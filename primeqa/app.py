@@ -8,6 +8,14 @@ from flask import Flask
 load_dotenv()
 
 from primeqa.db import init_db
+
+import primeqa.core.models  # noqa: F401
+import primeqa.metadata.models  # noqa: F401
+import primeqa.test_management.models  # noqa: F401
+import primeqa.execution.models  # noqa: F401
+import primeqa.intelligence.models  # noqa: F401
+import primeqa.vector.models  # noqa: F401
+
 from primeqa.core.routes import core_bp
 from primeqa.metadata.routes import metadata_bp
 from primeqa.test_management.routes import test_management_bp

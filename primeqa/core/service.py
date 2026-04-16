@@ -147,21 +147,106 @@ class AuthService:
         }
 
 
+VALID_ENV_TYPES = {"sandbox", "uat", "staging", "production"}
+VALID_EXECUTION_POLICIES = {"full", "read_only", "disabled"}
+VALID_CAPTURE_MODES = {"minimal", "smart", "full"}
+
+
 class EnvironmentService:
     def __init__(self, env_repo):
         self.env_repo = env_repo
 
     def create_environment(self, tenant_id, name, env_type, sf_instance_url, sf_api_version, **kwargs):
-        pass
+        if env_type not in VALID_ENV_TYPES:
+            raise ValueError(f"Invalid env_type. Must be one of: {', '.join(VALID_ENV_TYPES)}")
+        ep = kwargs.get("execution_policy", "full")
+        if ep not in VALID_EXECUTION_POLICIES:
+            raise ValueError(f"Invalid execution_policy. Must be one of: {', '.join(VALID_EXECUTION_POLICIES)}")
+        cm = kwargs.get("capture_mode", "smart")
+        if cm not in VALID_CAPTURE_MODES:
+            raise ValueError(f"Invalid capture_mode. Must be one of: {', '.join(VALID_CAPTURE_MODES)}")
 
-    def update_environment(self, environment_id, updates):
-        pass
+        if env_type == "production":
+            kwargs.setdefault("cleanup_mandatory", True)
 
-    def test_connection(self, environment_id):
-        pass
+        env = self.env_repo.create_environment(
+            tenant_id, name, env_type, sf_instance_url, sf_api_version, **kwargs,
+        )
+        return self._env_dict(env)
 
-    def refresh_sf_token(self, environment_id):
+    def update_environment(self, environment_id, tenant_id, updates):
+        if "execution_policy" in updates and updates["execution_policy"] not in VALID_EXECUTION_POLICIES:
+            raise ValueError(f"Invalid execution_policy. Must be one of: {', '.join(VALID_EXECUTION_POLICIES)}")
+        if "capture_mode" in updates and updates["capture_mode"] not in VALID_CAPTURE_MODES:
+            raise ValueError(f"Invalid capture_mode. Must be one of: {', '.join(VALID_CAPTURE_MODES)}")
+
+        env = self.env_repo.update_environment(environment_id, tenant_id, updates)
+        if not env:
+            raise ValueError("Environment not found")
+        return self._env_dict(env)
+
+    def get_environment(self, environment_id, tenant_id):
+        env = self.env_repo.get_environment(environment_id, tenant_id)
+        if not env:
+            return None
+        return self._env_dict(env)
+
+    def store_credentials(self, environment_id, tenant_id, client_id, client_secret, access_token=None, refresh_token=None):
+        env = self.env_repo.get_environment(environment_id, tenant_id)
+        if not env:
+            raise ValueError("Environment not found")
+        self.env_repo.store_credentials(environment_id, client_id, client_secret, access_token, refresh_token)
+        return {"status": "stored"}
+
+    def get_credentials(self, environment_id, tenant_id):
+        env = self.env_repo.get_environment(environment_id, tenant_id)
+        if not env:
+            raise ValueError("Environment not found")
+        return self.env_repo.get_credentials_decrypted(environment_id)
+
+    def test_connection(self, environment_id, tenant_id):
+        import requests as http_requests
+
+        env = self.env_repo.get_environment(environment_id, tenant_id)
+        if not env:
+            raise ValueError("Environment not found")
+
+        creds = self.env_repo.get_credentials_decrypted(environment_id)
+        if not creds or not creds.get("access_token"):
+            raise ValueError("No credentials or access token stored for this environment")
+
+        url = f"{env.sf_instance_url}/services/data/v{env.sf_api_version}/"
+        try:
+            resp = http_requests.get(url, headers={
+                "Authorization": f"Bearer {creds['access_token']}",
+            }, timeout=15)
+            if resp.status_code == 200:
+                return {"status": "connected", "sf_version": env.sf_api_version}
+            return {"status": "failed", "status_code": resp.status_code, "detail": resp.text[:500]}
+        except http_requests.RequestException as e:
+            return {"status": "failed", "detail": str(e)}
+
+    def refresh_sf_token(self, environment_id, tenant_id):
         pass
 
     def list_environments(self, tenant_id):
-        pass
+        envs = self.env_repo.list_environments(tenant_id)
+        return [self._env_dict(e) for e in envs]
+
+    @staticmethod
+    def _env_dict(env):
+        return {
+            "id": env.id,
+            "tenant_id": env.tenant_id,
+            "name": env.name,
+            "env_type": env.env_type,
+            "sf_instance_url": env.sf_instance_url,
+            "sf_api_version": env.sf_api_version,
+            "execution_policy": env.execution_policy,
+            "capture_mode": env.capture_mode,
+            "max_execution_slots": env.max_execution_slots,
+            "cleanup_mandatory": env.cleanup_mandatory,
+            "is_active": env.is_active,
+            "created_at": env.created_at.isoformat() if env.created_at else None,
+            "updated_at": env.updated_at.isoformat() if env.updated_at else None,
+        }

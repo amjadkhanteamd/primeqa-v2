@@ -7,8 +7,8 @@ from flask import Blueprint, jsonify, request
 
 from primeqa.core.auth import require_auth, require_role
 from primeqa.db import get_db
-from primeqa.core.repository import UserRepository, RefreshTokenRepository
-from primeqa.core.service import AuthService
+from primeqa.core.repository import UserRepository, RefreshTokenRepository, EnvironmentRepository
+from primeqa.core.service import AuthService, EnvironmentService
 
 core_bp = Blueprint("core", __name__)
 
@@ -18,6 +18,12 @@ def _get_auth_service():
     user_repo = UserRepository(db)
     token_repo = RefreshTokenRepository(db)
     return AuthService(user_repo, token_repo), db
+
+
+def _get_env_service():
+    db = next(get_db())
+    env_repo = EnvironmentRepository(db)
+    return EnvironmentService(env_repo), db
 
 
 # --- Auth ---
@@ -139,33 +145,109 @@ def update_user(user_id):
         db.close()
 
 
-# --- Environments (stubs) ---
+# --- Environments ---
 
 @core_bp.route("/api/environments", methods=["GET"])
 @require_auth
 def list_environments():
-    return jsonify(error="Not Implemented"), 501
+    svc, db = _get_env_service()
+    try:
+        envs = svc.list_environments(request.user["tenant_id"])
+        return jsonify(envs), 200
+    finally:
+        db.close()
 
 
 @core_bp.route("/api/environments", methods=["POST"])
 @require_role("admin")
 def create_environment():
-    return jsonify(error="Not Implemented"), 501
+    data = request.get_json(silent=True) or {}
+    required = ["name", "env_type", "sf_instance_url", "sf_api_version"]
+    missing = [f for f in required if not data.get(f)]
+    if missing:
+        return jsonify(error=f"Missing required fields: {', '.join(missing)}"), 400
+
+    svc, db = _get_env_service()
+    try:
+        env = svc.create_environment(
+            tenant_id=request.user["tenant_id"],
+            name=data["name"],
+            env_type=data["env_type"],
+            sf_instance_url=data["sf_instance_url"],
+            sf_api_version=data["sf_api_version"],
+            execution_policy=data.get("execution_policy", "full"),
+            capture_mode=data.get("capture_mode", "smart"),
+            max_execution_slots=data.get("max_execution_slots", 2),
+            **({} if "cleanup_mandatory" not in data else {"cleanup_mandatory": data["cleanup_mandatory"]}),
+        )
+        return jsonify(env), 201
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    finally:
+        db.close()
+
+
+@core_bp.route("/api/environments/<int:env_id>", methods=["GET"])
+@require_auth
+def get_environment(env_id):
+    svc, db = _get_env_service()
+    try:
+        env = svc.get_environment(env_id, request.user["tenant_id"])
+        if not env:
+            return jsonify(error="Environment not found"), 404
+        return jsonify(env), 200
+    finally:
+        db.close()
 
 
 @core_bp.route("/api/environments/<int:env_id>", methods=["PATCH"])
 @require_role("admin")
 def update_environment(env_id):
-    return jsonify(error="Not Implemented"), 501
+    data = request.get_json(silent=True) or {}
+    svc, db = _get_env_service()
+    try:
+        env = svc.update_environment(env_id, request.user["tenant_id"], data)
+        return jsonify(env), 200
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    finally:
+        db.close()
 
 
 @core_bp.route("/api/environments/<int:env_id>/test-connection", methods=["POST"])
 @require_role("admin")
 def test_connection(env_id):
-    return jsonify(error="Not Implemented"), 501
+    svc, db = _get_env_service()
+    try:
+        result = svc.test_connection(env_id, request.user["tenant_id"])
+        return jsonify(result), 200
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    finally:
+        db.close()
 
 
 @core_bp.route("/api/environments/<int:env_id>/credentials", methods=["POST"])
 @require_role("admin")
 def store_credentials(env_id):
-    return jsonify(error="Not Implemented"), 501
+    data = request.get_json(silent=True) or {}
+    required = ["client_id", "client_secret"]
+    missing = [f for f in required if not data.get(f)]
+    if missing:
+        return jsonify(error=f"Missing required fields: {', '.join(missing)}"), 400
+
+    svc, db = _get_env_service()
+    try:
+        result = svc.store_credentials(
+            environment_id=env_id,
+            tenant_id=request.user["tenant_id"],
+            client_id=data["client_id"],
+            client_secret=data["client_secret"],
+            access_token=data.get("access_token"),
+            refresh_token=data.get("refresh_token"),
+        )
+        return jsonify(result), 200
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    finally:
+        db.close()
