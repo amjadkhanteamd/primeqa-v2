@@ -11,8 +11,10 @@ from primeqa.execution.repository import (
     PipelineRunRepository, PipelineStageRepository,
     ExecutionSlotRepository, WorkerHeartbeatRepository,
     RunTestResultRepository, RunStepResultRepository,
+    RunCreatedEntityRepository,
 )
 from primeqa.execution.service import PipelineService
+from primeqa.execution.cleanup import CleanupEngine, CleanupAttemptRepository
 
 execution_bp = Blueprint("execution", __name__)
 
@@ -174,5 +176,81 @@ def get_step_results(run_id, result_id):
             "api_response": s.api_response, "error_message": s.error_message,
             "duration_ms": s.duration_ms,
         } for s in steps]), 200
+    finally:
+        db.close()
+
+
+# --- Cleanup ---
+
+@execution_bp.route("/api/runs/<int:run_id>/cleanup-status", methods=["GET"])
+@require_auth
+def get_cleanup_status(run_id):
+    db = next(get_db())
+    try:
+        entity_repo = RunCreatedEntityRepository(db)
+        cleanup_repo = CleanupAttemptRepository(db)
+        engine = CleanupEngine(entity_repo, cleanup_repo)
+        status = engine.get_cleanup_status(run_id)
+        return jsonify(status), 200
+    finally:
+        db.close()
+
+
+@execution_bp.route("/api/runs/<int:run_id>/retry-cleanup", methods=["POST"])
+@require_role("admin", "tester")
+def retry_cleanup(run_id):
+    db = next(get_db())
+    try:
+        from primeqa.core.models import Environment
+        from primeqa.execution.models import PipelineRun
+        run = db.query(PipelineRun).filter(PipelineRun.id == run_id).first()
+        if not run:
+            return jsonify(error="Run not found"), 404
+        env = db.query(Environment).filter(Environment.id == run.environment_id).first()
+        entity_repo = RunCreatedEntityRepository(db)
+        cleanup_repo = CleanupAttemptRepository(db)
+        engine = CleanupEngine(entity_repo, cleanup_repo)
+        result = engine.retry_cleanup(run_id, env)
+        return jsonify(result), 200
+    finally:
+        db.close()
+
+
+@execution_bp.route("/api/environments/<int:env_id>/orphaned-records", methods=["GET"])
+@require_auth
+def get_orphaned_records(env_id):
+    db = next(get_db())
+    try:
+        entity_repo = RunCreatedEntityRepository(db)
+        cleanup_repo = CleanupAttemptRepository(db)
+        engine = CleanupEngine(entity_repo, cleanup_repo)
+        orphaned = engine.get_orphaned_records(env_id)
+        return jsonify(orphaned), 200
+    finally:
+        db.close()
+
+
+@execution_bp.route("/api/environments/<int:env_id>/emergency-cleanup", methods=["POST"])
+@require_role("admin")
+def emergency_cleanup(env_id):
+    db = next(get_db())
+    try:
+        from primeqa.core.models import Environment
+        from primeqa.core.repository import EnvironmentRepository
+        env_repo = EnvironmentRepository(db)
+        env = env_repo.get_environment(env_id)
+        if not env:
+            return jsonify(error="Environment not found"), 404
+        creds = env_repo.get_credentials_decrypted(env_id)
+        if not creds or not creds.get("access_token"):
+            return jsonify(error="No credentials for this environment"), 400
+        from primeqa.execution.executor import SalesforceExecutionClient
+        sf = SalesforceExecutionClient(env.sf_instance_url, env.sf_api_version, creds["access_token"])
+        entity_repo = RunCreatedEntityRepository(db)
+        cleanup_repo = CleanupAttemptRepository(db)
+        engine = CleanupEngine(entity_repo, cleanup_repo, sf)
+        data = request.get_json(silent=True) or {}
+        result = engine.emergency_cleanup(env, data.get("sobject_types"))
+        return jsonify(result), 200
     finally:
         db.close()
