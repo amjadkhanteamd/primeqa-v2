@@ -333,31 +333,86 @@ class RunTestResultRepository:
     def __init__(self, db):
         self.db = db
 
-    def create_result(self, run_id, test_case_id, test_case_version_id, environment_id, status, **kwargs):
-        pass
+    def create_result(self, run_id, test_case_id, test_case_version_id, environment_id, status="passed", **kwargs):
+        rtr = RunTestResult(
+            run_id=run_id,
+            test_case_id=test_case_id,
+            test_case_version_id=test_case_version_id,
+            environment_id=environment_id,
+            status=status,
+            failure_type=kwargs.get("failure_type"),
+            failure_summary=kwargs.get("failure_summary"),
+            total_steps=kwargs.get("total_steps", 0),
+            passed_steps=kwargs.get("passed_steps", 0),
+            failed_steps=kwargs.get("failed_steps", 0),
+            duration_ms=kwargs.get("duration_ms"),
+        )
+        self.db.add(rtr)
+        self.db.commit()
+        self.db.refresh(rtr)
+        return rtr
 
     def get_result(self, result_id):
-        pass
+        return self.db.query(RunTestResult).filter(RunTestResult.id == result_id).first()
 
     def list_results(self, run_id):
-        pass
+        return self.db.query(RunTestResult).filter(
+            RunTestResult.run_id == run_id,
+        ).order_by(RunTestResult.executed_at).all()
 
     def update_result(self, result_id, updates):
-        pass
+        rtr = self.get_result(result_id)
+        if not rtr:
+            return None
+        for k, v in updates.items():
+            if hasattr(rtr, k):
+                setattr(rtr, k, v)
+        self.db.commit()
+        self.db.refresh(rtr)
+        return rtr
 
 
 class RunStepResultRepository:
     def __init__(self, db):
         self.db = db
 
-    def create_step_result(self, run_test_result_id, step_order, step_action, status, **kwargs):
-        pass
+    def create_step_result(self, run_test_result_id, step_order, step_action, status="passed", **kwargs):
+        rsr = RunStepResult(
+            run_test_result_id=run_test_result_id,
+            step_order=step_order,
+            step_action=step_action,
+            status=status,
+            execution_state=kwargs.get("execution_state", "not_started"),
+            target_object=kwargs.get("target_object"),
+            target_record_id=kwargs.get("target_record_id"),
+            before_state=kwargs.get("before_state"),
+            after_state=kwargs.get("after_state"),
+            field_diff=kwargs.get("field_diff"),
+            api_request=kwargs.get("api_request"),
+            api_response=kwargs.get("api_response"),
+            error_message=kwargs.get("error_message"),
+            duration_ms=kwargs.get("duration_ms"),
+        )
+        self.db.add(rsr)
+        self.db.commit()
+        self.db.refresh(rsr)
+        return rsr
 
     def update_step_result(self, step_id, updates):
-        pass
+        rsr = self.db.query(RunStepResult).filter(RunStepResult.id == step_id).first()
+        if not rsr:
+            return None
+        for k, v in updates.items():
+            if hasattr(rsr, k):
+                setattr(rsr, k, v)
+        self.db.commit()
+        self.db.refresh(rsr)
+        return rsr
 
     def list_step_results(self, run_test_result_id):
-        pass
+        return self.db.query(RunStepResult).filter(
+            RunStepResult.run_test_result_id == run_test_result_id,
+        ).order_by(RunStepResult.step_order).all()
 
 
 class RunCreatedEntityRepository:
@@ -365,13 +420,38 @@ class RunCreatedEntityRepository:
         self.db = db
 
     def create_entity(self, run_id, run_step_result_id, entity_type, sf_record_id, creation_source, **kwargs):
-        pass
+        entity = RunCreatedEntity(
+            run_id=run_id,
+            run_step_result_id=run_step_result_id,
+            entity_type=entity_type,
+            sf_record_id=sf_record_id,
+            creation_source=creation_source,
+            logical_identifier=kwargs.get("logical_identifier"),
+            primeqa_idempotency_key=kwargs.get("primeqa_idempotency_key"),
+            creation_fingerprint=kwargs.get("creation_fingerprint"),
+            parent_entity_id=kwargs.get("parent_entity_id"),
+            cleanup_required=kwargs.get("cleanup_required", True),
+        )
+        self.db.add(entity)
+        self.db.commit()
+        self.db.refresh(entity)
+        return entity
 
     def list_entities_for_cleanup(self, run_id):
-        pass
+        return self.db.query(RunCreatedEntity).filter(
+            RunCreatedEntity.run_id == run_id,
+            RunCreatedEntity.cleanup_required == True,
+        ).order_by(RunCreatedEntity.created_at.desc()).all()
 
     def find_by_idempotency_key(self, key):
-        pass
+        return self.db.query(RunCreatedEntity).filter(
+            RunCreatedEntity.primeqa_idempotency_key == key,
+        ).first()
 
     def mark_cleaned(self, entity_id):
-        pass
+        entity = self.db.query(RunCreatedEntity).filter(
+            RunCreatedEntity.id == entity_id,
+        ).first()
+        if entity:
+            entity.cleanup_required = False
+            self.db.commit()

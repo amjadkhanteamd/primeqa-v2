@@ -10,6 +10,7 @@ from primeqa.db import get_db
 from primeqa.execution.repository import (
     PipelineRunRepository, PipelineStageRepository,
     ExecutionSlotRepository, WorkerHeartbeatRepository,
+    RunTestResultRepository, RunStepResultRepository,
 )
 from primeqa.execution.service import PipelineService
 
@@ -117,5 +118,61 @@ def get_slots(env_id):
         if not status:
             return jsonify(error="Environment not found"), 404
         return jsonify(status), 200
+    finally:
+        db.close()
+
+
+# --- Results ---
+
+@execution_bp.route("/api/runs/<int:run_id>/results", methods=["GET"])
+@require_auth
+def list_results(run_id):
+    db = next(get_db())
+    try:
+        repo = RunTestResultRepository(db)
+        step_repo = RunStepResultRepository(db)
+        results = repo.list_results(run_id)
+        output = []
+        for r in results:
+            steps = step_repo.list_step_results(r.id)
+            output.append({
+                "id": r.id, "run_id": r.run_id, "test_case_id": r.test_case_id,
+                "status": r.status, "failure_type": r.failure_type,
+                "failure_summary": r.failure_summary,
+                "total_steps": r.total_steps, "passed_steps": r.passed_steps,
+                "failed_steps": r.failed_steps, "duration_ms": r.duration_ms,
+                "steps": [{
+                    "id": s.id, "step_order": s.step_order,
+                    "step_action": s.step_action, "target_object": s.target_object,
+                    "target_record_id": s.target_record_id, "status": s.status,
+                    "execution_state": s.execution_state,
+                    "before_state": s.before_state, "after_state": s.after_state,
+                    "field_diff": s.field_diff, "api_request": s.api_request,
+                    "api_response": s.api_response, "error_message": s.error_message,
+                    "duration_ms": s.duration_ms,
+                } for s in steps],
+            })
+        return jsonify(output), 200
+    finally:
+        db.close()
+
+
+@execution_bp.route("/api/runs/<int:run_id>/results/<int:result_id>/steps", methods=["GET"])
+@require_auth
+def get_step_results(run_id, result_id):
+    db = next(get_db())
+    try:
+        repo = RunStepResultRepository(db)
+        steps = repo.list_step_results(result_id)
+        return jsonify([{
+            "id": s.id, "step_order": s.step_order,
+            "step_action": s.step_action, "target_object": s.target_object,
+            "target_record_id": s.target_record_id, "status": s.status,
+            "execution_state": s.execution_state,
+            "before_state": s.before_state, "after_state": s.after_state,
+            "field_diff": s.field_diff, "api_request": s.api_request,
+            "api_response": s.api_response, "error_message": s.error_message,
+            "duration_ms": s.duration_ms,
+        } for s in steps]), 200
     finally:
         db.close()
