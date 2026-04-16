@@ -12,6 +12,8 @@ SessionLocal = None
 def init_db(database_url):
     """Initialise the engine and session factory. Call once at app startup."""
     global engine, SessionLocal
+    if engine is not None:
+        return
     engine = create_engine(database_url, pool_pre_ping=True)
     SessionLocal = scoped_session(sessionmaker(bind=engine))
 
