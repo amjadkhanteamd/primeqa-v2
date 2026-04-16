@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Reviews - PrimeQA{% endblock %}
+{% block content %}
+<div class="space-y-6">
+    <h1 class="text-2xl font-bold text-gray-900">Review Queue</h1>
+    <div class="bg-white shadow rounded-lg">
+        <div class="divide-y divide-gray-200">
+            {% for r in reviews %}
+            <a href="/reviews/{{ r.id }}" class="block px-6 py-4 hover:bg-gray-50">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <p class="text-sm font-medium text-indigo-600">Review #{{ r.id }}</p>
+                        <p class="text-sm text-gray-500">Version #{{ r.test_case_version_id }}</p>
+                    </div>
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if r.status == 'pending' %}bg-orange-100 text-orange-800{% elif r.status == 'approved' %}bg-green-100 text-green-800{% elif r.status == 'rejected' %}bg-red-100 text-red-800{% else %}bg-yellow-100 text-yellow-800{% endif %}">{{ r.status }}</span>
+                </div>
+            </a>
+            {% endfor %}
+            {% if not reviews %}
+            <div class="px-6 py-8 text-center text-sm text-gray-500">No pending reviews</div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

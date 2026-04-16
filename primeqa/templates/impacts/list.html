@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Metadata Impacts - PrimeQA{% endblock %}
+{% block content %}
+<div class="space-y-6">
+    <h1 class="text-2xl font-bold text-gray-900">Pending Metadata Impacts</h1>
+    {% if impacts %}
+    <div class="bg-white shadow rounded-lg divide-y divide-gray-200">
+        {% for impact in impacts %}
+        <div class="px-6 py-4">
+            <div class="flex justify-between items-start">
+                <div>
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if 'removed' in impact.impact_type %}bg-red-100 text-red-800{% elif 'added' in impact.impact_type %}bg-green-100 text-green-800{% else %}bg-yellow-100 text-yellow-800{% endif %}">{{ impact.impact_type }}</span>
+                    <span class="ml-2 text-sm font-medium text-gray-900">{{ impact.entity_ref }}</span>
+                    <span class="ml-2 text-sm text-gray-500">affects test case #{{ impact.test_case_id }}</span>
+                </div>
+                <div class="flex space-x-2">
+                    <form method="POST" action="/impacts/{{ impact.id }}/resolve"><input type="hidden" name="resolution" value="regenerated"><button class="text-xs rounded bg-blue-100 text-blue-700 px-2 py-1 hover:bg-blue-200">Regenerate</button></form>
+                    <form method="POST" action="/impacts/{{ impact.id }}/resolve"><input type="hidden" name="resolution" value="edited"><button class="text-xs rounded bg-yellow-100 text-yellow-700 px-2 py-1 hover:bg-yellow-200">Edit</button></form>
+                    <form method="POST" action="/impacts/{{ impact.id }}/resolve"><input type="hidden" name="resolution" value="dismissed"><button class="text-xs rounded bg-gray-100 text-gray-700 px-2 py-1 hover:bg-gray-200">Dismiss</button></form>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="bg-white shadow rounded-lg p-8 text-center">
+        <p class="text-sm text-gray-500">No pending impacts. Your test cases are up to date.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

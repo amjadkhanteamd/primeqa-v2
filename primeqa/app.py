@@ -21,6 +21,7 @@ from primeqa.metadata.routes import metadata_bp
 from primeqa.test_management.routes import test_management_bp
 from primeqa.execution.routes import execution_bp
 from primeqa.intelligence.routes import intelligence_bp
+from primeqa.views import views_bp
 
 
 def create_app():
@@ -36,6 +37,7 @@ def create_app():
     application.register_blueprint(test_management_bp)
     application.register_blueprint(execution_bp)
     application.register_blueprint(intelligence_bp)
+    application.register_blueprint(views_bp)
 
     return application
 

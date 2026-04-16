@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Login - PrimeQA{% endblock %}
+{% block public_content %}
+<div class="w-full max-w-md space-y-8">
+    <div>
+        <h1 class="text-center text-3xl font-bold text-indigo-600">PrimeQA</h1>
+        <h2 class="mt-2 text-center text-lg text-gray-600">Sign in to your account</h2>
+    </div>
+    {% if error %}
+    <div class="rounded-md bg-red-50 p-4">
+        <p class="text-sm text-red-700">{{ error }}</p>
+    </div>
+    {% endif %}
+    <form class="mt-8 space-y-6" method="POST" action="/login">
+        <div class="space-y-4 rounded-md">
+            <div>
+                <label for="email" class="block text-sm font-medium text-gray-700">Email</label>
+                <input id="email" name="email" type="email" required
+                    class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                    placeholder="admin@primeqa.io">
+            </div>
+            <div>
+                <label for="password" class="block text-sm font-medium text-gray-700">Password</label>
+                <input id="password" name="password" type="password" required
+                    class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+            </div>
+        </div>
+        <button type="submit" class="w-full rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">
+            Sign in
+        </button>
+    </form>
+</div>
+{% endblock %}

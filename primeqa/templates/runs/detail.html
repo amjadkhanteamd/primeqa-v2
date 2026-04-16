@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Run #{{ run.id }} - PrimeQA{% endblock %}
+{% block content %}
+<div class="space-y-6" {% if run.status == 'running' %}hx-get="/runs/{{ run.id }}" hx-trigger="every 5s" hx-select="#run-content" hx-target="#run-content" hx-swap="outerHTML"{% endif %}>
+    <div class="flex justify-between items-center">
+        <h1 class="text-2xl font-bold text-gray-900">Run #{{ run.id }}</h1>
+        {% if run.status in ['queued', 'running'] and user.role in ['admin', 'tester'] %}
+        <form method="POST" action="/runs/{{ run.id }}/cancel">
+            <button type="submit" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500">Cancel</button>
+        </form>
+        {% endif %}
+    </div>
+    <div id="run-content">
+        <div class="bg-white shadow rounded-lg p-6 grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div><span class="text-xs text-gray-500 uppercase">Status</span>
+                <p><span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if run.status == 'completed' %}bg-green-100 text-green-800{% elif run.status == 'failed' %}bg-red-100 text-red-800{% elif run.status == 'running' %}bg-blue-100 text-blue-800 animate-pulse-blue{% elif run.status == 'queued' %}bg-yellow-100 text-yellow-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ run.status }}</span></p></div>
+            <div><span class="text-xs text-gray-500 uppercase">Type</span><p class="font-medium">{{ run.run_type }}</p></div>
+            <div><span class="text-xs text-gray-500 uppercase">Priority</span><p class="font-medium">{{ run.priority }}</p></div>
+            <div><span class="text-xs text-gray-500 uppercase">Tests</span><p class="font-medium text-green-600">{{ run.passed }}</p>/<span class="text-red-600">{{ run.failed }}</span>/<span>{{ run.total_tests }}</span></div>
+        </div>
+
+        {% if stages %}
+        <div class="bg-white shadow rounded-lg p-6 mt-4">
+            <h3 class="text-sm font-medium text-gray-500 mb-4">Pipeline Stages</h3>
+            <div class="flex space-x-2">
+                {% for stage in stages %}
+                <div class="flex-1 text-center">
+                    <div class="h-2 rounded-full {% if stage.status == 'passed' %}bg-green-500{% elif stage.status == 'failed' %}bg-red-500{% elif stage.status == 'running' %}bg-blue-500 animate-pulse-blue{% elif stage.status == 'skipped' %}bg-gray-300{% else %}bg-gray-200{% endif %}"></div>
+                    <p class="mt-1 text-xs text-gray-500">{{ stage.stage_name|replace('_', ' ')|title }}</p>
+                    <p class="text-xs {% if stage.status == 'passed' %}text-green-600{% elif stage.status == 'failed' %}text-red-600{% elif stage.status == 'running' %}text-blue-600{% else %}text-gray-400{% endif %}">{{ stage.status }}</p>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if results %}
+        <div class="bg-white shadow rounded-lg mt-4">
+            <div class="px-4 py-5 sm:px-6 border-b"><h3 class="text-lg font-medium">Test Results</h3></div>
+            <div class="divide-y divide-gray-200">
+                {% for r in results %}
+                <div class="px-6 py-4">
+                    <div class="flex justify-between items-center">
+                        <span class="font-medium">Test #{{ r.test_case_id }}</span>
+                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if r.status == 'passed' %}bg-green-100 text-green-800{% elif r.status == 'failed' %}bg-red-100 text-red-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ r.status }}</span>
+                    </div>
+                    {% if r.failure_summary %}<p class="text-sm text-red-600 mt-1">{{ r.failure_summary }}</p>{% endif %}
+                    {% if r.steps %}
+                    <div class="mt-2 space-y-1">
+                        {% for s in r.steps %}
+                        <div class="text-xs flex items-center space-x-2 {% if s.status == 'failed' %}text-red-600{% else %}text-gray-500{% endif %}">
+                            <span class="w-4">{{ s.step_order }}.</span>
+                            <span class="font-mono">{{ s.step_action }}</span>
+                            <span>{{ s.target_object }}</span>
+                            <span class="{% if s.status == 'passed' %}text-green-500{% elif s.status == 'failed' %}text-red-500{% else %}text-gray-400{% endif %}">{{ s.status }}</span>
+                            {% if s.error_message %}<span class="text-red-400 truncate max-w-xs">{{ s.error_message[:80] }}</span>{% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

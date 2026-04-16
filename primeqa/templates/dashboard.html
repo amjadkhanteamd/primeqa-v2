@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - PrimeQA{% endblock %}
+{% block content %}
+<div class="space-y-6">
+    <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
+
+    <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        <div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+            <dt class="truncate text-sm font-medium text-gray-500">Total Test Cases</dt>
+            <dd class="mt-1 text-3xl font-semibold text-gray-900">{{ stats.total_test_cases }}</dd>
+        </div>
+        <div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+            <dt class="truncate text-sm font-medium text-gray-500">Runs Today</dt>
+            <dd class="mt-1 text-3xl font-semibold text-gray-900">{{ stats.runs_today }}</dd>
+        </div>
+        <div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+            <dt class="truncate text-sm font-medium text-gray-500">Pass Rate</dt>
+            <dd class="mt-1 text-3xl font-semibold {% if stats.pass_rate >= 80 %}text-green-600{% elif stats.pass_rate >= 50 %}text-yellow-600{% else %}text-red-600{% endif %}">{{ stats.pass_rate }}%</dd>
+        </div>
+        <div class="overflow-hidden rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+            <dt class="truncate text-sm font-medium text-gray-500">Pending Reviews</dt>
+            <dd class="mt-1 text-3xl font-semibold text-orange-600">{{ stats.pending_reviews }}</dd>
+        </div>
+    </div>
+
+    {% if user.role in ['ba', 'admin'] and stats.pending_reviews > 0 %}
+    <div class="rounded-md bg-orange-50 border border-orange-200 p-4">
+        <p class="text-sm text-orange-800">You have <strong>{{ stats.pending_reviews }}</strong> pending reviews.
+            <a href="/reviews" class="font-medium underline">Review now</a></p>
+    </div>
+    {% endif %}
+
+    {% if user.role == 'admin' %}
+    <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
+        <div class="rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+            <h3 class="text-sm font-medium text-gray-500">Users</h3>
+            <p class="mt-1 text-2xl font-semibold text-gray-900">{{ stats.user_count }} active</p>
+        </div>
+        <div class="rounded-lg bg-white px-4 py-5 shadow sm:p-6">
+            <h3 class="text-sm font-medium text-gray-500">Environments</h3>
+            <p class="mt-1 text-2xl font-semibold text-gray-900">{{ stats.env_count }} configured</p>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200">
+            <h3 class="text-lg font-medium text-gray-900">Recent Runs</h3>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Priority</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Queued</th>
+                    </tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-200">
+                    {% for run in recent_runs %}
+                    <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/runs/{{ run.id }}'">
+                        <td class="px-6 py-4 text-sm font-medium text-indigo-600">#{{ run.id }}</td>
+                        <td class="px-6 py-4">
+                            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                                {% if run.status == 'completed' %}bg-green-100 text-green-800
+                                {% elif run.status == 'failed' %}bg-red-100 text-red-800
+                                {% elif run.status == 'running' %}bg-blue-100 text-blue-800
+                                {% elif run.status == 'queued' %}bg-yellow-100 text-yellow-800
+                                {% elif run.status == 'cancelled' %}bg-gray-100 text-gray-800
+                                {% endif %}">{{ run.status }}</span>
+                        </td>
+                        <td class="px-6 py-4 text-sm text-gray-500">{{ run.run_type }}</td>
+                        <td class="px-6 py-4 text-sm text-gray-500">{{ run.priority }}</td>
+                        <td class="px-6 py-4 text-sm text-gray-500">{{ run.queued_at[:19] if run.queued_at else '' }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not recent_runs %}
+                    <tr><td colspan="5" class="px-6 py-8 text-center text-sm text-gray-500">No runs yet</td></tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

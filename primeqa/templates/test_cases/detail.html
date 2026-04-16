@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}{{ tc.title }} - PrimeQA{% endblock %}
+{% block content %}
+<div class="space-y-6">
+    <div class="flex justify-between items-center">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">{{ tc.title }}</h1>
+            <div class="mt-1 flex space-x-2">
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if tc.status == 'active' %}bg-green-100 text-green-800{% elif tc.status == 'approved' %}bg-blue-100 text-blue-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ tc.status }}</span>
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if tc.visibility == 'shared' %}bg-green-50 text-green-700{% else %}bg-gray-50 text-gray-600{% endif %}">{{ tc.visibility }}</span>
+                <span class="text-xs text-gray-500">v{{ tc.version }}</span>
+            </div>
+        </div>
+        {% if tc.visibility == 'private' and tc.owner_id == user.id %}
+        <form method="POST" action="/test-cases/{{ tc.id }}/share">
+            <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Share</button>
+        </form>
+        {% endif %}
+    </div>
+
+    {% if current_version %}
+    <div class="bg-white shadow rounded-lg p-6">
+        <h3 class="text-sm font-medium text-gray-500 mb-4">Current Version (v{{ current_version.version_number }}) - {{ current_version.generation_method }}</h3>
+        {% if current_version.referenced_entities %}
+        <div class="mb-4 flex flex-wrap gap-1">
+            {% for entity in current_version.referenced_entities %}
+            <span class="inline-flex items-center px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 text-xs">{{ entity }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% if current_version.steps %}
+        <ol class="space-y-3">
+            {% for step in current_version.steps %}
+            <li class="flex items-start space-x-3 p-3 rounded bg-gray-50">
+                <span class="flex-shrink-0 w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 text-xs flex items-center justify-center font-medium">{{ step.step_order }}</span>
+                <div>
+                    <p class="text-sm font-medium text-gray-900"><span class="font-mono text-indigo-600">{{ step.action }}</span> {{ step.target_object }}</p>
+                    {% if step.field_values %}<p class="text-xs text-gray-500 mt-0.5">{{ step.field_values }}</p>{% endif %}
+                    {% if step.expected_result %}<p class="text-xs text-green-600 mt-0.5">Expected: {{ step.expected_result }}</p>{% endif %}
+                </div>
+            </li>
+            {% endfor %}
+        </ol>
+        {% else %}
+        <p class="text-sm text-gray-500">No steps defined</p>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if versions %}
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:px-6 border-b"><h3 class="text-lg font-medium">Version History</h3></div>
+        <div class="divide-y divide-gray-200">
+            {% for v in versions %}
+            <div class="px-6 py-3 flex justify-between items-center {% if v.id == tc.current_version_id %}bg-indigo-50{% endif %}">
+                <div>
+                    <span class="text-sm font-medium">v{{ v.version_number }}</span>
+                    <span class="text-xs text-gray-500 ml-2">{{ v.generation_method }}</span>
+                    {% if v.confidence_score %}<span class="text-xs text-gray-400 ml-1">({{ "%.0f"|format(v.confidence_score * 100) }}% confidence)</span>{% endif %}
+                </div>
+                <span class="text-xs text-gray-500">{{ v.created_at[:19] if v.created_at else '' }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

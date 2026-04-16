@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Test Library - PrimeQA{% endblock %}
+{% block content %}
+<div class="flex space-x-6">
+    <div class="w-64 flex-shrink-0">
+        <div class="bg-white shadow rounded-lg p-4">
+            <h3 class="text-sm font-medium text-gray-900 mb-3">Sections</h3>
+            {% macro render_tree(sections, depth=0) %}
+            <ul class="{% if depth > 0 %}ml-4{% endif %} space-y-1">
+                {% for s in sections %}
+                <li>
+                    <a href="/test-cases?section_id={{ s.id }}" class="block text-sm py-1 px-2 rounded {% if section_id == s.id %}bg-indigo-50 text-indigo-700 font-medium{% else %}text-gray-600 hover:bg-gray-50{% endif %}">{{ s.name }}</a>
+                    {% if s.children %}{{ render_tree(s.children, depth+1) }}{% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+            {% endmacro %}
+            <a href="/test-cases" class="block text-sm py-1 px-2 rounded mb-2 {% if not section_id %}bg-indigo-50 text-indigo-700 font-medium{% else %}text-gray-600 hover:bg-gray-50{% endif %}">All Test Cases</a>
+            {{ render_tree(sections) }}
+        </div>
+    </div>
+    <div class="flex-1">
+        <div class="flex justify-between items-center mb-4">
+            <h1 class="text-2xl font-bold text-gray-900">Test Cases</h1>
+        </div>
+        <div class="bg-white shadow rounded-lg overflow-x-auto">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Title</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Visibility</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Owner</th>
+                    </tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-200">
+                    {% for tc in test_cases %}
+                    <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/test-cases/{{ tc.id }}'">
+                        <td class="px-6 py-4 text-sm font-medium text-indigo-600">{{ tc.title }}</td>
+                        <td class="px-6 py-4"><span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if tc.status == 'active' %}bg-green-100 text-green-800{% elif tc.status == 'approved' %}bg-blue-100 text-blue-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ tc.status }}</span></td>
+                        <td class="px-6 py-4"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if tc.visibility == 'shared' %}bg-green-50 text-green-700{% else %}bg-gray-50 text-gray-600{% endif %}">{{ tc.visibility }}</span></td>
+                        <td class="px-6 py-4 text-sm text-gray-500">{{ tc.owner_id }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not test_cases %}<tr><td colspan="4" class="px-6 py-8 text-center text-sm text-gray-500">No test cases found</td></tr>{% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
