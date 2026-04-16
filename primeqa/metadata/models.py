@@ -102,6 +102,8 @@ class MetaValidationRule(Base):
     error_message = Column(Text)
     is_active = Column(Boolean, nullable=False, server_default="true")
 
+    meta_object = relationship("MetaObject")
+
 
 class MetaFlow(Base):
     __tablename__ = "meta_flows"
@@ -132,6 +134,8 @@ class MetaTrigger(Base):
     trigger_name = Column(String(255), nullable=False)
     events = Column(String(255))
     is_active = Column(Boolean, nullable=False, server_default="true")
+
+    meta_object = relationship("MetaObject")
 
 
 class MetaRecordType(Base):
