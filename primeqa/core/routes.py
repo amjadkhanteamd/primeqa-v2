@@ -1,14 +1,17 @@
 """API routes for the core domain.
 
-Endpoints: /api/auth/*, /api/users/*, /api/environments/*
+Endpoints: /api/auth/*, /api/users/*, /api/environments/*, /api/connections/*, /api/groups/*
 """
 
 from flask import Blueprint, jsonify, request
 
 from primeqa.core.auth import require_auth, require_role
 from primeqa.db import get_db
-from primeqa.core.repository import UserRepository, RefreshTokenRepository, EnvironmentRepository
-from primeqa.core.service import AuthService, EnvironmentService
+from primeqa.core.repository import (
+    UserRepository, RefreshTokenRepository, EnvironmentRepository,
+    ConnectionRepository, GroupRepository,
+)
+from primeqa.core.service import AuthService, EnvironmentService, ConnectionService, GroupService
 
 core_bp = Blueprint("core", __name__)
 
@@ -152,7 +155,9 @@ def update_user(user_id):
 def list_environments():
     svc, db = _get_env_service()
     try:
-        envs = svc.list_environments(request.user["tenant_id"])
+        envs = svc.list_environments(
+            request.user["tenant_id"], request.user["id"], request.user["role"],
+        )
         return jsonify(envs), 200
     finally:
         db.close()
@@ -247,6 +252,195 @@ def store_credentials(env_id):
             refresh_token=data.get("refresh_token"),
         )
         return jsonify(result), 200
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    finally:
+        db.close()
+
+
+# --- Connections ---
+
+def _get_conn_service():
+    db = next(get_db())
+    return ConnectionService(ConnectionRepository(db)), db
+
+
+@core_bp.route("/api/connections", methods=["GET"])
+@require_auth
+def list_connections():
+    svc, db = _get_conn_service()
+    try:
+        return jsonify(svc.list_connections(request.user["tenant_id"], request.args.get("type"))), 200
+    finally:
+        db.close()
+
+
+@core_bp.route("/api/connections", methods=["POST"])
+@require_role("admin")
+def create_connection():
+    data = request.get_json(silent=True) or {}
+    for f in ["connection_type", "name", "config"]:
+        if not data.get(f):
+            return jsonify(error=f"{f} is required"), 400
+    svc, db = _get_conn_service()
+    try:
+        conn = svc.create_connection(request.user["tenant_id"], data["connection_type"],
+                                     data["name"], data["config"], request.user["id"])
+        return jsonify(conn), 201
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    finally:
+        db.close()
+
+
+@core_bp.route("/api/connections/<int:conn_id>", methods=["GET"])
+@require_auth
+def get_connection(conn_id):
+    svc, db = _get_conn_service()
+    try:
+        conn = svc.get_connection(conn_id, request.user["tenant_id"])
+        if not conn:
+            return jsonify(error="Connection not found"), 404
+        return jsonify(conn), 200
+    finally:
+        db.close()
+
+
+@core_bp.route("/api/connections/<int:conn_id>", methods=["DELETE"])
+@require_role("admin")
+def delete_connection(conn_id):
+    svc, db = _get_conn_service()
+    try:
+        svc.delete_connection(conn_id, request.user["tenant_id"])
+        return jsonify(message="Deleted"), 200
+    except ValueError as e:
+        return jsonify(error=str(e)), 404
+    finally:
+        db.close()
+
+
+@core_bp.route("/api/connections/<int:conn_id>/test", methods=["POST"])
+@require_role("admin")
+def test_connection_api(conn_id):
+    svc, db = _get_conn_service()
+    try:
+        result = svc.test_connection(conn_id, request.user["tenant_id"])
+        return jsonify(result), 200
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    finally:
+        db.close()
+
+
+# --- Groups ---
+
+def _get_group_service():
+    db = next(get_db())
+    return GroupService(GroupRepository(db)), db
+
+
+@core_bp.route("/api/groups", methods=["GET"])
+@require_auth
+def list_groups():
+    svc, db = _get_group_service()
+    try:
+        return jsonify(svc.list_groups(request.user["tenant_id"], request.user["id"], request.user["role"])), 200
+    finally:
+        db.close()
+
+
+@core_bp.route("/api/groups", methods=["POST"])
+@require_role("admin")
+def create_group():
+    data = request.get_json(silent=True) or {}
+    if not data.get("name"):
+        return jsonify(error="name is required"), 400
+    svc, db = _get_group_service()
+    try:
+        return jsonify(svc.create_group(request.user["tenant_id"], data["name"],
+                                        request.user["id"], data.get("description"))), 201
+    finally:
+        db.close()
+
+
+@core_bp.route("/api/groups/<int:group_id>", methods=["GET"])
+@require_auth
+def get_group(group_id):
+    svc, db = _get_group_service()
+    try:
+        detail = svc.get_group_detail(group_id, request.user["tenant_id"])
+        if not detail:
+            return jsonify(error="Group not found"), 404
+        return jsonify(detail), 200
+    finally:
+        db.close()
+
+
+@core_bp.route("/api/groups/<int:group_id>", methods=["DELETE"])
+@require_role("admin")
+def delete_group(group_id):
+    svc, db = _get_group_service()
+    try:
+        svc.delete_group(group_id, request.user["tenant_id"])
+        return jsonify(message="Deleted"), 200
+    except ValueError as e:
+        return jsonify(error=str(e)), 404
+    finally:
+        db.close()
+
+
+@core_bp.route("/api/groups/<int:group_id>/members", methods=["POST"])
+@require_role("admin")
+def add_group_member(group_id):
+    data = request.get_json(silent=True) or {}
+    if not data.get("user_id"):
+        return jsonify(error="user_id is required"), 400
+    svc, db = _get_group_service()
+    try:
+        svc.add_member(group_id, request.user["tenant_id"], data["user_id"], request.user["id"])
+        return jsonify(message="Added"), 200
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    finally:
+        db.close()
+
+
+@core_bp.route("/api/groups/<int:group_id>/members/<int:user_id>", methods=["DELETE"])
+@require_role("admin")
+def remove_group_member(group_id, user_id):
+    svc, db = _get_group_service()
+    try:
+        svc.remove_member(group_id, request.user["tenant_id"], user_id)
+        return jsonify(message="Removed"), 200
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    finally:
+        db.close()
+
+
+@core_bp.route("/api/groups/<int:group_id>/environments", methods=["POST"])
+@require_role("admin")
+def add_group_environment(group_id):
+    data = request.get_json(silent=True) or {}
+    if not data.get("environment_id"):
+        return jsonify(error="environment_id is required"), 400
+    svc, db = _get_group_service()
+    try:
+        svc.add_environment(group_id, request.user["tenant_id"], data["environment_id"], request.user["id"])
+        return jsonify(message="Added"), 200
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    finally:
+        db.close()
+
+
+@core_bp.route("/api/groups/<int:group_id>/environments/<int:env_id>", methods=["DELETE"])
+@require_role("admin")
+def remove_group_environment(group_id, env_id):
+    svc, db = _get_group_service()
+    try:
+        svc.remove_environment(group_id, request.user["tenant_id"], env_id)
+        return jsonify(message="Removed"), 200
     except ValueError as e:
         return jsonify(error=str(e)), 400
     finally:

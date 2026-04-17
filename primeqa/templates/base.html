@@ -30,7 +30,9 @@
                         <a href="/reviews" class="{% if active_page == 'reviews' %}border-indigo-500 text-gray-900{% else %}border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700{% endif %} inline-flex items-center border-b-2 px-1 pt-1 text-sm font-medium">Reviews</a>
                         {% endif %}
                         {% if user.role == 'admin' %}
+                        <a href="/connections" class="{% if active_page == 'connections' %}border-indigo-500 text-gray-900{% else %}border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700{% endif %} inline-flex items-center border-b-2 px-1 pt-1 text-sm font-medium">Connections</a>
                         <a href="/environments" class="{% if active_page == 'environments' %}border-indigo-500 text-gray-900{% else %}border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700{% endif %} inline-flex items-center border-b-2 px-1 pt-1 text-sm font-medium">Environments</a>
+                        <a href="/groups" class="{% if active_page == 'groups' %}border-indigo-500 text-gray-900{% else %}border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700{% endif %} inline-flex items-center border-b-2 px-1 pt-1 text-sm font-medium">Groups</a>
                         <a href="/users" class="{% if active_page == 'users' %}border-indigo-500 text-gray-900{% else %}border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700{% endif %} inline-flex items-center border-b-2 px-1 pt-1 text-sm font-medium">Users</a>
                         {% endif %}
                         {% if user.role in ['admin', 'tester'] %}

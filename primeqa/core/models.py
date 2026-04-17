@@ -85,6 +85,8 @@ class Environment(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
+    created_by = Column(Integer, ForeignKey("users.id"))
+
     tenant = relationship("Tenant", back_populates="environments")
     credentials = relationship("EnvironmentCredential", back_populates="environment", uselist=False)
 
@@ -132,4 +134,77 @@ class ActivityLog(Base):
         Index("idx_activity_log_created_at_desc", "created_at"),
         Index("idx_activity_log_tenant_created", "tenant_id", "created_at"),
         Index("idx_activity_log_entity", "entity_type", "entity_id"),
+    )
+
+
+class Group(Base):
+    __tablename__ = "groups"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    name = Column(String(255), nullable=False)
+    description = Column(Text)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    members = relationship("GroupMember", back_populates="group", cascade="all, delete-orphan")
+    group_environments = relationship("GroupEnvironment", back_populates="group", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="groups_tenant_name_unique"),
+    )
+
+
+class GroupMember(Base):
+    __tablename__ = "group_members"
+
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    added_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    added_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    group = relationship("Group", back_populates="members")
+    user = relationship("User", foreign_keys=[user_id])
+
+    __table_args__ = (
+        UniqueConstraint("group_id", "user_id", name="group_members_unique"),
+    )
+
+
+class GroupEnvironment(Base):
+    __tablename__ = "group_environments"
+
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey("groups.id", ondelete="CASCADE"), nullable=False)
+    environment_id = Column(Integer, ForeignKey("environments.id", ondelete="CASCADE"), nullable=False)
+    added_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    added_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    group = relationship("Group", back_populates="group_environments")
+    environment = relationship("Environment")
+
+    __table_args__ = (
+        UniqueConstraint("group_id", "environment_id", name="group_environments_unique"),
+    )
+
+
+class Connection(Base):
+    __tablename__ = "connections"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    connection_type = Column(String(20), nullable=False)
+    name = Column(String(255), nullable=False)
+    config = Column(JSON, nullable=False, server_default="{}")
+    status = Column(String(20), nullable=False, server_default="inactive")
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("connection_type IN ('salesforce', 'jira', 'llm')"),
+        CheckConstraint("status IN ('active', 'inactive', 'error')"),
+        UniqueConstraint("tenant_id", "name", name="connections_tenant_name_unique"),
     )

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ conn.name }} - PrimeQA{% endblock %}
+{% block content %}
+<div class="space-y-6">
+    <div class="flex justify-between items-center">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">{{ conn.name }}</h1>
+            <div class="mt-1 flex space-x-2">
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {% if conn.connection_type == 'salesforce' %}bg-blue-100 text-blue-800{% elif conn.connection_type == 'jira' %}bg-green-100 text-green-800{% else %}bg-purple-100 text-purple-800{% endif %}">{{ conn.connection_type }}</span>
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if conn.status == 'active' %}bg-green-50 text-green-700{% elif conn.status == 'error' %}bg-red-50 text-red-700{% else %}bg-gray-50 text-gray-600{% endif %}">{{ conn.status }}</span>
+            </div>
+        </div>
+        <div class="flex space-x-3">
+            <form method="POST" action="/connections/{{ conn.id }}/test"><button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Test Connection</button></form>
+            <form method="POST" action="/connections/{{ conn.id }}/delete" onsubmit="return confirm('Delete this connection?')"><button type="submit" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">Delete</button></form>
+        </div>
+    </div>
+    {% if message %}<div class="rounded-md {% if 'failed' in message|lower or 'error' in message|lower %}bg-red-50 text-red-700{% else %}bg-green-50 text-green-700{% endif %} p-4 text-sm">{{ message }}</div>{% endif %}
+    <div class="bg-white shadow rounded-lg p-6">
+        <h3 class="text-sm font-medium text-gray-500 mb-4">Configuration</h3>
+        <dl class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {% for key, value in conn.config.items() %}
+            <div>
+                <dt class="text-xs text-gray-500 uppercase">{{ key }}</dt>
+                <dd class="text-sm font-medium text-gray-900">{% if 'secret' in key|lower or 'key' in key|lower or 'token' in key|lower or 'password' in key|lower or 'credential' in key|lower %}••••••••{% else %}{{ value }}{% endif %}</dd>
+            </div>
+            {% endfor %}
+        </dl>
+    </div>
+</div>
+{% endblock %}

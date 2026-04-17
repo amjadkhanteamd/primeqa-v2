@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}{{ group.name }} - PrimeQA{% endblock %}
+{% block content %}
+<div class="space-y-6">
+    <div class="flex justify-between items-center">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">{{ group.name }}</h1>
+            {% if group.description %}<p class="text-sm text-gray-500 mt-1">{{ group.description }}</p>{% endif %}
+        </div>
+        {% if user.role == 'admin' %}
+        <form method="POST" action="/groups/{{ group.id }}/delete" onsubmit="return confirm('Delete this group?')">
+            <button type="submit" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">Delete Group</button>
+        </form>
+        {% endif %}
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Members -->
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-4 py-5 sm:px-6 border-b flex justify-between items-center">
+                <h3 class="text-lg font-medium">Members ({{ group.members|length }})</h3>
+            </div>
+            <div id="members-list">
+                <div class="divide-y divide-gray-200">
+                    {% for m in group.members %}
+                    <div class="px-6 py-3 flex justify-between items-center">
+                        <div>
+                            <p class="text-sm font-medium text-gray-900">{{ m.full_name }}</p>
+                            <p class="text-xs text-gray-500">{{ m.email }} &middot; {{ m.role }}</p>
+                        </div>
+                        {% if user.role == 'admin' %}
+                        <form method="POST" action="/groups/{{ group.id }}/members/{{ m.id }}/remove">
+                            <button type="submit" class="text-xs text-red-600 hover:text-red-800">Remove</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                    {% if not group.members %}
+                    <div class="px-6 py-4 text-sm text-gray-500">No members yet</div>
+                    {% endif %}
+                </div>
+                {% if user.role == 'admin' %}
+                <div class="px-6 py-4 border-t bg-gray-50">
+                    <form method="POST" action="/groups/{{ group.id }}/members" class="flex space-x-2">
+                        <select name="user_id" class="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm">
+                            {% for u in available_users %}
+                            <option value="{{ u.id }}">{{ u.full_name }} ({{ u.email }})</option>
+                            {% endfor %}
+                        </select>
+                        <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">Add</button>
+                    </form>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Environments -->
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-4 py-5 sm:px-6 border-b flex justify-between items-center">
+                <h3 class="text-lg font-medium">Environments ({{ group.environments|length }})</h3>
+            </div>
+            <div id="environments-list">
+                <div class="divide-y divide-gray-200">
+                    {% for e in group.environments %}
+                    <div class="px-6 py-3 flex justify-between items-center">
+                        <div>
+                            <p class="text-sm font-medium text-gray-900">{{ e.name }}</p>
+                            <p class="text-xs text-gray-500">{{ e.env_type }} &middot; {{ e.sf_instance_url[:40] }}...</p>
+                        </div>
+                        {% if user.role == 'admin' %}
+                        <form method="POST" action="/groups/{{ group.id }}/environments/{{ e.id }}/remove">
+                            <button type="submit" class="text-xs text-red-600 hover:text-red-800">Remove</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                    {% if not group.environments %}
+                    <div class="px-6 py-4 text-sm text-gray-500">No environments assigned</div>
+                    {% endif %}
+                </div>
+                {% if user.role == 'admin' and available_envs %}
+                <div class="px-6 py-4 border-t bg-gray-50">
+                    <form method="POST" action="/groups/{{ group.id }}/environments" class="flex space-x-2">
+                        <select name="environment_id" class="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm">
+                            {% for e in available_envs %}
+                            <option value="{{ e.id }}">{{ e.name }} ({{ e.env_type }})</option>
+                            {% endfor %}
+                        </select>
+                        <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">Assign</button>
+                    </form>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -10,8 +10,11 @@ import jwt
 from flask import Blueprint, render_template, request, redirect, url_for, make_response
 
 from primeqa.db import get_db
-from primeqa.core.repository import UserRepository, RefreshTokenRepository, EnvironmentRepository
-from primeqa.core.service import AuthService, EnvironmentService
+from primeqa.core.repository import (
+    UserRepository, RefreshTokenRepository, EnvironmentRepository,
+    ConnectionRepository, GroupRepository,
+)
+from primeqa.core.service import AuthService, EnvironmentService, ConnectionService, GroupService
 
 views_bp = Blueprint("views", __name__, template_folder="templates")
 
@@ -102,7 +105,7 @@ def dashboard():
     try:
         from primeqa.execution.models import PipelineRun
         from primeqa.test_management.models import TestCase, BAReview
-        from primeqa.core.models import User, Environment
+        from primeqa.core.models import User, Environment, Connection, Group
 
         tc_count = db.query(TestCase).filter(TestCase.tenant_id == request.user["tenant_id"]).count()
         runs_today = db.query(PipelineRun).filter(PipelineRun.tenant_id == request.user["tenant_id"]).count()
@@ -111,6 +114,9 @@ def dashboard():
         ).count()
         user_count = db.query(User).filter(User.tenant_id == request.user["tenant_id"], User.is_active == True).count()
         env_count = db.query(Environment).filter(Environment.tenant_id == request.user["tenant_id"]).count()
+        conn_count = db.query(Connection).filter(Connection.tenant_id == request.user["tenant_id"]).count()
+        group_count = db.query(Group).filter(Group.tenant_id == request.user["tenant_id"]).count()
+        setup_complete = conn_count > 0 and env_count > 0 and group_count > 0
 
         recent_runs = db.query(PipelineRun).filter(
             PipelineRun.tenant_id == request.user["tenant_id"],
@@ -128,6 +134,7 @@ def dashboard():
         }
         return render_template("dashboard.html", **ctx(
             active_page="dashboard", stats=stats, recent_runs=runs_data,
+            setup_complete=setup_complete,
         ))
     finally:
         db.close()
@@ -421,7 +428,9 @@ def reviews_submit(review_id):
 def environments_list():
     db = next(get_db())
     try:
-        envs = EnvironmentRepository(db).list_environments(request.user["tenant_id"])
+        envs = EnvironmentRepository(db).list_environments(
+            request.user["tenant_id"], request.user["id"], request.user["role"],
+        )
         envs_data = [{
             "id": e.id, "name": e.name, "env_type": e.env_type,
             "sf_instance_url": e.sf_instance_url, "capture_mode": e.capture_mode,
@@ -549,5 +558,278 @@ def impacts_resolve(impact_id):
         repo = MetadataImpactRepository(db)
         repo.resolve_impact(impact_id, request.form["resolution"], request.user["id"])
         return redirect("/impacts")
+    finally:
+        db.close()
+
+
+# --- Connections ---
+
+@views_bp.route("/connections")
+@role_required("admin")
+def connections_list():
+    db = next(get_db())
+    try:
+        svc = ConnectionService(ConnectionRepository(db))
+        conns = svc.list_connections(request.user["tenant_id"])
+        return render_template("connections/list.html", **ctx(
+            active_page="connections", connections=conns,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/connections/new")
+@role_required("admin")
+def connections_new():
+    return render_template("connections/new.html", **ctx(active_page="connections", error=None))
+
+
+@views_bp.route("/connections", methods=["POST"])
+@role_required("admin")
+def connections_create():
+    db = next(get_db())
+    try:
+        svc = ConnectionService(ConnectionRepository(db))
+        ctype = request.form.get("connection_type", "salesforce")
+        config = {}
+        if ctype == "salesforce":
+            config = {
+                "instance_url": request.form.get("sf_instance_url", ""),
+                "api_version": request.form.get("sf_api_version", "59.0"),
+                "client_id": request.form.get("sf_client_id", ""),
+                "client_secret": request.form.get("sf_client_secret", ""),
+            }
+        elif ctype == "jira":
+            config = {
+                "base_url": request.form.get("jira_base_url", ""),
+                "auth_type": "basic",
+                "username": request.form.get("jira_username", ""),
+                "api_token": request.form.get("jira_api_token", ""),
+            }
+        elif ctype == "llm":
+            config = {
+                "provider": request.form.get("llm_provider", "anthropic"),
+                "api_key": request.form.get("llm_api_key", ""),
+                "model": request.form.get("llm_model", "claude-sonnet-4-20250514"),
+            }
+        svc.create_connection(
+            request.user["tenant_id"], ctype,
+            request.form.get("name", ""), config, request.user["id"],
+        )
+        return redirect("/connections")
+    except ValueError as e:
+        return render_template("connections/new.html", **ctx(
+            active_page="connections", error=str(e),
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/connections/<int:conn_id>")
+@role_required("admin")
+def connections_detail(conn_id):
+    db = next(get_db())
+    try:
+        svc = ConnectionService(ConnectionRepository(db))
+        conn = svc.get_connection(conn_id, request.user["tenant_id"])
+        if not conn:
+            return redirect("/connections")
+        return render_template("connections/detail.html", **ctx(
+            active_page="connections", conn=conn,
+            message=request.args.get("message"),
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/connections/<int:conn_id>/test", methods=["POST"])
+@role_required("admin")
+def connections_test(conn_id):
+    db = next(get_db())
+    try:
+        svc = ConnectionService(ConnectionRepository(db))
+        result = svc.test_connection(conn_id, request.user["tenant_id"])
+        msg = "Connected successfully!" if result.get("status") == "connected" else f"Failed: {result.get('detail', 'Unknown error')}"
+        return redirect(f"/connections/{conn_id}?message={msg}")
+    except Exception as e:
+        return redirect(f"/connections/{conn_id}?message=Error: {e}")
+    finally:
+        db.close()
+
+
+@views_bp.route("/connections/<int:conn_id>/delete", methods=["POST"])
+@role_required("admin")
+def connections_delete(conn_id):
+    db = next(get_db())
+    try:
+        svc = ConnectionService(ConnectionRepository(db))
+        svc.delete_connection(conn_id, request.user["tenant_id"])
+        return redirect("/connections")
+    except Exception:
+        return redirect("/connections")
+    finally:
+        db.close()
+
+
+# --- Groups ---
+
+@views_bp.route("/groups")
+@login_required
+def groups_list():
+    db = next(get_db())
+    try:
+        svc = GroupService(GroupRepository(db))
+        groups = svc.list_groups(
+            request.user["tenant_id"], request.user["id"], request.user["role"],
+        )
+        return render_template("groups/list.html", **ctx(
+            active_page="groups", groups=groups,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/groups/new")
+@role_required("admin")
+def groups_new():
+    return render_template("groups/new.html", **ctx(active_page="groups"))
+
+
+@views_bp.route("/groups", methods=["POST"])
+@role_required("admin")
+def groups_create():
+    db = next(get_db())
+    try:
+        svc = GroupService(GroupRepository(db))
+        svc.create_group(
+            request.user["tenant_id"], request.form["name"],
+            request.user["id"], request.form.get("description"),
+        )
+        return redirect("/groups")
+    finally:
+        db.close()
+
+
+@views_bp.route("/groups/<int:group_id>")
+@login_required
+def groups_detail(group_id):
+    db = next(get_db())
+    try:
+        svc = GroupService(GroupRepository(db))
+        group = svc.get_group_detail(group_id, request.user["tenant_id"])
+        if not group:
+            return redirect("/groups")
+
+        member_ids = {m["id"] for m in group["members"]}
+        all_users = UserRepository(db).list_users(request.user["tenant_id"])
+        available_users = [{"id": u.id, "full_name": u.full_name, "email": u.email}
+                           for u in all_users if u.id not in member_ids and u.is_active]
+
+        env_ids = {e["id"] for e in group["environments"]}
+        all_envs = EnvironmentRepository(db).list_environments(request.user["tenant_id"])
+        available_envs = [{"id": e.id, "name": e.name, "env_type": e.env_type}
+                          for e in all_envs if e.id not in env_ids]
+
+        return render_template("groups/detail.html", **ctx(
+            active_page="groups", group=group,
+            available_users=available_users, available_envs=available_envs,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/groups/<int:group_id>/members", methods=["POST"])
+@role_required("admin")
+def groups_add_member(group_id):
+    db = next(get_db())
+    try:
+        svc = GroupService(GroupRepository(db))
+        svc.add_member(group_id, request.user["tenant_id"],
+                       int(request.form["user_id"]), request.user["id"])
+        return redirect(f"/groups/{group_id}")
+    except Exception:
+        return redirect(f"/groups/{group_id}")
+    finally:
+        db.close()
+
+
+@views_bp.route("/groups/<int:group_id>/members/<int:user_id>/remove", methods=["POST"])
+@role_required("admin")
+def groups_remove_member(group_id, user_id):
+    db = next(get_db())
+    try:
+        svc = GroupService(GroupRepository(db))
+        svc.remove_member(group_id, request.user["tenant_id"], user_id)
+        return redirect(f"/groups/{group_id}")
+    except Exception:
+        return redirect(f"/groups/{group_id}")
+    finally:
+        db.close()
+
+
+@views_bp.route("/groups/<int:group_id>/environments", methods=["POST"])
+@role_required("admin")
+def groups_add_environment(group_id):
+    db = next(get_db())
+    try:
+        svc = GroupService(GroupRepository(db))
+        svc.add_environment(group_id, request.user["tenant_id"],
+                            int(request.form["environment_id"]), request.user["id"])
+        return redirect(f"/groups/{group_id}")
+    except Exception:
+        return redirect(f"/groups/{group_id}")
+    finally:
+        db.close()
+
+
+@views_bp.route("/groups/<int:group_id>/environments/<int:env_id>/remove", methods=["POST"])
+@role_required("admin")
+def groups_remove_environment(group_id, env_id):
+    db = next(get_db())
+    try:
+        svc = GroupService(GroupRepository(db))
+        svc.remove_environment(group_id, request.user["tenant_id"], env_id)
+        return redirect(f"/groups/{group_id}")
+    except Exception:
+        return redirect(f"/groups/{group_id}")
+    finally:
+        db.close()
+
+
+@views_bp.route("/groups/<int:group_id>/delete", methods=["POST"])
+@role_required("admin")
+def groups_delete(group_id):
+    db = next(get_db())
+    try:
+        svc = GroupService(GroupRepository(db))
+        svc.delete_group(group_id, request.user["tenant_id"])
+        return redirect("/groups")
+    except Exception:
+        return redirect("/groups")
+    finally:
+        db.close()
+
+
+# --- Setup Wizard ---
+
+@views_bp.route("/setup")
+@role_required("admin")
+def setup_wizard():
+    db = next(get_db())
+    try:
+        from primeqa.core.models import Connection, Group, Environment
+        tid = request.user["tenant_id"]
+        conn_count = db.query(Connection).filter(Connection.tenant_id == tid).count()
+        env_count = db.query(Environment).filter(Environment.tenant_id == tid).count()
+        group_count = db.query(Group).filter(Group.tenant_id == tid).count()
+        return render_template("setup/wizard.html", **ctx(
+            active_page="setup",
+            connections_ok=conn_count > 0,
+            environments_ok=env_count > 0,
+            groups_ok=group_count > 0,
+            connection_count=conn_count,
+            environment_count=env_count,
+            group_count=group_count,
+        ))
     finally:
         db.close()

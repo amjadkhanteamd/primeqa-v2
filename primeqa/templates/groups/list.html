@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Groups - PrimeQA{% endblock %}
+{% block content %}
+<div class="space-y-6">
+    <div class="flex justify-between items-center">
+        <h1 class="text-2xl font-bold text-gray-900">Groups</h1>
+        {% if user.role == 'admin' %}
+        <a href="/groups/new" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Create Group</a>
+        {% endif %}
+    </div>
+    <div class="bg-white shadow rounded-lg overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="bg-gray-50">
+                <tr>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Description</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Members</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Environments</th>
+                </tr>
+            </thead>
+            <tbody class="bg-white divide-y divide-gray-200">
+                {% for g in groups %}
+                <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/groups/{{ g.id }}'">
+                    <td class="px-6 py-4 text-sm font-medium text-indigo-600">{{ g.name }}</td>
+                    <td class="px-6 py-4 text-sm text-gray-500">{{ g.description or '' }}</td>
+                    <td class="px-6 py-4 text-sm text-gray-500">{{ g.member_count }}</td>
+                    <td class="px-6 py-4 text-sm text-gray-500">{{ g.environment_count }}</td>
+                </tr>
+                {% endfor %}
+                {% if not groups %}<tr><td colspan="4" class="px-6 py-8 text-center text-sm text-gray-500">No groups yet</td></tr>{% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

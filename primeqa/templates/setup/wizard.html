@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Setup - PrimeQA{% endblock %}
+{% block content %}
+<div class="max-w-3xl mx-auto space-y-8">
+    <div class="text-center">
+        <h1 class="text-3xl font-bold text-gray-900">Welcome to PrimeQA</h1>
+        <p class="mt-2 text-gray-500">Complete these steps to get your platform ready.</p>
+        <div class="mt-4 flex justify-center">
+            <div class="flex items-center space-x-2">
+                {% set completed = [connections_ok, environments_ok, groups_ok] %}
+                {% set done = completed|select|list|length %}
+                <div class="h-2 w-32 bg-gray-200 rounded-full overflow-hidden">
+                    <div class="h-full bg-indigo-600 rounded-full" style="width: {{ (done / 3 * 100)|int }}%"></div>
+                </div>
+                <span class="text-sm text-gray-500">{{ done }}/3 complete</span>
+            </div>
+        </div>
+    </div>
+
+    {% if done == 3 %}
+    <div class="rounded-lg bg-green-50 border border-green-200 p-6 text-center">
+        <svg class="mx-auto h-12 w-12 text-green-500" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+        <h2 class="mt-3 text-xl font-semibold text-green-800">All Set!</h2>
+        <p class="mt-1 text-sm text-green-600">Your platform is configured and ready to use.</p>
+        <a href="/" class="mt-4 inline-block rounded-md bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500">Go to Dashboard</a>
+    </div>
+    {% endif %}
+
+    <div class="space-y-4">
+        <!-- Step 1: Connections -->
+        <div class="bg-white shadow rounded-lg p-6 flex items-center justify-between">
+            <div class="flex items-center space-x-4">
+                <div class="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center {% if connections_ok %}bg-green-100{% else %}bg-gray-100{% endif %}">
+                    {% if connections_ok %}
+                    <svg class="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+                    {% else %}
+                    <span class="text-lg font-bold text-gray-400">1</span>
+                    {% endif %}
+                </div>
+                <div>
+                    <h3 class="text-lg font-medium text-gray-900">Connect Services</h3>
+                    <p class="text-sm text-gray-500">Configure Salesforce, Jira, and LLM connections</p>
+                    {% if connections_ok %}<p class="text-xs text-green-600 mt-0.5">{{ connection_count }} connection(s) configured</p>{% endif %}
+                </div>
+            </div>
+            <a href="/connections{% if not connections_ok %}/new{% endif %}" class="rounded-md {% if connections_ok %}bg-gray-100 text-gray-700 hover:bg-gray-200{% else %}bg-indigo-600 text-white hover:bg-indigo-500{% endif %} px-4 py-2 text-sm font-semibold">{% if connections_ok %}View{% else %}Set up{% endif %}</a>
+        </div>
+
+        <!-- Step 2: Environments -->
+        <div class="bg-white shadow rounded-lg p-6 flex items-center justify-between">
+            <div class="flex items-center space-x-4">
+                <div class="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center {% if environments_ok %}bg-green-100{% else %}bg-gray-100{% endif %}">
+                    {% if environments_ok %}
+                    <svg class="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+                    {% else %}
+                    <span class="text-lg font-bold text-gray-400">2</span>
+                    {% endif %}
+                </div>
+                <div>
+                    <h3 class="text-lg font-medium text-gray-900">Create Environments</h3>
+                    <p class="text-sm text-gray-500">Add your Salesforce orgs as test environments</p>
+                    {% if environments_ok %}<p class="text-xs text-green-600 mt-0.5">{{ environment_count }} environment(s) configured</p>{% endif %}
+                </div>
+            </div>
+            <a href="/environments{% if not environments_ok %}/new{% endif %}" class="rounded-md {% if environments_ok %}bg-gray-100 text-gray-700 hover:bg-gray-200{% else %}bg-indigo-600 text-white hover:bg-indigo-500{% endif %} px-4 py-2 text-sm font-semibold">{% if environments_ok %}View{% else %}Set up{% endif %}</a>
+        </div>
+
+        <!-- Step 3: Groups -->
+        <div class="bg-white shadow rounded-lg p-6 flex items-center justify-between">
+            <div class="flex items-center space-x-4">
+                <div class="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center {% if groups_ok %}bg-green-100{% else %}bg-gray-100{% endif %}">
+                    {% if groups_ok %}
+                    <svg class="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+                    {% else %}
+                    <span class="text-lg font-bold text-gray-400">3</span>
+                    {% endif %}
+                </div>
+                <div>
+                    <h3 class="text-lg font-medium text-gray-900">Organize Groups</h3>
+                    <p class="text-sm text-gray-500">Create teams and assign environments</p>
+                    {% if groups_ok %}<p class="text-xs text-green-600 mt-0.5">{{ group_count }} group(s) created</p>{% endif %}
+                </div>
+            </div>
+            <a href="/groups{% if not groups_ok %}/new{% endif %}" class="rounded-md {% if groups_ok %}bg-gray-100 text-gray-700 hover:bg-gray-200{% else %}bg-indigo-600 text-white hover:bg-indigo-500{% endif %} px-4 py-2 text-sm font-semibold">{% if groups_ok %}View{% else %}Set up{% endif %}</a>
+        </div>
+    </div>
+</div>
+{% endblock %}
