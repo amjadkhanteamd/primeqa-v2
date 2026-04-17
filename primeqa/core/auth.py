@@ -56,7 +56,13 @@ def require_role(*roles):
         @wraps(f)
         @require_auth
         def decorated(*args, **kwargs):
-            if request.user["role"] not in roles:
+            # Super Admin is a tenant-wide god-mode role: always passes every
+            # role check (Q: "god mode"). Seeded per tenant, excluded from the
+            # 20-user cap elsewhere.
+            role = request.user["role"]
+            if role == "superadmin":
+                return f(*args, **kwargs)
+            if role not in roles:
                 return jsonify(error="Insufficient permissions"), 403
             return f(*args, **kwargs)
         return decorated

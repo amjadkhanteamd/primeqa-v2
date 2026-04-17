@@ -56,7 +56,10 @@ def role_required(*roles):
         @wraps(f)
         @login_required
         def decorated(*args, **kwargs):
-            if request.user["role"] not in roles:
+            role = request.user["role"]
+            if role == "superadmin":
+                return f(*args, **kwargs)
+            if role not in roles:
                 return redirect("/")
             return f(*args, **kwargs)
         return decorated
@@ -177,37 +180,235 @@ def runs_list():
 
 
 @views_bp.route("/runs/new")
-@role_required("admin", "tester")
+@role_required("admin", "tester", "superadmin")
 def runs_new():
+    """Unified Run Wizard (R1).
+
+    User picks any combination of Jira sources (sprint / JQL / epic / issue keys),
+    PrimeQA suites, requirements, sections, or hand-picked test cases, targets
+    an environment, and clicks Preview.
+    """
     db = next(get_db())
     try:
+        from primeqa.test_management.repository import (
+            TestSuiteRepository, SectionRepository,
+        )
         envs = EnvironmentRepository(db).list_environments(request.user["tenant_id"])
-        envs_data = [{"id": e.id, "name": e.name, "env_type": e.env_type} for e in envs]
-        return render_template("runs/new.html", **ctx(active_page="runs", environments=envs_data))
+        envs_data = [{
+            "id": e.id, "name": e.name, "env_type": e.env_type,
+            "sf_instance_url": e.sf_instance_url,
+            "llm_connection_id": e.llm_connection_id,
+            "has_meta": bool(e.current_meta_version_id),
+        } for e in envs]
+        suites = TestSuiteRepository(db).list_suites(request.user["tenant_id"])
+        suites_data = [{"id": s.id, "name": s.name, "suite_type": s.suite_type} for s in suites]
+        sections = SectionRepository(db).list_sections(request.user["tenant_id"])
+        sections_data = [{"id": s.id, "name": s.name} for s in sections]
+        jira_conns = ConnectionRepository(db).list_connections(
+            request.user["tenant_id"], "jira",
+        )
+        jira_conns_data = [{"id": c.id, "name": c.name} for c in jira_conns]
+        return render_template("runs/wizard.html", **ctx(
+            active_page="runs",
+            environments=envs_data, suites=suites_data, sections=sections_data,
+            jira_connections=jira_conns_data,
+        ))
     finally:
         db.close()
 
 
-@views_bp.route("/runs", methods=["POST"])
-@role_required("admin", "tester")
-def runs_create():
+def _build_wizard_selection(form):
+    """Parse a wizard form submission into a WizardSelection."""
+    from primeqa.runs.wizard import WizardSelection
+    def _csv_ints(key):
+        raw = form.get(key, "")
+        return [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+
+    jira_entries = []
+    jira_conn_id = form.get("jira_connection_id", type=int)
+    if jira_conn_id:
+        # Hand-typed keys (comma-separated): "PROJ-12, PROJ-13"
+        keys_raw = (form.get("jira_issue_keys") or "").strip()
+        if keys_raw:
+            keys = [k.strip() for k in keys_raw.split(",") if k.strip()]
+            jira_entries.append({"type": "issues", "connection_id": jira_conn_id, "issue_keys": keys})
+        # Sprint by ID
+        sprint_id = form.get("jira_sprint_id", type=int)
+        if sprint_id:
+            jira_entries.append({"type": "sprint", "connection_id": jira_conn_id, "sprint_id": sprint_id})
+        # JQL
+        jql = (form.get("jira_jql") or "").strip()
+        if jql:
+            jira_entries.append({"type": "jql", "connection_id": jira_conn_id, "jql": jql})
+        # Epic
+        epic_key = (form.get("jira_epic_key") or "").strip()
+        if epic_key:
+            jira_entries.append({
+                "type": "epic", "connection_id": jira_conn_id, "epic_key": epic_key,
+                "status": (form.get("jira_epic_status") or "").strip() or None,
+            })
+
+    return WizardSelection(
+        suite_ids=_csv_ints("suite_ids") or [int(x) for x in form.getlist("suite_id") if x.isdigit()],
+        section_ids=_csv_ints("section_ids"),
+        test_case_ids=_csv_ints("test_case_ids"),
+        requirement_ids=_csv_ints("requirement_ids"),
+        jira=jira_entries,
+    )
+
+
+@views_bp.route("/runs/new/preview", methods=["POST"])
+@role_required("admin", "tester", "superadmin")
+def runs_new_preview():
+    """Resolve the wizard selection, run pre-flight, render the preview screen."""
+    from primeqa.runs.wizard import RunWizardResolver
+    from primeqa.runs.preflight import Preflight
+    from primeqa.test_management.repository import (
+        TestSuiteRepository, SectionRepository, TestCaseRepository,
+        RequirementRepository,
+    )
+    from primeqa.metadata.repository import MetadataRepository
     db = next(get_db())
     try:
-        from primeqa.execution.repository import PipelineRunRepository, PipelineStageRepository, ExecutionSlotRepository, WorkerHeartbeatRepository
-        from primeqa.execution.service import PipelineService
+        env_repo = EnvironmentRepository(db)
+        conn_repo = ConnectionRepository(db)
+        suite_repo = TestSuiteRepository(db)
+        section_repo = SectionRepository(db)
+        tc_repo = TestCaseRepository(db)
+        req_repo = RequirementRepository(db)
+        meta_repo = MetadataRepository(db)
+
+        selection = _build_wizard_selection(request.form)
+        environment_id = int(request.form["environment_id"])
+
+        resolver = RunWizardResolver(
+            db, suite_repo=suite_repo, section_repo=section_repo,
+            tc_repo=tc_repo, req_repo=req_repo, connection_repo=conn_repo,
+        )
+        try:
+            resolved = resolver.resolve(request.user["tenant_id"], selection)
+        except Exception as e:
+            from flask import flash
+            flash(f"Selection failed: {e}", "error")
+            return redirect("/runs/new")
+
+        preflight = Preflight(
+            db, env_repo=env_repo, conn_repo=conn_repo,
+            tc_repo=tc_repo, meta_repo=meta_repo,
+        )
+        report = preflight.check(
+            request.user["tenant_id"], request.user, environment_id, resolved,
+        )
+
+        env = env_repo.get_environment(environment_id, request.user["tenant_id"])
+
+        # Optional cost forecast (Super Admin only)
+        cost = None
+        if request.user["role"] == "superadmin":
+            cost = _estimate_run_cost(resolved.test_count, env)
+
+        return render_template("runs/preview.html", **ctx(
+            active_page="runs",
+            environment_id=environment_id,
+            environment=env,
+            resolved={
+                "test_count": resolved.test_count,
+                "test_case_ids": resolved.test_case_ids,
+                "source_refs": resolved.source_refs,
+                "resolution_warnings": resolved.resolution_warnings,
+                "missing_jira_keys": resolved.missing_jira_keys,
+            },
+            report=report.to_dict(),
+            cost=cost,
+            priority=request.form.get("priority", "normal"),
+            run_type=request.form.get("run_type", "execute_only"),
+        ))
+    finally:
+        db.close()
+
+
+def _estimate_run_cost(test_count, env):
+    """Crude cost forecast. Anthropic-only for now; later phases refine this."""
+    # Hard-coded price per 1K tokens for typical Sonnet-class runs; Super Admin
+    # can refine in settings in R2. Executor-only runs don't touch the LLM;
+    # this mainly matters for generate / regenerate paths.
+    price_per_1k_input = 0.003
+    price_per_1k_output = 0.015
+    # Heuristic: 2K in / 1K out per test for AI-involved runs
+    tokens_in = 2_000 * test_count
+    tokens_out = 1_000 * test_count
+    return {
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "usd_estimate": round(
+            (tokens_in / 1000) * price_per_1k_input
+            + (tokens_out / 1000) * price_per_1k_output, 2,
+        ),
+        "note": "Upper bound; executor-only runs won't call the LLM.",
+    }
+
+
+@views_bp.route("/runs", methods=["POST"])
+@role_required("admin", "tester", "superadmin")
+def runs_create():
+    """Queue a new run from the wizard preview."""
+    from flask import flash
+    import json as _json
+    from primeqa.execution.repository import (
+        PipelineRunRepository, PipelineStageRepository,
+        ExecutionSlotRepository, WorkerHeartbeatRepository,
+    )
+    from primeqa.execution.service import PipelineService
+    db = next(get_db())
+    try:
         svc = PipelineService(
             PipelineRunRepository(db), PipelineStageRepository(db),
             ExecutionSlotRepository(db), WorkerHeartbeatRepository(db),
         )
-        source_ids = [int(x.strip()) for x in request.form.get("source_ids", "").split(",") if x.strip()]
+        test_case_ids = _json.loads(request.form.get("test_case_ids_json", "[]"))
+        source_refs = _json.loads(request.form.get("source_refs_json", "{}"))
+        override_token = request.form.get("override_token") or None
+
+        # Re-run preflight server-side (never trust client)
+        if test_case_ids:
+            from primeqa.runs.preflight import Preflight
+            from primeqa.runs.wizard import ResolvedRun
+            from primeqa.test_management.repository import TestCaseRepository
+            from primeqa.metadata.repository import MetadataRepository
+            preflight = Preflight(
+                db, env_repo=EnvironmentRepository(db),
+                conn_repo=ConnectionRepository(db),
+                tc_repo=TestCaseRepository(db),
+                meta_repo=MetadataRepository(db),
+            )
+            resolved = ResolvedRun(
+                test_case_ids=test_case_ids,
+                source_refs=source_refs,
+                resolution_warnings=[],
+                missing_jira_keys=[],
+            )
+            environment_id = int(request.form["environment_id"])
+            report = preflight.check(
+                request.user["tenant_id"], request.user, environment_id, resolved,
+            )
+            try:
+                preflight.ensure_runnable(report, request.user, override_token)
+            except Exception as e:
+                flash(f"Pre-flight failed: {e}", "error")
+                return redirect("/runs/new")
+        else:
+            flash("Selection produced zero tests; refine and try again.", "error")
+            return redirect("/runs/new")
+
         result = svc.create_run(
             tenant_id=request.user["tenant_id"],
             environment_id=int(request.form["environment_id"]),
             triggered_by=request.user["id"],
-            run_type=request.form.get("run_type", "full"),
-            source_type=request.form.get("source_type", "requirements"),
-            source_ids=source_ids,
+            run_type=request.form.get("run_type", "execute_only"),
+            source_type="test_cases",  # flat, rich details in source_refs
+            source_ids=test_case_ids,
             priority=request.form.get("priority", "normal"),
+            source_refs=source_refs,
         )
         return redirect(f"/runs/{result['id']}")
     finally:
@@ -232,6 +433,12 @@ def runs_detail(run_id):
             "id": run.id, "status": run.status, "run_type": run.run_type,
             "priority": run.priority, "passed": run.passed, "failed": run.failed,
             "total_tests": run.total_tests,
+            "environment_id": run.environment_id,
+            "queued_at": run.queued_at.isoformat() if run.queued_at else None,
+            "started_at": run.started_at.isoformat() if run.started_at else None,
+            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+            "source_refs": run.source_refs or {},
+            "parent_run_id": run.parent_run_id,
         }
         stages_data = [{"stage_name": s.stage_name, "status": s.status} for s in stages]
         results_data = []

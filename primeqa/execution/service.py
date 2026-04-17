@@ -23,6 +23,13 @@ class PipelineService:
         )
         self.stage_repo.create_stages(run.id)
 
+        # R1: broadcast run_status for any SSE subscribers
+        try:
+            from primeqa.runs.streams import emit_run_status
+            emit_run_status(run.id, status="queued", terminal=False)
+        except Exception:  # observability is best-effort
+            pass
+
         slot_acquired = self.slot_repo.acquire_slot(environment_id, run.id)
         if slot_acquired:
             self.run_repo.update_run_status(run.id, "running")
@@ -90,6 +97,11 @@ class PipelineService:
         self.run_repo.update_run_status(run.id, "completed")
         self.slot_repo.release_slot(run.environment_id, run.id)
         self._start_next_queued(run.environment_id)
+        try:
+            from primeqa.runs.streams import emit_run_status
+            emit_run_status(run_id, status="completed", terminal=True)
+        except Exception:
+            pass
 
     def fail_run(self, run_id, error_message=None):
         run = self.run_repo.get_run(run_id)
@@ -99,6 +111,12 @@ class PipelineService:
         self.slot_repo.release_slot(run.environment_id, run.id)
         self.stage_repo.skip_remaining_stages(run.id)
         self._start_next_queued(run.environment_id)
+        try:
+            from primeqa.runs.streams import emit_run_status
+            emit_run_status(run_id, status="failed", terminal=True,
+                            error_message=error_message)
+        except Exception:
+            pass
 
     def _start_next_queued(self, environment_id):
         next_run = self.run_repo.get_next_queued_for_env(environment_id)

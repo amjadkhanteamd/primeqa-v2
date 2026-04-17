@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% block title %}Run Preview - PrimeQA{% endblock %}
+{% block content %}
+
+{{ breadcrumbs([('Runs', '/runs'), ('New Run', '/runs/new'), ('Preview', None)]) }}
+
+<div class="max-w-4xl space-y-6">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900 mb-1">Preview</h1>
+    <p class="text-sm text-gray-500">Review what will run, then click <strong>Run now</strong> to queue it.</p>
+  </div>
+
+  <!-- Key facts card -->
+  <div class="bg-white shadow rounded-lg p-6 grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div>
+      <p class="text-xs text-gray-500 uppercase">Environment</p>
+      <p class="font-medium text-gray-900">{{ report.summary.environment.name }}</p>
+      <p class="text-xs text-gray-500">{{ report.summary.environment.env_type }}</p>
+    </div>
+    <div>
+      <p class="text-xs text-gray-500 uppercase">Metadata</p>
+      {% if report.summary.meta_version.id %}
+      <p class="font-medium text-gray-900">{{ report.summary.meta_version.version_label }}</p>
+      <p class="text-xs {% if report.summary.meta_version.age_hours and report.summary.meta_version.age_hours > 168 %}text-yellow-600{% else %}text-gray-500{% endif %}">
+        {{ "%.0f" | format(report.summary.meta_version.age_hours or 0) }}h old
+      </p>
+      {% else %}
+      <p class="text-red-600">Not synced</p>
+      {% endif %}
+    </div>
+    <div>
+      <p class="text-xs text-gray-500 uppercase">Tests</p>
+      <p class="font-medium text-gray-900">{{ resolved.test_count }} selected</p>
+      <p class="text-xs">
+        <span class="text-green-600">{{ report.will_run_count }} will run</span>
+        {% if report.skip_count %}
+        · <span class="text-yellow-700">{{ report.skip_count }} skipped</span>
+        {% endif %}
+      </p>
+    </div>
+    <div>
+      <p class="text-xs text-gray-500 uppercase">ETA</p>
+      {% set p50_s = (report.summary.eta_ms_range.p50_ms / 1000) | int %}
+      {% set p95_s = (report.summary.eta_ms_range.p95_ms / 1000) | int %}
+      <p class="font-medium text-gray-900">~{{ (p50_s / 60) | round(1) }} min</p>
+      <p class="text-xs text-gray-500">p50–p95: {{ p50_s }}s – {{ p95_s }}s</p>
+    </div>
+  </div>
+
+  <!-- Cost (Super Admin only) -->
+  {% if cost %}
+  <div class="bg-indigo-50 border border-indigo-200 rounded-lg p-4 text-sm">
+    <p class="font-medium text-indigo-900">Cost forecast (Super Admin)</p>
+    <p class="text-indigo-800 mt-1">
+      ~${{ cost.usd_estimate }} · {{ cost.tokens_in }} tokens in · {{ cost.tokens_out }} tokens out
+    </p>
+    <p class="text-xs text-indigo-700 mt-1">{{ cost.note }}</p>
+  </div>
+  {% endif %}
+
+  <!-- Blockers -->
+  {% if report.blockers %}
+  <div class="rounded-md bg-red-50 border border-red-200 p-4">
+    <h3 class="font-medium text-red-800">Pre-flight blockers</h3>
+    <ul class="mt-2 space-y-1">
+      {% for b in report.blockers %}
+      <li class="text-sm text-red-700"><span class="font-mono text-xs">{{ b.code }}</span> — {{ b.message }}</li>
+      {% endfor %}
+    </ul>
+    {% if user.role == 'superadmin' %}
+    <p class="text-xs text-red-700 mt-2">
+      Super Admins can override these by typing <code>OVERRIDE</code> in the form below.
+    </p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Warnings -->
+  {% if report.warnings %}
+  <div class="rounded-md bg-yellow-50 border border-yellow-200 p-4">
+    <h3 class="font-medium text-yellow-800">Warnings</h3>
+    <ul class="mt-2 space-y-1">
+      {% for w in report.warnings %}
+      <li class="text-sm text-yellow-700"><span class="font-mono text-xs">{{ w.code }}</span> — {{ w.message }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <!-- Resolution details (what the wizard resolved to) -->
+  <div class="bg-white shadow rounded-lg p-6">
+    <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">What was resolved</h3>
+    <pre class="text-xs font-mono text-gray-800 bg-gray-50 border border-gray-200 rounded p-3 overflow-x-auto">{{ resolved.source_refs | tojson(indent=2) }}</pre>
+    {% if resolved.resolution_warnings %}
+    <div class="mt-3 text-xs text-yellow-700">
+      <p class="font-medium">Resolution notes:</p>
+      <ul class="list-disc ml-5 space-y-1">
+        {% for w in resolved.resolution_warnings %}<li>{{ w }}</li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+    {% if resolved.missing_jira_keys %}
+    <div class="mt-3 text-xs text-red-700">
+      <p class="font-medium">Jira issues with no PrimeQA requirement ({{ resolved.missing_jira_keys | length }}):</p>
+      <p class="font-mono">{{ resolved.missing_jira_keys | join(', ') }}</p>
+      <p class="mt-1">Import them first from <a href="/requirements" class="underline">Requirements</a>, then come back here.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Per-test decisions summary (top 10 skipped) -->
+  {% if report.skip_count %}
+  <div class="bg-white shadow rounded-lg p-6">
+    <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">Skipped tests</h3>
+    <table class="min-w-full text-xs">
+      <thead class="text-gray-500"><tr><th class="text-left">Test ID</th><th class="text-left">Reason</th></tr></thead>
+      <tbody class="divide-y divide-gray-200">
+        {% for d in report.per_test_decisions %}
+          {% if not d.will_run %}
+          <tr>
+            <td class="py-1 font-mono">#{{ d.test_case_id }}</td>
+            <td class="py-1">{{ d.reason }}</td>
+          </tr>
+          {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <!-- Run form -->
+  <form method="POST" action="/runs" class="bg-white shadow rounded-lg p-6 flex items-end justify-between">
+    <input type="hidden" name="environment_id" value="{{ environment_id }}">
+    <input type="hidden" name="run_type" value="{{ run_type }}">
+    <input type="hidden" name="priority" value="{{ priority }}">
+    <input type="hidden" name="test_case_ids_json" value='{{ resolved.test_case_ids | tojson }}'>
+    <input type="hidden" name="source_refs_json" value='{{ resolved.source_refs | tojson }}'>
+
+    <div>
+      <p class="text-sm text-gray-700">
+        {% if report.blockers %}
+          <span class="text-red-700 font-medium">Blocked</span> — resolve blockers above first.
+        {% elif report.will_run_count == 0 %}
+          <span class="text-red-700 font-medium">0 tests will run</span> — refine the selection.
+        {% else %}
+          <span class="font-medium">{{ report.will_run_count }} tests</span> will be queued against
+          <span class="font-medium">{{ report.summary.environment.name }}</span>.
+        {% endif %}
+      </p>
+      {% if report.blockers and user.role == 'superadmin' %}
+      <div class="mt-2">
+        <label class="block text-xs text-gray-600">Type <code class="font-mono">OVERRIDE</code> to bypass blockers:</label>
+        <input name="override_token" type="text" autocomplete="off"
+               class="mt-1 block rounded-md border border-red-300 px-3 py-1.5 text-sm font-mono">
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="space-x-3">
+      <a href="/runs/new" class="rounded-md bg-white px-4 py-2 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">&larr; Back</a>
+      <button type="submit"
+              {% if report.blockers and user.role != 'superadmin' %}disabled{% endif %}
+              {% if report.will_run_count == 0 and not (user.role == 'superadmin') %}disabled{% endif %}
+              class="rounded-md bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500 disabled:opacity-50 disabled:cursor-not-allowed">
+        Run now &rarr;
+      </button>
+    </div>
+  </form>
+</div>
+{% endblock %}

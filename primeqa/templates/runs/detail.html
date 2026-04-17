@@ -1,68 +1,243 @@
 {% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% block title %}Run #{{ run.id }} - PrimeQA{% endblock %}
 {% block content %}
-<div class="space-y-6" {% if run.status == 'running' %}hx-get="/runs/{{ run.id }}" hx-trigger="every 5s" hx-select="#run-content" hx-target="#run-content" hx-swap="outerHTML"{% endif %}>
-    <div class="flex justify-between items-center">
-        <h1 class="text-2xl font-bold text-gray-900">Run #{{ run.id }}</h1>
-        {% if run.status in ['queued', 'running'] and user.role in ['admin', 'tester'] %}
-        <form method="POST" action="/runs/{{ run.id }}/cancel">
-            <button type="submit" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500">Cancel</button>
-        </form>
-        {% endif %}
-    </div>
-    <div id="run-content">
-        <div class="bg-white shadow rounded-lg p-6 grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div><span class="text-xs text-gray-500 uppercase">Status</span>
-                <p><span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if run.status == 'completed' %}bg-green-100 text-green-800{% elif run.status == 'failed' %}bg-red-100 text-red-800{% elif run.status == 'running' %}bg-blue-100 text-blue-800 animate-pulse-blue{% elif run.status == 'queued' %}bg-yellow-100 text-yellow-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ run.status }}</span></p></div>
-            <div><span class="text-xs text-gray-500 uppercase">Type</span><p class="font-medium">{{ run.run_type }}</p></div>
-            <div><span class="text-xs text-gray-500 uppercase">Priority</span><p class="font-medium">{{ run.priority }}</p></div>
-            <div><span class="text-xs text-gray-500 uppercase">Tests</span><p class="font-medium text-green-600">{{ run.passed }}</p>/<span class="text-red-600">{{ run.failed }}</span>/<span>{{ run.total_tests }}</span></div>
-        </div>
 
-        {% if stages %}
-        <div class="bg-white shadow rounded-lg p-6 mt-4">
-            <h3 class="text-sm font-medium text-gray-500 mb-4">Pipeline Stages</h3>
-            <div class="flex space-x-2">
-                {% for stage in stages %}
-                <div class="flex-1 text-center">
-                    <div class="h-2 rounded-full {% if stage.status == 'passed' %}bg-green-500{% elif stage.status == 'failed' %}bg-red-500{% elif stage.status == 'running' %}bg-blue-500 animate-pulse-blue{% elif stage.status == 'skipped' %}bg-gray-300{% else %}bg-gray-200{% endif %}"></div>
-                    <p class="mt-1 text-xs text-gray-500">{{ stage.stage_name|replace('_', ' ')|title }}</p>
-                    <p class="text-xs {% if stage.status == 'passed' %}text-green-600{% elif stage.status == 'failed' %}text-red-600{% elif stage.status == 'running' %}text-blue-600{% else %}text-gray-400{% endif %}">{{ stage.status }}</p>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-        {% endif %}
+{{ breadcrumbs([('Runs', '/runs'), ('Run #' ~ run.id, None)]) }}
 
-        {% if results %}
-        <div class="bg-white shadow rounded-lg mt-4">
-            <div class="px-4 py-5 sm:px-6 border-b"><h3 class="text-lg font-medium">Test Results</h3></div>
-            <div class="divide-y divide-gray-200">
-                {% for r in results %}
-                <div class="px-6 py-4">
-                    <div class="flex justify-between items-center">
-                        <span class="font-medium">Test #{{ r.test_case_id }}</span>
-                        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if r.status == 'passed' %}bg-green-100 text-green-800{% elif r.status == 'failed' %}bg-red-100 text-red-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ r.status }}</span>
-                    </div>
-                    {% if r.failure_summary %}<p class="text-sm text-red-600 mt-1">{{ r.failure_summary }}</p>{% endif %}
-                    {% if r.steps %}
-                    <div class="mt-2 space-y-1">
-                        {% for s in r.steps %}
-                        <div class="text-xs flex items-center space-x-2 {% if s.status == 'failed' %}text-red-600{% else %}text-gray-500{% endif %}">
-                            <span class="w-4">{{ s.step_order }}.</span>
-                            <span class="font-mono">{{ s.step_action }}</span>
-                            <span>{{ s.target_object }}</span>
-                            <span class="{% if s.status == 'passed' %}text-green-500{% elif s.status == 'failed' %}text-red-500{% else %}text-gray-400{% endif %}">{{ s.status }}</span>
-                            {% if s.error_message %}<span class="text-red-400 truncate max-w-xs">{{ s.error_message[:80] }}</span>{% endif %}
-                        </div>
-                        {% endfor %}
-                    </div>
-                    {% endif %}
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-        {% endif %}
+<div class="space-y-6">
+  <div class="flex justify-between items-center">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Run #{{ run.id }}</h1>
+      <p class="text-sm text-gray-500">{{ run.run_type }} · priority {{ run.priority }}</p>
     </div>
+    {% if run.status in ['queued', 'running'] and user.role in ['admin', 'tester', 'superadmin'] %}
+    <form method="POST" action="/runs/{{ run.id }}/cancel">
+      <button type="submit" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500">Cancel</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <!-- Header card: status + pipeline stages + counts -->
+  <div id="run-header" class="bg-white shadow rounded-lg p-6">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div>
+        <p class="text-xs text-gray-500 uppercase">Status</p>
+        <p><span id="run-status-badge" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+          {% if run.status == 'completed' %}bg-green-100 text-green-800
+          {% elif run.status == 'failed' %}bg-red-100 text-red-800
+          {% elif run.status == 'running' %}bg-blue-100 text-blue-800 animate-pulse-blue
+          {% elif run.status == 'queued' %}bg-yellow-100 text-yellow-800
+          {% else %}bg-gray-100 text-gray-800{% endif %}">{{ run.status }}</span></p>
+      </div>
+      <div>
+        <p class="text-xs text-gray-500 uppercase">Tests</p>
+        <p class="font-medium">
+          <span id="run-passed" class="text-green-600">{{ run.passed }}</span>
+          /
+          <span id="run-failed" class="text-red-600">{{ run.failed }}</span>
+          /
+          <span id="run-total">{{ run.total_tests }}</span>
+        </p>
+      </div>
+      <div>
+        <p class="text-xs text-gray-500 uppercase">Environment</p>
+        <p class="font-medium text-gray-900">#{{ run.environment_id }}</p>
+      </div>
+      <div>
+        <p class="text-xs text-gray-500 uppercase">Queued</p>
+        <p class="text-xs text-gray-700">{{ run.queued_at[:19] if run.queued_at else '-' }}</p>
+      </div>
+    </div>
+
+    {% if stages %}
+    <div class="mt-5">
+      <p class="text-xs text-gray-500 uppercase mb-2">Pipeline stages</p>
+      <div id="stage-track" class="flex space-x-2">
+        {% for stage in stages %}
+        <div class="flex-1 text-center" data-stage="{{ stage.stage_name }}">
+          <div class="h-2 rounded-full stage-bar {% if stage.status == 'passed' %}bg-green-500{% elif stage.status == 'failed' %}bg-red-500{% elif stage.status == 'running' %}bg-blue-500 animate-pulse-blue{% elif stage.status == 'skipped' %}bg-gray-300{% else %}bg-gray-200{% endif %}"></div>
+          <p class="mt-1 text-xs text-gray-500">{{ stage.stage_name | replace('_', ' ') | title }}</p>
+          <p class="text-xs stage-status {% if stage.status == 'passed' %}text-green-600{% elif stage.status == 'failed' %}text-red-600{% elif stage.status == 'running' %}text-blue-600{% else %}text-gray-400{% endif %}">{{ stage.status }}</p>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Source provenance (what was requested) -->
+  {% if run.source_refs %}
+  <details class="bg-white shadow rounded-lg">
+    <summary class="cursor-pointer px-6 py-3 text-sm font-medium text-gray-700">What was requested (source refs)</summary>
+    <pre class="mx-6 mb-4 text-xs font-mono bg-gray-50 border border-gray-200 rounded p-3 overflow-x-auto">{{ run.source_refs | tojson(indent=2) }}</pre>
+  </details>
+  {% endif %}
+
+  <!-- Live timeline (populated via SSE) -->
+  <div class="bg-white shadow rounded-lg">
+    <div class="px-4 py-4 border-b flex items-center justify-between">
+      <h3 class="text-lg font-medium">Timeline</h3>
+      <span id="live-indicator" class="hidden text-xs text-blue-600 font-medium">● live</span>
+    </div>
+    <div id="timeline" class="divide-y divide-gray-200">
+      {% if not results %}
+      <div class="px-6 py-6 text-sm text-gray-500">Waiting for steps to start&hellip;</div>
+      {% endif %}
+      {% for r in results %}
+      <div class="px-6 py-4" data-test-id="{{ r.test_case_id }}">
+        <div class="flex justify-between items-center">
+          <span class="font-medium">Test #{{ r.test_case_id }}</span>
+          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium test-status
+            {% if r.status == 'passed' %}bg-green-100 text-green-800
+            {% elif r.status == 'failed' %}bg-red-100 text-red-800
+            {% else %}bg-gray-100 text-gray-800{% endif %}">{{ r.status }}</span>
+        </div>
+        {% if r.failure_summary %}<p class="text-sm text-red-600 mt-1 break-words">{{ r.failure_summary }}</p>{% endif %}
+        {% if r.steps %}
+        <ol class="mt-2 space-y-1 step-list">
+          {% for s in r.steps %}
+          <li class="text-xs flex items-center space-x-2 step-row"
+              data-step-order="{{ s.step_order }}" data-test-case-id="{{ r.test_case_id }}">
+            <span class="w-4">{{ s.step_order }}.</span>
+            <span class="font-mono">{{ s.step_action }}</span>
+            <span>{{ s.target_object }}</span>
+            <span class="ml-auto step-status {% if s.status == 'passed' %}text-green-500{% elif s.status == 'failed' %}text-red-500{% else %}text-gray-400{% endif %}">{{ s.status }}</span>
+            {% if s.error_message %}<span class="text-red-400 truncate max-w-xs">{{ s.error_message[:80] }}</span>{% endif %}
+          </li>
+          {% endfor %}
+        </ol>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
 </div>
+
+<script>
+// SSE subscriber — only for active runs
+(function(){
+  const run = {
+    id: {{ run.id }},
+    status: {{ run.status | tojson }}
+  };
+  const terminal = new Set(['completed', 'failed', 'cancelled']);
+  if (terminal.has(run.status)) return;
+
+  const live = document.getElementById('live-indicator');
+  const statusBadge = document.getElementById('run-status-badge');
+  const passedEl = document.getElementById('run-passed');
+  const failedEl = document.getElementById('run-failed');
+  const totalEl = document.getElementById('run-total');
+  const timeline = document.getElementById('timeline');
+
+  function setStatusBadge(status) {
+    const classes = ['bg-green-100','text-green-800','bg-red-100','text-red-800',
+                     'bg-blue-100','text-blue-800','bg-yellow-100','text-yellow-800',
+                     'bg-gray-100','text-gray-800','animate-pulse-blue'];
+    statusBadge.classList.remove(...classes);
+    const map = {
+      completed: ['bg-green-100','text-green-800'],
+      failed: ['bg-red-100','text-red-800'],
+      running: ['bg-blue-100','text-blue-800','animate-pulse-blue'],
+      queued: ['bg-yellow-100','text-yellow-800'],
+    };
+    (map[status] || ['bg-gray-100','text-gray-800']).forEach(c => statusBadge.classList.add(c));
+    statusBadge.textContent = status;
+  }
+
+  function upsertStep(evt) {
+    const { test_case_id, step_order, action, target_object, status, error_summary, duration_ms } = evt;
+    let testBlock = timeline.querySelector(`[data-test-id="${test_case_id}"]`);
+    if (!testBlock) {
+      testBlock = document.createElement('div');
+      testBlock.className = 'px-6 py-4';
+      testBlock.dataset.testId = test_case_id;
+      testBlock.innerHTML = `
+        <div class="flex justify-between items-center">
+          <span class="font-medium">Test #${test_case_id}</span>
+          <span class="test-status inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">running</span>
+        </div>
+        <ol class="mt-2 space-y-1 step-list"></ol>`;
+      const waitingMsg = timeline.querySelector('.text-gray-500');
+      if (waitingMsg) waitingMsg.remove();
+      timeline.appendChild(testBlock);
+    }
+    const list = testBlock.querySelector('.step-list');
+    let row = list.querySelector(`[data-step-order="${step_order}"]`);
+    if (!row) {
+      row = document.createElement('li');
+      row.className = 'text-xs flex items-center space-x-2 step-row';
+      row.dataset.stepOrder = step_order;
+      row.dataset.testCaseId = test_case_id;
+      row.innerHTML = `<span class="w-4">${step_order}.</span>
+        <span class="font-mono">${action || '?'}</span>
+        <span>${target_object || ''}</span>
+        <span class="ml-auto step-status text-gray-400">running</span>`;
+      list.appendChild(row);
+    }
+    const statusSpan = row.querySelector('.step-status');
+    if (status) {
+      statusSpan.textContent = status + (duration_ms ? ` (${duration_ms}ms)` : '');
+      statusSpan.className = 'step-status ml-auto ' +
+        (status === 'passed' ? 'text-green-500' :
+         status === 'failed' || status === 'error' ? 'text-red-500' : 'text-gray-400');
+    }
+    if (error_summary) {
+      let errSpan = row.querySelector('.step-error');
+      if (!errSpan) {
+        errSpan = document.createElement('span');
+        errSpan.className = 'step-error text-red-400 truncate max-w-xs';
+        row.appendChild(errSpan);
+      }
+      errSpan.textContent = error_summary;
+    }
+  }
+
+  const es = new EventSource('/api/runs/' + run.id + '/events');
+  es.addEventListener('open', () => live.classList.remove('hidden'));
+  es.addEventListener('error', () => { /* browser auto-reconnects */ });
+
+  es.addEventListener('run_snapshot', e => {
+    try {
+      const snap = JSON.parse(e.data);
+      if (snap.status) setStatusBadge(snap.status);
+      if (snap.passed != null) passedEl.textContent = snap.passed;
+      if (snap.failed != null) failedEl.textContent = snap.failed;
+      if (snap.total_tests != null) totalEl.textContent = snap.total_tests;
+      if (terminal.has(snap.status)) {
+        live.classList.add('hidden');
+        es.close();
+        // Full page reload to pick up per-step detail rows freshly from DB
+        setTimeout(() => window.location.reload(), 600);
+      }
+    } catch (err) { console.warn('bad snapshot', err); }
+  });
+
+  es.addEventListener('step_started', e => {
+    try { upsertStep(JSON.parse(e.data)); } catch (_) {}
+  });
+
+  es.addEventListener('step_finished', e => {
+    try { upsertStep(JSON.parse(e.data)); } catch (_) {}
+  });
+
+  es.addEventListener('run_status', e => {
+    try {
+      const d = JSON.parse(e.data);
+      if (d.status) setStatusBadge(d.status);
+      if (d.terminal) {
+        live.classList.add('hidden');
+        es.close();
+        setTimeout(() => window.location.reload(), 600);
+      }
+    } catch (_) {}
+  });
+
+  es.addEventListener('stream_ending', () => {
+    live.classList.add('hidden');
+    es.close();
+  });
+})();
+</script>
 {% endblock %}

@@ -2,15 +2,24 @@
 
 Handles adaptive capture, before/after state diffing, PQA_ naming convention,
 and step-level execution state tracking.
+
+R1 additions:
+  - Emits SSE events on start/finish of each step via primeqa.runs.streams
+  - Captures extended log fields: soql_queries, http_status, timings,
+    correlation_id (tied via contextvar so we can cross-reference with
+    Anthropic/Railway/SF logs)
 """
 
 import hashlib
 import json
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 
 import requests as http_requests
+
+from primeqa.runs import streams as run_streams
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +83,7 @@ class SalesforceExecutionClient:
                 "status_code": resp.status_code,
                 "body": resp_body,
             },
+            "http_status": resp.status_code,
             "success": 200 <= resp.status_code < 300,
             "record_id": (resp_body or {}).get("id") if isinstance(resp_body, dict) else None,
         }
@@ -93,13 +103,18 @@ class StepExecutor:
         self.meta_vr_lookup = meta_vr_lookup or (lambda obj: False)
         self.state_vars = {}
 
-    def execute_step(self, run_test_result_id, step_def):
+    def execute_step(self, run_test_result_id, step_def, test_case_id=None,
+                     correlation_id=None):
         step_order = step_def.get("step_order", 0)
         action = step_def.get("action", "")
         target_object = step_def.get("target_object", "")
         logical_id = step_def.get("state_ref", f"step_{step_order}")
         if logical_id.startswith("$"):
             logical_id = logical_id[1:]
+
+        # Correlation ID: one per step (within a test) for cross-system log
+        # join. Propagated into api_request so SF-side logs can carry it too.
+        correlation_id = correlation_id or uuid.uuid4().hex[:16]
 
         step_result = self.step_result_repo.create_step_result(
             run_test_result_id=run_test_result_id,
@@ -112,14 +127,26 @@ class StepExecutor:
 
         self.step_result_repo.update_step_result(step_result.id, {
             "execution_state": "in_progress",
+            "correlation_id": correlation_id,
         })
 
+        # SSE event \u2014 step starting
+        run_streams.emit_step_started(
+            self.run_id, test_case_id or 0, step_order,
+            action=action, target_object=target_object,
+            correlation_id=correlation_id,
+        )
+
         start_time = time.time()
+        t_setup_done = start_time
+        t_sf_done = start_time
         before_state = None
         after_state = None
         field_diff = None
         api_request = None
         api_response = None
+        http_status = None
+        soql_queries = None
         error_message = None
         status = "passed"
         target_record_id = None
@@ -131,6 +158,8 @@ class StepExecutor:
             if self.capture_mode == "full" and action in ("update", "delete") and record_ref:
                 before_state = self._capture_state(target_object, record_ref)
 
+            t_setup_done = time.time()
+
             if action == "create":
                 result = self._execute_create(
                     target_object, resolved, step_order, logical_id,
@@ -141,6 +170,7 @@ class StepExecutor:
             elif action == "query":
                 soql = step_def.get("soql", f"SELECT Id FROM {target_object} LIMIT 1")
                 soql = self._resolve_soql_refs(soql)
+                soql_queries = [soql]
                 result = self.sf.query(soql)
             elif action == "verify":
                 result = self._execute_verify(target_object, record_ref, step_def.get("assertions", {}))
@@ -154,8 +184,11 @@ class StepExecutor:
             else:
                 raise ValueError(f"Unknown action: {action}")
 
+            t_sf_done = time.time()
+
             api_request = result.get("api_request")
             api_response = result.get("api_response")
+            http_status = result.get("http_status")
             target_record_id = result.get("record_id") or record_ref
 
             if not result.get("success"):
@@ -180,8 +213,16 @@ class StepExecutor:
             status = "error"
             error_message = str(e)
 
-        duration_ms = int((time.time() - start_time) * 1000)
+        end_time = time.time()
+        duration_ms = int((end_time - start_time) * 1000)
         execution_state = "completed" if status != "error" else "partially_completed"
+
+        timings = {
+            "total_ms": duration_ms,
+            "setup_ms": int((t_setup_done - start_time) * 1000),
+            "sf_ms": int((t_sf_done - t_setup_done) * 1000),
+            "capture_ms": int((end_time - t_sf_done) * 1000),
+        }
 
         self.step_result_repo.update_step_result(step_result.id, {
             "status": status,
@@ -192,9 +233,23 @@ class StepExecutor:
             "field_diff": field_diff,
             "api_request": api_request,
             "api_response": api_response,
+            "http_status": http_status,
+            "soql_queries": soql_queries,
+            "timings": timings,
             "error_message": error_message,
             "duration_ms": duration_ms,
         })
+
+        # SSE event \u2014 step finished. Include enough for the UI timeline to
+        # render without fetching the row back over REST.
+        run_streams.emit_step_finished(
+            self.run_id, test_case_id or 0, step_order,
+            status=status,
+            http_status=http_status,
+            duration_ms=duration_ms,
+            error_summary=(error_message[:140] if error_message else None),
+            correlation_id=correlation_id,
+        )
 
         return step_result, status
 

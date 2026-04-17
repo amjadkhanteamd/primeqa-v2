@@ -1,0 +1,243 @@
+{% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% block title %}New Run - PrimeQA{% endblock %}
+{% block content %}
+
+{{ breadcrumbs([('Runs', '/runs'), ('New Run', None)]) }}
+
+<div class="max-w-4xl">
+  <h1 class="text-2xl font-bold text-gray-900 mb-1">Trigger a new run</h1>
+  <p class="text-sm text-gray-500 mb-6">
+    Pick any combination of Jira sources, PrimeQA suites, requirements, sections,
+    or hand-picked test cases. You'll see a preview before it runs.
+  </p>
+
+  <form method="POST" action="/runs/new/preview" class="space-y-6">
+    <!-- Environment + run type -->
+    <div class="bg-white shadow rounded-lg p-6 space-y-4">
+      <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Target</h3>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Environment</label>
+          <select name="environment_id" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+            {% for env in environments %}
+            <option value="{{ env.id }}">
+              {{ env.name }} ({{ env.env_type }}){% if not env.has_meta %} — no metadata yet{% endif %}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Run type</label>
+          <select name="run_type" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+            <option value="execute_only">Execute only (use existing test cases)</option>
+            <option value="full">Full (generate + execute)</option>
+            <option value="generate_only">Generate only</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Priority</label>
+          <select name="priority" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+            <option value="normal">Normal</option>
+            <option value="high">High</option>
+            <option value="critical">Critical</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sources -->
+    <div class="bg-white shadow rounded-lg divide-y divide-gray-200">
+      <div class="px-6 py-4">
+        <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Sources</h3>
+        <p class="text-xs text-gray-500 mt-1">Mix and match — selections are deduplicated by test case ID.</p>
+      </div>
+
+      <!-- Suites -->
+      <details class="px-6 py-4" open>
+        <summary class="cursor-pointer text-sm font-medium text-gray-900">PrimeQA Suites</summary>
+        <div class="mt-3">
+          <select name="suite_id" multiple size="5" class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+            {% for s in suites %}
+            <option value="{{ s.id }}">{{ s.name }} ({{ s.suite_type }})</option>
+            {% endfor %}
+          </select>
+          <p class="mt-1 text-xs text-gray-500">Hold Ctrl / Cmd to multi-select.</p>
+        </div>
+      </details>
+
+      <!-- Sections -->
+      <details class="px-6 py-4">
+        <summary class="cursor-pointer text-sm font-medium text-gray-900">Sections (entire folders)</summary>
+        <div class="mt-3">
+          <input name="section_ids" type="text" placeholder="Comma-separated section IDs, e.g. 12, 15"
+                 class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+          <p class="mt-1 text-xs text-gray-500">
+            Available: {% for s in sections %}<code class="mr-1">#{{ s.id }} {{ s.name }}</code>{% endfor %}
+          </p>
+        </div>
+      </details>
+
+      <!-- Requirements -->
+      <details class="px-6 py-4">
+        <summary class="cursor-pointer text-sm font-medium text-gray-900">Requirements (PrimeQA)</summary>
+        <div class="mt-3">
+          <input name="requirement_ids" type="text" placeholder="Comma-separated requirement IDs"
+                 class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+          <p class="mt-1 text-xs text-gray-500">
+            Each requirement expands to every test case that references it.
+          </p>
+        </div>
+      </details>
+
+      <!-- Hand-picked test cases -->
+      <details class="px-6 py-4">
+        <summary class="cursor-pointer text-sm font-medium text-gray-900">Hand-picked test cases</summary>
+        <div class="mt-3">
+          <input name="test_case_ids" type="text" placeholder="Comma-separated test case IDs, e.g. 7, 12, 33"
+                 class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+        </div>
+      </details>
+
+      <!-- Jira -->
+      {% if jira_connections %}
+      <details class="px-6 py-4">
+        <summary class="cursor-pointer text-sm font-medium text-gray-900">Jira sources</summary>
+        <div class="mt-3 space-y-3">
+          <div>
+            <label class="block text-sm font-medium text-gray-700">Jira connection</label>
+            <select name="jira_connection_id" id="jira-connection" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+              <option value="">-- none --</option>
+              {% for c in jira_connections %}
+              <option value="{{ c.id }}">{{ c.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div>
+            <label class="block text-sm font-medium text-gray-700">Sprint ID</label>
+            <div class="flex items-center space-x-2 mt-1">
+              <input name="jira_sprint_id" type="number" placeholder="e.g. 128"
+                     class="block flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm">
+              <button type="button" id="sprint-picker-btn"
+                      class="rounded-md bg-white border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
+                Pick sprint&hellip;
+              </button>
+            </div>
+            <div id="sprint-picker-pane" class="hidden mt-2 border border-gray-200 rounded p-3 bg-gray-50 text-xs space-y-2"></div>
+          </div>
+
+          <div>
+            <label class="block text-sm font-medium text-gray-700">Or Jira issue keys</label>
+            <input name="jira_issue_keys" type="text" placeholder="PROJ-12, PROJ-13, PROJ-14"
+                   class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono">
+          </div>
+
+          <details class="text-sm">
+            <summary class="cursor-pointer text-gray-700">Advanced: JQL / epic</summary>
+            <div class="mt-2 space-y-2">
+              <div>
+                <label class="block text-xs text-gray-600">JQL</label>
+                <textarea name="jira_jql" rows="2" placeholder='project = PROJ AND status = "Ready for QA"'
+                          class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono"></textarea>
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <div>
+                  <label class="block text-xs text-gray-600">Epic key</label>
+                  <input name="jira_epic_key" type="text" placeholder="PROJ-100"
+                         class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono">
+                </div>
+                <div>
+                  <label class="block text-xs text-gray-600">Status filter (optional)</label>
+                  <input name="jira_epic_status" type="text" placeholder="Ready for QA"
+                         class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                </div>
+              </div>
+            </div>
+          </details>
+        </div>
+      </details>
+      {% endif %}
+    </div>
+
+    <div class="flex justify-end space-x-3">
+      <a href="/runs" class="rounded-md bg-white px-4 py-2 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Cancel</a>
+      <button type="submit" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500">
+        Preview &rarr;
+      </button>
+    </div>
+  </form>
+</div>
+
+<script>
+// Minimal "pick sprint" flow — click Pick, choose project → board → sprint.
+(function(){
+  const btn = document.getElementById('sprint-picker-btn');
+  const pane = document.getElementById('sprint-picker-pane');
+  const connSel = document.getElementById('jira-connection');
+  if (!btn || !pane || !connSel) return;
+
+  async function jfetch(url) {
+    const r = await fetch(url, { credentials: 'same-origin' });
+    if (!r.ok) { await window.PrimeQA.showErrorFromResponse(r); throw new Error('fetch failed'); }
+    return r.json();
+  }
+
+  btn.addEventListener('click', async () => {
+    const connId = connSel.value;
+    if (!connId) { window.PrimeQA.toast('Pick a Jira connection first', 'warning'); return; }
+    pane.classList.remove('hidden');
+    pane.innerHTML = '<div class="text-gray-500">Loading projects&hellip;</div>';
+    try {
+      const projects = await jfetch('/api/jira/' + connId + '/projects');
+      pane.innerHTML = '<div class="font-medium mb-1">Projects</div><ul class="space-y-1">' +
+        projects.slice(0, 50).map(p => '<li><button type="button" data-pk="' + p.key + '" class="pick-proj text-indigo-600 hover:underline">' + p.key + ' \u2014 ' + (p.name||'') + '</button></li>').join('') +
+        '</ul>';
+      pane.querySelectorAll('.pick-proj').forEach(b => b.addEventListener('click', () => loadBoards(connId, b.dataset.pk)));
+    } catch (e) {
+      pane.innerHTML = '<div class="text-red-600">' + e + '</div>';
+    }
+  });
+
+  async function loadBoards(connId, projectKey) {
+    pane.innerHTML = '<div class="text-gray-500">Loading boards for ' + projectKey + '&hellip;</div>';
+    try {
+      const boards = await jfetch('/api/jira/' + connId + '/projects/' + encodeURIComponent(projectKey) + '/boards');
+      if (boards.length === 0) {
+        pane.innerHTML = '<div class="text-gray-600">No scrum boards for ' + projectKey + ' (Kanban project?). Use JQL instead.</div>';
+        return;
+      }
+      pane.innerHTML = '<div class="font-medium mb-1">Boards</div><ul class="space-y-1">' +
+        boards.map(b => '<li><button type="button" data-bid="' + b.id + '" class="pick-board text-indigo-600 hover:underline">#' + b.id + ' \u2014 ' + b.name + '</button></li>').join('') +
+        '</ul>';
+      pane.querySelectorAll('.pick-board').forEach(b => b.addEventListener('click', () => loadSprints(connId, b.dataset.bid)));
+    } catch (e) {
+      pane.innerHTML = '<div class="text-red-600">' + e + '</div>';
+    }
+  }
+
+  async function loadSprints(connId, boardId) {
+    pane.innerHTML = '<div class="text-gray-500">Loading sprints&hellip;</div>';
+    try {
+      const sprints = await jfetch('/api/jira/' + connId + '/boards/' + boardId + '/sprints?state=active,closed,future');
+      if (sprints.length === 0) {
+        pane.innerHTML = '<div class="text-gray-600">No sprints on this board.</div>';
+        return;
+      }
+      pane.innerHTML = '<div class="font-medium mb-1">Sprints</div><ul class="space-y-1">' +
+        sprints.slice(0, 50).map(s => '<li><button type="button" data-sid="' + s.id + '" class="pick-sprint text-indigo-600 hover:underline">' +
+          '[' + s.state + '] #' + s.id + ' \u2014 ' + s.name + '</button></li>').join('') +
+        '</ul>';
+      pane.querySelectorAll('.pick-sprint').forEach(b => b.addEventListener('click', () => {
+        document.querySelector('input[name="jira_sprint_id"]').value = b.dataset.sid;
+        pane.innerHTML = '<div class="text-green-600">Sprint ' + b.dataset.sid + ' selected.</div>';
+      }));
+    } catch (e) {
+      pane.innerHTML = '<div class="text-red-600">' + e + '</div>';
+    }
+  }
+})();
+</script>
+{% endblock %}

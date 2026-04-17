@@ -47,6 +47,8 @@ class PipelineRunRepository:
             priority=kwargs.get("priority", "normal"),
             max_execution_time_sec=kwargs.get("max_execution_time_sec", 3600),
             config=kwargs.get("config", {}),
+            source_refs=kwargs.get("source_refs", {}),
+            parent_run_id=kwargs.get("parent_run_id"),
         )
         self.db.add(run)
         self.db.commit()

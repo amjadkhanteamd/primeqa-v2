@@ -75,6 +75,122 @@ def list_runs():
         db.close()
 
 
+# ---- Jira picker endpoints for Run Wizard (R1) -----------------------------
+# Thin pass-through to Jira REST using the stored Jira connection. Fetched
+# on demand (user clicks "Load projects" etc.; no TTL cache per Q decision).
+
+def _jira_client(db, connection_id, tenant_id):
+    from primeqa.core.repository import ConnectionRepository
+    from primeqa.runs.wizard import JiraClient
+    conn = ConnectionRepository(db).get_connection_decrypted(connection_id, tenant_id)
+    if not conn or conn.get("connection_type") != "jira":
+        return None
+    cfg = conn["config"]
+    base = cfg.get("base_url", "").rstrip("/")
+    auth = None
+    if cfg.get("auth_type") == "basic" and cfg.get("username") and cfg.get("api_token"):
+        import base64
+        auth = base64.b64encode(f"{cfg['username']}:{cfg['api_token']}".encode()).decode()
+    return JiraClient(base, auth)
+
+
+@execution_bp.route("/api/jira/<int:connection_id>/projects", methods=["GET"])
+@require_auth
+def jira_projects(connection_id):
+    db = next(get_db())
+    try:
+        client = _jira_client(db, connection_id, request.user["tenant_id"])
+        if not client:
+            return jsonify(error="Jira connection not found"), 404
+        return jsonify(client.list_projects()), 200
+    except Exception as e:
+        return jsonify(error=f"Jira fetch failed: {e}"), 502
+    finally:
+        db.close()
+
+
+@execution_bp.route("/api/jira/<int:connection_id>/projects/<string:project_key>/boards", methods=["GET"])
+@require_auth
+def jira_boards(connection_id, project_key):
+    db = next(get_db())
+    try:
+        client = _jira_client(db, connection_id, request.user["tenant_id"])
+        if not client:
+            return jsonify(error="Jira connection not found"), 404
+        return jsonify(client.list_boards_for_project(project_key)), 200
+    except Exception as e:
+        return jsonify(error=f"Jira fetch failed: {e}"), 502
+    finally:
+        db.close()
+
+
+@execution_bp.route("/api/jira/<int:connection_id>/boards/<int:board_id>/sprints", methods=["GET"])
+@require_auth
+def jira_sprints(connection_id, board_id):
+    db = next(get_db())
+    try:
+        client = _jira_client(db, connection_id, request.user["tenant_id"])
+        if not client:
+            return jsonify(error="Jira connection not found"), 404
+        states = request.args.get("state", "active,closed,future")
+        return jsonify(client.list_sprints(board_id, states)), 200
+    except Exception as e:
+        return jsonify(error=f"Jira fetch failed: {e}"), 502
+    finally:
+        db.close()
+
+
+@execution_bp.route("/api/runs/<int:run_id>/events", methods=["GET"])
+@require_auth
+def stream_run_events(run_id):
+    """Server-Sent Events endpoint for live run timeline updates.
+
+    Browser subscribes here; worker publishes step_started/step_finished/
+    run_status events to the in-process EventBus. Falls back to DB snapshots
+    every 5s when no bus events arrive (handles multi-process setups).
+    """
+    from flask import Response
+    from primeqa.runs.streams import stream_run_events as sse_gen
+    tenant_id = request.user["tenant_id"]
+    db = next(get_db())
+    try:
+        # Authorization: confirm the user can see this run (tenant-scoped)
+        run = PipelineRunRepository(db).get_run(run_id, tenant_id)
+        if not run:
+            return jsonify(error="Run not found"), 404
+    finally:
+        db.close()
+
+    def snapshot():
+        # Fresh session per snapshot; keeps things simple and avoids stale reads
+        snap_db = next(get_db())
+        try:
+            run = PipelineRunRepository(snap_db).get_run(run_id, tenant_id)
+            if not run:
+                return {"status": "unknown"}
+            stages = PipelineStageRepository(snap_db).get_stages(run_id)
+            test_results = RunTestResultRepository(snap_db).list_results(run_id)
+            return {
+                "status": run.status,
+                "passed": run.passed, "failed": run.failed,
+                "total_tests": run.total_tests,
+                "stages": [{"stage_name": s.stage_name, "status": s.status} for s in stages],
+                "tests": [
+                    {"id": r.id, "test_case_id": r.test_case_id,
+                     "status": r.status,
+                     "failure_summary": r.failure_summary}
+                    for r in test_results
+                ],
+            }
+        finally:
+            snap_db.close()
+
+    resp = Response(sse_gen(run_id, snapshot), mimetype="text/event-stream")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    return resp
+
+
 @execution_bp.route("/api/runs/<int:run_id>", methods=["GET"])
 @require_auth
 def get_run(run_id):
