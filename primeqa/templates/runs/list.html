@@ -4,9 +4,12 @@
 <div class="space-y-6">
     <div class="flex justify-between items-center">
         <h1 class="text-2xl font-bold text-gray-900">Pipeline Runs</h1>
-        {% if user.role in ['admin', 'tester'] %}
-        <a href="/runs/new" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">New Run</a>
-        {% endif %}
+        <div class="space-x-2">
+          {% if user.role in ['admin', 'tester', 'superadmin'] %}
+          <a href="/runs/scheduled" class="rounded-md bg-white px-3 py-2 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Scheduled</a>
+          <a href="/runs/new" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">New Run</a>
+          {% endif %}
+        </div>
     </div>
     <div class="flex space-x-4 text-sm">
         <a href="/runs" class="{% if not status_filter %}font-semibold text-indigo-600{% else %}text-gray-500{% endif %}">All</a>

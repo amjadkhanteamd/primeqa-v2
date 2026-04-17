@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% block title %}{{ 'Edit' if schedule else 'New' }} scheduled run - PrimeQA{% endblock %}
+{% block content %}
+
+{{ breadcrumbs([('Runs', '/runs'), ('Scheduled', '/runs/scheduled'),
+                ((schedule.id if schedule else 'New'), None)]) }}
+
+<div class="max-w-2xl">
+  <h1 class="text-2xl font-bold text-gray-900 mb-4">
+    {{ 'Edit scheduled run' if schedule else 'New scheduled run' }}
+  </h1>
+
+  <form method="POST" action="{{ action_url }}" class="bg-white shadow rounded-lg p-6 space-y-5">
+    {% if error %}
+    <div class="rounded-md bg-red-50 border border-red-200 p-3 text-sm text-red-700">{{ error }}</div>
+    {% endif %}
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700">Suite</label>
+      <select name="suite_id" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+        {% for s in suites %}
+        <option value="{{ s.id }}" {% if schedule and schedule.suite_id == s.id %}selected{% endif %}>
+          {{ s.name }} ({{ s.suite_type }})
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700">Environment</label>
+      <select name="environment_id" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+        {% for e in environments %}
+        <option value="{{ e.id }}" {% if schedule and schedule.environment_id == e.id %}selected{% endif %}>
+          {{ e.name }} ({{ e.env_type }})
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700">When to run</label>
+      <div class="mt-1 grid grid-cols-2 gap-2">
+        <select id="preset-sel" class="rounded-md border border-gray-300 px-3 py-2 text-sm">
+          <option value="">(custom cron)</option>
+          {% for key, label in presets %}
+          <option value="{{ key }}" {% if schedule and schedule.preset_label == key %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <input id="cron-input" name="cron_expr" type="text" required
+               placeholder="e.g. 0 2 * * *"
+               value="{{ schedule.cron_expr if schedule else '0 2 * * *' }}"
+               class="rounded-md border border-gray-300 px-3 py-2 text-sm font-mono">
+      </div>
+      <p class="mt-1 text-xs text-gray-500">Standard 5-field cron: minute hour day-of-month month day-of-week. Pick a preset or type freely.</p>
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700">Priority</label>
+        <select name="priority" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+          {% for p in ['normal','high','critical'] %}
+          <option value="{{ p }}" {% if (schedule and schedule.priority == p) or (not schedule and p == 'normal') %}selected{% endif %}>{{ p }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">Max silence (hours)</label>
+        <input name="max_silence_hours" type="number" min="0" step="1"
+               placeholder="(off)"
+               value="{{ schedule.max_silence_hours if schedule and schedule.max_silence_hours is not none else '' }}"
+               class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+        <p class="mt-1 text-xs text-gray-500">Alerts super admins if this schedule hasn't fired in this many hours. Leave empty to disable the dead-man's switch.</p>
+      </div>
+    </div>
+
+    <div class="flex justify-end space-x-3">
+      <a href="/runs/scheduled" class="rounded-md bg-white px-4 py-2 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Cancel</a>
+      <button type="submit" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500">
+        {{ 'Save' if schedule else 'Create schedule' }}
+      </button>
+    </div>
+  </form>
+</div>
+
+<script>
+// Preset <-> raw cron translator (Q9 bidirectional)
+(function(){
+  const presets = {{ presets_map | tojson }};
+  const sel = document.getElementById('preset-sel');
+  const input = document.getElementById('cron-input');
+  if (!sel || !input) return;
+  sel.addEventListener('change', () => {
+    const key = sel.value;
+    if (key && presets[key]) input.value = presets[key];
+  });
+  input.addEventListener('input', () => {
+    const match = Object.entries(presets).find(([_, v]) => v === input.value.trim());
+    sel.value = match ? match[0] : '';
+  });
+})();
+</script>
+{% endblock %}

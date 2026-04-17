@@ -98,11 +98,41 @@ def reap_stale_workers(ctx):
         log.warning(f"Marked worker {wh.worker_id} as dead")
 
 
+def fire_scheduled_runs(ctx):
+    """R4: poll scheduled_runs, create pipeline_runs for due schedules."""
+    try:
+        from primeqa.runs.schedule import fire_due_schedules
+        results = fire_due_schedules(ctx["db"])
+        for r in results:
+            if r.status == "fired":
+                log.info("scheduler fired schedule=%s run=%s", r.schedule_id, r.run_id)
+            elif r.status == "error":
+                log.warning("schedule %s fire error: %s", r.schedule_id, r.error)
+    except Exception as e:
+        log.exception("fire_scheduled_runs failed: %s", e)
+
+
+def dead_mans_switch_check(ctx):
+    """R4: log any silent schedules; persistent alerting wires up in R6."""
+    try:
+        from primeqa.runs.schedule import ScheduledRunRepository
+        from primeqa.core.models import Tenant
+        for tenant in ctx["db"].query(Tenant).all():
+            silent = ScheduledRunRepository(ctx["db"]).find_silent(tenant.id)
+            for s in silent:
+                log.warning("DMS: schedule %s (tenant %s) silent > %dh",
+                            s.id, tenant.id, s.max_silence_hours)
+    except Exception as e:
+        log.exception("dead_mans_switch_check failed: %s", e)
+
+
 def scheduler_tick(ctx):
     """Single reaper iteration."""
     reap_stuck_stages(ctx)
     reap_stuck_slots(ctx)
     reap_stale_workers(ctx)
+    fire_scheduled_runs(ctx)
+    dead_mans_switch_check(ctx)
 
 
 def run_scheduler():

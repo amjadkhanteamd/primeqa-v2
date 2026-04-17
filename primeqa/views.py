@@ -1817,6 +1817,194 @@ def settings_general():
         db.close()
 
 
+# Scheduled runs (R4) -------------------------------------------------------
+
+@views_bp.route("/runs/scheduled")
+@role_required("admin", "tester")
+def scheduled_runs_list():
+    db = next(get_db())
+    try:
+        from primeqa.runs.schedule import ScheduledRunRepository
+        from primeqa.test_management.models import TestSuite
+        from primeqa.core.models import Environment
+        rows = ScheduledRunRepository(db).list_for_tenant(request.user["tenant_id"])
+        suites = {s.id: s for s in db.query(TestSuite).all()}
+        envs = {e.id: e for e in db.query(Environment).all()}
+        data = []
+        for r in rows:
+            suite = suites.get(r.suite_id); env = envs.get(r.environment_id)
+            data.append({
+                "id": r.id, "suite_id": r.suite_id,
+                "suite_name": suite.name if suite else f"#{r.suite_id}",
+                "env_name": env.name if env else f"#{r.environment_id}",
+                "env_type": env.env_type if env else "",
+                "cron_expr": r.cron_expr, "preset_label": r.preset_label,
+                "priority": r.priority, "enabled": r.enabled,
+                "max_silence_hours": r.max_silence_hours,
+                "next_fire_at": r.next_fire_at.isoformat() if r.next_fire_at else None,
+                "last_fired_at": r.last_fired_at.isoformat() if r.last_fired_at else None,
+                "last_run_id": r.last_run_id,
+            })
+        return render_template("runs/scheduled_list.html", **ctx(
+            active_page="runs", schedules=data,
+        ))
+    finally:
+        db.close()
+
+
+def _schedule_form_context(db, tenant_id, schedule=None, error=None):
+    from primeqa.runs.schedule import PRESETS, PRESET_LABELS
+    from primeqa.test_management.models import TestSuite
+    suites = [{"id": s.id, "name": s.name, "suite_type": s.suite_type}
+              for s in db.query(TestSuite).filter(
+                  TestSuite.tenant_id == tenant_id,
+                  TestSuite.deleted_at.is_(None),
+              ).order_by(TestSuite.name.asc()).all()]
+    envs = EnvironmentRepository(db).list_environments(tenant_id)
+    envs_data = [{"id": e.id, "name": e.name, "env_type": e.env_type} for e in envs]
+    sched_dict = None
+    if schedule:
+        sched_dict = {
+            "id": schedule.id, "suite_id": schedule.suite_id,
+            "environment_id": schedule.environment_id,
+            "cron_expr": schedule.cron_expr, "preset_label": schedule.preset_label,
+            "priority": schedule.priority, "enabled": schedule.enabled,
+            "max_silence_hours": schedule.max_silence_hours,
+        }
+    return {
+        "suites": suites, "environments": envs_data,
+        "presets": [(k, PRESET_LABELS[k]) for k in PRESETS],
+        "presets_map": PRESETS,
+        "schedule": sched_dict, "error": error,
+    }
+
+
+@views_bp.route("/runs/scheduled/new", methods=["GET"])
+@role_required("admin", "tester")
+def scheduled_runs_new_form():
+    db = next(get_db())
+    try:
+        kwargs = _schedule_form_context(db, request.user["tenant_id"])
+        return render_template("runs/scheduled_form.html", **ctx(
+            active_page="runs", action_url="/runs/scheduled/new", **kwargs,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/runs/scheduled/new", methods=["POST"])
+@role_required("admin", "tester")
+def scheduled_runs_create():
+    from flask import flash
+    from primeqa.runs.schedule import ScheduledRunRepository
+    db = next(get_db())
+    try:
+        msh = request.form.get("max_silence_hours") or None
+        try:
+            repo = ScheduledRunRepository(db)
+            repo.create(
+                tenant_id=request.user["tenant_id"],
+                suite_id=int(request.form["suite_id"]),
+                environment_id=int(request.form["environment_id"]),
+                cron_expr=request.form["cron_expr"].strip(),
+                preset_label=None,  # repo derives from cron_expr
+                priority=request.form.get("priority", "normal"),
+                max_silence_hours=int(msh) if msh else None,
+                created_by=request.user["id"],
+            )
+            flash("Schedule created", "success")
+            return redirect("/runs/scheduled")
+        except ValueError as e:
+            kwargs = _schedule_form_context(db, request.user["tenant_id"], error=str(e))
+            return render_template("runs/scheduled_form.html", **ctx(
+                active_page="runs", action_url="/runs/scheduled/new", **kwargs,
+            ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/runs/scheduled/<int:sid>/edit", methods=["GET"])
+@role_required("admin", "tester")
+def scheduled_runs_edit_form(sid):
+    from primeqa.runs.schedule import ScheduledRunRepository
+    db = next(get_db())
+    try:
+        row = ScheduledRunRepository(db).get(sid, request.user["tenant_id"])
+        if not row:
+            return redirect("/runs/scheduled")
+        kwargs = _schedule_form_context(db, request.user["tenant_id"], schedule=row)
+        return render_template("runs/scheduled_form.html", **ctx(
+            active_page="runs", action_url=f"/runs/scheduled/{sid}/edit", **kwargs,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/runs/scheduled/<int:sid>/edit", methods=["POST"])
+@role_required("admin", "tester")
+def scheduled_runs_edit(sid):
+    from flask import flash
+    from primeqa.runs.schedule import ScheduledRunRepository
+    db = next(get_db())
+    try:
+        repo = ScheduledRunRepository(db)
+        msh = request.form.get("max_silence_hours") or None
+        try:
+            repo.update(
+                sid, request.user["tenant_id"], updated_by=request.user["id"],
+                environment_id=int(request.form["environment_id"]),
+                cron_expr=request.form["cron_expr"].strip(),
+                priority=request.form.get("priority", "normal"),
+                max_silence_hours=int(msh) if msh else None,
+            )
+            flash("Schedule updated", "success")
+        except ValueError as e:
+            flash(str(e), "error")
+        return redirect("/runs/scheduled")
+    finally:
+        db.close()
+
+
+@views_bp.route("/runs/scheduled/<int:sid>/enable", methods=["POST"])
+@role_required("admin", "tester")
+def scheduled_runs_enable(sid):
+    from primeqa.runs.schedule import ScheduledRunRepository
+    db = next(get_db())
+    try:
+        ScheduledRunRepository(db).update(
+            sid, request.user["tenant_id"], updated_by=request.user["id"], enabled=True,
+        )
+        return redirect("/runs/scheduled")
+    finally:
+        db.close()
+
+
+@views_bp.route("/runs/scheduled/<int:sid>/disable", methods=["POST"])
+@role_required("admin", "tester")
+def scheduled_runs_disable(sid):
+    from primeqa.runs.schedule import ScheduledRunRepository
+    db = next(get_db())
+    try:
+        ScheduledRunRepository(db).update(
+            sid, request.user["tenant_id"], updated_by=request.user["id"], enabled=False,
+        )
+        return redirect("/runs/scheduled")
+    finally:
+        db.close()
+
+
+@views_bp.route("/runs/scheduled/<int:sid>/delete", methods=["POST"])
+@role_required("admin", "tester")
+def scheduled_runs_delete(sid):
+    from primeqa.runs.schedule import ScheduledRunRepository
+    db = next(get_db())
+    try:
+        ScheduledRunRepository(db).delete(sid, request.user["tenant_id"])
+        return redirect("/runs/scheduled")
+    finally:
+        db.close()
+
+
 # Super Admin settings: Agent autonomy (R2) --------------------------------
 @views_bp.route("/settings/agent", methods=["GET"])
 @role_required("superadmin")

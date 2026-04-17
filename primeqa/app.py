@@ -25,6 +25,7 @@ import primeqa.intelligence.models  # noqa: F401
 import primeqa.vector.models  # noqa: F401
 import primeqa.release.models  # noqa: F401
 import primeqa.execution.data_engine  # noqa: F401
+import primeqa.runs.schedule  # noqa: F401 \u2014 R4 ScheduledRun model
 
 from primeqa.core.routes import core_bp
 from primeqa.metadata.routes import metadata_bp
