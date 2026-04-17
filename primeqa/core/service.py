@@ -301,9 +301,9 @@ class ConnectionService:
         ctype = data["connection_type"]
         try:
             if ctype == "salesforce":
-                org_type = cfg.get("org_type", "sandbox")
-                login_url = cfg.get("login_url", "")
+                login_url = cfg.get("instance_url", "").rstrip("/")
                 if not login_url:
+                    org_type = cfg.get("org_type", "sandbox")
                     login_url = "https://test.salesforce.com" if org_type == "sandbox" else "https://login.salesforce.com"
                 auth_flow = cfg.get("auth_flow", "client_credentials")
                 token_data_body = {
