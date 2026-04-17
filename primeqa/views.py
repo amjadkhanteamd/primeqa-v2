@@ -117,7 +117,11 @@ def dashboard():
         pending = db.query(BAReview).filter(
             BAReview.tenant_id == request.user["tenant_id"], BAReview.status == "pending",
         ).count()
-        user_count = db.query(User).filter(User.tenant_id == request.user["tenant_id"], User.is_active == True).count()
+        user_count = db.query(User).filter(
+            User.tenant_id == request.user["tenant_id"],
+            User.is_active == True,
+            User.role != "superadmin",
+        ).count()
         env_count = db.query(Environment).filter(Environment.tenant_id == request.user["tenant_id"]).count()
         conn_count = db.query(Connection).filter(Connection.tenant_id == request.user["tenant_id"]).count()
         group_count = db.query(Group).filter(Group.tenant_id == request.user["tenant_id"]).count()
@@ -327,25 +331,25 @@ def runs_new_preview():
         db.close()
 
 
-def _estimate_run_cost(test_count, env):
-    """Crude cost forecast. Anthropic-only for now; later phases refine this."""
-    # Hard-coded price per 1K tokens for typical Sonnet-class runs; Super Admin
-    # can refine in settings in R2. Executor-only runs don't touch the LLM;
-    # this mainly matters for generate / regenerate paths.
-    price_per_1k_input = 0.003
-    price_per_1k_output = 0.015
-    # Heuristic: 2K in / 1K out per test for AI-involved runs
-    tokens_in = 2_000 * test_count
-    tokens_out = 1_000 * test_count
-    return {
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
-        "usd_estimate": round(
-            (tokens_in / 1000) * price_per_1k_input
-            + (tokens_out / 1000) * price_per_1k_output, 2,
-        ),
-        "note": "Upper bound; executor-only runs won't call the LLM.",
-    }
+def _estimate_run_cost(test_count, env, run_type="execute_only"):
+    """Cost forecast delegated to primeqa.runs.cost."""
+    from primeqa.runs.cost import estimate_run_cost
+    # Pull LLM model from the connected LLM connection if available
+    model = None
+    if env and env.llm_connection_id:
+        try:
+            from primeqa.core.repository import ConnectionRepository
+            from primeqa.db import SessionLocal
+            db = SessionLocal()
+            conn = ConnectionRepository(db).get_connection_decrypted(
+                env.llm_connection_id, env.tenant_id,
+            )
+            db.close()
+            if conn and conn.get("config"):
+                model = conn["config"].get("model")
+        except Exception:
+            pass
+    return estimate_run_cost(test_count, model=model, run_type=run_type)
 
 
 @views_bp.route("/runs", methods=["POST"])
@@ -1789,6 +1793,48 @@ def settings_general():
             tenant=tenant_data, setup_complete=setup_complete,
             stats={"connections": conn_count, "environments": env_count, "groups": group_count},
         ))
+    finally:
+        db.close()
+
+
+# Super Admin settings: Agent autonomy (R2) --------------------------------
+@views_bp.route("/settings/agent", methods=["GET"])
+@role_required("superadmin")
+def settings_agent_get():
+    db = next(get_db())
+    try:
+        from primeqa.core.agent_settings import AgentSettingsRepository
+        settings = AgentSettingsRepository(db).get(request.user["tenant_id"])
+        return render_template("settings/agent.html", **ctx(
+            active_page="settings_agent", settings_page="agent",
+            settings=settings,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/settings/agent", methods=["POST"])
+@role_required("superadmin")
+def settings_agent_post():
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.core.agent_settings import AgentSettingsRepository
+        repo = AgentSettingsRepository(db)
+        agent_enabled = bool(request.form.get("agent_enabled"))
+        try:
+            repo.update(
+                request.user["tenant_id"],
+                updated_by=request.user["id"],
+                agent_enabled=agent_enabled,
+                trust_threshold_high=float(request.form.get("trust_threshold_high") or 0.85),
+                trust_threshold_medium=float(request.form.get("trust_threshold_medium") or 0.60),
+                max_fix_attempts_per_run=int(request.form.get("max_fix_attempts_per_run") or 3),
+            )
+            flash("Agent settings saved", "success")
+        except ValueError as e:
+            flash(str(e), "error")
+        return redirect("/settings/agent")
     finally:
         db.close()
 

@@ -124,6 +124,20 @@ class EnvironmentCredential(Base):
     )
 
 
+class TenantAgentSettings(Base):
+    """Per-tenant agent autonomy configuration (R2, configurable by Super Admin)."""
+    __tablename__ = "tenant_agent_settings"
+
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"),
+                       primary_key=True)
+    agent_enabled = Column(Boolean, nullable=False, server_default="true")
+    trust_threshold_high = Column(String(10), nullable=False, server_default="0.85")
+    trust_threshold_medium = Column(String(10), nullable=False, server_default="0.60")
+    max_fix_attempts_per_run = Column(Integer, nullable=False, server_default="3")
+    updated_by = Column(Integer, ForeignKey("users.id"))
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class ActivityLog(Base):
     __tablename__ = "activity_log"
 

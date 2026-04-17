@@ -56,9 +56,11 @@ class UserRepository:
         return self.db.query(User).filter(User.tenant_id == tenant_id).all()
 
     def count_active_users(self, tenant_id):
+        # Q: superadmin is excluded from the 20-user cap.
         return self.db.query(func.count(User.id)).filter(
             User.tenant_id == tenant_id,
             User.is_active == True,
+            User.role != "superadmin",
         ).scalar()
 
     def update_last_login(self, user_id):

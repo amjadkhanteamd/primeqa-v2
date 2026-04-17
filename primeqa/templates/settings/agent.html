@@ -1,0 +1,75 @@
+{% extends "settings/base.html" %}
+{% block title %}Agent autonomy - PrimeQA{% endblock %}
+{% block settings_content %}
+<div class="max-w-2xl">
+  <div class="mb-4">
+    <h1 class="text-2xl font-bold text-gray-900">Agent autonomy</h1>
+    <p class="mt-1 text-sm text-gray-500">
+      Controls how the fix-and-rerun agent behaves when test runs fail.
+      Visible to Super Admin only.
+    </p>
+  </div>
+
+  <form method="POST" action="/settings/agent" class="bg-white shadow rounded-lg p-6 space-y-5">
+    <div>
+      <label class="inline-flex items-center space-x-3">
+        <input type="checkbox" name="agent_enabled" value="1" {% if settings.agent_enabled %}checked{% endif %}
+               class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+        <span class="text-sm font-medium text-gray-900">Enable the fix-and-rerun agent</span>
+      </label>
+      <p class="mt-1 text-xs text-gray-500 ml-7">
+        When disabled, failed steps are recorded but the agent never triages or proposes fixes.
+      </p>
+    </div>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700">High confidence threshold</label>
+        <input type="number" step="0.01" min="0" max="1" name="trust_threshold_high"
+               value="{{ settings.trust_threshold_high }}"
+               class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+        <p class="mt-1 text-xs text-gray-500">
+          Fixes at or above this confidence auto-apply on <em>sandbox</em> environments.
+        </p>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700">Medium confidence threshold</label>
+        <input type="number" step="0.01" min="0" max="1" name="trust_threshold_medium"
+               value="{{ settings.trust_threshold_medium }}"
+               class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+        <p class="mt-1 text-xs text-gray-500">
+          Fixes below medium are labeled "Low confidence \u2014 do not apply."
+        </p>
+      </div>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-gray-700">Max auto-fix attempts per run</label>
+      <input type="number" min="0" max="10" name="max_fix_attempts_per_run"
+             value="{{ settings.max_fix_attempts_per_run }}"
+             class="mt-1 block w-32 rounded-md border border-gray-300 px-3 py-2 text-sm">
+      <p class="mt-1 text-xs text-gray-500">
+        Cap on agent-initiated reruns per parent run. Reaches cap \u2192 escalate to human review.
+      </p>
+    </div>
+
+    <div class="rounded-md bg-purple-50 border border-purple-200 p-3 text-xs text-purple-800">
+      <p><strong>Policies that are not configurable (and shouldn't be):</strong></p>
+      <ul class="list-disc ml-5 mt-1 space-y-0.5">
+        <li>Production environments: agent never auto-applies; fixes become review tasks.</li>
+        <li>Revert restores the full before-state snapshot captured at fix time.</li>
+        <li>Cost and raw LLM prompts are visible only to Super Admin.</li>
+      </ul>
+    </div>
+
+    <div class="flex justify-end space-x-3">
+      <a href="/" class="rounded-md bg-white px-3 py-2 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Cancel</a>
+      <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Save</button>
+    </div>
+  </form>
+
+  <p class="mt-4 text-xs text-gray-500">
+    {% if settings.updated_at %}Last updated {{ settings.updated_at[:19] }} by user #{{ settings.updated_by }}.{% endif %}
+  </p>
+</div>
+{% endblock %}
