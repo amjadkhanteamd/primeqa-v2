@@ -594,10 +594,13 @@ def connections_create():
         config = {}
         if ctype == "salesforce":
             config = {
+                "org_type": request.form.get("sf_org_type", "sandbox"),
                 "instance_url": request.form.get("sf_instance_url", ""),
                 "api_version": request.form.get("sf_api_version", "59.0"),
                 "client_id": request.form.get("sf_client_id", ""),
                 "client_secret": request.form.get("sf_client_secret", ""),
+                "username": request.form.get("sf_username", ""),
+                "password": request.form.get("sf_password", ""),
             }
         elif ctype == "jira":
             config = {
@@ -667,6 +670,89 @@ def connections_delete(conn_id):
         return redirect("/connections")
     except Exception:
         return redirect("/connections")
+    finally:
+        db.close()
+
+
+@views_bp.route("/connections/<int:conn_id>/edit")
+@role_required("admin")
+def connections_edit(conn_id):
+    db = next(get_db())
+    try:
+        svc = ConnectionService(ConnectionRepository(db))
+        conn = svc.get_connection(conn_id, request.user["tenant_id"])
+        if not conn:
+            return redirect("/connections")
+        return render_template("connections/edit.html", **ctx(
+            active_page="connections", conn=conn, error=None,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/connections/<int:conn_id>/edit", methods=["POST"])
+@role_required("admin")
+def connections_update(conn_id):
+    db = next(get_db())
+    try:
+        repo = ConnectionRepository(db)
+        svc = ConnectionService(repo)
+        conn = repo.get_connection(conn_id, request.user["tenant_id"])
+        if not conn:
+            return redirect("/connections")
+
+        updates = {"name": request.form.get("name", conn.name)}
+        old_config = dict(conn.config) if conn.config else {}
+
+        if conn.connection_type == "salesforce":
+            new_config = {
+                "org_type": request.form.get("sf_org_type", old_config.get("org_type", "sandbox")),
+                "instance_url": request.form.get("sf_instance_url") or old_config.get("instance_url", ""),
+                "api_version": request.form.get("sf_api_version") or old_config.get("api_version", "59.0"),
+                "username": request.form.get("sf_username") or old_config.get("username", ""),
+            }
+            if request.form.get("sf_client_id"):
+                new_config["client_id"] = request.form["sf_client_id"]
+            elif "client_id" in old_config:
+                new_config["client_id"] = old_config["client_id"]
+            if request.form.get("sf_client_secret"):
+                new_config["client_secret"] = request.form["sf_client_secret"]
+            elif "client_secret" in old_config:
+                new_config["client_secret"] = old_config["client_secret"]
+            if request.form.get("sf_password"):
+                new_config["password"] = request.form["sf_password"]
+            elif "password" in old_config:
+                new_config["password"] = old_config["password"]
+            updates["config"] = new_config
+        elif conn.connection_type == "jira":
+            new_config = {
+                "base_url": request.form.get("jira_base_url") or old_config.get("base_url", ""),
+                "auth_type": "basic",
+                "username": request.form.get("jira_username") or old_config.get("username", ""),
+            }
+            if request.form.get("jira_api_token"):
+                new_config["api_token"] = request.form["jira_api_token"]
+            elif "api_token" in old_config:
+                new_config["api_token"] = old_config["api_token"]
+            updates["config"] = new_config
+        elif conn.connection_type == "llm":
+            new_config = {
+                "provider": old_config.get("provider", "anthropic"),
+                "model": request.form.get("llm_model") or old_config.get("model", "claude-sonnet-4-20250514"),
+            }
+            if request.form.get("llm_api_key"):
+                new_config["api_key"] = request.form["llm_api_key"]
+            elif "api_key" in old_config:
+                new_config["api_key"] = old_config["api_key"]
+            updates["config"] = new_config
+
+        svc.update_connection(conn_id, request.user["tenant_id"], updates)
+        return redirect(f"/connections/{conn_id}")
+    except ValueError as e:
+        conn_data = svc.get_connection(conn_id, request.user["tenant_id"])
+        return render_template("connections/edit.html", **ctx(
+            active_page="connections", conn=conn_data, error=str(e),
+        ))
     finally:
         db.close()
 

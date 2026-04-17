@@ -12,6 +12,7 @@
         </div>
         <div class="flex space-x-3">
             <form method="POST" action="/connections/{{ conn.id }}/test"><button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Test Connection</button></form>
+            <a href="/connections/{{ conn.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit</a>
             <form method="POST" action="/connections/{{ conn.id }}/delete" onsubmit="return confirm('Delete this connection?')"><button type="submit" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">Delete</button></form>
         </div>
     </div>

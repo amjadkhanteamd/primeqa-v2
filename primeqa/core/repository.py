@@ -318,7 +318,7 @@ class ConnectionRepository:
     @staticmethod
     def _sensitive_fields(connection_type):
         return {
-            "salesforce": ["client_id", "client_secret"],
+            "salesforce": ["client_id", "client_secret", "password"],
             "jira": ["credentials", "api_token"],
             "llm": ["api_key"],
         }.get(connection_type, [])

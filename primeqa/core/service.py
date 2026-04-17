@@ -255,9 +255,9 @@ class EnvironmentService:
 
 VALID_CONNECTION_TYPES = {"salesforce", "jira", "llm"}
 REQUIRED_CONFIG = {
-    "salesforce": ["instance_url", "api_version", "client_id", "client_secret"],
-    "jira": ["base_url", "auth_type"],
-    "llm": ["provider", "api_key"],
+    "salesforce": ["instance_url", "client_id", "client_secret", "username", "password"],
+    "jira": ["base_url"],
+    "llm": ["api_key"],
 }
 
 
@@ -301,9 +301,28 @@ class ConnectionService:
         ctype = data["connection_type"]
         try:
             if ctype == "salesforce":
-                url = f"{cfg['instance_url']}/services/data/v{cfg.get('api_version', '59.0')}/"
-                resp = http_requests.get(url, headers={
-                    "Authorization": f"Bearer {cfg.get('access_token', '')}",
+                org_type = cfg.get("org_type", "sandbox")
+                login_url = "https://test.salesforce.com" if org_type == "sandbox" else "https://login.salesforce.com"
+                token_resp = http_requests.post(
+                    f"{login_url}/services/oauth2/token",
+                    data={
+                        "grant_type": "password",
+                        "client_id": cfg.get("client_id", ""),
+                        "client_secret": cfg.get("client_secret", ""),
+                        "username": cfg.get("username", ""),
+                        "password": cfg.get("password", ""),
+                    },
+                    timeout=15,
+                )
+                if token_resp.status_code != 200:
+                    self.conn_repo.update_status(connection_id, "error")
+                    return {"status": "failed", "detail": token_resp.text[:500]}
+                token_data = token_resp.json()
+                access_token = token_data.get("access_token", "")
+                instance_url = token_data.get("instance_url", cfg.get("instance_url", ""))
+                api_url = f"{instance_url}/services/data/v{cfg.get('api_version', '59.0')}/"
+                resp = http_requests.get(api_url, headers={
+                    "Authorization": f"Bearer {access_token}",
                 }, timeout=15)
                 ok = resp.status_code == 200
             elif ctype == "jira":
