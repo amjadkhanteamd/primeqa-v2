@@ -448,15 +448,20 @@ def environments_list():
 def environments_new():
     db = next(get_db())
     try:
-        sf_connections = ConnectionRepository(db).list_connections(
-            request.user["tenant_id"], "salesforce",
-        )
-        conns_data = [{"id": c.id, "name": c.name, "status": c.status,
+        conn_repo = ConnectionRepository(db)
+        tid = request.user["tenant_id"]
+        sf_conns = [{"id": c.id, "name": c.name, "status": c.status,
+                     "config": dict(c.config) if c.config else {}}
+                    for c in conn_repo.list_connections(tid, "salesforce")]
+        jira_conns = [{"id": c.id, "name": c.name, "status": c.status,
                        "config": dict(c.config) if c.config else {}}
-                      for c in sf_connections]
+                      for c in conn_repo.list_connections(tid, "jira")]
+        llm_conns = [{"id": c.id, "name": c.name, "status": c.status,
+                      "config": dict(c.config) if c.config else {}}
+                     for c in conn_repo.list_connections(tid, "llm")]
         return render_template("environments/new.html", **ctx(
             active_page="settings_environments", settings_page="environments",
-            sf_connections=conns_data,
+            sf_connections=sf_conns, jira_connections=jira_conns, llm_connections=llm_conns,
         ))
     finally:
         db.close()
@@ -470,6 +475,8 @@ def environments_create():
         conn_repo = ConnectionRepository(db)
         svc = EnvironmentService(EnvironmentRepository(db), conn_repo)
         connection_id = request.form.get("connection_id", type=int)
+        jira_connection_id = request.form.get("jira_connection_id", type=int)
+        llm_connection_id = request.form.get("llm_connection_id", type=int)
         svc.create_environment(
             tenant_id=request.user["tenant_id"],
             name=request.form["name"],
@@ -479,16 +486,26 @@ def environments_create():
             capture_mode=request.form.get("capture_mode", "smart"),
             max_execution_slots=int(request.form.get("max_execution_slots", 2)),
             created_by=request.user["id"],
-            connection_id=connection_id if connection_id else None,
+            connection_id=connection_id or None,
+            jira_connection_id=jira_connection_id or None,
+            llm_connection_id=llm_connection_id or None,
         )
         return redirect("/environments")
     except ValueError as e:
-        sf_connections = conn_repo.list_connections(request.user["tenant_id"], "salesforce")
-        conns_data = [{"id": c.id, "name": c.name, "status": c.status,
-                       "config": dict(c.config) if c.config else {}} for c in sf_connections]
+        tid = request.user["tenant_id"]
+        sf_conns = [{"id": c.id, "name": c.name, "status": c.status,
+                     "config": dict(c.config) if c.config else {}}
+                    for c in conn_repo.list_connections(tid, "salesforce")]
+        jira_conns = [{"id": c.id, "name": c.name, "status": c.status,
+                       "config": dict(c.config) if c.config else {}}
+                      for c in conn_repo.list_connections(tid, "jira")]
+        llm_conns = [{"id": c.id, "name": c.name, "status": c.status,
+                      "config": dict(c.config) if c.config else {}}
+                     for c in conn_repo.list_connections(tid, "llm")]
         return render_template("environments/new.html", **ctx(
             active_page="settings_environments", settings_page="environments",
-            sf_connections=conns_data, error=str(e),
+            sf_connections=sf_conns, jira_connections=jira_conns,
+            llm_connections=llm_conns, error=str(e),
         ))
     finally:
         db.close()

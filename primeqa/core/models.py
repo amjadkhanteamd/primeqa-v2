@@ -87,10 +87,14 @@ class Environment(Base):
 
     created_by = Column(Integer, ForeignKey("users.id"))
     connection_id = Column(Integer, ForeignKey("connections.id"))
+    jira_connection_id = Column(Integer, ForeignKey("connections.id"))
+    llm_connection_id = Column(Integer, ForeignKey("connections.id"))
 
     tenant = relationship("Tenant", back_populates="environments")
     credentials = relationship("EnvironmentCredential", back_populates="environment", uselist=False)
-    connection = relationship("Connection")
+    connection = relationship("Connection", foreign_keys=[connection_id])
+    jira_connection = relationship("Connection", foreign_keys=[jira_connection_id])
+    llm_connection = relationship("Connection", foreign_keys=[llm_connection_id])
 
     __table_args__ = (
         CheckConstraint("env_type IN ('sandbox', 'uat', 'staging', 'production')"),

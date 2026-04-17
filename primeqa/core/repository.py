@@ -126,6 +126,8 @@ class EnvironmentRepository:
             cleanup_mandatory=kwargs.get("cleanup_mandatory", False),
             created_by=kwargs.get("created_by"),
             connection_id=kwargs.get("connection_id"),
+            jira_connection_id=kwargs.get("jira_connection_id"),
+            llm_connection_id=kwargs.get("llm_connection_id"),
         )
         self.db.add(env)
         self.db.commit()

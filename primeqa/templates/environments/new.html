@@ -30,6 +30,30 @@
         </div>
 
         <div>
+            <label class="block text-sm font-medium text-gray-700">Jira Connection</label>
+            <select name="jira_connection_id" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm">
+                <option value="">None</option>
+                {% for conn in jira_connections %}
+                <option value="{{ conn.id }}">{{ conn.name }} {% if conn.status == 'active' %}(Connected){% elif conn.status == 'error' %}(Error){% else %}(Not tested){% endif %}</option>
+                {% endfor %}
+            </select>
+            <p class="mt-1 text-xs text-gray-400">For importing requirements and syncing tickets</p>
+        </div>
+
+        <div>
+            <label class="block text-sm font-medium text-gray-700">LLM Connection</label>
+            <select name="llm_connection_id" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm">
+                <option value="">None</option>
+                {% for conn in llm_connections %}
+                <option value="{{ conn.id }}">{{ conn.name }} ({{ conn.config.get('model', 'default') }}) {% if conn.status == 'active' %}(Connected){% elif conn.status == 'error' %}(Error){% else %}(Not tested){% endif %}</option>
+                {% endfor %}
+            </select>
+            <p class="mt-1 text-xs text-gray-400">For test generation and failure explanations</p>
+        </div>
+
+        <div class="border-t pt-4"></div>
+
+        <div>
             <label class="block text-sm font-medium text-gray-700">Environment Name</label>
             <input name="name" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm" placeholder="Dev Sandbox - Regression">
         </div>

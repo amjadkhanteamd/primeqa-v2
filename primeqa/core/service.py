@@ -264,6 +264,8 @@ class EnvironmentService:
             "updated_at": env.updated_at.isoformat() if env.updated_at else None,
             "created_by": env.created_by,
             "connection_id": env.connection_id,
+            "jira_connection_id": env.jira_connection_id,
+            "llm_connection_id": env.llm_connection_id,
         }
 
 
