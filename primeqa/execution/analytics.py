@@ -1,7 +1,7 @@
 """Analytics service — pass rate, flakiness, trend aggregations for dashboards."""
 
 from datetime import datetime, timezone, timedelta
-from sqlalchemy import func
+from sqlalchemy import func, case
 
 
 class AnalyticsService:
@@ -15,7 +15,7 @@ class AnalyticsService:
         rows = self.db.query(
             Environment.id, Environment.name,
             func.count(RunTestResult.id).label("total"),
-            func.sum(func.cast(RunTestResult.status == "passed", type_=func.Integer)).label("passed"),
+            func.sum(case((RunTestResult.status == "passed", 1), else_=0)).label("passed"),
         ).join(PipelineRun, PipelineRun.environment_id == Environment.id).join(
             RunTestResult, RunTestResult.run_id == PipelineRun.id,
         ).filter(
@@ -36,8 +36,8 @@ class AnalyticsService:
         rows = self.db.query(
             TestCase.id, TestCase.title,
             func.count(RunTestResult.id).label("total"),
-            func.sum(func.cast(RunTestResult.status == "passed", type_=func.Integer)).label("passed"),
-            func.sum(func.cast(RunTestResult.status.in_(["failed", "error"]), type_=func.Integer)).label("failed"),
+            func.sum(case((RunTestResult.status == "passed", 1), else_=0)).label("passed"),
+            func.sum(case((RunTestResult.status.in_(["failed", "error"]), 1), else_=0)).label("failed"),
         ).join(RunTestResult, RunTestResult.test_case_id == TestCase.id).join(
             PipelineRun, PipelineRun.id == RunTestResult.run_id,
         ).filter(
