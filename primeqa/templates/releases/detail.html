@@ -26,6 +26,9 @@
             <form method="POST" action="/releases/{{ release.id }}/score-risks">
                 <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Score Risks</button>
             </form>
+            <form method="POST" action="/releases/{{ release.id }}/evaluate-decision">
+                <button type="submit" class="rounded-md bg-purple-600 px-3 py-2 text-sm font-semibold text-white hover:bg-purple-500">Evaluate GO/NO-GO</button>
+            </form>
             <a href="/releases/{{ release.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit</a>
         </div>
         {% endif %}

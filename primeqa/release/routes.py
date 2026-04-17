@@ -154,6 +154,138 @@ def remove_test_plan_item(release_id, tc_id):
         db.close()
 
 
+@release_bp.route("/api/releases/<int:release_id>/evaluate-decision", methods=["POST"])
+@require_role("admin", "tester")
+def evaluate_decision(release_id):
+    from primeqa.release.decision_engine import DecisionEngine
+    svc, db = _get_service()
+    try:
+        release = svc.release_repo.get_release(release_id, request.user["tenant_id"])
+        if not release:
+            return jsonify(error="Release not found"), 404
+        engine = DecisionEngine(db)
+        result = engine.evaluate(release)
+        svc.release_repo.create_decision(
+            release_id=release_id,
+            recommendation=result["recommendation"],
+            confidence=result["confidence"],
+            reasoning=result,
+            criteria_met=result["criteria_met"],
+            recommended_by="ai",
+        )
+        return jsonify(result), 200
+    finally:
+        db.close()
+
+
+@release_bp.route("/api/releases/<int:release_id>/decisions/<int:decision_id>/finalize", methods=["POST"])
+@require_role("admin")
+def finalize_decision(release_id, decision_id):
+    data = request.get_json(silent=True) or {}
+    final = data.get("final_decision")
+    if final not in ("go", "conditional_go", "no_go"):
+        return jsonify(error="Invalid final_decision"), 400
+    svc, db = _get_service()
+    try:
+        d = svc.release_repo.finalize_decision(decision_id, final, request.user["id"], data.get("override_reason"))
+        if not d:
+            return jsonify(error="Decision not found"), 404
+        return jsonify({"final_decision": d.final_decision}), 200
+    finally:
+        db.close()
+
+
+@release_bp.route("/api/releases/<int:release_id>/status", methods=["GET"])
+def public_release_status(release_id):
+    """Public endpoint for CI/CD to poll release decision status."""
+    db = next(get_db())
+    try:
+        from primeqa.release.models import Release, ReleaseDecision
+        from sqlalchemy import desc
+        release = db.query(Release).filter(Release.id == release_id).first()
+        if not release:
+            return jsonify(error="Release not found"), 404
+        latest = db.query(ReleaseDecision).filter(
+            ReleaseDecision.release_id == release_id,
+        ).order_by(desc(ReleaseDecision.created_at)).first()
+        return jsonify({
+            "release_id": release_id,
+            "name": release.name,
+            "status": release.status,
+            "recommendation": latest.recommendation if latest else None,
+            "final_decision": latest.final_decision if latest else None,
+            "confidence": latest.confidence if latest else None,
+            "decided_at": latest.decided_at.isoformat() if latest and latest.decided_at else None,
+        }), 200
+    finally:
+        db.close()
+
+
+@release_bp.route("/api/webhooks/ci-trigger", methods=["POST"])
+def ci_webhook_trigger():
+    """CI/CD webhook to trigger release test runs. Expects HMAC-SHA256 signature."""
+    import hmac
+    import hashlib
+    import os
+
+    secret = os.getenv("WEBHOOK_SECRET", "")
+    if secret:
+        provided_sig = request.headers.get("X-PrimeQA-Signature", "")
+        body = request.get_data()
+        expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, provided_sig):
+            return jsonify(error="Invalid signature"), 401
+
+    data = request.get_json(silent=True) or {}
+    release_id = data.get("release_id")
+    environment_id = data.get("environment_id")
+    commit_sha = data.get("commit_sha", "unknown")
+
+    if not release_id or not environment_id:
+        return jsonify(error="release_id and environment_id required"), 400
+
+    db = next(get_db())
+    try:
+        from primeqa.release.models import Release, ReleaseTestPlanItem, ReleaseRun
+        from primeqa.execution.repository import (
+            PipelineRunRepository, PipelineStageRepository,
+            ExecutionSlotRepository, WorkerHeartbeatRepository,
+        )
+        from primeqa.execution.service import PipelineService
+        release = db.query(Release).filter(Release.id == release_id).first()
+        if not release:
+            return jsonify(error="Release not found"), 404
+
+        plan_items = db.query(ReleaseTestPlanItem).filter(
+            ReleaseTestPlanItem.release_id == release_id,
+        ).all()
+        tc_ids = [item.test_case_id for item in plan_items]
+        if not tc_ids:
+            return jsonify(error="No test cases in release plan"), 400
+
+        svc = PipelineService(
+            PipelineRunRepository(db), PipelineStageRepository(db),
+            ExecutionSlotRepository(db), WorkerHeartbeatRepository(db),
+        )
+        result = svc.create_run(
+            tenant_id=release.tenant_id, environment_id=environment_id,
+            triggered_by=release.created_by, run_type="execute_only",
+            source_type="release", source_ids=tc_ids, priority="high",
+            config={"commit_sha": commit_sha, "release_id": release_id},
+        )
+        rr = ReleaseRun(release_id=release_id, pipeline_run_id=result["id"],
+                       triggered_by=release.created_by)
+        db.add(rr)
+        db.commit()
+
+        return jsonify({
+            "run_id": result["id"],
+            "status_url": f"/api/releases/{release_id}/status",
+        }), 201
+    finally:
+        db.close()
+
+
 @release_bp.route("/api/releases/<int:release_id>/score-risks", methods=["POST"])
 @require_role("admin", "tester")
 def score_release_risks(release_id):

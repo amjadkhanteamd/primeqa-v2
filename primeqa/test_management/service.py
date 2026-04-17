@@ -17,6 +17,44 @@ class TestManagementService:
         self.section_repo = section_repo
         self.requirement_repo = requirement_repo
 
+    def regenerate_for_impact(self, tenant_id, impact_id, created_by,
+                               env_repo, conn_repo, metadata_repo):
+        """Regenerate a test case for a metadata impact."""
+        from primeqa.test_management.models import MetadataImpact, TestCase, Requirement
+        impact = self.impact_repo.db.query(MetadataImpact).filter(
+            MetadataImpact.id == impact_id,
+        ).first()
+        if not impact:
+            raise ValueError("Impact not found")
+
+        tc = self.test_case_repo.db.query(TestCase).filter(
+            TestCase.id == impact.test_case_id, TestCase.tenant_id == tenant_id,
+        ).first()
+        if not tc:
+            raise ValueError("Test case not found")
+
+        env = env_repo.db.query(env_repo.db.query().statement.table.__class__).first() if False else None
+        from primeqa.core.models import Environment
+        env = env_repo.db.query(Environment).filter(
+            Environment.tenant_id == tenant_id,
+            Environment.current_meta_version_id == impact.new_meta_version_id,
+        ).first()
+        if not env:
+            raise ValueError("Environment not found for impact")
+
+        requirement_id = tc.requirement_id
+        if not requirement_id:
+            raise ValueError("Test case has no linked requirement")
+
+        result = self.generate_test_case(
+            tenant_id=tenant_id, requirement_id=requirement_id,
+            environment_id=env.id, created_by=created_by,
+            env_repo=env_repo, conn_repo=conn_repo, metadata_repo=metadata_repo,
+            test_case_id=tc.id,
+        )
+        self.impact_repo.resolve_impact(impact_id, "regenerated", created_by)
+        return result
+
     def generate_test_case(self, tenant_id, requirement_id, environment_id, created_by,
                            env_repo, conn_repo, metadata_repo, test_case_id=None):
         """Use AI to generate a test case from a requirement + environment metadata."""

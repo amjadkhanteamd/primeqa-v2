@@ -93,5 +93,77 @@
             </table>
         </div>
     </div>
+
+    <!-- Release Health -->
+    {% if releases_health %}
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:px-6 border-b border-gray-200 flex justify-between items-center">
+            <h3 class="text-lg font-medium text-gray-900">Active Releases</h3>
+            <a href="/releases" class="text-sm text-indigo-600 hover:text-indigo-800">View all →</a>
+        </div>
+        <div class="divide-y divide-gray-200">
+            {% for r in releases_health %}
+            <a href="/releases/{{ r.id }}" class="block px-6 py-3 hover:bg-gray-50">
+                <div class="flex justify-between items-center">
+                    <div class="flex items-center space-x-3">
+                        <span class="text-sm font-medium text-gray-900">{{ r.name }}</span>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs
+                            {% if r.status == 'ready' %}bg-purple-100 text-purple-800
+                            {% elif r.status == 'in_progress' %}bg-yellow-100 text-yellow-800
+                            {% else %}bg-gray-100 text-gray-800{% endif %}">{{ r.status }}</span>
+                        {% if r.recommendation %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                            {% if r.recommendation == 'go' %}bg-green-100 text-green-800
+                            {% elif r.recommendation == 'no_go' %}bg-red-100 text-red-800
+                            {% else %}bg-yellow-100 text-yellow-800{% endif %}">{{ r.recommendation|replace('_', ' ')|upper }}</span>
+                        {% endif %}
+                    </div>
+                    {% if r.target_date %}<span class="text-xs text-gray-500">Due {{ r.target_date }}</span>{% endif %}
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Pass Rate by Environment + Flaky Tests -->
+    <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {% if env_pass_rates %}
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-4 py-5 sm:px-6 border-b"><h3 class="text-lg font-medium">Pass Rate by Environment (30d)</h3></div>
+            <div class="divide-y divide-gray-200">
+                {% for env in env_pass_rates %}
+                <div class="px-6 py-3">
+                    <div class="flex justify-between items-center mb-1">
+                        <span class="text-sm font-medium">{{ env.name }}</span>
+                        <span class="text-sm font-semibold {% if env.pass_rate >= 90 %}text-green-600{% elif env.pass_rate >= 70 %}text-yellow-600{% else %}text-red-600{% endif %}">{{ env.pass_rate }}%</span>
+                    </div>
+                    <div class="h-2 bg-gray-200 rounded-full overflow-hidden">
+                        <div class="h-full {% if env.pass_rate >= 90 %}bg-green-500{% elif env.pass_rate >= 70 %}bg-yellow-500{% else %}bg-red-500{% endif %}" style="width: {{ env.pass_rate }}%"></div>
+                    </div>
+                    <p class="mt-1 text-xs text-gray-500">{{ env.passed }}/{{ env.total }} passed</p>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if flaky_tests %}
+        <div class="bg-white shadow rounded-lg">
+            <div class="px-4 py-5 sm:px-6 border-b"><h3 class="text-lg font-medium">Flaky Tests (30d)</h3></div>
+            <div class="divide-y divide-gray-200">
+                {% for t in flaky_tests %}
+                <a href="/test-cases/{{ t.test_case_id }}" class="block px-6 py-3 hover:bg-gray-50">
+                    <div class="flex justify-between items-center">
+                        <span class="text-sm font-medium text-indigo-600">{{ t.title }}</span>
+                        <span class="text-sm font-semibold text-orange-600">{{ (t.flaky_score * 100)|int }}%</span>
+                    </div>
+                    <p class="text-xs text-gray-500">{{ t.passed }} passed · {{ t.failed }} failed · {{ t.total }} runs</p>
+                </a>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
 </div>
 {% endblock %}

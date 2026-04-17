@@ -129,14 +129,24 @@ def dashboard():
             "priority": r.priority, "queued_at": r.queued_at.isoformat() if r.queued_at else "",
         } for r in recent_runs]
 
+        # Analytics
+        from primeqa.execution.analytics import AnalyticsService
+        analytics = AnalyticsService(db)
+        tid = request.user["tenant_id"]
+        overall = analytics.overall_stats(tid)
+        env_pass_rates = analytics.pass_rate_by_environment(tid)
+        flaky = analytics.flaky_tests(tid, limit=5)
+        releases_health = analytics.release_health(tid)
+
         stats = {
             "total_test_cases": tc_count, "runs_today": runs_today,
-            "pass_rate": 0, "pending_reviews": pending,
+            "pass_rate": overall["pass_rate_30d"], "pending_reviews": pending,
             "user_count": user_count, "env_count": env_count,
         }
         return render_template("dashboard.html", **ctx(
             active_page="dashboard", stats=stats, recent_runs=runs_data,
             setup_complete=setup_complete,
+            env_pass_rates=env_pass_rates, flaky_tests=flaky, releases_health=releases_health,
         ))
     finally:
         db.close()
@@ -1036,6 +1046,40 @@ def impacts_resolve(impact_id):
         db.close()
 
 
+@views_bp.route("/impacts/<int:impact_id>/regenerate", methods=["POST"])
+@role_required("admin", "tester")
+def impacts_regenerate(impact_id):
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import (
+            SectionRepository, RequirementRepository, TestCaseRepository,
+            TestSuiteRepository, BAReviewRepository, MetadataImpactRepository,
+        )
+        from primeqa.test_management.service import TestManagementService
+        from primeqa.metadata.repository import MetadataRepository
+        svc = TestManagementService(
+            SectionRepository(db), RequirementRepository(db),
+            TestCaseRepository(db), TestSuiteRepository(db),
+            BAReviewRepository(db), MetadataImpactRepository(db),
+        )
+        svc.review_repo = BAReviewRepository(db)
+        result = svc.regenerate_for_impact(
+            tenant_id=request.user["tenant_id"], impact_id=impact_id,
+            created_by=request.user["id"],
+            env_repo=EnvironmentRepository(db),
+            conn_repo=ConnectionRepository(db),
+            metadata_repo=MetadataRepository(db),
+        )
+        flash(f"Regenerated test case #{result['test_case_id']}", "success")
+        return redirect(f"/test-cases/{result['test_case_id']}")
+    except Exception as e:
+        flash(f"Regeneration failed: {e}", "error")
+    finally:
+        db.close()
+    return redirect("/impacts")
+
+
 # --- Connections ---
 
 @views_bp.route("/connections")
@@ -1868,6 +1912,35 @@ def releases_create():
         return render_template("releases/new.html", **ctx(active_page="releases", error=str(e)))
     finally:
         db.close()
+
+
+@views_bp.route("/releases/<int:release_id>/evaluate-decision", methods=["POST"])
+@role_required("admin", "tester")
+def releases_evaluate_decision(release_id):
+    from flask import flash
+    from primeqa.release.decision_engine import DecisionEngine
+    db = next(get_db())
+    try:
+        release = ReleaseRepository(db).get_release(release_id, request.user["tenant_id"])
+        if not release:
+            return redirect("/releases")
+        engine = DecisionEngine(db)
+        result = engine.evaluate(release)
+        ReleaseRepository(db).create_decision(
+            release_id=release_id,
+            recommendation=result["recommendation"],
+            confidence=result["confidence"],
+            reasoning=result,
+            criteria_met=result["criteria_met"],
+            recommended_by="ai",
+        )
+        rec = result["recommendation"].upper().replace("_", " ")
+        flash(f"Decision: {rec} ({int(result['confidence']*100)}% confidence)", "success")
+    except Exception as e:
+        flash(f"Evaluation failed: {e}", "error")
+    finally:
+        db.close()
+    return redirect(f"/releases/{release_id}?tab=decision")
 
 
 @views_bp.route("/releases/<int:release_id>/score-risks", methods=["POST"])
