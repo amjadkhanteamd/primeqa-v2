@@ -16,7 +16,12 @@ from sqlalchemy import event
 
 log = logging.getLogger("primeqa.obs")
 
-SLOW_QUERY_MS = 300
+# Railway remote Postgres has ~400\u2013500 ms RTT per query. Logging anything
+# above 300 ms drowns the log in normal Railway latency. 800 ms flags
+# queries that are genuinely slow (bad plan, missing index, N+1) without
+# the floor noise. Override via PRIMEQA_SLOW_QUERY_MS env var.
+import os as _os
+SLOW_QUERY_MS = int(_os.getenv("PRIMEQA_SLOW_QUERY_MS", "800"))
 RECENT_WINDOW = 500  # rolling window size for p50/p95
 
 

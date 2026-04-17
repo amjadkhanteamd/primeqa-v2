@@ -42,7 +42,7 @@
       </div>
     </div>
     {% if r.project_key %}
-    <div class="mt-0.5 text-xs text-gray-400 pl-8">{{ r.project_key }}{% if r.project_name and r.project_name != r.project_key %} \u2014 {{ r.project_name }}{% endif %}</div>
+    <div class="mt-0.5 text-xs text-gray-400 pl-8">{{ r.project_key }}{% if r.project_name and r.project_name != r.project_key %} &mdash; {{ r.project_name }}{% endif %}</div>
     {% endif %}
   </li>
   {% endfor %}

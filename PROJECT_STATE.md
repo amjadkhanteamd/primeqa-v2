@@ -35,12 +35,12 @@ Production-grade UX across every test-management entity:
   fixed a latent `TestManagementService.__init__` bug
 - Bulk-op safeguards (100-item cap, typed-DELETE confirmation)
 - `primeqa/shared/` package: `query_builder`, `api`, `observability` (p50/p95
-  latency + slow-query log at 300 ms, exposed at `/api/_internal/health`)
+  latency + slow-query log at 800 ms (tunable via `PRIMEQA_SLOW_QUERY_MS`; default sits above Railway's ~400\u2013500 ms RTT), exposed at `/api/_internal/health`)
 - UI: pagination / toast / confirm-modal / breadcrumbs components; JS helpers
   (`toast.js`, `confirm.js`, `unsaved_changes.js`); library + detail + edit
   pages rewritten across all entities.
 
-### Run Experience (R1–R6) — shipped
+### Run Experience (R1–R7) — shipped
 
 | Phase | Commit | Scope |
 |---|---|---|
@@ -50,9 +50,26 @@ Production-grade UX across every test-management entity:
 | R4 | `452eb33` | `scheduled_runs` table (suites only per Q5), presets + advanced cron toggle, scheduler tick, dead-man's switch, `/runs/scheduled` UI |
 | R5 | `479e483` | `agent_fix_attempts` ledger, deterministic triage + LLM proposer, sandbox auto-apply gate at trust-band high, snapshot-based revert, release status respects `agent_verdict_counts` |
 | R6 | `82d0a1e` | Notification dispatch stub, flake quarantine with auto-tag, `/runs/:id/rerun-failed`, `/runs/:id/compare` against last green |
+| **R7** | **`8316317`** | **Jira ticket picker: searchable multi-select with chips + 8 s TTL cache, dual-mode `/api/jira/search` (HTML fragment + JSON), `POST /api/runs/preview` (read-only resolver reuse), sticky live selection summary bar. Replaces CSV issue-key input.** |
 
-**46 new tests across R1–R6, all passing against Railway DB.** Full plan and
+**56 new tests across R1–R7, all passing against Railway DB.** Full plan and
 decision ledger in `docs/design/run-experience.md`.
+
+### Self-Validation Suite (`a9da9d3`) — shipped
+
+JSON-driven, workflow-level end-to-end suite that exercises PrimeQA through
+its own HTTP surface. Motto: **"run PrimeQA on PrimeQA"** before every deploy.
+
+- `primeqa/system_validation/` — runner + step grammar (http / verify / save /
+  login / wait / assert_db) with `$var` substitution, dotted/list-indexed paths,
+  `$uuid` for idempotency
+- `primeqa/system_validation/suites/primeqa_core.json` — canonical 8-category
+  suite (Requirements, Test Library, Run Flow, Jira, **Preview — the canary**,
+  Metadata, Agent, UI Navigation)
+- `tests/test_system_validation.py` — runner unit tests + drives the canonical
+  suite: currently **13 passed, 0 failed, 3 skipped (with documented reasons),
+  16 total**
+- Design + roadmap in `docs/design/system-validation.md`
 
 ---
 
@@ -100,14 +117,16 @@ release_test_plan_items, release_runs, release_decisions *(+
 - **022**: `agent_fix_attempts`
 - **023**: `test_cases.is_quarantined` + quarantine metadata
 
-## API Endpoints (~130)
+## API Endpoints (~135)
 
 **Run Wizard / Preview / SSE**:
 - `GET /api/runs/:id/events` — SSE live step timeline (R1)
 - `GET /api/metadata/:mv/sync-events` — SSE metadata sync progress (R3)
 - `GET /api/metadata/:env/sync-status` — per-category status (R3)
 - `POST /api/metadata/:env/refresh` — optional `categories[]` selection (R3)
-- `GET /api/jira/:conn/projects | /projects/:key/boards | /boards/:id/sprints` — Jira picker (R1)
+- `GET /api/jira/:conn/projects | /projects/:key/boards | /boards/:id/sprints` — drill-down picker (R1, now Advanced)
+- **`GET /api/jira/search?env_id=X&q=Y[&format=json]`** — ticket-level search with 8 s TTL cache, HTML fragment or JSON (R7)
+- **`POST /api/runs/preview`** — read-only resolver: `{test_case_count, requirement_count, missing_jira_keys, warnings, summary_text, over_soft_cap, over_hard_cap}` (R7)
 - `GET /api/_internal/health` — p50/p95 latency + error-rate counters
 
 **Scheduled runs**: `/runs/scheduled` + CRUD views, scheduler-driven fire
@@ -150,13 +169,15 @@ release, CI/CD).
 | `admin` | baseline | + connections, environments, groups, users, purge |
 | **`superadmin`** | R2 | god-mode: cost visibility, agent autonomy config, raw LLM prompts, pre-flight override, excluded from 20-user cap. Seeded per tenant (`admin@primeqa.io` promoted on migration 017). |
 
-## Tests (~155 passing across 12 suites)
+## Tests (~170 passing across 17 suites)
 - test_auth (15), test_environments (14), test_metadata (10)
 - test_management (23), test_hardening (17)
 - test_pipeline (12), test_executor (15), test_cleanup (9)
 - test_intelligence (11)
-- **test_run_experience (14), test_r2_superadmin (7), test_r3_metadata (6),
-  test_r4_schedule (7), test_r5_agent (7), test_r6_polish (5)**
+- test_run_experience (14), test_r2_superadmin (7), test_r3_metadata (6),
+  test_r4_schedule (7), test_r5_agent (7), test_r6_polish (5)
+- **test_r7_jira_picker (10)** — search JQL, TTL cache, dual-mode endpoint, preview
+- **test_system_validation (4 + 13 suite outcomes)** — canonical self-validation suite
 
 ---
 

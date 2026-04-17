@@ -118,20 +118,22 @@
 
           <!-- Search input (HTMX to /api/jira/search) -->
           <div class="relative">
-            <input id="jira-search" type="text" autocomplete="off"
-                   placeholder="Search Jira tickets by key or summary\u2026"
+            <input id="jira-search" name="q" type="text" autocomplete="off"
+                   placeholder="Search Jira tickets by key or summary&hellip;"
                    class="block w-full rounded-md border border-gray-300 pl-9 pr-3 py-2 text-sm focus:border-indigo-500 focus:ring-indigo-500"
                    hx-get="/api/jira/search"
-                   hx-trigger="keyup changed delay:300ms, focus"
+                   hx-trigger="load, keyup changed delay:300ms, focus"
                    hx-target="#jira-results"
                    hx-swap="innerHTML"
                    hx-indicator="#jira-search-indicator"
-                   hx-vals='js:{env_id: document.querySelector("select[name=environment_id]").value, q: event.target.value}'>
+                   hx-include="select[name=environment_id]">
             <svg class="absolute left-3 top-2.5 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
-            <span id="jira-search-indicator" class="htmx-indicator absolute right-3 top-2.5 text-xs text-gray-500">loading\u2026</span>
+            <span id="jira-search-indicator" class="htmx-indicator absolute right-3 top-2.5 text-xs text-gray-500">loading&hellip;</span>
           </div>
 
-          <div id="jira-results" class="border border-gray-200 rounded-md bg-white"></div>
+          <div id="jira-results" class="border border-gray-200 rounded-md bg-white min-h-[3rem]">
+            <div class="px-3 py-2 text-xs text-gray-500 italic">Type at least 2 characters&hellip;</div>
+          </div>
 
           <!-- Advanced: the legacy drill-down + JQL / epic (kept for power users) -->
           {% if jira_connections %}

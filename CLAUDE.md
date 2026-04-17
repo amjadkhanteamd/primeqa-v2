@@ -42,9 +42,11 @@ primeqa/                       # Main package
 │                              # generation (AI), risk_engine, fix-and-rerun agent
 ├── release/                   # Release model, decision_engine, CI webhooks
 ├── runs/                      # Run Wizard, Preflight, SSE streams, cost forecast,
-│                              # scheduled runs
+│                              # scheduled runs, Jira search client + cache
 ├── shared/                    # query_builder, api envelope, observability,
 │                              # notifications dispatch
+├── system_validation/         # JSON-driven self-validation suite runner + grammar
+│   └── suites/primeqa_core.json   # the canonical 8-category E2E suite
 ├── vector/                    # Embeddings (pgvector)
 ├── static/                    # Shared JS/CSS (toast, confirm, unsaved-changes)
 └── templates/                 # Jinja2 HTML templates
@@ -67,25 +69,52 @@ tests/                         # Integration test files
 
 - `query_builder.ListQuery` — pagination/search/sort/filter with hard 50/page cap and sort-field whitelist
 - `api.json_page` / `json_error` — uniform `{data, meta}` + `{error:{code,message}}` envelopes
-- `observability` — request timing, SQLAlchemy slow-query log at 300 ms, counters at `GET /api/_internal/health`
+- `observability` — request timing, SQLAlchemy slow-query log at 800 ms (tunable via `PRIMEQA_SLOW_QUERY_MS`; default threshold sits above Railway's ~400\u2013500 ms RTT floor), counters at `GET /api/_internal/health`
 - `notifications` — stable `notify_*` API; log-only provider today (NOTIFICATIONS_PROVIDER env var flips it)
 
-## The Run Experience (R1–R6 shipped)
+## The Run Experience (R1–R7 shipped)
 
 ```
-1. Run Wizard (/runs/new) — mix Jira (project/sprint/JQL/epic) + suites + sections + requirements + hand-picks
-2. Preflight (primeqa/runs/preflight.py) — credentials, metadata freshness, per-test skip by metadata category, size caps (soft 100 / hard 500 with superadmin OVERRIDE)
-3. Preview (/runs/new/preview) — org, LLM, meta version, ETA, cost (superadmin only), warnings, per-test skip list
-4. Queue pipeline_run; SSE streams step_started / step_finished / run_status events
-5. On step failure: AgentOrchestrator triages (pattern DB + taxonomy regex), proposes a fix (LLM), gates on env_type != production AND confidence ≥ High threshold
-6. Auto-apply on sandbox creates new TestCaseVersion, reruns with parent_run_id
-7. UI shows Agent fixes tab with Accept / Revert / Edit
-8. Scheduler cron fires scheduled_runs (suites only in v1)
-9. Flake scorer auto-quarantines chronically flipping tests
-10. /api/releases/:id/status honors agent_verdict_counts per release
+1. Run Wizard (/runs/new) — Jira ticket search (chips + live preview) + suites + sections + requirements + hand-picks
+2. As the user types in the Jira box, GET /api/jira/search hits the env's
+   Jira connection, caches for 8 s, returns an HTMX fragment with status +
+   issue type + project; click / Enter adds a chip
+3. Every chip change debounced-fires POST /api/runs/preview (read-only
+   RunWizardResolver) updating the sticky "N Jira tickets, M suites → K
+   test cases" summary bar
+4. Clicking Preview goes to /runs/new/preview: Preflight checks
+   (credentials, metadata freshness, per-test skip by metadata category,
+   size caps 100/500 with superadmin OVERRIDE), cost (superadmin only),
+   per-test skip list
+5. Queue pipeline_run; SSE streams step_started / step_finished /
+   run_status events
+6. On step failure: AgentOrchestrator triages (pattern DB + taxonomy
+   regex), proposes a fix (LLM), gates on env_type != production AND
+   confidence ≥ High threshold
+7. Auto-apply on sandbox creates new TestCaseVersion, reruns with
+   parent_run_id
+8. UI shows Agent fixes tab with Accept / Revert / Edit
+9. Scheduler cron fires scheduled_runs (suites only in v1)
+10. Flake scorer auto-quarantines chronically flipping tests
+11. /api/releases/:id/status honors agent_verdict_counts per release
 ```
 
 Full decision ledger and architecture in `docs/design/run-experience.md`.
+
+## Self-Validation Suite
+
+PrimeQA runs itself via a JSON-driven E2E suite — the canonical artifact
+is at `primeqa/system_validation/suites/primeqa_core.json`. Grammar is
+documented in `docs/design/system-validation.md`. Run with:
+
+```bash
+python tests/test_system_validation.py
+```
+
+The suite covers 8 workflow categories (Requirements, Test Library, Run
+Flow, Jira, Preview, Metadata, Agent, UI Nav) and is authorable by
+non-engineers or LLMs. Roadmap: ingest the JSON back into the
+`test_cases` table so PrimeQA stores and runs tests of itself.
 
 ## Key commands
 ```bash
@@ -109,7 +138,9 @@ python tests/test_r3_metadata.py         # 6  (R3)
 python tests/test_r4_schedule.py         # 7  (R4)
 python tests/test_r5_agent.py            # 7  (R5)
 python tests/test_r6_polish.py           # 5  (R6)
-# ~155 total
+python tests/test_r7_jira_picker.py      # 10 (R7 Jira chip picker)
+python tests/test_system_validation.py   # 4 runner + 13 canonical suite outcomes
+# ~170 total
 
 # Deploy
 git push origin main                     # Railway auto-deploys 3 services

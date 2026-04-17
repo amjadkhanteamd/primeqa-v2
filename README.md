@@ -18,8 +18,9 @@ https://primeqa-v2-production.up.railway.app — login `admin@primeqa.io` / `cha
 6. **Risk scoring** ranks impacts and test plan by blast radius + criticality
 7. **Test Data Engine** provides reusable templates and generative factories
 8. **BA review** workflow with inline per-step comments; low-confidence AI tests auto-assigned
-9. **Unified Run Wizard**: mix Jira projects/sprints/epics/JQL with PrimeQA suites/sections/requirements/hand-picked tests in a single run
-10. **Pre-flight checks** before queuing: credentials, metadata freshness, per-test metadata-stale skip, run-size caps, prod-safety
+9. **Unified Run Wizard** with **searchable Jira ticket picker** — type-to-search with chips, HTMX-driven, 8 s TTL cache, status/type/project badges; plus PrimeQA suites/sections/requirements/hand-picked tests in a single run
+10. **Live selection summary** — sticky pill showing "N Jira tickets, M suites → K test cases" that updates via `POST /api/runs/preview` on every chip change
+11. **Pre-flight checks** before queuing: credentials, metadata freshness, per-test metadata-stale skip, run-size caps, prod-safety
 11. **Live execution** — SSE-powered timeline updates per step; per-step request/response, SOQL, LLM payload capture
 12. **Scheduled runs** — full cron (presets + advanced) for test suites with dead-man's-switch alerting
 13. **Fix-and-rerun agent** — on failure, triages the error, proposes a fix, auto-applies on sandbox at high confidence (production is always human-gated). Snapshot-based revert.
@@ -41,8 +42,9 @@ https://primeqa-v2-production.up.railway.app — login `admin@primeqa.io` / `cha
 - `vector/` — embeddings (pgvector)
 
 Plus cross-cutting:
-- `runs/` — Run Wizard, Preflight, SSE streams, cost forecaster, scheduled runs
+- `runs/` — Run Wizard, Preflight, SSE streams, cost forecaster, scheduled runs, Jira client + TTL cache
 - `shared/` — ListQuery, API envelope, observability, notifications
+- `system_validation/` — JSON-driven self-validation suite (PrimeQA tests PrimeQA)
 
 3 Railway services from one codebase: `web` (Flask + gunicorn), `worker`
 (pipeline processor), `scheduler` (reaper + dead-man's switch + cron firer).
@@ -63,7 +65,8 @@ tenant, excluded from the 20-user cap).
 ## Documentation
 - `CLAUDE.md` — project context for Claude Code / AI agents
 - `PROJECT_STATE.md` — current build progress, database tables, endpoints, pages
-- `docs/design/run-experience.md` — R1–R6 design doc with Q1–Q14 decision ledger
+- `docs/design/run-experience.md` — R1–R7 design doc with Q1–Q14 decision ledger
+- `docs/design/system-validation.md` — self-validation step grammar + canonical suite roadmap
 - `PRIMEQA_ARCHITECTURE_SPEC_v2.2.md` — original architecture spec
 - `PRIMEQA_BUILD_PLAN.md` — original build plan
 
