@@ -20,14 +20,14 @@ REAPER_INTERVAL = 60
 
 
 def create_scheduler_context():
-    from primeqa.db import init_db, SessionLocal
+    from primeqa import db as dbmod
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
         raise RuntimeError("DATABASE_URL not set")
     if database_url.startswith("postgres://"):
         database_url = database_url.replace("postgres://", "postgresql://", 1)
-    init_db(database_url)
-    db = SessionLocal()
+    dbmod.init_db(database_url)
+    db = dbmod.SessionLocal()
     from primeqa.execution.repository import (
         PipelineRunRepository, PipelineStageRepository,
         ExecutionSlotRepository, WorkerHeartbeatRepository,
