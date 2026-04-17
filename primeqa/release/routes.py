@@ -197,10 +197,17 @@ def finalize_decision(release_id, decision_id):
 
 @release_bp.route("/api/releases/<int:release_id>/status", methods=["GET"])
 def public_release_status(release_id):
-    """Public endpoint for CI/CD to poll release decision status."""
+    """Public endpoint for CI/CD to poll release decision status.
+
+    R5 / Q3: if the latest decision has `agent_verdict_counts=true` (default),
+    CI sees the post-agent result (which may flip red\u2192green after the agent
+    auto-fixed and rerun passed). If false, CI sees the pre-agent (raw human)
+    verdict. Super Admin can toggle per release in the release detail page.
+    """
     db = next(get_db())
     try:
-        from primeqa.release.models import Release, ReleaseDecision
+        from primeqa.release.models import Release, ReleaseDecision, ReleaseRun
+        from primeqa.execution.models import PipelineRun
         from sqlalchemy import desc
         release = db.query(Release).filter(Release.id == release_id).first()
         if not release:
@@ -208,6 +215,21 @@ def public_release_status(release_id):
         latest = db.query(ReleaseDecision).filter(
             ReleaseDecision.release_id == release_id,
         ).order_by(desc(ReleaseDecision.created_at)).first()
+
+        # Compute post-agent rolled-up stats if there have been agent reruns.
+        # When `agent_verdict_counts=false` we ignore agent-triggered reruns
+        # and only reflect the original (parent_run_id IS NULL) runs.
+        agent_counts = True if latest is None else bool(latest.agent_verdict_counts)
+        q = db.query(PipelineRun).join(
+            ReleaseRun, ReleaseRun.pipeline_run_id == PipelineRun.id,
+        ).filter(ReleaseRun.release_id == release_id)
+        if not agent_counts:
+            q = q.filter(PipelineRun.parent_run_id.is_(None))
+        runs = q.all()
+        passed = sum(r.passed or 0 for r in runs)
+        failed = sum(r.failed or 0 for r in runs)
+        total  = sum(r.total_tests or 0 for r in runs)
+
         return jsonify({
             "release_id": release_id,
             "name": release.name,
@@ -216,6 +238,9 @@ def public_release_status(release_id):
             "final_decision": latest.final_decision if latest else None,
             "confidence": latest.confidence if latest else None,
             "decided_at": latest.decided_at.isoformat() if latest and latest.decided_at else None,
+            "agent_verdict_counts": agent_counts,
+            "rollup": {"passed": passed, "failed": failed, "total": total,
+                       "runs_counted": len(runs)},
         }), 200
     finally:
         db.close()

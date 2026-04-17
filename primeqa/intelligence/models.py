@@ -56,6 +56,52 @@ class ExplanationRequest(Base):
     )
 
 
+class AgentFixAttempt(Base):
+    """One row per agent triage/fix proposal (R5).
+
+    Forms the audit log for the Agent fixes tab on run detail, the ledger
+    for Revert/Accept/Edit decisions, and the training corpus for the
+    next-generation agent.
+    """
+    __tablename__ = "agent_fix_attempts"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("pipeline_runs.id", ondelete="CASCADE"),
+                    nullable=False)
+    test_case_id = Column(Integer, ForeignKey("test_cases.id", ondelete="CASCADE"),
+                          nullable=False)
+    run_test_result_id = Column(Integer, ForeignKey("run_test_results.id",
+                                                    ondelete="SET NULL"))
+    run_step_result_id = Column(Integer, ForeignKey("run_step_results.id",
+                                                    ondelete="SET NULL"))
+    failure_class = Column(String(40))
+    pattern_id = Column(Integer, ForeignKey("failure_patterns.id",
+                                            ondelete="SET NULL"))
+    root_cause_summary = Column(Text)
+    confidence = Column(Float)
+    trust_band = Column(String(10))
+    proposed_fix_type = Column(String(40))
+    before_state = Column(JSON)
+    after_state = Column(JSON)
+    auto_applied = Column(Boolean, nullable=False, server_default="false")
+    rerun_run_id = Column(Integer, ForeignKey("pipeline_runs.id",
+                                              ondelete="SET NULL"))
+    rerun_outcome = Column(String(20))
+    user_decision = Column(String(20))
+    decided_at = Column(DateTime(timezone=True))
+    decided_by = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime(timezone=True), nullable=False,
+                        server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("trust_band IS NULL OR trust_band IN ('high','medium','low')",
+                        name="afa_trust_band_ck"),
+        CheckConstraint("user_decision IS NULL OR user_decision IN "
+                        "('accepted','reverted','edited')",
+                        name="afa_user_decision_ck"),
+    )
+
+
 class FailurePattern(Base):
     __tablename__ = "failure_patterns"
 

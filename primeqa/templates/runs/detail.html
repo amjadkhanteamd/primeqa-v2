@@ -66,6 +66,73 @@
     {% endif %}
   </div>
 
+  <!-- Agent fixes (R5) ------------------------------------------------- -->
+  {% if agent_fixes %}
+  <div class="bg-white shadow rounded-lg">
+    <div class="px-4 py-4 border-b flex items-center justify-between">
+      <h3 class="text-lg font-medium">Agent fixes <span class="ml-2 text-xs text-gray-500">({{ agent_fixes | length }})</span></h3>
+      <span class="text-xs text-gray-500">Per Q12 trust bands: auto-apply only on sandbox at high confidence</span>
+    </div>
+    <div class="divide-y divide-gray-200">
+      {% for f in agent_fixes %}
+      <div class="px-6 py-4">
+        <div class="flex items-start justify-between">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center space-x-2">
+              <span class="text-sm font-medium">Test #{{ f.test_case_id }}</span>
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                {% if f.trust_band == 'high' %}bg-green-100 text-green-800
+                {% elif f.trust_band == 'medium' %}bg-yellow-100 text-yellow-800
+                {% else %}bg-gray-100 text-gray-700{% endif %}">
+                {{ f.trust_band or 'n/a' }} &middot; {{ (f.confidence or 0) | round(2) }}
+              </span>
+              <span class="text-xs text-gray-500 font-mono">{{ f.failure_class or 'unknown' }}</span>
+              {% if f.proposed_fix_type %}<span class="text-xs text-gray-500">{{ f.proposed_fix_type }}</span>{% endif %}
+              {% if f.auto_applied %}<span class="text-xs text-indigo-600 font-medium">auto-applied</span>{% endif %}
+              {% if f.rerun_run_id %}<span class="text-xs"><a href="/runs/{{ f.rerun_run_id }}" class="text-indigo-600 hover:underline">rerun #{{ f.rerun_run_id }}</a></span>{% endif %}
+              {% if f.rerun_outcome %}<span class="text-xs {% if f.rerun_outcome == 'passed' %}text-green-600{% elif f.rerun_outcome == 'failed' %}text-red-600{% else %}text-gray-500{% endif %}">{{ f.rerun_outcome }}</span>{% endif %}
+            </div>
+            {% if f.root_cause_summary %}
+            <p class="mt-1 text-sm text-gray-700">{{ f.root_cause_summary }}</p>
+            {% endif %}
+            {% if f.user_decision %}
+            <p class="mt-1 text-xs text-gray-500">User decision: <span class="font-medium">{{ f.user_decision }}</span>{% if f.decided_at %} at {{ f.decided_at[:19] }}{% endif %}</p>
+            {% endif %}
+          </div>
+          {% if not f.user_decision and f.auto_applied %}
+          <div class="flex space-x-2 ml-4">
+            <form method="POST" action="/runs/agent-fixes/{{ f.id }}/accept" class="inline">
+              <button type="submit" class="rounded-md bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-500">Accept</button>
+            </form>
+            <form method="POST" action="/runs/agent-fixes/{{ f.id }}/revert" class="inline"
+                  onsubmit="return confirm('Revert this fix? The before-state snapshot will be restored.')">
+              <button type="submit" class="rounded-md bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-500">Revert</button>
+            </form>
+            <a href="/test-cases/{{ f.test_case_id }}/edit" class="rounded-md bg-white px-3 py-1 text-xs font-medium text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Edit</a>
+          </div>
+          {% endif %}
+        </div>
+        {% if user.role == 'superadmin' and f.before_state %}
+        <details class="mt-2 text-xs">
+          <summary class="cursor-pointer text-gray-500">Before / after snapshot (super admin)</summary>
+          <div class="mt-2 grid grid-cols-2 gap-3">
+            <div>
+              <p class="text-xs text-gray-500">Before</p>
+              <pre class="text-xs bg-gray-50 border border-gray-200 rounded p-2 overflow-x-auto max-h-60">{{ f.before_state | tojson(indent=2) }}</pre>
+            </div>
+            <div>
+              <p class="text-xs text-gray-500">After</p>
+              <pre class="text-xs bg-gray-50 border border-gray-200 rounded p-2 overflow-x-auto max-h-60">{{ f.after_state | tojson(indent=2) }}</pre>
+            </div>
+          </div>
+        </details>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   <!-- Source provenance (what was requested) -->
   {% if run.source_refs %}
   <details class="bg-white shadow rounded-lg">

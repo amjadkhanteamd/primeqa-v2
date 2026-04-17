@@ -126,6 +126,9 @@ class ReleaseDecision(Base):
     decided_by = Column(Integer, ForeignKey("users.id"))
     decided_at = Column(DateTime(timezone=True))
     override_reason = Column(Text)
+    # R5 / Q3: when true (default), CI-facing /status reflects the post-agent
+    # verdict. Super Admin can flip per release if pre-agent truth is required.
+    agent_verdict_counts = Column(Boolean, nullable=False, server_default="true")
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     release = relationship("Release", back_populates="decisions")

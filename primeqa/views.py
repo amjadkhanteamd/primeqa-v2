@@ -444,6 +444,27 @@ def runs_detail(run_id):
             "source_refs": run.source_refs or {},
             "parent_run_id": run.parent_run_id,
         }
+
+        # R5: agent fixes for this run
+        from primeqa.intelligence.models import AgentFixAttempt
+        agent_fixes = db.query(AgentFixAttempt).filter(
+            AgentFixAttempt.run_id == run.id,
+        ).order_by(AgentFixAttempt.created_at.desc()).all()
+        agent_fixes_data = [{
+            "id": f.id, "test_case_id": f.test_case_id,
+            "failure_class": f.failure_class,
+            "root_cause_summary": f.root_cause_summary,
+            "confidence": float(f.confidence) if f.confidence is not None else None,
+            "trust_band": f.trust_band,
+            "proposed_fix_type": f.proposed_fix_type,
+            "before_state": f.before_state,
+            "after_state": f.after_state,
+            "auto_applied": f.auto_applied,
+            "rerun_run_id": f.rerun_run_id,
+            "rerun_outcome": f.rerun_outcome,
+            "user_decision": f.user_decision,
+            "decided_at": f.decided_at.isoformat() if f.decided_at else None,
+        } for f in agent_fixes]
         stages_data = [{"stage_name": s.stage_name, "status": s.status} for s in stages]
         results_data = []
         for r in results:
@@ -457,6 +478,7 @@ def runs_detail(run_id):
             })
         return render_template("runs/detail.html", **ctx(
             active_page="runs", run=run_data, stages=stages_data, results=results_data,
+            agent_fixes=agent_fixes_data,
         ))
     finally:
         db.close()
@@ -1813,6 +1835,44 @@ def settings_general():
             tenant=tenant_data, setup_complete=setup_complete,
             stats={"connections": conn_count, "environments": env_count, "groups": group_count},
         ))
+    finally:
+        db.close()
+
+
+# Agent fix user decisions (R5) --------------------------------------------
+
+@views_bp.route("/runs/agent-fixes/<int:fix_id>/accept", methods=["POST"])
+@role_required("admin", "tester", "ba")
+def agent_fix_accept(fix_id):
+    from flask import flash
+    from primeqa.intelligence.agent import AgentOrchestrator
+    db = next(get_db())
+    try:
+        orch = AgentOrchestrator(db)
+        ok = orch.accept(fix_id, request.user["tenant_id"], request.user["id"])
+        flash("Fix accepted" if ok else "Could not accept (not found)", "success" if ok else "error")
+        # Return to originating run
+        from primeqa.intelligence.models import AgentFixAttempt
+        row = db.query(AgentFixAttempt).filter_by(id=fix_id).first()
+        return redirect(f"/runs/{row.run_id}" if row else "/runs")
+    finally:
+        db.close()
+
+
+@views_bp.route("/runs/agent-fixes/<int:fix_id>/revert", methods=["POST"])
+@role_required("admin", "tester", "ba")
+def agent_fix_revert(fix_id):
+    from flask import flash
+    from primeqa.intelligence.agent import AgentOrchestrator
+    db = next(get_db())
+    try:
+        orch = AgentOrchestrator(db)
+        ok = orch.revert(fix_id, request.user["tenant_id"], request.user["id"])
+        flash("Fix reverted; before-state restored" if ok else "Revert failed",
+              "success" if ok else "error")
+        from primeqa.intelligence.models import AgentFixAttempt
+        row = db.query(AgentFixAttempt).filter_by(id=fix_id).first()
+        return redirect(f"/runs/{row.run_id}" if row else "/runs")
     finally:
         db.close()
 
