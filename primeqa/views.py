@@ -630,13 +630,32 @@ def environments_refresh_metadata(env_id):
         if not conn_data:
             flash("Connection not found", "error")
             return redirect(f"/environments/{env_id}")
-        # Store credentials on environment from connection for metadata service
+        # Do OAuth flow to get a fresh access token
+        import requests as http_requests
         cfg = conn_data["config"]
+        login_url = cfg.get("instance_url", "").rstrip("/")
+        if not login_url:
+            org_type = cfg.get("org_type", "sandbox")
+            login_url = "https://test.salesforce.com" if org_type == "sandbox" else "https://login.salesforce.com"
+        token_body = {"client_id": cfg.get("client_id", ""), "client_secret": cfg.get("client_secret", "")}
+        if cfg.get("auth_flow") == "password":
+            token_body["grant_type"] = "password"
+            token_body["username"] = cfg.get("username", "")
+            token_body["password"] = cfg.get("password", "")
+        else:
+            token_body["grant_type"] = "client_credentials"
+        token_resp = http_requests.post(f"{login_url}/services/oauth2/token", data=token_body, timeout=15)
+        if token_resp.status_code != 200:
+            flash(f"OAuth failed: {token_resp.text[:300]}", "error")
+            return redirect(f"/environments/{env_id}")
+        token_data = token_resp.json()
+        access_token = token_data.get("access_token", "")
+        # Store fresh token on environment credentials
         env_repo.store_credentials(
             env_id,
             client_id=cfg.get("client_id", ""),
             client_secret=cfg.get("client_secret", ""),
-            access_token=cfg.get("access_token", ""),
+            access_token=access_token,
         )
         meta_repo = MetadataRepository(db)
         meta_svc = MetadataService(meta_repo, env_repo)
