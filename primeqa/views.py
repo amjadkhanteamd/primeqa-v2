@@ -1690,6 +1690,27 @@ def releases_create():
         db.close()
 
 
+@views_bp.route("/releases/<int:release_id>/score-risks", methods=["POST"])
+@role_required("admin", "tester")
+def releases_score_risks(release_id):
+    from flask import flash
+    from primeqa.intelligence.risk_engine import RiskEngine
+    db = next(get_db())
+    try:
+        release = ReleaseRepository(db).get_release(release_id, request.user["tenant_id"])
+        if not release:
+            return redirect("/releases")
+        engine = RiskEngine(db)
+        impact_count = engine.score_all_release_impacts(release_id)
+        plan_count = engine.rank_release_test_plan(release_id)
+        flash(f"Scored {impact_count} impacts, ranked {plan_count} test plan items", "success")
+    except Exception as e:
+        flash(f"Risk scoring failed: {e}", "error")
+    finally:
+        db.close()
+    return redirect(f"/releases/{release_id}")
+
+
 @views_bp.route("/releases/<int:release_id>")
 @login_required
 def releases_detail(release_id):
