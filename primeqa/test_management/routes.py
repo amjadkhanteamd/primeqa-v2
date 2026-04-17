@@ -503,6 +503,31 @@ def resolve_impact(impact_id):
         db.close()
 
 
+# --- Test Case Run History ---
+
+@test_management_bp.route("/api/test-cases/<int:tc_id>/runs", methods=["GET"])
+@require_auth
+def test_case_run_history(tc_id):
+    db = next(get_db())
+    try:
+        from primeqa.execution.models import RunTestResult, PipelineRun
+        results = db.query(RunTestResult).join(
+            PipelineRun, RunTestResult.run_id == PipelineRun.id,
+        ).filter(
+            RunTestResult.test_case_id == tc_id,
+            PipelineRun.tenant_id == request.user["tenant_id"],
+        ).order_by(RunTestResult.executed_at.desc()).limit(20).all()
+        return jsonify([{
+            "id": r.id, "run_id": r.run_id, "status": r.status,
+            "failure_type": r.failure_type, "failure_summary": r.failure_summary,
+            "duration_ms": r.duration_ms, "passed_steps": r.passed_steps,
+            "failed_steps": r.failed_steps, "total_steps": r.total_steps,
+            "executed_at": r.executed_at.isoformat() if r.executed_at else None,
+        } for r in results]), 200
+    finally:
+        db.close()
+
+
 # --- Step Schema + Metadata Lookup ---
 
 @test_management_bp.route("/api/step-schema", methods=["GET"])

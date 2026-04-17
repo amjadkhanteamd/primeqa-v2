@@ -12,6 +12,9 @@
             </div>
         </div>
         <div class="flex space-x-3">
+            {% if user.role in ['admin', 'tester'] and environments %}
+            <button onclick="document.getElementById('run-modal').classList.remove('hidden')" class="rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-500">▶ Run</button>
+            {% endif %}
             {% if user.role in ['admin', 'tester'] %}
             <a href="/test-cases/{{ tc.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit Steps</a>
             {% endif %}
@@ -22,6 +25,34 @@
             {% endif %}
         </div>
     </div>
+
+    {% if environments %}
+    <!-- Run Modal -->
+    <div id="run-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+        <div class="flex min-h-full items-center justify-center p-4">
+            <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('run-modal').classList.add('hidden')"></div>
+            <div class="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+                <h3 class="text-lg font-medium text-gray-900 mb-4">Run Test Case</h3>
+                <form method="POST" action="/test-cases/{{ tc.id }}/run" class="space-y-4">
+                    <div><label class="block text-sm font-medium text-gray-700">Environment</label>
+                        <select name="environment_id" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                            {% for e in environments %}<option value="{{ e.id }}">{{ e.name }}</option>{% endfor %}
+                        </select></div>
+                    <div><label class="block text-sm font-medium text-gray-700">Priority</label>
+                        <select name="priority" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                            <option value="normal">Normal</option>
+                            <option value="high">High</option>
+                            <option value="critical">Critical</option>
+                        </select></div>
+                    <div class="flex justify-end space-x-3">
+                        <button type="button" onclick="document.getElementById('run-modal').classList.add('hidden')" class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700">Cancel</button>
+                        <button type="submit" class="rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-500">Run Now</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 
     {% if current_version %}
     <div class="bg-white shadow rounded-lg p-6">
@@ -49,6 +80,33 @@
         {% else %}
         <p class="text-sm text-gray-500">No steps defined</p>
         {% endif %}
+    </div>
+    {% endif %}
+
+    {% if run_history %}
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-4 py-5 sm:px-6 border-b flex justify-between items-center">
+            <h3 class="text-lg font-medium">Run History</h3>
+            <span class="text-xs text-gray-500">Last {{ run_history|length }} runs</span>
+        </div>
+        <div class="divide-y divide-gray-200">
+            {% for r in run_history %}
+            <a href="/runs/{{ r.run_id }}" class="block px-6 py-3 hover:bg-gray-50">
+                <div class="flex justify-between items-center">
+                    <div class="flex items-center space-x-3">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                            {% if r.status == 'passed' %}bg-green-100 text-green-800
+                            {% elif r.status == 'failed' %}bg-red-100 text-red-800
+                            {% elif r.status == 'error' %}bg-orange-100 text-orange-800
+                            {% else %}bg-gray-100 text-gray-800{% endif %}">{{ r.status }}</span>
+                        <span class="text-sm text-gray-700">Run #{{ r.run_id }}</span>
+                        {% if r.failure_summary %}<span class="text-xs text-red-500">{{ r.failure_summary[:60] }}</span>{% endif %}
+                    </div>
+                    <span class="text-xs text-gray-500">{{ r.executed_at[:19] if r.executed_at else '' }}</span>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
     </div>
     {% endif %}
 

@@ -332,9 +332,29 @@ def test_cases_detail(tc_id):
             "created_at": v.created_at.isoformat() if v.created_at else "",
         } for v in versions]
 
+        # Run history
+        from primeqa.execution.models import RunTestResult, PipelineRun
+        run_results = db.query(RunTestResult).join(
+            PipelineRun, RunTestResult.run_id == PipelineRun.id,
+        ).filter(
+            RunTestResult.test_case_id == tc_id,
+            PipelineRun.tenant_id == request.user["tenant_id"],
+        ).order_by(RunTestResult.executed_at.desc()).limit(10).all()
+        run_history = [{
+            "id": r.id, "run_id": r.run_id, "status": r.status,
+            "failure_summary": r.failure_summary, "duration_ms": r.duration_ms,
+            "executed_at": r.executed_at.isoformat() if r.executed_at else "",
+        } for r in run_results]
+
+        # Available environments
+        envs = EnvironmentRepository(db).list_environments(
+            request.user["tenant_id"], request.user["id"], request.user["role"],
+        )
+        envs_data = [{"id": e.id, "name": e.name} for e in envs]
+
         return render_template("test_cases/detail.html", **ctx(
             active_page="test_cases", tc=tc_data, current_version=cv_data,
-            versions=versions_data,
+            versions=versions_data, run_history=run_history, environments=envs_data,
         ))
     finally:
         db.close()
@@ -350,6 +370,39 @@ def test_cases_share(tc_id):
         tc = tc_repo.get_test_case(tc_id, request.user["tenant_id"])
         if tc and tc.owner_id == request.user["id"]:
             tc_repo.update_test_case(tc_id, request.user["tenant_id"], {"visibility": "shared"})
+        return redirect(f"/test-cases/{tc_id}")
+    finally:
+        db.close()
+
+
+@views_bp.route("/test-cases/<int:tc_id>/run", methods=["POST"])
+@role_required("admin", "tester")
+def test_cases_run(tc_id):
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.execution.repository import (
+            PipelineRunRepository, PipelineStageRepository,
+            ExecutionSlotRepository, WorkerHeartbeatRepository,
+        )
+        from primeqa.execution.service import PipelineService
+        svc = PipelineService(
+            PipelineRunRepository(db), PipelineStageRepository(db),
+            ExecutionSlotRepository(db), WorkerHeartbeatRepository(db),
+        )
+        result = svc.create_run(
+            tenant_id=request.user["tenant_id"],
+            environment_id=int(request.form["environment_id"]),
+            triggered_by=request.user["id"],
+            run_type="execute_only",
+            source_type="test_cases",
+            source_ids=[tc_id],
+            priority=request.form.get("priority", "normal"),
+        )
+        flash(f"Run #{result['id']} queued", "success")
+        return redirect(f"/runs/{result['id']}")
+    except Exception as e:
+        flash(f"Run failed: {e}", "error")
         return redirect(f"/test-cases/{tc_id}")
     finally:
         db.close()

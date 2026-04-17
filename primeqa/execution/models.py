@@ -44,7 +44,7 @@ class PipelineRun(Base):
 
     __table_args__ = (
         CheckConstraint("run_type IN ('full', 'generate_only', 'execute_only')"),
-        CheckConstraint("source_type IN ('jira_tickets', 'suite', 'requirements', 'rerun')"),
+        CheckConstraint("source_type IN ('jira_tickets', 'suite', 'requirements', 'rerun', 'test_cases', 'release')"),
         CheckConstraint("status IN ('queued', 'running', 'completed', 'failed', 'cancelled')"),
         CheckConstraint("priority IN ('normal', 'high', 'critical')"),
     )
