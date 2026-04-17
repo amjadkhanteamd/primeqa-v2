@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ tc.title }} - PrimeQA{% endblock %}
+{% block content %}
+<div class="max-w-5xl space-y-6">
+    <div class="flex justify-between items-center">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">Edit Test Case</h1>
+            <p class="mt-1 text-sm text-gray-500">{{ tc.title }}</p>
+        </div>
+        <a href="/test-cases/{{ tc.id }}" class="text-sm text-gray-500 hover:text-gray-700">← Back to detail</a>
+    </div>
+
+    {% if error %}<div class="rounded-md bg-red-50 p-4"><p class="text-sm text-red-700">{{ error }}</p></div>{% endif %}
+
+    <form method="POST" action="/test-cases/{{ tc.id }}/edit" id="edit-form" class="space-y-6">
+        <input type="hidden" name="steps_json" id="steps-json">
+        <input type="hidden" name="environment_id" value="{{ env_id or '' }}">
+
+        <div class="bg-white shadow rounded-lg p-6 space-y-4">
+            <div><label class="block text-sm font-medium text-gray-700">Title</label>
+                <input name="title" value="{{ tc.title }}" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm"></div>
+            <div class="grid grid-cols-2 gap-4">
+                <div><label class="block text-sm font-medium text-gray-700">Environment (for metadata autocomplete)</label>
+                    <select id="env-select" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm">
+                        {% for env in environments %}
+                        <option value="{{ env.id }}" {% if env.id == env_id %}selected{% endif %}>{{ env.name }}</option>
+                        {% endfor %}
+                    </select></div>
+                <div><label class="block text-sm font-medium text-gray-700">Generation method (next version)</label>
+                    <select name="generation_method" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm">
+                        <option value="manual">Manual edit</option>
+                        <option value="regenerated">Regenerated</option>
+                    </select></div>
+            </div>
+        </div>
+
+        <div class="bg-white shadow rounded-lg p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-medium text-gray-900">Steps</h3>
+                <button type="button" onclick="addStep()" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">+ Add Step</button>
+            </div>
+            <div id="steps-container" class="space-y-3"></div>
+        </div>
+
+        <div class="flex justify-end space-x-3">
+            <a href="/test-cases/{{ tc.id }}" class="rounded-md bg-gray-100 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-200">Cancel</a>
+            <button type="submit" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Save as new version</button>
+        </div>
+    </form>
+</div>
+
+<script>
+const STEP_ACTIONS = {{ step_schema|tojson }};
+const INITIAL_STEPS = {{ initial_steps|tojson }};
+
+let stepCounter = 0;
+
+function getEnvId() {
+    return document.getElementById('env-select').value;
+}
+
+async function fetchObjects(query) {
+    const envId = getEnvId();
+    if (!envId) return [];
+    const r = await fetch(`/api/metadata/${envId}/objects?q=${encodeURIComponent(query)}`);
+    return await r.json();
+}
+
+async function fetchFields(objectName, query) {
+    const envId = getEnvId();
+    if (!envId || !objectName) return [];
+    const r = await fetch(`/api/metadata/${envId}/objects/${objectName}/fields?q=${encodeURIComponent(query||'')}`);
+    return await r.json();
+}
+
+function renderFieldInput(fieldName, fieldSpec, stepIdx, value='') {
+    const id = `s${stepIdx}_${fieldName}`;
+    const t = fieldSpec.type;
+    if (t === 'text') {
+        return `<textarea id="${id}" rows="2" class="block w-full rounded border border-gray-300 px-2 py-1 text-sm" placeholder="${fieldSpec.label}">${value || ''}</textarea>`;
+    }
+    if (t === 'integer') {
+        return `<input id="${id}" type="number" value="${value||''}" class="block w-full rounded border border-gray-300 px-2 py-1 text-sm" placeholder="${fieldSpec.label}">`;
+    }
+    if (t === 'multi_select') {
+        const opts = (fieldSpec.options || []).map(o => `<label class="inline-flex items-center mr-3"><input type="checkbox" value="${o}" ${(value||[]).includes(o)?'checked':''} class="multi-${stepIdx}-${fieldName}"> <span class="ml-1 text-sm">${o}</span></label>`).join('');
+        return `<div class="flex flex-wrap">${opts}</div>`;
+    }
+    if (t === 'field_map') {
+        const entries = value ? Object.entries(value) : [['','']];
+        const rows = entries.map(([k, v]) => `
+            <div class="flex space-x-2 mb-1">
+                <input value="${k}" placeholder="Field name" class="field-key flex-1 rounded border border-gray-300 px-2 py-1 text-sm">
+                <input value="${v}" placeholder="Value" class="field-val flex-1 rounded border border-gray-300 px-2 py-1 text-sm">
+                <button type="button" onclick="this.parentElement.remove()" class="text-red-500 text-sm">×</button>
+            </div>`).join('');
+        return `<div id="${id}" class="field-map">${rows}<button type="button" onclick="addFieldRow('${id}')" class="text-xs text-indigo-600">+ Add field</button></div>`;
+    }
+    return `<input id="${id}" type="text" value="${value||''}" class="block w-full rounded border border-gray-300 px-2 py-1 text-sm" placeholder="${fieldSpec.label}">`;
+}
+
+function addFieldRow(containerId) {
+    const c = document.getElementById(containerId);
+    const btn = c.querySelector('button[onclick^="addFieldRow"]');
+    const div = document.createElement('div');
+    div.className = 'flex space-x-2 mb-1';
+    div.innerHTML = `<input placeholder="Field name" class="field-key flex-1 rounded border border-gray-300 px-2 py-1 text-sm">
+                     <input placeholder="Value" class="field-val flex-1 rounded border border-gray-300 px-2 py-1 text-sm">
+                     <button type="button" onclick="this.parentElement.remove()" class="text-red-500 text-sm">×</button>`;
+    c.insertBefore(div, btn);
+}
+
+function renderStep(step, idx) {
+    const action = step.action || 'create';
+    const schema = STEP_ACTIONS[action] || STEP_ACTIONS['create'];
+    const fieldsHtml = Object.entries(schema.fields).map(([fname, fspec]) => `
+        <div class="mt-2">
+            <label class="block text-xs font-medium text-gray-600">${fspec.label}${fspec.required ? ' *' : ''}</label>
+            ${renderFieldInput(fname, fspec, idx, step[fname])}
+        </div>
+    `).join('');
+
+    return `
+    <div class="border border-gray-200 rounded-lg p-4" data-step-idx="${idx}">
+        <div class="flex justify-between items-center mb-3">
+            <div class="flex items-center space-x-3">
+                <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-indigo-100 text-xs font-medium text-indigo-700">${idx + 1}</span>
+                <select onchange="rerenderStep(${idx}, this.value)" class="step-action rounded border border-gray-300 px-2 py-1 text-sm font-medium">
+                    ${Object.keys(STEP_ACTIONS).map(a => `<option value="${a}" ${a===action?'selected':''}>${STEP_ACTIONS[a].label}</option>`).join('')}
+                </select>
+            </div>
+            <div class="flex space-x-2">
+                <button type="button" onclick="moveStep(${idx}, -1)" class="text-gray-400 hover:text-gray-600">↑</button>
+                <button type="button" onclick="moveStep(${idx}, 1)" class="text-gray-400 hover:text-gray-600">↓</button>
+                <button type="button" onclick="removeStep(${idx})" class="text-red-500 hover:text-red-700">×</button>
+            </div>
+        </div>
+        <div>${fieldsHtml}</div>
+        <div class="mt-2">
+            <label class="block text-xs font-medium text-gray-600">Expected result</label>
+            <input id="s${idx}_expected_result" type="text" value="${step.expected_result || ''}" class="block w-full rounded border border-gray-300 px-2 py-1 text-sm" placeholder="What should happen?">
+        </div>
+    </div>`;
+}
+
+function rerenderStep(idx, newAction) {
+    const steps = collectSteps();
+    steps[idx] = {...steps[idx], action: newAction};
+    renderAll(steps);
+}
+
+function moveStep(idx, delta) {
+    const steps = collectSteps();
+    const newIdx = idx + delta;
+    if (newIdx < 0 || newIdx >= steps.length) return;
+    [steps[idx], steps[newIdx]] = [steps[newIdx], steps[idx]];
+    renderAll(steps);
+}
+
+function removeStep(idx) {
+    const steps = collectSteps();
+    steps.splice(idx, 1);
+    renderAll(steps);
+}
+
+function addStep() {
+    const steps = collectSteps();
+    steps.push({action: 'create', step_order: steps.length + 1});
+    renderAll(steps);
+}
+
+function collectSteps() {
+    const container = document.getElementById('steps-container');
+    const stepEls = container.querySelectorAll('[data-step-idx]');
+    const steps = [];
+    stepEls.forEach((el, idx) => {
+        const actionSelect = el.querySelector('.step-action');
+        const action = actionSelect.value;
+        const schema = STEP_ACTIONS[action];
+        const step = {step_order: idx + 1, action};
+        Object.entries(schema.fields).forEach(([fname, fspec]) => {
+            if (fspec.type === 'field_map') {
+                const mapEl = el.querySelector(`#s${idx}_${fname}`);
+                const obj = {};
+                mapEl.querySelectorAll('.flex.space-x-2').forEach(row => {
+                    const k = row.querySelector('.field-key').value.trim();
+                    const v = row.querySelector('.field-val').value.trim();
+                    if (k) obj[k] = v;
+                });
+                step[fname] = obj;
+            } else if (fspec.type === 'multi_select') {
+                const boxes = el.querySelectorAll(`.multi-${idx}-${fname}:checked`);
+                step[fname] = Array.from(boxes).map(b => b.value);
+            } else {
+                const input = el.querySelector(`#s${idx}_${fname}`);
+                if (input) {
+                    step[fname] = fspec.type === 'integer' ? parseInt(input.value) || 0 : input.value;
+                }
+            }
+        });
+        const er = el.querySelector(`#s${idx}_expected_result`);
+        if (er && er.value) step.expected_result = er.value;
+        steps.push(step);
+    });
+    return steps;
+}
+
+function renderAll(steps) {
+    const container = document.getElementById('steps-container');
+    container.innerHTML = steps.map((s, i) => renderStep(s, i)).join('');
+}
+
+document.getElementById('edit-form').addEventListener('submit', function(e) {
+    const steps = collectSteps();
+    document.getElementById('steps-json').value = JSON.stringify(steps);
+});
+
+renderAll(INITIAL_STEPS.length ? INITIAL_STEPS : [{action: 'create', step_order: 1}]);
+</script>
+{% endblock %}

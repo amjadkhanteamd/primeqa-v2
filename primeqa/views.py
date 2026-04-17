@@ -355,6 +355,99 @@ def test_cases_share(tc_id):
         db.close()
 
 
+@views_bp.route("/test-cases/<int:tc_id>/edit", methods=["GET"])
+@role_required("admin", "tester")
+def test_cases_edit(tc_id):
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import TestCaseRepository
+        from primeqa.test_management.step_schema import STEP_ACTIONS
+        tc_repo = TestCaseRepository(db)
+        tc = tc_repo.get_test_case(tc_id, request.user["tenant_id"])
+        if not tc:
+            return redirect("/test-cases")
+        current_version = tc_repo.get_latest_version(tc.id)
+        initial_steps = current_version.steps if current_version else []
+        envs = EnvironmentRepository(db).list_environments(
+            request.user["tenant_id"], request.user["id"], request.user["role"],
+        )
+        envs_data = [{"id": e.id, "name": e.name} for e in envs]
+        env_id = envs_data[0]["id"] if envs_data else None
+        tc_data = {"id": tc.id, "title": tc.title}
+        return render_template("test_cases/edit.html", **ctx(
+            active_page="test_cases", tc=tc_data, initial_steps=initial_steps,
+            step_schema=STEP_ACTIONS, environments=envs_data, env_id=env_id, error=None,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/test-cases/<int:tc_id>/edit", methods=["POST"])
+@role_required("admin", "tester")
+def test_cases_update_steps(tc_id):
+    from flask import flash
+    import json as _json
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import TestCaseRepository
+        from primeqa.test_management.step_schema import StepValidator
+        from primeqa.metadata.repository import MetadataRepository
+        tc_repo = TestCaseRepository(db)
+        tc = tc_repo.get_test_case(tc_id, request.user["tenant_id"])
+        if not tc:
+            return redirect("/test-cases")
+
+        title = request.form.get("title") or tc.title
+        if title != tc.title:
+            tc_repo.update_test_case(tc_id, request.user["tenant_id"], {"title": title})
+
+        try:
+            steps = _json.loads(request.form.get("steps_json", "[]"))
+        except Exception:
+            steps = []
+
+        env_id = request.form.get("environment_id", type=int)
+        meta_version_id = tc.current_version_id
+        if env_id:
+            env = EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"])
+            if env and env.current_meta_version_id:
+                meta_version_id = env.current_meta_version_id
+                validator = StepValidator(MetadataRepository(db), env.current_meta_version_id)
+                ok, errors = validator.validate(steps)
+                if not ok:
+                    flash("Validation errors: " + "; ".join(errors[:5]), "error")
+                    return redirect(f"/test-cases/{tc_id}/edit")
+
+        if not meta_version_id:
+            from primeqa.test_management.models import TestCaseVersion
+            prev = db.query(TestCaseVersion).filter(
+                TestCaseVersion.test_case_id == tc_id,
+            ).order_by(TestCaseVersion.version_number.desc()).first()
+            meta_version_id = prev.metadata_version_id if prev else None
+
+        if not meta_version_id:
+            flash("No metadata version available. Select an environment.", "error")
+            return redirect(f"/test-cases/{tc_id}/edit")
+
+        tc_repo.create_version(
+            test_case_id=tc_id,
+            metadata_version_id=meta_version_id,
+            created_by=request.user["id"],
+            steps=steps,
+            expected_results=[s.get("expected_result", "") for s in steps],
+            preconditions=[],
+            generation_method=request.form.get("generation_method", "manual"),
+            referenced_entities=[],
+        )
+        flash("Saved new version", "success")
+        return redirect(f"/test-cases/{tc_id}")
+    except Exception as e:
+        flash(f"Save failed: {e}", "error")
+        return redirect(f"/test-cases/{tc_id}/edit")
+    finally:
+        db.close()
+
+
 # --- Reviews ---
 
 @views_bp.route("/reviews")

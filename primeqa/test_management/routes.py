@@ -503,6 +503,67 @@ def resolve_impact(impact_id):
         db.close()
 
 
+# --- Step Schema + Metadata Lookup ---
+
+@test_management_bp.route("/api/step-schema", methods=["GET"])
+@require_auth
+def get_step_schema():
+    from primeqa.test_management.step_schema import STEP_ACTIONS
+    return jsonify(STEP_ACTIONS), 200
+
+
+@test_management_bp.route("/api/metadata/<int:env_id>/objects", methods=["GET"])
+@require_auth
+def list_environment_objects(env_id):
+    q = (request.args.get("q") or "").lower()
+    db = next(get_db())
+    try:
+        from primeqa.core.models import Environment
+        env = db.query(Environment).filter(
+            Environment.id == env_id, Environment.tenant_id == request.user["tenant_id"],
+        ).first()
+        if not env or not env.current_meta_version_id:
+            return jsonify([]), 200
+        repo = MetadataRepository(db)
+        objects = repo.get_objects(env.current_meta_version_id)
+        if q:
+            objects = [o for o in objects if q in o.api_name.lower() or q in (o.label or "").lower()]
+        return jsonify([{
+            "api_name": o.api_name, "label": o.label, "is_custom": o.is_custom,
+        } for o in objects[:50]]), 200
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/metadata/<int:env_id>/objects/<string:object_name>/fields", methods=["GET"])
+@require_auth
+def list_object_fields(env_id, object_name):
+    q = (request.args.get("q") or "").lower()
+    db = next(get_db())
+    try:
+        from primeqa.core.models import Environment
+        env = db.query(Environment).filter(
+            Environment.id == env_id, Environment.tenant_id == request.user["tenant_id"],
+        ).first()
+        if not env or not env.current_meta_version_id:
+            return jsonify([]), 200
+        repo = MetadataRepository(db)
+        obj = repo.get_object_by_api_name(env.current_meta_version_id, object_name)
+        if not obj:
+            return jsonify([]), 200
+        fields = repo.get_fields(env.current_meta_version_id, obj.id)
+        if q:
+            fields = [f for f in fields if q in f.api_name.lower() or q in (f.label or "").lower()]
+        return jsonify([{
+            "api_name": f.api_name, "label": f.label, "field_type": f.field_type,
+            "is_required": f.is_required, "is_createable": f.is_createable,
+            "is_custom": f.is_custom, "reference_to": f.reference_to,
+            "picklist_values": f.picklist_values,
+        } for f in fields[:200]]), 200
+    finally:
+        db.close()
+
+
 # --- AI Generation ---
 
 @test_management_bp.route("/api/test-cases/generate", methods=["POST"])

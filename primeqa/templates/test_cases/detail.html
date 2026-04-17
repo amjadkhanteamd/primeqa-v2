@@ -11,11 +11,16 @@
                 <span class="text-xs text-gray-500">v{{ tc.version }}</span>
             </div>
         </div>
-        {% if tc.visibility == 'private' and tc.owner_id == user.id %}
-        <form method="POST" action="/test-cases/{{ tc.id }}/share">
-            <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Share</button>
-        </form>
-        {% endif %}
+        <div class="flex space-x-3">
+            {% if user.role in ['admin', 'tester'] %}
+            <a href="/test-cases/{{ tc.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit Steps</a>
+            {% endif %}
+            {% if tc.visibility == 'private' and tc.owner_id == user.id %}
+            <form method="POST" action="/test-cases/{{ tc.id }}/share">
+                <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Share</button>
+            </form>
+            {% endif %}
+        </div>
     </div>
 
     {% if current_version %}
