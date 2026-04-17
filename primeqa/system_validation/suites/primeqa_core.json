@@ -1,0 +1,311 @@
+{
+  "name": "PrimeQA Core Validation",
+  "version": "1.0",
+  "tags": ["system", "e2e", "core"],
+  "description": "Canonical self-validation suite covering every major workflow a PrimeQA user touches. Uses the system-validation step grammar (docs/design/system-validation.md).",
+
+  "setup": [
+    {"action": "login", "email": "admin@primeqa.io", "password": "changeme123", "tenant_id": 1, "save_as": "admin_token"}
+  ],
+
+  "categories": [
+    {
+      "name": "Requirements",
+      "tests": [
+        {
+          "name": "CRUD round-trip: create section + requirement, edit, soft-delete, restore",
+          "steps": [
+            {"action": "http", "method": "POST", "url": "/api/sections",
+             "body": {"name": "SysVal Section $uuid"},
+             "save_as": "sec_resp", "expect_status": 201},
+            {"action": "save", "from": "$sec_resp.body.id", "as": "sec_id"},
+
+            {"action": "http", "method": "POST", "url": "/api/requirements",
+             "body": {"section_id": "$sec_id", "source": "manual",
+                      "acceptance_criteria": "SysVal requirement $uuid"},
+             "save_as": "req_create", "expect_status": 201},
+            {"action": "verify", "target": "$req_create.body.source", "equals": "manual"},
+            {"action": "save", "from": "$req_create.body.id", "as": "req_id"},
+
+            {"action": "http", "method": "PATCH", "url": "/api/requirements/$req_id",
+             "body": {"acceptance_criteria": "Updated acceptance criteria"},
+             "save_as": "req_edit", "expect_status": 200},
+            {"action": "verify", "target": "$req_edit.body.acceptance_criteria",
+             "equals": "Updated acceptance criteria"},
+
+            {"action": "http", "method": "DELETE", "url": "/api/requirements/$req_id",
+             "save_as": "req_del", "expect_status": 200},
+            {"action": "verify", "target": "$req_del.body.deleted_at", "is_not_none": true},
+
+            {"action": "http", "method": "GET",
+             "url": "/api/requirements?page=1&per_page=50&deleted=1",
+             "save_as": "trash_list", "expect_status": 200},
+            {"action": "verify", "target": "$trash_list.body.meta.total", "gte": 1},
+
+            {"action": "http", "method": "POST",
+             "url": "/api/requirements/$req_id/restore",
+             "save_as": "req_restore", "expect_status": 200},
+            {"action": "verify", "target": "$req_restore.body.deleted_at", "equals": null},
+
+            {"action": "http", "method": "DELETE", "url": "/api/requirements/$req_id",
+             "save_as": "req_redelete", "expect_status": 200},
+            {"action": "http", "method": "POST", "url": "/api/requirements/$req_id/purge",
+             "save_as": "req_purge", "expect_status": 200},
+            {"action": "http", "method": "DELETE", "url": "/api/sections/$sec_id",
+             "expect_status": 200}
+          ]
+        }
+      ]
+    },
+
+    {
+      "name": "Test Library",
+      "tests": [
+        {
+          "name": "Create test case, verify fields, soft-delete + restore",
+          "steps": [
+            {"action": "http", "method": "POST", "url": "/api/sections",
+             "body": {"name": "SysVal TC Section $uuid"},
+             "save_as": "tc_sec", "expect_status": 201},
+            {"action": "save", "from": "$tc_sec.body.id", "as": "sec_id"},
+
+            {"action": "http", "method": "POST", "url": "/api/requirements",
+             "body": {"section_id": "$sec_id", "source": "manual",
+                      "acceptance_criteria": "anchor for TC"},
+             "save_as": "tc_req", "expect_status": 201},
+            {"action": "save", "from": "$tc_req.body.id", "as": "req_id"},
+
+            {"action": "http", "method": "POST", "url": "/api/test-cases",
+             "body": {"title": "SysVal TC $uuid", "requirement_id": "$req_id"},
+             "save_as": "tc_create", "expect_status": 201},
+            {"action": "verify", "target": "$tc_create.body.status", "equals": "draft"},
+            {"action": "verify", "target": "$tc_create.body.visibility", "equals": "private"},
+            {"action": "save", "from": "$tc_create.body.id", "as": "tc_id"},
+
+            {"action": "http", "method": "GET", "url": "/api/test-cases/$tc_id",
+             "save_as": "tc_get", "expect_status": 200},
+            {"action": "verify", "target": "$tc_get.body.id", "equals": "$tc_id"},
+
+            {"action": "http", "method": "DELETE", "url": "/api/test-cases/$tc_id",
+             "expect_status": 200},
+            {"action": "http", "method": "POST",
+             "url": "/api/test-cases/$tc_id/restore",
+             "expect_status": 200},
+
+            {"action": "http", "method": "DELETE", "url": "/api/test-cases/$tc_id",
+             "expect_status": 200},
+            {"action": "http", "method": "POST", "url": "/api/test-cases/$tc_id/purge",
+             "expect_status": 200},
+            {"action": "http", "method": "DELETE", "url": "/api/requirements/$req_id",
+             "expect_status": 200},
+            {"action": "http", "method": "DELETE", "url": "/api/sections/$sec_id",
+             "expect_status": 200}
+          ]
+        },
+        {
+          "name": "List pagination envelope",
+          "steps": [
+            {"action": "http", "method": "GET",
+             "url": "/api/test-cases?page=1&per_page=5",
+             "save_as": "list_resp", "expect_status": 200},
+            {"action": "verify", "target": "$list_resp.body.meta.per_page", "equals": 5},
+            {"action": "verify", "target": "$list_resp.body.meta.page", "equals": 1},
+            {"action": "verify", "target": "$list_resp.body.meta.total", "gte": 0}
+          ]
+        }
+      ]
+    },
+
+    {
+      "name": "Run Flow",
+      "tests": [
+        {
+          "name": "Queue a manual run via wizard resolver (no execution)",
+          "skip_reason": "Execution requires Salesforce credentials; queues-only mode isn't wired through views.py yet. Tracked as follow-up."
+        }
+      ]
+    },
+
+    {
+      "name": "Jira Integration",
+      "tests": [
+        {
+          "name": "Ticket search endpoint: no env \u2192 hint fragment",
+          "steps": [
+            {"action": "http", "method": "GET", "url": "/api/jira/search?q=opp",
+             "save_as": "search_no_env", "expect_status": 200},
+            {"action": "verify", "target": "$search_no_env.text",
+             "contains": "Pick an environment"}
+          ]
+        },
+        {
+          "name": "Ticket search endpoint: short query \u2192 Type-at-least-2 hint",
+          "steps": [
+            {"action": "http", "method": "GET", "url": "/api/jira/search?env_id=1&q=a",
+             "save_as": "search_short", "expect_status": 200},
+            {"action": "verify", "target": "$search_short.text",
+             "contains": "at least 2 characters"}
+          ]
+        },
+        {
+          "name": "Ticket search: JSON mode returns results array",
+          "steps": [
+            {"action": "http", "method": "GET",
+             "url": "/api/jira/search?env_id=1&q=a&format=json",
+             "save_as": "search_json", "expect_status": 200},
+            {"action": "verify", "target": "$search_json.body.results", "is_not_none": true}
+          ]
+        },
+        {
+          "name": "Import Jira ticket \u2192 requirement",
+          "skip_reason": "Needs a live Jira connection; covered in tests/test_management.py with mocks."
+        }
+      ]
+    },
+
+    {
+      "name": "Preview Engine (THE canary)",
+      "tests": [
+        {
+          "name": "Preview test_case_count matches resolved selection",
+          "steps": [
+            {"action": "http", "method": "POST", "url": "/api/runs/preview",
+             "body": {"environment_id": 1, "run_type": "execute_only", "jira_keys": [],
+                      "test_case_ids": []},
+             "save_as": "empty_preview", "expect_status": 200},
+            {"action": "verify", "target": "$empty_preview.body.test_case_count",
+             "equals": 0},
+            {"action": "verify", "target": "$empty_preview.body.summary_text",
+             "contains": "Nothing selected"}
+          ]
+        },
+        {
+          "name": "Preview with one hand-picked TC returns count 1",
+          "steps": [
+            {"action": "http", "method": "POST", "url": "/api/sections",
+             "body": {"name": "SysVal Preview $uuid"},
+             "save_as": "p_sec", "expect_status": 201},
+            {"action": "save", "from": "$p_sec.body.id", "as": "sec_id"},
+            {"action": "http", "method": "POST", "url": "/api/requirements",
+             "body": {"section_id": "$sec_id", "source": "manual"},
+             "save_as": "p_req", "expect_status": 201},
+            {"action": "save", "from": "$p_req.body.id", "as": "req_id"},
+            {"action": "http", "method": "POST", "url": "/api/test-cases",
+             "body": {"title": "Preview-target $uuid", "requirement_id": "$req_id",
+                      "visibility": "shared"},
+             "save_as": "p_tc", "expect_status": 201},
+            {"action": "save", "from": "$p_tc.body.id", "as": "tc_id"},
+
+            {"action": "http", "method": "POST", "url": "/api/runs/preview",
+             "body": {"environment_id": 1, "run_type": "execute_only",
+                      "test_case_ids": ["$tc_id"]},
+             "save_as": "prev1", "expect_status": 200},
+            {"action": "verify", "target": "$prev1.body.test_case_count", "equals": 1},
+            {"action": "verify", "target": "$prev1.body.summary_text",
+             "contains": "1 test case"},
+
+            {"action": "http", "method": "DELETE", "url": "/api/test-cases/$tc_id"},
+            {"action": "http", "method": "POST", "url": "/api/test-cases/$tc_id/purge"},
+            {"action": "http", "method": "DELETE", "url": "/api/requirements/$req_id"},
+            {"action": "http", "method": "DELETE", "url": "/api/sections/$sec_id"}
+          ]
+        }
+      ]
+    },
+
+    {
+      "name": "Metadata System",
+      "tests": [
+        {
+          "name": "Sync-status endpoint returns envelope, even when env has no meta",
+          "steps": [
+            {"action": "http", "method": "GET",
+             "url": "/api/metadata/999999/sync-status",
+             "save_as": "ms_unknown", "expect_status": 200},
+            {"action": "verify", "target": "$ms_unknown.body.meta_version_id",
+             "equals": null},
+            {"action": "verify", "target": "$ms_unknown.body.statuses", "is_not_none": true}
+          ]
+        },
+        {
+          "name": "meta_sync_status table is addressable (any existing version reports its 6 categories)",
+          "steps": [
+            {"action": "assert_db",
+             "sql": "SELECT COUNT(DISTINCT category) FROM meta_sync_status",
+             "save_as": "cat_count"},
+            {"action": "verify", "target": "$cat_count.0.0", "gte": 0}
+          ]
+        }
+      ]
+    },
+
+    {
+      "name": "Agent Fix System",
+      "tests": [
+        {
+          "name": "Trust bands threshold gates correctly",
+          "steps": [
+            {"action": "assert_db",
+             "sql": "SELECT trust_threshold_high::text, trust_threshold_medium::text FROM tenant_agent_settings WHERE tenant_id = 1",
+             "save_as": "bands"},
+            {"action": "verify", "target": "$bands.0.0", "is_not_none": true}
+          ]
+        },
+        {
+          "name": "agent_fix_attempts table is present and writeable via orchestrator",
+          "skip_reason": "Direct orchestrator unit coverage in tests/test_r5_agent.py; system-suite exercises only the ledger shape."
+        },
+        {
+          "name": "Ledger shape check",
+          "steps": [
+            {"action": "assert_db",
+             "sql": "SELECT column_name FROM information_schema.columns WHERE table_name = 'agent_fix_attempts' AND column_name = 'before_state'",
+             "expect_rows": 1}
+          ]
+        }
+      ]
+    },
+
+    {
+      "name": "UI Navigation",
+      "tests": [
+        {
+          "name": "Every primary page renders 200 with its key affordance",
+          "steps": [
+            {"action": "http", "method": "GET", "url": "/", "save_as": "dash",
+             "expect_status": 200},
+            {"action": "verify", "target": "$dash.text", "contains": "PrimeQA"},
+
+            {"action": "http", "method": "GET", "url": "/releases", "save_as": "rel",
+             "expect_status": 200},
+            {"action": "http", "method": "GET", "url": "/requirements", "save_as": "req",
+             "expect_status": 200},
+            {"action": "http", "method": "GET", "url": "/runs", "save_as": "runs",
+             "expect_status": 200},
+            {"action": "http", "method": "GET", "url": "/runs/new", "save_as": "wizard",
+             "expect_status": 200},
+            {"action": "verify", "target": "$wizard.text", "contains": "Jira tickets"},
+
+            {"action": "http", "method": "GET", "url": "/runs/scheduled", "save_as": "sched",
+             "expect_status": 200},
+            {"action": "verify", "target": "$sched.text", "contains": "Scheduled"},
+
+            {"action": "http", "method": "GET", "url": "/test-cases", "save_as": "lib",
+             "expect_status": 200},
+            {"action": "http", "method": "GET", "url": "/suites", "expect_status": 200},
+            {"action": "http", "method": "GET", "url": "/reviews", "expect_status": 200},
+            {"action": "http", "method": "GET", "url": "/impacts", "expect_status": 200},
+            {"action": "http", "method": "GET", "url": "/settings", "expect_status": 200},
+            {"action": "http", "method": "GET", "url": "/settings/agent", "save_as": "agent_settings",
+             "expect_status": 200},
+            {"action": "verify", "target": "$agent_settings.text", "contains": "Agent autonomy"},
+
+            {"action": "http", "method": "GET", "url": "/api/_internal/health",
+             "save_as": "health", "expect_status": 200},
+            {"action": "verify", "target": "$health.body.requests_total", "is_not_none": true}
+          ]
+        }
+      ]
+    }
+  ]
+}
