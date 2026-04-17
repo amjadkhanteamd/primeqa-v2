@@ -437,7 +437,7 @@ def environments_list():
             "execution_policy": e.execution_policy, "max_execution_slots": e.max_execution_slots,
         } for e in envs]
         return render_template("environments/list.html", **ctx(
-            active_page="environments", environments=envs_data,
+            active_page="settings_environments", settings_page="environments", environments=envs_data,
         ))
     finally:
         db.close()
@@ -446,7 +446,7 @@ def environments_list():
 @views_bp.route("/environments/new")
 @role_required("admin")
 def environments_new():
-    return render_template("environments/new.html", **ctx(active_page="environments"))
+    return render_template("environments/new.html", **ctx(active_page="settings_environments", settings_page="environments"))
 
 
 @views_bp.route("/environments", methods=["POST"])
@@ -485,7 +485,7 @@ def environments_detail(env_id):
             "max_execution_slots": env.max_execution_slots,
         }
         return render_template("environments/detail.html", **ctx(
-            active_page="environments", env=env_data, message=request.args.get("message"),
+            active_page="settings_environments", settings_page="environments", env=env_data, message=request.args.get("message"),
         ))
     finally:
         db.close()
@@ -500,7 +500,7 @@ def users_list():
     try:
         svc = AuthService(UserRepository(db), RefreshTokenRepository(db))
         users = svc.list_users(request.user["tenant_id"])
-        return render_template("users/list.html", **ctx(active_page="users", users=users))
+        return render_template("users/list.html", **ctx(active_page="settings_users", settings_page="users", users=users))
     finally:
         db.close()
 
@@ -508,7 +508,7 @@ def users_list():
 @views_bp.route("/users/new", methods=["GET"])
 @role_required("admin")
 def users_new():
-    return render_template("users/form.html", **ctx(active_page="users", edit_user=None, error=None))
+    return render_template("users/form.html", **ctx(active_page="settings_users", settings_page="users", edit_user=None, error=None))
 
 
 @views_bp.route("/users/new", methods=["POST"])
@@ -526,7 +526,7 @@ def users_create():
         )
         return redirect("/users")
     except ValueError as e:
-        return render_template("users/form.html", **ctx(active_page="users", edit_user=None, error=str(e)))
+        return render_template("users/form.html", **ctx(active_page="settings_users", settings_page="users", edit_user=None, error=str(e)))
     finally:
         db.close()
 
@@ -573,7 +573,7 @@ def connections_list():
         svc = ConnectionService(ConnectionRepository(db))
         conns = svc.list_connections(request.user["tenant_id"])
         return render_template("connections/list.html", **ctx(
-            active_page="connections", connections=conns,
+            active_page="settings_connections", settings_page="connections", connections=conns,
         ))
     finally:
         db.close()
@@ -582,7 +582,7 @@ def connections_list():
 @views_bp.route("/connections/new")
 @role_required("admin")
 def connections_new():
-    return render_template("connections/new.html", **ctx(active_page="connections", error=None))
+    return render_template("connections/new.html", **ctx(active_page="settings_connections", settings_page="connections", error=None))
 
 
 @views_bp.route("/connections", methods=["POST"])
@@ -625,7 +625,7 @@ def connections_create():
         return redirect("/connections")
     except ValueError as e:
         return render_template("connections/new.html", **ctx(
-            active_page="connections", error=str(e),
+            active_page="settings_connections", settings_page="connections", error=str(e),
         ))
     finally:
         db.close()
@@ -641,7 +641,7 @@ def connections_detail(conn_id):
         if not conn:
             return redirect("/connections")
         return render_template("connections/detail.html", **ctx(
-            active_page="connections", conn=conn,
+            active_page="settings_connections", settings_page="connections", conn=conn,
             message=request.args.get("message"),
         ))
     finally:
@@ -687,7 +687,7 @@ def connections_edit(conn_id):
         if not conn:
             return redirect("/connections")
         return render_template("connections/edit.html", **ctx(
-            active_page="connections", conn=conn, error=None,
+            active_page="settings_connections", settings_page="connections", conn=conn, error=None,
         ))
     finally:
         db.close()
@@ -754,7 +754,7 @@ def connections_update(conn_id):
     except ValueError as e:
         conn_data = svc.get_connection(conn_id, request.user["tenant_id"])
         return render_template("connections/edit.html", **ctx(
-            active_page="connections", conn=conn_data, error=str(e),
+            active_page="settings_connections", settings_page="connections", conn=conn_data, error=str(e),
         ))
     finally:
         db.close()
@@ -772,7 +772,7 @@ def groups_list():
             request.user["tenant_id"], request.user["id"], request.user["role"],
         )
         return render_template("groups/list.html", **ctx(
-            active_page="groups", groups=groups,
+            active_page="settings_groups", settings_page="groups", groups=groups,
         ))
     finally:
         db.close()
@@ -781,7 +781,7 @@ def groups_list():
 @views_bp.route("/groups/new")
 @role_required("admin")
 def groups_new():
-    return render_template("groups/new.html", **ctx(active_page="groups"))
+    return render_template("groups/new.html", **ctx(active_page="settings_groups", settings_page="groups"))
 
 
 @views_bp.route("/groups", methods=["POST"])
@@ -820,7 +820,7 @@ def groups_detail(group_id):
                           for e in all_envs if e.id not in env_ids]
 
         return render_template("groups/detail.html", **ctx(
-            active_page="groups", group=group,
+            active_page="settings_groups", settings_page="groups", group=group,
             available_users=available_users, available_envs=available_envs,
         ))
     finally:
@@ -899,6 +899,48 @@ def groups_delete(group_id):
         db.close()
 
 
+# --- Settings (General) ---
+
+@views_bp.route("/settings")
+@login_required
+def settings_general():
+    db = next(get_db())
+    try:
+        from primeqa.core.models import Connection, Group, Environment, Tenant
+        tid = request.user["tenant_id"]
+        tenant = db.query(Tenant).filter(Tenant.id == tid).first()
+        conn_count = db.query(Connection).filter(Connection.tenant_id == tid).count()
+        env_count = db.query(Environment).filter(Environment.tenant_id == tid).count()
+        group_count = db.query(Group).filter(Group.tenant_id == tid).count()
+        setup_complete = conn_count > 0 and env_count > 0 and group_count > 0
+        tenant_data = {"name": tenant.name if tenant else "Default", "slug": tenant.slug if tenant else "default"}
+        return render_template("settings/general.html", **ctx(
+            active_page="settings_general", settings_page="general",
+            tenant=tenant_data, setup_complete=setup_complete,
+            stats={"connections": conn_count, "environments": env_count, "groups": group_count},
+        ))
+    finally:
+        db.close()
+
+
+# Settings URL aliases
+@views_bp.route("/settings/connections")
+@role_required("admin")
+def settings_connections(): return redirect("/connections")
+
+@views_bp.route("/settings/environments")
+@role_required("admin")
+def settings_environments(): return redirect("/environments")
+
+@views_bp.route("/settings/groups")
+@login_required
+def settings_groups(): return redirect("/groups")
+
+@views_bp.route("/settings/users")
+@role_required("admin")
+def settings_users(): return redirect("/users")
+
+
 # --- Setup Wizard ---
 
 @views_bp.route("/setup")
@@ -912,7 +954,7 @@ def setup_wizard():
         env_count = db.query(Environment).filter(Environment.tenant_id == tid).count()
         group_count = db.query(Group).filter(Group.tenant_id == tid).count()
         return render_template("setup/wizard.html", **ctx(
-            active_page="setup",
+            active_page="settings_setup", settings_page="general",
             connections_ok=conn_count > 0,
             environments_ok=env_count > 0,
             groups_ok=group_count > 0,

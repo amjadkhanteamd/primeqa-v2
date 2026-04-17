@@ -1,6 +1,6 @@
-{% extends "base.html" %}
+{% extends "settings/base.html" %}
 {% block title %}Edit {{ conn.name }} - PrimeQA{% endblock %}
-{% block content %}
+{% block settings_content %}
 <div class="max-w-2xl">
     <h1 class="text-2xl font-bold text-gray-900 mb-6">Edit Connection</h1>
     {% if error %}<div class="rounded-md bg-red-50 p-4 mb-4"><p class="text-sm text-red-700">{{ error }}</p></div>{% endif %}
