@@ -195,26 +195,63 @@ def runs_new():
     db = next(get_db())
     try:
         from primeqa.test_management.repository import (
-            TestSuiteRepository, SectionRepository,
+            TestSuiteRepository, SectionRepository, TestCaseRepository,
+            RequirementRepository,
         )
-        envs = EnvironmentRepository(db).list_environments(request.user["tenant_id"])
+        from primeqa.test_management.models import TestCase, TestSuite, SuiteTestCase
+        from sqlalchemy import func
+
+        tid = request.user["tenant_id"]
+        uid = request.user["id"]
+
+        envs = EnvironmentRepository(db).list_environments(tid)
         envs_data = [{
             "id": e.id, "name": e.name, "env_type": e.env_type,
             "sf_instance_url": e.sf_instance_url,
             "llm_connection_id": e.llm_connection_id,
             "has_meta": bool(e.current_meta_version_id),
         } for e in envs]
-        suites = TestSuiteRepository(db).list_suites(request.user["tenant_id"])
-        suites_data = [{"id": s.id, "name": s.name, "suite_type": s.suite_type} for s in suites]
-        sections = SectionRepository(db).list_sections(request.user["tenant_id"])
+
+        # Suites with a quick test-count (so the user knows what each contains)
+        suite_counts = dict(db.query(
+            SuiteTestCase.suite_id, func.count(SuiteTestCase.id),
+        ).group_by(SuiteTestCase.suite_id).all())
+        suites = TestSuiteRepository(db).list_suites(tid)
+        suites_data = [{
+            "id": s.id, "name": s.name, "suite_type": s.suite_type,
+            "test_count": int(suite_counts.get(s.id, 0)),
+        } for s in suites]
+
+        sections = SectionRepository(db).list_sections(tid)
         sections_data = [{"id": s.id, "name": s.name} for s in sections]
-        jira_conns = ConnectionRepository(db).list_connections(
-            request.user["tenant_id"], "jira",
+
+        # Requirements (with Jira key + summary so the user can recognise them)
+        reqs = RequirementRepository(db).list_requirements(tid)
+        reqs_data = [{
+            "id": r.id, "jira_key": r.jira_key,
+            "summary": (r.jira_summary or "")[:120],
+            "source": r.source,
+        } for r in reqs]
+
+        # Test cases: show the most-recently-updated 500 active ones the user
+        # can see (owner's privates + all shared). Client-side search filters
+        # the rendered list.
+        tcs = TestCaseRepository(db).list_test_cases(
+            tid, include_private_for=uid,
         )
+        tcs = tcs[:500]
+        tcs_data = [{
+            "id": t.id, "title": (t.title or "")[:140],
+            "status": t.status, "visibility": t.visibility,
+        } for t in tcs]
+
+        jira_conns = ConnectionRepository(db).list_connections(tid, "jira")
         jira_conns_data = [{"id": c.id, "name": c.name} for c in jira_conns]
+
         return render_template("runs/wizard.html", **ctx(
             active_page="runs",
             environments=envs_data, suites=suites_data, sections=sections_data,
+            requirements=reqs_data, test_cases=tcs_data,
             jira_connections=jira_conns_data,
         ))
     finally:
@@ -222,9 +259,23 @@ def runs_new():
 
 
 def _build_wizard_selection(form):
-    """Parse a wizard form submission into a WizardSelection."""
+    """Parse a wizard form submission into a WizardSelection.
+
+    Accepts checkbox-style multi-values (preferred) OR legacy CSV strings so
+    both the new selectable UI and any older client still work.
+    """
     from primeqa.runs.wizard import WizardSelection
-    def _csv_ints(key):
+
+    def _ints(key):
+        # Preferred: repeated form fields from checkboxes (name="suite_id")
+        vals = form.getlist(key) if hasattr(form, "getlist") else []
+        # Legacy fallback: CSV single field (name="suite_ids")
+        if not vals:
+            csv = form.get(key + "s", "") or form.get(key, "")
+            vals = [v.strip() for v in csv.split(",") if v.strip()]
+        return [int(v) for v in vals if str(v).strip().lstrip("-").isdigit()]
+
+    def _csv_ints(key):  # kept for jira/legacy paths
         raw = form.get(key, "")
         return [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
 

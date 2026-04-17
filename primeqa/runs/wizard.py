@@ -321,6 +321,35 @@ class RunWizardResolver:
         return JiraClient(base, auth)
 
 
+# Small in-process TTL cache for Jira search results. Key =
+# (connection_id, query, limit) -> (expires_at_epoch, payload). Not a LRU
+# (size is trivially bounded by unique queries in a session) and intentionally
+# short-lived so stale results can't hide real Jira changes for long.
+_JIRA_SEARCH_CACHE: Dict[tuple, tuple] = {}
+JIRA_SEARCH_TTL_SEC = 8
+
+
+def _jira_cache_get(key):
+    import time
+    entry = _JIRA_SEARCH_CACHE.get(key)
+    if not entry:
+        return None
+    expires_at, value = entry
+    if expires_at < time.time():
+        _JIRA_SEARCH_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _jira_cache_set(key, value):
+    import time
+    _JIRA_SEARCH_CACHE[key] = (time.time() + JIRA_SEARCH_TTL_SEC, value)
+
+
+# Match a standard Jira key like "PROJ-123"
+_ISSUE_KEY_RE = __import__("re").compile(r"^[A-Z][A-Z0-9_]+-\d+$")
+
+
 class JiraClient:
     """Minimal Jira Cloud REST wrapper. Session-less, on-demand (Q: fetch on demand)."""
 
@@ -368,6 +397,57 @@ class JiraClient:
                 for s in body.get("values", [])]
 
     # ---- Resolution: sprint / JQL / epic \u2192 issues --------------------------
+
+    # ---- Free-text + key search used by the wizard's Jira picker ---------
+
+    def search_issues(self, query: str, *, connection_id: int,
+                      limit: int = 20, fields: str = "summary,status,issuetype,project"
+                      ) -> List[Dict[str, Any]]:
+        """Fast ticket search for the wizard's chip picker.
+
+        JQL rules:
+          - If `query` matches an issue key pattern (PROJ-123) \u2192 `key = "X"`
+          - Otherwise \u2192 `(summary ~ "q" OR issuekey = "q")` (both tried)
+          - Ordered by most recently updated
+
+        Results are cached in-process for a few seconds so keystroke-based UI
+        doesn't thrash the upstream API.
+        """
+        q = (query or "").strip()
+        if not q:
+            return []
+        limit = max(1, min(int(limit or 20), 50))
+        cache_key = (connection_id, q.lower(), limit)
+        cached = _jira_cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        if _ISSUE_KEY_RE.match(q):
+            # Exact key lookup \u2014 single canonical result if it exists
+            jql = f'key = "{q}"'
+        else:
+            escaped = q.replace('"', '\\"')
+            jql = f'(summary ~ "{escaped}" OR issuekey = "{escaped}") ORDER BY updated DESC'
+
+        url = f"{self.base_url}/rest/api/3/search"
+        params = {"jql": jql, "maxResults": limit, "fields": fields}
+        resp = http_requests.get(url, headers=self.headers, params=params, timeout=10)
+        resp.raise_for_status()
+        body = resp.json()
+        results = []
+        for issue in body.get("issues", []):
+            f = issue.get("fields") or {}
+            results.append({
+                "id":      issue.get("id"),
+                "key":     issue.get("key"),
+                "summary": (f.get("summary") or "")[:240],
+                "status":  ((f.get("status") or {}).get("name") or ""),
+                "issue_type": ((f.get("issuetype") or {}).get("name") or ""),
+                "project_key": ((f.get("project") or {}).get("key") or ""),
+                "project_name": ((f.get("project") or {}).get("name") or ""),
+            })
+        _jira_cache_set(cache_key, results)
+        return results
 
     def sprint_issues(self, sprint_id: int) -> List[Dict[str, Any]]:
         """Paginated GET /rest/agile/1.0/sprint/{id}/issue."""

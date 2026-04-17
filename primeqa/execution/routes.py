@@ -94,6 +94,177 @@ def _jira_client(db, connection_id, tenant_id):
     return JiraClient(base, auth)
 
 
+# ---- Jira ticket search for Run Wizard -------------------------------------
+# Env-based: resolve the Jira connection from the selected environment so the
+# user doesn't have to pick a connection separately.
+
+def _jira_client_for_env(db, env_id, tenant_id):
+    from primeqa.core.repository import EnvironmentRepository
+    env = EnvironmentRepository(db).get_environment(env_id, tenant_id)
+    if not env or not env.jira_connection_id:
+        return None, env
+    return _jira_client(db, env.jira_connection_id, tenant_id), env
+
+
+@execution_bp.route("/api/jira/search", methods=["GET"])
+@require_auth
+def jira_ticket_search():
+    """Ticket-level Jira search for the wizard chip picker.
+
+    Accept: text/html (default) \u2192 HTMX fragment at
+    `templates/runs/_jira_search_results.html`.
+    Accept: application/json or ?format=json \u2192 JSON payload.
+
+    Params:
+      env_id  (required) \u2014 env whose jira_connection_id is used
+      q       (required) \u2014 query string (issue key or free text)
+      limit   (optional, default 20, max 50)
+    """
+    from flask import render_template
+    env_id = request.args.get("env_id", type=int)
+    q = (request.args.get("q") or "").strip()
+    limit = request.args.get("limit", default=20, type=int)
+
+    want_json = (request.args.get("format") == "json" or
+                 "application/json" in (request.headers.get("Accept") or ""))
+
+    def _render(payload, hint=None, error=None):
+        if want_json:
+            body = {"results": payload or [], "hint": hint, "error": error,
+                    "count": len(payload or [])}
+            return jsonify(body), 200
+        return render_template("runs/_jira_search_results.html",
+                               results=payload or [], hint=hint, error=error), 200
+
+    if not env_id:
+        return _render([], hint="Pick an environment above to enable Jira search.")
+
+    if len(q) < 2:
+        return _render([], hint="Type at least 2 characters\u2026")
+
+    db = next(get_db())
+    try:
+        client, env = _jira_client_for_env(db, env_id, request.user["tenant_id"])
+        if not client:
+            return _render([], hint=(
+                "This environment has no Jira connection. "
+                "Attach one in Settings \u2192 Environments, or pick a different env."
+            ))
+        try:
+            results = client.search_issues(q, connection_id=env.jira_connection_id, limit=limit)
+        except Exception as e:
+            return _render([], error=f"Jira search failed: {e}")
+        return _render(results)
+    finally:
+        db.close()
+
+
+# ---- Run preview (live count as wizard selection changes) ------------------
+
+@execution_bp.route("/api/runs/preview", methods=["POST"])
+@require_auth
+def run_preview():
+    """Read-only live preview. Reuses RunWizardResolver so the resolution
+    logic stays identical between the inline chip count and the full
+    /runs/new/preview screen.
+
+    Body: {environment_id, run_type,
+           jira_keys[], suite_ids[], section_ids[],
+           requirement_ids[], test_case_ids[]}
+    Returns: {test_case_count, requirement_count, missing_jira_keys[],
+              warnings[], over_soft_cap, over_hard_cap}
+    """
+    from primeqa.runs.wizard import (
+        RunWizardResolver, WizardSelection, HARD_CAP, SOFT_CAP,
+    )
+    from primeqa.test_management.repository import (
+        TestSuiteRepository, SectionRepository, TestCaseRepository,
+        RequirementRepository,
+    )
+    from primeqa.core.repository import ConnectionRepository, EnvironmentRepository
+
+    data = request.get_json(silent=True) or {}
+    environment_id = data.get("environment_id")
+    jira_keys = [k.strip() for k in (data.get("jira_keys") or []) if k.strip()][:100]
+
+    # Resolve the env's Jira connection for any Jira keys
+    db = next(get_db())
+    try:
+        jira_entries = []
+        if jira_keys and environment_id:
+            env = EnvironmentRepository(db).get_environment(
+                environment_id, request.user["tenant_id"],
+            )
+            if env and env.jira_connection_id:
+                jira_entries.append({
+                    "type": "issues",
+                    "connection_id": env.jira_connection_id,
+                    "issue_keys": jira_keys,
+                })
+
+        selection = WizardSelection(
+            suite_ids=[int(x) for x in (data.get("suite_ids") or []) if str(x).lstrip("-").isdigit()],
+            section_ids=[int(x) for x in (data.get("section_ids") or []) if str(x).lstrip("-").isdigit()],
+            test_case_ids=[int(x) for x in (data.get("test_case_ids") or []) if str(x).lstrip("-").isdigit()],
+            requirement_ids=[int(x) for x in (data.get("requirement_ids") or []) if str(x).lstrip("-").isdigit()],
+            jira=jira_entries,
+        )
+
+        resolver = RunWizardResolver(
+            db,
+            suite_repo=TestSuiteRepository(db),
+            section_repo=SectionRepository(db),
+            tc_repo=TestCaseRepository(db),
+            req_repo=RequirementRepository(db),
+            connection_repo=ConnectionRepository(db),
+        )
+        try:
+            resolved = resolver.resolve(request.user["tenant_id"], selection)
+        except Exception as e:
+            return jsonify(error=str(e)), 400
+
+        jira_summary = (resolved.source_refs or {}).get("jira") or []
+        req_count = len((resolved.source_refs or {}).get("requirements") or [])
+        # Rough requirement count: requirements picked explicitly + jira-resolved ones
+        for j in jira_summary:
+            req_count += len((j.get("test_case_ids") or []))  # distinct TCs per Jira entry
+
+        # Warning enrichment
+        warnings = list(resolved.resolution_warnings)
+        if len(jira_keys) > 100:
+            warnings.append("Jira selection capped at 100 tickets.")
+
+        return jsonify({
+            "test_case_count": resolved.test_count,
+            "requirement_count": req_count,
+            "missing_jira_keys": resolved.missing_jira_keys,
+            "warnings": warnings,
+            "over_soft_cap": resolved.over_soft_cap,
+            "over_hard_cap": resolved.over_hard_cap,
+            "soft_cap": SOFT_CAP,
+            "hard_cap": HARD_CAP,
+            "summary_text": _build_summary_text(
+                len(jira_keys), len(selection.suite_ids),
+                len(selection.section_ids), len(selection.requirement_ids),
+                len(selection.test_case_ids), resolved.test_count,
+            ),
+        }), 200
+    finally:
+        db.close()
+
+
+def _build_summary_text(jira, suites, sections, reqs, tcs, total):
+    parts = []
+    if jira:    parts.append(f"{jira} Jira ticket{'s' if jira != 1 else ''}")
+    if suites:  parts.append(f"{suites} suite{'s' if suites != 1 else ''}")
+    if sections: parts.append(f"{sections} section{'s' if sections != 1 else ''}")
+    if reqs:    parts.append(f"{reqs} requirement{'s' if reqs != 1 else ''}")
+    if tcs:     parts.append(f"{tcs} test case{'s' if tcs != 1 else ''}")
+    if not parts:
+        return "Nothing selected yet."
+    return f"{', '.join(parts)} \u2192 {total} test case{'s' if total != 1 else ''}"
+
+
 @execution_bp.route("/api/jira/<int:connection_id>/projects", methods=["GET"])
 @require_auth
 def jira_projects(connection_id):

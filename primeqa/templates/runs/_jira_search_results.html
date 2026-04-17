@@ -1,0 +1,50 @@
+{#
+  Jira ticket search results fragment (R7).
+  Rendered into #jira-results by HTMX on every keystroke.
+  Each `.jira-result` row is click/Enter-addable to the chip set.
+#}
+{% if error %}
+  <div class="px-3 py-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded">
+    {{ error }}
+  </div>
+{% elif hint and not results %}
+  <div class="px-3 py-2 text-xs text-gray-500 italic">{{ hint }}</div>
+{% elif not results %}
+  <div class="px-3 py-2 text-sm text-gray-500">No Jira tickets match that search.</div>
+{% else %}
+<ul role="listbox" class="divide-y divide-gray-100 max-h-72 overflow-y-auto">
+  {% for r in results %}
+  <li role="option"
+      tabindex="0"
+      class="jira-result px-3 py-2 text-sm hover:bg-indigo-50 focus:bg-indigo-50 focus:outline-none cursor-pointer"
+      data-key="{{ r.key }}"
+      data-summary="{{ r.summary | e }}"
+      data-status="{{ r.status | e }}"
+      data-issue-type="{{ r.issue_type | e }}"
+      data-project-key="{{ r.project_key | e }}">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center space-x-2 min-w-0 flex-1">
+        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700 flex-shrink-0">{{ r.key }}</span>
+        <span class="text-gray-900 truncate">{{ r.summary or '(no summary)' }}</span>
+      </div>
+      <div class="flex items-center space-x-1 flex-shrink-0 ml-2">
+        {% if r.issue_type %}
+        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-700">{{ r.issue_type }}</span>
+        {% endif %}
+        {% if r.status %}
+        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs
+          {% set sl = r.status.lower() %}
+          {% if 'done' in sl or 'closed' in sl or 'resolved' in sl %}bg-green-100 text-green-800
+          {% elif 'progress' in sl or 'review' in sl or 'qa' in sl %}bg-yellow-100 text-yellow-800
+          {% elif 'to do' in sl or 'open' in sl or 'backlog' in sl %}bg-gray-100 text-gray-700
+          {% else %}bg-purple-100 text-purple-800{% endif %}">{{ r.status }}</span>
+        {% endif %}
+      </div>
+    </div>
+    {% if r.project_key %}
+    <div class="mt-0.5 text-xs text-gray-400 pl-8">{{ r.project_key }}{% if r.project_name and r.project_name != r.project_key %} \u2014 {{ r.project_name }}{% endif %}</div>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
