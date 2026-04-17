@@ -589,6 +589,59 @@ def list_object_fields(env_id, object_name):
         db.close()
 
 
+# --- Bulk Operations ---
+
+@test_management_bp.route("/api/test-cases/bulk", methods=["POST"])
+@require_role("admin", "tester")
+def bulk_test_cases():
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids") or []
+    action = data.get("action")
+    payload = data.get("payload") or {}
+    if not ids or not action:
+        return jsonify(error="ids and action are required"), 400
+
+    db = next(get_db())
+    try:
+        from primeqa.test_management.models import TestCase, TestCaseTag, SuiteTestCase
+        tid = request.user["tenant_id"]
+        tcs = db.query(TestCase).filter(
+            TestCase.tenant_id == tid, TestCase.id.in_(ids),
+        ).all()
+        count = 0
+        if action == "move_section":
+            sid = payload.get("section_id")
+            for tc in tcs:
+                tc.section_id = sid; count += 1
+        elif action == "set_status":
+            s = payload.get("status")
+            for tc in tcs:
+                tc.status = s; count += 1
+        elif action == "add_tag":
+            tag_id = payload.get("tag_id")
+            for tc in tcs:
+                existing = db.query(TestCaseTag).filter(
+                    TestCaseTag.test_case_id == tc.id, TestCaseTag.tag_id == tag_id,
+                ).first()
+                if not existing:
+                    db.add(TestCaseTag(test_case_id=tc.id, tag_id=tag_id)); count += 1
+        elif action == "add_to_suite":
+            suite_id = payload.get("suite_id")
+            for tc in tcs:
+                existing = db.query(SuiteTestCase).filter(
+                    SuiteTestCase.suite_id == suite_id, SuiteTestCase.test_case_id == tc.id,
+                ).first()
+                if not existing:
+                    db.add(SuiteTestCase(suite_id=suite_id, test_case_id=tc.id, position=0)); count += 1
+        else:
+            return jsonify(error=f"Unknown action: {action}"), 400
+
+        db.commit()
+        return jsonify({"affected": count}), 200
+    finally:
+        db.close()
+
+
 # --- AI Generation ---
 
 @test_management_bp.route("/api/test-cases/generate", methods=["POST"])
