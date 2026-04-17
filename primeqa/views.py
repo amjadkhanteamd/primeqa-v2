@@ -446,7 +446,20 @@ def environments_list():
 @views_bp.route("/environments/new")
 @role_required("admin")
 def environments_new():
-    return render_template("environments/new.html", **ctx(active_page="settings_environments", settings_page="environments"))
+    db = next(get_db())
+    try:
+        sf_connections = ConnectionRepository(db).list_connections(
+            request.user["tenant_id"], "salesforce",
+        )
+        conns_data = [{"id": c.id, "name": c.name, "status": c.status,
+                       "config": dict(c.config) if c.config else {}}
+                      for c in sf_connections]
+        return render_template("environments/new.html", **ctx(
+            active_page="settings_environments", settings_page="environments",
+            sf_connections=conns_data,
+        ))
+    finally:
+        db.close()
 
 
 @views_bp.route("/environments", methods=["POST"])
@@ -454,18 +467,29 @@ def environments_new():
 def environments_create():
     db = next(get_db())
     try:
-        svc = EnvironmentService(EnvironmentRepository(db))
+        conn_repo = ConnectionRepository(db)
+        svc = EnvironmentService(EnvironmentRepository(db), conn_repo)
+        connection_id = request.form.get("connection_id", type=int)
         svc.create_environment(
             tenant_id=request.user["tenant_id"],
             name=request.form["name"],
             env_type=request.form["env_type"],
-            sf_instance_url=request.form["sf_instance_url"],
-            sf_api_version=request.form.get("sf_api_version", "59.0"),
+            sf_instance_url=request.form.get("sf_instance_url") or None,
+            sf_api_version=request.form.get("sf_api_version") or None,
             capture_mode=request.form.get("capture_mode", "smart"),
             max_execution_slots=int(request.form.get("max_execution_slots", 2)),
             created_by=request.user["id"],
+            connection_id=connection_id if connection_id else None,
         )
         return redirect("/environments")
+    except ValueError as e:
+        sf_connections = conn_repo.list_connections(request.user["tenant_id"], "salesforce")
+        conns_data = [{"id": c.id, "name": c.name, "status": c.status,
+                       "config": dict(c.config) if c.config else {}} for c in sf_connections]
+        return render_template("environments/new.html", **ctx(
+            active_page="settings_environments", settings_page="environments",
+            sf_connections=conns_data, error=str(e),
+        ))
     finally:
         db.close()
 

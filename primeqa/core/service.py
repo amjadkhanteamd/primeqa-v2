@@ -153,10 +153,11 @@ VALID_CAPTURE_MODES = {"minimal", "smart", "full"}
 
 
 class EnvironmentService:
-    def __init__(self, env_repo):
+    def __init__(self, env_repo, conn_repo=None):
         self.env_repo = env_repo
+        self.conn_repo = conn_repo
 
-    def create_environment(self, tenant_id, name, env_type, sf_instance_url, sf_api_version, **kwargs):
+    def create_environment(self, tenant_id, name, env_type, sf_instance_url=None, sf_api_version=None, **kwargs):
         if env_type not in VALID_ENV_TYPES:
             raise ValueError(f"Invalid env_type. Must be one of: {', '.join(VALID_ENV_TYPES)}")
         ep = kwargs.get("execution_policy", "full")
@@ -165,6 +166,18 @@ class EnvironmentService:
         cm = kwargs.get("capture_mode", "smart")
         if cm not in VALID_CAPTURE_MODES:
             raise ValueError(f"Invalid capture_mode. Must be one of: {', '.join(VALID_CAPTURE_MODES)}")
+
+        connection_id = kwargs.get("connection_id")
+        if connection_id and self.conn_repo:
+            conn_data = self.conn_repo.get_connection_decrypted(connection_id, tenant_id)
+            if conn_data and conn_data["connection_type"] == "salesforce":
+                cfg = conn_data["config"]
+                sf_instance_url = sf_instance_url or cfg.get("instance_url", "")
+                sf_api_version = sf_api_version or cfg.get("api_version", "59.0")
+
+        if not sf_instance_url:
+            raise ValueError("Salesforce Instance URL is required (provide directly or via a Connection)")
+        sf_api_version = sf_api_version or "59.0"
 
         if env_type == "production":
             kwargs.setdefault("cleanup_mandatory", True)
@@ -250,6 +263,7 @@ class EnvironmentService:
             "created_at": env.created_at.isoformat() if env.created_at else None,
             "updated_at": env.updated_at.isoformat() if env.updated_at else None,
             "created_by": env.created_by,
+            "connection_id": env.connection_id,
         }
 
 

@@ -125,6 +125,7 @@ class EnvironmentRepository:
             max_execution_slots=kwargs.get("max_execution_slots", 2),
             cleanup_mandatory=kwargs.get("cleanup_mandatory", False),
             created_by=kwargs.get("created_by"),
+            connection_id=kwargs.get("connection_id"),
         )
         self.db.add(env)
         self.db.commit()

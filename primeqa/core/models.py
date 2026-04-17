@@ -86,9 +86,11 @@ class Environment(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     created_by = Column(Integer, ForeignKey("users.id"))
+    connection_id = Column(Integer, ForeignKey("connections.id"))
 
     tenant = relationship("Tenant", back_populates="environments")
     credentials = relationship("EnvironmentCredential", back_populates="environment", uselist=False)
+    connection = relationship("Connection")
 
     __table_args__ = (
         CheckConstraint("env_type IN ('sandbox', 'uat', 'staging', 'production')"),
