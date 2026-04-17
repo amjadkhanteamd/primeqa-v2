@@ -25,6 +25,7 @@
                         <a href="/requirements" class="{% if active_page == 'requirements' %}bg-gray-100 text-gray-900{% else %}text-gray-500 hover:bg-gray-50 hover:text-gray-700{% endif %} rounded-md px-3 py-2 text-sm font-medium">Requirements</a>
                         <a href="/runs" class="{% if active_page == 'runs' %}bg-gray-100 text-gray-900{% else %}text-gray-500 hover:bg-gray-50 hover:text-gray-700{% endif %} rounded-md px-3 py-2 text-sm font-medium">Runs</a>
                         <a href="/test-cases" class="{% if active_page == 'test_cases' %}bg-gray-100 text-gray-900{% else %}text-gray-500 hover:bg-gray-50 hover:text-gray-700{% endif %} rounded-md px-3 py-2 text-sm font-medium">Test Library</a>
+                        <a href="/suites" class="{% if active_page == 'suites' %}bg-gray-100 text-gray-900{% else %}text-gray-500 hover:bg-gray-50 hover:text-gray-700{% endif %} rounded-md px-3 py-2 text-sm font-medium">Suites</a>
                         {% if user.role in ['ba', 'admin'] %}
                         <a href="/reviews" class="{% if active_page == 'reviews' %}bg-gray-100 text-gray-900{% else %}text-gray-500 hover:bg-gray-50 hover:text-gray-700{% endif %} rounded-md px-3 py-2 text-sm font-medium">Reviews</a>
                         {% endif %}

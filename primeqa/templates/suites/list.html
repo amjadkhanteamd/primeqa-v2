@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Suites - PrimeQA{% endblock %}
+{% block content %}
+<div class="space-y-6">
+    <div class="flex justify-between items-center">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">Test Suites</h1>
+            <p class="mt-1 text-sm text-gray-500">Curated collections of test cases for execution.</p>
+        </div>
+        {% if user.role in ['admin', 'tester'] %}
+        <button onclick="document.getElementById('new-suite-modal').classList.remove('hidden')" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500">New Suite</button>
+        {% endif %}
+    </div>
+    <div class="bg-white shadow rounded-lg">
+        {% if suites %}
+        <ul class="divide-y divide-gray-200">
+            {% for s in suites %}
+            <li class="px-6 py-4 hover:bg-gray-50"><a href="/suites/{{ s.id }}" class="flex justify-between items-center">
+                <div>
+                    <p class="text-sm font-medium text-gray-900">{{ s.name }}</p>
+                    <p class="text-xs text-gray-500">{{ s.suite_type }}{% if s.description %} · {{ s.description[:80] }}{% endif %}</p>
+                </div>
+                <span class="text-xs text-gray-400">{{ s.created_at[:10] if s.created_at else '' }}</span>
+            </a></li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <div class="p-12 text-center text-sm text-gray-500">No suites yet. Create one to group test cases for execution.</div>
+        {% endif %}
+    </div>
+</div>
+
+<div id="new-suite-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+    <div class="flex min-h-full items-center justify-center p-4">
+        <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('new-suite-modal').classList.add('hidden')"></div>
+        <div class="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+            <h3 class="text-lg font-medium text-gray-900 mb-4">Create Suite</h3>
+            <form method="POST" action="/suites" class="space-y-4">
+                <div><label class="block text-sm font-medium">Name</label>
+                    <input name="name" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm"></div>
+                <div><label class="block text-sm font-medium">Type</label>
+                    <select name="suite_type" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                        <option value="regression">Regression</option>
+                        <option value="smoke">Smoke</option>
+                        <option value="sprint">Sprint</option>
+                        <option value="custom">Custom</option>
+                    </select></div>
+                <div><label class="block text-sm font-medium">Description</label>
+                    <textarea name="description" rows="2" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm"></textarea></div>
+                <div class="flex justify-end space-x-3">
+                    <button type="button" onclick="document.getElementById('new-suite-modal').classList.add('hidden')" class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700">Cancel</button>
+                    <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white">Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

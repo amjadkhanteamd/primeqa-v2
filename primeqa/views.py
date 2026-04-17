@@ -1666,6 +1666,158 @@ def requirements_generate(req_id):
     return redirect("/requirements")
 
 
+# --- Suites ---
+
+@views_bp.route("/suites")
+@login_required
+def suites_list():
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import TestSuiteRepository
+        repo = TestSuiteRepository(db)
+        suites = repo.list_suites(request.user["tenant_id"])
+        suites_data = [{"id": s.id, "name": s.name, "suite_type": s.suite_type,
+                        "description": s.description,
+                        "created_at": s.created_at.isoformat() if s.created_at else ""}
+                       for s in suites]
+        return render_template("suites/list.html", **ctx(
+            active_page="suites", suites=suites_data,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/suites", methods=["POST"])
+@role_required("admin", "tester")
+def suites_create():
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import TestSuiteRepository
+        repo = TestSuiteRepository(db)
+        repo.create_suite(
+            request.user["tenant_id"], request.form["name"],
+            request.form.get("suite_type", "custom"), request.user["id"],
+            description=request.form.get("description"),
+        )
+        flash("Suite created", "success")
+    except Exception as e:
+        flash(str(e), "error")
+    finally:
+        db.close()
+    return redirect("/suites")
+
+
+@views_bp.route("/suites/<int:suite_id>")
+@login_required
+def suites_detail(suite_id):
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import TestSuiteRepository, TestCaseRepository
+        suite_repo = TestSuiteRepository(db)
+        tc_repo = TestCaseRepository(db)
+        suite = suite_repo.get_suite(suite_id, request.user["tenant_id"])
+        if not suite:
+            return redirect("/suites")
+        stcs = suite_repo.get_suite_test_cases(suite_id)
+        test_cases = []
+        for stc in stcs:
+            tc = tc_repo.get_test_case(stc.test_case_id, request.user["tenant_id"])
+            if tc:
+                test_cases.append({"id": tc.id, "title": tc.title, "status": tc.status})
+        envs = EnvironmentRepository(db).list_environments(
+            request.user["tenant_id"], request.user["id"], request.user["role"],
+        )
+        envs_data = [{"id": e.id, "name": e.name} for e in envs]
+        suite_data = {"id": suite.id, "name": suite.name, "suite_type": suite.suite_type,
+                      "description": suite.description}
+        return render_template("suites/detail.html", **ctx(
+            active_page="suites", suite=suite_data, test_cases=test_cases, environments=envs_data,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/suites/<int:suite_id>/run", methods=["POST"])
+@role_required("admin", "tester")
+def suites_run(suite_id):
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.execution.repository import (
+            PipelineRunRepository, PipelineStageRepository,
+            ExecutionSlotRepository, WorkerHeartbeatRepository,
+        )
+        from primeqa.execution.service import PipelineService
+        svc = PipelineService(
+            PipelineRunRepository(db), PipelineStageRepository(db),
+            ExecutionSlotRepository(db), WorkerHeartbeatRepository(db),
+        )
+        result = svc.create_run(
+            tenant_id=request.user["tenant_id"],
+            environment_id=int(request.form["environment_id"]),
+            triggered_by=request.user["id"],
+            run_type="execute_only",
+            source_type="suite",
+            source_ids=[suite_id],
+            priority="normal",
+        )
+        flash(f"Suite run #{result['id']} queued", "success")
+        return redirect(f"/runs/{result['id']}")
+    except Exception as e:
+        flash(str(e), "error")
+        return redirect(f"/suites/{suite_id}")
+    finally:
+        db.close()
+
+
+# --- Milestones ---
+
+@views_bp.route("/milestones")
+@login_required
+def milestones_list():
+    db = next(get_db())
+    try:
+        from primeqa.test_management.models import Milestone
+        tid = request.user["tenant_id"]
+        milestones = db.query(Milestone).filter(Milestone.tenant_id == tid).order_by(Milestone.due_date.asc().nullslast()).all()
+        data = [{"id": m.id, "name": m.name, "description": m.description,
+                 "status": m.status, "due_date": m.due_date.isoformat() if m.due_date else None}
+                for m in milestones]
+        return render_template("milestones/list.html", **ctx(
+            active_page="milestones", milestones=data,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/milestones", methods=["POST"])
+@role_required("admin", "tester")
+def milestones_create():
+    from flask import flash
+    from datetime import datetime as _dt
+    db = next(get_db())
+    try:
+        from primeqa.test_management.models import Milestone
+        due = request.form.get("due_date")
+        due_date = _dt.fromisoformat(due) if due else None
+        m = Milestone(
+            tenant_id=request.user["tenant_id"],
+            name=request.form["name"],
+            description=request.form.get("description"),
+            due_date=due_date,
+            created_by=request.user["id"],
+        )
+        db.add(m)
+        db.commit()
+        flash("Milestone created", "success")
+    except Exception as e:
+        flash(str(e), "error")
+    finally:
+        db.close()
+    return redirect("/milestones")
+
+
 # --- Releases ---
 
 @views_bp.route("/releases")

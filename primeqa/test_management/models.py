@@ -159,6 +159,50 @@ class BAReview(Base):
     )
 
 
+class Tag(Base):
+    __tablename__ = "tags"
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    name = Column(String(100), nullable=False)
+    color = Column(String(20), server_default="gray")
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="tags_tenant_name_unique"),)
+
+
+class TestCaseTag(Base):
+    __tablename__ = "test_case_tags"
+    id = Column(Integer, primary_key=True)
+    test_case_id = Column(Integer, ForeignKey("test_cases.id", ondelete="CASCADE"), nullable=False)
+    tag_id = Column(Integer, ForeignKey("tags.id", ondelete="CASCADE"), nullable=False)
+    __table_args__ = (UniqueConstraint("test_case_id", "tag_id", name="test_case_tags_unique"),)
+
+
+class Milestone(Base):
+    __tablename__ = "milestones"
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    name = Column(String(255), nullable=False)
+    description = Column(Text)
+    due_date = Column(DateTime(timezone=True))
+    status = Column(String(20), nullable=False, server_default="active")
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="milestones_tenant_name_unique"),
+        CheckConstraint("status IN ('active', 'completed', 'archived')"),
+    )
+
+
+class MilestoneSuite(Base):
+    __tablename__ = "milestone_suites"
+    id = Column(Integer, primary_key=True)
+    milestone_id = Column(Integer, ForeignKey("milestones.id", ondelete="CASCADE"), nullable=False)
+    suite_id = Column(Integer, ForeignKey("test_suites.id", ondelete="CASCADE"), nullable=False)
+    added_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    __table_args__ = (UniqueConstraint("milestone_id", "suite_id", name="milestone_suites_unique"),)
+
+
 class MetadataImpact(Base):
     __tablename__ = "metadata_impacts"
 
