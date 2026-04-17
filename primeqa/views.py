@@ -463,6 +463,7 @@ def environments_create():
             sf_api_version=request.form.get("sf_api_version", "59.0"),
             capture_mode=request.form.get("capture_mode", "smart"),
             max_execution_slots=int(request.form.get("max_execution_slots", 2)),
+            created_by=request.user["id"],
         )
         return redirect("/environments")
     finally:

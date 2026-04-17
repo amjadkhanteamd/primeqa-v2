@@ -183,6 +183,7 @@ def create_environment():
             execution_policy=data.get("execution_policy", "full"),
             capture_mode=data.get("capture_mode", "smart"),
             max_execution_slots=data.get("max_execution_slots", 2),
+            created_by=request.user["id"],
             **({} if "cleanup_mandatory" not in data else {"cleanup_mandatory": data["cleanup_mandatory"]}),
         )
         return jsonify(env), 201
