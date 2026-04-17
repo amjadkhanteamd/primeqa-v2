@@ -308,12 +308,23 @@ class Preflight:
     def _healthy_meta_categories(self, meta_version) -> Set[str]:
         """Return the set of healthy categories for this meta_version.
 
-        R1 stub: assumes all 6 categories healthy if meta_version completed.
-        R3 will replace this by reading `meta_sync_status`.
+        R3: reads `meta_sync_status` rows to answer per-category. Falls back
+        to the legacy "meta_version.status == 'complete' \u2192 all healthy"
+        if no status rows exist (pre-R3 meta versions).
         """
-        if not meta_version or meta_version.status != "complete":
+        if not meta_version:
             return set()
-        return {"objects", "fields", "record_types", "validation_rules", "flows", "triggers"}
+        from primeqa.metadata.models import MetaSyncStatus
+        rows = self.db.query(MetaSyncStatus).filter(
+            MetaSyncStatus.meta_version_id == meta_version.id,
+        ).all()
+        if not rows:
+            # Legacy meta_version, no per-category data
+            if meta_version.status == "complete":
+                return {"objects", "fields", "record_types",
+                        "validation_rules", "flows", "triggers"}
+            return set()
+        return {r.category for r in rows if r.status == "complete"}
 
     def _categories_for_refs(self, referenced_entities: List[Any]) -> Set[str]:
         """Map referenced_entities list -> the set of metadata categories they depend on.

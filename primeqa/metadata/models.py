@@ -40,6 +40,34 @@ class MetaVersion(Base):
     )
 
 
+class MetaSyncStatus(Base):
+    """Per-category sync status for a MetaVersion (R3)."""
+    __tablename__ = "meta_sync_status"
+
+    id = Column(Integer, primary_key=True)
+    meta_version_id = Column(Integer, ForeignKey("meta_versions.id", ondelete="CASCADE"),
+                             nullable=False)
+    category = Column(String(30), nullable=False)
+    status = Column(String(30), nullable=False, server_default="pending")
+    items_count = Column(Integer, nullable=False, server_default="0")
+    retry_count = Column(Integer, nullable=False, server_default="0")
+    error_message = Column(Text)
+    started_at = Column(DateTime(timezone=True))
+    completed_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("meta_version_id", "category", name="meta_sync_status_unique"),
+        CheckConstraint(
+            "category IN ('objects','fields','record_types','validation_rules','flows','triggers')",
+        ),
+        CheckConstraint(
+            "status IN ('pending','running','complete','failed','skipped','skipped_parent_failed')",
+        ),
+    )
+
+
 class MetaObject(Base):
     __tablename__ = "meta_objects"
 

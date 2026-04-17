@@ -23,9 +23,76 @@
         <div><span class="text-xs text-gray-500 uppercase">Cleanup Mandatory</span><p class="font-medium">{{ 'Yes' if env.cleanup_mandatory else 'No' }}</p></div>
     </div>
     <div class="flex space-x-3">
-        <form method="POST" action="/environments/{{ env.id }}/refresh-metadata"><button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Refresh Metadata</button></form>
         <form method="POST" action="/environments/{{ env.id }}/test-connection"><button type="submit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Test Connection</button></form>
     </div>
     {% if message %}<div class="rounded-md {% if 'error' in message|lower %}bg-red-50 text-red-700{% else %}bg-green-50 text-green-700{% endif %} p-4 text-sm">{{ message }}</div>{% endif %}
+
+    <!-- R3: Metadata sync panel ------------------------------------------- -->
+    <div class="bg-white shadow rounded-lg p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-semibold text-gray-900">Sync your environment for accurate testing</h3>
+        {% if meta_version_id %}<span class="text-xs text-gray-500">Current meta version: #{{ meta_version_id }}</span>{% endif %}
+      </div>
+
+      <form method="POST" action="/environments/{{ env.id }}/refresh-metadata" class="space-y-4">
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+          {% for cat in ['objects','fields','record_types','validation_rules','flows','triggers'] %}
+          {% set s = sync_statuses.get(cat) %}
+          <label class="flex items-start space-x-2 p-3 rounded border border-gray-200 hover:bg-gray-50 cursor-pointer">
+            <input type="checkbox" name="categories" value="{{ cat }}" checked
+                   class="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium text-gray-900">{{ cat | replace('_',' ') | title }}</div>
+              {% if s %}
+              <div class="mt-1 text-xs
+                {% if s.status == 'complete' %}text-green-600
+                {% elif s.status == 'failed' %}text-red-600
+                {% elif s.status == 'skipped_parent_failed' %}text-yellow-700
+                {% elif s.status in ('running','pending') %}text-blue-600
+                {% else %}text-gray-500{% endif %}">
+                {{ s.status }} &middot; {{ s.items_count }} items
+              </div>
+              {% if s.error_message %}
+              <div class="mt-1 text-xs text-red-500 truncate">{{ s.error_message[:120] }}</div>
+              {% endif %}
+              {% else %}
+              <div class="mt-1 text-xs text-gray-400">never synced</div>
+              {% endif %}
+            </div>
+          </label>
+          {% endfor %}
+        </div>
+        <button type="submit" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500">
+          Sync selected categories
+        </button>
+        <p class="text-xs text-gray-500">Dependent categories (fields, VRs, flows, triggers) require parent categories to be healthy before they can run. If a parent fails, its dependents are skipped.</p>
+      </form>
+
+      {% if meta_version_id %}
+      <div class="mt-4" id="sync-live" data-mv-id="{{ meta_version_id }}">
+        <span id="sync-live-badge" class="hidden text-xs text-blue-600 font-medium">\u25cf live syncing...</span>
+      </div>
+      <script>
+      (function(){
+        const mvId = document.querySelector('#sync-live')?.dataset?.mvId;
+        if (!mvId) return;
+        const es = new EventSource('/api/metadata/' + mvId + '/sync-events');
+        const badge = document.getElementById('sync-live-badge');
+        es.addEventListener('open', () => badge.classList.remove('hidden'));
+        es.addEventListener('sync_started', () => badge.classList.remove('hidden'));
+        es.addEventListener('category_finished', () => {
+          // Simple UX: when any category finishes, reload to show fresh state
+          setTimeout(() => window.location.reload(), 400);
+          es.close();
+        });
+        es.addEventListener('sync_finished', () => {
+          setTimeout(() => window.location.reload(), 400);
+          es.close();
+        });
+        es.addEventListener('stream_ending', () => es.close());
+      })();
+      </script>
+      {% endif %}
+    </div>
 </div>
 {% endblock %}

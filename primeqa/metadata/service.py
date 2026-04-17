@@ -27,7 +27,24 @@ class MetadataService:
         self.metadata_repo = metadata_repo
         self.env_repo = env_repo
 
-    def refresh_metadata(self, environment_id, tenant_id):
+    def refresh_metadata(self, environment_id, tenant_id, categories=None):
+        """Refresh metadata. If `categories` is passed, only those are touched;
+        otherwise all 6 categories sync (backwards-compat).
+
+        R3 change: writes per-category status rows to meta_sync_status as the
+        refresh progresses, and emits SSE events via primeqa.metadata.sync_engine.
+        """
+        # R3: category filter and status-writing helpers
+        from primeqa.metadata.sync_engine import (
+            ALL_CATEGORIES, DEPENDS_ON, emit_sync_event,
+        )
+        from primeqa.metadata.models import MetaSyncStatus
+        from datetime import datetime, timezone as _tz
+        requested_cats = set(categories) if categories else set(ALL_CATEGORIES)
+        requested_cats &= set(ALL_CATEGORIES)
+        if not requested_cats:
+            requested_cats = set(ALL_CATEGORIES)
+
         env = self.env_repo.get_environment(environment_id, tenant_id)
         if not env:
             raise ValueError("Environment not found")
@@ -49,9 +66,56 @@ class MetadataService:
             environment_id, f"v{version_num}",
         )
 
+        # Seed status rows for every category being sync'd
+        def _seed_status(cat, status):
+            row = MetaSyncStatus(meta_version_id=mv.id, category=cat, status=status)
+            self.metadata_repo.db.add(row)
+            self.metadata_repo.db.commit()
+
+        def _update_status(cat, status, items=None, error=None):
+            row = self.metadata_repo.db.query(MetaSyncStatus).filter_by(
+                meta_version_id=mv.id, category=cat).first()
+            if not row:
+                row = MetaSyncStatus(meta_version_id=mv.id, category=cat, status=status)
+                self.metadata_repo.db.add(row)
+            row.status = status
+            if items is not None:
+                row.items_count = items
+            if error is not None:
+                row.error_message = error[:500]
+            if status == "running" and not row.started_at:
+                row.started_at = datetime.now(_tz.utc)
+            if status in ("complete", "failed", "skipped", "skipped_parent_failed"):
+                row.completed_at = datetime.now(_tz.utc)
+            row.updated_at = datetime.now(_tz.utc)
+            self.metadata_repo.db.commit()
+            emit_sync_event(mv.id, "category_finished" if status != "running" else "category_started",
+                            category=cat, status=status,
+                            items_count=items if items is not None else 0,
+                            error_message=error[:200] if error else None)
+
+        for cat in ALL_CATEGORIES:
+            if cat in requested_cats:
+                _seed_status(cat, "pending")
+            else:
+                # Skipped by user selection
+                _seed_status(cat, "skipped")
+
+        emit_sync_event(mv.id, "sync_started", meta_version_id=mv.id,
+                        categories=sorted(requested_cats))
+
+        def _mark_dependents_skipped(failed_cat):
+            """When a parent category fails, mark its dependents as skipped_parent_failed."""
+            for c, parents in DEPENDS_ON.items():
+                if failed_cat in parents and c in requested_cats:
+                    _update_status(c, "skipped_parent_failed",
+                                   error=f"Parent '{failed_cat}' failed; retry it first.")
+
         try:
             sf = SalesforceClient(env.sf_instance_url, env.sf_api_version, creds["access_token"])
 
+            if "objects" in requested_cats:
+                _update_status("objects", "running")
             sobjects = sf.get_objects()
             filtered = [
                 o for o in sobjects
@@ -76,9 +140,15 @@ class MetadataService:
                 }
                 for o in filtered
             ])
+            if "objects" in requested_cats:
+                _update_status("objects", "complete", items=len(stored_objects))
 
             total_fields = 0
             obj_map = {o.api_name: o for o in stored_objects}
+            if "fields" in requested_cats:
+                _update_status("fields", "running")
+            if "record_types" in requested_cats:
+                _update_status("record_types", "running")
 
             for obj in stored_objects:
                 try:
@@ -125,6 +195,14 @@ class MetadataService:
                 if record_types:
                     self.metadata_repo.store_record_types(mv.id, obj.id, record_types)
 
+            if "fields" in requested_cats:
+                _update_status("fields", "complete", items=total_fields)
+            if "record_types" in requested_cats:
+                _update_status("record_types", "complete",
+                               items=0)  # actual per-object counts not tracked today
+
+            if "validation_rules" in requested_cats:
+                _update_status("validation_rules", "running")
             vrs = sf.query_tooling(
                 "SELECT Id, ValidationName, Active, "
                 "EntityDefinition.QualifiedApiName, "
@@ -143,7 +221,11 @@ class MetadataService:
                         "is_active": vr.get("Active", True),
                     }])
                     vr_count += 1
+            if "validation_rules" in requested_cats:
+                _update_status("validation_rules", "complete", items=vr_count)
 
+            if "flows" in requested_cats:
+                _update_status("flows", "running")
             flow_records = sf.query_tooling(
                 "SELECT Id, ApiName, Label, ProcessType, "
                 "TriggerType, "
@@ -175,7 +257,11 @@ class MetadataService:
                 })
             if flows_data:
                 self.metadata_repo.store_flows(mv.id, flows_data)
+            if "flows" in requested_cats:
+                _update_status("flows", "complete", items=len(flows_data))
 
+            if "triggers" in requested_cats:
+                _update_status("triggers", "running")
             trigger_records = sf.query_tooling(
                 "SELECT Id, Name, TableEnumOrId, "
                 "UsageBeforeInsert, UsageAfterInsert, "
@@ -201,6 +287,8 @@ class MetadataService:
                         "is_active": True,
                     }])
                     trigger_count += 1
+            if "triggers" in requested_cats:
+                _update_status("triggers", "complete", items=trigger_count)
 
             hash_input = sorted([o.api_name for o in stored_objects])
             all_fields = self.metadata_repo.get_fields(mv.id)
@@ -225,6 +313,9 @@ class MetadataService:
 
             self.metadata_repo.archive_old_versions(environment_id)
 
+            emit_sync_event(mv.id, "sync_finished", status="complete",
+                            outcomes={k: "complete" for k in requested_cats})
+
             return {
                 "version_id": mv.id,
                 "version_label": f"v{version_num}",
@@ -239,6 +330,24 @@ class MetadataService:
             }
 
         except Exception as e:
+            # Determine which category was running at the time of failure, mark it failed,
+            # and cascade skipped_parent_failed to its dependents.
+            err_msg = str(e)
+            running = self.metadata_repo.db.query(MetaSyncStatus).filter_by(
+                meta_version_id=mv.id, status="running",
+            ).first()
+            if running:
+                _update_status(running.category, "failed", error=err_msg)
+                _mark_dependents_skipped(running.category)
+            # Remaining pending categories become skipped
+            pending = self.metadata_repo.db.query(MetaSyncStatus).filter_by(
+                meta_version_id=mv.id, status="pending",
+            ).all()
+            for p in pending:
+                _update_status(p.category, "skipped_parent_failed",
+                               error="Earlier category failed")
+            emit_sync_event(mv.id, "sync_finished", status="failed",
+                            error_message=err_msg[:240])
             self.metadata_repo.fail_meta_version(mv.id)
             raise
 

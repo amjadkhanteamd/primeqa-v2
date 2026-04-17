@@ -994,10 +994,28 @@ def environments_detail(env_id):
             "max_execution_slots": env.max_execution_slots,
             "cleanup_mandatory": env.cleanup_mandatory,
         }
+
+        # R3: per-category sync status for the current meta_version
+        sync_statuses = {}
+        meta_version_id = env.current_meta_version_id
+        if meta_version_id:
+            from primeqa.metadata.models import MetaSyncStatus
+            rows = db.query(MetaSyncStatus).filter(
+                MetaSyncStatus.meta_version_id == meta_version_id,
+            ).all()
+            for r in rows:
+                sync_statuses[r.category] = {
+                    "status": r.status,
+                    "items_count": r.items_count,
+                    "error_message": r.error_message,
+                    "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                }
+
         return render_template("environments/detail.html", **ctx(
             active_page="settings_environments", settings_page="environments",
             breadcrumb_section="Environments", breadcrumb_item=env.name,
             env=env_data, message=request.args.get("message"),
+            sync_statuses=sync_statuses, meta_version_id=meta_version_id,
         ))
     finally:
         db.close()
@@ -1127,7 +1145,9 @@ def environments_refresh_metadata(env_id):
         )
         meta_repo = MetadataRepository(db)
         meta_svc = MetadataService(meta_repo, env_repo)
-        result = meta_svc.refresh_metadata(env_id, request.user["tenant_id"])
+        # R3: accept optional categories[] checkbox selection
+        cats = request.form.getlist("categories") or None
+        result = meta_svc.refresh_metadata(env_id, request.user["tenant_id"], categories=cats)
         flash(f"Metadata refreshed: {result['objects_count']} objects, {result['fields_count']} fields", "success")
     except Exception as e:
         flash(f"Metadata refresh failed: {e}", "error")
