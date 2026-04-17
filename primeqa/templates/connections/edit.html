@@ -49,8 +49,11 @@
                 <input name="llm_api_key" type="password" placeholder="Leave blank to keep current" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm"></div>
             <div><label class="block text-sm font-medium text-gray-700">Preferred Model</label>
                 <select name="llm_model" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm">
+                    <option value="claude-opus-4-20250514" {% if conn.config.get('model') == 'claude-opus-4-20250514' %}selected{% endif %}>Claude Opus 4</option>
                     <option value="claude-sonnet-4-20250514" {% if conn.config.get('model') == 'claude-sonnet-4-20250514' %}selected{% endif %}>Claude Sonnet 4</option>
                     <option value="claude-haiku-4-20250414" {% if conn.config.get('model') == 'claude-haiku-4-20250414' %}selected{% endif %}>Claude Haiku 4</option>
+                    <option value="claude-3-7-sonnet-20250219" {% if conn.config.get('model') == 'claude-3-7-sonnet-20250219' %}selected{% endif %}>Claude 3.7 Sonnet</option>
+                    <option value="claude-3-5-haiku-20241022" {% if conn.config.get('model') == 'claude-3-5-haiku-20241022' %}selected{% endif %}>Claude 3.5 Haiku</option>
                 </select></div>
         </div>
         {% endif %}
