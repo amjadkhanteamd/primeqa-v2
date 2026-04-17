@@ -8,9 +8,12 @@
             {% if group.description %}<p class="text-sm text-gray-500 mt-1">{{ group.description }}</p>{% endif %}
         </div>
         {% if user.role == 'admin' %}
-        <form method="POST" action="/groups/{{ group.id }}/delete" onsubmit="return confirm('Delete this group?')">
-            <button type="submit" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">Delete Group</button>
-        </form>
+        <div class="flex space-x-3">
+            <a href="/groups/{{ group.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit</a>
+            <form method="POST" action="/groups/{{ group.id }}/delete" id="delete-group-{{ group.id }}">
+                <button type="button" onclick="showConfirmModal('Delete Group', 'This will remove all members and environment assignments. Are you sure?', 'delete-group-{{ group.id }}')" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">Delete</button>
+            </form>
+        </div>
         {% endif %}
     </div>
 

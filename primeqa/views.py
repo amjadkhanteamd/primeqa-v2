@@ -524,12 +524,77 @@ def environments_detail(env_id):
             "sf_instance_url": env.sf_instance_url, "sf_api_version": env.sf_api_version,
             "capture_mode": env.capture_mode, "execution_policy": env.execution_policy,
             "max_execution_slots": env.max_execution_slots,
+            "cleanup_mandatory": env.cleanup_mandatory,
         }
         return render_template("environments/detail.html", **ctx(
-            active_page="settings_environments", settings_page="environments", env=env_data, message=request.args.get("message"),
+            active_page="settings_environments", settings_page="environments",
+            breadcrumb_section="Environments", breadcrumb_item=env.name,
+            env=env_data, message=request.args.get("message"),
         ))
     finally:
         db.close()
+
+
+@views_bp.route("/environments/<int:env_id>/edit", methods=["GET"])
+@role_required("admin")
+def environments_edit(env_id):
+    db = next(get_db())
+    try:
+        env = EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"])
+        if not env:
+            return redirect("/environments")
+        env_data = {
+            "id": env.id, "name": env.name, "env_type": env.env_type,
+            "capture_mode": env.capture_mode, "execution_policy": env.execution_policy,
+            "max_execution_slots": env.max_execution_slots, "cleanup_mandatory": env.cleanup_mandatory,
+        }
+        return render_template("environments/edit.html", **ctx(
+            active_page="settings_environments", settings_page="environments",
+            breadcrumb_section="Environments", breadcrumb_item=f"Edit {env.name}",
+            env=env_data, error=None,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/environments/<int:env_id>/edit", methods=["POST"])
+@role_required("admin")
+def environments_update(env_id):
+    from flask import flash
+    db = next(get_db())
+    try:
+        svc = EnvironmentService(EnvironmentRepository(db))
+        svc.update_environment(env_id, request.user["tenant_id"], {
+            "name": request.form.get("name"),
+            "env_type": request.form.get("env_type"),
+            "capture_mode": request.form.get("capture_mode"),
+            "execution_policy": request.form.get("execution_policy"),
+            "max_execution_slots": int(request.form.get("max_execution_slots", 2)),
+            "cleanup_mandatory": "cleanup_mandatory" in request.form,
+        })
+        flash("Environment updated successfully", "success")
+        return redirect(f"/environments/{env_id}")
+    except ValueError as e:
+        flash(str(e), "error")
+        return redirect(f"/environments/{env_id}/edit")
+    finally:
+        db.close()
+
+
+@views_bp.route("/environments/<int:env_id>/delete", methods=["POST"])
+@role_required("admin")
+def environments_delete(env_id):
+    from flask import flash
+    db = next(get_db())
+    try:
+        env_repo = EnvironmentRepository(db)
+        env_repo.update_environment(env_id, request.user["tenant_id"], {"is_active": False})
+        flash("Environment deactivated successfully", "success")
+    except Exception as e:
+        flash(str(e), "error")
+    finally:
+        db.close()
+    return redirect("/environments")
 
 
 # --- Users ---
@@ -539,9 +604,42 @@ def environments_detail(env_id):
 def users_list():
     db = next(get_db())
     try:
+        from flask import flash
+        search = request.args.get("search", "").strip()
+        sort = request.args.get("sort", "full_name")
+        order = request.args.get("order", "asc")
+        page = request.args.get("page", 1, type=int)
+        per_page = 20
+
         svc = AuthService(UserRepository(db), RefreshTokenRepository(db))
-        users = svc.list_users(request.user["tenant_id"])
-        return render_template("users/list.html", **ctx(active_page="settings_users", settings_page="users", users=users))
+        all_users = svc.list_users(request.user["tenant_id"])
+
+        if search:
+            all_users = [u for u in all_users if search.lower() in u["full_name"].lower() or search.lower() in u["email"].lower()]
+
+        reverse = order == "desc"
+        if sort in ("full_name", "email", "role"):
+            all_users.sort(key=lambda u: (u.get(sort) or "").lower(), reverse=reverse)
+
+        total = len(all_users)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = min(page, total_pages)
+        paginated = all_users[(page - 1) * per_page:page * per_page]
+
+        extra = ""
+        if search:
+            extra += f"&search={search}"
+        if sort != "full_name":
+            extra += f"&sort={sort}"
+        if order != "asc":
+            extra += f"&order={order}"
+
+        return render_template("users/list.html", **ctx(
+            active_page="settings_users", settings_page="users",
+            breadcrumb_section="Users",
+            users=paginated, total=total, page=page, total_pages=total_pages,
+            search=search, sort=sort, order=order, extra_params=extra,
+        ))
     finally:
         db.close()
 
@@ -549,12 +647,17 @@ def users_list():
 @views_bp.route("/users/new", methods=["GET"])
 @role_required("admin")
 def users_new():
-    return render_template("users/form.html", **ctx(active_page="settings_users", settings_page="users", edit_user=None, error=None))
+    return render_template("users/form.html", **ctx(
+        active_page="settings_users", settings_page="users",
+        breadcrumb_section="Users", breadcrumb_item="New User",
+        edit_user=None, error=None,
+    ))
 
 
 @views_bp.route("/users/new", methods=["POST"])
 @role_required("admin")
 def users_create():
+    from flask import flash
     db = next(get_db())
     try:
         svc = AuthService(UserRepository(db), RefreshTokenRepository(db))
@@ -565,11 +668,81 @@ def users_create():
             full_name=request.form["full_name"],
             role=request.form["role"],
         )
+        flash(f"User {request.form['full_name']} created successfully", "success")
         return redirect("/users")
     except ValueError as e:
-        return render_template("users/form.html", **ctx(active_page="settings_users", settings_page="users", edit_user=None, error=str(e)))
+        return render_template("users/form.html", **ctx(
+            active_page="settings_users", settings_page="users",
+            breadcrumb_section="Users", breadcrumb_item="New User",
+            edit_user=None, error=str(e),
+        ))
     finally:
         db.close()
+
+
+@views_bp.route("/users/<int:user_id>/edit", methods=["GET"])
+@role_required("admin")
+def users_edit(user_id):
+    db = next(get_db())
+    try:
+        user_repo = UserRepository(db)
+        edit_user = user_repo.get_user_by_id(user_id)
+        if not edit_user or edit_user.tenant_id != request.user["tenant_id"]:
+            return redirect("/users")
+        user_data = {
+            "id": edit_user.id, "email": edit_user.email,
+            "full_name": edit_user.full_name, "role": edit_user.role,
+            "is_active": edit_user.is_active,
+        }
+        return render_template("users/form.html", **ctx(
+            active_page="settings_users", settings_page="users",
+            breadcrumb_section="Users", breadcrumb_item=edit_user.full_name,
+            edit_user=user_data, error=None,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/users/<int:user_id>/edit", methods=["POST"])
+@role_required("admin")
+def users_update(user_id):
+    from flask import flash
+    db = next(get_db())
+    try:
+        svc = AuthService(UserRepository(db), RefreshTokenRepository(db))
+        updates = {
+            "full_name": request.form.get("full_name"),
+            "role": request.form.get("role"),
+            "is_active": "is_active" in request.form,
+        }
+        svc.update_user(user_id, **updates)
+        flash("User updated successfully", "success")
+        return redirect("/users")
+    except ValueError as e:
+        flash(str(e), "error")
+        return redirect(f"/users/{user_id}/edit")
+    finally:
+        db.close()
+
+
+@views_bp.route("/users/<int:user_id>/toggle-active", methods=["POST"])
+@role_required("admin")
+def users_toggle_active(user_id):
+    from flask import flash
+    db = next(get_db())
+    try:
+        user_repo = UserRepository(db)
+        user = user_repo.get_user_by_id(user_id)
+        if user and user.tenant_id == request.user["tenant_id"]:
+            new_status = not user.is_active
+            svc = AuthService(user_repo, RefreshTokenRepository(db))
+            svc.update_user(user_id, is_active=new_status)
+            flash(f"User {'activated' if new_status else 'deactivated'} successfully", "success")
+    except ValueError as e:
+        flash(str(e), "error")
+    finally:
+        db.close()
+    return redirect("/users")
 
 
 # --- Impacts ---
@@ -835,7 +1008,47 @@ def groups_create():
             request.user["tenant_id"], request.form["name"],
             request.user["id"], request.form.get("description"),
         )
+        from flask import flash
+        flash("Group created successfully", "success")
         return redirect("/groups")
+    finally:
+        db.close()
+
+
+@views_bp.route("/groups/<int:group_id>/edit", methods=["GET"])
+@role_required("admin")
+def groups_edit(group_id):
+    db = next(get_db())
+    try:
+        svc = GroupService(GroupRepository(db))
+        group = svc.get_group_detail(group_id, request.user["tenant_id"])
+        if not group:
+            return redirect("/groups")
+        return render_template("groups/edit.html", **ctx(
+            active_page="settings_groups", settings_page="groups",
+            breadcrumb_section="Groups", breadcrumb_item=f"Edit {group['name']}",
+            group=group, error=None,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/groups/<int:group_id>/edit", methods=["POST"])
+@role_required("admin")
+def groups_update(group_id):
+    from flask import flash
+    db = next(get_db())
+    try:
+        group_repo = GroupRepository(db)
+        group_repo.update_group(group_id, request.user["tenant_id"], {
+            "name": request.form.get("name"),
+            "description": request.form.get("description"),
+        })
+        flash("Group updated successfully", "success")
+        return redirect(f"/groups/{group_id}")
+    except Exception as e:
+        flash(str(e), "error")
+        return redirect(f"/groups/{group_id}/edit")
     finally:
         db.close()
 

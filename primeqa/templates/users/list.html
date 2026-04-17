@@ -1,34 +1,53 @@
 {% extends "settings/base.html" %}
+{% from "components/pagination.html" import render_search, render_pagination, sort_header %}
 {% block title %}Users - PrimeQA{% endblock %}
 {% block settings_content %}
-<div class="space-y-6">
+<div class="space-y-4">
     <div class="flex justify-between items-center">
         <h1 class="text-2xl font-bold text-gray-900">Users</h1>
         <a href="/users/new" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Add User</a>
+    </div>
+    <div class="flex items-center justify-between">
+        {{ render_search('/users', search or '', 'Search by name or email...') }}
+        <span class="text-sm text-gray-500">{{ total }} user{{ 's' if total != 1 else '' }}</span>
     </div>
     <div class="bg-white shadow rounded-lg overflow-x-auto">
         <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
                 <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Email</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ sort_header('Name', 'full_name', sort, order, '/users', extra_params) }}</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">{{ sort_header('Email', 'email', sort, order, '/users', extra_params) }}</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Last Login</th>
+                    <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
             </thead>
             <tbody class="bg-white divide-y divide-gray-200">
                 {% for u in users %}
-                <tr>
+                <tr class="hover:bg-gray-50">
                     <td class="px-6 py-4 text-sm font-medium text-gray-900">{{ u.full_name }}</td>
                     <td class="px-6 py-4 text-sm text-gray-500">{{ u.email }}</td>
                     <td class="px-6 py-4"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {% if u.role == 'admin' %}bg-purple-100 text-purple-800{% elif u.role == 'tester' %}bg-blue-100 text-blue-800{% elif u.role == 'ba' %}bg-green-100 text-green-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ u.role }}</span></td>
                     <td class="px-6 py-4"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if u.is_active %}bg-green-50 text-green-700{% else %}bg-red-50 text-red-700{% endif %}">{% if u.is_active %}Active{% else %}Inactive{% endif %}</span></td>
                     <td class="px-6 py-4 text-sm text-gray-500">{{ u.last_login_at[:19] if u.last_login_at else 'Never' }}</td>
+                    <td class="px-6 py-4 text-right space-x-2">
+                        <a href="/users/{{ u.id }}/edit" class="text-sm text-indigo-600 hover:text-indigo-800">Edit</a>
+                        <form method="POST" action="/users/{{ u.id }}/toggle-active" class="inline" id="toggle-{{ u.id }}">
+                            <button type="button" onclick="showConfirmModal('{{ 'Deactivate' if u.is_active else 'Activate' }} User', 'Are you sure you want to {{ 'deactivate' if u.is_active else 'activate' }} {{ u.full_name }}?', 'toggle-{{ u.id }}')" class="text-sm {% if u.is_active %}text-red-600 hover:text-red-800{% else %}text-green-600 hover:text-green-800{% endif %}">{{ 'Deactivate' if u.is_active else 'Activate' }}</button>
+                        </form>
+                    </td>
                 </tr>
                 {% endfor %}
+                {% if not users %}
+                <tr><td colspan="6" class="px-6 py-8 text-center text-sm text-gray-500">
+                    No users found{% if search %} matching "{{ search }}"{% endif %}.
+                    {% if not search %}<a href="/users/new" class="text-indigo-600 hover:text-indigo-500">Add your first user.</a>{% endif %}
+                </td></tr>
+                {% endif %}
             </tbody>
         </table>
+        {{ render_pagination(page, total_pages, '/users', extra_params) }}
     </div>
 </div>
 {% endblock %}

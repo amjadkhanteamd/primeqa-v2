@@ -2,14 +2,25 @@
 {% block title %}{{ env.name }} - PrimeQA{% endblock %}
 {% block settings_content %}
 <div class="space-y-6">
-    <h1 class="text-2xl font-bold text-gray-900">{{ env.name }}</h1>
+    <div class="flex justify-between items-center">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">{{ env.name }}</h1>
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium mt-1 {% if env.env_type == 'production' %}bg-red-100 text-red-800{% elif env.env_type == 'uat' %}bg-yellow-100 text-yellow-800{% else %}bg-green-100 text-green-800{% endif %}">{{ env.env_type }}</span>
+        </div>
+        <div class="flex space-x-3">
+            <a href="/environments/{{ env.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit</a>
+            <form method="POST" action="/environments/{{ env.id }}/delete" id="delete-env-{{ env.id }}">
+                <button type="button" onclick="showConfirmModal('Delete Environment', 'This will deactivate the environment. Are you sure?', 'delete-env-{{ env.id }}')" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">Delete</button>
+            </form>
+        </div>
+    </div>
     <div class="bg-white shadow rounded-lg p-6 grid grid-cols-2 md:grid-cols-3 gap-4">
-        <div><span class="text-xs text-gray-500 uppercase">Type</span><p class="font-medium">{{ env.env_type }}</p></div>
         <div><span class="text-xs text-gray-500 uppercase">Instance URL</span><p class="text-sm text-gray-600 truncate">{{ env.sf_instance_url }}</p></div>
         <div><span class="text-xs text-gray-500 uppercase">API Version</span><p class="font-medium">{{ env.sf_api_version }}</p></div>
         <div><span class="text-xs text-gray-500 uppercase">Capture Mode</span><p class="font-medium">{{ env.capture_mode }}</p></div>
         <div><span class="text-xs text-gray-500 uppercase">Execution Policy</span><p class="font-medium">{{ env.execution_policy }}</p></div>
         <div><span class="text-xs text-gray-500 uppercase">Slots</span><p class="font-medium">{{ env.max_execution_slots }}</p></div>
+        <div><span class="text-xs text-gray-500 uppercase">Cleanup Mandatory</span><p class="font-medium">{{ 'Yes' if env.cleanup_mandatory else 'No' }}</p></div>
     </div>
     <div class="flex space-x-3">
         <form method="POST" action="/environments/{{ env.id }}/refresh-metadata"><button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Refresh Metadata</button></form>
