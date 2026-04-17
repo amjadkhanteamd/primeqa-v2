@@ -23,12 +23,14 @@ import primeqa.test_management.models  # noqa: F401
 import primeqa.execution.models  # noqa: F401
 import primeqa.intelligence.models  # noqa: F401
 import primeqa.vector.models  # noqa: F401
+import primeqa.release.models  # noqa: F401
 
 from primeqa.core.routes import core_bp
 from primeqa.metadata.routes import metadata_bp
 from primeqa.test_management.routes import test_management_bp
 from primeqa.execution.routes import execution_bp
 from primeqa.intelligence.routes import intelligence_bp
+from primeqa.release.routes import release_bp
 from primeqa.views import views_bp
 
 
@@ -48,6 +50,7 @@ def create_app():
     application.register_blueprint(test_management_bp)
     application.register_blueprint(execution_bp)
     application.register_blueprint(intelligence_bp)
+    application.register_blueprint(release_bp)
     application.register_blueprint(views_bp)
 
     @application.route("/health")

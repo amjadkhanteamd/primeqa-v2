@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}{{ release.name }} - PrimeQA{% endblock %}
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="flex justify-between items-start">
+        <div>
+            <div class="flex items-center space-x-3">
+                <h1 class="text-2xl font-bold text-gray-900">{{ release.name }}</h1>
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                    {% if release.status == 'shipped' %}bg-green-100 text-green-800
+                    {% elif release.status == 'decided' %}bg-blue-100 text-blue-800
+                    {% elif release.status == 'ready' %}bg-purple-100 text-purple-800
+                    {% elif release.status == 'in_progress' %}bg-yellow-100 text-yellow-800
+                    {% elif release.status == 'cancelled' %}bg-red-100 text-red-800
+                    {% else %}bg-gray-100 text-gray-800{% endif %}">
+                    {{ release.status|replace('_', ' ')|capitalize }}
+                </span>
+            </div>
+            {% if release.version_tag %}<p class="mt-1 text-sm text-gray-500 font-mono">{{ release.version_tag }}</p>{% endif %}
+            {% if release.description %}<p class="mt-2 text-sm text-gray-600">{{ release.description }}</p>{% endif %}
+            {% if release.target_date %}<p class="mt-2 text-xs text-gray-500">Target: {{ release.target_date }}</p>{% endif %}
+        </div>
+        {% if user.role in ['admin', 'tester'] %}
+        <div class="flex space-x-3">
+            <a href="/releases/{{ release.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit</a>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Decision Banner -->
+    {% if release.latest_decision %}
+    <div class="rounded-lg p-4 border
+        {% if release.latest_decision.recommendation == 'go' %}bg-green-50 border-green-200
+        {% elif release.latest_decision.recommendation == 'no_go' %}bg-red-50 border-red-200
+        {% else %}bg-yellow-50 border-yellow-200{% endif %}">
+        <div class="flex items-start justify-between">
+            <div>
+                <p class="text-sm font-medium
+                    {% if release.latest_decision.recommendation == 'go' %}text-green-800
+                    {% elif release.latest_decision.recommendation == 'no_go' %}text-red-800
+                    {% else %}text-yellow-800{% endif %}">
+                    AI Recommendation: {{ release.latest_decision.recommendation|replace('_', ' ')|upper }}
+                    {% if release.latest_decision.confidence %}<span class="ml-2 text-xs">({{ (release.latest_decision.confidence * 100)|int }}% confidence)</span>{% endif %}
+                </p>
+                {% if release.latest_decision.final_decision %}
+                <p class="mt-1 text-xs text-gray-600">Final decision: <span class="font-medium">{{ release.latest_decision.final_decision|replace('_', ' ')|upper }}</span></p>
+                {% endif %}
+            </div>
+            <a href="/releases/{{ release.id }}/decision" class="text-sm font-medium text-indigo-600 hover:text-indigo-800">View Reasoning →</a>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Tabs -->
+    <div class="border-b border-gray-200">
+        <nav class="-mb-px flex space-x-8">
+            <a href="?tab=requirements" class="{% if tab == 'requirements' or not tab %}border-indigo-500 text-indigo-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} whitespace-nowrap border-b-2 py-3 text-sm font-medium">
+                Requirements ({{ release.requirements|length }})
+            </a>
+            <a href="?tab=impacts" class="{% if tab == 'impacts' %}border-indigo-500 text-indigo-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} whitespace-nowrap border-b-2 py-3 text-sm font-medium">
+                Impacts ({{ release.impacts|length }})
+            </a>
+            <a href="?tab=test_plan" class="{% if tab == 'test_plan' %}border-indigo-500 text-indigo-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} whitespace-nowrap border-b-2 py-3 text-sm font-medium">
+                Test Plan ({{ release.test_plan|length }})
+            </a>
+            <a href="?tab=runs" class="{% if tab == 'runs' %}border-indigo-500 text-indigo-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} whitespace-nowrap border-b-2 py-3 text-sm font-medium">
+                Runs ({{ release.runs|length }})
+            </a>
+            <a href="?tab=decision" class="{% if tab == 'decision' %}border-indigo-500 text-indigo-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} whitespace-nowrap border-b-2 py-3 text-sm font-medium">
+                Decision
+            </a>
+        </nav>
+    </div>
+
+    <!-- Tab Content -->
+    {% if tab == 'impacts' %}
+    <div class="bg-white shadow rounded-lg p-6">
+        {% if release.impacts %}
+        <ul class="divide-y divide-gray-200">
+            {% for i in release.impacts %}
+            <li class="py-3 flex justify-between items-center">
+                <div>
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                        {% if i.risk_level == 'critical' %}bg-red-100 text-red-800
+                        {% elif i.risk_level == 'high' %}bg-orange-100 text-orange-800
+                        {% elif i.risk_level == 'medium' %}bg-yellow-100 text-yellow-800
+                        {% else %}bg-gray-100 text-gray-800{% endif %}">
+                        {{ i.risk_level or 'not scored' }}
+                    </span>
+                    <span class="ml-2 text-sm text-gray-700">Impact #{{ i.metadata_impact_id }}</span>
+                </div>
+                {% if i.risk_score %}<span class="text-sm font-medium text-gray-900">{{ i.risk_score }}/100</span>{% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-sm text-gray-500 text-center py-8">No metadata impacts yet. Run metadata refresh to detect changes.</p>
+        {% endif %}
+    </div>
+    {% elif tab == 'test_plan' %}
+    <div class="bg-white shadow rounded-lg p-6">
+        {% if release.test_plan %}
+        <ul class="divide-y divide-gray-200">
+            {% for item in release.test_plan %}
+            <li class="py-3 flex justify-between items-center">
+                <div>
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                        {% if item.priority == 'critical' %}bg-red-100 text-red-800
+                        {% elif item.priority == 'high' %}bg-orange-100 text-orange-800
+                        {% elif item.priority == 'medium' %}bg-yellow-100 text-yellow-800
+                        {% else %}bg-gray-100 text-gray-800{% endif %}">
+                        {{ item.priority }}
+                    </span>
+                    <a href="/test-cases/{{ item.test_case_id }}" class="ml-2 text-sm font-medium text-indigo-600 hover:text-indigo-800">Test Case #{{ item.test_case_id }}</a>
+                    {% if item.inclusion_reason %}<span class="ml-2 text-xs text-gray-500">{{ item.inclusion_reason }}</span>{% endif %}
+                </div>
+                {% if item.risk_score %}<span class="text-sm text-gray-500">Risk: {{ item.risk_score }}</span>{% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-sm text-gray-500 text-center py-8">No tests in the plan yet. Add tests manually or generate from requirements.</p>
+        {% endif %}
+    </div>
+    {% elif tab == 'runs' %}
+    <div class="bg-white shadow rounded-lg p-6">
+        {% if release.runs %}
+        <ul class="divide-y divide-gray-200">
+            {% for run in release.runs %}
+            <li class="py-3 flex justify-between items-center">
+                <a href="/runs/{{ run.pipeline_run_id }}" class="text-sm font-medium text-indigo-600 hover:text-indigo-800">Run #{{ run.pipeline_run_id }}</a>
+                <span class="text-xs text-gray-500">{{ run.triggered_at[:19] if run.triggered_at else '' }}</span>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-sm text-gray-500 text-center py-8">No runs yet. Execute the test plan to see results here.</p>
+        {% endif %}
+    </div>
+    {% elif tab == 'decision' %}
+    <div class="bg-white shadow rounded-lg p-6">
+        {% if release.latest_decision %}
+        <h3 class="text-lg font-medium text-gray-900 mb-4">Decision Details</h3>
+        <dl class="grid grid-cols-2 gap-4 mb-6">
+            <div><dt class="text-xs text-gray-500 uppercase">Recommendation</dt><dd class="text-sm font-medium text-gray-900">{{ release.latest_decision.recommendation|replace('_', ' ')|upper }}</dd></div>
+            <div><dt class="text-xs text-gray-500 uppercase">Confidence</dt><dd class="text-sm font-medium text-gray-900">{% if release.latest_decision.confidence %}{{ (release.latest_decision.confidence * 100)|int }}%{% else %}—{% endif %}</dd></div>
+            <div><dt class="text-xs text-gray-500 uppercase">Final Decision</dt><dd class="text-sm font-medium text-gray-900">{{ release.latest_decision.final_decision|replace('_', ' ')|upper if release.latest_decision.final_decision else 'Pending' }}</dd></div>
+            <div><dt class="text-xs text-gray-500 uppercase">Decided At</dt><dd class="text-sm text-gray-900">{{ release.latest_decision.decided_at[:19] if release.latest_decision.decided_at else '—' }}</dd></div>
+        </dl>
+        {% if release.latest_decision.reasoning %}
+        <h4 class="text-sm font-medium text-gray-700 mb-2">Reasoning</h4>
+        <pre class="text-xs bg-gray-50 p-3 rounded overflow-auto">{{ release.latest_decision.reasoning|tojson(indent=2) }}</pre>
+        {% endif %}
+        {% else %}
+        <p class="text-sm text-gray-500 text-center py-8">No decision yet. Complete test execution to generate a recommendation.</p>
+        {% endif %}
+    </div>
+    {% else %}
+    <!-- Requirements tab (default) -->
+    <div class="bg-white shadow rounded-lg p-6">
+        {% if release.requirements %}
+        <ul class="divide-y divide-gray-200">
+            {% for req in release.requirements %}
+            <li class="py-3 flex justify-between items-center">
+                <div>
+                    {% if req.jira_key %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700">{{ req.jira_key }}</span>{% endif %}
+                    <span class="ml-2 text-sm font-medium text-gray-900">{{ req.jira_summary or ('Requirement #' ~ req.id) }}</span>
+                    {% if req.is_stale %}<span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs bg-yellow-100 text-yellow-800">Stale</span>{% endif %}
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-sm text-gray-500 text-center py-8">No requirements attached yet. Import from Jira or add manually.</p>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

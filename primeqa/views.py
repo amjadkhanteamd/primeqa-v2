@@ -15,6 +15,8 @@ from primeqa.core.repository import (
     ConnectionRepository, GroupRepository,
 )
 from primeqa.core.service import AuthService, EnvironmentService, ConnectionService, GroupService
+from primeqa.release.repository import ReleaseRepository
+from primeqa.release.service import ReleaseService
 
 views_bp = Blueprint("views", __name__, template_folder="templates")
 
@@ -1302,6 +1304,75 @@ def setup_wizard():
             connection_count=conn_count,
             environment_count=env_count,
             group_count=group_count,
+        ))
+    finally:
+        db.close()
+
+
+# --- Releases ---
+
+@views_bp.route("/releases")
+@login_required
+def releases_list():
+    db = next(get_db())
+    try:
+        svc = ReleaseService(ReleaseRepository(db))
+        status_filter = request.args.get("status")
+        releases = svc.list_releases(request.user["tenant_id"], status=status_filter)
+        return render_template("releases/list.html", **ctx(
+            active_page="releases", releases=releases, status_filter=status_filter,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/releases/new")
+@role_required("admin", "tester")
+def releases_new():
+    return render_template("releases/new.html", **ctx(active_page="releases", error=None))
+
+
+@views_bp.route("/releases", methods=["POST"])
+@role_required("admin", "tester")
+def releases_create():
+    from flask import flash
+    db = next(get_db())
+    try:
+        svc = ReleaseService(ReleaseRepository(db))
+        criteria = {
+            "min_pass_rate": int(request.form.get("min_pass_rate", 95)),
+            "max_flaky_percent": int(request.form.get("max_flaky_percent", 10)),
+            "critical_tests_must_pass": "critical_tests_must_pass" in request.form,
+            "no_unresolved_high_risk_impacts": "no_unresolved_high_risk_impacts" in request.form,
+        }
+        target_date = request.form.get("target_date") or None
+        result = svc.create_release(
+            request.user["tenant_id"], request.form["name"], request.user["id"],
+            version_tag=request.form.get("version_tag") or None,
+            description=request.form.get("description") or None,
+            target_date=target_date,
+            decision_criteria=criteria,
+        )
+        flash(f"Release '{result['name']}' created", "success")
+        return redirect(f"/releases/{result['id']}")
+    except ValueError as e:
+        return render_template("releases/new.html", **ctx(active_page="releases", error=str(e)))
+    finally:
+        db.close()
+
+
+@views_bp.route("/releases/<int:release_id>")
+@login_required
+def releases_detail(release_id):
+    db = next(get_db())
+    try:
+        svc = ReleaseService(ReleaseRepository(db))
+        release = svc.get_release_detail(release_id, request.user["tenant_id"])
+        if not release:
+            return redirect("/releases")
+        tab = request.args.get("tab", "requirements")
+        return render_template("releases/detail.html", **ctx(
+            active_page="releases", release=release, tab=tab,
         ))
     finally:
         db.close()

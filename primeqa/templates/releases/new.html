@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}New Release - PrimeQA{% endblock %}
+{% block content %}
+<div class="max-w-2xl">
+    <h1 class="text-2xl font-bold text-gray-900 mb-6">Create Release</h1>
+    {% if error %}<div class="rounded-md bg-red-50 p-4 mb-4"><p class="text-sm text-red-700">{{ error }}</p></div>{% endif %}
+    <form method="POST" action="/releases" class="bg-white shadow rounded-lg p-6 space-y-6">
+        <div><label class="block text-sm font-medium text-gray-700">Name</label>
+            <input name="name" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm" placeholder="Sprint 42 / Q2 Release">
+            <p class="mt-1 text-xs text-gray-400">Use a memorable name — sprint number, version, or milestone</p></div>
+        <div><label class="block text-sm font-medium text-gray-700">Version Tag <span class="text-gray-400">(optional)</span></label>
+            <input name="version_tag" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm" placeholder="v2.4.0"></div>
+        <div><label class="block text-sm font-medium text-gray-700">Description</label>
+            <textarea name="description" rows="3" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm" placeholder="What's in this release?"></textarea></div>
+        <div><label class="block text-sm font-medium text-gray-700">Target Date</label>
+            <input name="target_date" type="date" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm"></div>
+
+        <div class="border-t pt-4">
+            <h3 class="text-sm font-medium text-gray-500 mb-3">Decision Criteria (GO/NO-GO thresholds)</h3>
+            <div class="grid grid-cols-2 gap-4">
+                <div><label class="block text-sm font-medium text-gray-700">Min Pass Rate (%)</label>
+                    <input name="min_pass_rate" type="number" value="95" min="0" max="100" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm"></div>
+                <div><label class="block text-sm font-medium text-gray-700">Max Flaky Test % </label>
+                    <input name="max_flaky_percent" type="number" value="10" min="0" max="100" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm"></div>
+                <div class="col-span-2"><label class="inline-flex items-center">
+                    <input name="critical_tests_must_pass" type="checkbox" checked class="rounded border-gray-300">
+                    <span class="ml-2 text-sm text-gray-700">All critical-priority tests must pass</span></label></div>
+                <div class="col-span-2"><label class="inline-flex items-center">
+                    <input name="no_unresolved_high_risk_impacts" type="checkbox" checked class="rounded border-gray-300">
+                    <span class="ml-2 text-sm text-gray-700">No unresolved high-risk impacts</span></label></div>
+            </div>
+        </div>
+
+        <button type="submit" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Create Release</button>
+    </form>
+</div>
+{% endblock %}
