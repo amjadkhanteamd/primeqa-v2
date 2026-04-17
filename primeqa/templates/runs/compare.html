@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% block title %}Compare Run #{{ this_run.id }} - PrimeQA{% endblock %}
+{% block content %}
+
+{{ breadcrumbs([('Runs', '/runs'),
+                ('Run #' ~ this_run.id, '/runs/' ~ this_run.id),
+                ('Compare', None)]) }}
+
+<div class="max-w-4xl space-y-6">
+  <h1 class="text-2xl font-bold text-gray-900">Compare to last green run</h1>
+
+  {% if not prev_run %}
+  <div class="bg-yellow-50 border border-yellow-200 p-4 rounded-md text-sm text-yellow-800">
+    No prior fully-green run found for environment #{{ this_run.environment_id }}. Nothing to compare yet.
+  </div>
+  {% else %}
+  <div class="bg-white shadow rounded-lg p-6">
+    <p class="text-sm text-gray-600">
+      Comparing <strong>Run #{{ this_run.id }}</strong> vs last green
+      <a href="/runs/{{ prev_run.id }}" class="text-indigo-600 hover:underline">Run #{{ prev_run.id }}</a>.
+    </p>
+    <p class="mt-2 text-sm">
+      <span class="text-red-700 font-medium">{{ flipped_green_to_red | length }}</span> flipped green\u2192red,
+      <span class="text-green-700 font-medium">{{ flipped_red_to_green | length }}</span> flipped red\u2192green,
+      <span class="text-gray-600">{{ newly_added | length }}</span> new tests.
+    </p>
+  </div>
+
+  {% if flipped_green_to_red %}
+  <div class="bg-white shadow rounded-lg p-6">
+    <h2 class="text-sm font-semibold text-red-700 uppercase tracking-wide mb-3">New failures (were passing)</h2>
+    <ul class="space-y-1 text-sm">
+      {% for tc in flipped_green_to_red %}
+      <li><a href="/test-cases/{{ tc }}" class="text-indigo-600 hover:underline">Test #{{ tc }}</a></li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if flipped_red_to_green %}
+  <div class="bg-white shadow rounded-lg p-6">
+    <h2 class="text-sm font-semibold text-green-700 uppercase tracking-wide mb-3">Now passing (were failing)</h2>
+    <ul class="space-y-1 text-sm">
+      {% for tc in flipped_red_to_green %}
+      <li><a href="/test-cases/{{ tc }}" class="text-indigo-600 hover:underline">Test #{{ tc }}</a></li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if newly_added %}
+  <div class="bg-white shadow rounded-lg p-6">
+    <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">Newly added since last green</h2>
+    <ul class="space-y-1 text-sm">
+      {% for tc in newly_added %}
+      <li><a href="/test-cases/{{ tc }}" class="text-indigo-600 hover:underline">Test #{{ tc }}</a></li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+{% endblock %}

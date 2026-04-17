@@ -81,6 +81,10 @@ class TestCase(Base):
     version = Column(Integer, nullable=False, server_default="1")
     deleted_at = Column(DateTime(timezone=True))
     deleted_by = Column(Integer, ForeignKey("users.id"))
+    # R6: flake quarantine
+    is_quarantined = Column(Boolean, nullable=False, server_default="false")
+    quarantined_at = Column(DateTime(timezone=True))
+    quarantined_reason = Column(Text)
 
     versions = relationship("TestCaseVersion", back_populates="test_case",
                             foreign_keys="TestCaseVersion.test_case_id")

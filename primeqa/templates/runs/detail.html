@@ -11,11 +11,21 @@
       <h1 class="text-2xl font-bold text-gray-900">Run #{{ run.id }}</h1>
       <p class="text-sm text-gray-500">{{ run.run_type }} · priority {{ run.priority }}</p>
     </div>
-    {% if run.status in ['queued', 'running'] and user.role in ['admin', 'tester', 'superadmin'] %}
-    <form method="POST" action="/runs/{{ run.id }}/cancel">
-      <button type="submit" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500">Cancel</button>
-    </form>
-    {% endif %}
+    <div class="flex items-center space-x-2">
+      {% if run.status in ['queued', 'running'] and user.role in ['admin', 'tester', 'superadmin'] %}
+      <form method="POST" action="/runs/{{ run.id }}/cancel">
+        <button type="submit" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500">Cancel</button>
+      </form>
+      {% endif %}
+      {% if run.status in ['completed', 'failed'] %}
+      <a href="/runs/{{ run.id }}/compare" class="rounded-md bg-white px-3 py-2 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Compare to last green</a>
+      {% endif %}
+      {% if run.status in ['completed', 'failed'] and run.failed and user.role in ['admin','tester','superadmin'] %}
+      <form method="POST" action="/runs/{{ run.id }}/rerun-failed">
+        <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Rerun failed</button>
+      </form>
+      {% endif %}
+    </div>
   </div>
 
   <!-- Header card: status + pipeline stages + counts -->

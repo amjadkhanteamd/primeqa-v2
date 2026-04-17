@@ -1839,6 +1839,108 @@ def settings_general():
         db.close()
 
 
+# R6 \u2014 Rerun subset + comparison + flake ------------------------------------
+
+@views_bp.route("/runs/<int:run_id>/rerun-failed", methods=["POST"])
+@role_required("admin", "tester")
+def runs_rerun_failed(run_id):
+    """Rerun only the failed tests of this run (R6)."""
+    from flask import flash
+    from primeqa.execution.repository import (
+        PipelineRunRepository, PipelineStageRepository,
+        ExecutionSlotRepository, WorkerHeartbeatRepository,
+        RunTestResultRepository,
+    )
+    from primeqa.execution.service import PipelineService
+    db = next(get_db())
+    try:
+        parent = PipelineRunRepository(db).get_run(run_id, request.user["tenant_id"])
+        if not parent:
+            flash("Run not found", "error"); return redirect("/runs")
+        results = RunTestResultRepository(db).list_results(run_id)
+        failed_ids = [r.test_case_id for r in results if r.status in ("failed", "error")]
+        if not failed_ids:
+            flash("No failed tests to rerun.", "error"); return redirect(f"/runs/{run_id}")
+
+        svc = PipelineService(
+            PipelineRunRepository(db), PipelineStageRepository(db),
+            ExecutionSlotRepository(db), WorkerHeartbeatRepository(db),
+        )
+        created = svc.create_run(
+            tenant_id=parent.tenant_id, environment_id=parent.environment_id,
+            triggered_by=request.user["id"], run_type="execute_only",
+            source_type="test_cases", source_ids=failed_ids,
+            priority=parent.priority, parent_run_id=parent.id,
+            source_refs={"rerun_failed_of": parent.id, "test_case_ids": failed_ids},
+        )
+        return redirect(f"/runs/{created['id']}")
+    finally:
+        db.close()
+
+
+@views_bp.route("/runs/<int:run_id>/compare", methods=["GET"])
+@login_required
+def runs_compare_last_green(run_id):
+    """Compare this run with the most recent successful run against the same env."""
+    from primeqa.execution.models import PipelineRun, RunTestResult
+    db = next(get_db())
+    try:
+        run = db.query(PipelineRun).filter(
+            PipelineRun.id == run_id,
+            PipelineRun.tenant_id == request.user["tenant_id"],
+        ).first()
+        if not run:
+            return redirect("/runs")
+        prev = db.query(PipelineRun).filter(
+            PipelineRun.tenant_id == run.tenant_id,
+            PipelineRun.environment_id == run.environment_id,
+            PipelineRun.status == "completed",
+            PipelineRun.failed == 0,
+            PipelineRun.id < run.id,
+        ).order_by(PipelineRun.id.desc()).first()
+
+        def _status_map(rid):
+            rows = db.query(RunTestResult).filter(RunTestResult.run_id == rid).all()
+            return {r.test_case_id: r.status for r in rows}
+
+        this_map = _status_map(run.id)
+        prev_map = _status_map(prev.id) if prev else {}
+
+        flipped_green_to_red, flipped_red_to_green, newly_added = [], [], []
+        for tc_id, status in this_map.items():
+            prev_status = prev_map.get(tc_id)
+            if prev_status is None:
+                newly_added.append(tc_id)
+            elif prev_status == "passed" and status in ("failed", "error"):
+                flipped_green_to_red.append(tc_id)
+            elif prev_status in ("failed", "error") and status == "passed":
+                flipped_red_to_green.append(tc_id)
+
+        return render_template("runs/compare.html", **ctx(
+            active_page="runs", this_run=run, prev_run=prev,
+            flipped_green_to_red=flipped_green_to_red,
+            flipped_red_to_green=flipped_red_to_green,
+            newly_added=newly_added,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/test-cases/<int:tc_id>/quarantine/lift", methods=["POST"])
+@role_required("admin", "tester")
+def test_case_lift_quarantine(tc_id):
+    from flask import flash
+    from primeqa.execution.flake import lift_quarantine
+    db = next(get_db())
+    try:
+        ok = lift_quarantine(db, test_case_id=tc_id, tenant_id=request.user["tenant_id"])
+        flash("Quarantine lifted" if ok else "Test case not found",
+              "success" if ok else "error")
+        return redirect(f"/test-cases/{tc_id}")
+    finally:
+        db.close()
+
+
 # Agent fix user decisions (R5) --------------------------------------------
 
 @views_bp.route("/runs/agent-fixes/<int:fix_id>/accept", methods=["POST"])
