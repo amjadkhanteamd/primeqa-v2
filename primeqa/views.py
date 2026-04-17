@@ -1309,6 +1309,118 @@ def setup_wizard():
         db.close()
 
 
+# --- Requirements + AI Generation ---
+
+@views_bp.route("/requirements")
+@login_required
+def requirements_list():
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import RequirementRepository, SectionRepository
+        req_repo = RequirementRepository(db)
+        sec_repo = SectionRepository(db)
+        tid = request.user["tenant_id"]
+        reqs = req_repo.list_requirements(tid)
+        sections = sec_repo.list_sections(tid)
+        envs = EnvironmentRepository(db).list_environments(tid, request.user["id"], request.user["role"])
+        conns = ConnectionRepository(db).list_connections(tid, "jira")
+        reqs_data = [{"id": r.id, "jira_key": r.jira_key, "jira_summary": r.jira_summary,
+                      "acceptance_criteria": r.acceptance_criteria, "is_stale": r.is_stale}
+                     for r in reqs]
+        envs_data = [{"id": e.id, "name": e.name} for e in envs if e.llm_connection_id]
+        sections_data = [{"id": s.id, "name": s.name} for s in sections]
+        conns_data = [{"id": c.id, "name": c.name} for c in conns]
+        return render_template("requirements/list.html", **ctx(
+            active_page="requirements",
+            requirements=reqs_data, sections=sections_data,
+            environments=envs_data, jira_connections=conns_data,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/requirements/import-jira", methods=["POST"])
+@role_required("admin", "tester")
+def requirements_import_jira():
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import (
+            SectionRepository, RequirementRepository, TestCaseRepository,
+            TestSuiteRepository, BAReviewRepository, MetadataImpactRepository,
+        )
+        from primeqa.test_management.service import TestManagementService
+        svc = TestManagementService(
+            SectionRepository(db), RequirementRepository(db),
+            TestCaseRepository(db), TestSuiteRepository(db),
+            BAReviewRepository(db), MetadataImpactRepository(db),
+        )
+        conn_id = int(request.form["jira_connection_id"])
+        conn_data = ConnectionRepository(db).get_connection_decrypted(conn_id, request.user["tenant_id"])
+        if not conn_data:
+            flash("Jira connection not found", "error")
+            return redirect("/requirements")
+        cfg = conn_data["config"]
+        jira_auth = None
+        if cfg.get("auth_type") == "basic" and cfg.get("username") and cfg.get("api_token"):
+            import base64
+            jira_auth = base64.b64encode(f"{cfg['username']}:{cfg['api_token']}".encode()).decode()
+        svc.import_jira_requirement(
+            tenant_id=request.user["tenant_id"],
+            section_id=int(request.form["section_id"]),
+            jira_base_url=cfg.get("base_url", ""),
+            jira_key=request.form["jira_key"],
+            created_by=request.user["id"],
+            jira_auth=jira_auth,
+        )
+        flash(f"Imported {request.form['jira_key']}", "success")
+    except ValueError as e:
+        flash(str(e), "error")
+    except Exception as e:
+        flash(f"Import failed: {e}", "error")
+    finally:
+        db.close()
+    return redirect("/requirements")
+
+
+@views_bp.route("/requirements/<int:req_id>/generate", methods=["POST"])
+@role_required("admin", "tester")
+def requirements_generate(req_id):
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import (
+            SectionRepository, RequirementRepository, TestCaseRepository,
+            TestSuiteRepository, BAReviewRepository, MetadataImpactRepository,
+        )
+        from primeqa.test_management.service import TestManagementService
+        from primeqa.metadata.repository import MetadataRepository
+        svc = TestManagementService(
+            SectionRepository(db), RequirementRepository(db),
+            TestCaseRepository(db), TestSuiteRepository(db),
+            BAReviewRepository(db), MetadataImpactRepository(db),
+        )
+        env_id = int(request.form["environment_id"])
+        result = svc.generate_test_case(
+            tenant_id=request.user["tenant_id"],
+            requirement_id=req_id,
+            environment_id=env_id,
+            created_by=request.user["id"],
+            env_repo=EnvironmentRepository(db),
+            conn_repo=ConnectionRepository(db),
+            metadata_repo=MetadataRepository(db),
+        )
+        flash(f"Generated test case with {result['steps_count']} steps ({int(result['confidence_score']*100)}% confidence)", "success")
+        return redirect(f"/test-cases/{result['test_case_id']}")
+    except ValueError as e:
+        flash(str(e), "error")
+    except Exception as e:
+        flash(f"Generation failed: {e}", "error")
+    finally:
+        db.close()
+    return redirect("/requirements")
+
+
 # --- Releases ---
 
 @views_bp.route("/releases")

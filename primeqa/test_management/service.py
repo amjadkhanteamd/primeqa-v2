@@ -16,6 +16,68 @@ class TestManagementService:
                  suite_repo, review_repo, impact_repo):
         self.section_repo = section_repo
         self.requirement_repo = requirement_repo
+
+    def generate_test_case(self, tenant_id, requirement_id, environment_id, created_by,
+                           env_repo, conn_repo, metadata_repo, test_case_id=None):
+        """Use AI to generate a test case from a requirement + environment metadata."""
+        from primeqa.intelligence.generation import TestCaseGenerator
+
+        requirement = self.requirement_repo.get_requirement(requirement_id, tenant_id)
+        if not requirement:
+            raise ValueError("Requirement not found")
+
+        env = env_repo.get_environment(environment_id, tenant_id)
+        if not env:
+            raise ValueError("Environment not found")
+        if not env.current_meta_version_id:
+            raise ValueError("Environment has no metadata version. Refresh metadata first.")
+        if not env.llm_connection_id:
+            raise ValueError("Environment has no LLM connection configured")
+
+        llm_conn = conn_repo.get_connection_decrypted(env.llm_connection_id, tenant_id)
+        if not llm_conn:
+            raise ValueError("LLM connection not found")
+
+        import anthropic
+        llm_client = anthropic.Anthropic(api_key=llm_conn["config"].get("api_key", ""))
+        model = llm_conn["config"].get("model", "claude-sonnet-4-20250514")
+
+        generator = TestCaseGenerator(llm_client, metadata_repo)
+        result = generator.generate(requirement, env.current_meta_version_id, model=model)
+
+        if test_case_id:
+            tc = self.test_case_repo.get_test_case(test_case_id, tenant_id)
+            if not tc:
+                raise ValueError("Test case not found")
+        else:
+            title = requirement.jira_summary or f"Test for {requirement.jira_key or f'requirement {requirement.id}'}"
+            tc = self.test_case_repo.create_test_case(
+                tenant_id=tenant_id, title=title,
+                owner_id=created_by, created_by=created_by,
+                requirement_id=requirement_id, section_id=requirement.section_id,
+                visibility="private", status="draft",
+            )
+
+        version = self.test_case_repo.create_version(
+            test_case_id=tc.id,
+            metadata_version_id=env.current_meta_version_id,
+            created_by=created_by,
+            steps=result["steps"],
+            expected_results=result["expected_results"],
+            preconditions=result["preconditions"],
+            generation_method="ai" if not test_case_id else "regenerated",
+            confidence_score=result["confidence_score"],
+            referenced_entities=result["referenced_entities"],
+        )
+
+        return {
+            "test_case_id": tc.id,
+            "version_id": version.id,
+            "confidence_score": result["confidence_score"],
+            "explanation": result["explanation"],
+            "steps_count": len(result["steps"]),
+        }
+
         self.test_case_repo = test_case_repo
         self.suite_repo = suite_repo
         self.review_repo = review_repo

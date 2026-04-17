@@ -13,6 +13,8 @@ from primeqa.test_management.repository import (
     TestSuiteRepository, BAReviewRepository, MetadataImpactRepository,
 )
 from primeqa.test_management.service import TestManagementService, ConflictError
+from primeqa.core.repository import EnvironmentRepository, ConnectionRepository
+from primeqa.metadata.repository import MetadataRepository
 
 test_management_bp = Blueprint("test_management", __name__)
 
@@ -497,5 +499,36 @@ def resolve_impact(impact_id):
         return jsonify(impact), 200
     except ValueError as e:
         return jsonify(error=str(e)), 400
+    finally:
+        db.close()
+
+
+# --- AI Generation ---
+
+@test_management_bp.route("/api/test-cases/generate", methods=["POST"])
+@require_role("admin", "tester")
+def generate_test_case():
+    data = request.get_json(silent=True) or {}
+    for f in ["requirement_id", "environment_id"]:
+        if not data.get(f):
+            return jsonify(error=f"{f} is required"), 400
+    svc, db = _get_service()
+    try:
+        env_repo = EnvironmentRepository(db)
+        conn_repo = ConnectionRepository(db)
+        meta_repo = MetadataRepository(db)
+        result = svc.generate_test_case(
+            tenant_id=request.user["tenant_id"],
+            requirement_id=data["requirement_id"],
+            environment_id=data["environment_id"],
+            created_by=request.user["id"],
+            env_repo=env_repo, conn_repo=conn_repo, metadata_repo=meta_repo,
+            test_case_id=data.get("test_case_id"),
+        )
+        return jsonify(result), 201
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    except Exception as e:
+        return jsonify(error=f"Generation failed: {e}"), 500
     finally:
         db.close()
