@@ -1402,6 +1402,77 @@ def setup_wizard():
         db.close()
 
 
+# --- Test Data ---
+
+@views_bp.route("/settings/test-data")
+@login_required
+def test_data_list():
+    db = next(get_db())
+    try:
+        from primeqa.execution.data_engine import DataEngineService
+        svc = DataEngineService(db)
+        tid = request.user["tenant_id"]
+        templates = svc.list_templates(tid)
+        factories = svc.list_factories(tid)
+        t_data = [{"id": t.id, "name": t.name, "object_type": t.object_type,
+                   "description": t.description, "field_values": t.field_values} for t in templates]
+        f_data = [{"id": f.id, "name": f.name, "factory_type": f.factory_type,
+                   "description": f.description, "config": f.config} for f in factories]
+        return render_template("test_data/list.html", **ctx(
+            active_page="settings_test_data", settings_page="test_data",
+            templates=t_data, factories=f_data,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/settings/test-data/templates", methods=["POST"])
+@role_required("admin", "tester")
+def test_data_templates_create():
+    from flask import flash
+    import json as _json
+    db = next(get_db())
+    try:
+        from primeqa.execution.data_engine import DataEngineService
+        svc = DataEngineService(db)
+        try:
+            field_values = _json.loads(request.form.get("field_values") or "{}")
+        except Exception:
+            field_values = {}
+        svc.create_template(
+            request.user["tenant_id"], request.form["name"],
+            request.form["object_type"], field_values, request.user["id"],
+            description=request.form.get("description"),
+        )
+        flash("Template created", "success")
+    except Exception as e:
+        flash(str(e), "error")
+    finally:
+        db.close()
+    return redirect("/settings/test-data")
+
+
+@views_bp.route("/settings/test-data/factories", methods=["POST"])
+@role_required("admin", "tester")
+def test_data_factories_create():
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.execution.data_engine import DataEngineService
+        svc = DataEngineService(db)
+        svc.create_factory(
+            request.user["tenant_id"], request.form["name"],
+            request.form["factory_type"], {}, request.user["id"],
+            description=request.form.get("description"),
+        )
+        flash("Factory created", "success")
+    except Exception as e:
+        flash(str(e), "error")
+    finally:
+        db.close()
+    return redirect("/settings/test-data")
+
+
 # --- Requirements + AI Generation ---
 
 @views_bp.route("/requirements")
