@@ -595,13 +595,15 @@ def connections_create():
         if ctype == "salesforce":
             config = {
                 "org_type": request.form.get("sf_org_type", "sandbox"),
+                "auth_flow": request.form.get("sf_auth_flow", "client_credentials"),
                 "instance_url": request.form.get("sf_instance_url", ""),
                 "api_version": request.form.get("sf_api_version", "59.0"),
                 "client_id": request.form.get("sf_client_id", ""),
                 "client_secret": request.form.get("sf_client_secret", ""),
-                "username": request.form.get("sf_username", ""),
-                "password": request.form.get("sf_password", ""),
             }
+            if config["auth_flow"] == "password":
+                config["username"] = request.form.get("sf_username", "")
+                config["password"] = request.form.get("sf_password", "")
         elif ctype == "jira":
             config = {
                 "base_url": request.form.get("jira_base_url", ""),

@@ -22,19 +22,27 @@
                         <option value="sandbox">Sandbox (test.salesforce.com)</option>
                         <option value="production">Production (login.salesforce.com)</option>
                     </select></div>
+                <div><label class="block text-sm font-medium text-gray-700">Auth Flow</label>
+                    <select name="sf_auth_flow" id="sf-auth-flow" onchange="togglePasswordFields()" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm">
+                        <option value="client_credentials">Client Credentials (Recommended)</option>
+                        <option value="password">Username-Password</option>
+                    </select>
+                    <p class="mt-1 text-xs text-gray-400">Client Credentials requires "Enable Client Credentials Flow" in your Connected App</p></div>
                 <div><label class="block text-sm font-medium text-gray-700">Instance URL</label>
-                    <input name="sf_instance_url" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm" placeholder="https://acme--dev.sandbox.my.salesforce.com"></div>
+                    <input name="sf_instance_url" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm" placeholder="https://acme--dev.sandbox.my.salesforce.com">
+                    <p class="mt-1 text-xs text-gray-400">Optional for Client Credentials — will be returned by OAuth</p></div>
                 <div><label class="block text-sm font-medium text-gray-700">API Version</label>
                     <input name="sf_api_version" value="59.0" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm"></div>
                 <div><label class="block text-sm font-medium text-gray-700">Client ID (Consumer Key)</label>
                     <input name="sf_client_id" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm"></div>
                 <div><label class="block text-sm font-medium text-gray-700">Client Secret (Consumer Secret)</label>
                     <input name="sf_client_secret" type="password" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm"></div>
-                <div><label class="block text-sm font-medium text-gray-700">Username</label>
-                    <input name="sf_username" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm" placeholder="admin@acme.com.dev"></div>
-                <div><label class="block text-sm font-medium text-gray-700">Password + Security Token</label>
-                    <input name="sf_password" type="password" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm" placeholder="YourPassword + SecurityToken (concatenated)">
-                    <p class="mt-1 text-xs text-gray-400">Append your security token directly after the password with no spaces</p></div>
+                <div id="sf-password-fields" class="hidden space-y-4">
+                    <div><label class="block text-sm font-medium text-gray-700">Username</label>
+                        <input name="sf_username" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm" placeholder="admin@acme.com.dev"></div>
+                    <div><label class="block text-sm font-medium text-gray-700">Password + Security Token</label>
+                        <input name="sf_password" type="password" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm" placeholder="YourPassword + SecurityToken (concatenated)"></div>
+                </div>
             </div>
         </div>
 
@@ -76,6 +84,10 @@ function toggleFields() {
     document.getElementById('sf-fields').classList.toggle('hidden', type !== 'salesforce');
     document.getElementById('jira-fields').classList.toggle('hidden', type !== 'jira');
     document.getElementById('llm-fields').classList.toggle('hidden', type !== 'llm');
+}
+function togglePasswordFields() {
+    const flow = document.getElementById('sf-auth-flow').value;
+    document.getElementById('sf-password-fields').classList.toggle('hidden', flow !== 'password');
 }
 </script>
 {% endblock %}

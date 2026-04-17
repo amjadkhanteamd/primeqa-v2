@@ -255,7 +255,7 @@ class EnvironmentService:
 
 VALID_CONNECTION_TYPES = {"salesforce", "jira", "llm"}
 REQUIRED_CONFIG = {
-    "salesforce": ["instance_url", "client_id", "client_secret", "username", "password"],
+    "salesforce": ["client_id", "client_secret"],
     "jira": ["base_url"],
     "llm": ["api_key"],
 }
@@ -302,16 +302,23 @@ class ConnectionService:
         try:
             if ctype == "salesforce":
                 org_type = cfg.get("org_type", "sandbox")
-                login_url = "https://test.salesforce.com" if org_type == "sandbox" else "https://login.salesforce.com"
+                login_url = cfg.get("login_url", "")
+                if not login_url:
+                    login_url = "https://test.salesforce.com" if org_type == "sandbox" else "https://login.salesforce.com"
+                auth_flow = cfg.get("auth_flow", "client_credentials")
+                token_data_body = {
+                    "client_id": cfg.get("client_id", ""),
+                    "client_secret": cfg.get("client_secret", ""),
+                }
+                if auth_flow == "password":
+                    token_data_body["grant_type"] = "password"
+                    token_data_body["username"] = cfg.get("username", "")
+                    token_data_body["password"] = cfg.get("password", "")
+                else:
+                    token_data_body["grant_type"] = "client_credentials"
                 token_resp = http_requests.post(
                     f"{login_url}/services/oauth2/token",
-                    data={
-                        "grant_type": "password",
-                        "client_id": cfg.get("client_id", ""),
-                        "client_secret": cfg.get("client_secret", ""),
-                        "username": cfg.get("username", ""),
-                        "password": cfg.get("password", ""),
-                    },
+                    data=token_data_body,
                     timeout=15,
                 )
                 if token_resp.status_code != 200:
