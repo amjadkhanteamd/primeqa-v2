@@ -581,6 +581,74 @@ def environments_update(env_id):
         db.close()
 
 
+@views_bp.route("/environments/<int:env_id>/test-connection", methods=["POST"])
+@role_required("admin")
+def environments_test_connection(env_id):
+    from flask import flash
+    db = next(get_db())
+    try:
+        conn_repo = ConnectionRepository(db)
+        env_repo = EnvironmentRepository(db)
+        env = env_repo.get_environment(env_id, request.user["tenant_id"])
+        if not env:
+            flash("Environment not found", "error")
+            return redirect("/environments")
+        if env.connection_id:
+            svc = ConnectionService(conn_repo)
+            result = svc.test_connection(env.connection_id, request.user["tenant_id"])
+            if result.get("status") == "connected":
+                flash("Connection successful!", "success")
+            else:
+                flash(f"Connection failed: {result.get('detail', 'Unknown error')}", "error")
+        else:
+            flash("No Salesforce connection linked to this environment", "error")
+    except Exception as e:
+        flash(f"Error: {e}", "error")
+    finally:
+        db.close()
+    return redirect(f"/environments/{env_id}")
+
+
+@views_bp.route("/environments/<int:env_id>/refresh-metadata", methods=["POST"])
+@role_required("admin")
+def environments_refresh_metadata(env_id):
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.metadata.repository import MetadataRepository
+        from primeqa.metadata.service import MetadataService
+        env_repo = EnvironmentRepository(db)
+        conn_repo = ConnectionRepository(db)
+        env = env_repo.get_environment(env_id, request.user["tenant_id"])
+        if not env:
+            flash("Environment not found", "error")
+            return redirect("/environments")
+        if not env.connection_id:
+            flash("No Salesforce connection linked — cannot refresh metadata", "error")
+            return redirect(f"/environments/{env_id}")
+        conn_data = conn_repo.get_connection_decrypted(env.connection_id, request.user["tenant_id"])
+        if not conn_data:
+            flash("Connection not found", "error")
+            return redirect(f"/environments/{env_id}")
+        # Store credentials on environment from connection for metadata service
+        cfg = conn_data["config"]
+        env_repo.store_credentials(
+            env_id,
+            client_id=cfg.get("client_id", ""),
+            client_secret=cfg.get("client_secret", ""),
+            access_token=cfg.get("access_token", ""),
+        )
+        meta_repo = MetadataRepository(db)
+        meta_svc = MetadataService(meta_repo, env_repo)
+        result = meta_svc.refresh_metadata(env_id, request.user["tenant_id"])
+        flash(f"Metadata refreshed: {result['objects_count']} objects, {result['fields_count']} fields", "success")
+    except Exception as e:
+        flash(f"Metadata refresh failed: {e}", "error")
+    finally:
+        db.close()
+    return redirect(f"/environments/{env_id}")
+
+
 @views_bp.route("/environments/<int:env_id>/delete", methods=["POST"])
 @role_required("admin")
 def environments_delete(env_id):
