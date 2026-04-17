@@ -282,19 +282,53 @@ def test_cases_library():
         tc_repo = TestCaseRepository(db)
 
         sections = section_repo.get_section_tree(request.user["tenant_id"])
+
+        # Parse list params — page, per_page (capped 50), q, sort, order, filters
+        page = request.args.get("page", 1, type=int)
+        per_page = request.args.get("per_page", 20, type=int)
+        q = (request.args.get("q") or "").strip()
+        sort = request.args.get("sort", "updated_at")
+        order = request.args.get("order", "desc")
         section_id = request.args.get("section_id", type=int)
-        tcs = tc_repo.list_test_cases(
-            request.user["tenant_id"],
-            include_private_for=request.user["id"],
-            section_id=section_id,
-        )
+        status = request.args.get("status") or None
+        show_deleted = request.args.get("deleted", "").lower() in ("1", "true", "yes")
+
+        filters = {}
+        if section_id:
+            filters["section_id"] = section_id
+        if status:
+            filters["status"] = status
+
+        try:
+            result = tc_repo.list_page(
+                request.user["tenant_id"], user_id=request.user["id"],
+                page=page, per_page=per_page, q=q, sort=sort, order=order,
+                filters=filters, include_deleted=show_deleted,
+            )
+            query_error = None
+            tc_rows = result.items
+            meta = {
+                "total": result.total, "page": result.page,
+                "per_page": result.per_page, "total_pages": result.total_pages,
+            }
+        except Exception as e:
+            # Bad sort field etc. — show empty list with a toast and keep the page usable
+            query_error = str(e)
+            tc_rows = []
+            meta = {"total": 0, "page": 1, "per_page": per_page, "total_pages": 0}
+
         tc_data = [{
             "id": tc.id, "title": tc.title, "status": tc.status,
             "visibility": tc.visibility, "owner_id": tc.owner_id,
-        } for tc in tcs]
+            "updated_at": tc.updated_at.isoformat() if tc.updated_at else "",
+            "deleted_at": tc.deleted_at.isoformat() if getattr(tc, "deleted_at", None) else None,
+        } for tc in tc_rows]
+
         return render_template("test_cases/library.html", **ctx(
             active_page="test_cases", sections=sections, test_cases=tc_data,
-            section_id=section_id,
+            section_id=section_id, meta=meta,
+            search=q, sort=sort, order=order, status_filter=status,
+            show_deleted=show_deleted, query_error=query_error,
         ))
     finally:
         db.close()
@@ -436,7 +470,7 @@ def test_cases_edit(tc_id):
         )
         envs_data = [{"id": e.id, "name": e.name} for e in envs]
         env_id = envs_data[0]["id"] if envs_data else None
-        tc_data = {"id": tc.id, "title": tc.title}
+        tc_data = {"id": tc.id, "title": tc.title, "version": tc.version}
         return render_template("test_cases/edit.html", **ctx(
             active_page="test_cases", tc=tc_data, initial_steps=initial_steps,
             step_schema=STEP_ACTIONS, environments=envs_data, env_id=env_id, error=None,
@@ -462,7 +496,20 @@ def test_cases_update_steps(tc_id):
 
         title = request.form.get("title") or tc.title
         if title != tc.title:
-            tc_repo.update_test_case(tc_id, request.user["tenant_id"], {"title": title})
+            try:
+                expected_version = int(request.form.get("expected_version", tc.version))
+            except (TypeError, ValueError):
+                expected_version = tc.version
+            updated, result = tc_repo.update_test_case(
+                tc_id, request.user["tenant_id"],
+                {"title": title}, expected_version=expected_version,
+            )
+            if result == "conflict":
+                flash(
+                    "This test case was modified by someone else while you were editing. "
+                    "Reload to see the latest version before saving.", "error",
+                )
+                return redirect(f"/test-cases/{tc_id}/edit")
 
         try:
             steps = _json.loads(request.form.get("steps_json", "[]"))
@@ -520,13 +567,41 @@ def reviews_queue():
     try:
         from primeqa.test_management.repository import BAReviewRepository
         repo = BAReviewRepository(db)
-        reviews = repo.list_reviews(request.user["tenant_id"], assigned_to=request.user["id"])
+        page = request.args.get("page", 1, type=int)
+        per_page = request.args.get("per_page", 20, type=int)
+        sort = request.args.get("sort", "created_at")
+        order = request.args.get("order", "desc")
+        show_deleted = request.args.get("deleted", "").lower() in ("1", "true", "yes")
+        filters = {}
+        status = request.args.get("status")
+        if status:
+            filters["status"] = status
+        only_mine = request.args.get("mine", "1") != "0"
+        if only_mine:
+            filters["assigned_to"] = request.user["id"]
+
+        try:
+            result = repo.list_page(
+                request.user["tenant_id"],
+                page=page, per_page=per_page, q=None, sort=sort, order=order,
+                filters=filters, include_deleted=show_deleted,
+            )
+            reviews = result.items
+            meta = {"total": result.total, "page": result.page,
+                    "per_page": result.per_page, "total_pages": result.total_pages}
+            query_error = None
+        except Exception as e:
+            reviews, meta, query_error = [], {"total": 0, "page": 1, "per_page": per_page, "total_pages": 0}, str(e)
+
         reviews_data = [{
             "id": r.id, "test_case_version_id": r.test_case_version_id,
-            "status": r.status, "created_at": r.created_at.isoformat() if r.created_at else "",
+            "status": r.status,
+            "created_at": r.created_at.isoformat() if r.created_at else "",
         } for r in reviews]
         return render_template("reviews/queue.html", **ctx(
             active_page="reviews", reviews=reviews_data,
+            meta=meta, status_filter=status, only_mine=only_mine,
+            show_deleted=show_deleted, query_error=query_error,
         ))
     finally:
         db.close()
@@ -1023,12 +1098,43 @@ def impacts_list():
     try:
         from primeqa.test_management.repository import MetadataImpactRepository
         repo = MetadataImpactRepository(db)
-        impacts = repo.list_pending_impacts(request.user["tenant_id"])
+        page = request.args.get("page", 1, type=int)
+        per_page = request.args.get("per_page", 20, type=int)
+        q = (request.args.get("q") or "").strip()
+        sort = request.args.get("sort", "created_at")
+        order = request.args.get("order", "desc")
+        show_deleted = request.args.get("deleted", "").lower() in ("1", "true", "yes")
+        filters = {}
+        resolution = request.args.get("resolution", "pending")
+        if resolution:
+            filters["resolution"] = resolution
+        if request.args.get("impact_type"):
+            filters["impact_type"] = request.args.get("impact_type")
+
+        try:
+            result = repo.list_page(
+                request.user["tenant_id"],
+                page=page, per_page=per_page, q=q, sort=sort, order=order,
+                filters=filters, include_deleted=show_deleted,
+            )
+            impacts = result.items
+            meta = {"total": result.total, "page": result.page,
+                    "per_page": result.per_page, "total_pages": result.total_pages}
+            query_error = None
+        except Exception as e:
+            impacts, meta, query_error = [], {"total": 0, "page": 1, "per_page": per_page, "total_pages": 0}, str(e)
+
         impacts_data = [{
             "id": i.id, "test_case_id": i.test_case_id,
             "impact_type": i.impact_type, "entity_ref": i.entity_ref,
+            "resolution": i.resolution,
+            "created_at": i.created_at.isoformat() if i.created_at else "",
         } for i in impacts]
-        return render_template("impacts/list.html", **ctx(active_page="impacts", impacts=impacts_data))
+        return render_template("impacts/list.html", **ctx(
+            active_page="impacts", impacts=impacts_data,
+            meta=meta, search=q, resolution_filter=resolution,
+            show_deleted=show_deleted, query_error=query_error,
+        ))
     finally:
         db.close()
 
@@ -1605,13 +1711,40 @@ def requirements_list():
         req_repo = RequirementRepository(db)
         sec_repo = SectionRepository(db)
         tid = request.user["tenant_id"]
-        reqs = req_repo.list_requirements(tid)
         sections = sec_repo.list_sections(tid)
         envs = EnvironmentRepository(db).list_environments(tid, request.user["id"], request.user["role"])
         conns = ConnectionRepository(db).list_connections(tid, "jira")
-        reqs_data = [{"id": r.id, "jira_key": r.jira_key, "jira_summary": r.jira_summary,
-                      "acceptance_criteria": r.acceptance_criteria, "is_stale": r.is_stale}
-                     for r in reqs]
+
+        page = request.args.get("page", 1, type=int)
+        per_page = request.args.get("per_page", 20, type=int)
+        q = (request.args.get("q") or "").strip()
+        sort = request.args.get("sort", "updated_at")
+        order = request.args.get("order", "desc")
+        show_deleted = request.args.get("deleted", "").lower() in ("1", "true", "yes")
+        filters = {}
+        if request.args.get("section_id", type=int):
+            filters["section_id"] = request.args.get("section_id", type=int)
+        if request.args.get("source"):
+            filters["source"] = request.args.get("source")
+
+        try:
+            result = req_repo.list_page(
+                tid, page=page, per_page=per_page, q=q, sort=sort, order=order,
+                filters=filters, include_deleted=show_deleted,
+            )
+            reqs = result.items
+            meta = {"total": result.total, "page": result.page,
+                    "per_page": result.per_page, "total_pages": result.total_pages}
+            query_error = None
+        except Exception as e:
+            reqs, meta, query_error = [], {"total": 0, "page": 1, "per_page": per_page, "total_pages": 0}, str(e)
+
+        reqs_data = [{
+            "id": r.id, "jira_key": r.jira_key, "jira_summary": r.jira_summary,
+            "acceptance_criteria": r.acceptance_criteria, "is_stale": r.is_stale,
+            "source": r.source,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else "",
+        } for r in reqs]
         envs_data = [{"id": e.id, "name": e.name} for e in envs if e.llm_connection_id]
         sections_data = [{"id": s.id, "name": s.name} for s in sections]
         conns_data = [{"id": c.id, "name": c.name} for c in conns]
@@ -1619,6 +1752,8 @@ def requirements_list():
             active_page="requirements",
             requirements=reqs_data, sections=sections_data,
             environments=envs_data, jira_connections=conns_data,
+            meta=meta, search=q, sort=sort, order=order,
+            show_deleted=show_deleted, query_error=query_error,
         ))
     finally:
         db.close()
@@ -1719,13 +1854,38 @@ def suites_list():
     try:
         from primeqa.test_management.repository import TestSuiteRepository
         repo = TestSuiteRepository(db)
-        suites = repo.list_suites(request.user["tenant_id"])
+        page = request.args.get("page", 1, type=int)
+        per_page = request.args.get("per_page", 20, type=int)
+        q = (request.args.get("q") or "").strip()
+        sort = request.args.get("sort", "updated_at")
+        order = request.args.get("order", "desc")
+        show_deleted = request.args.get("deleted", "").lower() in ("1", "true", "yes")
+        filters = {}
+        if request.args.get("suite_type"):
+            filters["suite_type"] = request.args.get("suite_type")
+
+        try:
+            result = repo.list_page(
+                request.user["tenant_id"],
+                page=page, per_page=per_page, q=q, sort=sort, order=order,
+                filters=filters, include_deleted=show_deleted,
+            )
+            suites = result.items
+            meta = {"total": result.total, "page": result.page,
+                    "per_page": result.per_page, "total_pages": result.total_pages}
+            query_error = None
+        except Exception as e:
+            suites, meta, query_error = [], {"total": 0, "page": 1, "per_page": per_page, "total_pages": 0}, str(e)
+
         suites_data = [{"id": s.id, "name": s.name, "suite_type": s.suite_type,
                         "description": s.description,
+                        "updated_at": s.updated_at.isoformat() if s.updated_at else "",
                         "created_at": s.created_at.isoformat() if s.created_at else ""}
                        for s in suites]
         return render_template("suites/list.html", **ctx(
             active_page="suites", suites=suites_data,
+            meta=meta, search=q, sort=sort, order=order,
+            show_deleted=show_deleted, query_error=query_error,
         ))
     finally:
         db.close()

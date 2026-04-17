@@ -1,0 +1,23 @@
+{#
+  Toast stack.
+
+  Two sources: Flask flash messages (rendered directly) and HTMX responses
+  that emit `HX-Trigger: toast` — static/js/toast.js listens for that event
+  and appends to this stack.
+
+  Include this macro from base.html once; every page gets toast support.
+#}
+
+{% macro toast_stack() %}
+<div id="toast-stack"
+     class="fixed top-4 right-4 z-[60] flex flex-col space-y-2 w-80 max-w-full"
+     aria-live="polite" aria-atomic="true"></div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+  <script>
+    window.__primeqaFlash = {{ messages | tojson }};
+  </script>
+  {% endif %}
+{% endwith %}
+{% endmacro %}

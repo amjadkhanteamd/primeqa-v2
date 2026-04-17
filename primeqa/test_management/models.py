@@ -25,6 +25,10 @@ class Section(Base):
     position = Column(Integer, nullable=False, server_default="0")
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    version = Column(Integer, nullable=False, server_default="1")
+    deleted_at = Column(DateTime(timezone=True))
+    deleted_by = Column(Integer, ForeignKey("users.id"))
 
     children = relationship("Section", back_populates="parent")
     parent = relationship("Section", back_populates="children", remote_side=[id])
@@ -51,6 +55,9 @@ class Requirement(Base):
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    version = Column(Integer, nullable=False, server_default="1")
+    deleted_at = Column(DateTime(timezone=True))
+    deleted_by = Column(Integer, ForeignKey("users.id"))
 
     __table_args__ = (
         CheckConstraint("source IN ('jira', 'manual')"),
@@ -72,6 +79,8 @@ class TestCase(Base):
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     version = Column(Integer, nullable=False, server_default="1")
+    deleted_at = Column(DateTime(timezone=True))
+    deleted_by = Column(Integer, ForeignKey("users.id"))
 
     versions = relationship("TestCaseVersion", back_populates="test_case",
                             foreign_keys="TestCaseVersion.test_case_id")
@@ -121,6 +130,9 @@ class TestSuite(Base):
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    version = Column(Integer, nullable=False, server_default="1")
+    deleted_at = Column(DateTime(timezone=True))
+    deleted_by = Column(Integer, ForeignKey("users.id"))
 
     __table_args__ = (
         CheckConstraint("suite_type IN ('regression', 'smoke', 'sprint', 'custom')"),
@@ -153,6 +165,10 @@ class BAReview(Base):
     step_comments = Column(JSON, nullable=False, server_default="[]")
     reviewed_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    version = Column(Integer, nullable=False, server_default="1")
+    deleted_at = Column(DateTime(timezone=True))
+    deleted_by = Column(Integer, ForeignKey("users.id"))
 
     __table_args__ = (
         CheckConstraint("status IN ('pending', 'approved', 'rejected', 'needs_edit')"),
@@ -268,6 +284,9 @@ class MetadataImpact(Base):
     resolved_by = Column(Integer, ForeignKey("users.id"))
     resolved_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    deleted_at = Column(DateTime(timezone=True))
+    deleted_by = Column(Integer, ForeignKey("users.id"))
 
     __table_args__ = (
         CheckConstraint(

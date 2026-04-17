@@ -32,6 +32,7 @@ from primeqa.test_management.routes import test_management_bp
 from primeqa.execution.routes import execution_bp
 from primeqa.intelligence.routes import intelligence_bp
 from primeqa.release.routes import release_bp
+from primeqa.shared import observability as obs
 from primeqa.views import views_bp
 
 
@@ -53,6 +54,9 @@ def create_app():
     application.register_blueprint(intelligence_bp)
     application.register_blueprint(release_bp)
     application.register_blueprint(views_bp)
+
+    # Install request-timing + slow-query hooks after blueprints/engine are ready
+    obs.install(application)
 
     @application.route("/health")
     def health():

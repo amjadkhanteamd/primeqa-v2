@@ -1,6 +1,9 @@
 """Service layer for the test management domain.
 
-Business logic: CRUD, versioning, Jira sync, stale detection, BA reviews.
+Business logic: CRUD, versioning, Jira sync, stale detection, BA reviews,
+soft delete + admin purge, optimistic locking, bulk ops with a size cap.
+
+All dependencies are passed via the constructor (no late-bound attributes).
 """
 
 import logging
@@ -8,46 +11,89 @@ from datetime import datetime, timezone
 
 import requests as http_requests
 
+from primeqa.core.repository import ActivityLogRepository
+from primeqa.shared.api import (
+    BULK_MAX_ITEMS, BulkLimitError, ConflictError, ForbiddenError,
+    NotFoundError, ValidationError,
+)
+
 log = logging.getLogger(__name__)
 
 
 class TestManagementService:
+    """Coordinates all test-management repositories.
+
+    ALL collaborators are required in the constructor. This is intentional —
+    the previous version assigned some attributes after a `return` statement,
+    so `generate_test_case`'s low-confidence branch (which references
+    `self.review_repo`) would raise `AttributeError` at runtime.
+    """
+
     def __init__(self, section_repo, requirement_repo, test_case_repo,
-                 suite_repo, review_repo, impact_repo):
+                 suite_repo, review_repo, impact_repo,
+                 activity_repo=None):
+        missing = [name for name, val in [
+            ("section_repo", section_repo),
+            ("requirement_repo", requirement_repo),
+            ("test_case_repo", test_case_repo),
+            ("suite_repo", suite_repo),
+            ("review_repo", review_repo),
+            ("impact_repo", impact_repo),
+        ] if val is None]
+        if missing:
+            raise TypeError(
+                f"TestManagementService missing required repositories: {missing}"
+            )
         self.section_repo = section_repo
         self.requirement_repo = requirement_repo
+        self.test_case_repo = test_case_repo
+        self.suite_repo = suite_repo
+        self.review_repo = review_repo
+        self.impact_repo = impact_repo
+        # activity log is optional — if absent we silently skip writes
+        self.activity_repo = activity_repo
+
+    # ---- activity log helper -------------------------------------------------
+
+    def _log(self, tenant_id, user_id, action, entity_type, entity_id, details=None):
+        if not self.activity_repo:
+            return
+        try:
+            self.activity_repo.log_activity(
+                tenant_id, user_id, action, entity_type, entity_id, details or {},
+            )
+        except Exception as e:
+            log.warning("activity log write failed: %s", e)
+
+    # ---- AI generation / regeneration ---------------------------------------
 
     def regenerate_for_impact(self, tenant_id, impact_id, created_by,
-                               env_repo, conn_repo, metadata_repo):
+                              env_repo, conn_repo, metadata_repo):
         """Regenerate a test case for a metadata impact."""
-        from primeqa.test_management.models import MetadataImpact, TestCase, Requirement
+        from primeqa.test_management.models import MetadataImpact, TestCase
+        from primeqa.core.models import Environment
         impact = self.impact_repo.db.query(MetadataImpact).filter(
             MetadataImpact.id == impact_id,
         ).first()
         if not impact:
-            raise ValueError("Impact not found")
+            raise NotFoundError("Impact not found")
 
-        tc = self.test_case_repo.db.query(TestCase).filter(
-            TestCase.id == impact.test_case_id, TestCase.tenant_id == tenant_id,
-        ).first()
+        tc = self.test_case_repo.get_test_case(impact.test_case_id, tenant_id)
         if not tc:
-            raise ValueError("Test case not found")
+            raise NotFoundError("Test case not found")
 
-        env = env_repo.db.query(env_repo.db.query().statement.table.__class__).first() if False else None
-        from primeqa.core.models import Environment
         env = env_repo.db.query(Environment).filter(
             Environment.tenant_id == tenant_id,
             Environment.current_meta_version_id == impact.new_meta_version_id,
         ).first()
         if not env:
-            raise ValueError("Environment not found for impact")
+            raise NotFoundError("Environment not found for impact")
 
-        requirement_id = tc.requirement_id
-        if not requirement_id:
-            raise ValueError("Test case has no linked requirement")
+        if not tc.requirement_id:
+            raise ValidationError("Test case has no linked requirement")
 
         result = self.generate_test_case(
-            tenant_id=tenant_id, requirement_id=requirement_id,
+            tenant_id=tenant_id, requirement_id=tc.requirement_id,
             environment_id=env.id, created_by=created_by,
             env_repo=env_repo, conn_repo=conn_repo, metadata_repo=metadata_repo,
             test_case_id=tc.id,
@@ -62,19 +108,19 @@ class TestManagementService:
 
         requirement = self.requirement_repo.get_requirement(requirement_id, tenant_id)
         if not requirement:
-            raise ValueError("Requirement not found")
+            raise NotFoundError("Requirement not found")
 
         env = env_repo.get_environment(environment_id, tenant_id)
         if not env:
-            raise ValueError("Environment not found")
+            raise NotFoundError("Environment not found")
         if not env.current_meta_version_id:
-            raise ValueError("Environment has no metadata version. Refresh metadata first.")
+            raise ValidationError("Environment has no metadata version. Refresh metadata first.")
         if not env.llm_connection_id:
-            raise ValueError("Environment has no LLM connection configured")
+            raise ValidationError("Environment has no LLM connection configured")
 
         llm_conn = conn_repo.get_connection_decrypted(env.llm_connection_id, tenant_id)
         if not llm_conn:
-            raise ValueError("LLM connection not found")
+            raise NotFoundError("LLM connection not found")
 
         import anthropic
         llm_client = anthropic.Anthropic(api_key=llm_conn["config"].get("api_key", ""))
@@ -86,9 +132,11 @@ class TestManagementService:
         if test_case_id:
             tc = self.test_case_repo.get_test_case(test_case_id, tenant_id)
             if not tc:
-                raise ValueError("Test case not found")
+                raise NotFoundError("Test case not found")
         else:
-            title = requirement.jira_summary or f"Test for {requirement.jira_key or f'requirement {requirement.id}'}"
+            title = requirement.jira_summary or (
+                f"Test for {requirement.jira_key or f'requirement {requirement.id}'}"
+            )
             tc = self.test_case_repo.create_test_case(
                 tenant_id=tenant_id, title=title,
                 owner_id=created_by, created_by=created_by,
@@ -109,13 +157,19 @@ class TestManagementService:
         )
 
         auto_review_created = False
-        if result["confidence_score"] < 0.7 and hasattr(self, "review_repo"):
+        if result["confidence_score"] < 0.7:
+            # review_repo is guaranteed-present thanks to constructor DI
             self.review_repo.create_review(
                 tenant_id=tenant_id,
                 test_case_version_id=version.id,
                 assigned_to=created_by,
             )
             auto_review_created = True
+
+        self._log(tenant_id, created_by,
+                  "generate_test_case" if not test_case_id else "regenerate_test_case",
+                  "test_case", tc.id,
+                  {"version_id": version.id, "confidence": result["confidence_score"]})
 
         return {
             "test_case_id": tc.id,
@@ -126,53 +180,72 @@ class TestManagementService:
             "auto_review_created": auto_review_created,
         }
 
-        self.test_case_repo = test_case_repo
-        self.suite_repo = suite_repo
-        self.review_repo = review_repo
-        self.impact_repo = impact_repo
-
-    # --- Sections ---
+    # ---- Sections ------------------------------------------------------------
 
     def create_section(self, tenant_id, name, created_by, **kwargs):
-        return self._section_dict(
-            self.section_repo.create_section(tenant_id, name, created_by, **kwargs)
-        )
-
-    def get_section_tree(self, tenant_id):
-        return self.section_repo.get_section_tree(tenant_id)
-
-    def update_section(self, section_id, tenant_id, updates):
-        s = self.section_repo.update_section(section_id, tenant_id, updates)
-        if not s:
-            raise ValueError("Section not found")
+        s = self.section_repo.create_section(tenant_id, name, created_by, **kwargs)
+        self._log(tenant_id, created_by, "create", "section", s.id, {"name": name})
         return self._section_dict(s)
 
-    def delete_section(self, section_id, tenant_id):
-        if not self.section_repo.delete_section(section_id, tenant_id):
-            raise ValueError("Section not found")
+    def get_section_tree(self, tenant_id, include_deleted=False):
+        return self.section_repo.get_section_tree(tenant_id, include_deleted=include_deleted)
 
-    # --- Requirements ---
+    def list_sections_page(self, tenant_id, **params):
+        page = self.section_repo.list_page(tenant_id, **params)
+        return page, self._section_dict
+
+    def update_section(self, section_id, tenant_id, updates, expected_version=None, user_id=None):
+        s, result = self.section_repo.update_section(
+            section_id, tenant_id, updates, expected_version,
+        )
+        if result == "not_found":
+            raise NotFoundError("Section not found")
+        if result == "conflict":
+            raise ConflictError("Section was modified by another user",
+                                details={"current_version": self.section_repo.get_section(
+                                    section_id, tenant_id).version})
+        self._log(tenant_id, user_id, "update", "section", section_id, updates)
+        return self._section_dict(s)
+
+    def delete_section(self, section_id, tenant_id, user_id):
+        s = self.section_repo.soft_delete_section(section_id, tenant_id, user_id)
+        if not s:
+            raise NotFoundError("Section not found")
+        self._log(tenant_id, user_id, "soft_delete", "section", section_id)
+        return self._section_dict(s)
+
+    def restore_section(self, section_id, tenant_id, user_id):
+        s = self.section_repo.restore_section(section_id, tenant_id)
+        if not s:
+            raise NotFoundError("Section not found")
+        self._log(tenant_id, user_id, "restore", "section", section_id)
+        return self._section_dict(s)
+
+    def purge_section(self, section_id, tenant_id, user_id):
+        if not self.section_repo.purge_section(section_id, tenant_id):
+            raise NotFoundError("Section not found")
+        self._log(tenant_id, user_id, "purge", "section", section_id)
+
+    # ---- Requirements --------------------------------------------------------
 
     def create_requirement(self, tenant_id, section_id, source, created_by, **kwargs):
-        return self._req_dict(
-            self.requirement_repo.create_requirement(
-                tenant_id, section_id, source, created_by, **kwargs
-            )
+        r = self.requirement_repo.create_requirement(
+            tenant_id, section_id, source, created_by, **kwargs,
         )
+        self._log(tenant_id, created_by, "create", "requirement", r.id, {"source": source})
+        return self._req_dict(r)
 
     def import_jira_requirement(self, tenant_id, section_id, jira_base_url,
-                                 jira_key, created_by, jira_auth=None):
+                                jira_key, created_by, jira_auth=None):
         existing = self.requirement_repo.find_by_jira_key(tenant_id, jira_key)
         if existing:
-            raise ValueError(f"Requirement for {jira_key} already exists")
+            raise ValidationError(f"Requirement for {jira_key} already exists")
 
         issue = self._fetch_jira_issue(jira_base_url, jira_key, jira_auth)
         fields = issue.get("fields", {})
 
         req = self.requirement_repo.create_requirement(
-            tenant_id=tenant_id,
-            section_id=section_id,
-            source="jira",
+            tenant_id=tenant_id, section_id=section_id, source="jira",
             created_by=created_by,
             jira_key=jira_key,
             jira_summary=fields.get("summary", ""),
@@ -182,12 +255,14 @@ class TestManagementService:
         self.requirement_repo.update_requirement(req.id, tenant_id, {
             "jira_last_synced": datetime.now(timezone.utc),
         })
+        self._log(tenant_id, created_by, "import_jira", "requirement", req.id,
+                  {"jira_key": jira_key})
         return self._req_dict(req)
 
     def sync_jira_requirement(self, requirement_id, tenant_id, jira_base_url, jira_auth=None):
         req = self.requirement_repo.get_requirement(requirement_id, tenant_id)
         if not req or not req.jira_key:
-            raise ValueError("Requirement not found or not Jira-linked")
+            raise NotFoundError("Requirement not found or not Jira-linked")
 
         issue = self._fetch_jira_issue(jira_base_url, req.jira_key, jira_auth)
         fields = issue.get("fields", {})
@@ -212,29 +287,67 @@ class TestManagementService:
                 "is_stale": True,
             })
 
-        req = self.requirement_repo.update_requirement(requirement_id, tenant_id, updates)
+        req, _result = self.requirement_repo.update_requirement(requirement_id, tenant_id, updates)
         return self._req_dict(req), changed
 
     def list_requirements(self, tenant_id, section_id=None):
         reqs = self.requirement_repo.list_requirements(tenant_id, section_id)
         return [self._req_dict(r) for r in reqs]
 
-    # --- Test Cases ---
+    def list_requirements_page(self, tenant_id, **params):
+        page = self.requirement_repo.list_page(tenant_id, **params)
+        return page, self._req_dict
+
+    def update_requirement(self, requirement_id, tenant_id, updates,
+                           expected_version=None, user_id=None):
+        req, result = self.requirement_repo.update_requirement(
+            requirement_id, tenant_id, updates, expected_version,
+        )
+        if result == "not_found":
+            raise NotFoundError("Requirement not found")
+        if result == "conflict":
+            raise ConflictError("Requirement was modified by another user",
+                                details={"current_version": self.requirement_repo.get_requirement(
+                                    requirement_id, tenant_id).version})
+        self._log(tenant_id, user_id, "update", "requirement", requirement_id, updates)
+        return self._req_dict(req)
+
+    def delete_requirement(self, requirement_id, tenant_id, user_id):
+        r = self.requirement_repo.soft_delete_requirement(requirement_id, tenant_id, user_id)
+        if not r:
+            raise NotFoundError("Requirement not found")
+        self._log(tenant_id, user_id, "soft_delete", "requirement", requirement_id)
+        return self._req_dict(r)
+
+    def restore_requirement(self, requirement_id, tenant_id, user_id):
+        r = self.requirement_repo.restore_requirement(requirement_id, tenant_id)
+        if not r:
+            raise NotFoundError("Requirement not found")
+        self._log(tenant_id, user_id, "restore", "requirement", requirement_id)
+        return self._req_dict(r)
+
+    def purge_requirement(self, requirement_id, tenant_id, user_id):
+        if not self.requirement_repo.purge_requirement(requirement_id, tenant_id):
+            raise NotFoundError("Requirement not found")
+        self._log(tenant_id, user_id, "purge", "requirement", requirement_id)
+
+    # ---- Test cases ----------------------------------------------------------
 
     def create_test_case(self, tenant_id, title, owner_id, created_by, **kwargs):
         if not kwargs.get("requirement_id") and not kwargs.get("section_id"):
-            raise ValueError("Either requirement_id or section_id is required")
+            raise ValidationError("Either requirement_id or section_id is required")
         tc = self.test_case_repo.create_test_case(
             tenant_id, title, owner_id, created_by, **kwargs,
         )
+        self._log(tenant_id, created_by, "create", "test_case", tc.id, {"title": title})
         return self._tc_dict(tc)
 
     def get_test_case(self, test_case_id, tenant_id, requesting_user_id):
         tc = self.test_case_repo.get_test_case(test_case_id, tenant_id)
         if not tc:
-            raise ValueError("Test case not found")
+            raise NotFoundError("Test case not found")
         if tc.visibility == "private" and tc.owner_id != requesting_user_id:
-            raise ValueError("Test case not found")
+            raise NotFoundError("Test case not found")
         return self._tc_dict(tc)
 
     def list_test_cases(self, tenant_id, user_id, **filters):
@@ -243,108 +356,278 @@ class TestManagementService:
         )
         return [self._tc_dict(tc) for tc in tcs]
 
-    def update_test_case(self, test_case_id, tenant_id, updates, expected_version=None):
+    def list_test_cases_page(self, tenant_id, user_id, **params):
+        page = self.test_case_repo.list_page(tenant_id, user_id=user_id, **params)
+        return page, self._tc_dict
+
+    def update_test_case(self, test_case_id, tenant_id, updates,
+                         expected_version=None, user_id=None):
         tc, result = self.test_case_repo.update_test_case(
             test_case_id, tenant_id, updates, expected_version,
         )
         if result == "not_found":
-            raise ValueError("Test case not found")
+            raise NotFoundError("Test case not found")
         if result == "conflict":
-            raise ConflictError("Test case was modified by another user")
+            current = self.test_case_repo.get_test_case(test_case_id, tenant_id)
+            raise ConflictError(
+                "Test case was modified by another user",
+                details={"current_version": current.version if current else None},
+            )
+        self._log(tenant_id, user_id, "update", "test_case", test_case_id, updates)
         return self._tc_dict(tc)
 
     def share_test_case(self, test_case_id, tenant_id, user_id):
         tc = self.test_case_repo.get_test_case(test_case_id, tenant_id)
         if not tc:
-            raise ValueError("Test case not found")
+            raise NotFoundError("Test case not found")
         if tc.owner_id != user_id:
-            raise ValueError("Only the owner can share a test case")
+            raise ForbiddenError("Only the owner can share a test case")
         tc, _ = self.test_case_repo.update_test_case(
             test_case_id, tenant_id, {"visibility": "shared"},
         )
+        self._log(tenant_id, user_id, "share", "test_case", test_case_id)
         return self._tc_dict(tc)
 
-    def activate_test_case(self, test_case_id, tenant_id):
+    def activate_test_case(self, test_case_id, tenant_id, user_id=None):
         tc = self.test_case_repo.get_test_case(test_case_id, tenant_id)
         if not tc:
-            raise ValueError("Test case not found")
+            raise NotFoundError("Test case not found")
         if tc.status != "approved":
-            raise ValueError("Test case must be approved before activation")
+            raise ValidationError("Test case must be approved before activation")
         tc, _ = self.test_case_repo.update_test_case(
             test_case_id, tenant_id, {"status": "active"},
         )
+        self._log(tenant_id, user_id, "activate", "test_case", test_case_id)
         return self._tc_dict(tc)
 
-    # --- Versions ---
+    def delete_test_case(self, test_case_id, tenant_id, user_id):
+        tc = self.test_case_repo.soft_delete_test_case(test_case_id, tenant_id, user_id)
+        if not tc:
+            raise NotFoundError("Test case not found")
+        self._log(tenant_id, user_id, "soft_delete", "test_case", test_case_id)
+        return self._tc_dict(tc)
+
+    def restore_test_case(self, test_case_id, tenant_id, user_id):
+        tc = self.test_case_repo.restore_test_case(test_case_id, tenant_id)
+        if not tc:
+            raise NotFoundError("Test case not found")
+        self._log(tenant_id, user_id, "restore", "test_case", test_case_id)
+        return self._tc_dict(tc)
+
+    def purge_test_case(self, test_case_id, tenant_id, user_id):
+        if not self.test_case_repo.purge_test_case(test_case_id, tenant_id):
+            raise NotFoundError("Test case not found")
+        self._log(tenant_id, user_id, "purge", "test_case", test_case_id)
+
+    # ---- Bulk ops (test cases) ----------------------------------------------
+
+    def bulk_test_cases(self, tenant_id, user_id, ids, action, payload):
+        """Execute a bulk action on a set of test cases.
+
+        Guards:
+          - `len(ids) > BULK_MAX_ITEMS` → BulkLimitError (400)
+          - destructive actions require caller to pass `confirm == 'DELETE'`
+            — that check happens in the route layer using `require_bulk_confirm`
+        """
+        if not ids:
+            raise ValidationError("ids is required")
+        if len(ids) > BULK_MAX_ITEMS:
+            raise BulkLimitError(
+                f"Bulk action exceeds the {BULK_MAX_ITEMS}-item limit",
+                details={"limit": BULK_MAX_ITEMS, "received": len(ids)},
+            )
+        if not action:
+            raise ValidationError("action is required")
+
+        from primeqa.test_management.models import TestCase, TestCaseTag, SuiteTestCase
+        db = self.test_case_repo.db
+        tcs = db.query(TestCase).filter(
+            TestCase.tenant_id == tenant_id,
+            TestCase.id.in_(ids),
+            TestCase.deleted_at.is_(None),
+        ).all()
+        count = 0
+        if action == "move_section":
+            sid = payload.get("section_id")
+            for tc in tcs:
+                tc.section_id = sid
+                count += 1
+        elif action == "set_status":
+            status = payload.get("status")
+            for tc in tcs:
+                tc.status = status
+                count += 1
+        elif action == "add_tag":
+            tag_id = payload.get("tag_id")
+            for tc in tcs:
+                exists = db.query(TestCaseTag).filter(
+                    TestCaseTag.test_case_id == tc.id,
+                    TestCaseTag.tag_id == tag_id,
+                ).first()
+                if not exists:
+                    db.add(TestCaseTag(test_case_id=tc.id, tag_id=tag_id))
+                    count += 1
+        elif action == "add_to_suite":
+            suite_id = payload.get("suite_id")
+            for tc in tcs:
+                exists = db.query(SuiteTestCase).filter(
+                    SuiteTestCase.suite_id == suite_id,
+                    SuiteTestCase.test_case_id == tc.id,
+                ).first()
+                if not exists:
+                    db.add(SuiteTestCase(suite_id=suite_id, test_case_id=tc.id, position=0))
+                    count += 1
+        elif action == "soft_delete":
+            now = datetime.now(timezone.utc)
+            for tc in tcs:
+                tc.deleted_at = now
+                tc.deleted_by = user_id
+                count += 1
+        else:
+            raise ValidationError(f"Unknown action: {action}")
+
+        db.commit()
+        self._log(tenant_id, user_id, f"bulk_{action}", "test_case", None,
+                  {"ids": ids, "payload": payload, "affected": count})
+        return {"affected": count}
+
+    def bulk_purge_test_cases(self, tenant_id, user_id, ids):
+        """Admin-only permanent deletion — caller enforces role + confirm."""
+        if not ids:
+            raise ValidationError("ids is required")
+        if len(ids) > BULK_MAX_ITEMS:
+            raise BulkLimitError(
+                f"Bulk action exceeds the {BULK_MAX_ITEMS}-item limit",
+                details={"limit": BULK_MAX_ITEMS, "received": len(ids)},
+            )
+        from primeqa.test_management.models import TestCase
+        db = self.test_case_repo.db
+        tcs = db.query(TestCase).filter(
+            TestCase.tenant_id == tenant_id, TestCase.id.in_(ids),
+        ).all()
+        count = 0
+        for tc in tcs:
+            db.delete(tc)
+            count += 1
+        db.commit()
+        self._log(tenant_id, user_id, "bulk_purge", "test_case", None,
+                  {"ids": ids, "affected": count})
+        return {"affected": count}
+
+    # ---- Versions ------------------------------------------------------------
 
     def create_version(self, test_case_id, tenant_id, metadata_version_id, created_by, **kwargs):
         tc = self.test_case_repo.get_test_case(test_case_id, tenant_id)
         if not tc:
-            raise ValueError("Test case not found")
+            raise NotFoundError("Test case not found")
         tcv = self.test_case_repo.create_version(
             test_case_id, metadata_version_id, created_by, **kwargs,
         )
+        self._log(tenant_id, created_by, "create_version", "test_case", test_case_id,
+                  {"version_id": tcv.id})
         return self._tcv_dict(tcv)
 
     def list_versions(self, test_case_id, tenant_id):
         tc = self.test_case_repo.get_test_case(test_case_id, tenant_id)
         if not tc:
-            raise ValueError("Test case not found")
+            raise NotFoundError("Test case not found")
         versions = self.test_case_repo.get_versions(test_case_id)
         return [self._tcv_dict(v) for v in versions]
 
-    # --- Suites ---
+    # ---- Suites --------------------------------------------------------------
 
     def create_suite(self, tenant_id, name, suite_type, created_by, **kwargs):
         suite = self.suite_repo.create_suite(
             tenant_id, name, suite_type, created_by, kwargs.get("description"),
         )
+        self._log(tenant_id, created_by, "create", "test_suite", suite.id, {"name": name})
         return self._suite_dict(suite)
 
     def list_suites(self, tenant_id):
         return [self._suite_dict(s) for s in self.suite_repo.list_suites(tenant_id)]
 
+    def list_suites_page(self, tenant_id, **params):
+        page = self.suite_repo.list_page(tenant_id, **params)
+        return page, self._suite_dict
+
+    def update_suite(self, suite_id, tenant_id, updates,
+                     expected_version=None, user_id=None):
+        suite, result = self.suite_repo.update_suite(
+            suite_id, tenant_id, updates, expected_version,
+        )
+        if result == "not_found":
+            raise NotFoundError("Suite not found")
+        if result == "conflict":
+            raise ConflictError("Suite was modified by another user",
+                                details={"current_version": self.suite_repo.get_suite(
+                                    suite_id, tenant_id).version})
+        self._log(tenant_id, user_id, "update", "test_suite", suite_id, updates)
+        return self._suite_dict(suite)
+
+    def delete_suite(self, suite_id, tenant_id, user_id):
+        suite = self.suite_repo.soft_delete_suite(suite_id, tenant_id, user_id)
+        if not suite:
+            raise NotFoundError("Suite not found")
+        self._log(tenant_id, user_id, "soft_delete", "test_suite", suite_id)
+        return self._suite_dict(suite)
+
+    def restore_suite(self, suite_id, tenant_id, user_id):
+        suite = self.suite_repo.restore_suite(suite_id, tenant_id)
+        if not suite:
+            raise NotFoundError("Suite not found")
+        self._log(tenant_id, user_id, "restore", "test_suite", suite_id)
+        return self._suite_dict(suite)
+
+    def purge_suite(self, suite_id, tenant_id, user_id):
+        if not self.suite_repo.purge_suite(suite_id, tenant_id):
+            raise NotFoundError("Suite not found")
+        self._log(tenant_id, user_id, "purge", "test_suite", suite_id)
+
     def add_to_suite(self, suite_id, test_case_id, tenant_id, position=0):
         suite = self.suite_repo.get_suite(suite_id, tenant_id)
         if not suite:
-            raise ValueError("Suite not found")
+            raise NotFoundError("Suite not found")
         self.suite_repo.add_test_case(suite_id, test_case_id, position)
 
     def remove_from_suite(self, suite_id, test_case_id, tenant_id):
         suite = self.suite_repo.get_suite(suite_id, tenant_id)
         if not suite:
-            raise ValueError("Suite not found")
+            raise NotFoundError("Suite not found")
         self.suite_repo.remove_test_case(suite_id, test_case_id)
 
     def get_suite_test_cases(self, suite_id, tenant_id):
         suite = self.suite_repo.get_suite(suite_id, tenant_id)
         if not suite:
-            raise ValueError("Suite not found")
+            raise NotFoundError("Suite not found")
         stcs = self.suite_repo.get_suite_test_cases(suite_id)
         return [{"test_case_id": s.test_case_id, "position": s.position} for s in stcs]
 
     def reorder_suite_test_case(self, suite_id, test_case_id, tenant_id, new_position):
         suite = self.suite_repo.get_suite(suite_id, tenant_id)
         if not suite:
-            raise ValueError("Suite not found")
+            raise NotFoundError("Suite not found")
         self.suite_repo.reorder_test_case(suite_id, test_case_id, new_position)
 
-    # --- Reviews ---
+    # ---- Reviews -------------------------------------------------------------
 
     def assign_review(self, tenant_id, test_case_version_id, assigned_to):
         return self._review_dict(
             self.review_repo.create_review(tenant_id, test_case_version_id, assigned_to)
         )
 
-    def submit_review(self, review_id, status, feedback=None, reviewed_by=None):
-        review = self.review_repo.update_review(review_id, status, feedback, reviewed_by)
+    def submit_review(self, review_id, status, feedback=None, reviewed_by=None,
+                      step_comments=None):
+        review = self.review_repo.update_review(
+            review_id, status, feedback, reviewed_by, step_comments=step_comments,
+        )
         if not review:
-            raise ValueError("Review not found")
+            raise NotFoundError("Review not found")
 
         if status == "approved":
-            tcv = self.test_case_repo.db.query(
-                __import__("primeqa.test_management.models", fromlist=["TestCaseVersion"]).TestCaseVersion
-            ).filter_by(id=review.test_case_version_id).first()
+            from primeqa.test_management.models import TestCaseVersion
+            tcv = self.test_case_repo.db.query(TestCaseVersion).filter_by(
+                id=review.test_case_version_id,
+            ).first()
             if tcv:
                 self.test_case_repo.update_test_case(
                     tcv.test_case_id, review.tenant_id,
@@ -357,19 +640,65 @@ class TestManagementService:
         reviews = self.review_repo.list_reviews(tenant_id, status, assigned_to)
         return [self._review_dict(r) for r in reviews]
 
-    # --- Impacts ---
+    def list_reviews_page(self, tenant_id, **params):
+        page = self.review_repo.list_page(tenant_id, **params)
+        return page, self._review_dict
+
+    def delete_review(self, review_id, tenant_id, user_id):
+        r = self.review_repo.soft_delete_review(review_id, tenant_id, user_id)
+        if not r:
+            raise NotFoundError("Review not found")
+        self._log(tenant_id, user_id, "soft_delete", "ba_review", review_id)
+        return self._review_dict(r)
+
+    def restore_review(self, review_id, tenant_id, user_id):
+        r = self.review_repo.restore_review(review_id, tenant_id)
+        if not r:
+            raise NotFoundError("Review not found")
+        self._log(tenant_id, user_id, "restore", "ba_review", review_id)
+        return self._review_dict(r)
+
+    def purge_review(self, review_id, tenant_id, user_id):
+        if not self.review_repo.purge_review(review_id, tenant_id):
+            raise NotFoundError("Review not found")
+        self._log(tenant_id, user_id, "purge", "ba_review", review_id)
+
+    # ---- Impacts -------------------------------------------------------------
 
     def list_pending_impacts(self, tenant_id):
         impacts = self.impact_repo.list_pending_impacts(tenant_id)
         return [self._impact_dict(i) for i in impacts]
 
+    def list_impacts_page(self, tenant_id, **params):
+        page = self.impact_repo.list_page(tenant_id, **params)
+        return page, self._impact_dict
+
     def resolve_impact(self, impact_id, resolution, resolved_by):
         impact = self.impact_repo.resolve_impact(impact_id, resolution, resolved_by)
         if not impact:
-            raise ValueError("Impact not found")
+            raise NotFoundError("Impact not found")
         return self._impact_dict(impact)
 
-    # --- Jira helpers ---
+    def delete_impact(self, impact_id, tenant_id, user_id):
+        i = self.impact_repo.soft_delete_impact(impact_id, tenant_id, user_id)
+        if not i:
+            raise NotFoundError("Impact not found")
+        self._log(tenant_id, user_id, "soft_delete", "metadata_impact", impact_id)
+        return self._impact_dict(i)
+
+    def restore_impact(self, impact_id, tenant_id, user_id):
+        i = self.impact_repo.restore_impact(impact_id, tenant_id)
+        if not i:
+            raise NotFoundError("Impact not found")
+        self._log(tenant_id, user_id, "restore", "metadata_impact", impact_id)
+        return self._impact_dict(i)
+
+    def purge_impact(self, impact_id, tenant_id, user_id):
+        if not self.impact_repo.purge_impact(impact_id, tenant_id):
+            raise NotFoundError("Impact not found")
+        self._log(tenant_id, user_id, "purge", "metadata_impact", impact_id)
+
+    # ---- Jira helpers --------------------------------------------------------
 
     def _fetch_jira_issue(self, base_url, key, auth=None):
         url = f"{base_url.rstrip('/')}/rest/api/2/issue/{key}"
@@ -387,7 +716,7 @@ class TestManagementService:
                 return str(cf_val)
         return fields.get("description", "")
 
-    # --- Dict helpers ---
+    # ---- Dict helpers --------------------------------------------------------
 
     @staticmethod
     def _section_dict(s):
@@ -395,7 +724,10 @@ class TestManagementService:
             "id": s.id, "tenant_id": s.tenant_id, "parent_id": s.parent_id,
             "name": s.name, "description": s.description, "position": s.position,
             "created_by": s.created_by,
+            "version": getattr(s, "version", 1),
             "created_at": s.created_at.isoformat() if s.created_at else None,
+            "updated_at": s.updated_at.isoformat() if getattr(s, "updated_at", None) else None,
+            "deleted_at": s.deleted_at.isoformat() if getattr(s, "deleted_at", None) else None,
         }
 
     @staticmethod
@@ -406,8 +738,11 @@ class TestManagementService:
             "jira_summary": r.jira_summary, "jira_description": r.jira_description,
             "acceptance_criteria": r.acceptance_criteria,
             "jira_version": r.jira_version, "is_stale": r.is_stale,
+            "version": getattr(r, "version", 1),
             "created_by": r.created_by,
             "created_at": r.created_at.isoformat() if r.created_at else None,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            "deleted_at": r.deleted_at.isoformat() if getattr(r, "deleted_at", None) else None,
         }
 
     @staticmethod
@@ -419,6 +754,7 @@ class TestManagementService:
             "status": tc.status, "current_version_id": tc.current_version_id,
             "version": tc.version, "created_by": tc.created_by,
             "updated_at": tc.updated_at.isoformat() if tc.updated_at else None,
+            "deleted_at": tc.deleted_at.isoformat() if getattr(tc, "deleted_at", None) else None,
         }
 
     @staticmethod
@@ -441,8 +777,11 @@ class TestManagementService:
         return {
             "id": s.id, "tenant_id": s.tenant_id, "name": s.name,
             "description": s.description, "suite_type": s.suite_type,
+            "version": getattr(s, "version", 1),
             "created_by": s.created_by,
             "created_at": s.created_at.isoformat() if s.created_at else None,
+            "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            "deleted_at": s.deleted_at.isoformat() if getattr(s, "deleted_at", None) else None,
         }
 
     @staticmethod
@@ -452,8 +791,11 @@ class TestManagementService:
             "test_case_version_id": r.test_case_version_id,
             "assigned_to": r.assigned_to, "reviewed_by": r.reviewed_by,
             "status": r.status, "feedback": r.feedback,
+            "step_comments": getattr(r, "step_comments", []) or [],
+            "version": getattr(r, "version", 1),
             "reviewed_at": r.reviewed_at.isoformat() if r.reviewed_at else None,
             "created_at": r.created_at.isoformat() if r.created_at else None,
+            "deleted_at": r.deleted_at.isoformat() if getattr(r, "deleted_at", None) else None,
         }
 
     @staticmethod
@@ -462,9 +804,15 @@ class TestManagementService:
             "id": i.id, "test_case_id": i.test_case_id,
             "impact_type": i.impact_type, "entity_ref": i.entity_ref,
             "resolution": i.resolution,
+            "change_details": i.change_details,
+            "new_meta_version_id": i.new_meta_version_id,
+            "prev_meta_version_id": i.prev_meta_version_id,
             "created_at": i.created_at.isoformat() if i.created_at else None,
+            "deleted_at": i.deleted_at.isoformat() if getattr(i, "deleted_at", None) else None,
         }
 
 
-class ConflictError(Exception):
-    pass
+# Re-export ConflictError for external imports that expect it at module scope.
+# The canonical home is primeqa.shared.api; this alias preserves the existing
+# `from primeqa.test_management.service import ConflictError` import path.
+ConflictError = ConflictError  # noqa: F811

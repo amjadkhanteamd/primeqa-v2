@@ -1,6 +1,14 @@
 {% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% block title %}Edit {{ tc.title }} - PrimeQA{% endblock %}
 {% block content %}
+
+{{ breadcrumbs([
+  ('Test Library', '/test-cases'),
+  (tc.title, '/test-cases/' ~ tc.id),
+  ('Edit', None),
+]) }}
+
 <div class="max-w-5xl space-y-6">
     <div class="flex justify-between items-center">
         <div>
@@ -12,9 +20,10 @@
 
     {% if error %}<div class="rounded-md bg-red-50 p-4"><p class="text-sm text-red-700">{{ error }}</p></div>{% endif %}
 
-    <form method="POST" action="/test-cases/{{ tc.id }}/edit" id="edit-form" class="space-y-6">
+    <form method="POST" action="/test-cases/{{ tc.id }}/edit" id="edit-form" class="space-y-6" data-unsaved-guard>
         <input type="hidden" name="steps_json" id="steps-json">
         <input type="hidden" name="environment_id" value="{{ env_id or '' }}">
+        <input type="hidden" name="expected_version" value="{{ tc.version or 1 }}">
 
         <div class="bg-white shadow rounded-lg p-6 space-y-4">
             <div><label class="block text-sm font-medium text-gray-700">Title</label>

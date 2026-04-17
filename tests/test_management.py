@@ -67,6 +67,7 @@ def ensure_user(email, password, full_name, role):
 
 def setup_meta_version():
     """Create a minimal meta_version for test_case_versions FK."""
+    import uuid
     from primeqa.db import SessionLocal
     from primeqa.metadata.models import MetaVersion
     from primeqa.core.models import Environment
@@ -80,7 +81,9 @@ def setup_meta_version():
             db.add(env)
             db.commit()
             db.refresh(env)
-        mv = MetaVersion(environment_id=env.id, version_label="v1", status="complete")
+        # Unique label per run to avoid colliding with prior test runs' rows.
+        label = f"tm{uuid.uuid4().hex[:6]}"
+        mv = MetaVersion(environment_id=env.id, version_label=label, status="complete")
         db.add(mv)
         db.commit()
         db.refresh(mv)

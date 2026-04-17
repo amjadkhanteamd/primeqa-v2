@@ -1,51 +1,286 @@
 {% extends "base.html" %}
+{% from 'components/pagination.html' import render_meta_pagination, sort_header, per_page_selector %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% block title %}Test Library - PrimeQA{% endblock %}
 {% block content %}
+
+{# 5-second test: primary action (+ New Test), one row of filter chips, scannable table. #}
+
+{{ breadcrumbs([('Test Library', None)]) }}
+
+{# Preserve current filters when switching sort/page #}
+{% set qs %}{% if search %}&q={{ search | urlencode }}{% endif %}{% if section_id %}&section_id={{ section_id }}{% endif %}{% if status_filter %}&status={{ status_filter }}{% endif %}{% if show_deleted %}&deleted=1{% endif %}{% if meta.per_page and meta.per_page != 20 %}&per_page={{ meta.per_page }}{% endif %}{% endset %}
+{% set qs_nosort %}{{ qs }}{% endset %}
+
 <div class="flex space-x-6">
-    <div class="w-64 flex-shrink-0">
-        <div class="bg-white shadow rounded-lg p-4">
-            <h3 class="text-sm font-medium text-gray-900 mb-3">Sections</h3>
-            {% macro render_tree(sections, depth=0) %}
-            <ul class="{% if depth > 0 %}ml-4{% endif %} space-y-1">
-                {% for s in sections %}
-                <li>
-                    <a href="/test-cases?section_id={{ s.id }}" class="block text-sm py-1 px-2 rounded {% if section_id == s.id %}bg-indigo-50 text-indigo-700 font-medium{% else %}text-gray-600 hover:bg-gray-50{% endif %}">{{ s.name }}</a>
-                    {% if s.children %}{{ render_tree(s.children, depth+1) }}{% endif %}
-                </li>
-                {% endfor %}
-            </ul>
-            {% endmacro %}
-            <a href="/test-cases" class="block text-sm py-1 px-2 rounded mb-2 {% if not section_id %}bg-indigo-50 text-indigo-700 font-medium{% else %}text-gray-600 hover:bg-gray-50{% endif %}">All Test Cases</a>
-            {{ render_tree(sections) }}
-        </div>
+  <aside class="w-56 flex-shrink-0">
+    <div class="bg-white shadow rounded-lg p-4">
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-3">Sections</h3>
+      {% macro render_tree(sections, depth=0) %}
+      <ul class="{% if depth > 0 %}ml-4{% endif %} space-y-1">
+        {% for s in sections %}
+        <li>
+          <a href="/test-cases?section_id={{ s.id }}" class="block text-sm py-1 px-2 rounded {% if section_id == s.id %}bg-indigo-50 text-indigo-700 font-medium{% else %}text-gray-600 hover:bg-gray-50{% endif %}">{{ s.name }}</a>
+          {% if s.children %}{{ render_tree(s.children, depth+1) }}{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% endmacro %}
+      <a href="/test-cases" class="block text-sm py-1 px-2 rounded mb-2 {% if not section_id %}bg-indigo-50 text-indigo-700 font-medium{% else %}text-gray-600 hover:bg-gray-50{% endif %}">All Test Cases</a>
+      {{ render_tree(sections) }}
     </div>
-    <div class="flex-1">
-        <div class="flex justify-between items-center mb-4">
-            <h1 class="text-2xl font-bold text-gray-900">Test Cases</h1>
-        </div>
-        <div class="bg-white shadow rounded-lg overflow-x-auto">
-            <table class="min-w-full divide-y divide-gray-200">
-                <thead class="bg-gray-50">
-                    <tr>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Title</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Visibility</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Owner</th>
-                    </tr>
-                </thead>
-                <tbody class="bg-white divide-y divide-gray-200">
-                    {% for tc in test_cases %}
-                    <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/test-cases/{{ tc.id }}'">
-                        <td class="px-6 py-4 text-sm font-medium text-indigo-600">{{ tc.title }}</td>
-                        <td class="px-6 py-4"><span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if tc.status == 'active' %}bg-green-100 text-green-800{% elif tc.status == 'approved' %}bg-blue-100 text-blue-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ tc.status }}</span></td>
-                        <td class="px-6 py-4"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if tc.visibility == 'shared' %}bg-green-50 text-green-700{% else %}bg-gray-50 text-gray-600{% endif %}">{{ tc.visibility }}</span></td>
-                        <td class="px-6 py-4 text-sm text-gray-500">{{ tc.owner_id }}</td>
-                    </tr>
-                    {% endfor %}
-                    {% if not test_cases %}<tr><td colspan="4" class="px-6 py-8 text-center text-sm text-gray-500">No test cases found</td></tr>{% endif %}
-                </tbody>
-            </table>
-        </div>
+  </aside>
+
+  <div class="flex-1 min-w-0">
+    {# Page header — primary action lives here #}
+    <div class="flex items-center justify-between mb-4">
+      <h1 class="text-2xl font-bold text-gray-900">
+        Test Cases
+        {% if show_deleted %}<span class="ml-2 align-middle inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-200 text-gray-700">Trash</span>{% endif %}
+      </h1>
+      <div class="flex items-center space-x-2">
+        {% if show_deleted %}
+        <a href="/test-cases" class="rounded-md bg-white px-3 py-1.5 text-sm font-medium text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Back to active</a>
+        {% else %}
+        <a href="/test-cases?deleted=1" class="rounded-md bg-white px-3 py-1.5 text-sm font-medium text-gray-600 ring-1 ring-gray-300 hover:bg-gray-50">View Trash</a>
+        <a href="/requirements" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500">+ Generate from Requirement</a>
+        {% endif %}
+      </div>
     </div>
+
+    {# Filter + search row — one line, stays simple #}
+    <div class="bg-white shadow rounded-lg p-3 mb-3 flex flex-wrap items-center gap-2">
+      <form method="GET" action="/test-cases" class="flex items-center space-x-2 flex-1 min-w-0">
+        {% if section_id %}<input type="hidden" name="section_id" value="{{ section_id }}">{% endif %}
+        {% if show_deleted %}<input type="hidden" name="deleted" value="1">{% endif %}
+        <div class="relative flex-1 max-w-md">
+          <input type="text" name="q" value="{{ search or '' }}" placeholder="Search by title…"
+                 class="block w-full rounded-md border border-gray-300 pl-9 pr-3 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+          <svg class="absolute left-3 top-2 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+        </div>
+        <select name="status" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+          <option value="">All statuses</option>
+          {% for opt in ['draft','approved','active'] %}
+          <option value="{{ opt }}" {% if status_filter == opt %}selected{% endif %}>{{ opt }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="rounded-md bg-white border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">Filter</button>
+        {% if search or status_filter %}
+        <a href="/test-cases{% if section_id %}?section_id={{ section_id }}{% endif %}" class="text-sm text-gray-500 hover:text-gray-700">Clear</a>
+        {% endif %}
+      </form>
+      <div class="ml-auto">{{ per_page_selector(meta.per_page, '/test-cases', qs_nosort, [10, 20, 50]) }}</div>
+    </div>
+
+    {% if query_error %}
+    <div class="mb-3 rounded-md bg-red-50 border border-red-200 p-3 text-sm text-red-700">{{ query_error }}</div>
+    {% endif %}
+
+    {# Multi-select bar — hidden until something is checked #}
+    <div id="bulk-bar" class="hidden bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 mb-3 flex items-center justify-between">
+      <div class="text-sm text-indigo-900"><span id="bulk-count">0</span> selected</div>
+      <div class="space-x-2 flex items-center">
+        <button id="bulk-delete" class="rounded-md bg-white px-3 py-1.5 text-sm text-red-700 ring-1 ring-red-200 hover:bg-red-50">Move to trash</button>
+        {% if user and user.role == 'admin' %}
+        <button id="bulk-purge" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Purge permanently</button>
+        {% endif %}
+        <button id="bulk-clear" class="text-sm text-indigo-700 hover:text-indigo-900">Clear</button>
+      </div>
+    </div>
+
+    <div class="bg-white shadow rounded-lg overflow-x-auto">
+      <table class="min-w-full divide-y divide-gray-200">
+        <thead class="bg-gray-50">
+          <tr>
+            <th class="px-3 py-3 w-10"><input type="checkbox" id="select-all" aria-label="Select all"
+                class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"></th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+              {{ sort_header('Title', 'title', sort, order, '/test-cases', qs_nosort) }}
+            </th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+              {{ sort_header('Status', 'status', sort, order, '/test-cases', qs_nosort) }}
+            </th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Visibility</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Owner</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
+              {{ sort_header('Updated', 'updated_at', sort, order, '/test-cases', qs_nosort) }}
+            </th>
+            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-200">
+          {% for tc in test_cases %}
+          <tr class="hover:bg-gray-50" data-tc-id="{{ tc.id }}">
+            <td class="px-3 py-4"><input type="checkbox" class="row-check rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" value="{{ tc.id }}" aria-label="Select {{ tc.title }}"></td>
+            <td class="px-6 py-3 text-sm font-medium text-indigo-600"><a href="/test-cases/{{ tc.id }}" class="hover:underline">{{ tc.title }}</a></td>
+            <td class="px-6 py-3"><span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if tc.status == 'active' %}bg-green-100 text-green-800{% elif tc.status == 'approved' %}bg-blue-100 text-blue-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ tc.status }}</span></td>
+            <td class="px-6 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if tc.visibility == 'shared' %}bg-green-50 text-green-700{% else %}bg-gray-50 text-gray-600{% endif %}">{{ tc.visibility }}</span></td>
+            <td class="px-6 py-3 text-sm text-gray-500">#{{ tc.owner_id }}</td>
+            <td class="px-6 py-3 text-xs text-gray-500">{{ tc.updated_at[:10] if tc.updated_at else '' }}</td>
+            <td class="px-3 py-3 text-right text-sm space-x-2">
+              {% if show_deleted %}
+              <button class="text-indigo-600 hover:text-indigo-900" data-restore-id="{{ tc.id }}">Restore</button>
+              {% if user and user.role == 'admin' %}
+              <button class="text-red-600 hover:text-red-900" data-purge-id="{{ tc.id }}" data-tc-title="{{ tc.title }}">Purge</button>
+              {% endif %}
+              {% else %}
+              <a href="/test-cases/{{ tc.id }}/edit" class="text-gray-600 hover:text-indigo-600">Edit</a>
+              <button class="text-red-600 hover:text-red-900" data-delete-id="{{ tc.id }}" data-tc-title="{{ tc.title }}">Delete</button>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+          {% if not test_cases %}
+          <tr><td colspan="7" class="px-6 py-10 text-center text-sm text-gray-500">
+            {% if show_deleted %}
+              Trash is empty.
+            {% elif search or status_filter %}
+              No test cases match your filters. <a href="/test-cases" class="text-indigo-600 hover:underline">Clear</a>
+            {% else %}
+              No test cases yet. Create one from a Requirement.
+            {% endif %}
+          </td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+    {{ render_meta_pagination(meta, '/test-cases', qs_nosort) }}
+  </div>
 </div>
+
+<script>
+(function(){
+  const CSRF_NOOP = {};
+
+  async function apiCall(method, url, body) {
+    const resp = await fetch(url, {
+      method: method,
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',    // sends the httponly access_token cookie
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!resp.ok) {
+      await window.PrimeQA.showErrorFromResponse(resp);
+      throw new Error('request failed');
+    }
+    return resp;
+  }
+
+  // Single-row delete
+  document.querySelectorAll('[data-delete-id]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.deleteId, title = btn.dataset.tcTitle;
+      window.PrimeQA.confirm({
+        title: 'Move to trash?', variant: 'danger',
+        message: '"' + title + '" will be moved to trash. You can restore it from Trash.',
+        submitLabel: 'Move to trash',
+        onConfirm: async () => {
+          try {
+            await apiCall('DELETE', '/api/test-cases/' + id);
+            window.PrimeQA.toast('Test case moved to trash', 'success');
+            const row = btn.closest('tr'); if (row) row.remove();
+          } catch (_) {}
+        }
+      });
+    });
+  });
+
+  // Restore
+  document.querySelectorAll('[data-restore-id]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.restoreId;
+      try {
+        await apiCall('POST', '/api/test-cases/' + id + '/restore');
+        window.PrimeQA.toast('Restored', 'success');
+        const row = btn.closest('tr'); if (row) row.remove();
+      } catch (_) {}
+    });
+  });
+
+  // Purge (admin)
+  document.querySelectorAll('[data-purge-id]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.purgeId, title = btn.dataset.tcTitle;
+      window.PrimeQA.confirm({
+        title: 'Permanently delete?', variant: 'danger',
+        message: 'This permanently deletes "' + title + '" and all of its versions. This cannot be undone.',
+        typeTo: 'DELETE', submitLabel: 'Purge forever',
+        onConfirm: async () => {
+          try {
+            await apiCall('POST', '/api/test-cases/' + id + '/purge');
+            window.PrimeQA.toast('Purged', 'success');
+            const row = btn.closest('tr'); if (row) row.remove();
+          } catch (_) {}
+        }
+      });
+    });
+  });
+
+  // Multi-select
+  const checks = Array.from(document.querySelectorAll('.row-check'));
+  const bar = document.getElementById('bulk-bar');
+  const countLabel = document.getElementById('bulk-count');
+  const selectAll = document.getElementById('select-all');
+
+  function refreshBar() {
+    const n = checks.filter(c => c.checked).length;
+    countLabel.textContent = n;
+    bar.classList.toggle('hidden', n === 0);
+  }
+  checks.forEach(c => c.addEventListener('change', refreshBar));
+  if (selectAll) selectAll.addEventListener('change', () => {
+    checks.forEach(c => { c.checked = selectAll.checked; });
+    refreshBar();
+  });
+  document.getElementById('bulk-clear')?.addEventListener('click', () => {
+    checks.forEach(c => c.checked = false); if (selectAll) selectAll.checked = false;
+    refreshBar();
+  });
+
+  document.getElementById('bulk-delete')?.addEventListener('click', () => {
+    const ids = checks.filter(c => c.checked).map(c => parseInt(c.value, 10));
+    if (ids.length === 0) return;
+    if (ids.length > 100) {
+      window.PrimeQA.toast('Bulk actions are limited to 100 items', 'error'); return;
+    }
+    window.PrimeQA.confirm({
+      title: 'Move ' + ids.length + ' to trash?', variant: 'danger',
+      message: 'Type DELETE to confirm moving ' + ids.length + ' test cases to trash.',
+      typeTo: 'DELETE', submitLabel: 'Move to trash',
+      onConfirm: async () => {
+        try {
+          await apiCall('POST', '/api/test-cases/bulk', {
+            ids: ids, action: 'soft_delete', confirm: 'DELETE',
+          });
+          window.PrimeQA.toast(ids.length + ' moved to trash', 'success');
+          ids.forEach(id => document.querySelector('tr[data-tc-id="' + id + '"]')?.remove());
+        } catch (_) {}
+      }
+    });
+  });
+
+  document.getElementById('bulk-purge')?.addEventListener('click', () => {
+    const ids = checks.filter(c => c.checked).map(c => parseInt(c.value, 10));
+    if (ids.length === 0) return;
+    if (ids.length > 100) {
+      window.PrimeQA.toast('Bulk actions are limited to 100 items', 'error'); return;
+    }
+    window.PrimeQA.confirm({
+      title: 'Purge ' + ids.length + ' permanently?', variant: 'danger',
+      message: 'Type DELETE to permanently purge ' + ids.length + ' test cases. This cannot be undone.',
+      typeTo: 'DELETE', submitLabel: 'Purge forever',
+      onConfirm: async () => {
+        try {
+          await apiCall('POST', '/api/test-cases/bulk/purge', {
+            ids: ids, confirm: 'DELETE',
+          });
+          window.PrimeQA.toast(ids.length + ' purged', 'success');
+          ids.forEach(id => document.querySelector('tr[data-tc-id="' + id + '"]')?.remove());
+        } catch (_) {}
+      }
+    });
+  });
+})();
+</script>
+
 {% endblock %}

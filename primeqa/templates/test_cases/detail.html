@@ -1,6 +1,10 @@
 {% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% block title %}{{ tc.title }} - PrimeQA{% endblock %}
 {% block content %}
+
+{{ breadcrumbs([('Test Library', '/test-cases'), (tc.title, None)]) }}
+
 <div class="space-y-6">
     <div class="flex justify-between items-center">
         <div>
@@ -22,6 +26,9 @@
             <form method="POST" action="/test-cases/{{ tc.id }}/share">
                 <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Share</button>
             </form>
+            {% endif %}
+            {% if user.role in ['admin', 'tester'] %}
+            <button id="detail-delete-btn" class="rounded-md bg-white px-3 py-2 text-sm font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50">Delete</button>
             {% endif %}
         </div>
     </div>
@@ -128,4 +135,25 @@
     </div>
     {% endif %}
 </div>
+
+<script>
+document.getElementById('detail-delete-btn')?.addEventListener('click', () => {
+  window.PrimeQA.confirm({
+    title: 'Move to trash?', variant: 'danger',
+    message: '"{{ tc.title | replace("'", "") }}" will be moved to trash. You can restore it later.',
+    submitLabel: 'Move to trash',
+    onConfirm: async () => {
+      const r = await fetch('/api/test-cases/{{ tc.id }}', {
+        method: 'DELETE', credentials: 'same-origin',
+      });
+      if (r.ok) {
+        window.PrimeQA.toast('Test case moved to trash', 'success');
+        setTimeout(()=>window.location.href='/test-cases', 500);
+      } else {
+        window.PrimeQA.showErrorFromResponse(r);
+      }
+    }
+  });
+});
+</script>
 {% endblock %}

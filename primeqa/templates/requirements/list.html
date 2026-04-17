@@ -1,22 +1,57 @@
 {% extends "base.html" %}
+{% from 'components/pagination.html' import render_meta_pagination, per_page_selector %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% block title %}Requirements - PrimeQA{% endblock %}
 {% block content %}
+
+{{ breadcrumbs([('Requirements', None)]) }}
+
+{% set qs %}{% if search %}&q={{ search | urlencode }}{% endif %}{% if show_deleted %}&deleted=1{% endif %}{% if meta.per_page and meta.per_page != 20 %}&per_page={{ meta.per_page }}{% endif %}{% endset %}
+
 <div class="space-y-6">
     <div class="flex justify-between items-center">
         <div>
-            <h1 class="text-2xl font-bold text-gray-900">Requirements</h1>
+            <h1 class="text-2xl font-bold text-gray-900">
+              Requirements
+              {% if show_deleted %}<span class="ml-2 align-middle inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-200 text-gray-700">Trash</span>{% endif %}
+            </h1>
             <p class="mt-1 text-sm text-gray-500">Import from Jira or create manually. Generate test cases with AI.</p>
         </div>
-        {% if user.role in ['admin', 'tester'] %}
-        <button onclick="document.getElementById('import-modal').classList.remove('hidden')" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Import from Jira</button>
-        {% endif %}
+        <div class="flex items-center space-x-2">
+            {% if show_deleted %}
+            <a href="/requirements" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Back to active</a>
+            {% else %}
+            <a href="/requirements?deleted=1" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-600 ring-1 ring-gray-300 hover:bg-gray-50">View Trash</a>
+            {% if user.role in ['admin', 'tester'] %}
+            <button onclick="document.getElementById('import-modal').classList.remove('hidden')" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Import from Jira</button>
+            {% endif %}
+            {% endif %}
+        </div>
     </div>
+
+    <div class="bg-white shadow rounded-lg p-3 flex flex-wrap items-center gap-2">
+      <form method="GET" action="/requirements" class="flex items-center space-x-2 flex-1 min-w-0">
+        {% if show_deleted %}<input type="hidden" name="deleted" value="1">{% endif %}
+        <div class="relative flex-1 max-w-md">
+          <input type="text" name="q" value="{{ search or '' }}" placeholder="Search by Jira key or summary…"
+                 class="block w-full rounded-md border border-gray-300 pl-9 pr-3 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+          <svg class="absolute left-3 top-2 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
+        </div>
+        <button type="submit" class="rounded-md bg-white border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">Search</button>
+        {% if search %}<a href="/requirements" class="text-sm text-gray-500 hover:text-gray-700">Clear</a>{% endif %}
+      </form>
+      <div class="ml-auto">{{ per_page_selector(meta.per_page, '/requirements', qs, [10, 20, 50]) }}</div>
+    </div>
+
+    {% if query_error %}
+    <div class="rounded-md bg-red-50 border border-red-200 p-3 text-sm text-red-700">{{ query_error }}</div>
+    {% endif %}
 
     {% if requirements %}
     <div class="bg-white shadow rounded-lg overflow-hidden">
         <ul class="divide-y divide-gray-200">
             {% for req in requirements %}
-            <li class="px-6 py-4 hover:bg-gray-50">
+            <li class="px-6 py-4 hover:bg-gray-50" data-req-id="{{ req.id }}">
                 <div class="flex justify-between items-center">
                     <div class="flex-1 min-w-0">
                         <div class="flex items-center space-x-2">
@@ -26,18 +61,26 @@
                         </div>
                         {% if req.acceptance_criteria %}<p class="mt-1 text-xs text-gray-500 line-clamp-2">{{ req.acceptance_criteria }}</p>{% endif %}
                     </div>
-                    {% if user.role in ['admin', 'tester'] %}
-                    <form method="POST" action="/requirements/{{ req.id }}/generate" class="flex items-center space-x-2">
-                        <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1 text-xs">
-                            <option value="">Select env...</option>
-                            {% for env in environments %}<option value="{{ env.id }}">{{ env.name }}</option>{% endfor %}
-                        </select>
-                        <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 flex items-center space-x-1">
-                            <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" /></svg>
-                            <span>Generate</span>
-                        </button>
-                    </form>
-                    {% endif %}
+                    <div class="flex items-center space-x-2">
+                      {% if user.role in ['admin', 'tester'] and not show_deleted %}
+                      <form method="POST" action="/requirements/{{ req.id }}/generate" class="flex items-center space-x-2">
+                          <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1 text-xs">
+                              <option value="">Select env...</option>
+                              {% for env in environments %}<option value="{{ env.id }}">{{ env.name }}</option>{% endfor %}
+                          </select>
+                          <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 flex items-center space-x-1">
+                              <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" /></svg>
+                              <span>Generate</span>
+                          </button>
+                      </form>
+                      <button class="text-xs text-red-600 hover:text-red-800" data-delete-req="{{ req.id }}" data-req-title="{{ req.jira_key or req.jira_summary or 'Requirement' }}">Delete</button>
+                      {% elif show_deleted %}
+                      <button class="text-xs text-indigo-600 hover:text-indigo-900" data-restore-req="{{ req.id }}">Restore</button>
+                      {% if user.role == 'admin' %}
+                      <button class="text-xs text-red-600 hover:text-red-900" data-purge-req="{{ req.id }}" data-req-title="{{ req.jira_key or req.jira_summary or 'Requirement' }}">Purge</button>
+                      {% endif %}
+                      {% endif %}
+                    </div>
                 </div>
             </li>
             {% endfor %}
@@ -45,11 +88,51 @@
     </div>
     {% else %}
     <div class="bg-white shadow rounded-lg p-12 text-center">
-        <h3 class="text-sm font-medium text-gray-900">No requirements yet</h3>
-        <p class="mt-1 text-sm text-gray-500">Import from Jira to get started.</p>
+        <h3 class="text-sm font-medium text-gray-900">
+          {% if show_deleted %}Trash is empty.
+          {% elif search %}No requirements match your search.
+          {% else %}No requirements yet{% endif %}
+        </h3>
+        {% if not search and not show_deleted %}<p class="mt-1 text-sm text-gray-500">Import from Jira to get started.</p>{% endif %}
     </div>
     {% endif %}
+
+    {{ render_meta_pagination(meta, '/requirements', qs) }}
 </div>
+
+<script>
+(function(){
+  async function apiCall(method, url) {
+    const r = await fetch(url, { method: method, credentials: 'same-origin' });
+    if (!r.ok) { await window.PrimeQA.showErrorFromResponse(r); throw new Error('failed'); }
+    return r;
+  }
+  document.querySelectorAll('[data-delete-req]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.deleteReq, title = btn.dataset.reqTitle;
+    window.PrimeQA.confirm({
+      title: 'Move to trash?', variant: 'danger',
+      message: '"' + title + '" will be moved to trash.', submitLabel: 'Move to trash',
+      onConfirm: async () => { try { await apiCall('DELETE', '/api/requirements/'+id);
+        window.PrimeQA.toast('Requirement moved to trash', 'success');
+        btn.closest('li').remove(); } catch (_) {} }
+    });
+  }));
+  document.querySelectorAll('[data-restore-req]').forEach(btn => btn.addEventListener('click', async () => {
+    try { await apiCall('POST', '/api/requirements/'+btn.dataset.restoreReq+'/restore');
+      window.PrimeQA.toast('Restored', 'success'); btn.closest('li').remove(); } catch (_) {}
+  }));
+  document.querySelectorAll('[data-purge-req]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.purgeReq, title = btn.dataset.reqTitle;
+    window.PrimeQA.confirm({
+      title: 'Permanently delete?', variant: 'danger',
+      message: 'This permanently deletes "' + title + '". This cannot be undone.',
+      typeTo: 'DELETE', submitLabel: 'Purge forever',
+      onConfirm: async () => { try { await apiCall('POST', '/api/requirements/'+id+'/purge');
+        window.PrimeQA.toast('Purged', 'success'); btn.closest('li').remove(); } catch (_) {} }
+    });
+  }));
+})();
+</script>
 
 <!-- Jira Import Modal -->
 <div id="import-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">

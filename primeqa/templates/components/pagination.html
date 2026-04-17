@@ -1,3 +1,14 @@
+{#
+  Pagination / search / sort macros.
+
+  Two styles supported:
+    - Legacy:  render_pagination(page, total_pages, base_url, extra_params)
+    - Envelope: render_meta_pagination(meta, base_url, extra_params)
+
+  For all new code use the `_meta_` variants — they consume the same
+  {data, meta} envelope the API returns so backend and frontend stay aligned.
+#}
+
 {% macro render_pagination(page, total_pages, base_url, extra_params='') %}
 {% if total_pages > 1 %}
 <nav class="flex items-center justify-between border-t border-gray-200 px-4 py-3 sm:px-6 mt-4">
@@ -25,17 +36,31 @@
 {% endif %}
 {% endmacro %}
 
-{% macro render_search(base_url, current_search='', placeholder='Search...') %}
+
+{% macro render_meta_pagination(meta, base_url, extra_params='') %}
+  {{ render_pagination(meta.page, meta.total_pages, base_url, extra_params) }}
+  {% if meta.total %}
+  <p class="text-xs text-gray-500 mt-2 px-4">
+    Showing {{ ((meta.page - 1) * meta.per_page) + 1 }}–{{ [meta.page * meta.per_page, meta.total] | min }}
+    of {{ meta.total }} total
+  </p>
+  {% endif %}
+{% endmacro %}
+
+
+{% macro render_search(base_url, current_search='', placeholder='Search...', extra_params='') %}
 <form method="GET" action="{{ base_url }}" class="flex items-center space-x-2">
+    {# preserve filter state across searches — parent builds hidden inputs if needed #}
     <div class="relative flex-1 max-w-xs">
-        <input type="text" name="search" value="{{ current_search }}" placeholder="{{ placeholder }}"
+        <input type="text" name="q" value="{{ current_search }}" placeholder="{{ placeholder }}"
             class="block w-full rounded-md border border-gray-300 pl-9 pr-3 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
         <svg class="absolute left-3 top-2 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
     </div>
     <button type="submit" class="rounded-md bg-white border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">Search</button>
-    {% if current_search %}<a href="{{ base_url }}" class="text-sm text-gray-500 hover:text-gray-700">Clear</a>{% endif %}
+    {% if current_search %}<a href="{{ base_url }}{{ extra_params }}" class="text-sm text-gray-500 hover:text-gray-700">Clear</a>{% endif %}
 </form>
 {% endmacro %}
+
 
 {% macro sort_header(label, field, current_sort, current_order, base_url, extra_params='') %}
 {% set new_order = 'desc' if current_sort == field and current_order == 'asc' else 'asc' %}
@@ -50,4 +75,17 @@
     <svg class="h-3 w-3 text-gray-300 group-hover:text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 15L12 18.75 15.75 15m-7.5-6L12 5.25 15.75 9" /></svg>
     {% endif %}
 </a>
+{% endmacro %}
+
+
+{% macro per_page_selector(current, base_url, extra_params='', options=[10, 20, 50]) %}
+<div class="flex items-center space-x-2 text-sm text-gray-500">
+  <label for="per_page">Per page</label>
+  <select id="per_page" onchange="window.location.href='{{ base_url }}?per_page='+this.value+'{{ extra_params }}'"
+          class="rounded-md border border-gray-300 px-2 py-1 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+    {% for opt in options %}
+    <option value="{{ opt }}" {% if current == opt %}selected{% endif %}>{{ opt }}</option>
+    {% endfor %}
+  </select>
+</div>
 {% endmacro %}

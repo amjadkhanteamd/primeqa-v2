@@ -1,31 +1,124 @@
 {% extends "base.html" %}
+{% from 'components/pagination.html' import render_meta_pagination, per_page_selector %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% block title %}Metadata Impacts - PrimeQA{% endblock %}
 {% block content %}
+
+{{ breadcrumbs([('Impacts', None)]) }}
+
+{% set qs %}{% if search %}&q={{ search | urlencode }}{% endif %}{% if resolution_filter and resolution_filter != 'pending' %}&resolution={{ resolution_filter }}{% endif %}{% if show_deleted %}&deleted=1{% endif %}{% if meta.per_page and meta.per_page != 20 %}&per_page={{ meta.per_page }}{% endif %}{% endset %}
+
 <div class="space-y-6">
-    <h1 class="text-2xl font-bold text-gray-900">Pending Metadata Impacts</h1>
-    {% if impacts %}
-    <div class="bg-white shadow rounded-lg divide-y divide-gray-200">
-        {% for impact in impacts %}
-        <div class="px-6 py-4">
-            <div class="flex justify-between items-start">
-                <div>
-                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if 'removed' in impact.impact_type %}bg-red-100 text-red-800{% elif 'added' in impact.impact_type %}bg-green-100 text-green-800{% else %}bg-yellow-100 text-yellow-800{% endif %}">{{ impact.impact_type }}</span>
-                    <span class="ml-2 text-sm font-medium text-gray-900">{{ impact.entity_ref }}</span>
-                    <span class="ml-2 text-sm text-gray-500">affects test case #{{ impact.test_case_id }}</span>
-                </div>
-                <div class="flex space-x-2">
-                    <form method="POST" action="/impacts/{{ impact.id }}/regenerate"><button class="text-xs rounded bg-indigo-600 text-white px-3 py-1 hover:bg-indigo-500 font-medium">AI Regenerate</button></form>
-                    <a href="/test-cases/{{ impact.test_case_id }}/edit" class="text-xs rounded bg-yellow-100 text-yellow-700 px-2 py-1 hover:bg-yellow-200">Edit Manually</a>
-                    <form method="POST" action="/impacts/{{ impact.id }}/resolve"><input type="hidden" name="resolution" value="dismissed"><button class="text-xs rounded bg-gray-100 text-gray-700 px-2 py-1 hover:bg-gray-200">Dismiss</button></form>
-                </div>
-            </div>
-        </div>
+  <div class="flex justify-between items-center">
+    <h1 class="text-2xl font-bold text-gray-900">
+      Metadata Impacts
+      {% if show_deleted %}<span class="ml-2 align-middle inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-200 text-gray-700">Trash</span>{% endif %}
+    </h1>
+    <div class="flex items-center space-x-2">
+      {% if show_deleted %}
+      <a href="/impacts" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Back to active</a>
+      {% else %}
+      <a href="/impacts?deleted=1" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-600 ring-1 ring-gray-300 hover:bg-gray-50">View Trash</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="bg-white shadow rounded-lg p-3 flex flex-wrap items-center gap-2">
+    <form method="GET" action="/impacts" class="flex items-center space-x-2 flex-1 min-w-0">
+      {% if show_deleted %}<input type="hidden" name="deleted" value="1">{% endif %}
+      <div class="relative flex-1 max-w-md">
+        <input type="text" name="q" value="{{ search or '' }}" placeholder="Search by entity…"
+               class="block w-full rounded-md border border-gray-300 pl-9 pr-3 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+        <svg class="absolute left-3 top-2 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
+      </div>
+      <select name="resolution" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+        {% for opt in ['pending','regenerated','edited','dismissed'] %}
+        <option value="{{ opt }}" {% if resolution_filter == opt %}selected{% endif %}>{{ opt }}</option>
         {% endfor %}
+      </select>
+      <button type="submit" class="rounded-md bg-white border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">Filter</button>
+    </form>
+    <div class="ml-auto">{{ per_page_selector(meta.per_page, '/impacts', qs, [10, 20, 50]) }}</div>
+  </div>
+
+  {% if query_error %}
+  <div class="rounded-md bg-red-50 border border-red-200 p-3 text-sm text-red-700">{{ query_error }}</div>
+  {% endif %}
+
+  {% if impacts %}
+  <div class="bg-white shadow rounded-lg divide-y divide-gray-200">
+    {% for impact in impacts %}
+    <div class="px-6 py-4" data-impact-id="{{ impact.id }}">
+      <div class="flex justify-between items-start">
+        <div>
+          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if 'removed' in impact.impact_type %}bg-red-100 text-red-800{% elif 'added' in impact.impact_type %}bg-green-100 text-green-800{% else %}bg-yellow-100 text-yellow-800{% endif %}">{{ impact.impact_type }}</span>
+          <span class="ml-2 text-sm font-medium text-gray-900">{{ impact.entity_ref }}</span>
+          <span class="ml-2 text-sm text-gray-500">affects <a href="/test-cases/{{ impact.test_case_id }}" class="text-indigo-600 hover:underline">test case #{{ impact.test_case_id }}</a></span>
+          <span class="ml-2 text-xs text-gray-400">{{ impact.created_at[:10] if impact.created_at else '' }}</span>
+        </div>
+        <div class="flex space-x-2">
+          {% if not show_deleted %}
+          <form method="POST" action="/impacts/{{ impact.id }}/regenerate"><button class="text-xs rounded bg-indigo-600 text-white px-3 py-1 hover:bg-indigo-500 font-medium">AI Regenerate</button></form>
+          <a href="/test-cases/{{ impact.test_case_id }}/edit" class="text-xs rounded bg-yellow-100 text-yellow-700 px-2 py-1 hover:bg-yellow-200">Edit Manually</a>
+          <form method="POST" action="/impacts/{{ impact.id }}/resolve"><input type="hidden" name="resolution" value="dismissed"><button class="text-xs rounded bg-gray-100 text-gray-700 px-2 py-1 hover:bg-gray-200">Dismiss</button></form>
+          <button class="text-xs rounded bg-white text-red-600 px-2 py-1 ring-1 ring-red-200 hover:bg-red-50" data-delete-impact="{{ impact.id }}">Trash</button>
+          {% else %}
+          <button class="text-xs rounded bg-white text-indigo-600 px-2 py-1 ring-1 ring-indigo-200 hover:bg-indigo-50" data-restore-impact="{{ impact.id }}">Restore</button>
+          {% if user.role == 'admin' %}
+          <button class="text-xs rounded bg-white text-red-600 px-2 py-1 ring-1 ring-red-200 hover:bg-red-50" data-purge-impact="{{ impact.id }}">Purge</button>
+          {% endif %}
+          {% endif %}
+        </div>
+      </div>
     </div>
-    {% else %}
-    <div class="bg-white shadow rounded-lg p-8 text-center">
-        <p class="text-sm text-gray-500">No pending impacts. Your test cases are up to date.</p>
-    </div>
-    {% endif %}
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="bg-white shadow rounded-lg p-8 text-center">
+    <p class="text-sm text-gray-500">
+      {% if show_deleted %}Trash is empty.
+      {% elif search or (resolution_filter and resolution_filter != 'pending') %}No impacts match your filters.
+      {% else %}No pending impacts. Your test cases are up to date.{% endif %}
+    </p>
+  </div>
+  {% endif %}
+
+  {{ render_meta_pagination(meta, '/impacts', qs) }}
 </div>
+
+<script>
+(function(){
+  async function apiCall(method, url) {
+    const r = await fetch(url, { method: method, credentials: 'same-origin' });
+    if (!r.ok) { await window.PrimeQA.showErrorFromResponse(r); throw new Error('failed'); }
+    return r;
+  }
+  document.querySelectorAll('[data-delete-impact]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.deleteImpact;
+    window.PrimeQA.confirm({
+      title: 'Move to trash?', variant: 'danger',
+      message: 'Impact #' + id + ' will be moved to trash.', submitLabel: 'Move to trash',
+      onConfirm: async () => { try { await apiCall('DELETE', '/api/impacts/'+id);
+        window.PrimeQA.toast('Impact moved to trash', 'success');
+        btn.closest('[data-impact-id]').remove(); } catch (_) {} }
+    });
+  }));
+  document.querySelectorAll('[data-restore-impact]').forEach(btn => btn.addEventListener('click', async () => {
+    try { await apiCall('POST', '/api/impacts/'+btn.dataset.restoreImpact+'/restore');
+      window.PrimeQA.toast('Restored', 'success');
+      btn.closest('[data-impact-id]').remove(); } catch (_) {}
+  }));
+  document.querySelectorAll('[data-purge-impact]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.purgeImpact;
+    window.PrimeQA.confirm({
+      title: 'Permanently delete?', variant: 'danger',
+      message: 'This permanently deletes impact #' + id + '. This cannot be undone.',
+      typeTo: 'DELETE', submitLabel: 'Purge forever',
+      onConfirm: async () => { try { await apiCall('POST', '/api/impacts/'+id+'/purge');
+        window.PrimeQA.toast('Purged', 'success');
+        btn.closest('[data-impact-id]').remove(); } catch (_) {} }
+    });
+  }));
+})();
+</script>
 {% endblock %}

@@ -1,40 +1,90 @@
 """API routes for the test management domain.
 
-Endpoints: /api/sections/*, /api/requirements/*, /api/test-cases/*,
-           /api/suites/*, /api/reviews/*, /api/impacts/*
+All list endpoints return the uniform envelope `{data, meta}` via
+`primeqa.shared.api.json_page`. Errors return `{error: {code, message}}`
+via `json_error` / `json_error_from`. Destructive bulk actions require
+`confirm == "DELETE"` in the payload and are capped at
+`primeqa.shared.api.BULK_MAX_ITEMS` (100).
+
+Soft-delete / restore / purge convention:
+  DELETE /api/<res>/<id>          — soft delete (anyone with write role)
+  POST   /api/<res>/<id>/restore  — restore from trash
+  POST   /api/<res>/<id>/purge    — admin-only permanent deletion
 """
 
 from flask import Blueprint, jsonify, request
 
 from primeqa.core.auth import require_auth, require_role
-from primeqa.db import get_db
-from primeqa.test_management.repository import (
-    SectionRepository, RequirementRepository, TestCaseRepository,
-    TestSuiteRepository, BAReviewRepository, MetadataImpactRepository,
+from primeqa.core.repository import (
+    ActivityLogRepository, ConnectionRepository, EnvironmentRepository,
 )
-from primeqa.test_management.service import TestManagementService, ConflictError
-from primeqa.core.repository import EnvironmentRepository, ConnectionRepository
+from primeqa.db import get_db
 from primeqa.metadata.repository import MetadataRepository
+from primeqa.shared.api import (
+    BulkLimitError, ConflictError, ForbiddenError, NotFoundError,
+    ServiceError, ValidationError,
+    json_error, json_error_from, json_list, json_page,
+    parse_list_params, require_bulk_confirm,
+)
+from primeqa.shared.query_builder import QueryBuilderError
+from primeqa.test_management.repository import (
+    BAReviewRepository, MetadataImpactRepository, RequirementRepository,
+    SectionRepository, TestCaseRepository, TestSuiteRepository,
+)
+from primeqa.test_management.service import TestManagementService
 
 test_management_bp = Blueprint("test_management", __name__)
 
 
 def _get_service():
     db = next(get_db())
-    return TestManagementService(
-        SectionRepository(db), RequirementRepository(db),
-        TestCaseRepository(db), TestSuiteRepository(db),
-        BAReviewRepository(db), MetadataImpactRepository(db),
-    ), db
+    svc = TestManagementService(
+        section_repo=SectionRepository(db),
+        requirement_repo=RequirementRepository(db),
+        test_case_repo=TestCaseRepository(db),
+        suite_repo=TestSuiteRepository(db),
+        review_repo=BAReviewRepository(db),
+        impact_repo=MetadataImpactRepository(db),
+        activity_repo=ActivityLogRepository(db),
+    )
+    return svc, db
 
 
-# --- Sections ---
+def _handle(fn):
+    """Map ServiceError / QueryBuilderError / ValueError → uniform envelope."""
+    try:
+        return fn()
+    except (ValidationError, ConflictError, NotFoundError, ForbiddenError,
+            BulkLimitError, ServiceError) as e:
+        return json_error_from(e)
+    except QueryBuilderError as e:
+        return json_error(e.code, e.message, http=400)
+    except ValueError as e:
+        return json_error("VALIDATION_ERROR", str(e), http=400)
+
+
+# ---- Sections ---------------------------------------------------------------
 
 @test_management_bp.route("/api/sections", methods=["GET"])
 @require_auth
 def list_sections():
     svc, db = _get_service()
     try:
+        # Legacy clients get the tree; paginated consumers get ?page=
+        if "page" in request.args or "per_page" in request.args or "q" in request.args:
+            params = parse_list_params(
+                request, allowed_filters=["parent_id"],
+                default_sort="updated_at", default_order="desc",
+            )
+            def run():
+                page, serializer = svc.list_sections_page(
+                    request.user["tenant_id"],
+                    page=params["page"], per_page=params["per_page"],
+                    q=params["q"], sort=params["sort"], order=params["order"],
+                    filters=params["filters"], include_deleted=params["show_deleted"],
+                )
+                return json_page(page, serialize=serializer)
+            return _handle(run)
         tree = svc.get_section_tree(request.user["tenant_id"])
         return jsonify(tree), 200
     finally:
@@ -46,15 +96,18 @@ def list_sections():
 def create_section():
     data = request.get_json(silent=True) or {}
     if not data.get("name"):
-        return jsonify(error="name is required"), 400
+        return json_error("VALIDATION_ERROR", "name is required")
     svc, db = _get_service()
     try:
-        s = svc.create_section(
-            request.user["tenant_id"], data["name"], request.user["id"],
-            parent_id=data.get("parent_id"), description=data.get("description"),
-            position=data.get("position", 0),
-        )
-        return jsonify(s), 201
+        def run():
+            s = svc.create_section(
+                request.user["tenant_id"], data["name"], request.user["id"],
+                parent_id=data.get("parent_id"),
+                description=data.get("description"),
+                position=data.get("position", 0),
+            )
+            return jsonify(s), 201
+        return _handle(run)
     finally:
         db.close()
 
@@ -63,12 +116,15 @@ def create_section():
 @require_role("admin")
 def update_section(section_id):
     data = request.get_json(silent=True) or {}
+    expected_version = data.pop("expected_version", None)
     svc, db = _get_service()
     try:
-        s = svc.update_section(section_id, request.user["tenant_id"], data)
-        return jsonify(s), 200
-    except ValueError as e:
-        return jsonify(error=str(e)), 404
+        def run():
+            s = svc.update_section(section_id, request.user["tenant_id"], data,
+                                   expected_version=expected_version,
+                                   user_id=request.user["id"])
+            return jsonify(s), 200
+        return _handle(run)
     finally:
         db.close()
 
@@ -78,21 +134,60 @@ def update_section(section_id):
 def delete_section(section_id):
     svc, db = _get_service()
     try:
-        svc.delete_section(section_id, request.user["tenant_id"])
-        return jsonify(message="Deleted"), 200
-    except ValueError as e:
-        return jsonify(error=str(e)), 404
+        def run():
+            s = svc.delete_section(section_id, request.user["tenant_id"], request.user["id"])
+            return jsonify(s), 200
+        return _handle(run)
     finally:
         db.close()
 
 
-# --- Requirements ---
+@test_management_bp.route("/api/sections/<int:section_id>/restore", methods=["POST"])
+@require_role("admin")
+def restore_section(section_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            s = svc.restore_section(section_id, request.user["tenant_id"], request.user["id"])
+            return jsonify(s), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/sections/<int:section_id>/purge", methods=["POST"])
+@require_role("admin")
+def purge_section(section_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            svc.purge_section(section_id, request.user["tenant_id"], request.user["id"])
+            return jsonify({"message": "Purged"}), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+# ---- Requirements -----------------------------------------------------------
 
 @test_management_bp.route("/api/requirements", methods=["GET"])
 @require_auth
 def list_requirements():
     svc, db = _get_service()
     try:
+        if "page" in request.args or "per_page" in request.args or "q" in request.args:
+            params = parse_list_params(
+                request, allowed_filters=["section_id", "source", "is_stale"],
+            )
+            def run():
+                page, serializer = svc.list_requirements_page(
+                    request.user["tenant_id"],
+                    page=params["page"], per_page=params["per_page"],
+                    q=params["q"], sort=params["sort"], order=params["order"],
+                    filters=params["filters"], include_deleted=params["show_deleted"],
+                )
+                return json_page(page, serialize=serializer)
+            return _handle(run)
         reqs = svc.list_requirements(
             request.user["tenant_id"], section_id=request.args.get("section_id", type=int),
         )
@@ -106,17 +201,19 @@ def list_requirements():
 def create_requirement():
     data = request.get_json(silent=True) or {}
     if not data.get("section_id"):
-        return jsonify(error="section_id is required"), 400
+        return json_error("VALIDATION_ERROR", "section_id is required")
     svc, db = _get_service()
     try:
-        req = svc.create_requirement(
-            request.user["tenant_id"], data["section_id"],
-            data.get("source", "manual"), request.user["id"],
-            jira_key=data.get("jira_key"), jira_summary=data.get("jira_summary"),
-            jira_description=data.get("jira_description"),
-            acceptance_criteria=data.get("acceptance_criteria"),
-        )
-        return jsonify(req), 201
+        def run():
+            req = svc.create_requirement(
+                request.user["tenant_id"], data["section_id"],
+                data.get("source", "manual"), request.user["id"],
+                jira_key=data.get("jira_key"), jira_summary=data.get("jira_summary"),
+                jira_description=data.get("jira_description"),
+                acceptance_criteria=data.get("acceptance_criteria"),
+            )
+            return jsonify(req), 201
+        return _handle(run)
     finally:
         db.close()
 
@@ -125,12 +222,55 @@ def create_requirement():
 @require_role("admin", "tester")
 def update_requirement(req_id):
     data = request.get_json(silent=True) or {}
+    expected_version = data.pop("expected_version", None)
     svc, db = _get_service()
     try:
-        req = svc.requirement_repo.update_requirement(req_id, request.user["tenant_id"], data)
-        if not req:
-            return jsonify(error="Requirement not found"), 404
-        return jsonify(TestManagementService._req_dict(req)), 200
+        def run():
+            req = svc.update_requirement(
+                req_id, request.user["tenant_id"], data,
+                expected_version=expected_version, user_id=request.user["id"],
+            )
+            return jsonify(req), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/requirements/<int:req_id>", methods=["DELETE"])
+@require_role("admin", "tester")
+def delete_requirement(req_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            r = svc.delete_requirement(req_id, request.user["tenant_id"], request.user["id"])
+            return jsonify(r), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/requirements/<int:req_id>/restore", methods=["POST"])
+@require_role("admin", "tester")
+def restore_requirement(req_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            r = svc.restore_requirement(req_id, request.user["tenant_id"], request.user["id"])
+            return jsonify(r), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/requirements/<int:req_id>/purge", methods=["POST"])
+@require_role("admin")
+def purge_requirement(req_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            svc.purge_requirement(req_id, request.user["tenant_id"], request.user["id"])
+            return jsonify({"message": "Purged"}), 200
+        return _handle(run)
     finally:
         db.close()
 
@@ -142,19 +282,19 @@ def import_jira():
     required = ["section_id", "jira_base_url", "jira_key"]
     missing = [f for f in required if not data.get(f)]
     if missing:
-        return jsonify(error=f"Missing: {', '.join(missing)}"), 400
+        return json_error("VALIDATION_ERROR", f"Missing: {', '.join(missing)}")
     svc, db = _get_service()
     try:
-        req = svc.import_jira_requirement(
-            request.user["tenant_id"], data["section_id"],
-            data["jira_base_url"], data["jira_key"], request.user["id"],
-            jira_auth=data.get("jira_auth"),
-        )
-        return jsonify(req), 201
-    except ValueError as e:
-        return jsonify(error=str(e)), 409
+        def run():
+            req = svc.import_jira_requirement(
+                request.user["tenant_id"], data["section_id"],
+                data["jira_base_url"], data["jira_key"], request.user["id"],
+                jira_auth=data.get("jira_auth"),
+            )
+            return jsonify(req), 201
+        return _handle(run)
     except Exception as e:
-        return jsonify(error=f"Jira import failed: {str(e)}"), 500
+        return json_error("JIRA_IMPORT_FAILED", f"Jira import failed: {e}", http=500)
     finally:
         db.close()
 
@@ -164,27 +304,44 @@ def import_jira():
 def sync_jira(req_id):
     data = request.get_json(silent=True) or {}
     if not data.get("jira_base_url"):
-        return jsonify(error="jira_base_url is required"), 400
+        return json_error("VALIDATION_ERROR", "jira_base_url is required")
     svc, db = _get_service()
     try:
-        req, changed = svc.sync_jira_requirement(
-            req_id, request.user["tenant_id"],
-            data["jira_base_url"], data.get("jira_auth"),
-        )
-        return jsonify({"requirement": req, "changed": changed}), 200
-    except ValueError as e:
-        return jsonify(error=str(e)), 400
+        def run():
+            req, changed = svc.sync_jira_requirement(
+                req_id, request.user["tenant_id"],
+                data["jira_base_url"], data.get("jira_auth"),
+            )
+            return jsonify({"requirement": req, "changed": changed}), 200
+        return _handle(run)
     finally:
         db.close()
 
 
-# --- Test Cases ---
+# ---- Test cases -------------------------------------------------------------
 
 @test_management_bp.route("/api/test-cases", methods=["GET"])
 @require_auth
 def list_test_cases():
     svc, db = _get_service()
     try:
+        if "page" in request.args or "per_page" in request.args or "q" in request.args \
+                or "sort" in request.args:
+            params = parse_list_params(
+                request,
+                allowed_filters=["status", "requirement_id", "section_id",
+                                 "owner_id", "visibility"],
+            )
+            def run():
+                page, serializer = svc.list_test_cases_page(
+                    request.user["tenant_id"], request.user["id"],
+                    page=params["page"], per_page=params["per_page"],
+                    q=params["q"], sort=params["sort"], order=params["order"],
+                    filters=params["filters"], include_deleted=params["show_deleted"],
+                )
+                return json_page(page, serialize=serializer)
+            return _handle(run)
+        # Legacy unpaginated response for existing clients/tests
         tcs = svc.list_test_cases(
             request.user["tenant_id"], request.user["id"],
             requirement_id=request.args.get("requirement_id", type=int),
@@ -201,19 +358,19 @@ def list_test_cases():
 def create_test_case():
     data = request.get_json(silent=True) or {}
     if not data.get("title"):
-        return jsonify(error="title is required"), 400
+        return json_error("VALIDATION_ERROR", "title is required")
     svc, db = _get_service()
     try:
-        tc = svc.create_test_case(
-            request.user["tenant_id"], data["title"],
-            request.user["id"], request.user["id"],
-            requirement_id=data.get("requirement_id"),
-            section_id=data.get("section_id"),
-            visibility=data.get("visibility", "private"),
-        )
-        return jsonify(tc), 201
-    except ValueError as e:
-        return jsonify(error=str(e)), 400
+        def run():
+            tc = svc.create_test_case(
+                request.user["tenant_id"], data["title"],
+                request.user["id"], request.user["id"],
+                requirement_id=data.get("requirement_id"),
+                section_id=data.get("section_id"),
+                visibility=data.get("visibility", "private"),
+            )
+            return jsonify(tc), 201
+        return _handle(run)
     finally:
         db.close()
 
@@ -223,10 +380,10 @@ def create_test_case():
 def get_test_case(tc_id):
     svc, db = _get_service()
     try:
-        tc = svc.get_test_case(tc_id, request.user["tenant_id"], request.user["id"])
-        return jsonify(tc), 200
-    except ValueError as e:
-        return jsonify(error=str(e)), 404
+        def run():
+            tc = svc.get_test_case(tc_id, request.user["tenant_id"], request.user["id"])
+            return jsonify(tc), 200
+        return _handle(run)
     finally:
         db.close()
 
@@ -238,12 +395,52 @@ def update_test_case(tc_id):
     expected_version = data.pop("expected_version", None)
     svc, db = _get_service()
     try:
-        tc = svc.update_test_case(tc_id, request.user["tenant_id"], data, expected_version)
-        return jsonify(tc), 200
-    except ConflictError:
-        return jsonify(error="Conflict: test case was modified by another user"), 409
-    except ValueError as e:
-        return jsonify(error=str(e)), 400
+        def run():
+            tc = svc.update_test_case(
+                tc_id, request.user["tenant_id"], data,
+                expected_version=expected_version, user_id=request.user["id"],
+            )
+            return jsonify(tc), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/test-cases/<int:tc_id>", methods=["DELETE"])
+@require_role("admin", "tester")
+def delete_test_case(tc_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            tc = svc.delete_test_case(tc_id, request.user["tenant_id"], request.user["id"])
+            return jsonify(tc), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/test-cases/<int:tc_id>/restore", methods=["POST"])
+@require_role("admin", "tester")
+def restore_test_case(tc_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            tc = svc.restore_test_case(tc_id, request.user["tenant_id"], request.user["id"])
+            return jsonify(tc), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/test-cases/<int:tc_id>/purge", methods=["POST"])
+@require_role("admin")
+def purge_test_case(tc_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            svc.purge_test_case(tc_id, request.user["tenant_id"], request.user["id"])
+            return jsonify({"message": "Purged"}), 200
+        return _handle(run)
     finally:
         db.close()
 
@@ -253,10 +450,10 @@ def update_test_case(tc_id):
 def share_test_case(tc_id):
     svc, db = _get_service()
     try:
-        tc = svc.share_test_case(tc_id, request.user["tenant_id"], request.user["id"])
-        return jsonify(tc), 200
-    except ValueError as e:
-        return jsonify(error=str(e)), 400
+        def run():
+            tc = svc.share_test_case(tc_id, request.user["tenant_id"], request.user["id"])
+            return jsonify(tc), 200
+        return _handle(run)
     finally:
         db.close()
 
@@ -266,10 +463,11 @@ def share_test_case(tc_id):
 def activate_test_case(tc_id):
     svc, db = _get_service()
     try:
-        tc = svc.activate_test_case(tc_id, request.user["tenant_id"])
-        return jsonify(tc), 200
-    except ValueError as e:
-        return jsonify(error=str(e)), 400
+        def run():
+            tc = svc.activate_test_case(tc_id, request.user["tenant_id"],
+                                        user_id=request.user["id"])
+            return jsonify(tc), 200
+        return _handle(run)
     finally:
         db.close()
 
@@ -279,10 +477,10 @@ def activate_test_case(tc_id):
 def list_versions(tc_id):
     svc, db = _get_service()
     try:
-        versions = svc.list_versions(tc_id, request.user["tenant_id"])
-        return jsonify(versions), 200
-    except ValueError as e:
-        return jsonify(error=str(e)), 404
+        def run():
+            versions = svc.list_versions(tc_id, request.user["tenant_id"])
+            return jsonify(versions), 200
+        return _handle(run)
     finally:
         db.close()
 
@@ -292,33 +490,44 @@ def list_versions(tc_id):
 def create_version(tc_id):
     data = request.get_json(silent=True) or {}
     if not data.get("metadata_version_id"):
-        return jsonify(error="metadata_version_id is required"), 400
+        return json_error("VALIDATION_ERROR", "metadata_version_id is required")
     svc, db = _get_service()
     try:
-        v = svc.create_version(
-            tc_id, request.user["tenant_id"],
-            data["metadata_version_id"], request.user["id"],
-            steps=data.get("steps", []),
-            expected_results=data.get("expected_results", []),
-            preconditions=data.get("preconditions", []),
-            generation_method=data.get("generation_method", "manual"),
-            confidence_score=data.get("confidence_score"),
-            referenced_entities=data.get("referenced_entities", []),
-        )
-        return jsonify(v), 201
-    except ValueError as e:
-        return jsonify(error=str(e)), 400
+        def run():
+            v = svc.create_version(
+                tc_id, request.user["tenant_id"],
+                data["metadata_version_id"], request.user["id"],
+                steps=data.get("steps", []),
+                expected_results=data.get("expected_results", []),
+                preconditions=data.get("preconditions", []),
+                generation_method=data.get("generation_method", "manual"),
+                confidence_score=data.get("confidence_score"),
+                referenced_entities=data.get("referenced_entities", []),
+            )
+            return jsonify(v), 201
+        return _handle(run)
     finally:
         db.close()
 
 
-# --- Suites ---
+# ---- Suites -----------------------------------------------------------------
 
 @test_management_bp.route("/api/suites", methods=["GET"])
 @require_auth
 def list_suites():
     svc, db = _get_service()
     try:
+        if "page" in request.args or "per_page" in request.args or "q" in request.args:
+            params = parse_list_params(request, allowed_filters=["suite_type"])
+            def run():
+                page, serializer = svc.list_suites_page(
+                    request.user["tenant_id"],
+                    page=params["page"], per_page=params["per_page"],
+                    q=params["q"], sort=params["sort"], order=params["order"],
+                    filters=params["filters"], include_deleted=params["show_deleted"],
+                )
+                return json_page(page, serialize=serializer)
+            return _handle(run)
         return jsonify(svc.list_suites(request.user["tenant_id"])), 200
     finally:
         db.close()
@@ -329,15 +538,74 @@ def list_suites():
 def create_suite():
     data = request.get_json(silent=True) or {}
     if not data.get("name") or not data.get("suite_type"):
-        return jsonify(error="name and suite_type are required"), 400
+        return json_error("VALIDATION_ERROR", "name and suite_type are required")
     svc, db = _get_service()
     try:
-        suite = svc.create_suite(
-            request.user["tenant_id"], data["name"],
-            data["suite_type"], request.user["id"],
-            description=data.get("description"),
-        )
-        return jsonify(suite), 201
+        def run():
+            suite = svc.create_suite(
+                request.user["tenant_id"], data["name"],
+                data["suite_type"], request.user["id"],
+                description=data.get("description"),
+            )
+            return jsonify(suite), 201
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/suites/<int:suite_id>", methods=["PATCH"])
+@require_role("admin", "tester")
+def update_suite(suite_id):
+    data = request.get_json(silent=True) or {}
+    expected_version = data.pop("expected_version", None)
+    svc, db = _get_service()
+    try:
+        def run():
+            suite = svc.update_suite(
+                suite_id, request.user["tenant_id"], data,
+                expected_version=expected_version, user_id=request.user["id"],
+            )
+            return jsonify(suite), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/suites/<int:suite_id>", methods=["DELETE"])
+@require_role("admin", "tester")
+def delete_suite(suite_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            s = svc.delete_suite(suite_id, request.user["tenant_id"], request.user["id"])
+            return jsonify(s), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/suites/<int:suite_id>/restore", methods=["POST"])
+@require_role("admin", "tester")
+def restore_suite(suite_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            s = svc.restore_suite(suite_id, request.user["tenant_id"], request.user["id"])
+            return jsonify(s), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/suites/<int:suite_id>/purge", methods=["POST"])
+@require_role("admin")
+def purge_suite(suite_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            svc.purge_suite(suite_id, request.user["tenant_id"], request.user["id"])
+            return jsonify({"message": "Purged"}), 200
+        return _handle(run)
     finally:
         db.close()
 
@@ -347,10 +615,10 @@ def create_suite():
 def get_suite_test_cases(suite_id):
     svc, db = _get_service()
     try:
-        tcs = svc.get_suite_test_cases(suite_id, request.user["tenant_id"])
-        return jsonify(tcs), 200
-    except ValueError as e:
-        return jsonify(error=str(e)), 404
+        def run():
+            tcs = svc.get_suite_test_cases(suite_id, request.user["tenant_id"])
+            return jsonify(tcs), 200
+        return _handle(run)
     finally:
         db.close()
 
@@ -360,14 +628,14 @@ def get_suite_test_cases(suite_id):
 def add_to_suite(suite_id):
     data = request.get_json(silent=True) or {}
     if not data.get("test_case_id"):
-        return jsonify(error="test_case_id is required"), 400
+        return json_error("VALIDATION_ERROR", "test_case_id is required")
     svc, db = _get_service()
     try:
-        svc.add_to_suite(suite_id, data["test_case_id"],
-                         request.user["tenant_id"], data.get("position", 0))
-        return jsonify(message="Added"), 200
-    except ValueError as e:
-        return jsonify(error=str(e)), 400
+        def run():
+            svc.add_to_suite(suite_id, data["test_case_id"],
+                             request.user["tenant_id"], data.get("position", 0))
+            return jsonify({"message": "Added"}), 200
+        return _handle(run)
     finally:
         db.close()
 
@@ -377,10 +645,10 @@ def add_to_suite(suite_id):
 def remove_from_suite(suite_id, tc_id):
     svc, db = _get_service()
     try:
-        svc.remove_from_suite(suite_id, tc_id, request.user["tenant_id"])
-        return jsonify(message="Removed"), 200
-    except ValueError as e:
-        return jsonify(error=str(e)), 400
+        def run():
+            svc.remove_from_suite(suite_id, tc_id, request.user["tenant_id"])
+            return jsonify({"message": "Removed"}), 200
+        return _handle(run)
     finally:
         db.close()
 
@@ -391,23 +659,37 @@ def reorder_in_suite(suite_id, tc_id):
     data = request.get_json(silent=True) or {}
     svc, db = _get_service()
     try:
-        svc.reorder_suite_test_case(
-            suite_id, tc_id, request.user["tenant_id"], data.get("position", 0),
-        )
-        return jsonify(message="Reordered"), 200
-    except ValueError as e:
-        return jsonify(error=str(e)), 400
+        def run():
+            svc.reorder_suite_test_case(
+                suite_id, tc_id, request.user["tenant_id"], data.get("position", 0),
+            )
+            return jsonify({"message": "Reordered"}), 200
+        return _handle(run)
     finally:
         db.close()
 
 
-# --- Reviews ---
+# ---- Reviews ----------------------------------------------------------------
 
 @test_management_bp.route("/api/reviews", methods=["GET"])
 @require_role("admin", "ba")
 def list_reviews():
     svc, db = _get_service()
     try:
+        if "page" in request.args or "per_page" in request.args:
+            params = parse_list_params(
+                request, allowed_filters=["status", "assigned_to", "reviewed_by"],
+                default_sort="created_at",
+            )
+            def run():
+                page, serializer = svc.list_reviews_page(
+                    request.user["tenant_id"],
+                    page=params["page"], per_page=params["per_page"],
+                    q=params["q"], sort=params["sort"], order=params["order"],
+                    filters=params["filters"], include_deleted=params["show_deleted"],
+                )
+                return json_page(page, serialize=serializer)
+            return _handle(run)
         reviews = svc.list_reviews(
             request.user["tenant_id"],
             status=request.args.get("status"),
@@ -439,14 +721,16 @@ def assign_review():
     required = ["test_case_version_id", "assigned_to"]
     missing = [f for f in required if not data.get(f)]
     if missing:
-        return jsonify(error=f"Missing: {', '.join(missing)}"), 400
+        return json_error("VALIDATION_ERROR", f"Missing: {', '.join(missing)}")
     svc, db = _get_service()
     try:
-        review = svc.assign_review(
-            request.user["tenant_id"],
-            data["test_case_version_id"], data["assigned_to"],
-        )
-        return jsonify(review), 201
+        def run():
+            review = svc.assign_review(
+                request.user["tenant_id"],
+                data["test_case_version_id"], data["assigned_to"],
+            )
+            return jsonify(review), 201
+        return _handle(run)
     finally:
         db.close()
 
@@ -456,30 +740,84 @@ def assign_review():
 def submit_review(review_id):
     data = request.get_json(silent=True) or {}
     if not data.get("status"):
-        return jsonify(error="status is required"), 400
+        return json_error("VALIDATION_ERROR", "status is required")
     if data["status"] not in ("approved", "rejected", "needs_edit"):
-        return jsonify(error="Invalid status"), 400
+        return json_error("VALIDATION_ERROR", "Invalid status")
     svc, db = _get_service()
     try:
-        review = svc.submit_review(
-            review_id, data["status"],
-            feedback=data.get("feedback"),
-            reviewed_by=request.user["id"],
-        )
-        return jsonify(review), 200
-    except ValueError as e:
-        return jsonify(error=str(e)), 400
+        def run():
+            review = svc.submit_review(
+                review_id, data["status"],
+                feedback=data.get("feedback"),
+                reviewed_by=request.user["id"],
+                step_comments=data.get("step_comments"),
+            )
+            return jsonify(review), 200
+        return _handle(run)
     finally:
         db.close()
 
 
-# --- Impacts ---
+@test_management_bp.route("/api/reviews/<int:review_id>", methods=["DELETE"])
+@require_role("admin", "ba")
+def delete_review(review_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            r = svc.delete_review(review_id, request.user["tenant_id"], request.user["id"])
+            return jsonify(r), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/reviews/<int:review_id>/restore", methods=["POST"])
+@require_role("admin", "ba")
+def restore_review(review_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            r = svc.restore_review(review_id, request.user["tenant_id"], request.user["id"])
+            return jsonify(r), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/reviews/<int:review_id>/purge", methods=["POST"])
+@require_role("admin")
+def purge_review(review_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            svc.purge_review(review_id, request.user["tenant_id"], request.user["id"])
+            return jsonify({"message": "Purged"}), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+# ---- Impacts ----------------------------------------------------------------
 
 @test_management_bp.route("/api/impacts", methods=["GET"])
 @require_auth
 def list_impacts():
     svc, db = _get_service()
     try:
+        if "page" in request.args or "per_page" in request.args or "q" in request.args:
+            params = parse_list_params(
+                request, allowed_filters=["resolution", "impact_type", "test_case_id"],
+                default_sort="created_at",
+            )
+            def run():
+                page, serializer = svc.list_impacts_page(
+                    request.user["tenant_id"],
+                    page=params["page"], per_page=params["per_page"],
+                    q=params["q"], sort=params["sort"], order=params["order"],
+                    filters=params["filters"], include_deleted=params["show_deleted"],
+                )
+                return json_page(page, serialize=serializer)
+            return _handle(run)
         return jsonify(svc.list_pending_impacts(request.user["tenant_id"])), 200
     finally:
         db.close()
@@ -490,27 +828,66 @@ def list_impacts():
 def resolve_impact(impact_id):
     data = request.get_json(silent=True) or {}
     if not data.get("resolution"):
-        return jsonify(error="resolution is required"), 400
+        return json_error("VALIDATION_ERROR", "resolution is required")
     if data["resolution"] not in ("regenerated", "edited", "dismissed"):
-        return jsonify(error="Invalid resolution"), 400
+        return json_error("VALIDATION_ERROR", "Invalid resolution")
     svc, db = _get_service()
     try:
-        impact = svc.resolve_impact(impact_id, data["resolution"], request.user["id"])
-        return jsonify(impact), 200
-    except ValueError as e:
-        return jsonify(error=str(e)), 400
+        def run():
+            impact = svc.resolve_impact(impact_id, data["resolution"], request.user["id"])
+            return jsonify(impact), 200
+        return _handle(run)
     finally:
         db.close()
 
 
-# --- Test Case Run History ---
+@test_management_bp.route("/api/impacts/<int:impact_id>", methods=["DELETE"])
+@require_role("admin", "tester")
+def delete_impact(impact_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            i = svc.delete_impact(impact_id, request.user["tenant_id"], request.user["id"])
+            return jsonify(i), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/impacts/<int:impact_id>/restore", methods=["POST"])
+@require_role("admin", "tester")
+def restore_impact(impact_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            i = svc.restore_impact(impact_id, request.user["tenant_id"], request.user["id"])
+            return jsonify(i), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/impacts/<int:impact_id>/purge", methods=["POST"])
+@require_role("admin")
+def purge_impact(impact_id):
+    svc, db = _get_service()
+    try:
+        def run():
+            svc.purge_impact(impact_id, request.user["tenant_id"], request.user["id"])
+            return jsonify({"message": "Purged"}), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+# ---- Test case run history --------------------------------------------------
 
 @test_management_bp.route("/api/test-cases/<int:tc_id>/runs", methods=["GET"])
 @require_auth
 def test_case_run_history(tc_id):
     db = next(get_db())
     try:
-        from primeqa.execution.models import RunTestResult, PipelineRun
+        from primeqa.execution.models import PipelineRun, RunTestResult
         results = db.query(RunTestResult).join(
             PipelineRun, RunTestResult.run_id == PipelineRun.id,
         ).filter(
@@ -528,7 +905,7 @@ def test_case_run_history(tc_id):
         db.close()
 
 
-# --- Step Schema + Metadata Lookup ---
+# ---- Step schema + metadata lookup -----------------------------------------
 
 @test_management_bp.route("/api/step-schema", methods=["GET"])
 @require_auth
@@ -589,7 +966,10 @@ def list_object_fields(env_id, object_name):
         db.close()
 
 
-# --- Bulk Operations ---
+# ---- Bulk ops (test cases) --------------------------------------------------
+
+_DESTRUCTIVE_BULK_ACTIONS = {"soft_delete"}
+
 
 @test_management_bp.route("/api/test-cases/bulk", methods=["POST"])
 @require_role("admin", "tester")
@@ -599,50 +979,52 @@ def bulk_test_cases():
     action = data.get("action")
     payload = data.get("payload") or {}
     if not ids or not action:
-        return jsonify(error="ids and action are required"), 400
+        return json_error("VALIDATION_ERROR", "ids and action are required")
 
-    db = next(get_db())
+    svc, db = _get_service()
     try:
-        from primeqa.test_management.models import TestCase, TestCaseTag, SuiteTestCase
-        tid = request.user["tenant_id"]
-        tcs = db.query(TestCase).filter(
-            TestCase.tenant_id == tid, TestCase.id.in_(ids),
-        ).all()
-        count = 0
-        if action == "move_section":
-            sid = payload.get("section_id")
-            for tc in tcs:
-                tc.section_id = sid; count += 1
-        elif action == "set_status":
-            s = payload.get("status")
-            for tc in tcs:
-                tc.status = s; count += 1
-        elif action == "add_tag":
-            tag_id = payload.get("tag_id")
-            for tc in tcs:
-                existing = db.query(TestCaseTag).filter(
-                    TestCaseTag.test_case_id == tc.id, TestCaseTag.tag_id == tag_id,
-                ).first()
-                if not existing:
-                    db.add(TestCaseTag(test_case_id=tc.id, tag_id=tag_id)); count += 1
-        elif action == "add_to_suite":
-            suite_id = payload.get("suite_id")
-            for tc in tcs:
-                existing = db.query(SuiteTestCase).filter(
-                    SuiteTestCase.suite_id == suite_id, SuiteTestCase.test_case_id == tc.id,
-                ).first()
-                if not existing:
-                    db.add(SuiteTestCase(suite_id=suite_id, test_case_id=tc.id, position=0)); count += 1
-        else:
-            return jsonify(error=f"Unknown action: {action}"), 400
-
-        db.commit()
-        return jsonify({"affected": count}), 200
+        def run():
+            if action in _DESTRUCTIVE_BULK_ACTIONS:
+                require_bulk_confirm(data, ids)
+            else:
+                # still enforce the hard cap on non-destructive actions
+                from primeqa.shared.api import BULK_MAX_ITEMS
+                if len(ids) > BULK_MAX_ITEMS:
+                    raise BulkLimitError(
+                        f"Bulk action exceeds the {BULK_MAX_ITEMS}-item limit",
+                        details={"limit": BULK_MAX_ITEMS, "received": len(ids)},
+                    )
+            result = svc.bulk_test_cases(
+                request.user["tenant_id"], request.user["id"],
+                ids, action, payload,
+            )
+            return jsonify(result), 200
+        return _handle(run)
     finally:
         db.close()
 
 
-# --- AI Generation ---
+@test_management_bp.route("/api/test-cases/bulk/purge", methods=["POST"])
+@require_role("admin")
+def bulk_purge_test_cases():
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids") or []
+    if not ids:
+        return json_error("VALIDATION_ERROR", "ids is required")
+    svc, db = _get_service()
+    try:
+        def run():
+            require_bulk_confirm(data, ids)
+            result = svc.bulk_purge_test_cases(
+                request.user["tenant_id"], request.user["id"], ids,
+            )
+            return jsonify(result), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+# ---- AI generation ----------------------------------------------------------
 
 @test_management_bp.route("/api/test-cases/generate", methods=["POST"])
 @require_role("admin", "tester")
@@ -650,24 +1032,24 @@ def generate_test_case():
     data = request.get_json(silent=True) or {}
     for f in ["requirement_id", "environment_id"]:
         if not data.get(f):
-            return jsonify(error=f"{f} is required"), 400
+            return json_error("VALIDATION_ERROR", f"{f} is required")
     svc, db = _get_service()
     try:
-        env_repo = EnvironmentRepository(db)
-        conn_repo = ConnectionRepository(db)
-        meta_repo = MetadataRepository(db)
-        result = svc.generate_test_case(
-            tenant_id=request.user["tenant_id"],
-            requirement_id=data["requirement_id"],
-            environment_id=data["environment_id"],
-            created_by=request.user["id"],
-            env_repo=env_repo, conn_repo=conn_repo, metadata_repo=meta_repo,
-            test_case_id=data.get("test_case_id"),
-        )
-        return jsonify(result), 201
-    except ValueError as e:
-        return jsonify(error=str(e)), 400
+        def run():
+            env_repo = EnvironmentRepository(db)
+            conn_repo = ConnectionRepository(db)
+            meta_repo = MetadataRepository(db)
+            result = svc.generate_test_case(
+                tenant_id=request.user["tenant_id"],
+                requirement_id=data["requirement_id"],
+                environment_id=data["environment_id"],
+                created_by=request.user["id"],
+                env_repo=env_repo, conn_repo=conn_repo, metadata_repo=meta_repo,
+                test_case_id=data.get("test_case_id"),
+            )
+            return jsonify(result), 201
+        return _handle(run)
     except Exception as e:
-        return jsonify(error=f"Generation failed: {e}"), 500
+        return json_error("GENERATION_FAILED", f"Generation failed: {e}", http=500)
     finally:
         db.close()

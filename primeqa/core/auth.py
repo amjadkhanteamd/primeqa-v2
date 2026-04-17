@@ -18,11 +18,21 @@ def _get_jwt_secret():
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        # Accept either:
+        #   - Authorization: Bearer <jwt>  (traditional API clients)
+        #   - access_token cookie          (httponly cookie used by the web UI)
+        # so same-origin AJAX from the rendered pages can hit /api/* without
+        # shipping the JWT through JS.
         auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
+        token = None
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        elif request.cookies.get("access_token"):
+            token = request.cookies.get("access_token")
+
+        if not token:
             return jsonify(error="Missing or invalid Authorization header"), 401
 
-        token = auth_header[7:]
         try:
             payload = jwt.decode(token, _get_jwt_secret(), algorithms=["HS256"])
         except jwt.ExpiredSignatureError:

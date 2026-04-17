@@ -1,25 +1,120 @@
 {% extends "base.html" %}
+{% from 'components/pagination.html' import render_meta_pagination, per_page_selector %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% block title %}Reviews - PrimeQA{% endblock %}
 {% block content %}
+
+{{ breadcrumbs([('Reviews', None)]) }}
+
+{% set qs %}{% if status_filter %}&status={{ status_filter }}{% endif %}{% if not only_mine %}&mine=0{% endif %}{% if show_deleted %}&deleted=1{% endif %}{% if meta.per_page and meta.per_page != 20 %}&per_page={{ meta.per_page }}{% endif %}{% endset %}
+
 <div class="space-y-6">
-    <h1 class="text-2xl font-bold text-gray-900">Review Queue</h1>
-    <div class="bg-white shadow rounded-lg">
-        <div class="divide-y divide-gray-200">
-            {% for r in reviews %}
-            <a href="/reviews/{{ r.id }}" class="block px-6 py-4 hover:bg-gray-50">
-                <div class="flex justify-between items-center">
-                    <div>
-                        <p class="text-sm font-medium text-indigo-600">Review #{{ r.id }}</p>
-                        <p class="text-sm text-gray-500">Version #{{ r.test_case_version_id }}</p>
-                    </div>
-                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if r.status == 'pending' %}bg-orange-100 text-orange-800{% elif r.status == 'approved' %}bg-green-100 text-green-800{% elif r.status == 'rejected' %}bg-red-100 text-red-800{% else %}bg-yellow-100 text-yellow-800{% endif %}">{{ r.status }}</span>
-                </div>
-            </a>
-            {% endfor %}
-            {% if not reviews %}
-            <div class="px-6 py-8 text-center text-sm text-gray-500">No pending reviews</div>
-            {% endif %}
-        </div>
+  <div class="flex justify-between items-center">
+    <h1 class="text-2xl font-bold text-gray-900">
+      Review Queue
+      {% if show_deleted %}<span class="ml-2 align-middle inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-200 text-gray-700">Trash</span>{% endif %}
+    </h1>
+    <div class="flex items-center space-x-2">
+      {% if show_deleted %}
+      <a href="/reviews" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Back to active</a>
+      {% else %}
+      <a href="/reviews?deleted=1" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-600 ring-1 ring-gray-300 hover:bg-gray-50">View Trash</a>
+      {% endif %}
     </div>
+  </div>
+
+  <div class="bg-white shadow rounded-lg p-3 flex flex-wrap items-center gap-2">
+    <form method="GET" action="/reviews" class="flex items-center space-x-2 flex-1">
+      {% if show_deleted %}<input type="hidden" name="deleted" value="1">{% endif %}
+      <select name="status" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+        <option value="">All statuses</option>
+        {% for opt in ['pending','approved','rejected','needs_edit'] %}
+        <option value="{{ opt }}" {% if status_filter == opt %}selected{% endif %}>{{ opt }}</option>
+        {% endfor %}
+      </select>
+      <label class="inline-flex items-center space-x-2 text-sm text-gray-700">
+        <input type="checkbox" name="mine" value="1" {% if only_mine %}checked{% endif %}
+               class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+        <span>Assigned to me only</span>
+      </label>
+      <button type="submit" class="rounded-md bg-white border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">Filter</button>
+    </form>
+    <div class="ml-auto">{{ per_page_selector(meta.per_page, '/reviews', qs, [10, 20, 50]) }}</div>
+  </div>
+
+  {% if query_error %}
+  <div class="rounded-md bg-red-50 border border-red-200 p-3 text-sm text-red-700">{{ query_error }}</div>
+  {% endif %}
+
+  <div class="bg-white shadow rounded-lg">
+    <div class="divide-y divide-gray-200">
+      {% for r in reviews %}
+      <div class="flex items-center px-6 py-4 hover:bg-gray-50" data-review-id="{{ r.id }}">
+        <a href="/reviews/{{ r.id }}" class="flex-1 min-w-0">
+          <div class="flex justify-between items-center">
+            <div>
+              <p class="text-sm font-medium text-indigo-600 hover:underline">Review #{{ r.id }}</p>
+              <p class="text-sm text-gray-500">Version #{{ r.test_case_version_id }}</p>
+            </div>
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if r.status == 'pending' %}bg-orange-100 text-orange-800{% elif r.status == 'approved' %}bg-green-100 text-green-800{% elif r.status == 'rejected' %}bg-red-100 text-red-800{% else %}bg-yellow-100 text-yellow-800{% endif %}">{{ r.status }}</span>
+          </div>
+        </a>
+        {% if user.role in ['admin', 'ba'] and not show_deleted %}
+        <button class="ml-4 text-xs text-gray-500 hover:text-red-600" data-delete-review="{{ r.id }}">Archive</button>
+        {% elif show_deleted %}
+        <button class="ml-4 text-xs text-indigo-600 hover:text-indigo-900" data-restore-review="{{ r.id }}">Restore</button>
+        {% if user.role == 'admin' %}
+        <button class="ml-2 text-xs text-red-600 hover:text-red-900" data-purge-review="{{ r.id }}">Purge</button>
+        {% endif %}
+        {% endif %}
+      </div>
+      {% endfor %}
+      {% if not reviews %}
+      <div class="px-6 py-10 text-center text-sm text-gray-500">
+        {% if show_deleted %}Trash is empty.
+        {% elif status_filter %}No reviews match that status.
+        {% else %}No pending reviews{% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  {{ render_meta_pagination(meta, '/reviews', qs) }}
 </div>
+
+<script>
+(function(){
+  async function apiCall(method, url) {
+    const r = await fetch(url, { method: method, credentials: 'same-origin' });
+    if (!r.ok) { await window.PrimeQA.showErrorFromResponse(r); throw new Error('failed'); }
+    return r;
+  }
+  document.querySelectorAll('[data-delete-review]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.deleteReview;
+    window.PrimeQA.confirm({
+      title: 'Archive review?', variant: 'danger',
+      message: 'Review #' + id + ' will be archived.', submitLabel: 'Archive',
+      onConfirm: async () => { try { await apiCall('DELETE', '/api/reviews/'+id);
+        window.PrimeQA.toast('Review archived', 'success');
+        btn.closest('[data-review-id]').remove(); } catch (_) {} }
+    });
+  }));
+  document.querySelectorAll('[data-restore-review]').forEach(btn => btn.addEventListener('click', async () => {
+    try { await apiCall('POST', '/api/reviews/'+btn.dataset.restoreReview+'/restore');
+      window.PrimeQA.toast('Restored', 'success');
+      btn.closest('[data-review-id]').remove(); } catch (_) {}
+  }));
+  document.querySelectorAll('[data-purge-review]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.purgeReview;
+    window.PrimeQA.confirm({
+      title: 'Permanently delete?', variant: 'danger',
+      message: 'This permanently deletes review #' + id + '. This cannot be undone.',
+      typeTo: 'DELETE', submitLabel: 'Purge forever',
+      onConfirm: async () => { try { await apiCall('POST', '/api/reviews/'+id+'/purge');
+        window.PrimeQA.toast('Purged', 'success');
+        btn.closest('[data-review-id]').remove(); } catch (_) {} }
+    });
+  }));
+})();
+</script>
 {% endblock %}

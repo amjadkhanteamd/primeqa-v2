@@ -1,33 +1,85 @@
 {% extends "base.html" %}
+{% from 'components/pagination.html' import render_meta_pagination, per_page_selector %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% block title %}Suites - PrimeQA{% endblock %}
 {% block content %}
+
+{{ breadcrumbs([('Suites', None)]) }}
+
+{% set qs %}{% if search %}&q={{ search | urlencode }}{% endif %}{% if show_deleted %}&deleted=1{% endif %}{% if meta.per_page and meta.per_page != 20 %}&per_page={{ meta.per_page }}{% endif %}{% endset %}
+
 <div class="space-y-6">
     <div class="flex justify-between items-center">
         <div>
-            <h1 class="text-2xl font-bold text-gray-900">Test Suites</h1>
+            <h1 class="text-2xl font-bold text-gray-900">
+              Test Suites
+              {% if show_deleted %}<span class="ml-2 align-middle inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-200 text-gray-700">Trash</span>{% endif %}
+            </h1>
             <p class="mt-1 text-sm text-gray-500">Curated collections of test cases for execution.</p>
         </div>
-        {% if user.role in ['admin', 'tester'] %}
-        <button onclick="document.getElementById('new-suite-modal').classList.remove('hidden')" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500">New Suite</button>
-        {% endif %}
+        <div class="flex items-center space-x-2">
+          {% if show_deleted %}
+          <a href="/suites" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Back to active</a>
+          {% else %}
+          <a href="/suites?deleted=1" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-600 ring-1 ring-gray-300 hover:bg-gray-50">View Trash</a>
+          {% if user.role in ['admin', 'tester'] %}
+          <button onclick="document.getElementById('new-suite-modal').classList.remove('hidden')" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500">New Suite</button>
+          {% endif %}
+          {% endif %}
+        </div>
     </div>
+
+    <div class="bg-white shadow rounded-lg p-3 flex flex-wrap items-center gap-2">
+      <form method="GET" action="/suites" class="flex items-center space-x-2 flex-1 min-w-0">
+        {% if show_deleted %}<input type="hidden" name="deleted" value="1">{% endif %}
+        <div class="relative flex-1 max-w-md">
+          <input type="text" name="q" value="{{ search or '' }}" placeholder="Search by name…"
+                 class="block w-full rounded-md border border-gray-300 pl-9 pr-3 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+          <svg class="absolute left-3 top-2 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
+        </div>
+        <button type="submit" class="rounded-md bg-white border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">Search</button>
+        {% if search %}<a href="/suites" class="text-sm text-gray-500 hover:text-gray-700">Clear</a>{% endif %}
+      </form>
+      <div class="ml-auto">{{ per_page_selector(meta.per_page, '/suites', qs, [10, 20, 50]) }}</div>
+    </div>
+
+    {% if query_error %}
+    <div class="rounded-md bg-red-50 border border-red-200 p-3 text-sm text-red-700">{{ query_error }}</div>
+    {% endif %}
+
     <div class="bg-white shadow rounded-lg">
         {% if suites %}
         <ul class="divide-y divide-gray-200">
             {% for s in suites %}
-            <li class="px-6 py-4 hover:bg-gray-50"><a href="/suites/{{ s.id }}" class="flex justify-between items-center">
-                <div>
-                    <p class="text-sm font-medium text-gray-900">{{ s.name }}</p>
+            <li class="px-6 py-4 hover:bg-gray-50 flex justify-between items-center" data-suite-id="{{ s.id }}">
+                <a href="/suites/{{ s.id }}" class="flex-1 min-w-0">
+                    <p class="text-sm font-medium text-indigo-600 hover:underline">{{ s.name }}</p>
                     <p class="text-xs text-gray-500">{{ s.suite_type }}{% if s.description %} · {{ s.description[:80] }}{% endif %}</p>
+                </a>
+                <div class="flex items-center space-x-3 ml-4">
+                  <span class="text-xs text-gray-400">{{ s.updated_at[:10] if s.updated_at else (s.created_at[:10] if s.created_at else '') }}</span>
+                  {% if user.role in ['admin', 'tester'] and not show_deleted %}
+                  <button class="text-xs text-red-600 hover:text-red-800" data-delete-suite="{{ s.id }}" data-suite-name="{{ s.name }}">Delete</button>
+                  {% elif show_deleted %}
+                  <button class="text-xs text-indigo-600 hover:text-indigo-900" data-restore-suite="{{ s.id }}">Restore</button>
+                  {% if user.role == 'admin' %}
+                  <button class="text-xs text-red-600 hover:text-red-900" data-purge-suite="{{ s.id }}" data-suite-name="{{ s.name }}">Purge</button>
+                  {% endif %}
+                  {% endif %}
                 </div>
-                <span class="text-xs text-gray-400">{{ s.created_at[:10] if s.created_at else '' }}</span>
-            </a></li>
+            </li>
             {% endfor %}
         </ul>
         {% else %}
-        <div class="p-12 text-center text-sm text-gray-500">No suites yet. Create one to group test cases for execution.</div>
+        <div class="p-12 text-center text-sm text-gray-500">
+          {% if show_deleted %}Trash is empty.
+          {% elif search %}No suites match your search.
+          {% else %}No suites yet. Create one to group test cases for execution.{% endif %}
+        </div>
         {% endif %}
     </div>
+
+    {{ render_meta_pagination(meta, '/suites', qs) }}
 </div>
 
 <div id="new-suite-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">
@@ -55,4 +107,37 @@
         </div>
     </div>
 </div>
+
+<script>
+(function(){
+  async function apiCall(method, url) {
+    const r = await fetch(url, { method: method, credentials: 'same-origin' });
+    if (!r.ok) { await window.PrimeQA.showErrorFromResponse(r); throw new Error('failed'); }
+    return r;
+  }
+  document.querySelectorAll('[data-delete-suite]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.deleteSuite, name = btn.dataset.suiteName;
+    window.PrimeQA.confirm({
+      title: 'Move to trash?', variant: 'danger',
+      message: '"' + name + '" will be moved to trash.', submitLabel: 'Move to trash',
+      onConfirm: async () => { try { await apiCall('DELETE', '/api/suites/'+id);
+        window.PrimeQA.toast('Suite moved to trash', 'success'); btn.closest('li').remove(); } catch (_) {} }
+    });
+  }));
+  document.querySelectorAll('[data-restore-suite]').forEach(btn => btn.addEventListener('click', async () => {
+    try { await apiCall('POST', '/api/suites/'+btn.dataset.restoreSuite+'/restore');
+      window.PrimeQA.toast('Restored', 'success'); btn.closest('li').remove(); } catch (_) {}
+  }));
+  document.querySelectorAll('[data-purge-suite]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.purgeSuite, name = btn.dataset.suiteName;
+    window.PrimeQA.confirm({
+      title: 'Permanently delete?', variant: 'danger',
+      message: 'This permanently deletes "' + name + '". This cannot be undone.',
+      typeTo: 'DELETE', submitLabel: 'Purge forever',
+      onConfirm: async () => { try { await apiCall('POST', '/api/suites/'+id+'/purge');
+        window.PrimeQA.toast('Purged', 'success'); btn.closest('li').remove(); } catch (_) {} }
+    });
+  }));
+})();
+</script>
 {% endblock %}
