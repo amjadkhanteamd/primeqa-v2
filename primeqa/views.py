@@ -527,17 +527,31 @@ def reviews_queue():
 def reviews_detail(review_id):
     db = next(get_db())
     try:
-        from primeqa.test_management.repository import BAReviewRepository
+        from primeqa.test_management.repository import BAReviewRepository, TestCaseRepository
+        from primeqa.test_management.models import TestCaseVersion, TestCase
         review = BAReviewRepository(db).get_review(review_id)
         if not review:
             return redirect("/reviews")
+        tcv = db.query(TestCaseVersion).filter(TestCaseVersion.id == review.test_case_version_id).first()
+        tc = db.query(TestCase).filter(TestCase.id == tcv.test_case_id).first() if tcv else None
         review_data = {
             "id": review.id, "test_case_version_id": review.test_case_version_id,
             "status": review.status, "feedback": review.feedback,
+            "step_comments": review.step_comments or [],
             "created_at": review.created_at.isoformat() if review.created_at else "",
         }
+        version_data = None
+        if tcv:
+            version_data = {
+                "id": tcv.id, "version_number": tcv.version_number,
+                "generation_method": tcv.generation_method,
+                "confidence_score": tcv.confidence_score,
+                "steps": tcv.steps or [],
+                "referenced_entities": tcv.referenced_entities or [],
+            }
+        tc_data = {"id": tc.id, "title": tc.title} if tc else None
         return render_template("reviews/detail.html", **ctx(
-            active_page="reviews", review=review_data,
+            active_page="reviews", review=review_data, version=version_data, tc=tc_data,
         ))
     finally:
         db.close()
@@ -546,6 +560,8 @@ def reviews_detail(review_id):
 @views_bp.route("/reviews/<int:review_id>", methods=["POST"])
 @role_required("admin", "ba")
 def reviews_submit(review_id):
+    from flask import flash
+    import json as _json
     db = next(get_db())
     try:
         from primeqa.test_management.repository import BAReviewRepository, TestCaseRepository
@@ -553,7 +569,14 @@ def reviews_submit(review_id):
         review_repo = BAReviewRepository(db)
         status = request.form.get("status")
         feedback = request.form.get("feedback")
-        review = review_repo.update_review(review_id, status, feedback, request.user["id"])
+        step_comments = []
+        for key, val in request.form.items():
+            if key.startswith("step_comment_") and val.strip():
+                step_order = int(key.replace("step_comment_", ""))
+                step_comments.append({"step_order": step_order, "comment": val.strip()})
+        review = review_repo.update_review(
+            review_id, status, feedback, request.user["id"], step_comments=step_comments,
+        )
         if review and status == "approved":
             tcv = db.query(TestCaseVersion).filter(
                 TestCaseVersion.id == review.test_case_version_id,
@@ -564,6 +587,7 @@ def reviews_submit(review_id):
                     tcv.test_case_id, request.user["tenant_id"],
                     {"status": "approved", "visibility": "shared"},
                 )
+        flash(f"Review {status}", "success")
         return redirect("/reviews")
     finally:
         db.close()
@@ -1617,6 +1641,7 @@ def requirements_generate(req_id):
             TestCaseRepository(db), TestSuiteRepository(db),
             BAReviewRepository(db), MetadataImpactRepository(db),
         )
+        svc.review_repo = BAReviewRepository(db)
         env_id = int(request.form["environment_id"])
         result = svc.generate_test_case(
             tenant_id=request.user["tenant_id"],
@@ -1627,7 +1652,10 @@ def requirements_generate(req_id):
             conn_repo=ConnectionRepository(db),
             metadata_repo=MetadataRepository(db),
         )
-        flash(f"Generated test case with {result['steps_count']} steps ({int(result['confidence_score']*100)}% confidence)", "success")
+        msg = f"Generated test case with {result['steps_count']} steps ({int(result['confidence_score']*100)}% confidence)"
+        if result.get("auto_review_created"):
+            msg += " — auto-assigned for review (low confidence)"
+        flash(msg, "success")
         return redirect(f"/test-cases/{result['test_case_id']}")
     except ValueError as e:
         flash(str(e), "error")

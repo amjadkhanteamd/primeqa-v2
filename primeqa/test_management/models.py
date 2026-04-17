@@ -150,6 +150,7 @@ class BAReview(Base):
     reviewed_by = Column(Integer, ForeignKey("users.id"))
     status = Column(String(20), nullable=False, server_default="pending")
     feedback = Column(Text)
+    step_comments = Column(JSON, nullable=False, server_default="[]")
     reviewed_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 

@@ -341,13 +341,15 @@ class BAReviewRepository:
             q = q.filter(BAReview.assigned_to == assigned_to)
         return q.order_by(BAReview.created_at.desc()).all()
 
-    def update_review(self, review_id, status, feedback=None, reviewed_by=None):
+    def update_review(self, review_id, status, feedback=None, reviewed_by=None, step_comments=None):
         review = self.get_review(review_id)
         if not review:
             return None
         review.status = status
         review.feedback = feedback
         review.reviewed_by = reviewed_by
+        if step_comments is not None:
+            review.step_comments = step_comments
         review.reviewed_at = datetime.now(timezone.utc)
         self.db.commit()
         self.db.refresh(review)

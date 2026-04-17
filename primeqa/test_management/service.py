@@ -70,12 +70,22 @@ class TestManagementService:
             referenced_entities=result["referenced_entities"],
         )
 
+        auto_review_created = False
+        if result["confidence_score"] < 0.7 and hasattr(self, "review_repo"):
+            self.review_repo.create_review(
+                tenant_id=tenant_id,
+                test_case_version_id=version.id,
+                assigned_to=created_by,
+            )
+            auto_review_created = True
+
         return {
             "test_case_id": tc.id,
             "version_id": version.id,
             "confidence_score": result["confidence_score"],
             "explanation": result["explanation"],
             "steps_count": len(result["steps"]),
+            "auto_review_created": auto_review_created,
         }
 
         self.test_case_repo = test_case_repo

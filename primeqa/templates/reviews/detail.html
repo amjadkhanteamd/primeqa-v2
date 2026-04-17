@@ -2,45 +2,90 @@
 {% block title %}Review #{{ review.id }} - PrimeQA{% endblock %}
 {% block content %}
 <div class="space-y-6">
-    <h1 class="text-2xl font-bold text-gray-900">Review #{{ review.id }}</h1>
-    <div class="bg-white shadow rounded-lg p-6">
-        <div class="grid grid-cols-3 gap-4 mb-6">
-            <div><span class="text-xs text-gray-500 uppercase">Status</span>
-                <p><span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if review.status == 'pending' %}bg-orange-100 text-orange-800{% elif review.status == 'approved' %}bg-green-100 text-green-800{% elif review.status == 'rejected' %}bg-red-100 text-red-800{% else %}bg-yellow-100 text-yellow-800{% endif %}">{{ review.status }}</span></p>
-            </div>
-            <div><span class="text-xs text-gray-500 uppercase">Version</span><p class="font-medium">#{{ review.test_case_version_id }}</p></div>
-            <div><span class="text-xs text-gray-500 uppercase">Created</span><p class="text-sm text-gray-600">{{ review.created_at[:19] if review.created_at else '' }}</p></div>
+    <div class="flex justify-between items-start">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900">Review #{{ review.id }}</h1>
+            {% if tc %}<p class="mt-1 text-sm text-gray-500"><a href="/test-cases/{{ tc.id }}" class="text-indigo-600 hover:underline">{{ tc.title }}</a>{% if version %} · v{{ version.version_number }} · {{ version.generation_method }}{% if version.confidence_score %} · {{ (version.confidence_score*100)|int }}% confidence{% endif %}{% endif %}</p>{% endif %}
         </div>
-        {% if review.feedback %}
-        <div class="rounded-md bg-gray-50 p-4 mb-4">
-            <p class="text-sm text-gray-700"><strong>Feedback:</strong> {{ review.feedback }}</p>
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+            {% if review.status == 'pending' %}bg-orange-100 text-orange-800
+            {% elif review.status == 'approved' %}bg-green-100 text-green-800
+            {% elif review.status == 'rejected' %}bg-red-100 text-red-800
+            {% else %}bg-yellow-100 text-yellow-800{% endif %}">{{ review.status }}</span>
+    </div>
+
+    {% if review.feedback %}
+    <div class="rounded-md bg-gray-50 p-4 border border-gray-200">
+        <p class="text-xs font-medium text-gray-500 uppercase mb-1">Overall Feedback</p>
+        <p class="text-sm text-gray-700">{{ review.feedback }}</p>
+    </div>
+    {% endif %}
+
+    {% if review.status == 'pending' %}
+    <form method="POST" action="/reviews/{{ review.id }}" id="review-form" class="space-y-4">
+        {% if version and version.steps %}
+        <div class="bg-white shadow rounded-lg p-6">
+            <h3 class="text-lg font-medium text-gray-900 mb-4">Review Steps</h3>
+            <div class="space-y-4">
+                {% for step in version.steps %}
+                {% set existing_comment = '' %}
+                {% for c in review.step_comments %}{% if c.step_order == step.step_order %}{% set existing_comment = c.comment %}{% endif %}{% endfor %}
+                <div class="border border-gray-200 rounded-lg p-4">
+                    <div class="flex items-start space-x-3">
+                        <span class="flex-shrink-0 w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 text-xs flex items-center justify-center font-medium">{{ step.step_order }}</span>
+                        <div class="flex-1 min-w-0">
+                            <p class="text-sm font-medium"><span class="font-mono text-indigo-600">{{ step.action }}</span> {{ step.target_object }}{% if step.record_ref %} ({{ step.record_ref }}){% endif %}</p>
+                            {% if step.field_values %}<div class="mt-1 text-xs text-gray-600 font-mono">{{ step.field_values }}</div>{% endif %}
+                            {% if step.expected_result %}<p class="mt-1 text-xs text-green-600">Expected: {{ step.expected_result }}</p>{% endif %}
+                            <textarea name="step_comment_{{ step.step_order }}" rows="2" placeholder="Add a comment on this step..." class="mt-2 block w-full rounded border border-gray-300 px-2 py-1 text-xs">{{ existing_comment }}</textarea>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
         </div>
         {% endif %}
-    </div>
-    {% if review.status == 'pending' %}
-    <div class="bg-white shadow rounded-lg p-6">
-        <h3 class="text-lg font-medium mb-4">Submit Review</h3>
-        <form method="POST" action="/reviews/{{ review.id }}" class="space-y-4">
-            <div>
-                <label for="feedback" class="block text-sm font-medium text-gray-700">Feedback</label>
-                <textarea id="feedback" name="feedback" rows="3" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border px-3 py-2" placeholder="Optional comments..."></textarea>
-            </div>
+
+        <div class="bg-white shadow rounded-lg p-6 space-y-4">
+            <div><label class="block text-sm font-medium text-gray-700">Overall Feedback</label>
+                <textarea name="feedback" rows="3" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm" placeholder="Overall feedback (optional)..."></textarea></div>
             <div class="flex space-x-3">
                 <button type="submit" name="status" value="approved" class="rounded-md bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500" title="Keyboard: A">Approve</button>
                 <button type="submit" name="status" value="rejected" class="rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-500" title="Keyboard: R">Reject</button>
                 <button type="submit" name="status" value="needs_edit" class="rounded-md bg-yellow-600 px-4 py-2 text-sm font-semibold text-white hover:bg-yellow-500" title="Keyboard: E">Request Edit</button>
             </div>
-        </form>
-    </div>
+        </div>
+    </form>
     <script>
     document.addEventListener('keydown', e => {
-        if (e.target.tagName === 'TEXTAREA') return;
-        const form = document.querySelector('form');
-        if (e.key === 'a' || e.key === 'A') { const i = document.createElement('input'); i.type='hidden'; i.name='status'; i.value='approved'; form.appendChild(i); form.submit(); }
-        if (e.key === 'r' || e.key === 'R') { const i = document.createElement('input'); i.type='hidden'; i.name='status'; i.value='rejected'; form.appendChild(i); form.submit(); }
-        if (e.key === 'e' || e.key === 'E') { const i = document.createElement('input'); i.type='hidden'; i.name='status'; i.value='needs_edit'; form.appendChild(i); form.submit(); }
+        if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+        const form = document.getElementById('review-form');
+        const submit = (value) => {
+            const i = document.createElement('input'); i.type = 'hidden'; i.name = 'status'; i.value = value;
+            form.appendChild(i); form.submit();
+        };
+        if (e.key === 'a' || e.key === 'A') submit('approved');
+        if (e.key === 'r' || e.key === 'R') submit('rejected');
+        if (e.key === 'e' || e.key === 'E') submit('needs_edit');
     });
     </script>
+    {% elif version and version.steps %}
+    <div class="bg-white shadow rounded-lg p-6">
+        <h3 class="text-lg font-medium text-gray-900 mb-4">Steps</h3>
+        <div class="space-y-3">
+            {% for step in version.steps %}
+            {% set cmt = '' %}
+            {% for c in review.step_comments %}{% if c.step_order == step.step_order %}{% set cmt = c.comment %}{% endif %}{% endfor %}
+            <div class="border border-gray-200 rounded-lg p-3 flex items-start space-x-3">
+                <span class="flex-shrink-0 w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 text-xs flex items-center justify-center font-medium">{{ step.step_order }}</span>
+                <div class="flex-1 min-w-0">
+                    <p class="text-sm font-medium"><span class="font-mono text-indigo-600">{{ step.action }}</span> {{ step.target_object }}</p>
+                    {% if cmt %}<div class="mt-1 rounded bg-yellow-50 border border-yellow-200 text-xs text-yellow-900 px-2 py-1">💬 {{ cmt }}</div>{% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
     {% endif %}
 </div>
 {% endblock %}
