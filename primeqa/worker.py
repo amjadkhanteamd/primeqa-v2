@@ -47,14 +47,248 @@ def create_worker_context():
 
 
 def execute_stage(stage, ctx):
-    """Execute a single pipeline stage. Currently a stub that marks as passed."""
+    """Dispatch a pipeline stage to its handler. Unimplemented stages pass
+    through so execute-only runs (the common case) don't block on unused
+    generate/store/metadata_refresh/jira_read.
+    """
     stage_repo = ctx["stage_repo"]
     stage_repo.update_stage(stage.id, "running")
     ctx["heartbeat_repo"].update_heartbeat(
         ctx["worker_id"], current_run_id=stage.run_id, current_stage=stage.stage_name,
     )
+
+    try:
+        if stage.stage_name == "execute":
+            _run_execute_stage(stage, ctx)
+        elif stage.stage_name == "record":
+            _run_record_stage(stage, ctx)
+        else:
+            # metadata_refresh / jira_read / generate / store: still
+            # stubs for execute_only runs; wire these when full run-type
+            # support lands.
+            pass
+    except Exception as e:
+        log.exception("stage %s on run %s failed: %s", stage.stage_name, stage.run_id, e)
+        stage_repo.update_stage(stage.id, "failed", last_error=str(e)[:500])
+        return False
+
     stage_repo.update_stage(stage.id, "passed")
     return True
+
+
+def _run_execute_stage(stage, ctx):
+    """Run every test case on `run.source_ids` against the env's SF org.
+
+    For each test case:
+      1. Fetch its current test_case_version.steps
+      2. Create a run_test_result row
+      3. Invoke StepExecutor per step (SSE events already built in)
+      4. Update counts + final status on run_test_result and pipeline_run
+    """
+    import time
+    from primeqa.execution.executor import SalesforceExecutionClient, StepExecutor
+    from primeqa.execution.repository import (
+        RunTestResultRepository, RunStepResultRepository, RunCreatedEntityRepository,
+    )
+    from primeqa.execution.idempotency import IdempotencyManager
+    from primeqa.core.repository import EnvironmentRepository, ConnectionRepository
+    from primeqa.test_management.models import TestCase, TestCaseVersion
+    from primeqa.metadata.worker_runner import _oauth_token
+
+    db = ctx["db"]
+    run_repo = ctx["run_repo"]
+    run = run_repo.get_run(stage.run_id)
+    if not run:
+        raise RuntimeError(f"run {stage.run_id} not found")
+
+    # Resolve the test_case_ids this run needs to execute.
+    tc_ids = _resolve_test_case_ids(db, run)
+    if not tc_ids:
+        log.info("run %s has no test cases to execute (source_type=%s); skipping",
+                 run.id, run.source_type)
+        run_repo.update_run_status(run.id, "running",
+                                   total_tests=0, passed=0, failed=0, skipped=0)
+        return
+
+    env_repo = EnvironmentRepository(db)
+    env = env_repo.get_environment(run.environment_id, run.tenant_id)
+    if not env:
+        raise RuntimeError(f"environment {run.environment_id} not found")
+
+    conn_repo = ConnectionRepository(db)
+    if not env.connection_id:
+        raise RuntimeError("environment has no Salesforce connection")
+    conn = conn_repo.get_connection_decrypted(env.connection_id, run.tenant_id)
+    if not conn:
+        raise RuntimeError("connection not found / could not decrypt")
+
+    access_token = _oauth_token(env, conn["config"])
+    # Persist the fresh token so other services can reuse within the window.
+    env_repo.store_credentials(
+        env.id,
+        client_id=conn["config"].get("client_id", ""),
+        client_secret=conn["config"].get("client_secret", ""),
+        access_token=access_token,
+    )
+
+    sf = SalesforceExecutionClient(env.sf_instance_url, env.sf_api_version, access_token)
+    step_repo = RunStepResultRepository(db)
+    rtr_repo = RunTestResultRepository(db)
+    entity_repo = RunCreatedEntityRepository(db)
+    # IdempotencyManager takes entity_repo (not db) — it uses the repo to
+    # dedupe created entities across steps within a run.
+    idem = IdempotencyManager(entity_repo, sf_client=sf)
+
+    # VR-aware capture-mode hint: executor's "smart" uses this to decide
+    # when to snapshot state. Always True keeps us cautious on first wiring.
+    def _has_vr(_obj_name): return True
+
+    total = passed = failed = skipped = 0
+
+    for tc_id in tc_ids:
+        tc = db.query(TestCase).filter(
+            TestCase.id == tc_id, TestCase.tenant_id == run.tenant_id,
+            TestCase.deleted_at.is_(None),
+        ).first()
+        if not tc or not tc.current_version_id:
+            skipped += 1
+            continue
+
+        version = db.query(TestCaseVersion).filter(
+            TestCaseVersion.id == tc.current_version_id,
+        ).first()
+        if not version or not version.steps:
+            skipped += 1
+            continue
+
+        # Heartbeat per test case so the reaper doesn't kill the worker on
+        # slow test suites.
+        ctx["heartbeat_repo"].update_heartbeat(
+            ctx["worker_id"], current_run_id=run.id, current_stage="execute",
+        )
+
+        rtr = rtr_repo.create_result(
+            run_id=run.id, test_case_id=tc.id,
+            test_case_version_id=version.id,
+            environment_id=env.id, status="passed",
+            total_steps=len(version.steps),
+        )
+
+        t0 = time.time()
+        tc_failed_steps = 0
+        tc_passed_steps = 0
+        tc_status = "passed"
+        failure_summary = None
+        failure_type = None
+
+        try:
+            executor = StepExecutor(
+                sf_client=sf, run_id=run.id,
+                capture_mode=env.capture_mode or "smart",
+                step_result_repo=step_repo,
+                entity_repo=entity_repo,
+                idempotency_mgr=idem,
+                meta_vr_lookup=_has_vr,
+            )
+            for step_def in version.steps:
+                step, status = executor.execute_step(
+                    rtr.id, step_def, test_case_id=tc.id,
+                )
+                if status == "passed":
+                    tc_passed_steps += 1
+                else:
+                    tc_failed_steps += 1
+                    tc_status = "failed" if status == "failed" else "error"
+                    failure_summary = step.error_message if hasattr(step, "error_message") else None
+                    failure_type = "step_error"
+                    break  # stop on first non-pass (classic SF test harness behavior)
+        except Exception as e:
+            tc_status = "error"
+            failure_summary = f"{type(e).__name__}: {e}"
+            failure_type = "unexpected_error"
+            log.exception("test case %s on run %s crashed: %s", tc.id, run.id, e)
+
+        # Update rtr with final counts + status
+        duration_ms = int((time.time() - t0) * 1000)
+        rtr.status = tc_status
+        rtr.passed_steps = tc_passed_steps
+        rtr.failed_steps = tc_failed_steps
+        rtr.failure_summary = (failure_summary or "")[:500] if failure_summary else None
+        rtr.failure_type = failure_type
+        rtr.duration_ms = duration_ms
+        db.commit()
+
+        total += 1
+        if tc_status == "passed":
+            passed += 1
+        else:
+            failed += 1
+
+        # Per-test SSE notification
+        try:
+            from primeqa.runs.streams import emit_test_finished
+            emit_test_finished(run.id, tc.id, tc_status,
+                               duration_ms=duration_ms,
+                               passed_steps=tc_passed_steps,
+                               failed_steps=tc_failed_steps)
+        except Exception:
+            pass
+
+    run_repo.update_run_status(
+        run.id, "running",
+        total_tests=total, passed=passed, failed=failed, skipped=skipped,
+    )
+    log.info("run %s: executed %d tests (%d passed, %d failed, %d skipped)",
+             run.id, total, passed, failed, skipped)
+
+
+def _run_record_stage(stage, ctx):
+    """Finalize the run: status from counts, cleanup, SSE notification."""
+    run = ctx["run_repo"].get_run(stage.run_id)
+    if not run:
+        return
+    # complete_run / fail_run release the env slot, flip status,
+    # and emit the run_status SSE event.
+    if run.failed == 0:
+        ctx["service"].complete_run(run.id)
+    else:
+        ctx["service"].fail_run(run.id, error_message=f"{run.failed} test(s) failed")
+
+
+def _resolve_test_case_ids(db, run):
+    """Expand run.source_ids + run.source_type into a flat test_case_id list."""
+    from primeqa.test_management.models import TestCase, SuiteTestCase
+
+    source_type = run.source_type
+    source_ids = run.source_ids or []
+
+    if source_type in ("test_cases", "rerun"):
+        return list(source_ids)
+
+    if source_type == "suite":
+        rows = db.query(SuiteTestCase).filter(
+            SuiteTestCase.suite_id.in_(source_ids),
+        ).all()
+        return list({r.test_case_id for r in rows})
+
+    if source_type == "requirements":
+        rows = db.query(TestCase).filter(
+            TestCase.tenant_id == run.tenant_id,
+            TestCase.requirement_id.in_(source_ids),
+            TestCase.deleted_at.is_(None),
+        ).all()
+        return [r.id for r in rows]
+
+    if source_type == "release":
+        from primeqa.release.models import ReleaseTestPlanItem
+        items = db.query(ReleaseTestPlanItem).filter(
+            ReleaseTestPlanItem.release_id.in_(source_ids),
+        ).all()
+        return list({i.test_case_id for i in items})
+
+    # Unknown source_type: empty list rather than crash
+    log.warning("unknown source_type=%s on run %s", source_type, run.id)
+    return []
 
 
 def process_run(run, ctx):
