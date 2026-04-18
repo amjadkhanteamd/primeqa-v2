@@ -28,7 +28,7 @@
         {{ req.jira_summary or ('Requirement #' ~ req.id) }}
       </h1>
       <p class="mt-1 text-sm text-gray-500">
-        {% if req.section_name %}Section: <span class="font-medium">{{ req.section_name }}</span> \u00b7 {% endif %}
+        {% if req.section_name %}Section: <span class="font-medium">{{ req.section_name }}</span> · {% endif %}
         Updated {{ req.updated_at[:19] if req.updated_at else '-' }}
       </p>
     </div>
@@ -51,7 +51,7 @@
             {% endfor %}
           </select>
           <button type="submit"
-                  {% if not ready_envs %}disabled title="No environment is ready for AI generation \u2014 attach an LLM connection and refresh metadata."{% endif %}
+                  {% if not ready_envs %}disabled title="No environment is ready for AI generation — attach an LLM connection and refresh metadata."{% endif %}
                   class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">
             Generate test case
           </button>

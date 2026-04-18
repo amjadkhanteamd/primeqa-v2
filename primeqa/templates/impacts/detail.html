@@ -5,7 +5,7 @@
 
 {{ breadcrumbs([
   ('Impacts', '/impacts'),
-  ('#' ~ impact.id ~ ' \u2014 ' ~ impact.entity_ref, None),
+  ('#' ~ impact.id ~ ' — ' ~ impact.entity_ref, None),
 ]) }}
 
 <div class="max-w-5xl space-y-6">
@@ -30,7 +30,7 @@
         <span class="font-mono">{{ impact.prev_meta_version_label }}</span>
         &rarr;
         <span class="font-mono">{{ impact.new_meta_version_label }}</span>
-        \u00b7
+        ·
         {% endif %}
         Detected {{ impact.created_at[:19] if impact.created_at else '-' }}
       </p>
