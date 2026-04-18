@@ -598,17 +598,37 @@ def runs_cancel(run_id):
 @views_bp.route("/test-cases")
 @login_required
 def test_cases_library():
+    """Test Library with two viewing modes:
+
+    - **Grouped by requirement** (default once multi-TC is in play):
+      Pages over requirements. For each requirement on the page, fetches
+      all its visible TCs and renders them inline under the requirement
+      header. TCs not linked to a requirement land in an "Unlinked"
+      bucket that renders once on page 1 only.
+    - **Flat** (?group_by=flat): current per-TC paginated view.
+
+    Default is inferred: if any TC in this tenant was produced by the
+    multi-TC generator (has generation_batch_id), grouped wins; else
+    flat. Explicit ?group_by overrides.
+    """
+    from primeqa.test_management.repository import (
+        SectionRepository, TestCaseRepository, RequirementRepository,
+    )
+    from primeqa.test_management.models import TestCase
+
     db = next(get_db())
     try:
-        from primeqa.test_management.repository import SectionRepository, TestCaseRepository
         section_repo = SectionRepository(db)
         tc_repo = TestCaseRepository(db)
+        req_repo = RequirementRepository(db)
+        tid = request.user["tenant_id"]
+        uid = request.user["id"]
 
-        sections = section_repo.get_section_tree(request.user["tenant_id"])
+        sections = section_repo.get_section_tree(tid)
 
-        # Parse list params — page, per_page (capped 50), q, sort, order, filters
-        page = request.args.get("page", 1, type=int)
-        per_page = request.args.get("per_page", 20, type=int)
+        # Shared list params
+        page = request.args.get("page", 1, type=int) or 1
+        per_page = request.args.get("per_page", 20, type=int) or 20
         q = (request.args.get("q") or "").strip()
         sort = request.args.get("sort", "updated_at")
         order = request.args.get("order", "desc")
@@ -621,39 +641,153 @@ def test_cases_library():
             filters["section_id"] = section_id
         if status:
             filters["status"] = status
+        if request.args.get("coverage_type"):
+            filters["coverage_type"] = request.args.get("coverage_type")
 
-        try:
-            result = tc_repo.list_page(
-                request.user["tenant_id"], user_id=request.user["id"],
-                page=page, per_page=per_page, q=q, sort=sort, order=order,
-                filters=filters, include_deleted=show_deleted,
+        # Group-by mode: explicit param wins; otherwise infer from whether
+        # any TC in the tenant has a generation_batch_id.
+        explicit_group = request.args.get("group_by")
+        if explicit_group in ("requirement", "flat"):
+            group_by = explicit_group
+        else:
+            any_batched = (db.query(TestCase.id)
+                           .filter(TestCase.tenant_id == tid,
+                                   TestCase.generation_batch_id.isnot(None))
+                           .first())
+            group_by = "requirement" if any_batched else "flat"
+
+        # Coverage-type sort order within a group: positive first so the
+        # happy path sits on top, then the rest in a stable order.
+        COV_ORDER = {
+            "positive": 0, "negative_validation": 1, "boundary": 2,
+            "edge_case": 3, "regression": 4,
+        }
+
+        query_error = None
+        groups = []
+        unlinked_tcs = []
+        meta = {"total": 0, "page": 1, "per_page": per_page, "total_pages": 0}
+        tc_data = []
+
+        if group_by == "requirement":
+            # Fetch bounded TC list, then group + sort + paginate groups
+            try:
+                all_tcs = tc_repo.list_for_grouping(
+                    tid, user_id=uid, q=q, filters=filters,
+                    include_deleted=show_deleted, max_items=500,
+                )
+            except Exception as e:
+                query_error = str(e)
+                all_tcs = []
+
+            # Bucket by requirement_id
+            by_req = {}
+            for tc in all_tcs:
+                if tc.requirement_id:
+                    by_req.setdefault(tc.requirement_id, []).append(tc)
+                else:
+                    unlinked_tcs.append(tc)
+
+            # Load requirement summaries in one shot. Include soft-deleted
+            # rows so the group header still shows a meaningful title +
+            # "req deleted" badge for orphaned TCs.
+            reqs_by_id = req_repo.get_requirements_by_ids(
+                by_req.keys(), tid, include_deleted=True,
             )
-            query_error = None
-            tc_rows = result.items
-            meta = {
-                "total": result.total, "page": result.page,
-                "per_page": result.per_page, "total_pages": result.total_pages,
-            }
-        except Exception as e:
-            # Bad sort field etc. — show empty list with a toast and keep the page usable
-            query_error = str(e)
-            tc_rows = []
-            meta = {"total": 0, "page": 1, "per_page": per_page, "total_pages": 0}
 
-        tc_data = [{
-            "id": tc.id, "title": tc.title, "status": tc.status,
-            "visibility": tc.visibility, "owner_id": tc.owner_id,
-            "updated_at": tc.updated_at.isoformat() if tc.updated_at else "",
-            "deleted_at": tc.deleted_at.isoformat() if getattr(tc, "deleted_at", None) else None,
-            "coverage_type": getattr(tc, "coverage_type", None),
-            "generation_batch_id": getattr(tc, "generation_batch_id", None),
-            "requirement_id": tc.requirement_id,
-        } for tc in tc_rows]
+            # Sort each bucket by coverage then updated_at desc
+            def _tc_sort_key(tc):
+                return (
+                    COV_ORDER.get(tc.coverage_type, 99),
+                    -(tc.updated_at.timestamp() if tc.updated_at else 0),
+                )
+            for rid, tcs in by_req.items():
+                tcs.sort(key=_tc_sort_key)
+
+            # Sort groups by most-recent TC update (activity-first)
+            def _group_recency(kv):
+                rid, tcs = kv
+                return max((t.updated_at.timestamp() if t.updated_at else 0
+                            for t in tcs), default=0)
+            sorted_groups = sorted(by_req.items(), key=_group_recency, reverse=True)
+
+            # Paginate requirements (not TCs)
+            total_groups = len(sorted_groups)
+            per_page_grp = min(max(per_page, 1), 50)
+            total_pages = max(1, (total_groups + per_page_grp - 1) // per_page_grp)
+            page = max(1, min(page, total_pages))
+            start = (page - 1) * per_page_grp
+            page_slice = sorted_groups[start:start + per_page_grp]
+
+            def _tc_dict(tc):
+                return {
+                    "id": tc.id, "title": tc.title, "status": tc.status,
+                    "visibility": tc.visibility, "owner_id": tc.owner_id,
+                    "updated_at": tc.updated_at.isoformat() if tc.updated_at else "",
+                    "coverage_type": getattr(tc, "coverage_type", None),
+                    "generation_batch_id": getattr(tc, "generation_batch_id", None),
+                    "requirement_id": tc.requirement_id,
+                }
+
+            for rid, tcs in page_slice:
+                req = reqs_by_id.get(rid)
+                # Coverage breakdown per group for the header chip
+                cov_counts = {}
+                for tc in tcs:
+                    k = tc.coverage_type or "other"
+                    cov_counts[k] = cov_counts.get(k, 0) + 1
+                groups.append({
+                    "requirement_id": rid,
+                    "jira_key": req.jira_key if req else None,
+                    "summary": (req.jira_summary if req else None) or f"Requirement #{rid}",
+                    "deleted": bool(req.deleted_at) if req else False,
+                    "test_cases": [_tc_dict(tc) for tc in tcs],
+                    "coverage_counts": cov_counts,
+                })
+
+            unlinked_data = [_tc_dict(tc) for tc in unlinked_tcs]
+            # Unlinked bucket only shows on page 1 to keep the mental model simple.
+            if page != 1:
+                unlinked_data = []
+
+            meta = {"total": total_groups, "page": page,
+                    "per_page": per_page_grp, "total_pages": total_pages}
+        else:
+            # Flat mode — original per-TC pagination
+            try:
+                result = tc_repo.list_page(
+                    tid, user_id=uid,
+                    page=page, per_page=per_page, q=q, sort=sort, order=order,
+                    filters=filters, include_deleted=show_deleted,
+                )
+                tc_rows = result.items
+                meta = {
+                    "total": result.total, "page": result.page,
+                    "per_page": result.per_page, "total_pages": result.total_pages,
+                }
+            except Exception as e:
+                query_error = str(e)
+                tc_rows = []
+            tc_data = [{
+                "id": tc.id, "title": tc.title, "status": tc.status,
+                "visibility": tc.visibility, "owner_id": tc.owner_id,
+                "updated_at": tc.updated_at.isoformat() if tc.updated_at else "",
+                "deleted_at": tc.deleted_at.isoformat() if getattr(tc, "deleted_at", None) else None,
+                "coverage_type": getattr(tc, "coverage_type", None),
+                "generation_batch_id": getattr(tc, "generation_batch_id", None),
+                "requirement_id": tc.requirement_id,
+            } for tc in tc_rows]
+            unlinked_data = []
 
         return render_template("test_cases/library.html", **ctx(
-            active_page="test_cases", sections=sections, test_cases=tc_data,
+            active_page="test_cases", sections=sections,
+            group_by=group_by,
+            test_cases=tc_data,           # flat mode
+            groups=groups,                # grouped mode
+            unlinked_test_cases=unlinked_data,  # grouped mode, page 1 only
             section_id=section_id, meta=meta,
             search=q, sort=sort, order=order, status_filter=status,
+            coverage_filter=request.args.get("coverage_type"),
             show_deleted=show_deleted, query_error=query_error,
         ))
     finally:

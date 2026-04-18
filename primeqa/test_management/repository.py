@@ -192,6 +192,20 @@ class RequirementRepository:
             q = q.filter(Requirement.section_id == section_id)
         return q.order_by(Requirement.created_at.desc()).all()
 
+    def get_requirements_by_ids(self, requirement_ids, tenant_id,
+                                include_deleted=False):
+        """Batch-load requirements for the group-by-requirement Test
+        Library view. Returns {id: Requirement}."""
+        if not requirement_ids:
+            return {}
+        q = self.db.query(Requirement).filter(
+            Requirement.tenant_id == tenant_id,
+            Requirement.id.in_(list(requirement_ids)),
+        )
+        if not include_deleted:
+            q = q.filter(Requirement.deleted_at.is_(None))
+        return {r.id: r for r in q.all()}
+
     def list_page(self, tenant_id, *, page=1, per_page=20, q=None,
                   sort="updated_at", order="desc", filters=None,
                   include_deleted=False) -> PageResult:
@@ -316,6 +330,51 @@ class TestCaseRepository:
         else:
             q = q.filter(TestCase.visibility == "shared")
         return q.order_by(TestCase.updated_at.desc()).all()
+
+    def list_for_grouping(self, tenant_id, *, user_id=None, q=None,
+                          filters=None, include_deleted=False,
+                          max_items=500):
+        """Return the full set of visible TCs (up to `max_items`) matching
+        the same filter/search semantics as `list_page`, but WITHOUT
+        server-side pagination. Used by the group-by-requirement Test
+        Library view where pagination is per-requirement, not per-TC.
+
+        Returns a plain list (not PageResult) ordered by updated_at desc
+        so the group's most-recent TC bubbles up. A hard cap of 500 keeps
+        the endpoint bounded even for giant tenants; above that the user
+        should use filters.
+        """
+        from sqlalchemy import or_
+        query = self.db.query(TestCase).filter(TestCase.tenant_id == tenant_id)
+        if not include_deleted:
+            query = query.filter(TestCase.deleted_at.is_(None))
+        if user_id:
+            query = query.filter(or_(TestCase.visibility == "shared",
+                                     TestCase.owner_id == user_id))
+        else:
+            query = query.filter(TestCase.visibility == "shared")
+
+        f = filters or {}
+        if f.get("status"):
+            query = query.filter(TestCase.status == f["status"])
+        if f.get("requirement_id"):
+            query = query.filter(TestCase.requirement_id == f["requirement_id"])
+        if f.get("section_id"):
+            query = query.filter(TestCase.section_id == f["section_id"])
+        if f.get("owner_id"):
+            query = query.filter(TestCase.owner_id == f["owner_id"])
+        if f.get("visibility"):
+            query = query.filter(TestCase.visibility == f["visibility"])
+        if f.get("coverage_type"):
+            query = query.filter(TestCase.coverage_type == f["coverage_type"])
+
+        if q:
+            # Same wildcard-escape convention as ListQuery: escape %, _
+            # before wrapping in the ILIKE wildcards.
+            safe = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            query = query.filter(TestCase.title.ilike(f"%{safe}%"))
+
+        return query.order_by(TestCase.updated_at.desc()).limit(max_items).all()
 
     def list_page(self, tenant_id, *, user_id=None, page=1, per_page=20, q=None,
                   sort="updated_at", order="desc", filters=None,
