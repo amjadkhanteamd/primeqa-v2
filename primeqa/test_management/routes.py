@@ -318,6 +318,87 @@ def sync_jira(req_id):
         db.close()
 
 
+@test_management_bp.route("/api/requirements/bulk-generate", methods=["POST"])
+@require_role("admin", "tester")
+def bulk_generate_requirements():
+    """Generate test cases for multiple requirements in parallel.
+
+    Body:  {environment_id, requirement_ids: [ids], confirm?: "GENERATE"}
+    Returns: {results: [{requirement_id, status: "ok"|"error",
+                         test_case_id?, version_number?, confidence?, error?}]}
+
+    Concurrency: up to 5 in parallel (ThreadPoolExecutor). Each generation
+    takes ~15s against Anthropic so a bulk of 10 is ~30s. Client shows a
+    modal with an indeterminate progress bar until the aggregated response
+    arrives. Each worker thread opens its own short-lived DB session and
+    its own TestManagementService because SQLAlchemy sessions are not
+    thread-safe.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    data = request.get_json(silent=True) or {}
+    env_id = data.get("environment_id")
+    req_ids = data.get("requirement_ids") or []
+    if not env_id:
+        return json_error("VALIDATION_ERROR", "environment_id is required")
+    if not isinstance(req_ids, list) or not req_ids:
+        return json_error("VALIDATION_ERROR",
+                          "requirement_ids must be a non-empty array")
+    # Bulk cap: 20 per call to stay under 30s max latency with 5 parallel.
+    if len(req_ids) > 20:
+        return json_error("BULK_LIMIT",
+                          f"Bulk-generate is capped at 20 per call (got {len(req_ids)})")
+
+    tenant_id = request.user["tenant_id"]
+    user_id = request.user["id"]
+
+    def generate_one(req_id):
+        # Fresh session + service per thread; SQLAlchemy sessions are
+        # NOT safe to share across threads.
+        from primeqa.db import engine
+        from sqlalchemy.orm import Session
+        s = Session(bind=engine)
+        try:
+            svc = TestManagementService(
+                SectionRepository(s), RequirementRepository(s),
+                TestCaseRepository(s), TestSuiteRepository(s),
+                BAReviewRepository(s), MetadataImpactRepository(s),
+            )
+            try:
+                result = svc.generate_test_case(
+                    tenant_id=tenant_id, requirement_id=req_id,
+                    environment_id=env_id, created_by=user_id,
+                    env_repo=EnvironmentRepository(s),
+                    conn_repo=ConnectionRepository(s),
+                    metadata_repo=MetadataRepository(s),
+                )
+                return {
+                    "requirement_id": req_id, "status": "ok",
+                    "test_case_id": result["test_case_id"],
+                    "version_number": result.get("version_number"),
+                    "generation_mode": result.get("generation_mode"),
+                    "confidence": result["confidence_score"],
+                }
+            except (ValueError, ValidationError, NotFoundError) as e:
+                return {"requirement_id": req_id, "status": "error",
+                        "error": str(e)[:200]}
+            except Exception as e:
+                return {"requirement_id": req_id, "status": "error",
+                        "error": f"{type(e).__name__}: {str(e)[:150]}"}
+        finally:
+            s.close()
+
+    results = []
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {pool.submit(generate_one, r): r for r in req_ids}
+        for fut in as_completed(futures):
+            results.append(fut.result())
+
+    # Preserve submission order in response so client can match to rows
+    result_by_id = {r["requirement_id"]: r for r in results}
+    ordered = [result_by_id.get(rid) for rid in req_ids]
+    return jsonify({"results": ordered}), 200
+
+
 # ---- Test cases -------------------------------------------------------------
 
 @test_management_bp.route("/api/test-cases", methods=["GET"])
