@@ -32,6 +32,28 @@ class SectionRepository:
 
     def create_section(self, tenant_id, name, created_by, parent_id=None,
                        description=None, position=0):
+        """Idempotent: if an active section with the same (tenant, parent,
+        name) already exists, return it instead of creating a duplicate.
+
+        Integration tests ran against the live DB without cleaning up, so
+        repeated runs were creating dozens of identical "Regression Tests"
+        and "Account Tests" root/child sections. The sidebar then rendered
+        each distinct id as a separate tree node. Deduping here stops the
+        bleeding; existing dupes need a data-cleanup pass.
+        """
+        existing = self.db.query(Section).filter(
+            Section.tenant_id == tenant_id,
+            Section.name == name,
+            Section.deleted_at.is_(None),
+        )
+        if parent_id is None:
+            existing = existing.filter(Section.parent_id.is_(None))
+        else:
+            existing = existing.filter(Section.parent_id == parent_id)
+        found = existing.first()
+        if found:
+            return found
+
         section = Section(
             tenant_id=tenant_id, name=name, parent_id=parent_id,
             description=description, position=position, created_by=created_by,
