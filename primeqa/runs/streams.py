@@ -219,12 +219,21 @@ def stream_run_events(run_id: int, snapshot_fn,
 
 def record_event(run_id: int, tenant_id: int, kind: str, message: str,
                  *, level: str = "info", context: Optional[dict] = None) -> None:
-    """Write one row to run_events. Opens its own short-lived session so
-    the caller's transaction/session lifecycle isn't affected."""
+    """Write one row to run_events. Opens a FRESH, non-scoped session so
+    the caller's transaction/session lifecycle isn't affected.
+
+    Critical subtlety: `primeqa.db.SessionLocal` is a scoped_session that
+    returns the thread-local session on each call. If we used it here, a
+    subsequent session.close() would close the caller's session too and
+    detach every instance they're holding \u2014 which was the actual cause
+    of "Instance <PipelineRun> is not bound to a Session" we saw in
+    production after calling emit_* from worker/service code.
+    """
     try:
-        from primeqa.db import SessionLocal
+        from sqlalchemy.orm import Session
+        from primeqa.db import engine
         from primeqa.execution.models import RunEvent
-        session = SessionLocal()
+        session = Session(bind=engine)
         try:
             ev = RunEvent(
                 run_id=run_id, tenant_id=tenant_id,
