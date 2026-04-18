@@ -4,7 +4,7 @@
 <div class="space-y-6">
     <h1 class="text-2xl font-bold text-gray-900">Dashboard</h1>
 
-    {% if user.role == 'admin' and not setup_complete %}
+    {% if user.role in ['admin', 'superadmin'] and not setup_complete %}
     <div class="rounded-lg bg-indigo-50 border border-indigo-200 p-4 flex items-center justify-between">
         <div>
             <p class="text-sm font-medium text-indigo-800">Complete your platform setup</p>
@@ -33,14 +33,14 @@
         </div>
     </div>
 
-    {% if user.role in ['ba', 'admin'] and stats.pending_reviews > 0 %}
+    {% if user.role in ['ba', 'admin', 'superadmin'] and stats.pending_reviews > 0 %}
     <div class="rounded-md bg-orange-50 border border-orange-200 p-4">
         <p class="text-sm text-orange-800">You have <strong>{{ stats.pending_reviews }}</strong> pending reviews.
             <a href="/reviews" class="font-medium underline">Review now</a></p>
     </div>
     {% endif %}
 
-    {% if user.role == 'admin' %}
+    {% if user.role in ['admin', 'superadmin'] %}
     <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
         <div class="rounded-lg bg-white px-4 py-5 shadow sm:p-6">
             <h3 class="text-sm font-medium text-gray-500">Users</h3>

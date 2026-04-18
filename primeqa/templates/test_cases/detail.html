@@ -16,10 +16,10 @@
             </div>
         </div>
         <div class="flex space-x-3">
-            {% if user.role in ['admin', 'tester'] and environments %}
+            {% if user.role in ['admin', 'tester', 'superadmin'] and environments %}
             <button onclick="document.getElementById('run-modal').classList.remove('hidden')" class="rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-500">▶ Run</button>
             {% endif %}
-            {% if user.role in ['admin', 'tester'] %}
+            {% if user.role in ['admin', 'tester', 'superadmin'] %}
             <a href="/test-cases/{{ tc.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit Steps</a>
             {% endif %}
             {% if tc.visibility == 'private' and tc.owner_id == user.id %}
@@ -27,7 +27,7 @@
                 <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Share</button>
             </form>
             {% endif %}
-            {% if user.role in ['admin', 'tester'] %}
+            {% if user.role in ['admin', 'tester', 'superadmin'] %}
             <button id="detail-delete-btn" class="rounded-md bg-white px-3 py-2 text-sm font-semibold text-red-700 ring-1 ring-red-200 hover:bg-red-50">Delete</button>
             {% endif %}
         </div>

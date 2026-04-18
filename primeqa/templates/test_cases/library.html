@@ -81,7 +81,7 @@
       <div class="text-sm text-indigo-900"><span id="bulk-count">0</span> selected</div>
       <div class="space-x-2 flex items-center">
         <button id="bulk-delete" class="rounded-md bg-white px-3 py-1.5 text-sm text-red-700 ring-1 ring-red-200 hover:bg-red-50">Move to trash</button>
-        {% if user and user.role == 'admin' %}
+        {% if user and user.role in ['admin', 'superadmin'] %}
         <button id="bulk-purge" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Purge permanently</button>
         {% endif %}
         <button id="bulk-clear" class="text-sm text-indigo-700 hover:text-indigo-900">Clear</button>
@@ -120,7 +120,7 @@
             <td class="px-3 py-3 text-right text-sm space-x-2">
               {% if show_deleted %}
               <button class="text-indigo-600 hover:text-indigo-900" data-restore-id="{{ tc.id }}">Restore</button>
-              {% if user and user.role == 'admin' %}
+              {% if user and user.role in ['admin', 'superadmin'] %}
               <button class="text-red-600 hover:text-red-900" data-purge-id="{{ tc.id }}" data-tc-title="{{ tc.title }}">Purge</button>
               {% endif %}
               {% else %}

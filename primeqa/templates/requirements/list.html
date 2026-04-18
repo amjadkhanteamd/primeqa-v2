@@ -22,7 +22,7 @@
             <a href="/requirements" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Back to active</a>
             {% else %}
             <a href="/requirements?deleted=1" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-600 ring-1 ring-gray-300 hover:bg-gray-50">View Trash</a>
-            {% if user.role in ['admin', 'tester'] %}
+            {% if user.role in ['admin', 'tester', 'superadmin'] %}
             <button onclick="document.getElementById('import-modal').classList.remove('hidden')" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Import from Jira</button>
             {% endif %}
             {% endif %}
@@ -62,7 +62,7 @@
                         {% if req.acceptance_criteria %}<p class="mt-1 text-xs text-gray-500 line-clamp-2">{{ req.acceptance_criteria }}</p>{% endif %}
                     </div>
                     <div class="flex items-center space-x-2">
-                      {% if user.role in ['admin', 'tester'] and not show_deleted %}
+                      {% if user.role in ['admin', 'tester', 'superadmin'] and not show_deleted %}
                       <form method="POST" action="/requirements/{{ req.id }}/generate" class="flex items-center space-x-2">
                           <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1 text-xs">
                               <option value="">Select env...</option>
@@ -76,7 +76,7 @@
                       <button class="text-xs text-red-600 hover:text-red-800" data-delete-req="{{ req.id }}" data-req-title="{{ req.jira_key or req.jira_summary or 'Requirement' }}">Delete</button>
                       {% elif show_deleted %}
                       <button class="text-xs text-indigo-600 hover:text-indigo-900" data-restore-req="{{ req.id }}">Restore</button>
-                      {% if user.role == 'admin' %}
+                      {% if user.role in ['admin', 'superadmin'] %}
                       <button class="text-xs text-red-600 hover:text-red-900" data-purge-req="{{ req.id }}" data-req-title="{{ req.jira_key or req.jira_summary or 'Requirement' }}">Purge</button>
                       {% endif %}
                       {% endif %}

@@ -19,7 +19,7 @@
                 <div><span class="text-gray-500">Email:</span> <span class="text-gray-900">{{ user.email }}</span></div>
                 <div><span class="text-gray-500">Role:</span>
                     <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
-                        {% if user.role == 'admin' %}bg-purple-100 text-purple-800
+                        {% if user.role in ['admin', 'superadmin'] %}bg-purple-100 text-purple-800
                         {% elif user.role == 'tester' %}bg-blue-100 text-blue-800
                         {% elif user.role == 'ba' %}bg-green-100 text-green-800
                         {% else %}bg-gray-100 text-gray-800{% endif %}">{{ user.role }}</span>
@@ -45,7 +45,7 @@
         </div>
     </div>
 
-    {% if not setup_complete and user.role == 'admin' %}
+    {% if not setup_complete and user.role in ['admin', 'superadmin'] %}
     <div class="rounded-lg bg-indigo-50 border border-indigo-200 p-4 flex items-center justify-between">
         <div>
             <p class="text-sm font-medium text-indigo-800">Setup incomplete</p>

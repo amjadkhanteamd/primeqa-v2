@@ -7,7 +7,7 @@
             <h1 class="text-2xl font-bold text-gray-900">{{ suite.name }}</h1>
             <p class="mt-1 text-sm text-gray-500">{{ suite.suite_type }} · {{ test_cases|length }} test case(s)</p>
         </div>
-        {% if user.role in ['admin', 'tester'] and environments %}
+        {% if user.role in ['admin', 'tester', 'superadmin'] and environments %}
         <button onclick="document.getElementById('run-suite-modal').classList.remove('hidden')" class="rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-500">▶ Run Suite</button>
         {% endif %}
     </div>

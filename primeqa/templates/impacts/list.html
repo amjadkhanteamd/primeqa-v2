@@ -64,7 +64,7 @@
           <button class="text-xs rounded bg-white text-red-600 px-2 py-1 ring-1 ring-red-200 hover:bg-red-50" data-delete-impact="{{ impact.id }}">Trash</button>
           {% else %}
           <button class="text-xs rounded bg-white text-indigo-600 px-2 py-1 ring-1 ring-indigo-200 hover:bg-indigo-50" data-restore-impact="{{ impact.id }}">Restore</button>
-          {% if user.role == 'admin' %}
+          {% if user.role in ['admin', 'superadmin'] %}
           <button class="text-xs rounded bg-white text-red-600 px-2 py-1 ring-1 ring-red-200 hover:bg-red-50" data-purge-impact="{{ impact.id }}">Purge</button>
           {% endif %}
           {% endif %}

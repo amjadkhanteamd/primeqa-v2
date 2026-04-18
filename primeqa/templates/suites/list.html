@@ -22,7 +22,7 @@
           <a href="/suites" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Back to active</a>
           {% else %}
           <a href="/suites?deleted=1" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-600 ring-1 ring-gray-300 hover:bg-gray-50">View Trash</a>
-          {% if user.role in ['admin', 'tester'] %}
+          {% if user.role in ['admin', 'tester', 'superadmin'] %}
           <button onclick="document.getElementById('new-suite-modal').classList.remove('hidden')" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500">New Suite</button>
           {% endif %}
           {% endif %}
@@ -58,11 +58,11 @@
                 </a>
                 <div class="flex items-center space-x-3 ml-4">
                   <span class="text-xs text-gray-400">{{ s.updated_at[:10] if s.updated_at else (s.created_at[:10] if s.created_at else '') }}</span>
-                  {% if user.role in ['admin', 'tester'] and not show_deleted %}
+                  {% if user.role in ['admin', 'tester', 'superadmin'] and not show_deleted %}
                   <button class="text-xs text-red-600 hover:text-red-800" data-delete-suite="{{ s.id }}" data-suite-name="{{ s.name }}">Delete</button>
                   {% elif show_deleted %}
                   <button class="text-xs text-indigo-600 hover:text-indigo-900" data-restore-suite="{{ s.id }}">Restore</button>
-                  {% if user.role == 'admin' %}
+                  {% if user.role in ['admin', 'superadmin'] %}
                   <button class="text-xs text-red-600 hover:text-red-900" data-purge-suite="{{ s.id }}" data-suite-name="{{ s.name }}">Purge</button>
                   {% endif %}
                   {% endif %}

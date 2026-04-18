@@ -7,7 +7,7 @@
             <h1 class="text-2xl font-bold text-gray-900">Milestones</h1>
             <p class="mt-1 text-sm text-gray-500">Delivery markers tying suites together with due dates.</p>
         </div>
-        {% if user.role in ['admin', 'tester'] %}
+        {% if user.role in ['admin', 'tester', 'superadmin'] %}
         <button onclick="document.getElementById('new-milestone-modal').classList.remove('hidden')" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500">New Milestone</button>
         {% endif %}
     </div>

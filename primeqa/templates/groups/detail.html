@@ -7,7 +7,7 @@
             <h1 class="text-2xl font-bold text-gray-900">{{ group.name }}</h1>
             {% if group.description %}<p class="text-sm text-gray-500 mt-1">{{ group.description }}</p>{% endif %}
         </div>
-        {% if user.role == 'admin' %}
+        {% if user.role in ['admin', 'superadmin'] %}
         <div class="flex space-x-3">
             <a href="/groups/{{ group.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit</a>
             <form method="POST" action="/groups/{{ group.id }}/delete" id="delete-group-{{ group.id }}">
@@ -31,7 +31,7 @@
                             <p class="text-sm font-medium text-gray-900">{{ m.full_name }}</p>
                             <p class="text-xs text-gray-500">{{ m.email }} &middot; {{ m.role }}</p>
                         </div>
-                        {% if user.role == 'admin' %}
+                        {% if user.role in ['admin', 'superadmin'] %}
                         <form method="POST" action="/groups/{{ group.id }}/members/{{ m.id }}/remove">
                             <button type="submit" class="text-xs text-red-600 hover:text-red-800">Remove</button>
                         </form>
@@ -42,7 +42,7 @@
                     <div class="px-6 py-4 text-sm text-gray-500">No members yet</div>
                     {% endif %}
                 </div>
-                {% if user.role == 'admin' %}
+                {% if user.role in ['admin', 'superadmin'] %}
                 <div class="px-6 py-4 border-t bg-gray-50">
                     <form method="POST" action="/groups/{{ group.id }}/members" class="flex space-x-2">
                         <select name="user_id" class="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm">
@@ -70,7 +70,7 @@
                             <p class="text-sm font-medium text-gray-900">{{ e.name }}</p>
                             <p class="text-xs text-gray-500">{{ e.env_type }} &middot; {{ e.sf_instance_url[:40] }}...</p>
                         </div>
-                        {% if user.role == 'admin' %}
+                        {% if user.role in ['admin', 'superadmin'] %}
                         <form method="POST" action="/groups/{{ group.id }}/environments/{{ e.id }}/remove">
                             <button type="submit" class="text-xs text-red-600 hover:text-red-800">Remove</button>
                         </form>
@@ -81,7 +81,7 @@
                     <div class="px-6 py-4 text-sm text-gray-500">No environments assigned</div>
                     {% endif %}
                 </div>
-                {% if user.role == 'admin' and available_envs %}
+                {% if user.role in ['admin', 'superadmin'] and available_envs %}
                 <div class="px-6 py-4 border-t bg-gray-50">
                     <form method="POST" action="/groups/{{ group.id }}/environments" class="flex space-x-2">
                         <select name="environment_id" class="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm">

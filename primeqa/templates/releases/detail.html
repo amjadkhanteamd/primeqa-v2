@@ -21,7 +21,7 @@
             {% if release.description %}<p class="mt-2 text-sm text-gray-600">{{ release.description }}</p>{% endif %}
             {% if release.target_date %}<p class="mt-2 text-xs text-gray-500">Target: {{ release.target_date }}</p>{% endif %}
         </div>
-        {% if user.role in ['admin', 'tester'] %}
+        {% if user.role in ['admin', 'tester', 'superadmin'] %}
         <div class="flex space-x-3">
             <form method="POST" action="/releases/{{ release.id }}/score-risks">
                 <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Score Risks</button>

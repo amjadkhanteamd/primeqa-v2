@@ -29,10 +29,10 @@
                         <a href="/runs" class="{% if active_page == 'runs' %}bg-gray-100 text-gray-900{% else %}text-gray-500 hover:bg-gray-50 hover:text-gray-700{% endif %} rounded-md px-3 py-2 text-sm font-medium">Runs</a>
                         <a href="/test-cases" class="{% if active_page == 'test_cases' %}bg-gray-100 text-gray-900{% else %}text-gray-500 hover:bg-gray-50 hover:text-gray-700{% endif %} rounded-md px-3 py-2 text-sm font-medium">Test Library</a>
                         <a href="/suites" class="{% if active_page == 'suites' %}bg-gray-100 text-gray-900{% else %}text-gray-500 hover:bg-gray-50 hover:text-gray-700{% endif %} rounded-md px-3 py-2 text-sm font-medium">Suites</a>
-                        {% if user.role in ['ba', 'admin'] %}
+                        {% if user.role in ['ba', 'admin', 'superadmin'] %}
                         <a href="/reviews" class="{% if active_page == 'reviews' %}bg-gray-100 text-gray-900{% else %}text-gray-500 hover:bg-gray-50 hover:text-gray-700{% endif %} rounded-md px-3 py-2 text-sm font-medium">Reviews</a>
                         {% endif %}
-                        {% if user.role in ['admin', 'tester'] %}
+                        {% if user.role in ['admin', 'tester', 'superadmin'] %}
                         <a href="/impacts" class="{% if active_page == 'impacts' %}bg-gray-100 text-gray-900{% else %}text-gray-500 hover:bg-gray-50 hover:text-gray-700{% endif %} rounded-md px-3 py-2 text-sm font-medium">Impacts</a>
                         {% endif %}
                     </div>
@@ -56,7 +56,7 @@
                                 <p class="text-sm font-medium text-gray-900">{{ user.full_name }}</p>
                                 <p class="text-xs text-gray-500">{{ user.email }}</p>
                                 <span class="mt-1 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
-                                    {% if user.role == 'admin' %}bg-purple-100 text-purple-800
+                                    {% if user.role in ['admin', 'superadmin'] %}bg-purple-100 text-purple-800
                                     {% elif user.role == 'tester' %}bg-blue-100 text-blue-800
                                     {% elif user.role == 'ba' %}bg-green-100 text-green-800
                                     {% else %}bg-gray-100 text-gray-800{% endif %}">{{ user.role }}</span>

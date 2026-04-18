@@ -4,7 +4,7 @@
 <div class="space-y-6">
     <div class="flex justify-between items-center">
         <h1 class="text-2xl font-bold text-gray-900">Groups</h1>
-        {% if user.role == 'admin' %}
+        {% if user.role in ['admin', 'superadmin'] %}
         <a href="/groups/new" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Create Group</a>
         {% endif %}
     </div>
