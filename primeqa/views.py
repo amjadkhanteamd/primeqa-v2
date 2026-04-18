@@ -2491,7 +2491,13 @@ def requirements_list():
             "source": r.source,
             "updated_at": r.updated_at.isoformat() if r.updated_at else "",
         } for r in reqs]
-        envs_data = [{"id": e.id, "name": e.name} for e in envs if e.llm_connection_id]
+        # Envs with their readiness for AI generation (needs LLM + metadata)
+        envs_data = [{
+            "id": e.id, "name": e.name,
+            "has_llm": bool(e.llm_connection_id),
+            "has_meta": bool(e.current_meta_version_id),
+            "ready": bool(e.llm_connection_id and e.current_meta_version_id),
+        } for e in envs]
         sections_data = [{"id": s.id, "name": s.name} for s in sections]
         conns_data = [{"id": c.id, "name": c.name} for c in conns]
         return render_template("requirements/list.html", **ctx(
@@ -2540,8 +2546,12 @@ def requirements_detail(req_id):
 
         envs = EnvironmentRepository(db).list_environments(
             tid, request.user["id"], request.user["role"])
-        envs_data = [{"id": e.id, "name": e.name}
-                     for e in envs if e.llm_connection_id]
+        envs_data = [{
+            "id": e.id, "name": e.name,
+            "has_llm": bool(e.llm_connection_id),
+            "has_meta": bool(e.current_meta_version_id),
+            "ready": bool(e.llm_connection_id and e.current_meta_version_id),
+        } for e in envs]
 
         req_data = {
             "id": req.id, "jira_key": req.jira_key,
@@ -2662,27 +2672,39 @@ def requirements_generate(req_id):
         )
         svc.review_repo = BAReviewRepository(db)
         env_id = int(request.form["environment_id"])
-        result = svc.generate_test_case(
-            tenant_id=request.user["tenant_id"],
-            requirement_id=req_id,
-            environment_id=env_id,
-            created_by=request.user["id"],
-            env_repo=EnvironmentRepository(db),
-            conn_repo=ConnectionRepository(db),
-            metadata_repo=MetadataRepository(db),
-        )
+        try:
+            result = svc.generate_test_case(
+                tenant_id=request.user["tenant_id"],
+                requirement_id=req_id,
+                environment_id=env_id,
+                created_by=request.user["id"],
+                env_repo=EnvironmentRepository(db),
+                conn_repo=ConnectionRepository(db),
+                metadata_repo=MetadataRepository(db),
+            )
+        except ValueError as e:
+            # Actionable flash for the common blocker: no metadata yet / no LLM
+            msg = str(e)
+            if "metadata version" in msg.lower() or "refresh metadata" in msg.lower():
+                flash(f"Generation blocked: {msg} Refresh the env's metadata from "
+                      f"Settings \u2192 Environments \u2192 this env.", "error")
+            elif "llm" in msg.lower():
+                flash(f"Generation blocked: {msg} Attach an LLM connection in "
+                      f"Settings \u2192 Environments \u2192 this env.", "error")
+            else:
+                flash(msg, "error")
+            return redirect(f"/requirements/{req_id}")
+
         msg = f"Generated test case with {result['steps_count']} steps ({int(result['confidence_score']*100)}% confidence)"
         if result.get("auto_review_created"):
-            msg += " — auto-assigned for review (low confidence)"
+            msg += " \u2014 auto-assigned for review (low confidence)"
         flash(msg, "success")
         return redirect(f"/test-cases/{result['test_case_id']}")
-    except ValueError as e:
-        flash(str(e), "error")
     except Exception as e:
         flash(f"Generation failed: {e}", "error")
     finally:
         db.close()
-    return redirect("/requirements")
+    return redirect(f"/requirements/{req_id}")
 
 
 # --- Suites ---

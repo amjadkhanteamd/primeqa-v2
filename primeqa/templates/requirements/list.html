@@ -63,12 +63,15 @@
                     </a>
                     <div class="flex items-center space-x-2">
                       {% if user.role in ['admin', 'tester', 'superadmin'] and not show_deleted %}
+                      {% set ready_envs = environments | selectattr('ready') | list %}
                       <form method="POST" action="/requirements/{{ req.id }}/generate" class="flex items-center space-x-2">
                           <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1 text-xs">
                               <option value="">Select env...</option>
-                              {% for env in environments %}<option value="{{ env.id }}">{{ env.name }}</option>{% endfor %}
+                              {% for env in environments %}
+                              <option value="{{ env.id }}" {% if not env.ready %}disabled{% endif %}>{{ env.name }}{% if not env.has_llm %} &mdash; no LLM{% elif not env.has_meta %} &mdash; needs metadata{% endif %}</option>
+                              {% endfor %}
                           </select>
-                          <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 flex items-center space-x-1">
+                          <button type="submit" {% if not ready_envs %}disabled title="No environment is ready for AI generation"{% endif %} class="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 flex items-center space-x-1 disabled:opacity-50 disabled:cursor-not-allowed">
                               <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" /></svg>
                               <span>Generate</span>
                           </button>

@@ -40,14 +40,19 @@
         {% endif %}
       {% else %}
         {% if user.role in ['admin', 'tester', 'superadmin'] and environments %}
+        {% set ready_envs = environments | selectattr('ready') | list %}
         <form method="POST" action="/requirements/{{ req.id }}/generate" class="flex items-center space-x-2">
           <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
             <option value="">Pick env&hellip;</option>
             {% for env in environments %}
-            <option value="{{ env.id }}">{{ env.name }}</option>
+            <option value="{{ env.id }}" {% if not env.ready %}disabled{% endif %}>
+              {{ env.name }}{% if not env.has_llm %} &mdash; no LLM connection{% elif not env.has_meta %} &mdash; needs metadata refresh{% endif %}
+            </option>
             {% endfor %}
           </select>
-          <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">
+          <button type="submit"
+                  {% if not ready_envs %}disabled title="No environment is ready for AI generation \u2014 attach an LLM connection and refresh metadata."{% endif %}
+                  class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">
             Generate test case
           </button>
         </form>

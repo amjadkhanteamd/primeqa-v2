@@ -53,14 +53,20 @@ class MetadataService:
         if not creds or not creds.get("access_token"):
             raise ValueError("No credentials stored for this environment")
 
-        prev_version = self.metadata_repo.get_current_version(environment_id)
-
+        # Pick the next unused version label across ALL meta_versions for
+        # this env, not just the "current" one \u2014 previous failed/in_progress
+        # syncs still hold their slot (the unique index is on env_id +
+        # version_label and doesn't skip failed rows). Before this fix, a
+        # failed v1 blocked the next refresh with a duplicate-key error.
+        from primeqa.metadata.models import MetaVersion
+        all_labels = {
+            row[0] for row in self.metadata_repo.db.query(MetaVersion.version_label)
+                                     .filter(MetaVersion.environment_id == environment_id)
+                                     .all()
+        }
         version_num = 1
-        if prev_version:
-            try:
-                version_num = int(prev_version.version_label.lstrip("v")) + 1
-            except (ValueError, AttributeError):
-                version_num = prev_version.id + 1
+        while f"v{version_num}" in all_labels:
+            version_num += 1
 
         mv = self.metadata_repo.create_meta_version(
             environment_id, f"v{version_num}",
