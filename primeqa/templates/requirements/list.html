@@ -23,7 +23,14 @@
             {% else %}
             <a href="/requirements?deleted=1" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-600 ring-1 ring-gray-300 hover:bg-gray-50">View Trash</a>
             {% if user.role in ['admin', 'tester', 'superadmin'] %}
-            <button onclick="document.getElementById('import-modal').classList.remove('hidden')" class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Import from Jira</button>
+            <button onclick="document.getElementById('new-req-modal').classList.remove('hidden')"
+                    class="rounded-md bg-white px-4 py-2 text-sm font-semibold text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-50">
+                + New Requirement
+            </button>
+            <button onclick="document.getElementById('import-modal').classList.remove('hidden')"
+                    class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">
+                Import from Jira
+            </button>
             {% endif %}
             {% endif %}
         </div>
@@ -103,6 +110,8 @@
     {{ render_meta_pagination(meta, '/requirements', qs) }}
 </div>
 
+{% include 'components/generate_overlay.html' %}
+
 <script>
 (function(){
   async function apiCall(method, url) {
@@ -137,29 +146,240 @@
 })();
 </script>
 
-<!-- Jira Import Modal -->
-<div id="import-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+<!-- New Requirement Modal (manual create) -->
+<div id="new-req-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">
     <div class="flex min-h-full items-center justify-center p-4">
-        <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('import-modal').classList.add('hidden')"></div>
-        <div class="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
-            <h3 class="text-lg font-medium text-gray-900 mb-4">Import from Jira</h3>
-            <form method="POST" action="/requirements/import-jira" class="space-y-4">
-                <div><label class="block text-sm font-medium text-gray-700">Section</label>
+        <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('new-req-modal').classList.add('hidden')"></div>
+        <div class="relative bg-white rounded-lg shadow-xl max-w-lg w-full p-6">
+            <h3 class="text-lg font-medium text-gray-900 mb-1">New Requirement</h3>
+            <p class="text-xs text-gray-500 mb-4">Create a requirement without a Jira ticket. You can attach a Jira key later.</p>
+            <form method="POST" action="/requirements/new" class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Title <span class="text-red-500">*</span></label>
+                    <input name="title" required maxlength="500"
+                           class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                           placeholder="Short summary of the behavior under test">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Section <span class="text-red-500">*</span></label>
                     <select name="section_id" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
                         {% for s in sections %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
-                    </select></div>
-                <div><label class="block text-sm font-medium text-gray-700">Jira Connection</label>
-                    <select name="jira_connection_id" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
-                        {% for c in jira_connections %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
-                    </select></div>
-                <div><label class="block text-sm font-medium text-gray-700">Jira Ticket Key</label>
-                    <input name="jira_key" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm" placeholder="PROJ-123"></div>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Description</label>
+                    <textarea name="description" rows="4"
+                              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                              placeholder="What needs to happen, context, scope."></textarea>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Acceptance criteria</label>
+                    <textarea name="acceptance_criteria" rows="5"
+                              class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono"
+                              placeholder="Given &hellip; When &hellip; Then &hellip;
+Multiple AC separated by blank lines"></textarea>
+                    <p class="mt-1 text-xs text-gray-500">Used by AI to generate test cases. More specific = better tests.</p>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Jira key <span class="text-gray-400 font-normal">(optional)</span></label>
+                    <input name="jira_key" maxlength="50"
+                           class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono"
+                           placeholder="PROJ-123">
+                    <p class="mt-1 text-xs text-gray-500">Attach to an existing Jira ticket for traceability. Still treated as a manual requirement (no auto-sync).</p>
+                </div>
                 <div class="flex justify-end space-x-3">
-                    <button type="button" onclick="document.getElementById('import-modal').classList.add('hidden')" class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">Cancel</button>
-                    <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Import</button>
+                    <button type="button" onclick="document.getElementById('new-req-modal').classList.add('hidden')" class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">Cancel</button>
+                    <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Create</button>
                 </div>
             </form>
         </div>
     </div>
 </div>
+
+<!-- Jira Import Modal \u2014 chip picker + paste fallback -->
+<div id="import-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+    <div class="flex min-h-full items-start justify-center p-4 pt-10">
+        <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('import-modal').classList.add('hidden')"></div>
+        <div class="relative bg-white rounded-lg shadow-xl max-w-2xl w-full p-6">
+            <h3 class="text-lg font-medium text-gray-900 mb-1">Import from Jira</h3>
+            <p class="text-xs text-gray-500 mb-4">Search and pick multiple tickets, or paste a list of keys. Each becomes a requirement.</p>
+            <form method="POST" action="/requirements/import-jira" class="space-y-4" id="import-jira-form">
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700">Section</label>
+                    <select name="section_id" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                        {% for s in sections %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
+                    </select>
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700">Jira Connection</label>
+                    <select id="import-jira-conn" name="jira_connection_id" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                        {% for c in jira_connections %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
+                    </select>
+                  </div>
+                </div>
+
+                <!-- Chip selection -->
+                <div>
+                  <label class="block text-sm font-medium text-gray-700">Selected tickets <span id="import-chip-count" class="text-gray-500 font-normal"></span></label>
+                  <div id="import-jira-chips" class="mt-1 flex flex-wrap gap-1 min-h-[2.25rem] p-2 border border-dashed border-gray-200 rounded-md text-sm">
+                    <span class="text-xs text-gray-400" id="import-jira-chips-placeholder">No tickets selected yet.</span>
+                  </div>
+                </div>
+
+                <!-- Search -->
+                <div class="relative">
+                  <input id="import-jira-search" type="text" autocomplete="off"
+                         placeholder="Search tickets by key or summary\u2026"
+                         class="block w-full rounded-md border border-gray-300 pl-9 pr-3 py-2 text-sm focus:border-indigo-500 focus:ring-indigo-500"
+                         hx-get="/api/jira/search"
+                         hx-trigger="load, keyup changed delay:300ms, focus"
+                         hx-target="#import-jira-results"
+                         hx-swap="innerHTML"
+                         hx-indicator="#import-jira-indicator"
+                         hx-vals='js:{conn_id: document.getElementById("import-jira-conn").value}'>
+                  <svg class="absolute left-3 top-2.5 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
+                  <span id="import-jira-indicator" class="htmx-indicator absolute right-3 top-2.5 text-xs text-gray-500">loading\u2026</span>
+                </div>
+                <div id="import-jira-results" class="border border-gray-200 rounded-md bg-white max-h-60 overflow-y-auto min-h-[3rem]">
+                  <div class="px-3 py-2 text-xs text-gray-500 italic">Type at least 2 characters\u2026</div>
+                </div>
+
+                <!-- Paste fallback -->
+                <details class="text-sm">
+                  <summary class="cursor-pointer text-gray-600 hover:text-gray-900">Or paste a list of keys</summary>
+                  <div class="mt-2">
+                    <textarea id="import-jira-paste" rows="3"
+                              class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono"
+                              placeholder="SQ-205, SQ-206&#10;SQ-211"></textarea>
+                    <button type="button" id="import-jira-paste-apply"
+                            class="mt-2 rounded-md bg-white ring-1 ring-gray-300 px-3 py-1 text-xs text-gray-700 hover:bg-gray-50">
+                      Add pasted keys to selection
+                    </button>
+                    <p class="mt-1 text-xs text-gray-500">Comma- or newline-separated. We'll fetch and deduplicate on import.</p>
+                  </div>
+                </details>
+
+                <!-- Hidden collector -->
+                <input type="hidden" name="jira_keys" id="import-jira-keys" value="">
+
+                <div class="flex justify-end space-x-3 pt-2 border-t border-gray-100">
+                    <button type="button" onclick="document.getElementById('import-modal').classList.add('hidden')" class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">Cancel</button>
+                    <button type="submit" id="import-jira-submit" disabled class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">Import</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+// Chip picker for the requirements Jira-import modal. Distinct from the
+// run wizard's picker (different element IDs, different submit target).
+// Uses the same /api/jira/search backend via conn_id.
+(function(){
+  const form       = document.getElementById('import-jira-form');
+  const connSel    = document.getElementById('import-jira-conn');
+  const searchEl   = document.getElementById('import-jira-search');
+  const resultsEl  = document.getElementById('import-jira-results');
+  const chipsEl    = document.getElementById('import-jira-chips');
+  const chipsPlace = document.getElementById('import-jira-chips-placeholder');
+  const countEl    = document.getElementById('import-chip-count');
+  const keysHidden = document.getElementById('import-jira-keys');
+  const submitBtn  = document.getElementById('import-jira-submit');
+  const pasteTa    = document.getElementById('import-jira-paste');
+  const pasteApply = document.getElementById('import-jira-paste-apply');
+  if (!form) return;
+
+  const selected = new Map();  // key -> {key, summary, ...}
+  const MAX = 50;
+
+  function escapeHtml(s) {
+    return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function render() {
+    chipsEl.querySelectorAll('.chip').forEach(el => el.remove());
+    const keys = [...selected.keys()];
+    chipsPlace.classList.toggle('hidden', keys.length > 0);
+    keys.forEach(k => {
+      const info = selected.get(k);
+      const chip = document.createElement('span');
+      chip.className = 'chip inline-flex items-center space-x-1 px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-800 text-xs';
+      chip.title = info.summary || k;
+      chip.innerHTML = '<span class="font-mono font-medium">' + k + '</span>' +
+                      (info.summary ? '<span class="max-w-[18rem] truncate">\u2014 ' + escapeHtml(info.summary) + '</span>' : '');
+      const rm = document.createElement('button');
+      rm.type = 'button'; rm.textContent = '\u00d7';
+      rm.className = 'ml-1 text-indigo-600 hover:text-indigo-900 text-sm leading-none';
+      rm.setAttribute('aria-label', 'Remove ' + k);
+      rm.addEventListener('click', () => { selected.delete(k); render(); });
+      chip.appendChild(rm);
+      chipsEl.appendChild(chip);
+    });
+    keysHidden.value = keys.join(',');
+    countEl.textContent = keys.length ? '(' + keys.length + ')' : '';
+    submitBtn.disabled = keys.length === 0;
+  }
+
+  function add(info) {
+    if (!info || !info.key) return;
+    if (selected.has(info.key)) return;
+    if (selected.size >= MAX) {
+      window.PrimeQA?.toast?.('Max ' + MAX + ' tickets per import', 'warning');
+      return;
+    }
+    selected.set(info.key, info);
+    render();
+  }
+
+  function datasetToInfo(el) {
+    // Must match data-* attributes in templates/runs/_jira_search_results.html
+    return {
+      key: el.dataset.key,
+      summary: el.dataset.summary,
+      status: el.dataset.status,
+      issue_type: el.dataset.issueType,
+      project_key: el.dataset.projectKey,
+    };
+  }
+
+  resultsEl.addEventListener('click', evt => {
+    const row = evt.target.closest('.jira-result');
+    if (row) add(datasetToInfo(row));
+  });
+  resultsEl.addEventListener('keydown', evt => {
+    const row = evt.target.closest('.jira-result');
+    if (!row) return;
+    if (evt.key === 'Enter' || evt.key === ' ') {
+      evt.preventDefault(); add(datasetToInfo(row));
+    }
+  });
+  searchEl.addEventListener('keydown', evt => {
+    if (evt.key === 'ArrowDown') {
+      const first = resultsEl.querySelector('.jira-result');
+      if (first) { evt.preventDefault(); first.focus(); }
+    } else if (evt.key === 'Escape') {
+      searchEl.value = ''; resultsEl.innerHTML = '';
+    }
+  });
+
+  // Swapping Jira connection refreshes the search
+  connSel.addEventListener('change', () => {
+    searchEl.value = '';
+    resultsEl.innerHTML = '';
+    if (window.htmx) window.htmx.trigger(searchEl, 'load');
+  });
+
+  // "Add pasted keys" \u2014 parses textarea and adds as chips with no
+  // summary (they'll show just the key; server fetches summaries on import).
+  pasteApply?.addEventListener('click', () => {
+    const raw = (pasteTa.value || '').trim();
+    if (!raw) return;
+    raw.split(/[\s,]+/).filter(Boolean).forEach(k => add({ key: k, summary: '' }));
+    pasteTa.value = '';
+  });
+
+  render();
+})();
+</script>
 {% endblock %}

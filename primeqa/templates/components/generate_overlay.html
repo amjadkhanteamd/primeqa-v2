@@ -1,0 +1,61 @@
+{# Shared overlay + JS for the "Generate test case" form submit.
+   Intercepts any <form action="*/generate"> on the page, shows a spinner
+   with rotating status labels, and disables the submit button to prevent
+   the double-click duplicates that produced the original pollution.
+
+   Include once per page that has a Generate form:
+     {% include 'components/generate_overlay.html' %}
+#}
+<div id="generate-overlay" class="hidden fixed inset-0 z-50 bg-gray-900 bg-opacity-60">
+  <div class="flex min-h-full items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-xl max-w-md w-full p-8 text-center space-y-5">
+      <div class="mx-auto h-12 w-12 relative">
+        <div class="absolute inset-0 rounded-full border-4 border-indigo-100"></div>
+        <div class="absolute inset-0 rounded-full border-4 border-indigo-500 border-t-transparent animate-spin"></div>
+      </div>
+      <div>
+        <p id="generate-overlay-title" class="text-base font-semibold text-gray-900">Generating test case&hellip;</p>
+        <p id="generate-overlay-sub" class="mt-2 text-sm text-gray-500">→ Reading metadata&hellip;</p>
+      </div>
+      <p class="text-xs text-gray-400">This usually takes 10–20 seconds. Please don't close this tab.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const overlay = document.getElementById('generate-overlay');
+  const subEl = document.getElementById('generate-overlay-sub');
+  if (!overlay || !subEl) return;
+  const LABELS = [
+    '→ Reading metadata…',
+    '→ Reasoning about steps…',
+    '→ Writing draft…',
+    '→ Finalizing…',
+  ];
+  let rotateTimer = null;
+  function show() {
+    overlay.classList.remove('hidden');
+    let i = 0;
+    subEl.textContent = LABELS[0];
+    rotateTimer = setInterval(() => {
+      i = (i + 1) % LABELS.length;
+      subEl.textContent = LABELS[i];
+    }, 2500);
+  }
+  document.querySelectorAll('form[action$="/generate"]').forEach(form => {
+    form.addEventListener('submit', () => {
+      const envSel = form.querySelector('select[name="environment_id"]');
+      if (envSel && !envSel.value) return;
+      const btn = form.querySelector('button[type="submit"]');
+      if (btn) { btn.disabled = true; btn.classList.add('opacity-70', 'cursor-wait'); }
+      show();
+      window.addEventListener('pageshow', () => {
+        overlay.classList.add('hidden');
+        if (rotateTimer) clearInterval(rotateTimer);
+        if (btn) { btn.disabled = false; btn.classList.remove('opacity-70', 'cursor-wait'); }
+      }, { once: true });
+    });
+  });
+})();
+</script>

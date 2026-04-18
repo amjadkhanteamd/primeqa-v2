@@ -2875,9 +2875,74 @@ def requirements_edit(req_id):
         db.close()
 
 
+@views_bp.route("/requirements/new", methods=["POST"])
+@role_required("admin", "tester")
+def requirements_create_manual():
+    """Create a manual (non-Jira) requirement from the + New Requirement
+    modal on /requirements.
+
+    Maps the form's `title` into jira_summary so the list/detail views
+    (which render jira_summary as the headline) keep working uniformly
+    for manual and Jira-sourced rows. `source='manual'` tells the detail
+    view not to show Re-sync, and the title-partial-unique index is
+    skipped because jira_key is NULL.
+    """
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import (
+            SectionRepository, RequirementRepository, TestCaseRepository,
+            TestSuiteRepository, BAReviewRepository, MetadataImpactRepository,
+        )
+        from primeqa.test_management.service import TestManagementService
+        svc = TestManagementService(
+            SectionRepository(db), RequirementRepository(db),
+            TestCaseRepository(db), TestSuiteRepository(db),
+            BAReviewRepository(db), MetadataImpactRepository(db),
+        )
+        title = (request.form.get("title") or "").strip()
+        section_id = request.form.get("section_id", type=int)
+        if not title:
+            flash("Title is required.", "error")
+            return redirect("/requirements")
+        if not section_id:
+            flash("Section is required.", "error")
+            return redirect("/requirements")
+        description = (request.form.get("description") or "").strip() or None
+        acceptance = (request.form.get("acceptance_criteria") or "").strip() or None
+        jira_key = (request.form.get("jira_key") or "").strip() or None
+
+        result = svc.create_requirement(
+            tenant_id=request.user["tenant_id"],
+            section_id=section_id,
+            source="manual",
+            created_by=request.user["id"],
+            jira_key=jira_key,
+            jira_summary=title,
+            jira_description=description,
+            acceptance_criteria=acceptance,
+        )
+        flash(f"Created requirement: {title}", "success")
+        req_id = result.get("id") if isinstance(result, dict) else getattr(result, "id", None)
+        if req_id:
+            return redirect(f"/requirements/{req_id}")
+    except Exception as e:
+        flash(f"Could not create requirement: {e}", "error")
+    finally:
+        db.close()
+    return redirect("/requirements")
+
+
 @views_bp.route("/requirements/import-jira", methods=["POST"])
 @role_required("admin", "tester")
 def requirements_import_jira():
+    """Import one or many Jira tickets as requirements.
+
+    Accepts either:
+      - jira_key  (single-ticket legacy path)
+      - jira_keys (comma/newline-separated list from the chip picker)
+    Reports imported / skipped (already exists) / failed counts via flash.
+    """
     from flask import flash
     db = next(get_db())
     try:
@@ -2901,17 +2966,58 @@ def requirements_import_jira():
         if cfg.get("auth_type") == "basic" and cfg.get("username") and cfg.get("api_token"):
             import base64
             jira_auth = base64.b64encode(f"{cfg['username']}:{cfg['api_token']}".encode()).decode()
-        svc.import_jira_requirement(
-            tenant_id=request.user["tenant_id"],
-            section_id=int(request.form["section_id"]),
-            jira_base_url=cfg.get("base_url", ""),
-            jira_key=request.form["jira_key"],
-            created_by=request.user["id"],
-            jira_auth=jira_auth,
-        )
-        flash(f"Imported {request.form['jira_key']}", "success")
-    except ValueError as e:
-        flash(str(e), "error")
+
+        # Parse keys \u2014 either `jira_keys` (multi from chip picker, comma-
+        # or newline-separated) or legacy `jira_key` (single).
+        raw_multi = (request.form.get("jira_keys") or "").strip()
+        if raw_multi:
+            import re
+            keys = [k.strip() for k in re.split(r"[\s,]+", raw_multi) if k.strip()]
+        else:
+            single = (request.form.get("jira_key") or "").strip()
+            keys = [single] if single else []
+
+        # Dedupe while preserving order
+        seen = set()
+        keys = [k for k in keys if not (k in seen or seen.add(k))]
+
+        if not keys:
+            flash("No Jira keys provided.", "error")
+            return redirect("/requirements")
+
+        section_id = int(request.form["section_id"])
+        tenant_id = request.user["tenant_id"]
+        base_url = cfg.get("base_url", "")
+
+        imported, skipped, failed = [], [], []
+        for key in keys:
+            try:
+                svc.import_jira_requirement(
+                    tenant_id=tenant_id,
+                    section_id=section_id,
+                    jira_base_url=base_url,
+                    jira_key=key,
+                    created_by=request.user["id"],
+                    jira_auth=jira_auth,
+                )
+                imported.append(key)
+            except ValueError as ve:
+                # "already exists" is the common skip case
+                if "already exists" in str(ve).lower():
+                    skipped.append(key)
+                else:
+                    failed.append((key, str(ve)))
+            except Exception as ex:
+                failed.append((key, str(ex)[:100]))
+
+        # One consolidated flash per outcome
+        if imported:
+            flash(f"Imported {len(imported)}: {', '.join(imported)}", "success")
+        if skipped:
+            flash(f"Skipped {len(skipped)} already-imported: {', '.join(skipped)}", "info")
+        if failed:
+            detail = "; ".join(f"{k} \u2014 {err}" for k, err in failed)
+            flash(f"Failed {len(failed)}: {detail}", "error")
     except Exception as e:
         flash(f"Import failed: {e}", "error")
     finally:
