@@ -50,7 +50,7 @@ primeqa/                       # Main package
 ├── vector/                    # Embeddings (pgvector)
 ├── static/                    # Shared JS/CSS (toast, confirm, unsaved-changes)
 └── templates/                 # Jinja2 HTML templates
-migrations/                    # SQL migration files (001–029)
+migrations/                    # SQL migration files (001–030)
 scripts/                       # One-off operational SQL (data cleanup, etc.)
 docs/design/                   # Design docs (run-experience.md covers R1–R7)
 tests/                         # Integration test files
@@ -128,6 +128,34 @@ Three integration points:
 APIs: `POST /api/test-cases/:id/revalidate` (optional `{environment_id}`), `POST /api/test-cases/:id/apply-validation-fix` (body `{issue, replacement}`).
 
 UI on test case detail page: red banner for critical, yellow for warnings, green "No issues" on clean. Each issue lists its suggested replacements as Apply buttons that patch the step JSON and reload.
+
+## Context-driven run triggers + rerun / labels / AI failure summary
+
+The Runs tab used to be both the history view AND the primary way to trigger runs (via the Run Wizard). Multi-TC generation made the wizard feel like the wrong starting point — most users want to run the tests that belong to a thing, not recompose the selection. Context-driven triggers live alongside the source.
+
+**Trigger from the source**:
+- `POST /requirements/:id/run` — run every active TC linked to a requirement. Per-row button on Requirements list; `▶ Run N test cases` on Requirement detail. Visibility-scoped (private TCs owned by others are excluded).
+- `POST /releases/:id/run` — run everything in a Release's test plan. `▶ Run test plan` button in the Test Plan tab header.
+- `POST /suites/:id/run` (pre-existing) — run a suite.
+- `POST /test-cases/:id/run` (pre-existing) — run a single TC.
+- Run Wizard at `/runs/new` is the **advanced** path for mixed-source runs (e.g. Jira tickets + a suite + hand-picked TCs in one run). Runs list now says "Advanced: build run" for it, with a banner that points to the source pages as the primary entry.
+
+**Requirements list state-aware buttons**:
+The list handler runs one group-by over TCs per visible requirement and picks the Generate button label from the user's own state:
+- No my-draft AND no approved/active → `Generate`
+- My draft exists → `Regenerate` (outline style)
+- Approved/active TC exists (but no my-draft) → `Generate again`
+
+TC count + coverage chips render inline on each row when tests exist.
+
+**Run detail extras (migration 030)**:
+- `pipeline_runs.label` — free-form 100-char tag. Inline debounced editor on run detail; substring-match filter on the run history page (`?label=release-`).
+- `↻ Rerun` per-row on failed results → `POST /runs/:id/rerun-one {test_case_id}` queues a single-TC rerun with `parent_run_id` linkage.
+- `↻ Rerun verbatim` in the header → `POST /runs/:id/rerun-verbatim` collects every `(test_case_id, test_case_version_id)` from the original and stores `version_pin` in `run.config`. The worker's `_run_execute_stage` reads `run.config.version_pin[str(tc_id)]` before falling back to `current_version_id`. Critical when the TC has been edited since the original run.
+- `failure_summary_ai` (superadmin only) — `POST /runs/:id/summarise-failures` prompts the env's LLM with every failed step's error text and caches a 3-6 sentence root-cause summary. `failure_summary_at` + `failure_summary_model` drive the "Regenerate" affordance.
+
+**Run cost panel on /runs/:id (superadmin only)**:
+Sums `generation_batches.cost_usd` for the batches that produced this run's TCs, plus agent fix-and-rerun attempt counts (per-attempt token tracking is a future migration). Collapsible panel with a grand total in the summary line. Panel is never rendered for non-superadmin roles.
 
 ## The Run Experience (R1–R7 + post-R7 enhancements)
 
@@ -226,7 +254,7 @@ python tests/test_system_validation.py   # 4 runner + 13 canonical suite outcome
 git push origin main                     # Railway auto-deploys 3 services
 
 # Apply a migration (idempotent since 016)
-psql "$DATABASE_URL" -f migrations/029_test_case_version_validation.sql
+psql "$DATABASE_URL" -f migrations/030_run_labels_and_failure_summary.sql
 ```
 
 ## Environment variables

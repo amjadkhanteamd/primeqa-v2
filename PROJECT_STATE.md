@@ -75,6 +75,9 @@ Continuous UX + infra improvements on top of R1–R7. Each commit is below.
 | `21287b3` | **Grouped suite picker + suites list metadata + release curation UI.** Suite picker now groups TCs by requirement with group select-all + 3-state indeterminate checkboxes. Suites list shows TC count + coverage chips + requirements covered per row (single JOIN, no N+1). Release detail: `+ Add requirements` button on Requirements tab with search + multi-select + bulk-add, `+ Add test cases` on Test Plan tab with the same grouped-by-requirement picker + priority selector, Remove per row, TC title / status / coverage badges. New bulk endpoints `POST /api/releases/:id/requirements/bulk` and `POST /api/releases/:id/test-plan/bulk`. |
 | `ab40337` | **Static test-case validator (migration 029).** New `TestCaseValidator` module catches AI hallucinations before runtime: object-not-found, field-not-found, field-not-createable, unresolved-`$var`, fields-not-synced. Fuzzy `difflib.get_close_matches(cutoff=0.6)` suggestions per issue. Three integration points: (1) after generation — validator runs during `generate_test_plan` and stores a `validation_report` JSONB on each new `test_case_version`; (2) before execution — worker blocks TCs with `status=='critical'` unless `config.skip_validation` / `force_run`; (3) during execution — existing `$var` fail-fast remains. API: `POST /api/test-cases/:id/revalidate`, `POST /api/test-cases/:id/apply-validation-fix`. UI: red/yellow/green banner on TC detail with per-issue Apply buttons that create a new version. |
 | `2e10581` | **Validator SOQL parsing.** Extends the validator to parse `query` steps' SOQL strings: `SELECT` column list + `FROM` object. Two new rules (`soql_from_object_not_found`, `soql_column_not_found`). Relationship-aware: `Owner.Id` is valid when `OwnerId` exists as a reference field (`__r`→`__c` for custom lookups). Permissive parser — silent no-op when the SOQL can't be parsed, to avoid false positives blocking valid tests. `apply_fix` extended to rewrite bad FROM or bad SELECT column in the SOQL text (word-boundary-safe). |
+| `38e3b46` | **Ship 1 — context-driven Run triggers.** Runs tab stops being the primary entry point; triggers move to the thing you want to run. Per-row `▶ Run` + TC count + coverage chips on the Requirements list (with per-user state-aware `Generate` / `Regenerate` / `Generate again` label). `▶ Run N test cases` on Requirement detail. `▶ Run test plan` on Release detail → Test Plan tab. New routes `POST /requirements/:id/run` + `POST /releases/:id/run`. Wizard demoted to "Advanced: build run" with a tip banner pointing to Requirements / Suites / Releases. |
+| `78113a0` | **Ship 2 — AI spend panel on run detail.** Superadmin-only collapsible panel aggregating LLM cost per run: test generation total (from `generation_batches.cost_usd` joined via the run's TCs) + model list + tokens in/out + batch count; agent fix-and-rerun attempt count with a note that per-attempt token tracking is a future migration. Grand total in the summary line. |
+| `dad9612` | **Ship 3 + HPV (migration 030).** Four upgrades: (1) per-failed-row `↻ Rerun` button queues a new run for a single TC; (2) `↻ Rerun verbatim` pins each TC to its prior `test_case_version_id` via `run.config.version_pin`, worker honors it ahead of `current_version_id`; (3) inline-edit `label` on run detail (debounced auto-save) + substring label filter on the run history page; (4) `Summarise failures` superadmin-only AI panel — prompts the env's LLM with every failed step's error text, caches result in `pipeline_runs.failure_summary_ai / _at / _model`. All gated behind role + terminal state. |
 
 ### Self-Validation Suite (`a9da9d3`) — shipped
 
@@ -112,7 +115,7 @@ test_case_tags, milestones, milestone_suites, custom_fields,
 custom_field_values, step_templates, test_case_parameter_sets,
 **generation_batches** *(all with soft-delete columns)*
 
-**Execution** (15): pipeline_runs *(+ `source_refs`, `parent_run_id`)*,
+**Execution** (15): pipeline_runs *(+ `source_refs`, `parent_run_id`, `label`, `failure_summary_ai`, `failure_summary_at`, `failure_summary_model`)*,
 pipeline_stages, run_test_results, run_step_results *(+ 7 log-capture
 columns)*, **run_events** *(durable pipeline log, migration 027)*,
 run_artifacts, run_created_entities, run_cleanup_attempts,
@@ -130,7 +133,7 @@ release_test_plan_items, release_runs, release_decisions *(+
 
 **Vector** (1): embeddings
 
-## Migrations (001–029)
+## Migrations (001–030)
 - 001–015: platform, test management, execution, intelligence, release, data engine, risk, step comments, tags/milestones, custom fields
 - **016**: Test management soft delete + pg_trgm + composite/partial indexes
 - **017**: Super Admin role, `pipeline_runs.source_refs` + `parent_run_id`
@@ -146,6 +149,7 @@ release_test_plan_items, release_runs, release_decisions *(+
 - **027**: `run_events` durable pipeline log (id, run_id, tenant_id, ts, kind, level, message, context jsonb) + partial index on `(tenant_id, ts desc)` where level in (warn, error)
 - **028**: `test_cases.coverage_type` + `test_cases.generation_batch_id`, new `generation_batches` table (model, input/output tokens, cost_usd, explanation, coverage_types[]) for multi-TC test-plan generation
 - **029**: `test_case_versions.validation_report` (JSONB) + `validated_at` + `validated_against_meta_version_id` for the static validator that runs after every generation and before every execution
+- **030**: `pipeline_runs.label` + `failure_summary_ai` + `failure_summary_at` + `failure_summary_model` for run tags, AI failure summaries, and filterable run history
 
 ## API Endpoints (~140)
 
