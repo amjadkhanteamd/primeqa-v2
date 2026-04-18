@@ -107,7 +107,10 @@ class MetadataService:
                 # Skipped by user selection
                 _seed_status(cat, "skipped")
 
-        emit_sync_event(mv.id, "sync_started", meta_version_id=mv.id,
+        # NB: don't pass `meta_version_id=` here \u2014 emit_sync_event's first
+        # positional arg IS meta_version_id, and duplicating it raises
+        # `got multiple values for argument 'meta_version_id'`.
+        emit_sync_event(mv.id, "sync_started",
                         categories=sorted(requested_cats))
 
         def _mark_dependents_skipped(failed_cat):
