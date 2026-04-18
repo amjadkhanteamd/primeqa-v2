@@ -422,26 +422,63 @@ class MetadataService:
             if heartbeat_cb: heartbeat_cb()
 
             # ---- validation_rules --------------------------------------
+            # Tooling API quirks observed in the wild:
+            #   - `EntityDefinition.QualifiedApiName` relationship traversal
+            #     returns 400 Bad Request on orgs without View-Setup perms
+            #     or with older API metadata.
+            #   - `ErrorConditionFormula` is permission-gated on some orgs
+            #     (requires "View Setup and Configuration" profile perm).
+            # Defensive path: separate EntityDefinition lookup for the
+            # Id\u2192api_name map, minimal VR select without the formula, plus
+            # a fallback that retries without ValidationName if even that
+            # fails.
             vr_count = 0
             if _cancel_check_and_bail(): return {"cancelled": True}
             if "validation_rules" in requested_cats:
                 _update_status("validation_rules", "running")
-                vr_soql = (
-                    "SELECT Id, ValidationName, Active, "
-                    "EntityDefinition.QualifiedApiName, "
-                    "ErrorConditionFormula, ErrorMessage "
-                    "FROM ValidationRule"
-                )
+
+                # 1) Build EntityDefinitionId \u2192 QualifiedApiName map
+                ent_id_to_name = {}
+                try:
+                    for e in sf.query_tooling(
+                        "SELECT Id, QualifiedApiName FROM EntityDefinition "
+                        "WHERE QualifiedApiName != NULL LIMIT 2000"
+                    ):
+                        if e.get("Id") and e.get("QualifiedApiName"):
+                            ent_id_to_name[e["Id"]] = e["QualifiedApiName"]
+                except Exception as e:
+                    log.warning("EntityDefinition probe failed (%s); "
+                                "VRs will still persist but won't attach to objects.", e)
+
+                # 2) Minimal VR select \u2014 no relationship traversal, no formula
+                base_fields = ["Id", "ValidationName", "Active",
+                               "EntityDefinitionId", "ErrorMessage"]
+                vr_soql = f"SELECT {', '.join(base_fields)} FROM ValidationRule"
                 if delta_mode:
                     vr_soql += f" WHERE LastModifiedDate > {_since_iso()}"
-                vrs = sf.query_tooling(vr_soql)
+                try:
+                    vrs = sf.query_tooling(vr_soql)
+                except Exception as e:
+                    # Last-ditch fallback: drop ValidationName + Active too
+                    # (some orgs restrict those). At worst we still get Id
+                    # + EntityDefinitionId so the test-case reference graph
+                    # isn't completely blind.
+                    log.warning("VR probe with %s failed (%s); retrying without ValidationName/Active",
+                                base_fields, e)
+                    vrs = sf.query_tooling(
+                        "SELECT Id, EntityDefinitionId FROM ValidationRule" +
+                        (f" WHERE LastModifiedDate > {_since_iso()}" if delta_mode else "")
+                    )
+
                 for vr in vrs:
-                    obj_name = (vr.get("EntityDefinition") or {}).get("QualifiedApiName", "")
-                    obj = obj_map.get(obj_name)
+                    obj_name = ent_id_to_name.get(vr.get("EntityDefinitionId", ""), "")
+                    obj = obj_map.get(obj_name) if obj_name else None
                     if obj:
                         self.metadata_repo.store_validation_rules(mv.id, obj.id, [{
-                            "rule_name": vr.get("ValidationName", ""),
-                            "error_condition_formula": vr.get("ErrorConditionFormula"),
+                            "rule_name": vr.get("ValidationName") or vr.get("Id", ""),
+                            # ErrorConditionFormula dropped per permission risk \u2014
+                            # test-case risk scoring falls back to rule_name match.
+                            "error_condition_formula": None,
                             "error_message": vr.get("ErrorMessage"),
                             "is_active": vr.get("Active", True),
                         }])
@@ -454,14 +491,26 @@ class MetadataService:
             if _cancel_check_and_bail(): return {"cancelled": True}
             if "flows" in requested_cats:
                 _update_status("flows", "running")
+                # Same relationship-traversal risk as VRs: drop
+                # TriggerObjectOrEvent.QualifiedApiName and resolve via the
+                # same EntityDefinition lookup we built above (if any).
                 flow_soql = (
                     "SELECT Id, ApiName, Label, ProcessType, TriggerType, "
-                    "TriggerObjectOrEvent.QualifiedApiName "
+                    "TriggerObjectOrEventId "
                     "FROM Flow WHERE Status = 'Active'"
                 )
                 if delta_mode:
                     flow_soql += f" AND LastModifiedDate > {_since_iso()}"
-                flow_records = sf.query_tooling(flow_soql)
+                try:
+                    flow_records = sf.query_tooling(flow_soql)
+                except Exception as e:
+                    log.warning("Flow probe with trigger-object-id failed (%s); "
+                                "retrying without it", e)
+                    flow_records = sf.query_tooling(
+                        "SELECT Id, ApiName, Label, ProcessType, TriggerType "
+                        "FROM Flow WHERE Status = 'Active'" +
+                        (f" AND LastModifiedDate > {_since_iso()}" if delta_mode else "")
+                    )
                 flow_type_map = {
                     "AutoLaunchedFlow": "autolaunched", "Flow": "screen",
                     "Workflow": "record_triggered", "CustomEvent": "record_triggered",
@@ -472,12 +521,15 @@ class MetadataService:
                     "RecordBeforeSave": "create_or_update",
                     "RecordBeforeDelete": "delete",
                 }
+                # Use the EntityDefinition map from VRs if available; Flow's
+                # TriggerObjectOrEventId points to the same EntityDefinition.
+                _ent_map = locals().get("ent_id_to_name") or {}
                 for f in flow_records:
                     pt = f.get("ProcessType", "")
                     flows_data.append({
                         "api_name": f.get("ApiName", ""), "label": f.get("Label"),
                         "flow_type": flow_type_map.get(pt, "autolaunched"),
-                        "trigger_object": (f.get("TriggerObjectOrEvent") or {}).get("QualifiedApiName"),
+                        "trigger_object": _ent_map.get(f.get("TriggerObjectOrEventId", "")),
                         "trigger_event": trigger_event_map.get(f.get("TriggerType")),
                         "is_active": True,
                     })

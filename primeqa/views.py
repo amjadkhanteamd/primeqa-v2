@@ -1299,20 +1299,41 @@ def environments_sync_progress(env_id, mv_id):
         cat_order = {c: i for i, c in enumerate(ALL_CATEGORIES)}
         rows = sorted(rows, key=lambda r: cat_order.get(r.category, 99))
 
-        # ETA: sum of rolling-avg duration across requested remaining categories
-        from sqlalchemy import func as sa_func, and_
+        # ETA: rolling-avg duration per category.
+        #  - Use only the **last 5 successful** rows (parallel-describe era,
+        #    F1+) so pre-F1 slow runs stop polluting the baseline.
+        #  - Default of 10s when we have no history (was 30s; F1 reality is
+        #    closer to 5-15s per category on typical orgs).
+        #  - Cap at 60s per category so a single outlier row can't spike
+        #    the ETA into the tens of minutes.
+        from sqlalchemy import func as sa_func
+        DEFAULT_CAT_MS = 10_000
+        MAX_CAT_MS = 60_000
         avg_durations = {}
         for cat in ALL_CATEGORIES:
-            avg_ms = db.query(sa_func.avg(
-                sa_func.extract("epoch", MetaSyncStatus.completed_at - MetaSyncStatus.started_at) * 1000,
-            )).join(MetaVersion, MetaSyncStatus.meta_version_id == MetaVersion.id).filter(
-                MetaVersion.environment_id == env_id,
-                MetaSyncStatus.category == cat,
-                MetaSyncStatus.status == "complete",
-                MetaSyncStatus.started_at.isnot(None),
-                MetaSyncStatus.completed_at.isnot(None),
-            ).scalar()
-            avg_durations[cat] = int(avg_ms) if avg_ms else 30000  # 30s default
+            recent = (db.query(
+                    sa_func.extract(
+                        "epoch",
+                        MetaSyncStatus.completed_at - MetaSyncStatus.started_at,
+                    ) * 1000
+                )
+                .join(MetaVersion, MetaSyncStatus.meta_version_id == MetaVersion.id)
+                .filter(
+                    MetaVersion.environment_id == env_id,
+                    MetaSyncStatus.category == cat,
+                    MetaSyncStatus.status == "complete",
+                    MetaSyncStatus.started_at.isnot(None),
+                    MetaSyncStatus.completed_at.isnot(None),
+                )
+                .order_by(MetaSyncStatus.completed_at.desc())
+                .limit(5)
+                .all())
+            if recent:
+                samples = [float(r[0]) for r in recent if r[0] is not None]
+                avg_ms = int(sum(samples) / len(samples)) if samples else DEFAULT_CAT_MS
+            else:
+                avg_ms = DEFAULT_CAT_MS
+            avg_durations[cat] = min(avg_ms, MAX_CAT_MS)
 
         mv_data = {
             "id": mv.id, "version_label": mv.version_label, "status": mv.status,
