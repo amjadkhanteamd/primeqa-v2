@@ -35,7 +35,8 @@ def run_tests():
     client.set_cookie("access_token", admin_token)
 
     def t_search_jql_key_pattern():
-        """Exact issue-key queries build a `key = "X"` JQL."""
+        """Exact issue-key queries build a `key = "X"` JQL and hit the new
+        /rest/api/3/search/jql endpoint (old /search is 410 Gone since May 2024)."""
         from primeqa.runs.wizard import JiraClient, _JIRA_SEARCH_CACHE
         _JIRA_SEARCH_CACHE.clear()
         captured = {}
@@ -43,16 +44,25 @@ def run_tests():
             captured["url"] = url
             captured["params"] = kwargs.get("params") or {}
             m = MagicMock(); m.raise_for_status = lambda: None
-            m.json.return_value = {"issues": [{"id":"1","key":"PROJ-123",
-                "fields":{"summary":"x","status":{"name":"Done"},
-                          "issuetype":{"name":"Bug"},"project":{"key":"PROJ","name":"Project"}}}]}
+            m.json.return_value = {
+                "issues": [{"id": "1", "key": "PROJ-123", "fields": {
+                    "summary": "x",
+                    "status": {"name": "Done"},
+                    "issuetype": {"name": "Bug"},
+                    "project": {"key": "PROJ", "name": "Project"},
+                }}],
+                "isLast": True,
+            }
             return m
         c = JiraClient("https://jira.example", None)
         with patch("primeqa.runs.wizard.http_requests.get", side_effect=fake_get):
             out = c.search_issues("PROJ-123", connection_id=1)
         assert len(out) == 1 and out[0]["key"] == "PROJ-123"
         assert captured["params"]["jql"] == 'key = "PROJ-123"'
-    results.append(test("R7-1. Key-pattern query uses exact JQL", t_search_jql_key_pattern))
+        # Regression: must hit the new endpoint, not the deprecated one
+        assert captured["url"].endswith("/rest/api/3/search/jql"), captured["url"]
+    results.append(test("R7-1. Key-pattern query uses exact JQL on /search/jql",
+                        t_search_jql_key_pattern))
 
     def t_search_jql_fulltext():
         from primeqa.runs.wizard import JiraClient, _JIRA_SEARCH_CACHE

@@ -429,7 +429,11 @@ class JiraClient:
             escaped = q.replace('"', '\\"')
             jql = f'(summary ~ "{escaped}" OR issuekey = "{escaped}") ORDER BY updated DESC'
 
-        url = f"{self.base_url}/rest/api/3/search"
+        # Atlassian deprecated /rest/api/3/search (May 2024) \u2014 returns 410 Gone.
+        # Replacement is /rest/api/3/search/jql with token-based pagination
+        # and no `total`. For this ticket-picker call we only want one page,
+        # so we ignore pagination entirely.
+        url = f"{self.base_url}/rest/api/3/search/jql"
         params = {"jql": jql, "maxResults": limit, "fields": fields}
         resp = http_requests.get(url, headers=self.headers, params=params, timeout=10)
         resp.raise_for_status()
@@ -450,16 +454,57 @@ class JiraClient:
         return results
 
     def sprint_issues(self, sprint_id: int) -> List[Dict[str, Any]]:
-        """Paginated GET /rest/agile/1.0/sprint/{id}/issue."""
+        """Paginated GET /rest/agile/1.0/sprint/{id}/issue.
+
+        Agile API still uses startAt/maxResults + `total` \u2014 the deprecation
+        only hit the platform search endpoint.
+        """
         url = f"{self.base_url}/rest/agile/1.0/sprint/{sprint_id}/issue"
-        return self._paginated_issues(url, {})
+        return self._paginated_agile_issues(url, {})
 
     def search_jql(self, jql: str) -> List[Dict[str, Any]]:
-        """Paginated GET /rest/api/3/search."""
-        url = f"{self.base_url}/rest/api/3/search"
-        return self._paginated_issues(url, {"jql": jql})
+        """Paginated search using the new token-based /rest/api/3/search/jql."""
+        url = f"{self.base_url}/rest/api/3/search/jql"
+        return self._paginated_jql_search(url, jql)
 
-    def _paginated_issues(self, url: str, extra_params: Dict[str, Any]) -> List[Dict[str, Any]]:
+    # ---- Paginators ----------------------------------------------------------
+
+    def _paginated_jql_search(self, url: str, jql: str) -> List[Dict[str, Any]]:
+        """Token-based pagination for /rest/api/3/search/jql (May 2024 replacement).
+
+        The new endpoint returns:
+            {issues: [...], isLast: bool, nextPageToken?: str}
+        and no `total`. We walk the tokens until isLast OR a safety cap.
+        """
+        page_size = 100
+        results: List[Dict[str, Any]] = []
+        next_token: Optional[str] = None
+        while True:
+            params: Dict[str, Any] = {
+                "jql": jql,
+                "maxResults": page_size,
+                "fields": "summary,status,issuetype",
+            }
+            if next_token:
+                params["nextPageToken"] = next_token
+            r = http_requests.get(url, headers=self.headers, params=params, timeout=20)
+            r.raise_for_status()
+            body = r.json()
+            page = body.get("issues", [])
+            results.extend({"key": i.get("key"),
+                            "summary": (i.get("fields") or {}).get("summary"),
+                            "status": ((i.get("fields") or {}).get("status") or {}).get("name")}
+                           for i in page)
+            if body.get("isLast") or not body.get("nextPageToken"):
+                break
+            next_token = body.get("nextPageToken")
+            if len(results) > 2000:  # safety valve
+                break
+        return results
+
+    def _paginated_agile_issues(self, url: str, extra_params: Dict[str, Any]
+                                ) -> List[Dict[str, Any]]:
+        """Legacy startAt/maxResults paginator \u2014 still valid on the agile API."""
         start_at = 0
         page_size = 100
         results: List[Dict[str, Any]] = []
@@ -481,3 +526,6 @@ class JiraClient:
             if len(results) > 2000:  # safety valve
                 break
         return results
+
+    # Back-compat shim \u2014 earlier revision used `_paginated_issues` directly
+    _paginated_issues = _paginated_agile_issues
