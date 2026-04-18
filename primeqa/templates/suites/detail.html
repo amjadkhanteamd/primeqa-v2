@@ -1,34 +1,202 @@
 {% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% block title %}{{ suite.name }} - PrimeQA{% endblock %}
 {% block content %}
+
+{{ breadcrumbs([('Suites', '/suites'), (suite.name, None)]) }}
+
 <div class="space-y-6">
-    <div class="flex justify-between items-center">
-        <div>
-            <h1 class="text-2xl font-bold text-gray-900">{{ suite.name }}</h1>
-            <p class="mt-1 text-sm text-gray-500">{{ suite.suite_type }} · {{ test_cases|length }} test case(s)</p>
+    {# ---- Header: editable name/type/description + actions ---------------- #}
+    <div class="bg-white shadow rounded-lg p-6">
+        <div id="suite-header-view" class="flex items-start justify-between">
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                    <h1 class="text-2xl font-bold text-gray-900 truncate">{{ suite.name }}</h1>
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                        {% if suite.suite_type == 'smoke' %}bg-emerald-50 text-emerald-700
+                        {% elif suite.suite_type == 'regression' %}bg-sky-50 text-sky-700
+                        {% elif suite.suite_type == 'sprint' %}bg-amber-50 text-amber-800
+                        {% else %}bg-gray-50 text-gray-700{% endif %}">{{ suite.suite_type }}</span>
+                    {% if user.role in ['admin', 'tester', 'superadmin'] %}
+                    <button id="edit-suite-btn" class="text-xs text-indigo-600 hover:text-indigo-800">Edit</button>
+                    {% endif %}
+                </div>
+                {% if suite.description %}
+                <p class="mt-2 text-sm text-gray-600 whitespace-pre-wrap">{{ suite.description }}</p>
+                {% else %}
+                <p class="mt-2 text-sm text-gray-400 italic">No description</p>
+                {% endif %}
+                <p class="mt-2 text-xs text-gray-500">
+                    {{ test_cases | length }} test case{{ '' if test_cases | length == 1 else 's' }}
+                    {% if coverage_counts %}
+                    {% for c in ['positive', 'negative_validation', 'boundary', 'edge_case', 'regression'] %}
+                      {% if coverage_counts.get(c) %}
+                      · <span class="text-gray-700">{{ coverage_counts[c] }} {{ c.replace('_',' ') }}</span>
+                      {% endif %}
+                    {% endfor %}
+                    {% endif %}
+                    {% if requirements_covered %} · covers {{ requirements_covered | length }} requirement{{ '' if requirements_covered | length == 1 else 's' }}{% endif %}
+                </p>
+            </div>
+            <div class="flex items-center gap-2 ml-4 flex-shrink-0">
+                {% if user.role in ['admin', 'tester', 'superadmin'] and environments %}
+                <button onclick="document.getElementById('run-suite-modal').classList.remove('hidden')"
+                        class="rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-500">▶ Run Suite</button>
+                {% endif %}
+                {% if user.role in ['admin', 'tester', 'superadmin'] %}
+                <button id="delete-suite-btn" data-suite-id="{{ suite.id }}" data-suite-name="{{ suite.name }}"
+                        class="rounded-md bg-white px-3 py-2 text-sm text-red-700 ring-1 ring-red-200 hover:bg-red-50">Delete</button>
+                {% endif %}
+            </div>
         </div>
-        {% if user.role in ['admin', 'tester', 'superadmin'] and environments %}
-        <button onclick="document.getElementById('run-suite-modal').classList.remove('hidden')" class="rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-500">▶ Run Suite</button>
+
+        {# Inline edit form (hidden until Edit is clicked) #}
+        {% if user.role in ['admin', 'tester', 'superadmin'] %}
+        <form id="suite-edit-form" class="hidden mt-2 space-y-3" data-suite-id="{{ suite.id }}">
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs font-medium text-gray-700">Name</label>
+                    <input name="name" value="{{ suite.name }}" required maxlength="255"
+                           class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-gray-700">Type</label>
+                    <select name="suite_type" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+                        {% for opt in ['regression', 'smoke', 'sprint', 'custom'] %}
+                        <option value="{{ opt }}" {% if suite.suite_type == opt %}selected{% endif %}>{{ opt }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div>
+                <label class="block text-xs font-medium text-gray-700">Description</label>
+                <textarea name="description" rows="3"
+                          class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">{{ suite.description or '' }}</textarea>
+            </div>
+            <div class="flex justify-end gap-2">
+                <button type="button" id="suite-edit-cancel" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Cancel</button>
+                <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">Save</button>
+            </div>
+        </form>
         {% endif %}
     </div>
 
+    {# ---- Test cases in this suite --------------------------------------- #}
     <div class="bg-white shadow rounded-lg">
-        <div class="px-6 py-4 border-b"><h3 class="text-lg font-medium">Test Cases</h3></div>
+        <div class="px-6 py-4 border-b flex items-center justify-between">
+            <h3 class="text-lg font-medium">Test Cases <span class="text-sm font-normal text-gray-500">({{ test_cases | length }})</span></h3>
+            {% if user.role in ['admin', 'tester', 'superadmin'] %}
+            <button id="add-tcs-btn"
+                    class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">
+                + Add test cases
+            </button>
+            {% endif %}
+        </div>
         {% if test_cases %}
-        <ul class="divide-y divide-gray-200">
+        <ul id="suite-tcs" class="divide-y divide-gray-200" data-suite-id="{{ suite.id }}">
             {% for tc in test_cases %}
-            <li class="px-6 py-3 flex justify-between items-center">
-                <a href="/test-cases/{{ tc.id }}" class="text-sm font-medium text-indigo-600 hover:text-indigo-800">{{ tc.title }}</a>
-                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if tc.status == 'active' %}bg-green-100 text-green-800{% elif tc.status == 'approved' %}bg-blue-100 text-blue-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ tc.status }}</span>
+            <li class="px-6 py-3 flex items-center gap-3" data-tc-id="{{ tc.id }}">
+                <span class="text-xs text-gray-400 w-6 text-right tabular-nums suite-position">{{ loop.index }}.</span>
+                <div class="flex-1 min-w-0">
+                    <a href="/test-cases/{{ tc.id }}" class="text-sm font-medium text-indigo-600 hover:text-indigo-800 truncate">{{ tc.title }}</a>
+                    <div class="mt-1 flex items-center gap-2 flex-wrap">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if tc.status == 'active' %}bg-green-100 text-green-800{% elif tc.status == 'approved' %}bg-blue-100 text-blue-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ tc.status }}</span>
+                        {% if tc.coverage_type %}
+                        {% set c = tc.coverage_type %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                            {% if c == 'positive' %}bg-green-50 text-green-700
+                            {% elif c == 'negative_validation' %}bg-red-50 text-red-700
+                            {% elif c == 'boundary' %}bg-amber-50 text-amber-800
+                            {% elif c == 'edge_case' %}bg-purple-50 text-purple-700
+                            {% elif c == 'regression' %}bg-sky-50 text-sky-700
+                            {% else %}bg-gray-50 text-gray-600{% endif %}">{{ c.replace('_',' ') }}</span>
+                        {% endif %}
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if tc.visibility == 'shared' %}bg-green-50 text-green-700{% else %}bg-gray-50 text-gray-600{% endif %}">{{ tc.visibility }}</span>
+                    </div>
+                </div>
+                {% if user.role in ['admin', 'tester', 'superadmin'] %}
+                <div class="flex items-center gap-1">
+                    <button class="move-tc text-gray-400 hover:text-gray-700 p-1" data-direction="up" aria-label="Move up" title="Move up">↑</button>
+                    <button class="move-tc text-gray-400 hover:text-gray-700 p-1" data-direction="down" aria-label="Move down" title="Move down">↓</button>
+                    <button class="remove-tc text-red-600 hover:text-red-800 p-1 text-xs" title="Remove from suite">Remove</button>
+                </div>
+                {% endif %}
             </li>
             {% endfor %}
         </ul>
         {% else %}
-        <div class="p-8 text-center text-sm text-gray-500">No test cases in this suite yet.</div>
+        <div class="p-10 text-center text-sm text-gray-500">
+            No test cases in this suite yet.
+            {% if user.role in ['admin', 'tester', 'superadmin'] %}
+            Click <strong>+ Add test cases</strong> to add some from the library.
+            {% endif %}
+        </div>
         {% endif %}
     </div>
+
+    {# ---- Requirements covered ------------------------------------------- #}
+    {% if requirements_covered %}
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-6 py-3 border-b"><h3 class="text-sm font-medium text-gray-700">Requirements covered <span class="text-xs text-gray-500 font-normal">({{ requirements_covered | length }})</span></h3></div>
+        <ul class="divide-y divide-gray-200">
+            {% for r in requirements_covered %}
+            <li class="px-6 py-2 flex items-center gap-2">
+                {% if r.jira_key %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700">{{ r.jira_key }}</span>
+                {% endif %}
+                <a href="/requirements/{{ r.id }}" class="text-sm text-indigo-600 hover:underline truncate">{{ r.summary }}</a>
+                {% if r.deleted %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-700">deleted</span>{% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
 </div>
 
+{# ---- Add TCs picker modal ----------------------------------------------- #}
+{% if user.role in ['admin', 'tester', 'superadmin'] %}
+<div id="add-tcs-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+  <div class="flex min-h-full items-start justify-center p-4 pt-10">
+    <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('add-tcs-modal').classList.add('hidden')"></div>
+    <div class="relative bg-white rounded-lg shadow-xl max-w-3xl w-full p-6">
+      <h3 class="text-lg font-medium text-gray-900 mb-1">Add test cases to "{{ suite.name }}"</h3>
+      <p class="text-xs text-gray-500 mb-4">Filter the library, check the ones you want, click Add.</p>
+
+      <div class="flex flex-wrap gap-2 mb-3">
+        <input id="picker-search" type="search" placeholder="Search by title…"
+               class="flex-1 min-w-[10rem] rounded-md border border-gray-300 px-3 py-1.5 text-sm">
+        <select id="picker-status" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+          <option value="">All statuses</option>
+          {% for opt in ['draft','approved','active'] %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
+        </select>
+        <select id="picker-coverage" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+          <option value="">All coverage</option>
+          {% for opt in ['positive','negative_validation','boundary','edge_case','regression'] %}
+          <option value="{{ opt }}">{{ opt.replace('_',' ') }}</option>
+          {% endfor %}
+        </select>
+        <button id="picker-refresh" class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">Refresh</button>
+      </div>
+
+      <div id="picker-results" class="border border-gray-200 rounded max-h-96 overflow-y-auto">
+        <div class="px-4 py-6 text-sm text-gray-500 italic">Loading test cases…</div>
+      </div>
+
+      <div class="mt-3 flex items-center justify-between">
+        <div class="text-xs text-gray-500"><span id="picker-selected-count">0</span> selected</div>
+        <div class="flex items-center gap-2">
+          <button type="button" onclick="document.getElementById('add-tcs-modal').classList.add('hidden')"
+                  class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">Cancel</button>
+          <button id="picker-add-btn" disabled
+                  class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">Add selected</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ---- Run Suite modal ---------------------------------------------------- #}
 {% if environments %}
 <div id="run-suite-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">
     <div class="flex min-h-full items-center justify-center p-4">
@@ -49,4 +217,206 @@
     </div>
 </div>
 {% endif %}
+
+<script>
+(function(){
+  const suiteId = {{ suite.id }};
+
+  async function api(method, url, body) {
+    const r = await fetch(url, {
+      method, credentials: 'same-origin',
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!r.ok) { await window.PrimeQA.showErrorFromResponse(r); throw new Error('failed'); }
+    return r.json();
+  }
+
+  // ---- Edit suite metadata --------------------------------------------
+  const headerView = document.getElementById('suite-header-view');
+  const editForm = document.getElementById('suite-edit-form');
+  document.getElementById('edit-suite-btn')?.addEventListener('click', () => {
+    headerView.classList.add('hidden');
+    editForm.classList.remove('hidden');
+  });
+  document.getElementById('suite-edit-cancel')?.addEventListener('click', () => {
+    headerView.classList.remove('hidden');
+    editForm.classList.add('hidden');
+  });
+  editForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(editForm).entries());
+    try {
+      await api('PATCH', '/api/suites/' + suiteId, data);
+      window.PrimeQA.toast('Suite updated', 'success');
+      setTimeout(() => window.location.reload(), 300);
+    } catch (_) {}
+  });
+
+  // ---- Delete suite ---------------------------------------------------
+  document.getElementById('delete-suite-btn')?.addEventListener('click', (e) => {
+    const btn = e.currentTarget;
+    const name = btn.dataset.suiteName;
+    window.PrimeQA.confirm({
+      title: 'Move suite to trash?', variant: 'danger',
+      message: '"' + name + '" will be moved to trash. Test cases inside are not deleted.',
+      submitLabel: 'Move to trash',
+      onConfirm: async () => {
+        try {
+          await api('DELETE', '/api/suites/' + suiteId);
+          window.PrimeQA.toast('Suite moved to trash', 'success');
+          setTimeout(() => window.location.href = '/suites', 400);
+        } catch (_) {}
+      }
+    });
+  });
+
+  // ---- Remove TC from suite -------------------------------------------
+  document.querySelectorAll('.remove-tc').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const li = btn.closest('li');
+      const tcId = li.dataset.tcId;
+      try {
+        await api('DELETE', '/api/suites/' + suiteId + '/test-cases/' + tcId);
+        li.remove();
+        window.PrimeQA.toast('Removed from suite', 'success');
+        renumberPositions();
+      } catch (_) {}
+    });
+  });
+
+  function renumberPositions() {
+    document.querySelectorAll('#suite-tcs li .suite-position').forEach((el, i) => {
+      el.textContent = (i + 1) + '.';
+    });
+  }
+
+  // ---- Reorder TCs (up/down arrows) -----------------------------------
+  document.querySelectorAll('.move-tc').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const li = btn.closest('li');
+      const tcId = parseInt(li.dataset.tcId, 10);
+      const dir = btn.dataset.direction;
+      const sibling = dir === 'up' ? li.previousElementSibling : li.nextElementSibling;
+      if (!sibling) return;
+      // Optimistic DOM move, then PATCH to persist
+      if (dir === 'up') li.parentNode.insertBefore(li, sibling);
+      else li.parentNode.insertBefore(sibling, li);
+      renumberPositions();
+      // New position = the 1-indexed spot in the DOM
+      const newPos = Array.from(li.parentNode.children).indexOf(li) + 1;
+      try {
+        await api('PATCH', '/api/suites/' + suiteId + '/test-cases/' + tcId + '/reorder',
+                  { position: newPos });
+      } catch (_) {
+        // Undo on failure
+        window.location.reload();
+      }
+    });
+  });
+
+  // ---- Add TCs picker modal -------------------------------------------
+  const modal = document.getElementById('add-tcs-modal');
+  const resultsEl = document.getElementById('picker-results');
+  const searchEl = document.getElementById('picker-search');
+  const statusEl = document.getElementById('picker-status');
+  const coverageEl = document.getElementById('picker-coverage');
+  const selCountEl = document.getElementById('picker-selected-count');
+  const addBtn = document.getElementById('picker-add-btn');
+  const refreshBtn = document.getElementById('picker-refresh');
+  const existingIds = new Set(Array.from(document.querySelectorAll('#suite-tcs li')).map(li => parseInt(li.dataset.tcId, 10)));
+  const selectedIds = new Set();
+
+  function escapeHtml(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  async function loadLibrary() {
+    resultsEl.innerHTML = '<div class="px-4 py-6 text-sm text-gray-500 italic">Loading\u2026</div>';
+    const params = new URLSearchParams();
+    params.set('per_page', '50');
+    if (searchEl.value.trim()) params.set('q', searchEl.value.trim());
+    if (statusEl.value) params.set('status', statusEl.value);
+    if (coverageEl.value) params.set('coverage_type', coverageEl.value);
+    try {
+      const body = await api('GET', '/api/test-cases?' + params.toString());
+      const rows = (body.data || []).filter(tc => !existingIds.has(tc.id));
+      if (!rows.length) {
+        resultsEl.innerHTML = '<div class="px-4 py-6 text-sm text-gray-500">No matching test cases. Adjust filters or clear them.</div>';
+        return;
+      }
+      resultsEl.innerHTML = rows.map(tc => {
+        const c = tc.coverage_type || '';
+        const covClass = (
+          c === 'positive' ? 'bg-green-50 text-green-700' :
+          c === 'negative_validation' ? 'bg-red-50 text-red-700' :
+          c === 'boundary' ? 'bg-amber-50 text-amber-800' :
+          c === 'edge_case' ? 'bg-purple-50 text-purple-700' :
+          c === 'regression' ? 'bg-sky-50 text-sky-700' :
+          'bg-gray-50 text-gray-600'
+        );
+        const covLabel = c ? c.replace(/_/g, ' ') : '\u2014';
+        const statusClass = tc.status === 'active' ? 'bg-green-100 text-green-800'
+                          : tc.status === 'approved' ? 'bg-blue-100 text-blue-800'
+                          : 'bg-gray-100 text-gray-800';
+        return `
+          <label class="picker-row flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer">
+            <input type="checkbox" class="picker-check rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" value="${tc.id}" ${selectedIds.has(tc.id) ? 'checked' : ''}>
+            <span class="flex-1 truncate text-sm text-gray-800">${escapeHtml(tc.title)}</span>
+            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] ${covClass}">${covLabel}</span>
+            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] ${statusClass}">${tc.status}</span>
+          </label>`;
+      }).join('');
+      resultsEl.querySelectorAll('.picker-check').forEach(cb => {
+        cb.addEventListener('change', () => {
+          const id = parseInt(cb.value, 10);
+          if (cb.checked) selectedIds.add(id); else selectedIds.delete(id);
+          selCountEl.textContent = selectedIds.size;
+          addBtn.disabled = selectedIds.size === 0;
+        });
+      });
+    } catch (err) {
+      resultsEl.innerHTML = '<div class="px-4 py-6 text-sm text-red-600">Failed to load library: ' + escapeHtml(String(err)) + '</div>';
+    }
+  }
+
+  // Debounced search / filter listeners
+  let debounce;
+  function onFilterChange() {
+    clearTimeout(debounce);
+    debounce = setTimeout(loadLibrary, 250);
+  }
+  searchEl?.addEventListener('input', onFilterChange);
+  statusEl?.addEventListener('change', loadLibrary);
+  coverageEl?.addEventListener('change', loadLibrary);
+  refreshBtn?.addEventListener('click', loadLibrary);
+
+  document.getElementById('add-tcs-btn')?.addEventListener('click', () => {
+    selectedIds.clear();
+    selCountEl.textContent = '0';
+    addBtn.disabled = true;
+    modal.classList.remove('hidden');
+    loadLibrary();
+  });
+
+  addBtn?.addEventListener('click', async () => {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    addBtn.disabled = true;
+    try {
+      const result = await api('POST', '/api/suites/' + suiteId + '/test-cases/bulk',
+                                { test_case_ids: ids });
+      const addedN = (result.added || []).length;
+      const dupN = (result.already_in || []).length;
+      let msg = addedN + ' added';
+      if (dupN) msg += ', ' + dupN + ' already in suite';
+      window.PrimeQA.toast(msg, 'success');
+      modal.classList.add('hidden');
+      setTimeout(() => window.location.reload(), 300);
+    } catch (_) {
+      addBtn.disabled = false;
+    }
+  });
+})();
+</script>
 {% endblock %}

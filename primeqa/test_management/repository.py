@@ -567,6 +567,42 @@ class TestSuiteRepository:
             return True
         return False
 
+    def add_test_cases_bulk(self, suite_id, test_case_ids):
+        """Add many TCs at once, skipping those already in the suite.
+        Assigns positions at the END of the current ordering so existing
+        order is preserved. Returns {added: [...], already_in: [...]}.
+        """
+        if not test_case_ids:
+            return {"added": [], "already_in": []}
+
+        already_in = {
+            stc.test_case_id for stc in
+            self.db.query(SuiteTestCase.test_case_id).filter(
+                SuiteTestCase.suite_id == suite_id,
+                SuiteTestCase.test_case_id.in_(list(test_case_ids)),
+            ).all()
+        }
+        # Next position: max(position)+1
+        max_pos = self.db.query(func.max(SuiteTestCase.position)).filter(
+            SuiteTestCase.suite_id == suite_id,
+        ).scalar()
+        next_pos = (max_pos or 0) + 1
+
+        added = []
+        # Preserve caller's order for the "added" list
+        for tc_id in test_case_ids:
+            if tc_id in already_in:
+                continue
+            stc = SuiteTestCase(
+                suite_id=suite_id, test_case_id=tc_id, position=next_pos,
+            )
+            self.db.add(stc)
+            added.append(tc_id)
+            next_pos += 1
+        if added:
+            self.db.commit()
+        return {"added": added, "already_in": sorted(already_in)}
+
     def get_suite_test_cases(self, suite_id):
         return self.db.query(SuiteTestCase).filter(
             SuiteTestCase.suite_id == suite_id,

@@ -3348,28 +3348,80 @@ def suites_create():
 @views_bp.route("/suites/<int:suite_id>")
 @login_required
 def suites_detail(suite_id):
+    """Suite detail with full curate-and-run UX: add/remove/reorder TCs,
+    edit metadata, coverage breakdown, requirements-covered summary."""
     db = next(get_db())
     try:
-        from primeqa.test_management.repository import TestSuiteRepository, TestCaseRepository
+        from primeqa.test_management.repository import (
+            TestSuiteRepository, TestCaseRepository, RequirementRepository,
+        )
         suite_repo = TestSuiteRepository(db)
         tc_repo = TestCaseRepository(db)
-        suite = suite_repo.get_suite(suite_id, request.user["tenant_id"])
+        req_repo = RequirementRepository(db)
+        tid = request.user["tenant_id"]
+
+        suite = suite_repo.get_suite(suite_id, tid)
         if not suite:
             return redirect("/suites")
+
         stcs = suite_repo.get_suite_test_cases(suite_id)
+        # Load all TC rows in one query to avoid N+1
+        from primeqa.test_management.models import TestCase
+        tc_ids = [s.test_case_id for s in stcs]
+        tc_rows = []
+        if tc_ids:
+            tc_rows = db.query(TestCase).filter(
+                TestCase.id.in_(tc_ids), TestCase.tenant_id == tid,
+                TestCase.deleted_at.is_(None),
+            ).all()
+        tc_by_id = {t.id: t for t in tc_rows}
+
+        # Preserve suite ordering (stcs is position-ordered)
         test_cases = []
+        coverage_counts = {}
+        requirement_ids = set()
         for stc in stcs:
-            tc = tc_repo.get_test_case(stc.test_case_id, request.user["tenant_id"])
-            if tc:
-                test_cases.append({"id": tc.id, "title": tc.title, "status": tc.status})
+            tc = tc_by_id.get(stc.test_case_id)
+            if not tc:
+                continue
+            cov = tc.coverage_type or None
+            if cov:
+                coverage_counts[cov] = coverage_counts.get(cov, 0) + 1
+            if tc.requirement_id:
+                requirement_ids.add(tc.requirement_id)
+            test_cases.append({
+                "id": tc.id, "title": tc.title, "status": tc.status,
+                "visibility": tc.visibility, "coverage_type": cov,
+                "requirement_id": tc.requirement_id,
+                "position": stc.position,
+            })
+
+        # Summary: which requirements this suite covers
+        reqs_by_id = req_repo.get_requirements_by_ids(
+            requirement_ids, tid, include_deleted=True,
+        )
+        requirements_covered = [{
+            "id": rid,
+            "jira_key": reqs_by_id[rid].jira_key if rid in reqs_by_id else None,
+            "summary": (reqs_by_id[rid].jira_summary if rid in reqs_by_id else None) or f"Requirement #{rid}",
+            "deleted": bool(reqs_by_id[rid].deleted_at) if rid in reqs_by_id else False,
+        } for rid in sorted(requirement_ids)]
+
         envs = EnvironmentRepository(db).list_environments(
-            request.user["tenant_id"], request.user["id"], request.user["role"],
+            tid, request.user["id"], request.user["role"],
         )
         envs_data = [{"id": e.id, "name": e.name} for e in envs]
-        suite_data = {"id": suite.id, "name": suite.name, "suite_type": suite.suite_type,
-                      "description": suite.description}
+        suite_data = {
+            "id": suite.id, "name": suite.name, "suite_type": suite.suite_type,
+            "description": suite.description,
+            "created_at": suite.created_at.isoformat() if getattr(suite, "created_at", None) else None,
+            "updated_at": suite.updated_at.isoformat() if getattr(suite, "updated_at", None) else None,
+        }
         return render_template("suites/detail.html", **ctx(
-            active_page="suites", suite=suite_data, test_cases=test_cases, environments=envs_data,
+            active_page="suites", suite=suite_data,
+            test_cases=test_cases, environments=envs_data,
+            coverage_counts=coverage_counts,
+            requirements_covered=requirements_covered,
         ))
     finally:
         db.close()

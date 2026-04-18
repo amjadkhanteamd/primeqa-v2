@@ -848,6 +848,46 @@ class TestManagementService:
             raise NotFoundError("Suite not found")
         self.suite_repo.add_test_case(suite_id, test_case_id, position)
 
+    def add_to_suite_bulk(self, suite_id, test_case_ids, tenant_id, created_by):
+        """Add many TCs to a suite in one go. Tenant-scoped on both the
+        suite (can the user edit this suite) and the TCs (prevent leaking
+        other tenants' TC ids through the API). Returns {added, already_in,
+        skipped_not_found_or_wrong_tenant}.
+        """
+        from primeqa.test_management.models import TestCase
+        suite = self.suite_repo.get_suite(suite_id, tenant_id)
+        if not suite:
+            raise NotFoundError("Suite not found")
+
+        ids = [int(x) for x in (test_case_ids or []) if str(x).strip()]
+        if len(ids) > 200:
+            raise ValidationError("Bulk add is capped at 200 test cases per call")
+
+        if not ids:
+            return {"added": [], "already_in": [], "skipped": []}
+
+        # Tenant-check TCs: only those belonging to the caller's tenant
+        # and not soft-deleted are eligible. Matching owner/visibility
+        # rules are deferred to the picker UI \u2014 if the user could see
+        # the TC, they can add it.
+        valid_tcs = self.test_case_repo.db.query(TestCase.id).filter(
+            TestCase.id.in_(ids),
+            TestCase.tenant_id == tenant_id,
+            TestCase.deleted_at.is_(None),
+        ).all()
+        valid_ids = {row[0] for row in valid_tcs}
+        skipped = [i for i in ids if i not in valid_ids]
+        eligible = [i for i in ids if i in valid_ids]  # preserve order
+
+        result = self.suite_repo.add_test_cases_bulk(suite_id, eligible)
+        result["skipped"] = skipped
+
+        self._log(tenant_id, created_by, "add_to_suite_bulk",
+                  "test_suite", suite_id,
+                  {"added": result["added"], "already_in": result["already_in"],
+                   "skipped": skipped})
+        return result
+
     def remove_from_suite(self, suite_id, test_case_id, tenant_id):
         suite = self.suite_repo.get_suite(suite_id, tenant_id)
         if not suite:

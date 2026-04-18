@@ -734,6 +734,31 @@ def add_to_suite(suite_id):
         db.close()
 
 
+@test_management_bp.route("/api/suites/<int:suite_id>/test-cases/bulk", methods=["POST"])
+@require_role("admin", "tester")
+def add_to_suite_bulk(suite_id):
+    """Add many test cases to a suite in one call.
+    Body: {test_case_ids: [int, ...]}
+    Returns: {added: [...], already_in: [...], skipped: [...]}
+    """
+    data = request.get_json(silent=True) or {}
+    tc_ids = data.get("test_case_ids") or []
+    if not isinstance(tc_ids, list) or not tc_ids:
+        return json_error("VALIDATION_ERROR",
+                          "test_case_ids must be a non-empty array")
+    svc, db = _get_service()
+    try:
+        def run():
+            result = svc.add_to_suite_bulk(
+                suite_id, tc_ids,
+                request.user["tenant_id"], request.user["id"],
+            )
+            return jsonify(result), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
 @test_management_bp.route("/api/suites/<int:suite_id>/test-cases/<int:tc_id>", methods=["DELETE"])
 @require_role("admin", "tester")
 def remove_from_suite(suite_id, tc_id):
