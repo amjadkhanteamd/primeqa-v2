@@ -12,23 +12,25 @@ https://primeqa-v2-production.up.railway.app — login `admin@primeqa.io` / `cha
 
 1. **Connect** Salesforce + Jira + LLM (Anthropic) once per workspace
 2. **Create a Release** with decision criteria (pass rate, flakiness cap, critical tests must pass)
-3. **Import Jira tickets** as requirements, attach to the release
+3. **Requirements**: create manually ("+ New Requirement") or bulk-import from Jira via a chip picker (HTMX live search + multi-select + paste fallback)
 4. **Metadata refresh** per-category (objects → fields/record_types → validation_rules/flows/triggers) with SSE live progress; partial failures don't block healthy categories
-5. **AI generates** structured test cases from requirements, grounded in your org metadata
-6. **Risk scoring** ranks impacts and test plan by blast radius + criticality
-7. **Test Data Engine** provides reusable templates and generative factories
-8. **BA review** workflow with inline per-step comments; low-confidence AI tests auto-assigned
-9. **Unified Run Wizard** with **searchable Jira ticket picker** — type-to-search with chips, HTMX-driven, 8 s TTL cache, status/type/project badges; plus PrimeQA suites/sections/requirements/hand-picked tests in a single run
-10. **Live selection summary** — sticky pill showing "N Jira tickets, M suites → K test cases" that updates via `POST /api/runs/preview` on every chip change
-11. **Pre-flight checks** before queuing: credentials, metadata freshness, per-test metadata-stale skip, run-size caps, prod-safety
-11. **Live execution** — SSE-powered timeline updates per step; per-step request/response, SOQL, LLM payload capture
-12. **Scheduled runs** — full cron (presets + advanced) for test suites with dead-man's-switch alerting
-13. **Fix-and-rerun agent** — on failure, triages the error, proposes a fix, auto-applies on sandbox at high confidence (production is always human-gated). Snapshot-based revert.
-14. **Cleanup engine** reverse-deletes entities with dependency retry
-15. **Decision Engine** evaluates release against criteria → recommends GO / CONDITIONAL_GO / NO_GO with reasoning; per-release flag controls whether CI sees pre-agent or post-agent verdict
-16. **Dashboard** shows release health, pass rate by environment, flaky test detection + auto-quarantine
-17. **Rerun subset** and **compare to last green** on every run
-18. **CI/CD webhook** — GitHub Actions can trigger runs and poll `/api/releases/:id/status`
+5. **AI generates a test plan** — one Generate click produces 3–6 independent test cases covering positive / negative_validation / boundary / edge_case / regression, grounded in your org metadata. Batch-wide supersession keeps the library tidy; rationale + cost stored per batch.
+6. **Bulk generate** — pick N requirements, fire up to 5 parallel generations (hard cap 20); each row reports test_case_count + coverage breakdown
+7. **Risk scoring** ranks impacts and test plan by blast radius + criticality
+8. **Test Data Engine** provides reusable templates and generative factories
+9. **BA review** workflow with inline per-step comments; low-confidence AI tests auto-assigned
+10. **Unified Run Wizard** with **searchable Jira ticket picker** — type-to-search with chips, HTMX-driven, 8 s TTL cache, status/type/project badges; plus PrimeQA suites/sections/requirements/hand-picked tests in a single run
+11. **Live selection summary** — sticky pill showing "N Jira tickets, M suites → K test cases" that updates via `POST /api/runs/preview` on every chip change
+12. **Pre-flight checks** before queuing: credentials, metadata freshness, per-test metadata-stale skip, run-size caps, prod-safety
+13. **Live execution** — SSE-powered timeline updates per step, **plus a durable hierarchical "Pipeline log" panel** backed by `run_events` that survives page refresh and works across Railway's split web/worker services. Download any run's log as .txt or .json for tickets.
+14. **Fail-fast on test-data bugs** — executor catches unresolved `$var` references before hitting Salesforce and surfaces an actionable error ("Fix the test case so a prior create step sets `state_ref` to the matching $var"). No more cryptic `MALFORMED_ID` noise.
+15. **Scheduled runs** — full cron (presets + advanced) for test suites with dead-man's-switch alerting
+16. **Fix-and-rerun agent** — on failure, triages the error, proposes a fix, auto-applies on sandbox at high confidence (production is always human-gated). Snapshot-based revert.
+17. **Cleanup engine** reverse-deletes entities with dependency retry
+18. **Decision Engine** evaluates release against criteria → recommends GO / CONDITIONAL_GO / NO_GO with reasoning; per-release flag controls whether CI sees pre-agent or post-agent verdict
+19. **Dashboard** shows release health, pass rate by environment, flaky test detection + auto-quarantine
+20. **Rerun subset** and **compare to last green** on every run
+21. **CI/CD webhook** — GitHub Actions can trigger runs and poll `/api/releases/:id/status`
 
 ## Architecture
 

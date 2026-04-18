@@ -62,10 +62,10 @@
     <div id="bulk-bar" class="hidden sticky top-0 z-10 bg-indigo-50 border border-indigo-200 rounded-md px-4 py-2 flex items-center space-x-3">
       <span class="text-sm font-medium text-indigo-800"><span id="bulk-count">0</span> selected</span>
       <select id="bulk-env" class="rounded-md border border-indigo-300 bg-white px-2 py-1 text-xs">
-        <option value="">Select env\u2026</option>
+        <option value="">Select env…</option>
         {% for env in environments %}
         <option value="{{ env.id }}" {% if not env.ready %}disabled{% endif %}>
-          {{ env.name }}{% if not env.has_llm %} \u2014 no LLM{% elif not env.has_meta %} \u2014 needs metadata{% endif %}
+          {{ env.name }}{% if not env.has_llm %} — no LLM{% elif not env.has_meta %} — needs metadata{% endif %}
         </option>
         {% endfor %}
       </select>
@@ -75,7 +75,7 @@
       </button>
       <button type="button" id="bulk-clear-btn"
               class="text-xs text-indigo-700 hover:text-indigo-900">Clear</button>
-      <span class="text-xs text-indigo-600 ml-auto">Each requirement yields 3\u20136 test cases (positive / negative / boundary / edge). Up to 5 requirements in parallel; max 20 per click.</span>
+      <span class="text-xs text-indigo-600 ml-auto">Each requirement yields 3–6 test cases (positive / negative / boundary / edge). Up to 5 requirements in parallel; max 20 per click.</span>
     </div>
     {% endif %}
     <div class="bg-white shadow rounded-lg overflow-hidden">
@@ -149,8 +149,8 @@
         <div class="relative h-2 bg-gray-100 rounded">
           <div class="absolute inset-y-0 left-0 bg-indigo-500 rounded animate-pulse" style="width: 50%;"></div>
         </div>
-        <p id="bulk-gen-status" class="text-sm text-gray-600">Running up to 5 requirements in parallel; each produces 3\u20136 test cases&hellip;</p>
-        <p class="text-xs text-gray-400">Don't close this tab. This usually takes 20\u201360 seconds depending on how many you picked.</p>
+        <p id="bulk-gen-status" class="text-sm text-gray-600">Running up to 5 requirements in parallel; each produces 3–6 test cases&hellip;</p>
+        <p class="text-xs text-gray-400">Don't close this tab. This usually takes 20–60 seconds depending on how many you picked.</p>
       </div>
       <div id="bulk-gen-done" class="hidden space-y-3">
         <p id="bulk-gen-summary" class="text-sm text-gray-800"></p>
@@ -408,7 +408,7 @@ Multiple AC separated by blank lines"></textarea>
                 <!-- Search -->
                 <div class="relative">
                   <input id="import-jira-search" type="text" autocomplete="off"
-                         placeholder="Search tickets by key or summary\u2026"
+                         placeholder="Search tickets by key or summary…"
                          class="block w-full rounded-md border border-gray-300 pl-9 pr-3 py-2 text-sm focus:border-indigo-500 focus:ring-indigo-500"
                          hx-get="/api/jira/search"
                          hx-trigger="load, keyup changed delay:300ms, focus"
@@ -417,10 +417,10 @@ Multiple AC separated by blank lines"></textarea>
                          hx-indicator="#import-jira-indicator"
                          hx-vals='js:{conn_id: document.getElementById("import-jira-conn").value}'>
                   <svg class="absolute left-3 top-2.5 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/></svg>
-                  <span id="import-jira-indicator" class="htmx-indicator absolute right-3 top-2.5 text-xs text-gray-500">loading\u2026</span>
+                  <span id="import-jira-indicator" class="htmx-indicator absolute right-3 top-2.5 text-xs text-gray-500">loading…</span>
                 </div>
                 <div id="import-jira-results" class="border border-gray-200 rounded-md bg-white max-h-60 overflow-y-auto min-h-[3rem]">
-                  <div class="px-3 py-2 text-xs text-gray-500 italic">Type at least 2 characters\u2026</div>
+                  <div class="px-3 py-2 text-xs text-gray-500 italic">Type at least 2 characters…</div>
                 </div>
 
                 <!-- Paste fallback -->

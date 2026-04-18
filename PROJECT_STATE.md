@@ -55,6 +55,21 @@ Production-grade UX across every test-management entity:
 **56 new tests across R1–R7, all passing against Railway DB.** Full plan and
 decision ledger in `docs/design/run-experience.md`.
 
+### Post-R7 enhancements — shipped (April 2026)
+
+Continuous UX + infra improvements on top of R1–R7. Each commit is below.
+
+| Commit | Scope |
+|---|---|
+| `4e268e6` | **Worker executor wiring.** `execute_stage` was a stub flipping every stage to `passed` without running anything — a Run #69 showed "0/0/0 tests" even though it reported complete. Replaced with a dispatcher that routes `execute` → `_run_execute_stage` (resolves test_case_ids, fetches SF OAuth, builds `StepExecutor`, iterates `version.steps`, commits per-TC totals, emits `test_finished` SSE) and `record` → `_run_record_stage` (PipelineService.complete_run / fail_run). |
+| `defe03e` | **Stage-sequencing race + atomic rtr + $var fail-fast.** (1) A Railway worker redeploy mid-run left `execute` stuck in `running` while a second worker raced ahead to `record` and called `complete_run` with stale 0/0/0 counts. Fixed by `get_next_pending_stage` now blocking on any running predecessor. (2) Direct ORM mutation on a potentially-expired `RunTestResult` instance was silently dropping writes — switched to `update_result()` re-fetch + commit. (3) Executor now fails fast with `"Unresolved reference variable(s): $foo — no prior step stored them. Available vars: (none). Fix the test case so a prior create step sets \`state_ref\` to the matching $var."` before sending the literal to Salesforce and getting back a cryptic `MALFORMED_ID`. |
+| `275d40a` | **`SectionRepository.create_section` is idempotent.** If an active section with the same `(tenant_id, parent_id, name)` exists, it's returned instead of creating a dup. Stopped the bleed of 8× "Regression Tests" root sections that integration tests had accumulated. `scripts/cleanup_test_pollution.sql` is a reviewable, transactional one-shot that soft-deletes the pre-existing pollution. |
+| `001a9e7` / `b002f64` / `4119f47` / `09effa1` | **Durable pipeline log (migration 027).** In-process SSE EventBus fires only within one process, so on Railway (split web/worker/scheduler) the run detail page saw "Waiting for steps to start…" for the first 15+ seconds of every run. New `run_events` table is the durable sink: worker writes every milestone (stage transitions, OAuth fetch, test-case resolution, per-step progress), SSE endpoint tails the table every ~1s for cross-service delivery. On connect, last 200 events are backfilled so refresh repopulates the log. Structured hierarchical log panel on `/runs/:id` groups by event kind (run / stage / test / step) with color + icon; download .txt / .json for any run. Scheduler trims to 1000 events/run. `record_event` uses its own `Session(bind=engine)` to avoid closing the caller's scoped session. |
+| `a74401a` | **Test-case supersession.** Every click of "Generate test case" on the same requirement was creating a new TC. New model: **one requirement → one active draft per user**. On regenerate, prior own-drafts are soft-deleted and a new version rolls onto the kept TC. Approved / active TCs are immutable and spawn a fresh TC alongside. Version-awareness UI on TC detail: `Draft v3` chip + "updated 2 min ago" relative time + "View history" jump link. |
+| `bfd0a48` | **Requirements UX refresh (phases 1–3).** (1) "+ New Requirement" button for manual requirements (no Jira). (2) Shared `components/generate_overlay.html` — rotating spinner labels so Generate doesn't look frozen; ended the double-click → dup-TC pattern. (3) Chip-picker in the Import modal with live HTMX search via `/api/jira/search?conn_id=...` (endpoint extended to accept direct connection id for the import flow); paste fallback for raw keys. |
+| `70db511` | **Bulk-generate (phase 4).** Checkbox per requirement + sticky bulk bar. `POST /api/requirements/bulk-generate` runs ≤5 in parallel via `ThreadPoolExecutor` with per-thread `Session(bind=engine)`, hard cap 20 per call. Modal summarises per-row results. |
+| `06d4673` | **Multi-TC generation (migration 028).** One click → 3–6 test cases covering `positive / negative_validation / boundary / edge_case / regression`. `TestCaseGenerator.generate_plan()` returns a plan; `generate_test_plan()` creates one `generation_batches` row + N TCs with `coverage_type` + `generation_batch_id`. Batch-wide supersession (all prior own-drafts replaced). Executor name prefix bumped to `PQA_{run_id}_{tc_id}_{logical_id}` to prevent same-requirement TCs colliding on SF name uniqueness. UI: Coverage column on Test Library with colored badges, "AI test plan rationale" callout on requirement detail with cost (superadmin), linked TCs grouped by coverage bucket. Bulk-generate modal reports "Generated 18 test cases across 4 requirements". |
+
 ### Self-Validation Suite (`a9da9d3`) — shipped
 
 JSON-driven, workflow-level end-to-end suite that exercises PrimeQA through
@@ -73,25 +88,27 @@ its own HTTP surface. Motto: **"run PrimeQA on PrimeQA"** before every deploy.
 
 ---
 
-## Database (60+ tables)
+## Database (63+ tables)
 
 **Core domain** (11): tenants, users, refresh_tokens, environments,
 environment_credentials, activity_log, groups, group_members,
 group_environments, connections, **tenant_agent_settings**
 
-**Metadata** (8): meta_versions, meta_objects, meta_fields,
-meta_validation_rules, meta_flows, meta_triggers, meta_record_types,
-**meta_sync_status**
+**Metadata** (8): meta_versions *(+ `delta_since_ts`, background-job
+columns)*, meta_objects, meta_fields, meta_validation_rules, meta_flows,
+meta_triggers, meta_record_types, **meta_sync_status**
 
-**Test Management** (16): sections, requirements, test_cases,
-test_case_versions, test_suites, suite_test_cases, ba_reviews,
-metadata_impacts, tags, test_case_tags, milestones, milestone_suites,
-custom_fields, custom_field_values, step_templates,
-test_case_parameter_sets *(all with soft-delete columns)*
+**Test Management** (17): sections, requirements, test_cases *(+
+`coverage_type`, `generation_batch_id`)*, test_case_versions, test_suites,
+suite_test_cases, ba_reviews, metadata_impacts, tags, test_case_tags,
+milestones, milestone_suites, custom_fields, custom_field_values,
+step_templates, test_case_parameter_sets, **generation_batches**
+*(all with soft-delete columns)*
 
-**Execution** (14): pipeline_runs *(+ `source_refs`, `parent_run_id`)*,
+**Execution** (15): pipeline_runs *(+ `source_refs`, `parent_run_id`)*,
 pipeline_stages, run_test_results, run_step_results *(+ 7 log-capture
-columns)*, run_artifacts, run_created_entities, run_cleanup_attempts,
+columns)*, **run_events** *(durable pipeline log, migration 027)*,
+run_artifacts, run_created_entities, run_cleanup_attempts,
 execution_slots, worker_heartbeats, data_templates, data_factories,
 data_snapshots, test_case_data_bindings, test_case_risk_factors
 
@@ -106,7 +123,7 @@ release_test_plan_items, release_runs, release_decisions *(+
 
 **Vector** (1): embeddings
 
-## Migrations (001–023)
+## Migrations (001–028)
 - 001–015: platform, test management, execution, intelligence, release, data engine, risk, step comments, tags/milestones, custom fields
 - **016**: Test management soft delete + pg_trgm + composite/partial indexes
 - **017**: Super Admin role, `pipeline_runs.source_refs` + `parent_run_id`
@@ -116,18 +133,29 @@ release_test_plan_items, release_runs, release_decisions *(+
 - **021**: `scheduled_runs`
 - **022**: `agent_fix_attempts`
 - **023**: `test_cases.is_quarantined` + quarantine metadata
+- **024**: `requirements` unique `(tenant_id, jira_key)` partial index (active rows only) so soft-deleted Jira imports don't block re-import
+- **025**: `meta_versions` background-job columns (queued_at, triggered_by, categories_requested, worker_id, heartbeat_at, cancel_requested, parent_meta_version_id) for the new async metadata-sync worker
+- **026**: `meta_versions.delta_since_ts` for quick-refresh delta syncs driven by the preview-page drift banner
+- **027**: `run_events` durable pipeline log (id, run_id, tenant_id, ts, kind, level, message, context jsonb) + partial index on `(tenant_id, ts desc)` where level in (warn, error)
+- **028**: `test_cases.coverage_type` + `test_cases.generation_batch_id`, new `generation_batches` table (model, input/output tokens, cost_usd, explanation, coverage_types[]) for multi-TC test-plan generation
 
-## API Endpoints (~135)
+## API Endpoints (~140)
 
 **Run Wizard / Preview / SSE**:
-- `GET /api/runs/:id/events` — SSE live step timeline (R1)
+- `GET /api/runs/:id/events` — SSE live step timeline with DB-tail fallback for cross-service delivery (R1 + post-R7 durable-log update)
+- **`GET /api/runs/:id/events/download?format=json|txt`** — full event history export (post-R7)
 - `GET /api/metadata/:mv/sync-events` — SSE metadata sync progress (R3)
 - `GET /api/metadata/:env/sync-status` — per-category status (R3)
 - `POST /api/metadata/:env/refresh` — optional `categories[]` selection (R3)
 - `GET /api/jira/:conn/projects | /projects/:key/boards | /boards/:id/sprints` — drill-down picker (R1, now Advanced)
-- **`GET /api/jira/search?env_id=X&q=Y[&format=json]`** — ticket-level search with 8 s TTL cache, HTML fragment or JSON (R7)
+- **`GET /api/jira/search?env_id=X|conn_id=Y&q=Z[&format=json]`** — ticket-level search with 8 s TTL cache, HTML fragment or JSON (R7; post-R7 added `conn_id` for the requirements-import chip picker)
 - **`POST /api/runs/preview`** — read-only resolver: `{test_case_count, requirement_count, missing_jira_keys, warnings, summary_text, over_soft_cap, over_hard_cap}` (R7)
 - `GET /api/_internal/health` — p50/p95 latency + error-rate counters
+
+**Requirements / multi-TC generation** (post-R7):
+- **`POST /requirements/new`** — manual (non-Jira) requirement create
+- **`POST /requirements/import-jira`** — accepts `jira_keys` (comma/newline list from chip picker) or `jira_key` (single); reports imported / skipped-already-exists / failed
+- **`POST /api/requirements/bulk-generate`** — generate plans for N requirements in parallel (cap 5, hard cap 20 per call)
 
 **Scheduled runs**: `/runs/scheduled` + CRUD views, scheduler-driven fire
 
@@ -146,9 +174,9 @@ release, CI/CD).
 - `/login` — auth
 - `/` — dashboard (release health, pass rate, flaky tests)
 - `/releases` list, new, detail (tabs: Changes, Impacts, Plan, Runs, Decision)
-- `/requirements` list with Jira import + AI generate
+- `/requirements` list with **+ New Requirement** (manual create modal), **Import from Jira** chip picker (multi-ticket HTMX search + paste fallback), checkbox multi-select + sticky bulk-generate bar ("Each requirement yields 3–6 test cases — up to 5 in parallel; max 20 per click"). Per-row Generate shows a rotating-label overlay.
 - `/runs`, `/runs/new` (Run Wizard), `/runs/new/preview` (Preflight preview),
-  `/runs/:id` (live SSE timeline + Agent fixes tab + Compare + Rerun failed)
+  `/runs/:id` (live SSE timeline + **durable "Pipeline log" panel** with hierarchical structured events + Download .txt/.json + Agent fixes tab + Compare + Rerun failed)
 - **`/runs/scheduled`, `/runs/scheduled/new`, `/runs/scheduled/:id/edit`** (R4)
 - `/test-cases`, `/test-cases/:id`, `/test-cases/:id/edit`
 - `/suites`, `/suites/:id`
@@ -208,8 +236,21 @@ release, CI/CD).
 
 ## Known Limitations / Follow-Ups
 - **Executor → agent dispatch wiring** (R5 caveat): the `execute_step`
-  failure path needs one call into `AgentOrchestrator.handle_failure`. All
-  primitives are in place.
+  failure path needs one call into `AgentOrchestrator.handle_failure`.
+  The executor itself is now wired end-to-end (post-R7 commit `4e268e6`);
+  the agent handoff is the remaining thread.
+- **Dynamic test suites**: suites are static lists today. Multi-TC
+  generation makes "query-based suites" (e.g. `coverage_type=positive AND
+  section=Accounts`) more valuable. Deferred pending usage patterns.
+- **Run Wizard coverage filter**: could add "Smoke = positives only"
+  toggle now that TCs are tagged with `coverage_type`. Deferred.
+- **Parallel TC execution within a run**: serial today. With multi-TC,
+  5×-parallel could cut bulk-run time significantly. Deferred; risks
+  include API rate limits and cleanup interleaving.
+- **Post-generation linter**: the generator sometimes emits `$var`
+  references without a matching `state_ref`. The executor fail-fasts
+  with a clear message (post-R7 `defe03e`), but a save-time validator
+  would catch it before the first run.
 - **Email provider** (Q4 deferred): `NOTIFICATIONS_PROVIDER=log` today.
   Flip to SendGrid / SES when chosen.
 - **Per-category meta retry without new version** (R3 caveat): retrying a
@@ -218,7 +259,9 @@ release, CI/CD).
 - **Proactive "Suggested runs"** (Q10 deferred): revisit after R5 usage data.
 - **Run Preview Refine filter surface** (Q13 deferred): waiting on usage.
 - Health check disabled on Railway (was blocking deploys)
-- Tests write to shared Railway DB (cleanup between runs is manual)
+- Tests write to shared Railway DB (cleanup between runs is manual);
+  `scripts/cleanup_test_pollution.sql` is the reviewable one-shot for
+  accumulated duplicate sections / orphan TCs when it matters.
 - Custom fields / step templates / parameter sets have schema + API, no UI
 - Metadata diff viewer is still text-diff, no side-by-side
 - No test-result artifact viewer (screenshots schema exists, no UI)

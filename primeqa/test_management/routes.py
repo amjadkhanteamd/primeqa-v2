@@ -384,8 +384,19 @@ def bulk_generate_requirements():
                 return {"requirement_id": req_id, "status": "error",
                         "error": str(e)[:200]}
             except Exception as e:
+                # Map common upstream errors to actionable per-row text
+                raw = str(e)
+                low = raw.lower()
+                if "credit balance" in low:
+                    friendly = "Anthropic credits exhausted \u2014 top up at console.anthropic.com"
+                elif "invalid x-api-key" in low or "authentication_error" in low:
+                    friendly = "LLM API key invalid \u2014 check Settings \u2192 Connections"
+                elif "rate_limit" in low or "rate limit" in low or "429" in raw:
+                    friendly = "Anthropic rate limit hit \u2014 retry in a minute"
+                else:
+                    friendly = f"{type(e).__name__}: {raw[:150]}"
                 return {"requirement_id": req_id, "status": "error",
-                        "error": f"{type(e).__name__}: {str(e)[:150]}"}
+                        "error": friendly}
         finally:
             s.close()
 

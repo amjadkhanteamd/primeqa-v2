@@ -3122,7 +3122,23 @@ def requirements_generate(req_id):
             flash(" ".join(parts) + ".", "success")
         return redirect(f"/requirements/{req_id}")
     except Exception as e:
-        flash(f"Generation failed: {e}", "error")
+        # Turn common upstream errors into actionable UX instead of raw
+        # tracebacks. The noisiest is Anthropic returning 400 with
+        # "credit balance too low" buried inside a nested JSON body.
+        msg = str(e)
+        lower = msg.lower()
+        if "credit balance" in lower and "anthropic" in lower:
+            flash("Generation blocked: your Anthropic account is out of credits. "
+                  "Top up at https://console.anthropic.com/settings/billing "
+                  "and try again. No test cases were created.", "error")
+        elif "invalid x-api-key" in lower or "authentication_error" in lower:
+            flash("Generation blocked: the LLM connection's API key is invalid. "
+                  "Update it in Settings \u2192 Connections.", "error")
+        elif "rate_limit" in lower or "rate limit" in lower or "429" in msg:
+            flash("Generation blocked: Anthropic rate limit hit. Wait a minute "
+                  "and retry, or reduce bulk size.", "error")
+        else:
+            flash(f"Generation failed: {msg[:400]}", "error")
     finally:
         db.close()
     return redirect(f"/requirements/{req_id}")

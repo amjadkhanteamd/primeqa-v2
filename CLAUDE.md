@@ -50,8 +50,9 @@ primeqa/                       # Main package
 ├── vector/                    # Embeddings (pgvector)
 ├── static/                    # Shared JS/CSS (toast, confirm, unsaved-changes)
 └── templates/                 # Jinja2 HTML templates
-migrations/                    # SQL migration files (001–023)
-docs/design/                   # Design docs (run-experience.md covers R1–R6)
+migrations/                    # SQL migration files (001–028)
+scripts/                       # One-off operational SQL (data cleanup, etc.)
+docs/design/                   # Design docs (run-experience.md covers R1–R7)
 tests/                         # Integration test files
 ```
 
@@ -69,10 +70,34 @@ tests/                         # Integration test files
 
 - `query_builder.ListQuery` — pagination/search/sort/filter with hard 50/page cap and sort-field whitelist
 - `api.json_page` / `json_error` — uniform `{data, meta}` + `{error:{code,message}}` envelopes
-- `observability` — request timing, SQLAlchemy slow-query log at 800 ms (tunable via `PRIMEQA_SLOW_QUERY_MS`; default threshold sits above Railway's ~400\u2013500 ms RTT floor), counters at `GET /api/_internal/health`
+- `observability` — request timing, SQLAlchemy slow-query log at 800 ms (tunable via `PRIMEQA_SLOW_QUERY_MS`; default threshold sits above Railway's ~400–500 ms RTT floor), counters at `GET /api/_internal/health`
 - `notifications` — stable `notify_*` API; log-only provider today (NOTIFICATIONS_PROVIDER env var flips it)
 
-## The Run Experience (R1–R7 shipped)
+## Run event log (cross-service real-time)
+
+In `primeqa/runs/streams.py` + `run_events` table (migration 027):
+
+- Worker/service code calls `emit_stage_started`, `emit_stage_finished`, `emit_test_started`, `emit_test_finished`, `emit_step_started`, `emit_step_finished`, `emit_log`, `emit_run_status`. Each fans out to:
+  1. **In-process `EventBus`** (live, same-process delivery)
+  2. **`run_events` row** via `record_event()` — durable, cross-service
+- `record_event` opens its own `Session(bind=engine)` (not `SessionLocal()`) so closing it does **not** close the caller's scoped session. That was the cause of a DetachedInstanceError fire drill; never regress this.
+- SSE endpoint `GET /api/runs/:id/events` interleaves three channels: in-process bus, DB tail every ~1s (cross-service), DB snapshot every 5s. Initial connect backfills the last 200 events so refresh repopulates the log panel.
+- Scheduler's `trim_run_events` keeps ≤1000 events per run (runs every 10 min).
+- Privacy: API bodies, SOQL, credentials **never** land in events. Full per-step payloads live in `run_step_results` (role-gated).
+
+## AI test-plan generation (multi-TC per requirement)
+
+In `primeqa/intelligence/generation.py` + `primeqa/test_management/service.py`, migration 028:
+
+- One Generate click → **3–6 test cases** covering `positive / negative_validation / boundary / edge_case / regression` (one scenario per TC). Replaces the old "one click = one TC" model which hid coverage gaps.
+- `TestCaseGenerator.generate_plan(requirement, meta_version_id)` returns `{test_cases: [...], explanation}`.
+- `TestManagementService.generate_test_plan(...)` creates a `generation_batches` row + N `test_cases` rows (each with `coverage_type` + `generation_batch_id`) + N `test_case_versions`.
+- **Supersession is batch-wide**: a new Generate soft-deletes all own-user drafts for the requirement (any prior batch); approved/active TCs are immutable.
+- Cost per batch is estimated from tokens using a model→$ lookup table and stored on `generation_batches.cost_usd`. Surfaced to superadmin only.
+- Executor name prefix is `PQA_{run_id}_{tc_id}_{logical_id}` to prevent 5 TCs from one requirement colliding on Salesforce Name uniqueness. Idempotency key carries `tc_id` too.
+- Fail-fast: `StepExecutor.execute_step` raises a clear error when a `$var` reference has no prior `state_ref`; message includes available vars and the fix hint. Catches the most common AI-generator quality bug before hitting Salesforce.
+
+## The Run Experience (R1–R7 + post-R7 enhancements)
 
 ```
 1. Run Wizard (/runs/new) — Jira ticket search (chips + live preview) + suites + sections + requirements + hand-picks
@@ -86,17 +111,40 @@ tests/                         # Integration test files
    (credentials, metadata freshness, per-test skip by metadata category,
    size caps 100/500 with superadmin OVERRIDE), cost (superadmin only),
    per-test skip list
-5. Queue pipeline_run; SSE streams step_started / step_finished /
-   run_status events
+5. Queue pipeline_run; worker dispatches stages. Executor runs each TC's
+   steps against Salesforce, writing run_test_results + run_step_results +
+   run_events rows. SSE interleaves in-process bus + 1s DB event tail +
+   5s snapshot poll so the `/runs/:id` log panel shows every milestone
+   cross-service (web and worker are separate Railway services).
 6. On step failure: AgentOrchestrator triages (pattern DB + taxonomy
    regex), proposes a fix (LLM), gates on env_type != production AND
    confidence ≥ High threshold
 7. Auto-apply on sandbox creates new TestCaseVersion, reruns with
    parent_run_id
-8. UI shows Agent fixes tab with Accept / Revert / Edit
-9. Scheduler cron fires scheduled_runs (suites only in v1)
+8. UI shows Agent fixes tab with Accept / Revert / Edit; Pipeline log
+   panel supports Download .txt / .json for ticket attachments.
+9. Scheduler cron fires scheduled_runs (suites only in v1). Also trims
+   run_events to ≤1000 per run and reaps stuck stages (5-min heartbeat).
 10. Flake scorer auto-quarantines chronically flipping tests
 11. /api/releases/:id/status honors agent_verdict_counts per release
+```
+
+Requirements → test cases flow (post-R7):
+
+```
+1. Create requirements manually via "+ New Requirement" OR import from Jira
+   (chip picker: HTMX live search + multi-select + paste fallback)
+2. Click Generate → AI generate_plan returns 3–6 test cases covering
+   positive / negative_validation / boundary / edge_case / regression
+3. Each TC gets coverage_type + generation_batch_id; batch captures the
+   LLM's rationale + token/cost for superadmin audit
+4. Supersession: regenerating soft-deletes prior own-drafts for that
+   requirement; approved/active TCs spawn a fresh TC alongside
+5. Bulk-generate: pick N requirements → POST /api/requirements/bulk-generate
+   runs ≤5 in parallel via ThreadPoolExecutor (hard cap 20 per call)
+6. Test Library shows a Coverage column with colored badges; Requirement
+   detail page groups linked TCs by coverage bucket + shows "AI test plan
+   rationale" callout
 ```
 
 Full decision ledger and architecture in `docs/design/run-experience.md`.
@@ -146,7 +194,7 @@ python tests/test_system_validation.py   # 4 runner + 13 canonical suite outcome
 git push origin main                     # Railway auto-deploys 3 services
 
 # Apply a migration (idempotent since 016)
-psql "$DATABASE_URL" -f migrations/023_flake_quarantine.sql
+psql "$DATABASE_URL" -f migrations/028_coverage_types_and_generation_batches.sql
 ```
 
 ## Environment variables
@@ -176,6 +224,11 @@ one. Migrations 016+ are idempotent (use `ADD COLUMN IF NOT EXISTS` and
 - Commit messages are descriptive, prefixed with phase/feature name, signed with `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`
 - Every destructive/admin action writes to `activity_log` via the service layer
 - All lists paginate with per_page capped at 50 — there are no unbounded list endpoints anymore
+- **Section create is idempotent** — `create_section` returns an existing active row if one matches `(tenant_id, parent_id, name)`. Prevents duplicate-tree regrowth from integration tests.
+- **AI generation is batch-first** — every Generate click on a requirement produces N TCs in one `generation_batches` row; supersession is batch-wide per `(tenant_id, requirement_id, owner_id)`. Single-TC `generate_test_case()` remains only for explicit re-gen of a specific `test_case_id`.
+- **Thread-safety**: SQLAlchemy sessions are **not** shared across threads. Bulk endpoints using `ThreadPoolExecutor` open `Session(bind=engine)` per thread. `record_event()` same pattern — never `SessionLocal()` if the caller is holding a scoped session.
+- **Cross-service observability**: worker/service milestones write to the `run_events` DB table in addition to the in-process BUS. Web's SSE endpoint tails the table so Railway's split services still deliver live updates.
+- **HTML unicode**: never write `\uXXXX` escapes directly in Jinja/HTML content — HTML doesn't interpret them. Use the actual UTF-8 character or `&#NNNN;` entity. (JS string literals **do** interpret `\uXXXX`; those are fine.)
 
 ## The Release Intelligence Loop
 
