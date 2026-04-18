@@ -566,9 +566,52 @@ def runs_detail(run_id):
                            "target_object": s.target_object, "status": s.status,
                            "error_message": s.error_message} for s in steps],
             })
+        # ---- Cost + LLM breakdown (superadmin only) --------------------
+        # Sums AI spend attributable to this run:
+        #   1. Test-case generation: sum cost_usd of generation_batches
+        #      that produced TCs in this run.
+        #   2. Agent fix-and-rerun: tokens aren't tracked per attempt
+        #      yet, so we show attempt counts + "model unknown" \u2014
+        #      a future migration can add tokens/cost columns.
+        cost_panel = None
+        if request.user.get("role") == "superadmin":
+            from primeqa.test_management.models import TestCase, GenerationBatch
+            tc_ids = [r.test_case_id for r in results]
+            gen_batches = []
+            if tc_ids:
+                batch_ids = {row[0] for row in db.query(TestCase.generation_batch_id)
+                              .filter(TestCase.id.in_(tc_ids),
+                                      TestCase.generation_batch_id.isnot(None)).all()
+                              if row[0]}
+                if batch_ids:
+                    gen_batches = db.query(GenerationBatch).filter(
+                        GenerationBatch.id.in_(list(batch_ids)),
+                    ).all()
+            gen_total = sum(float(b.cost_usd or 0) for b in gen_batches)
+            gen_in = sum(int(b.input_tokens or 0) for b in gen_batches)
+            gen_out = sum(int(b.output_tokens or 0) for b in gen_batches)
+            gen_models = sorted({b.llm_model for b in gen_batches if b.llm_model})
+
+            agent_fix_count = len(agent_fixes_data)
+            cost_panel = {
+                "generation": {
+                    "total_usd": round(gen_total, 4),
+                    "tokens_in": gen_in, "tokens_out": gen_out,
+                    "models": gen_models, "batches": len(gen_batches),
+                },
+                "agent_fixes": {
+                    "attempts": agent_fix_count,
+                    "note": "Agent fix-and-rerun token cost is not yet "
+                            "tracked per attempt; roll forward to a later "
+                            "migration to add input/output_tokens columns.",
+                },
+                # Run-level grand total is only the generation cost today.
+                "total_usd": round(gen_total, 4),
+            }
+
         return render_template("runs/detail.html", **ctx(
             active_page="runs", run=run_data, stages=stages_data, results=results_data,
-            agent_fixes=agent_fixes_data,
+            agent_fixes=agent_fixes_data, cost_panel=cost_panel,
         ))
     finally:
         db.close()
