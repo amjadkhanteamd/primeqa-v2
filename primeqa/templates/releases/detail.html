@@ -109,7 +109,15 @@
         <div class="px-6 py-3 border-b flex items-center justify-between">
             <h3 class="text-sm font-medium text-gray-700">Test Plan <span class="text-gray-500 font-normal">({{ release.test_plan | length }})</span></h3>
             {% if user.role in ['admin', 'tester', 'superadmin'] %}
-            <button id="add-tp-btn" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">+ Add test cases</button>
+            <div class="flex items-center gap-2">
+              {% if release.test_plan %}
+              <button id="run-release-plan-btn"
+                      class="rounded-md bg-green-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-green-500">
+                ▶ Run test plan
+              </button>
+              {% endif %}
+              <button id="add-tp-btn" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">+ Add test cases</button>
+            </div>
             {% endif %}
         </div>
         {% if release.test_plan %}
@@ -226,6 +234,40 @@
     {% endif %}
 </div>
 
+{# ---- Run Test Plan modal: pick env, queue the run ------------------- #}
+{% if user.role in ['admin', 'tester', 'superadmin'] and release.test_plan %}
+<div id="run-plan-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+  <div class="flex min-h-full items-center justify-center p-4">
+    <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('run-plan-modal').classList.add('hidden')"></div>
+    <div class="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+      <h3 class="text-lg font-medium text-gray-900 mb-1">Run release test plan</h3>
+      <p class="text-xs text-gray-500 mb-4">{{ release.test_plan | length }} test cases will be executed against the selected environment.</p>
+      <form method="POST" action="/releases/{{ release.id }}/run" class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Environment</label>
+          <select name="environment_id" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+            <option value="">Pick env…</option>
+            {% for e in environments %}<option value="{{ e.id }}">{{ e.name }}</option>{% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700">Priority</label>
+          <select name="priority" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+            <option value="normal">Normal</option>
+            <option value="high">High</option>
+            <option value="critical">Critical</option>
+          </select>
+        </div>
+        <div class="flex justify-end space-x-3">
+          <button type="button" onclick="document.getElementById('run-plan-modal').classList.add('hidden')" class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700">Cancel</button>
+          <button type="submit" class="rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-500">▶ Run Now</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 {# ---- Add Test Plan items picker modal (grouped by requirement) -------- #}
 {% if user.role in ['admin', 'tester', 'superadmin'] %}
 <div id="add-tp-modal" class="hidden fixed inset-0 z-50 overflow-y-auto"
@@ -334,6 +376,11 @@
         window.PrimeQA.toast('Removed from release', 'success');
       } catch (_) {}
     });
+  });
+
+  // ---- Open Run Test Plan modal
+  document.getElementById('run-release-plan-btn')?.addEventListener('click', () => {
+    document.getElementById('run-plan-modal')?.classList.remove('hidden');
   });
 
   // ---- Remove a test plan item

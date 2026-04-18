@@ -41,9 +41,24 @@
       {% else %}
         {% if user.role in ['admin', 'tester', 'superadmin'] and environments %}
         {% set ready_envs = environments | selectattr('ready') | list %}
+        {# \u25B6 Run all test cases \u2014 shown when the requirement has at
+           least one linked TC. Env picker reuses the existing list. #}
+        {% if test_cases %}
+        <form method="POST" action="/requirements/{{ req.id }}/run" class="flex items-center space-x-2">
+          <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+            <option value="">Run env&hellip;</option>
+            {% for env in environments %}
+            <option value="{{ env.id }}">{{ env.name }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="rounded-md bg-green-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-green-500">
+            ▶ Run {{ test_cases | length }} test case{{ '' if test_cases | length == 1 else 's' }}
+          </button>
+        </form>
+        {% endif %}
         <form method="POST" action="/requirements/{{ req.id }}/generate" class="flex items-center space-x-2">
           <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
-            <option value="">Pick env&hellip;</option>
+            <option value="">Gen env&hellip;</option>
             {% for env in environments %}
             <option value="{{ env.id }}" {% if not env.ready %}disabled{% endif %}>
               {{ env.name }}{% if not env.has_llm %} &mdash; no LLM connection{% elif not env.has_meta %} &mdash; needs metadata refresh{% endif %}
@@ -53,7 +68,7 @@
           <button type="submit"
                   {% if not ready_envs %}disabled title="No environment is ready for AI generation — attach an LLM connection and refresh metadata."{% endif %}
                   class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">
-            Generate test case
+            {% if test_cases %}Regenerate{% else %}Generate test case{% endif %}
           </button>
         </form>
         {% endif %}

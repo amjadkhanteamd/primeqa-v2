@@ -2941,11 +2941,58 @@ def requirements_list():
         except Exception as e:
             reqs, meta, query_error = [], {"total": 0, "page": 1, "per_page": per_page, "total_pages": 0}, str(e)
 
+        # Load TC counts + coverage breakdown + generation state per
+        # visible requirement in one query, so the list can show "5
+        # tests · positive 1 · negative 2..." badges and pick the right
+        # button label (Generate / Regenerate / Generate again).
+        tc_stats = {}  # requirement_id -> {total, coverage, any_draft_mine, any_approved_or_active}
+        if reqs:
+            from sqlalchemy import func as _sf
+            from primeqa.test_management.models import TestCase
+            rows = (db.query(
+                        TestCase.requirement_id,
+                        TestCase.status,
+                        TestCase.coverage_type,
+                        TestCase.owner_id,
+                    )
+                    .filter(
+                        TestCase.tenant_id == tid,
+                        TestCase.deleted_at.is_(None),
+                        TestCase.requirement_id.in_([r.id for r in reqs]),
+                    ).all())
+            for rid, status_, cov, owner in rows:
+                stats = tc_stats.setdefault(rid, {
+                    "total": 0, "coverage": {},
+                    "my_draft_count": 0,
+                    "approved_or_active_count": 0,
+                })
+                stats["total"] += 1
+                k = cov or "other"
+                stats["coverage"][k] = stats["coverage"].get(k, 0) + 1
+                if status_ == "draft" and owner == request.user["id"]:
+                    stats["my_draft_count"] += 1
+                if status_ in ("approved", "active"):
+                    stats["approved_or_active_count"] += 1
+
+        def _button_state(s):
+            """Pick between Generate / Regenerate / Generate again based
+            on what the user already has for this requirement."""
+            if not s:
+                return "generate"       # first-time generation
+            if s["my_draft_count"] > 0:
+                return "regenerate"     # supersede-in-place
+            if s["approved_or_active_count"] > 0:
+                return "generate_again" # alongside approved work
+            return "generate"
+
         reqs_data = [{
             "id": r.id, "jira_key": r.jira_key, "jira_summary": r.jira_summary,
             "acceptance_criteria": r.acceptance_criteria, "is_stale": r.is_stale,
             "source": r.source,
             "updated_at": r.updated_at.isoformat() if r.updated_at else "",
+            "tc_count": (tc_stats.get(r.id) or {}).get("total", 0),
+            "coverage_counts": (tc_stats.get(r.id) or {}).get("coverage", {}),
+            "button_state": _button_state(tc_stats.get(r.id)),
         } for r in reqs]
         # Envs with their readiness for AI generation (needs LLM + metadata)
         envs_data = [{
@@ -3240,6 +3287,63 @@ def requirements_import_jira():
     finally:
         db.close()
     return redirect("/requirements")
+
+
+@views_bp.route("/requirements/<int:req_id>/run", methods=["POST"])
+@role_required("admin", "tester")
+def requirements_run(req_id):
+    """Queue a run of every active TC linked to this requirement. Tenant-
+    scoped; TCs the user can't see (private, other owner) are excluded.
+    """
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.test_management.models import TestCase
+        from primeqa.execution.repository import (
+            PipelineRunRepository, PipelineStageRepository,
+            ExecutionSlotRepository, WorkerHeartbeatRepository,
+        )
+        from primeqa.execution.service import PipelineService
+        tid = request.user["tenant_id"]
+        env_id = request.form.get("environment_id", type=int)
+        if not env_id:
+            flash("Pick an environment to run against.", "error")
+            return redirect(f"/requirements/{req_id}")
+
+        # Resolve TC ids visible to this user under this requirement
+        tcs = db.query(TestCase).filter(
+            TestCase.tenant_id == tid,
+            TestCase.requirement_id == req_id,
+            TestCase.deleted_at.is_(None),
+            ((TestCase.visibility == "shared") |
+             (TestCase.owner_id == request.user["id"])),
+        ).all()
+        if not tcs:
+            flash("No runnable test cases found for this requirement.", "error")
+            return redirect(f"/requirements/{req_id}")
+
+        svc = PipelineService(
+            PipelineRunRepository(db), PipelineStageRepository(db),
+            ExecutionSlotRepository(db), WorkerHeartbeatRepository(db),
+        )
+        result = svc.create_run(
+            tenant_id=tid, environment_id=env_id,
+            triggered_by=request.user["id"],
+            run_type="execute_only",
+            source_type="requirements",
+            source_ids=[req_id],
+            priority="normal",
+            source_refs={"requirement_ids": [req_id],
+                         "test_case_ids": [t.id for t in tcs]},
+        )
+        flash(f"Run #{result['id']} queued ({len(tcs)} test case"
+              f"{'s' if len(tcs) != 1 else ''})", "success")
+        return redirect(f"/runs/{result['id']}")
+    except Exception as e:
+        flash(f"Could not queue run: {e}", "error")
+        return redirect(f"/requirements/{req_id}")
+    finally:
+        db.close()
 
 
 @views_bp.route("/requirements/<int:req_id>/generate", methods=["POST"])
@@ -3660,6 +3764,60 @@ def releases_create():
         db.close()
 
 
+@views_bp.route("/releases/<int:release_id>/run", methods=["POST"])
+@role_required("admin", "tester")
+def releases_run(release_id):
+    """Queue a run of every test_plan item for this release."""
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.release.repository import ReleaseRepository
+        from primeqa.release.service import ReleaseService
+        from primeqa.execution.repository import (
+            PipelineRunRepository, PipelineStageRepository,
+            ExecutionSlotRepository, WorkerHeartbeatRepository,
+        )
+        from primeqa.execution.service import PipelineService
+        tid = request.user["tenant_id"]
+        env_id = request.form.get("environment_id", type=int)
+        priority = request.form.get("priority", "normal")
+        if not env_id:
+            flash("Pick an environment to run against.", "error")
+            return redirect(f"/releases/{release_id}")
+        rel_svc = ReleaseService(ReleaseRepository(db))
+        release = rel_svc.get_release_detail(release_id, tid)
+        if not release:
+            flash("Release not found.", "error")
+            return redirect("/releases")
+        tc_ids = [item["test_case_id"] for item in release.get("test_plan", [])
+                  if not item.get("deleted")]
+        if not tc_ids:
+            flash("Release test plan is empty.", "error")
+            return redirect(f"/releases/{release_id}?tab=test_plan")
+
+        svc = PipelineService(
+            PipelineRunRepository(db), PipelineStageRepository(db),
+            ExecutionSlotRepository(db), WorkerHeartbeatRepository(db),
+        )
+        result = svc.create_run(
+            tenant_id=tid, environment_id=env_id,
+            triggered_by=request.user["id"],
+            run_type="execute_only",
+            source_type="release",
+            source_ids=[release_id],
+            priority=priority,
+            source_refs={"release_id": release_id, "test_case_ids": tc_ids},
+        )
+        flash(f"Run #{result['id']} queued ({len(tc_ids)} test case"
+              f"{'s' if len(tc_ids) != 1 else ''})", "success")
+        return redirect(f"/runs/{result['id']}")
+    except Exception as e:
+        flash(f"Could not queue run: {e}", "error")
+        return redirect(f"/releases/{release_id}?tab=test_plan")
+    finally:
+        db.close()
+
+
 @views_bp.route("/releases/<int:release_id>/evaluate-decision", methods=["POST"])
 @role_required("admin", "tester")
 def releases_evaluate_decision(release_id):
@@ -3735,9 +3893,16 @@ def releases_detail(release_id):
             "summary": r.jira_summary or f"Requirement #{r.id}",
         } for r in req_rows]
 
+        # Env list for the "Run test plan" modal
+        envs = EnvironmentRepository(db).list_environments(
+            tid, request.user["id"], request.user["role"],
+        )
+        envs_data = [{"id": e.id, "name": e.name} for e in envs]
+
         return render_template("releases/detail.html", **ctx(
             active_page="releases", release=release, tab=tab,
             all_requirements=all_requirements,
+            environments=envs_data,
         ))
     finally:
         db.close()

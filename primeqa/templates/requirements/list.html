@@ -88,26 +88,59 @@
                            value="{{ req.id }}" data-req-title="{{ req.jira_summary or ('Requirement #' ~ req.id) }}" data-req-key="{{ req.jira_key or '' }}">
                     {% endif %}
                     <a href="/requirements/{{ req.id }}" class="flex-1 min-w-0 block">
-                        <div class="flex items-center space-x-2">
+                        <div class="flex items-center space-x-2 flex-wrap">
                             {% if req.jira_key %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700">{{ req.jira_key }}</span>{% endif %}
                             <span class="text-sm font-medium text-gray-900 truncate hover:text-indigo-600 hover:underline">{{ req.jira_summary or 'Requirement #' ~ req.id }}</span>
                             {% if req.is_stale %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-yellow-100 text-yellow-800">Stale</span>{% endif %}
+                            {% if req.tc_count %}
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-50 text-indigo-700" title="{{ req.tc_count }} test case(s) generated for this requirement">
+                              {{ req.tc_count }} test{{ '' if req.tc_count == 1 else 's' }}
+                            </span>
+                            {% for c in ['positive','negative_validation','boundary','edge_case','regression'] %}
+                              {% if req.coverage_counts.get(c) %}
+                              <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px]
+                                {% if c == 'positive' %}bg-green-50 text-green-700
+                                {% elif c == 'negative_validation' %}bg-red-50 text-red-700
+                                {% elif c == 'boundary' %}bg-amber-50 text-amber-800
+                                {% elif c == 'edge_case' %}bg-purple-50 text-purple-700
+                                {% else %}bg-sky-50 text-sky-700{% endif %}">{{ req.coverage_counts[c] }} {{ c.replace('_',' ') }}</span>
+                              {% endif %}
+                            {% endfor %}
+                            {% else %}
+                            <span class="text-xs text-gray-400">no tests yet</span>
+                            {% endif %}
                         </div>
                         {% if req.acceptance_criteria %}<p class="mt-1 text-xs text-gray-500 line-clamp-2">{{ req.acceptance_criteria }}</p>{% endif %}
                     </a>
                     <div class="flex items-center space-x-2">
                       {% if user.role in ['admin', 'tester', 'superadmin'] and not show_deleted %}
                       {% set ready_envs = environments | selectattr('ready') | list %}
+                      {# \u25B6 Run \u2014 shown only when this requirement has test cases. #}
+                      {% if req.tc_count %}
+                      <form method="POST" action="/requirements/{{ req.id }}/run" class="flex items-center space-x-2">
+                          <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1 text-xs">
+                              <option value="">Run env...</option>
+                              {% for env in environments %}
+                              <option value="{{ env.id }}">{{ env.name }}</option>
+                              {% endfor %}
+                          </select>
+                          <button type="submit" class="rounded-md bg-green-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-green-500 flex items-center space-x-1">
+                              <span>▶ Run</span>
+                          </button>
+                      </form>
+                      {% endif %}
+                      {# Generate / Regenerate / Generate again \u2014 state-aware label. #}
                       <form method="POST" action="/requirements/{{ req.id }}/generate" class="flex items-center space-x-2">
                           <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1 text-xs">
-                              <option value="">Select env...</option>
+                              <option value="">Gen env...</option>
                               {% for env in environments %}
                               <option value="{{ env.id }}" {% if not env.ready %}disabled{% endif %}>{{ env.name }}{% if not env.has_llm %} &mdash; no LLM{% elif not env.has_meta %} &mdash; needs metadata{% endif %}</option>
                               {% endfor %}
                           </select>
-                          <button type="submit" {% if not ready_envs %}disabled title="No environment is ready for AI generation"{% endif %} class="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 flex items-center space-x-1 disabled:opacity-50 disabled:cursor-not-allowed">
+                          <button type="submit" {% if not ready_envs %}disabled title="No environment is ready for AI generation"{% endif %}
+                                  class="rounded-md {% if req.button_state == 'regenerate' %}bg-white ring-1 ring-indigo-300 text-indigo-700 hover:bg-indigo-50{% else %}bg-indigo-600 text-white hover:bg-indigo-500{% endif %} px-3 py-1.5 text-xs font-semibold flex items-center space-x-1 disabled:opacity-50 disabled:cursor-not-allowed">
                               <svg class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" /></svg>
-                              <span>Generate</span>
+                              <span>{% if req.button_state == 'regenerate' %}Regenerate{% elif req.button_state == 'generate_again' %}Generate again{% else %}Generate{% endif %}</span>
                           </button>
                       </form>
                       <button class="text-xs text-red-600 hover:text-red-800" data-delete-req="{{ req.id }}" data-req-title="{{ req.jira_key or req.jira_summary or 'Requirement' }}">Delete</button>
