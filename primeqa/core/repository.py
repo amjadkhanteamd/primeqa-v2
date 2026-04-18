@@ -143,14 +143,22 @@ class EnvironmentRepository:
         return q.first()
 
     def list_environments(self, tenant_id, user_id=None, role=None):
+        from sqlalchemy import select
         q = self.db.query(Environment).filter(
             Environment.tenant_id == tenant_id,
             Environment.is_active == True,
         )
-        if role != "admin" and user_id is not None:
-            group_env_ids = self.db.query(GroupEnvironment.environment_id).join(
-                GroupMember, GroupEnvironment.group_id == GroupMember.group_id,
-            ).filter(GroupMember.user_id == user_id).subquery()
+        # Admin + super admin see every active env for their tenant. Other
+        # roles see envs they created or that their groups grant access to.
+        if role not in ("admin", "superadmin") and user_id is not None:
+            # Use a proper `select()` construct instead of `.subquery()` so
+            # SQLAlchemy 2.x doesn't emit the "Coercing Subquery object into
+            # a select() for use in IN()" warning on every request.
+            group_env_ids = (
+                select(GroupEnvironment.environment_id)
+                .join(GroupMember, GroupEnvironment.group_id == GroupMember.group_id)
+                .where(GroupMember.user_id == user_id)
+            )
             q = q.filter(
                 (Environment.created_by == user_id) |
                 (Environment.id.in_(group_env_ids))
