@@ -39,6 +39,9 @@ class MetaVersion(Base):
     heartbeat_at = Column(DateTime(timezone=True))
     cancel_requested = Column(Boolean, nullable=False, server_default="false")
     parent_meta_version_id = Column(Integer, ForeignKey("meta_versions.id", ondelete="SET NULL"))
+    # Delta-sync cutoff (migration 026). If set, Tooling queries filter by
+    # LastModifiedDate > delta_since_ts and only changed objects get described.
+    delta_since_ts = Column(DateTime(timezone=True))
 
     objects = relationship("MetaObject", back_populates="meta_version")
 

@@ -11,6 +11,54 @@
     <p class="text-sm text-gray-500">Review what will run, then click <strong>Run now</strong> to queue it.</p>
   </div>
 
+  {# F2: drift banner. Shows up when SF metadata has changed since the env
+     was last synced. Quick-refresh queues a delta sync; Run anyway lets
+     the user proceed knowing they might hit stale-metadata skips. #}
+  {% if drift and drift.drift_detected %}
+  <div class="rounded-md border border-yellow-300 bg-yellow-50 p-4">
+    <div class="flex items-start justify-between">
+      <div class="flex-1">
+        <p class="font-medium text-yellow-900">
+          ⚠ Metadata drift detected
+        </p>
+        <p class="mt-1 text-sm text-yellow-800">
+          {% set parts = [] %}
+          {% if drift.counts.fields %}{% set _ = parts.append((drift.counts.fields ~ (drift.counts.fields == 200 and '+' or '') ~ ' field' ~ (drift.counts.fields > 1 and 's' or ''))) %}{% endif %}
+          {% if drift.counts.validation_rules %}{% set _ = parts.append((drift.counts.validation_rules ~ (drift.counts.validation_rules == 200 and '+' or '') ~ ' validation rule' ~ (drift.counts.validation_rules > 1 and 's' or ''))) %}{% endif %}
+          {% if drift.counts.flows %}{% set _ = parts.append((drift.counts.flows ~ (drift.counts.flows == 200 and '+' or '') ~ ' flow' ~ (drift.counts.flows > 1 and 's' or ''))) %}{% endif %}
+          {% if drift.counts.triggers %}{% set _ = parts.append((drift.counts.triggers ~ (drift.counts.triggers == 200 and '+' or '') ~ ' trigger' ~ (drift.counts.triggers > 1 and 's' or ''))) %}{% endif %}
+          {{ parts | join(', ') }} changed in Salesforce since
+          <strong>{{ drift.current_meta_version_label }}</strong> was synced
+          ({{ drift.synced_at[:19] if drift.synced_at else '?' }}).
+        </p>
+      </div>
+      <div class="flex space-x-2 ml-3">
+        <form method="POST" action="/environments/{{ environment_id }}/quick-refresh">
+          <button type="submit" class="rounded-md bg-yellow-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-yellow-500">
+            Quick-refresh changed
+          </button>
+        </form>
+        <form method="POST" action="/environments/{{ environment_id }}/refresh-metadata">
+          <button type="submit" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">
+            Full re-sync
+          </button>
+        </form>
+      </div>
+    </div>
+    <p class="mt-2 text-xs text-yellow-700">
+      Tip: Quick-refresh only pulls the changed entities (usually seconds), Full re-sync rebuilds the whole version.
+    </p>
+  </div>
+  {% elif drift and drift.error %}
+  <div class="rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+    Couldn't check for drift: {{ drift.error }}
+  </div>
+  {% elif drift and drift.has_current_meta and not drift.drift_detected %}
+  <div class="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800">
+    ✓ No metadata drift since <strong>{{ drift.current_meta_version_label }}</strong> was synced. Safe to run.
+  </div>
+  {% endif %}
+
   <!-- Key facts card -->
   <div class="bg-white shadow rounded-lg p-6 grid grid-cols-2 md:grid-cols-4 gap-4">
     <div>

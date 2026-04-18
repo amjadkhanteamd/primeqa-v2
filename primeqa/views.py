@@ -382,6 +382,24 @@ def runs_new_preview():
         if request.user["role"] == "superadmin":
             cost = _estimate_run_cost(resolved.test_count, env)
 
+        # F2: drift check. Cheap Tooling query (~1 s) tells us if any
+        # field / VR / flow / trigger changed since the env's current meta
+        # version was synced. Failure modes (no conn / OAuth error) are
+        # surfaced as warnings, not hard blockers.
+        from primeqa.metadata.service import MetadataService
+        from primeqa.metadata.repository import MetadataRepository
+        from primeqa.metadata.worker_runner import _oauth_token
+        drift = None
+        try:
+            meta_svc = MetadataService(MetadataRepository(db), env_repo)
+            drift = meta_svc.check_drift(
+                environment_id, request.user["tenant_id"],
+                oauth_token_fetcher=_oauth_token,
+            )
+        except Exception as _e:
+            drift = {"error": str(_e), "drift_detected": False,
+                     "has_current_meta": False, "counts": {}}
+
         return render_template("runs/preview.html", **ctx(
             active_page="runs",
             environment_id=environment_id,
@@ -395,6 +413,7 @@ def runs_new_preview():
             },
             report=report.to_dict(),
             cost=cost,
+            drift=drift,
             priority=request.form.get("priority", "normal"),
             run_type=request.form.get("run_type", "execute_only"),
         ))
@@ -1318,6 +1337,65 @@ def environments_sync_progress(env_id, mv_id):
             active_page="settings_environments", settings_page="environments",
             env=env, mv=mv_data, rows=rows_data, avg_durations=avg_durations,
         ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/environments/<int:env_id>/quick-refresh", methods=["POST"])
+@role_required("admin", "superadmin")
+def environments_quick_refresh(env_id):
+    """F2 quick-refresh: queue a delta-sync meta_version pinned to the
+    current's completed_at. Skips the objects list fetch's describe loop
+    except for objects whose fields changed since the cutoff \u2014 typical
+    outcome is a handful of describes + 3 filtered Tooling queries,
+    finishing in seconds."""
+    from flask import flash
+    from datetime import datetime, timezone as _tz
+    db = next(get_db())
+    try:
+        from primeqa.metadata.models import MetaVersion, MetaSyncStatus
+        from primeqa.metadata.repository import MetadataRepository
+        from primeqa.metadata.sync_engine import ALL_CATEGORIES
+
+        meta_repo = MetadataRepository(db)
+        current = meta_repo.get_current_version(env_id)
+        if not current or not current.completed_at:
+            flash("No prior sync to delta against \u2014 use Refresh metadata for a full sync.",
+                  "warning")
+            return redirect(f"/environments/{env_id}")
+
+        # Single-flight guard
+        active = db.query(MetaVersion).filter(
+            MetaVersion.environment_id == env_id,
+            MetaVersion.status.in_(("queued", "in_progress")),
+        ).first()
+        if active:
+            return redirect(f"/environments/{env_id}/sync/{active.id}")
+
+        # Next version label
+        all_labels = {row[0] for row in db.query(MetaVersion.version_label)
+                                          .filter(MetaVersion.environment_id == env_id).all()}
+        n = 1
+        while f"v{n}" in all_labels:
+            n += 1
+
+        mv = MetaVersion(
+            environment_id=env_id,
+            version_label=f"v{n}",
+            status="queued",
+            queued_at=datetime.now(_tz.utc),
+            triggered_by=request.user["id"],
+            categories_requested=list(ALL_CATEGORIES),  # refresh everything, filtered by delta
+            parent_meta_version_id=current.id,
+            delta_since_ts=current.completed_at,
+        )
+        db.add(mv); db.commit(); db.refresh(mv)
+
+        for cat in ALL_CATEGORIES:
+            db.add(MetaSyncStatus(meta_version_id=mv.id, category=cat, status="pending"))
+        db.commit()
+
+        return redirect(f"/environments/{env_id}/sync/{mv.id}", code=303)
     finally:
         db.close()
 

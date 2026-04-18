@@ -28,6 +28,130 @@ class MetadataService:
         self.env_repo = env_repo
 
     # ------------------------------------------------------------------
+    # F2: Drift check.
+    # Called from the run-preview flow. Four cheap Tooling queries ask
+    # Salesforce "has anything changed since X?" \u2014 total wire time under
+    # a second. If anything's changed, the preview surfaces a banner + a
+    # "Quick-refresh" button that queues a delta-sync meta_version.
+    # ------------------------------------------------------------------
+
+    def check_drift(self, environment_id, tenant_id, oauth_token_fetcher):
+        """Return a dict describing whether the current metadata is stale.
+
+        Shape:
+          {
+            "has_current_meta": bool,
+            "current_meta_version_id": int | None,
+            "current_meta_version_label": str | None,
+            "synced_at": iso | None,
+            "drift_detected": bool,
+            "counts": { "validation_rules": N, "flows": N, "triggers": N, "fields": N },
+            "error": str | None,
+          }
+
+        If there's no current meta_version yet (env never synced), returns
+        `has_current_meta=False` so the caller can render "Never synced".
+        """
+        from primeqa.core.models import Environment
+        from datetime import datetime as _dt, timezone as _tz
+
+        db = self.metadata_repo.db
+        env = db.query(Environment).filter(
+            Environment.id == environment_id,
+            Environment.tenant_id == tenant_id,
+        ).first()
+        if not env:
+            return {"error": "Environment not found"}
+
+        current = self.metadata_repo.get_current_version(environment_id)
+        if not current or not current.completed_at:
+            return {
+                "has_current_meta": False,
+                "current_meta_version_id": None,
+                "current_meta_version_label": None,
+                "synced_at": None,
+                "drift_detected": False,
+                "counts": {},
+                "error": None,
+            }
+
+        # Cheap: one HTTP round-trip each, count-only Tooling queries
+        since_iso = current.completed_at.astimezone(_tz.utc) \
+                                        .strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        from primeqa.core.repository import ConnectionRepository
+        conn_repo = ConnectionRepository(db)
+        conn = conn_repo.get_connection_decrypted(env.connection_id, tenant_id) \
+               if env.connection_id else None
+        if not conn:
+            return {
+                "has_current_meta": True,
+                "current_meta_version_id": current.id,
+                "current_meta_version_label": current.version_label,
+                "synced_at": current.completed_at.isoformat(),
+                "drift_detected": False,
+                "counts": {},
+                "error": "No Salesforce connection \u2014 skipping drift check",
+            }
+
+        try:
+            access_token = oauth_token_fetcher(env, conn["config"])
+        except Exception as e:
+            return {
+                "has_current_meta": True,
+                "current_meta_version_id": current.id,
+                "current_meta_version_label": current.version_label,
+                "synced_at": current.completed_at.isoformat(),
+                "drift_detected": False,
+                "counts": {},
+                "error": f"Could not authenticate to Salesforce ({e})",
+            }
+
+        sf = SalesforceClient(env.sf_instance_url, env.sf_api_version, access_token)
+
+        counts = {}
+        try:
+            # The four entities whose changes most often invalidate tests.
+            # We use `SELECT Id ... LIMIT 200` rather than `COUNT()` because
+            # query_tooling returns records[], and COUNT() returns totalSize
+            # with zero records. 200 is plenty of headroom for a banner
+            # that just says "~N changed"; anything beyond is rounded to
+            # "200+" in the UI.
+            probes = {
+                "fields": f"SELECT Id FROM FieldDefinition WHERE LastModifiedDate > {since_iso} LIMIT 200",
+                "validation_rules": f"SELECT Id FROM ValidationRule WHERE LastModifiedDate > {since_iso} LIMIT 200",
+                "flows": f"SELECT Id FROM Flow WHERE LastModifiedDate > {since_iso} LIMIT 200",
+                "triggers": f"SELECT Id FROM ApexTrigger WHERE LastModifiedDate > {since_iso} LIMIT 200",
+            }
+            for category, soql in probes.items():
+                try:
+                    result = sf.query_tooling(soql)
+                    counts[category] = len(result) if result else 0
+                except Exception as e:
+                    log.warning("drift probe for %s failed: %s", category, e)
+                    counts[category] = 0
+
+            drift_detected = any(n > 0 for n in counts.values())
+            return {
+                "has_current_meta": True,
+                "current_meta_version_id": current.id,
+                "current_meta_version_label": current.version_label,
+                "synced_at": current.completed_at.isoformat(),
+                "drift_detected": drift_detected,
+                "counts": counts,
+                "error": None,
+            }
+        except Exception as e:
+            return {
+                "has_current_meta": True,
+                "current_meta_version_id": current.id,
+                "current_meta_version_label": current.version_label,
+                "synced_at": current.completed_at.isoformat(),
+                "drift_detected": False,
+                "counts": {},
+                "error": f"Drift check failed: {e}",
+            }
+
+    # ------------------------------------------------------------------
     # Background-job entrypoint (migration 025).
     # ------------------------------------------------------------------
     # Web route POSTs a queued meta_version and redirects to the progress
@@ -145,6 +269,20 @@ class MetadataService:
             MetaVersion.id != mv.id,
         ).order_by(MetaVersion.completed_at.desc()).first()
 
+        # F4: delta sync. When delta_since_ts is set, Tooling API queries
+        # filter by LastModifiedDate and the field-describe loop only hits
+        # objects whose fields changed.
+        since_ts = mv.delta_since_ts  # None => full sync (default)
+        delta_mode = since_ts is not None
+
+        def _since_iso():
+            """Serialise delta_since_ts to the ISO 8601 string SF expects."""
+            if not delta_mode:
+                return None
+            if hasattr(since_ts, "astimezone"):
+                return since_ts.astimezone(_tz.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            return str(since_ts)
+
         try:
             sf = SalesforceClient(env.sf_instance_url, env.sf_api_version, access_token)
 
@@ -187,11 +325,61 @@ class MetadataService:
             if "record_types" in requested_cats:
                 _update_status("record_types", "running")
 
-            for obj in stored_objects:
+            # F4: in delta mode, narrow the describe set to only objects
+            # whose fields/record_types changed. One Tooling query on
+            # FieldDefinition tells us which entities have any changed field.
+            objects_to_describe = stored_objects
+            if delta_mode:
                 try:
-                    describe = sf.describe_object(obj.api_name)
+                    changed_entities = sf.query_tooling(
+                        "SELECT EntityDefinition.QualifiedApiName "
+                        "FROM FieldDefinition "
+                        f"WHERE LastModifiedDate > {_since_iso()}"
+                    )
+                    changed_obj_names = {
+                        (r.get("EntityDefinition") or {}).get("QualifiedApiName", "")
+                        for r in changed_entities
+                    }
+                    changed_obj_names.discard("")
+                    objects_to_describe = [o for o in stored_objects
+                                           if o.api_name in changed_obj_names]
+                    log.info("delta sync: %d / %d objects have changed fields since %s",
+                             len(objects_to_describe), len(stored_objects), _since_iso())
                 except Exception as e:
-                    log.warning(f"Failed to describe {obj.api_name}: {e}")
+                    # If FieldDefinition query fails, fall back to describing everything.
+                    log.warning("delta sync: FieldDefinition query failed (%s); "
+                                "falling back to full describe", e)
+
+            # F1: describe objects in parallel (SF allows up to 25 concurrent
+            # API calls per user; we use 15 workers conservatively). Fetches
+            # run in threads (requests.Session is thread-safe for GETs);
+            # DB writes happen on the main thread afterwards, serialised.
+            # This drops the fields phase from ~3 min to ~20 s for a typical
+            # 500-object org. In-loop heartbeats every ~30 describes keep
+            # the reaper from declaring us dead during long fetches.
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            def _fetch_describe(obj):
+                try:
+                    return (obj, sf.describe_object(obj.api_name), None)
+                except Exception as e:
+                    return (obj, None, str(e))
+
+            describe_results = []
+            HB_EVERY = 30
+            if objects_to_describe:
+                with ThreadPoolExecutor(max_workers=15) as ex:
+                    futures = [ex.submit(_fetch_describe, obj) for obj in objects_to_describe]
+                    for i, fut in enumerate(as_completed(futures), 1):
+                        describe_results.append(fut.result())
+                        if heartbeat_cb and (i % HB_EVERY == 0):
+                            heartbeat_cb()
+
+            # Now serialise the DB writes (SQLAlchemy session is not
+            # thread-safe for writes).
+            for obj, describe, err in describe_results:
+                if err:
+                    log.warning(f"Failed to describe {obj.api_name}: {err}")
                     continue
                 fields_data = [
                     {
@@ -238,12 +426,15 @@ class MetadataService:
             if _cancel_check_and_bail(): return {"cancelled": True}
             if "validation_rules" in requested_cats:
                 _update_status("validation_rules", "running")
-                vrs = sf.query_tooling(
+                vr_soql = (
                     "SELECT Id, ValidationName, Active, "
                     "EntityDefinition.QualifiedApiName, "
                     "ErrorConditionFormula, ErrorMessage "
                     "FROM ValidationRule"
                 )
+                if delta_mode:
+                    vr_soql += f" WHERE LastModifiedDate > {_since_iso()}"
+                vrs = sf.query_tooling(vr_soql)
                 for vr in vrs:
                     obj_name = (vr.get("EntityDefinition") or {}).get("QualifiedApiName", "")
                     obj = obj_map.get(obj_name)
@@ -263,11 +454,14 @@ class MetadataService:
             if _cancel_check_and_bail(): return {"cancelled": True}
             if "flows" in requested_cats:
                 _update_status("flows", "running")
-                flow_records = sf.query_tooling(
+                flow_soql = (
                     "SELECT Id, ApiName, Label, ProcessType, TriggerType, "
                     "TriggerObjectOrEvent.QualifiedApiName "
                     "FROM Flow WHERE Status = 'Active'"
                 )
+                if delta_mode:
+                    flow_soql += f" AND LastModifiedDate > {_since_iso()}"
+                flow_records = sf.query_tooling(flow_soql)
                 flow_type_map = {
                     "AutoLaunchedFlow": "autolaunched", "Flow": "screen",
                     "Workflow": "record_triggered", "CustomEvent": "record_triggered",
@@ -297,12 +491,15 @@ class MetadataService:
             if _cancel_check_and_bail(): return {"cancelled": True}
             if "triggers" in requested_cats:
                 _update_status("triggers", "running")
-                trigger_records = sf.query_tooling(
+                trigger_soql = (
                     "SELECT Id, Name, TableEnumOrId, "
                     "UsageBeforeInsert, UsageAfterInsert, "
                     "UsageBeforeUpdate, UsageAfterUpdate, "
                     "UsageBeforeDelete, UsageAfterDelete FROM ApexTrigger"
                 )
+                if delta_mode:
+                    trigger_soql += f" WHERE LastModifiedDate > {_since_iso()}"
+                trigger_records = sf.query_tooling(trigger_soql)
                 for t in trigger_records:
                     obj_name = t.get("TableEnumOrId", "")
                     obj = obj_map.get(obj_name)
