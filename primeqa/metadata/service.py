@@ -491,26 +491,36 @@ class MetadataService:
             if _cancel_check_and_bail(): return {"cancelled": True}
             if "flows" in requested_cats:
                 _update_status("flows", "running")
-                # Same relationship-traversal risk as VRs: drop
-                # TriggerObjectOrEvent.QualifiedApiName and resolve via the
-                # same EntityDefinition lookup we built above (if any).
-                flow_soql = (
-                    "SELECT Id, ApiName, Label, ProcessType, TriggerType, "
-                    "TriggerObjectOrEventId "
-                    "FROM Flow WHERE Status = 'Active'"
+                # Flow Tooling-object quirks:
+                #   - `ApiName` does not exist on Flow. It lives on
+                #     FlowDefinition as `DeveloperName`. Using MasterLabel
+                #     as the api_name is close enough for our reference
+                #     graph (they usually match modulo spaces).
+                #   - Field is `MasterLabel`, not `Label`.
+                #   - Trigger-object relationship traversal is the same
+                #     permission risk as ValidationRule \u2014 resolve via
+                #     TriggerObjectOrEventId + ent_id_to_name instead.
+                where = "WHERE Status = 'Active'" + (
+                    f" AND LastModifiedDate > {_since_iso()}" if delta_mode else ""
                 )
-                if delta_mode:
-                    flow_soql += f" AND LastModifiedDate > {_since_iso()}"
+                flow_soql = (
+                    "SELECT Id, MasterLabel, ProcessType, TriggerType, "
+                    "TriggerObjectOrEventId FROM Flow " + where
+                )
                 try:
                     flow_records = sf.query_tooling(flow_soql)
                 except Exception as e:
-                    log.warning("Flow probe with trigger-object-id failed (%s); "
-                                "retrying without it", e)
-                    flow_records = sf.query_tooling(
-                        "SELECT Id, ApiName, Label, ProcessType, TriggerType "
-                        "FROM Flow WHERE Status = 'Active'" +
-                        (f" AND LastModifiedDate > {_since_iso()}" if delta_mode else "")
-                    )
+                    # Fallback 1: drop ProcessType + TriggerType + trigger-object
+                    # (minimum viable Flow sync).
+                    log.warning("Flow probe with full select failed (%s); "
+                                "retrying with minimum fields", e)
+                    try:
+                        flow_records = sf.query_tooling(
+                            "SELECT Id, MasterLabel FROM Flow " + where
+                        )
+                    except Exception as e2:
+                        log.warning("Flow probe minimum failed (%s); skipping flows", e2)
+                        flow_records = []
                 flow_type_map = {
                     "AutoLaunchedFlow": "autolaunched", "Flow": "screen",
                     "Workflow": "record_triggered", "CustomEvent": "record_triggered",
@@ -526,8 +536,11 @@ class MetadataService:
                 _ent_map = locals().get("ent_id_to_name") or {}
                 for f in flow_records:
                     pt = f.get("ProcessType", "")
+                    # MasterLabel as the api_name is intentional \u2014 see comment
+                    # above. If it's missing entirely we fall back to the SF Id.
+                    name = f.get("MasterLabel") or f.get("Id", "")
                     flows_data.append({
-                        "api_name": f.get("ApiName", ""), "label": f.get("Label"),
+                        "api_name": name, "label": f.get("MasterLabel"),
                         "flow_type": flow_type_map.get(pt, "autolaunched"),
                         "trigger_object": _ent_map.get(f.get("TriggerObjectOrEventId", "")),
                         "trigger_event": trigger_event_map.get(f.get("TriggerType")),
