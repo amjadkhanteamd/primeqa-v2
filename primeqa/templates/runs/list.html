@@ -6,7 +6,7 @@
 
 {{ breadcrumbs([('Runs', None)]) }}
 
-{% set qs %}{% if status_filter %}&status={{ status_filter }}{% endif %}{% if meta.per_page and meta.per_page != 20 %}&per_page={{ meta.per_page }}{% endif %}{% endset %}
+{% set qs %}{% if status_filter %}&status={{ status_filter }}{% endif %}{% if label_filter %}&label={{ label_filter | urlencode }}{% endif %}{% if meta.per_page and meta.per_page != 20 %}&per_page={{ meta.per_page }}{% endif %}{% endset %}
 
 <div class="space-y-6">
   <div class="flex justify-between items-center">
@@ -17,20 +17,41 @@
     <div class="space-x-2">
       {% if user.role in ['admin', 'tester', 'superadmin'] %}
       <a href="/runs/scheduled" class="rounded-md bg-white px-3 py-2 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Scheduled</a>
-      <a href="/runs/new" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">+ Trigger a new run</a>
+      <a href="/runs/new" class="rounded-md bg-white px-3 py-2 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50"
+         title="Power-user entry for mixed-source runs. Most runs are triggered from Requirements / Suites / Releases now.">Advanced: build run</a>
       {% endif %}
     </div>
   </div>
 
-  <!-- Status filter chips -->
+  {# Prefer triggering from the source page. This banner points users
+     there instead of forcing them through the wizard. #}
+  <div class="bg-indigo-50 border border-indigo-100 rounded-lg p-3 text-xs text-indigo-800 flex items-center gap-2">
+    <span class="font-medium">Tip:</span>
+    <span>Trigger runs from the thing you want to test \u2014
+      <a href="/requirements" class="underline">Requirements</a> \u00b7
+      <a href="/suites" class="underline">Suites</a> \u00b7
+      <a href="/releases" class="underline">Releases</a>. Use <em>Advanced: build run</em>
+      above when you need to mix sources.</span>
+  </div>
+
+  <!-- Status filter chips + label filter -->
   <div class="bg-white shadow rounded-lg p-3 flex flex-wrap items-center gap-2">
-    <div class="flex space-x-1 text-sm flex-1">
-      <a href="/runs" class="px-3 py-1 rounded-md {% if not status_filter %}bg-indigo-100 text-indigo-700 font-medium{% else %}text-gray-600 hover:bg-gray-50{% endif %}">All <span class="text-xs text-gray-500">({{ meta.total }})</span></a>
+    <div class="flex space-x-1 text-sm">
+      <a href="/runs{% if label_filter %}?label={{ label_filter | urlencode }}{% endif %}" class="px-3 py-1 rounded-md {% if not status_filter %}bg-indigo-100 text-indigo-700 font-medium{% else %}text-gray-600 hover:bg-gray-50{% endif %}">All <span class="text-xs text-gray-500">({{ meta.total }})</span></a>
       {% for s in ['queued','running','completed','failed','cancelled'] %}
-      <a href="/runs?status={{ s }}" class="px-3 py-1 rounded-md {% if status_filter == s %}bg-indigo-100 text-indigo-700 font-medium{% else %}text-gray-600 hover:bg-gray-50{% endif %}">{{ s|capitalize }}</a>
+      <a href="/runs?status={{ s }}{% if label_filter %}&label={{ label_filter | urlencode }}{% endif %}" class="px-3 py-1 rounded-md {% if status_filter == s %}bg-indigo-100 text-indigo-700 font-medium{% else %}text-gray-600 hover:bg-gray-50{% endif %}">{{ s|capitalize }}</a>
       {% endfor %}
     </div>
-    <div>{{ per_page_selector(meta.per_page, '/runs', qs, [10, 20, 50]) }}</div>
+    <form method="GET" action="/runs" class="flex items-center gap-1 ml-2">
+      {% if status_filter %}<input type="hidden" name="status" value="{{ status_filter }}">{% endif %}
+      <input type="search" name="label" value="{{ label_filter or '' }}"
+             placeholder="Filter by label…"
+             class="text-sm rounded-md border border-gray-300 px-2 py-1 w-48 focus:border-indigo-500 focus:ring-indigo-500">
+      {% if label_filter %}
+      <a href="/runs{% if status_filter %}?status={{ status_filter }}{% endif %}" class="text-xs text-gray-500 hover:text-gray-700">clear</a>
+      {% endif %}
+    </form>
+    <div class="ml-auto">{{ per_page_selector(meta.per_page, '/runs', qs, [10, 20, 50]) }}</div>
   </div>
 
   <div class="bg-white shadow rounded-lg overflow-x-auto">
@@ -49,7 +70,10 @@
       <tbody class="bg-white divide-y divide-gray-200">
         {% for run in runs %}
         <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/runs/{{ run.id }}'">
-          <td class="px-6 py-4 text-sm font-medium text-indigo-600">#{{ run.id }}</td>
+          <td class="px-6 py-4 text-sm font-medium text-indigo-600">
+            #{{ run.id }}
+            {% if run.label %}<div class="mt-0.5 text-[10px] font-normal text-gray-500 truncate max-w-[10rem]" title="{{ run.label }}">🏷 {{ run.label }}</div>{% endif %}
+          </td>
           <td class="px-6 py-4">
             <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
               {% if run.status == 'completed' %}bg-green-100 text-green-800

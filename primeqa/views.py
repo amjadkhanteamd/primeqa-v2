@@ -176,9 +176,13 @@ def runs_list():
         # PipelineRunRepository.list_runs supports limit/offset but returns a
         # plain list; we compute the count ourselves so we can render proper
         # pagination. Status filter reused as-is.
+        label_filter = (request.args.get("label") or "").strip() or None
         base = db.query(PipelineRun).filter(PipelineRun.tenant_id == request.user["tenant_id"])
         if status_filter:
             base = base.filter(PipelineRun.status == status_filter)
+        if label_filter:
+            # Substring match (ILIKE) so partial tag text finds matches
+            base = base.filter(PipelineRun.label.ilike(f"%{label_filter}%"))
         total = base.order_by(None).count()
         runs = base.order_by(PipelineRun.queued_at.desc()) \
                    .offset((page - 1) * per_page).limit(per_page).all()
@@ -189,6 +193,7 @@ def runs_list():
             "passed": r.passed, "failed": r.failed, "total_tests": r.total_tests,
             "queued_at": r.queued_at.isoformat() if r.queued_at else "",
             "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+            "label": r.label,
         } for r in runs]
         from math import ceil
         meta = {
@@ -197,7 +202,7 @@ def runs_list():
         }
         return render_template("runs/list.html", **ctx(
             active_page="runs", runs=runs_data,
-            status_filter=status_filter, meta=meta,
+            status_filter=status_filter, label_filter=label_filter, meta=meta,
         ))
     finally:
         db.close()
@@ -533,6 +538,11 @@ def runs_detail(run_id):
             "completed_at": run.completed_at.isoformat() if run.completed_at else None,
             "source_refs": run.source_refs or {},
             "parent_run_id": run.parent_run_id,
+            # Migration 030
+            "label": run.label,
+            "failure_summary_ai": run.failure_summary_ai,
+            "failure_summary_at": run.failure_summary_at.isoformat() if run.failure_summary_at else None,
+            "failure_summary_model": run.failure_summary_model,
         }
 
         # R5: agent fixes for this run
@@ -2496,6 +2506,220 @@ def runs_rerun_failed(run_id):
             source_refs={"rerun_failed_of": parent.id, "test_case_ids": failed_ids},
         )
         return redirect(f"/runs/{created['id']}")
+    finally:
+        db.close()
+
+
+@views_bp.route("/runs/<int:run_id>/rerun-one", methods=["POST"])
+@role_required("admin", "tester")
+def runs_rerun_one(run_id):
+    """Rerun a single test case from a previous run in a NEW run.
+    Form: test_case_id (int). Used by the per-row "Rerun" action on
+    the run detail timeline, next to each failed/errored test."""
+    from flask import flash
+    from primeqa.execution.repository import (
+        PipelineRunRepository, PipelineStageRepository,
+        ExecutionSlotRepository, WorkerHeartbeatRepository,
+    )
+    from primeqa.execution.service import PipelineService
+    db = next(get_db())
+    try:
+        parent = PipelineRunRepository(db).get_run(run_id, request.user["tenant_id"])
+        if not parent:
+            flash("Run not found", "error"); return redirect("/runs")
+        try:
+            tc_id = int(request.form["test_case_id"])
+        except (KeyError, ValueError):
+            flash("Missing test_case_id", "error")
+            return redirect(f"/runs/{run_id}")
+
+        svc = PipelineService(
+            PipelineRunRepository(db), PipelineStageRepository(db),
+            ExecutionSlotRepository(db), WorkerHeartbeatRepository(db),
+        )
+        created = svc.create_run(
+            tenant_id=parent.tenant_id, environment_id=parent.environment_id,
+            triggered_by=request.user["id"], run_type="execute_only",
+            source_type="test_cases", source_ids=[tc_id],
+            priority=parent.priority, parent_run_id=parent.id,
+            source_refs={"rerun_one_of": parent.id, "test_case_ids": [tc_id]},
+        )
+        return redirect(f"/runs/{created['id']}")
+    finally:
+        db.close()
+
+
+@views_bp.route("/runs/<int:run_id>/rerun-verbatim", methods=["POST"])
+@role_required("admin", "tester")
+def runs_rerun_verbatim(run_id):
+    """Replay a prior run with the EXACT same test case versions.
+
+    Most reruns hit whatever the current_version_id is now. "Verbatim"
+    pins each TC to the version_id that was executed in the parent
+    run \u2014 useful to reproduce a failure when the TC has moved on.
+    Pinned versions travel in run.config.version_pin; the worker
+    honours that ahead of current_version_id.
+    """
+    from flask import flash
+    from primeqa.execution.repository import (
+        PipelineRunRepository, PipelineStageRepository,
+        ExecutionSlotRepository, WorkerHeartbeatRepository,
+        RunTestResultRepository,
+    )
+    from primeqa.execution.service import PipelineService
+    db = next(get_db())
+    try:
+        parent = PipelineRunRepository(db).get_run(run_id, request.user["tenant_id"])
+        if not parent:
+            flash("Run not found", "error"); return redirect("/runs")
+        results = RunTestResultRepository(db).list_results(run_id)
+        if not results:
+            flash("Original run has no test results to replay.", "error")
+            return redirect(f"/runs/{run_id}")
+
+        tc_ids = [r.test_case_id for r in results]
+        # str keys so JSON round-trips cleanly; worker coerces back to int
+        version_pin = {str(r.test_case_id): r.test_case_version_id for r in results}
+
+        svc = PipelineService(
+            PipelineRunRepository(db), PipelineStageRepository(db),
+            ExecutionSlotRepository(db), WorkerHeartbeatRepository(db),
+        )
+        created = svc.create_run(
+            tenant_id=parent.tenant_id, environment_id=parent.environment_id,
+            triggered_by=request.user["id"], run_type="execute_only",
+            source_type="rerun", source_ids=tc_ids,
+            priority=parent.priority, parent_run_id=parent.id,
+            config={"version_pin": version_pin},
+            source_refs={"rerun_verbatim_of": parent.id,
+                         "test_case_ids": tc_ids,
+                         "version_pin": version_pin},
+        )
+        return redirect(f"/runs/{created['id']}")
+    except Exception as e:
+        flash(f"Could not rerun verbatim: {e}", "error")
+        return redirect(f"/runs/{run_id}")
+    finally:
+        db.close()
+
+
+@views_bp.route("/runs/<int:run_id>/label", methods=["POST"])
+@role_required("admin", "tester")
+def runs_set_label(run_id):
+    """Inline edit of a run's free-form label."""
+    from primeqa.execution.repository import PipelineRunRepository
+    from primeqa.execution.models import PipelineRun
+    db = next(get_db())
+    try:
+        run = PipelineRunRepository(db).get_run(run_id, request.user["tenant_id"])
+        if not run:
+            return jsonify(error="Run not found"), 404
+        data = request.get_json(silent=True) or {}
+        label = (data.get("label") or "").strip()[:100] or None
+        r = db.query(PipelineRun).filter(
+            PipelineRun.id == run_id,
+            PipelineRun.tenant_id == request.user["tenant_id"],
+        ).first()
+        if not r:
+            return jsonify(error="Run not found"), 404
+        r.label = label
+        db.commit()
+        return jsonify({"label": label}), 200
+    finally:
+        db.close()
+
+
+@views_bp.route("/runs/<int:run_id>/summarise-failures", methods=["POST"])
+@role_required("superadmin")
+def runs_summarise_failures(run_id):
+    """Generate (or refresh) an AI rollup of why tests failed on this run.
+
+    Superadmin only \u2014 costs LLM tokens. Sends failed steps'
+    error_message + step_action + target_object to the tenant's default
+    LLM, asks for a 2-4 sentence summary grouping by failure class.
+    Caches on pipeline_runs.failure_summary_ai; re-clicking regenerates.
+    """
+    from flask import flash
+    from datetime import datetime, timezone
+    from primeqa.execution.repository import (
+        PipelineRunRepository, RunTestResultRepository, RunStepResultRepository,
+    )
+    from primeqa.execution.models import PipelineRun
+    from primeqa.core.repository import ConnectionRepository, EnvironmentRepository
+    db = next(get_db())
+    try:
+        tid = request.user["tenant_id"]
+        run = PipelineRunRepository(db).get_run(run_id, tid)
+        if not run:
+            flash("Run not found", "error"); return redirect("/runs")
+
+        # Collect failed step error messages
+        results = RunTestResultRepository(db).list_results(run_id)
+        failed_tcs = [r for r in results if r.status in ("failed", "error")]
+        if not failed_tcs:
+            flash("No failures on this run \u2014 nothing to summarise.", "info")
+            return redirect(f"/runs/{run_id}")
+
+        step_repo = RunStepResultRepository(db)
+        failure_lines = []
+        for r in failed_tcs:
+            steps = step_repo.list_step_results(r.id)
+            for s in steps:
+                if s.status in ("failed", "error") and s.error_message:
+                    failure_lines.append(
+                        f"- TC#{r.test_case_id} step {s.step_order} "
+                        f"{s.step_action} on {s.target_object or '?'}: "
+                        f"{(s.error_message or '')[:300]}"
+                    )
+
+        if not failure_lines:
+            flash("No step-level failure messages found.", "info")
+            return redirect(f"/runs/{run_id}")
+
+        # Need an LLM connection; use the env's configured one
+        env = EnvironmentRepository(db).get_environment(run.environment_id, tid)
+        if not env or not env.llm_connection_id:
+            flash("This environment has no LLM connection.", "error")
+            return redirect(f"/runs/{run_id}")
+        conn = ConnectionRepository(db).get_connection_decrypted(env.llm_connection_id, tid)
+        if not conn:
+            flash("LLM connection could not be loaded.", "error")
+            return redirect(f"/runs/{run_id}")
+
+        import anthropic
+        model = conn["config"].get("model", "claude-sonnet-4-20250514")
+        client = anthropic.Anthropic(api_key=conn["config"].get("api_key", ""))
+
+        prompt = (
+            "Summarise why these Salesforce test steps failed. Group by "
+            "root cause when possible. Keep it to 3-6 sentences. Be "
+            "specific: mention field / object / validation names. No "
+            "preamble.\n\n"
+            + "\n".join(failure_lines[:50])
+        )
+        try:
+            resp = client.messages.create(
+                model=model, max_tokens=600,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            summary = resp.content[0].text.strip()
+        except Exception as e:
+            msg = str(e)
+            if "credit balance" in msg.lower():
+                flash("AI summarisation failed: Anthropic credits "
+                      "exhausted. Top up at console.anthropic.com.", "error")
+            else:
+                flash(f"AI summarisation failed: {msg[:200]}", "error")
+            return redirect(f"/runs/{run_id}")
+
+        r = db.query(PipelineRun).filter(
+            PipelineRun.id == run_id, PipelineRun.tenant_id == tid,
+        ).first()
+        r.failure_summary_ai = summary
+        r.failure_summary_at = datetime.now(timezone.utc)
+        r.failure_summary_model = model
+        db.commit()
+        return redirect(f"/runs/{run_id}")
     finally:
         db.close()
 

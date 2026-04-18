@@ -44,6 +44,12 @@ class PipelineRun(Base):
     queued_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     started_at = Column(DateTime(timezone=True))
     completed_at = Column(DateTime(timezone=True))
+    # Migration 030: free-form tag for filtering run history + cached
+    # AI failure summary for the run detail "Summarise failures" panel.
+    label = Column(String(100))
+    failure_summary_ai = Column(Text)
+    failure_summary_at = Column(DateTime(timezone=True))
+    failure_summary_model = Column(String(100))
 
     stages = relationship("PipelineStage", back_populates="run")
     test_results = relationship("RunTestResult", back_populates="run")

@@ -188,9 +188,15 @@ def _run_execute_stage(stage, ctx):
                      level="warn", tenant_id=tenant_id, test_case_id=tc_id)
             continue
 
+        # "Run verbatim" pins test cases to a specific version via
+        # run.config.version_pin = {str(tc_id): version_id}. Without a
+        # pin we fall back to the TC's current_version_id (normal path).
+        pin_map = (run.config or {}).get("version_pin") or {}
+        pinned_id = pin_map.get(str(tc.id)) or pin_map.get(tc.id)
+        version_id = pinned_id or tc.current_version_id
         version = db.query(TestCaseVersion).filter(
-            TestCaseVersion.id == tc.current_version_id,
-        ).first()
+            TestCaseVersion.id == version_id,
+        ).first() if version_id else None
         if not version or not version.steps:
             skipped += 1
             emit_log(run.id,
