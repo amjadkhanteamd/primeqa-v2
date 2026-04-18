@@ -187,36 +187,59 @@ def _oauth_token(env, cfg) -> str:
 
 # ---- Scheduler side: reap stalled jobs ------------------------------------
 
-STALL_THRESHOLD_SEC = 120  # 2 min of no heartbeat \u2192 declare worker dead
+STALL_THRESHOLD_SEC = 120        # 2 min of no heartbeat \u2192 declare worker dead
+NO_HEARTBEAT_GRACE_SEC = 300     # never-heartbeated rows older than 5 min are dead
 
 
 def reap_stalled_jobs(db) -> int:
     """Flip in_progress rows with no recent heartbeat to failed.
 
-    Called from primeqa.scheduler on its tick. Returns the number of
-    meta_versions reaped.
+    Two classes of stalled rows:
+      (1) heartbeat_at < now - STALL_THRESHOLD_SEC \u2014 worker went silent
+      (2) heartbeat_at IS NULL AND started_at < now - NO_HEARTBEAT_GRACE_SEC
+          \u2014 row was claimed before migration 025 or by a worker that
+          crashed before it could write its first heartbeat. Without this
+          clause, old in_progress rows hang forever because `heartbeat_at <
+          cutoff` is False for NULL.
+
+    Returns count of rows reaped. Called from primeqa.scheduler tick.
     """
     from primeqa.metadata.models import MetaVersion, MetaSyncStatus
     from primeqa.metadata.sync_engine import emit_sync_event
     from datetime import timedelta
+    from sqlalchemy import or_, and_
 
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=STALL_THRESHOLD_SEC)
+    now = datetime.now(timezone.utc)
+    heartbeat_cutoff = now - timedelta(seconds=STALL_THRESHOLD_SEC)
+    grace_cutoff = now - timedelta(seconds=NO_HEARTBEAT_GRACE_SEC)
+
     stalled = db.query(MetaVersion).filter(
         MetaVersion.status == "in_progress",
-        MetaVersion.heartbeat_at < cutoff,
+        or_(
+            and_(MetaVersion.heartbeat_at.isnot(None),
+                 MetaVersion.heartbeat_at < heartbeat_cutoff),
+            and_(MetaVersion.heartbeat_at.is_(None),
+                 # either started_at or queued_at is our "been around a while" signal
+                 or_(MetaVersion.started_at < grace_cutoff,
+                     and_(MetaVersion.started_at.is_(None),
+                          MetaVersion.queued_at < grace_cutoff))),
+        ),
     ).all()
+
     for mv in stalled:
         mv.status = "failed"
-        mv.completed_at = datetime.now(timezone.utc)
-        # Cascade any running meta_sync_status rows to failed so the progress
-        # UI shows a clear cause.
+        mv.completed_at = now
+        why = ("Worker stalled; no heartbeat for >2 min"
+               if mv.heartbeat_at
+               else "Worker never heartbeated; row reaped after grace period")
         for row in db.query(MetaSyncStatus).filter_by(meta_version_id=mv.id).all():
-            if row.status == "running":
+            if row.status in ("running", "pending"):
                 row.status = "failed"
-                row.error_message = "Worker stalled; no heartbeat for >2 min"
-                row.completed_at = datetime.now(timezone.utc)
+                row.error_message = why
+                row.completed_at = now
         emit_sync_event(mv.id, "sync_finished", status="failed",
-                        error_message="Worker stalled; sync aborted")
+                        error_message=why)
+
     if stalled:
         db.commit()
     return len(stalled)

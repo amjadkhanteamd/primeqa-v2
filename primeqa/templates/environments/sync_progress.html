@@ -261,17 +261,38 @@
 
   function showActionBar(snap) {
     elActionBar.classList.remove('hidden');
-    const failed = (snap.categories || []).filter(c => ['failed','skipped_parent_failed'].includes(c.status));
+    const cats = snap.categories || [];
+    const failedCats = cats.filter(c => ['failed','skipped_parent_failed','cancelled'].includes(c.status));
+    const completeCats = cats.filter(c => c.status === 'complete');
+    const hasRetryableFailures = failedCats.length > 0;
+
     if (snap.status === 'complete') {
-      elActionSummary.innerHTML = '<span class="text-green-700 font-medium">\u2713 Sync complete</span> \u00b7 ' + mv.version_label + ' is now current';
+      elActionSummary.innerHTML =
+        '<span class="text-green-700 font-medium">\u2713 Sync complete</span> \u00b7 ' +
+        mv.version_label + ' is now current';
     } else if (snap.status === 'failed') {
-      elActionSummary.innerHTML = '<span class="text-red-700 font-medium">\u2717 Sync failed</span>';
-      if (failed.length && btnRetry) btnRetry.classList.remove('hidden');
+      elActionSummary.innerHTML =
+        '<span class="text-red-700 font-medium">\u2717 Sync failed</span>' +
+        (completeCats.length ? ' \u00b7 ' + completeCats.length + ' of ' + cats.length +
+         ' categor' + (completeCats.length === 1 ? 'y' : 'ies') + ' completed' : '');
+      if (hasRetryableFailures && btnRetry) btnRetry.classList.remove('hidden');
     } else if (snap.status === 'cancelled') {
-      elActionSummary.innerHTML = '<span class="text-gray-700">\u232B Sync cancelled</span>';
-      if (failed.length && btnRetry) btnRetry.classList.remove('hidden');
+      elActionSummary.innerHTML =
+        '<span class="text-gray-700">\u232B Sync cancelled</span>' +
+        (completeCats.length ? ' \u00b7 ' + completeCats.length + ' categor' +
+         (completeCats.length === 1 ? 'y' : 'ies') + ' completed before cancel' : '');
+      if (hasRetryableFailures && btnRetry) btnRetry.classList.remove('hidden');
+    } else if (snap.status === 'partial') {
+      // Mixed outcome: some categories complete, some failed. Treat same as failed:
+      // give user the Retry + Start over path so they can make forward progress.
+      elActionSummary.innerHTML =
+        '<span class="text-yellow-700 font-medium">\u26a0 Partial sync</span> \u00b7 ' +
+        completeCats.length + ' of ' + cats.length + ' categories completed, ' +
+        failedCats.length + ' failed or skipped';
+      if (hasRetryableFailures && btnRetry) btnRetry.classList.remove('hidden');
     } else {
       elActionSummary.textContent = 'Sync ended in ' + snap.status + ' state';
+      if (hasRetryableFailures && btnRetry) btnRetry.classList.remove('hidden');
     }
   }
 
