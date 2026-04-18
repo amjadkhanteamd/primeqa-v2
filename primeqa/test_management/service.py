@@ -129,20 +129,57 @@ class TestManagementService:
         generator = TestCaseGenerator(llm_client, metadata_repo)
         result = generator.generate(requirement, env.current_meta_version_id, model=model)
 
+        # Whether the final write was a fresh TC, a reuse of an existing
+        # draft (supersession), or explicit regeneration via test_case_id.
+        # Drives generation_method on the new version + UI messaging.
+        generation_mode = "new"  # "new" | "reused_draft" | "regenerated"
+
         if test_case_id:
             tc = self.test_case_repo.get_test_case(test_case_id, tenant_id)
             if not tc:
                 raise NotFoundError("Test case not found")
+            generation_mode = "regenerated"
         else:
-            title = requirement.jira_summary or (
-                f"Test for {requirement.jira_key or f'requirement {requirement.id}'}"
+            # Supersession: one requirement \u2192 one active draft per user.
+            # If this user already has an open DRAFT TC for this requirement,
+            # roll a new version onto it instead of cluttering the library
+            # with duplicates. Approved / active TCs are mature work and
+            # get a fresh TC alongside them rather than being mutated.
+            #
+            # MY drafts only \u2014 other users' drafts on the same requirement
+            # are untouched so parallel QA work doesn't collide.
+            own_drafts = self.test_case_repo.list_test_cases(
+                tenant_id=tenant_id,
+                requirement_id=requirement_id,
+                status="draft",
+                include_private_for=created_by,
+                include_deleted=False,
             )
-            tc = self.test_case_repo.create_test_case(
-                tenant_id=tenant_id, title=title,
-                owner_id=created_by, created_by=created_by,
-                requirement_id=requirement_id, section_id=requirement.section_id,
-                visibility="private", status="draft",
-            )
+            own_drafts = [t for t in own_drafts if t.owner_id == created_by]
+
+            if own_drafts:
+                own_drafts.sort(key=lambda t: t.updated_at, reverse=True)
+                tc = own_drafts[0]
+                # Soft-delete stale drafts (keep most recent)
+                for stale in own_drafts[1:]:
+                    self.test_case_repo.soft_delete_test_case(
+                        stale.id, tenant_id, created_by,
+                    )
+                    self._log(tenant_id, created_by,
+                              "supersede_test_case", "test_case", stale.id,
+                              {"superseded_by": tc.id, "reason": "regenerate_draft"})
+                generation_mode = "reused_draft"
+            else:
+                title = requirement.jira_summary or (
+                    f"Test for {requirement.jira_key or f'requirement {requirement.id}'}"
+                )
+                tc = self.test_case_repo.create_test_case(
+                    tenant_id=tenant_id, title=title,
+                    owner_id=created_by, created_by=created_by,
+                    requirement_id=requirement_id, section_id=requirement.section_id,
+                    visibility="private", status="draft",
+                )
+                generation_mode = "new"
 
         version = self.test_case_repo.create_version(
             test_case_id=tc.id,
@@ -151,7 +188,7 @@ class TestManagementService:
             steps=result["steps"],
             expected_results=result["expected_results"],
             preconditions=result["preconditions"],
-            generation_method="ai" if not test_case_id else "regenerated",
+            generation_method=("ai" if generation_mode == "new" else "regenerated"),
             confidence_score=result["confidence_score"],
             referenced_entities=result["referenced_entities"],
         )
@@ -166,14 +203,22 @@ class TestManagementService:
             )
             auto_review_created = True
 
-        self._log(tenant_id, created_by,
-                  "generate_test_case" if not test_case_id else "regenerate_test_case",
+        activity_action = {
+            "new": "generate_test_case",
+            "reused_draft": "regenerate_test_case",
+            "regenerated": "regenerate_test_case",
+        }[generation_mode]
+        self._log(tenant_id, created_by, activity_action,
                   "test_case", tc.id,
-                  {"version_id": version.id, "confidence": result["confidence_score"]})
+                  {"version_id": version.id,
+                   "confidence": result["confidence_score"],
+                   "generation_mode": generation_mode})
 
         return {
             "test_case_id": tc.id,
             "version_id": version.id,
+            "version_number": version.version_number,
+            "generation_mode": generation_mode,
             "confidence_score": result["confidence_score"],
             "explanation": result["explanation"],
             "steps_count": len(result["steps"]),

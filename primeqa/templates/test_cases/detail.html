@@ -9,10 +9,25 @@
     <div class="flex justify-between items-center">
         <div>
             <h1 class="text-2xl font-bold text-gray-900">{{ tc.title }}</h1>
-            <div class="mt-1 flex space-x-2">
+            <div class="mt-1 flex items-center space-x-2 flex-wrap">
                 <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if tc.status == 'active' %}bg-green-100 text-green-800{% elif tc.status == 'approved' %}bg-blue-100 text-blue-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ tc.status }}</span>
                 <span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if tc.visibility == 'shared' %}bg-green-50 text-green-700{% else %}bg-gray-50 text-gray-600{% endif %}">{{ tc.visibility }}</span>
-                <span class="text-xs text-gray-500">v{{ tc.version }}</span>
+                {# Version chip: prominent so the user can see at a glance that
+                   "Regenerate" rolled this TC to a new version rather than
+                   creating a duplicate. Tooltip + jump link to history give
+                   the "did it overwrite something?" answer one click away. #}
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-indigo-50 text-indigo-700"
+                      title="Version {{ current_version.version_number if current_version else tc.version }} — open History below for prior versions.">
+                    {{ tc.status | capitalize }} v{{ current_version.version_number if current_version else tc.version }}
+                </span>
+                {% if tc.updated_at %}
+                <span class="text-xs text-gray-500" data-relative-time="{{ tc.updated_at }}">
+                    updated {{ tc.updated_at[:19] }}
+                </span>
+                {% endif %}
+                {% if versions and versions | length > 1 %}
+                <a href="#version-history" class="text-xs text-indigo-600 hover:text-indigo-800">View history ({{ versions | length }})</a>
+                {% endif %}
             </div>
         </div>
         <div class="flex space-x-3">
@@ -118,8 +133,11 @@
     {% endif %}
 
     {% if versions %}
-    <div class="bg-white shadow rounded-lg">
-        <div class="px-4 py-5 sm:px-6 border-b"><h3 class="text-lg font-medium">Version History</h3></div>
+    <div class="bg-white shadow rounded-lg" id="version-history">
+        <div class="px-4 py-5 sm:px-6 border-b flex items-center justify-between">
+            <h3 class="text-lg font-medium">Version History</h3>
+            <span class="text-xs text-gray-500">{{ versions | length }} version{{ '' if versions | length == 1 else 's' }}</span>
+        </div>
         <div class="divide-y divide-gray-200">
             {% for v in versions %}
             <div class="px-6 py-3 flex justify-between items-center {% if v.id == tc.current_version_id %}bg-indigo-50{% endif %}">
@@ -137,6 +155,29 @@
 </div>
 
 <script>
+// Friendly relative time for the "updated N ago" chip on the header.
+// Falls back gracefully to the ISO string if parsing fails.
+(function(){
+  const fmt = (iso) => {
+    const d = new Date(iso);
+    if (isNaN(d)) return null;
+    const s = Math.floor((Date.now() - d.getTime()) / 1000);
+    if (s < 5) return 'just now';
+    if (s < 60) return s + ' sec ago';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + ' min ago';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + ' hr ago';
+    const dy = Math.floor(h / 24);
+    if (dy < 30) return dy + ' day' + (dy === 1 ? '' : 's') + ' ago';
+    return d.toLocaleDateString();
+  };
+  document.querySelectorAll('[data-relative-time]').forEach(el => {
+    const rel = fmt(el.dataset.relativeTime);
+    if (rel) el.textContent = 'updated ' + rel;
+  });
+})();
+
 document.getElementById('detail-delete-btn')?.addEventListener('click', () => {
   window.PrimeQA.confirm({
     title: 'Move to trash?', variant: 'danger',

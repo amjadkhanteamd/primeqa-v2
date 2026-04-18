@@ -2961,9 +2961,21 @@ def requirements_generate(req_id):
                 flash(msg, "error")
             return redirect(f"/requirements/{req_id}")
 
-        msg = f"Generated test case with {result['steps_count']} steps ({int(result['confidence_score']*100)}% confidence)"
+        pct = int(result["confidence_score"] * 100)
+        v = result.get("version_number")
+        mode = result.get("generation_mode", "new")
+        if mode == "reused_draft":
+            msg = (f"Regenerated your draft \u2014 now v{v} "
+                   f"with {result['steps_count']} steps ({pct}% confidence). "
+                   "Stale drafts for this requirement were moved to trash.")
+        elif mode == "regenerated":
+            msg = (f"Test case updated \u2014 now v{v} "
+                   f"with {result['steps_count']} steps ({pct}% confidence).")
+        else:
+            msg = (f"Generated test case v{v or 1} "
+                   f"with {result['steps_count']} steps ({pct}% confidence).")
         if result.get("auto_review_created"):
-            msg += " \u2014 auto-assigned for review (low confidence)"
+            msg += " Auto-assigned for BA review (low confidence)."
         flash(msg, "success")
         return redirect(f"/test-cases/{result['test_case_id']}")
     except Exception as e:
