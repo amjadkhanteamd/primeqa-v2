@@ -101,9 +101,223 @@ class TestManagementService:
         self.impact_repo.resolve_impact(impact_id, "regenerated", created_by)
         return result
 
+    # ---- Multi-TC plan generation ----------------------------------------
+    # "One click \u2192 one test case" hid coverage gaps. generate_test_plan
+    # asks the model for an array of independent TCs covering positive /
+    # negative / boundary / edge / regression. Each becomes a TC row in
+    # one generation batch so the user can see "why 5 TCs?" and audit cost.
+
+    # Rough Anthropic pricing (USD / MTok), Apr 2026. Used for the
+    # superadmin cost column on generation_batches. Keyed by substring
+    # match on the model string.
+    _MODEL_PRICING = [
+        ("opus-4",   {"input": 15.00, "output": 75.00}),
+        ("sonnet-4", {"input":  3.00, "output": 15.00}),
+        ("haiku-4",  {"input":  0.80, "output":  4.00}),
+        ("sonnet-3", {"input":  3.00, "output": 15.00}),
+        ("haiku-3",  {"input":  0.25, "output":  1.25}),
+    ]
+
+    @classmethod
+    def _estimate_cost(cls, model, input_tokens, output_tokens):
+        if not model or input_tokens is None or output_tokens is None:
+            return None
+        ml = (model or "").lower()
+        pricing = None
+        for key, p in cls._MODEL_PRICING:
+            if key in ml:
+                pricing = p
+                break
+        if not pricing:
+            return None
+        cost = (input_tokens / 1_000_000) * pricing["input"] + \
+               (output_tokens / 1_000_000) * pricing["output"]
+        return round(cost, 4)
+
+    def generate_test_plan(self, tenant_id, requirement_id, environment_id,
+                           created_by, env_repo, conn_repo, metadata_repo,
+                           min_tests=3, max_tests=6):
+        """Generate a test plan (N independent test cases) for one requirement.
+
+        Supersession: soft-deletes ALL prior-batch drafts for this user on
+        this requirement, then creates a fresh batch with N TCs. Approved /
+        active TCs from older batches are kept (immutable work).
+
+        Returns:
+          {
+            "generation_batch_id": int,
+            "requirement_id": int,
+            "explanation": str,
+            "test_cases": [ { test_case_id, version_id, version_number,
+                              title, coverage_type, confidence, ... } ],
+            "tokens": {"input": ..., "output": ...},
+            "cost_usd": float or None,
+            "model_used": str,
+            "superseded_count": int,
+          }
+        """
+        from primeqa.intelligence.generation import TestCaseGenerator
+        from primeqa.test_management.models import GenerationBatch
+
+        requirement = self.requirement_repo.get_requirement(requirement_id, tenant_id)
+        if not requirement:
+            raise NotFoundError("Requirement not found")
+
+        env = env_repo.get_environment(environment_id, tenant_id)
+        if not env:
+            raise NotFoundError("Environment not found")
+        if not env.current_meta_version_id:
+            raise ValidationError("Environment has no metadata version. Refresh metadata first.")
+        if not env.llm_connection_id:
+            raise ValidationError("Environment has no LLM connection configured")
+
+        llm_conn = conn_repo.get_connection_decrypted(env.llm_connection_id, tenant_id)
+        if not llm_conn:
+            raise NotFoundError("LLM connection not found")
+
+        import anthropic
+        llm_client = anthropic.Anthropic(api_key=llm_conn["config"].get("api_key", ""))
+        model = llm_conn["config"].get("model", "claude-sonnet-4-20250514")
+
+        generator = TestCaseGenerator(llm_client, metadata_repo)
+        plan = generator.generate_plan(
+            requirement, env.current_meta_version_id, model=model,
+            min_tests=min_tests, max_tests=max_tests,
+        )
+        tcs_in_plan = plan.get("test_cases") or []
+        if not tcs_in_plan:
+            raise ValidationError("Generator produced no test cases")
+
+        # Supersession: soft-delete all own-draft TCs for this requirement
+        # across all prior batches. Approved / active stay.
+        own_drafts = self.test_case_repo.list_test_cases(
+            tenant_id=tenant_id,
+            requirement_id=requirement_id,
+            status="draft",
+            include_private_for=created_by,
+            include_deleted=False,
+        )
+        own_drafts = [t for t in own_drafts if t.owner_id == created_by]
+        superseded = 0
+        for stale in own_drafts:
+            self.test_case_repo.soft_delete_test_case(stale.id, tenant_id, created_by)
+            self._log(tenant_id, created_by,
+                      "supersede_test_case", "test_case", stale.id,
+                      {"reason": "regenerate_plan"})
+            superseded += 1
+
+        # Create the batch row first so each TC can reference its id.
+        cost = self._estimate_cost(
+            plan.get("model_used"),
+            plan.get("prompt_tokens"), plan.get("completion_tokens"),
+        )
+        coverage_types = sorted({tc.get("coverage_type", "positive") for tc in tcs_in_plan})
+        batch = GenerationBatch(
+            tenant_id=tenant_id, requirement_id=requirement_id,
+            created_by=created_by,
+            llm_model=plan.get("model_used"),
+            input_tokens=plan.get("prompt_tokens"),
+            output_tokens=plan.get("completion_tokens"),
+            cost_usd=cost,
+            explanation=plan.get("explanation", ""),
+            coverage_types=coverage_types,
+        )
+        self.test_case_repo.db.add(batch)
+        self.test_case_repo.db.commit()
+        self.test_case_repo.db.refresh(batch)
+
+        # Build N TCs + N TestCaseVersions + optionally BA reviews
+        created = []
+        auto_reviews = 0
+        for plan_tc in tcs_in_plan:
+            title = (plan_tc.get("title") or "").strip() or (
+                requirement.jira_summary or f"Test for {requirement.jira_key or requirement.id}"
+            )
+            # Coverage tag on the title so the library shows it at a glance
+            # even before a dedicated badge column is wired everywhere.
+            ct = plan_tc.get("coverage_type", "positive")
+            if ct and not title.lower().startswith(ct.replace("_", " ")):
+                # Only prefix when the AI's title doesn't already include
+                # the coverage type to avoid "[positive] Positive test of X".
+                prefix_map = {
+                    "positive": "[+] ",
+                    "negative_validation": "[-] ",
+                    "boundary": "[|] ",
+                    "edge_case": "[~] ",
+                    "regression": "[R] ",
+                }
+                title = prefix_map.get(ct, "") + title
+
+            tc = self.test_case_repo.create_test_case(
+                tenant_id=tenant_id, title=title[:500],
+                owner_id=created_by, created_by=created_by,
+                requirement_id=requirement_id, section_id=requirement.section_id,
+                visibility="private", status="draft",
+            )
+            tc.coverage_type = ct
+            tc.generation_batch_id = batch.id
+            self.test_case_repo.db.commit()
+
+            version = self.test_case_repo.create_version(
+                test_case_id=tc.id,
+                metadata_version_id=env.current_meta_version_id,
+                created_by=created_by,
+                steps=plan_tc.get("steps", []),
+                expected_results=plan_tc.get("expected_results", []),
+                preconditions=plan_tc.get("preconditions", []),
+                generation_method="ai",
+                confidence_score=float(plan_tc.get("confidence_score", 0.7)),
+                referenced_entities=plan_tc.get("referenced_entities", []),
+            )
+
+            if float(plan_tc.get("confidence_score", 0.7)) < 0.7:
+                self.review_repo.create_review(
+                    tenant_id=tenant_id,
+                    test_case_version_id=version.id,
+                    assigned_to=created_by,
+                )
+                auto_reviews += 1
+
+            created.append({
+                "test_case_id": tc.id,
+                "version_id": version.id,
+                "version_number": version.version_number,
+                "title": title,
+                "coverage_type": ct,
+                "description": plan_tc.get("description", ""),
+                "confidence": float(plan_tc.get("confidence_score", 0.7)),
+                "steps_count": len(plan_tc.get("steps", [])),
+            })
+
+        self._log(tenant_id, created_by,
+                  "generate_test_plan", "requirement", requirement_id,
+                  {"batch_id": batch.id, "tc_count": len(created),
+                   "coverage_types": coverage_types,
+                   "superseded": superseded,
+                   "cost_usd": float(cost) if cost is not None else None})
+
+        return {
+            "generation_batch_id": batch.id,
+            "requirement_id": requirement_id,
+            "explanation": plan.get("explanation", ""),
+            "test_cases": created,
+            "tokens": {
+                "input": plan.get("prompt_tokens", 0),
+                "output": plan.get("completion_tokens", 0),
+            },
+            "cost_usd": float(cost) if cost is not None else None,
+            "model_used": plan.get("model_used"),
+            "coverage_types": coverage_types,
+            "superseded_count": superseded,
+            "auto_reviews_created": auto_reviews,
+        }
+
     def generate_test_case(self, tenant_id, requirement_id, environment_id, created_by,
                            env_repo, conn_repo, metadata_repo, test_case_id=None):
-        """Use AI to generate a test case from a requirement + environment metadata."""
+        """Single-TC back-compat wrapper. Delegates to generate_test_plan
+        with max_tests=1 when creating a fresh TC. When `test_case_id` is
+        passed (explicit regeneration of a specific TC), keeps the original
+        single-version behavior."""
         from primeqa.intelligence.generation import TestCaseGenerator
 
         requirement = self.requirement_repo.get_requirement(requirement_id, tenant_id)

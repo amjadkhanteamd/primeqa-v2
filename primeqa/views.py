@@ -645,6 +645,9 @@ def test_cases_library():
             "visibility": tc.visibility, "owner_id": tc.owner_id,
             "updated_at": tc.updated_at.isoformat() if tc.updated_at else "",
             "deleted_at": tc.deleted_at.isoformat() if getattr(tc, "deleted_at", None) else None,
+            "coverage_type": getattr(tc, "coverage_type", None),
+            "generation_batch_id": getattr(tc, "generation_batch_id", None),
+            "requirement_id": tc.requirement_id,
         } for tc in tc_rows]
 
         return render_template("test_cases/library.html", **ctx(
@@ -2807,8 +2810,34 @@ def requirements_detail(req_id):
         tcs_data = [{
             "id": t.id, "title": t.title, "status": t.status,
             "visibility": t.visibility,
+            "coverage_type": getattr(t, "coverage_type", None),
+            "generation_batch_id": getattr(t, "generation_batch_id", None),
             "updated_at": t.updated_at.isoformat() if t.updated_at else "",
         } for t in tcs]
+
+        # Latest generation batch for this requirement (by this user or any
+        # user if none of mine). Surfaces the AI's rationale + cost.
+        from primeqa.test_management.models import GenerationBatch
+        latest_batch = (db.query(GenerationBatch)
+                        .filter(GenerationBatch.tenant_id == tid,
+                                GenerationBatch.requirement_id == req_id)
+                        .order_by(GenerationBatch.created_at.desc())
+                        .first())
+        is_superadmin = request.user.get("role") == "superadmin"
+        batch_data = None
+        if latest_batch:
+            batch_data = {
+                "id": latest_batch.id,
+                "explanation": latest_batch.explanation,
+                "coverage_types": latest_batch.coverage_types or [],
+                "model": latest_batch.llm_model,
+                "created_at": latest_batch.created_at.isoformat() if latest_batch.created_at else None,
+                # Cost + tokens only surfaced to superadmin; keep the
+                # flat user experience clean of $$ and internal plumbing.
+                "input_tokens": latest_batch.input_tokens if is_superadmin else None,
+                "output_tokens": latest_batch.output_tokens if is_superadmin else None,
+                "cost_usd": float(latest_batch.cost_usd) if (is_superadmin and latest_batch.cost_usd is not None) else None,
+            }
 
         envs = EnvironmentRepository(db).list_environments(
             tid, request.user["id"], request.user["role"])
@@ -2837,6 +2866,7 @@ def requirements_detail(req_id):
         return render_template("requirements/detail.html", **ctx(
             active_page="requirements", req=req_data,
             test_cases=tcs_data, environments=envs_data,
+            generation_batch=batch_data,
         ))
     finally:
         db.close()
@@ -3045,7 +3075,11 @@ def requirements_generate(req_id):
         svc.review_repo = BAReviewRepository(db)
         env_id = int(request.form["environment_id"])
         try:
-            result = svc.generate_test_case(
+            # Generate a multi-TC test plan instead of a single test. Click
+            # count stays the same; coverage breadth jumps (positive +
+            # negative + boundary + edge + regression). See migration 028
+            # and generate_test_plan in test_management/service.py.
+            plan = svc.generate_test_plan(
                 tenant_id=request.user["tenant_id"],
                 requirement_id=req_id,
                 environment_id=env_id,
@@ -3067,23 +3101,26 @@ def requirements_generate(req_id):
                 flash(msg, "error")
             return redirect(f"/requirements/{req_id}")
 
-        pct = int(result["confidence_score"] * 100)
-        v = result.get("version_number")
-        mode = result.get("generation_mode", "new")
-        if mode == "reused_draft":
-            msg = (f"Regenerated your draft \u2014 now v{v} "
-                   f"with {result['steps_count']} steps ({pct}% confidence). "
-                   "Stale drafts for this requirement were moved to trash.")
-        elif mode == "regenerated":
-            msg = (f"Test case updated \u2014 now v{v} "
-                   f"with {result['steps_count']} steps ({pct}% confidence).")
+        tcs = plan.get("test_cases", [])
+        n = len(tcs)
+        cov_counts = {}
+        for tc in tcs:
+            cov_counts[tc["coverage_type"]] = cov_counts.get(tc["coverage_type"], 0) + 1
+        cov_breakdown = ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in sorted(cov_counts.items()))
+        superseded = plan.get("superseded_count", 0)
+
+        if n == 0:
+            flash("Generator produced no test cases. Try regenerating.", "error")
         else:
-            msg = (f"Generated test case v{v or 1} "
-                   f"with {result['steps_count']} steps ({pct}% confidence).")
-        if result.get("auto_review_created"):
-            msg += " Auto-assigned for BA review (low confidence)."
-        flash(msg, "success")
-        return redirect(f"/test-cases/{result['test_case_id']}")
+            parts = [f"Generated {n} test case{'s' if n != 1 else ''}"]
+            if cov_breakdown:
+                parts.append(f"({cov_breakdown})")
+            if superseded:
+                parts.append(f"\u2014 superseded {superseded} stale draft{'s' if superseded != 1 else ''}")
+            if plan.get("auto_reviews_created"):
+                parts.append(f"\u2014 {plan['auto_reviews_created']} auto-assigned for BA review")
+            flash(" ".join(parts) + ".", "success")
+        return redirect(f"/requirements/{req_id}")
     except Exception as e:
         flash(f"Generation failed: {e}", "error")
     finally:

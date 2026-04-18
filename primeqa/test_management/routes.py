@@ -364,7 +364,7 @@ def bulk_generate_requirements():
                 BAReviewRepository(s), MetadataImpactRepository(s),
             )
             try:
-                result = svc.generate_test_case(
+                plan = svc.generate_test_plan(
                     tenant_id=tenant_id, requirement_id=req_id,
                     environment_id=env_id, created_by=user_id,
                     env_repo=EnvironmentRepository(s),
@@ -373,10 +373,12 @@ def bulk_generate_requirements():
                 )
                 return {
                     "requirement_id": req_id, "status": "ok",
-                    "test_case_id": result["test_case_id"],
-                    "version_number": result.get("version_number"),
-                    "generation_mode": result.get("generation_mode"),
-                    "confidence": result["confidence_score"],
+                    "generation_batch_id": plan["generation_batch_id"],
+                    "test_case_count": len(plan["test_cases"]),
+                    "coverage_types": plan.get("coverage_types", []),
+                    "superseded_count": plan.get("superseded_count", 0),
+                    # Keep first TC for convenience linking in the modal:
+                    "test_case_id": plan["test_cases"][0]["test_case_id"] if plan["test_cases"] else None,
                 }
             except (ValueError, ValidationError, NotFoundError) as e:
                 return {"requirement_id": req_id, "status": "error",

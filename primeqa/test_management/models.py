@@ -5,9 +5,10 @@ Tables owned: sections, requirements, test_cases, test_case_versions,
 """
 
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, Text, JSON, Float,
+    BigInteger, Column, Integer, Numeric, String, Boolean, DateTime, Text, JSON, Float,
     ForeignKey, CheckConstraint, UniqueConstraint, Index,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -36,6 +37,29 @@ class Section(Base):
     __table_args__ = (
         Index("idx_sections_tenant_parent", "tenant_id", "parent_id", "position"),
     )
+
+
+class GenerationBatch(Base):
+    """Links the N test cases produced by a single "Generate" click.
+
+    Rationale (migration 028): multi-TC generation means one click
+    produces 3\u20136 TCs covering different scenario angles. This row
+    captures the AI's rationale ("why these tests?") surfaced on the
+    requirement detail page, plus token / cost for superadmin audit.
+    """
+    __tablename__ = "generation_batches"
+
+    id = Column(BigInteger, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    requirement_id = Column(Integer, ForeignKey("requirements.id"), nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    llm_model = Column(String(100))
+    input_tokens = Column(Integer)
+    output_tokens = Column(Integer)
+    cost_usd = Column(Numeric(10, 4))
+    explanation = Column(Text)
+    coverage_types = Column(ARRAY(Text))
 
 
 class Requirement(Base):
@@ -85,6 +109,11 @@ class TestCase(Base):
     is_quarantined = Column(Boolean, nullable=False, server_default="false")
     quarantined_at = Column(DateTime(timezone=True))
     quarantined_reason = Column(Text)
+    # Multi-TC generation (migration 028): scenario angle the test
+    # validates, and the "Generate" click this TC came from so the
+    # whole batch can be shown together on the requirement detail.
+    coverage_type = Column(String(30))
+    generation_batch_id = Column(Integer, ForeignKey("generation_batches.id", ondelete="SET NULL"))
 
     versions = relationship("TestCaseVersion", back_populates="test_case",
                             foreign_keys="TestCaseVersion.test_case_id")

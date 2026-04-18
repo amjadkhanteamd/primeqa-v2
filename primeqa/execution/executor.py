@@ -282,14 +282,30 @@ class StepExecutor:
     def _execute_create(self, sobject, field_values, step_order, logical_id,
                         run_test_result_id, step_result_id):
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        pqa_name = f"PQA_{self.run_id}_{logical_id} {timestamp}"
+        # Include test_case_id in the generated record Name so multiple
+        # test cases from the same requirement don't collide on
+        # Name uniqueness. We look up the TC id via the run_test_result
+        # row, which we've been passing the id of throughout the chain.
+        tc_suffix = ""
+        try:
+            tc_row = self.step_result_repo.db.query(
+                __import__('primeqa.execution.models', fromlist=['RunTestResult']).RunTestResult
+            ).filter_by(id=run_test_result_id).first()
+            if tc_row and tc_row.test_case_id:
+                tc_suffix = f"_{tc_row.test_case_id}"
+        except Exception:
+            pass
+        pqa_name = f"PQA_{self.run_id}{tc_suffix}_{logical_id} {timestamp}"
         if "Name" not in field_values:
             field_values["Name"] = pqa_name
         else:
             field_values["Name"] = pqa_name
 
+        # Idempotency key also gains the test_case_id so two TCs creating
+        # the same logical Account don't reuse each other's record.
         idem_key = self.idempotency.generate_key(
-            self.run_id, step_order, sobject, logical_id,
+            self.run_id, step_order, sobject,
+            f"{logical_id}{tc_suffix}" if tc_suffix else logical_id,
         )
         existing = self.idempotency.check_existing(idem_key)
         if existing:

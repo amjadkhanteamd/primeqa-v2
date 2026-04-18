@@ -100,6 +100,7 @@
             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
               {{ sort_header('Status', 'status', sort, order, '/test-cases', qs_nosort) }}
             </th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Coverage</th>
             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Visibility</th>
             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Owner</th>
             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">
@@ -114,6 +115,22 @@
             <td class="px-3 py-4"><input type="checkbox" class="row-check rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" value="{{ tc.id }}" aria-label="Select {{ tc.title }}"></td>
             <td class="px-6 py-3 text-sm font-medium text-indigo-600"><a href="/test-cases/{{ tc.id }}" class="hover:underline">{{ tc.title }}</a></td>
             <td class="px-6 py-3"><span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if tc.status == 'active' %}bg-green-100 text-green-800{% elif tc.status == 'approved' %}bg-blue-100 text-blue-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ tc.status }}</span></td>
+            <td class="px-6 py-3">
+              {% if tc.coverage_type %}
+              {% set c = tc.coverage_type %}
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                {% if c == 'positive' %}bg-green-50 text-green-700
+                {% elif c == 'negative_validation' %}bg-red-50 text-red-700
+                {% elif c == 'boundary' %}bg-amber-50 text-amber-800
+                {% elif c == 'edge_case' %}bg-purple-50 text-purple-700
+                {% elif c == 'regression' %}bg-sky-50 text-sky-700
+                {% else %}bg-gray-50 text-gray-600{% endif %}">
+                {{ c.replace('_', ' ') }}
+              </span>
+              {% else %}
+              <span class="text-xs text-gray-300">—</span>
+              {% endif %}
+            </td>
             <td class="px-6 py-3"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if tc.visibility == 'shared' %}bg-green-50 text-green-700{% else %}bg-gray-50 text-gray-600{% endif %}">{{ tc.visibility }}</span></td>
             <td class="px-6 py-3 text-sm text-gray-500">#{{ tc.owner_id }}</td>
             <td class="px-6 py-3 text-xs text-gray-500">{{ tc.updated_at[:10] if tc.updated_at else '' }}</td>
@@ -131,7 +148,7 @@
           </tr>
           {% endfor %}
           {% if not test_cases %}
-          <tr><td colspan="7" class="px-6 py-10 text-center text-sm text-gray-500">
+          <tr><td colspan="8" class="px-6 py-10 text-center text-sm text-gray-500">
             {% if show_deleted %}
               Trash is empty.
             {% elif search or status_filter %}

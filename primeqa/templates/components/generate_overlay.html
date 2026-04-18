@@ -14,10 +14,10 @@
         <div class="absolute inset-0 rounded-full border-4 border-indigo-500 border-t-transparent animate-spin"></div>
       </div>
       <div>
-        <p id="generate-overlay-title" class="text-base font-semibold text-gray-900">Generating test case&hellip;</p>
+        <p id="generate-overlay-title" class="text-base font-semibold text-gray-900">Generating test plan&hellip;</p>
         <p id="generate-overlay-sub" class="mt-2 text-sm text-gray-500">→ Reading metadata&hellip;</p>
       </div>
-      <p class="text-xs text-gray-400">This usually takes 10–20 seconds. Please don't close this tab.</p>
+      <p class="text-xs text-gray-400">Producing 3–6 test cases covering positive, negative, boundary, and edge scenarios. This usually takes 15–25 seconds.</p>
     </div>
   </div>
 </div>
@@ -29,8 +29,9 @@
   if (!overlay || !subEl) return;
   const LABELS = [
     '→ Reading metadata…',
-    '→ Reasoning about steps…',
-    '→ Writing draft…',
+    '→ Planning test coverage (positive, negative, boundary, edge)…',
+    '→ Reasoning about steps for each scenario…',
+    '→ Writing drafts…',
     '→ Finalizing…',
   ];
   let rotateTimer = null;

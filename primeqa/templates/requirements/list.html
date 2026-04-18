@@ -75,7 +75,7 @@
       </button>
       <button type="button" id="bulk-clear-btn"
               class="text-xs text-indigo-700 hover:text-indigo-900">Clear</button>
-      <span class="text-xs text-indigo-600 ml-auto">Up to 5 generate in parallel; max 20 per batch.</span>
+      <span class="text-xs text-indigo-600 ml-auto">Each requirement yields 3\u20136 test cases (positive / negative / boundary / edge). Up to 5 requirements in parallel; max 20 per click.</span>
     </div>
     {% endif %}
     <div class="bg-white shadow rounded-lg overflow-hidden">
@@ -144,13 +144,13 @@
 <div id="bulk-gen-modal" class="hidden fixed inset-0 z-50 bg-gray-900 bg-opacity-60">
   <div class="flex min-h-full items-center justify-center p-4">
     <div class="bg-white rounded-lg shadow-xl max-w-lg w-full p-6 space-y-4">
-      <h3 class="text-lg font-semibold text-gray-900">Generating test cases</h3>
+      <h3 class="text-lg font-semibold text-gray-900">Generating test plans</h3>
       <div id="bulk-gen-running" class="space-y-3">
         <div class="relative h-2 bg-gray-100 rounded">
           <div class="absolute inset-y-0 left-0 bg-indigo-500 rounded animate-pulse" style="width: 50%;"></div>
         </div>
-        <p id="bulk-gen-status" class="text-sm text-gray-600">Running up to 5 in parallel&hellip;</p>
-        <p class="text-xs text-gray-400">Don't close this tab. This usually takes 15\u201330 seconds.</p>
+        <p id="bulk-gen-status" class="text-sm text-gray-600">Running up to 5 requirements in parallel; each produces 3\u20136 test cases&hellip;</p>
+        <p class="text-xs text-gray-400">Don't close this tab. This usually takes 20\u201360 seconds depending on how many you picked.</p>
       </div>
       <div id="bulk-gen-done" class="hidden space-y-3">
         <p id="bulk-gen-summary" class="text-sm text-gray-800"></p>
@@ -240,7 +240,9 @@
 
       const ok = body.results.filter(x => x && x.status === 'ok').length;
       const err = body.results.filter(x => x && x.status === 'error').length;
-      summaryEl.innerHTML = `<strong>${ok}</strong> generated, <strong>${err}</strong> failed.`;
+      const totalTc = body.results.reduce((a, r) => a + (r?.test_case_count || 0), 0);
+      summaryEl.innerHTML = `Generated <strong>${totalTc}</strong> test case${totalTc === 1 ? '' : 's'} across <strong>${ok}</strong> requirement${ok === 1 ? '' : 's'}` +
+                            (err ? `, <strong>${err}</strong> failed.` : '.');
 
       resultsEl.innerHTML = '';
       body.results.forEach(res => {
@@ -249,13 +251,17 @@
         li.className = 'py-1 flex items-start space-x-2';
         const name = titles[res.requirement_id] || ('#' + res.requirement_id);
         if (res.status === 'ok') {
-          const v = res.version_number ? ('v' + res.version_number) : '';
-          const pct = Math.round((res.confidence || 0) * 100);
-          const mode = res.generation_mode === 'reused_draft' ? ' (superseded draft)' :
-                       res.generation_mode === 'regenerated'  ? ' (regenerated)' : '';
+          const n = res.test_case_count || 0;
+          const cov = (res.coverage_types || []).join(', ').replace(/_/g, ' ') || 'mixed';
+          const link = res.test_case_id
+            ? ` \u2014 <a href="/requirements/${res.requirement_id}" class="text-indigo-600 hover:underline">view on requirement</a>`
+            : '';
+          const sup = res.superseded_count
+            ? ` \u00b7 ${res.superseded_count} superseded`
+            : '';
           li.innerHTML = `<span class="text-green-600">\u2713</span>
             <span class="font-mono">${name}</span>
-            <span class="text-gray-500">\u2014 <a href="/test-cases/${res.test_case_id}" class="text-indigo-600 hover:underline">${v} ${pct}%</a>${mode}</span>`;
+            <span class="text-gray-500">\u2014 ${n} test case${n === 1 ? '' : 's'} (${cov})${sup}${link}</span>`;
         } else {
           li.innerHTML = `<span class="text-red-600">\u2717</span>
             <span class="font-mono">${name}</span>
