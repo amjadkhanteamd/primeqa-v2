@@ -9,7 +9,7 @@
 {{ breadcrumbs([('Test Library', None)]) }}
 
 {# Preserve current filters when switching sort/page #}
-{% set qs %}{% if search %}&q={{ search | urlencode }}{% endif %}{% if section_id %}&section_id={{ section_id }}{% endif %}{% if status_filter %}&status={{ status_filter }}{% endif %}{% if coverage_filter %}&coverage_type={{ coverage_filter }}{% endif %}{% if show_deleted %}&deleted=1{% endif %}{% if meta.per_page and meta.per_page != 20 %}&per_page={{ meta.per_page }}{% endif %}{% if group_by %}&group_by={{ group_by }}{% endif %}{% endset %}
+{% set qs %}{% if search %}&q={{ search | urlencode }}{% endif %}{% if section_id %}&section_id={{ section_id }}{% endif %}{% if status_filter %}&status={{ status_filter }}{% endif %}{% if coverage_filter %}&coverage_type={{ coverage_filter }}{% endif %}{% if show_deleted %}&deleted=1{% endif %}{% if meta.per_page and meta.per_page != 20 %}&per_page={{ meta.per_page }}{% endif %}{% if group_by %}&group_by={{ group_by }}{% endif %}{% if req_sort and req_sort != 'activity' %}&req_sort={{ req_sort }}{% endif %}{% endset %}
 {% set qs_nosort %}{{ qs }}{% endset %}
 
 {# Shared TC-row macro so flat table and grouped accordions render the
@@ -108,6 +108,7 @@
         {% if section_id %}<input type="hidden" name="section_id" value="{{ section_id }}">{% endif %}
         {% if show_deleted %}<input type="hidden" name="deleted" value="1">{% endif %}
         {% if group_by %}<input type="hidden" name="group_by" value="{{ group_by }}">{% endif %}
+        {% if req_sort and req_sort != 'activity' %}<input type="hidden" name="req_sort" value="{{ req_sort }}">{% endif %}
         <div class="relative flex-1 max-w-md">
           <input type="text" name="q" value="{{ search or '' }}" placeholder="Search by title…"
                  class="block w-full rounded-md border border-gray-300 pl-9 pr-3 py-1.5 text-sm focus:border-indigo-500 focus:ring-indigo-500">
@@ -133,7 +134,7 @@
 
       {# Grouped | Flat toggle — preserves the rest of the filter state. #}
       <div class="inline-flex rounded-md ring-1 ring-gray-300 overflow-hidden text-xs" role="tablist" aria-label="View mode">
-        {% set flat_qs %}{% if search %}&q={{ search | urlencode }}{% endif %}{% if section_id %}&section_id={{ section_id }}{% endif %}{% if status_filter %}&status={{ status_filter }}{% endif %}{% if coverage_filter %}&coverage_type={{ coverage_filter }}{% endif %}{% if show_deleted %}&deleted=1{% endif %}{% endset %}
+        {% set flat_qs %}{% if search %}&q={{ search | urlencode }}{% endif %}{% if section_id %}&section_id={{ section_id }}{% endif %}{% if status_filter %}&status={{ status_filter }}{% endif %}{% if coverage_filter %}&coverage_type={{ coverage_filter }}{% endif %}{% if show_deleted %}&deleted=1{% endif %}{% if req_sort and req_sort != 'activity' %}&req_sort={{ req_sort }}{% endif %}{% endset %}
         <a href="/test-cases?group_by=requirement{{ flat_qs }}"
            class="px-3 py-1.5 {% if group_by == 'requirement' %}bg-indigo-600 text-white{% else %}bg-white text-gray-700 hover:bg-gray-50{% endif %}"
            role="tab" aria-selected="{{ 'true' if group_by == 'requirement' else 'false' }}">Grouped</a>
@@ -141,6 +142,25 @@
            class="px-3 py-1.5 border-l border-gray-300 {% if group_by == 'flat' %}bg-indigo-600 text-white{% else %}bg-white text-gray-700 hover:bg-gray-50{% endif %}"
            role="tab" aria-selected="{{ 'true' if group_by == 'flat' else 'false' }}">Flat</a>
       </div>
+
+      {# Requirement sort order \u2014 grouped mode only. Submits the same
+         form (which preserves filters); picking a value GETs /test-cases. #}
+      {% if group_by == 'requirement' %}
+      <form method="GET" action="/test-cases" class="inline-flex items-center gap-1 text-xs">
+        {% if search %}<input type="hidden" name="q" value="{{ search }}">{% endif %}
+        {% if section_id %}<input type="hidden" name="section_id" value="{{ section_id }}">{% endif %}
+        {% if status_filter %}<input type="hidden" name="status" value="{{ status_filter }}">{% endif %}
+        {% if coverage_filter %}<input type="hidden" name="coverage_type" value="{{ coverage_filter }}">{% endif %}
+        {% if show_deleted %}<input type="hidden" name="deleted" value="1">{% endif %}
+        <input type="hidden" name="group_by" value="requirement">
+        <label class="text-gray-500">Sort</label>
+        <select name="req_sort" onchange="this.form.submit()" class="rounded-md border border-gray-300 px-2 py-1.5 text-xs">
+          <option value="activity" {% if req_sort == 'activity' %}selected{% endif %}>Most recent activity</option>
+          <option value="jira_key" {% if req_sort == 'jira_key' %}selected{% endif %}>Jira key A→Z</option>
+          <option value="name" {% if req_sort == 'name' %}selected{% endif %}>Name A→Z</option>
+        </select>
+      </form>
+      {% endif %}
 
       <div>{{ per_page_selector(meta.per_page, '/test-cases', qs_nosort, [10, 20, 50]) }}</div>
     </div>
@@ -204,6 +224,13 @@
                   {% else %}bg-gray-50 text-gray-600{% endif %}">{{ cov[c] }} {{ c.replace('_',' ') }}</span>
                 {% endif %}
               {% endfor %}
+              {% if user.role in ['admin', 'tester', 'superadmin'] and not show_deleted %}
+              <button type="button" class="add-group-to-suite rounded-md bg-white ring-1 ring-indigo-200 px-2 py-0.5 text-[11px] text-indigo-700 hover:bg-indigo-50 ml-2"
+                      data-group-title="{{ group.jira_key or group.summary }}"
+                      data-coverage-tc-ids='{{ group.coverage_tc_ids | tojson }}'
+                      data-all-tc-ids='{{ group.all_tc_ids | tojson }}'
+                      onclick="event.preventDefault(); event.stopPropagation();">+ Add to suite</button>
+              {% endif %}
             </span>
           </summary>
           <div class="overflow-x-auto border-t border-gray-100">
@@ -283,6 +310,186 @@
     {% endif %}
   </div>
 </div>
+
+{# ---- Shared "Add group to suite" modal --------------------------------- #}
+{% if user.role in ['admin', 'tester', 'superadmin'] and group_by == 'requirement' %}
+<div id="add-to-suite-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+  <div class="flex min-h-full items-start justify-center p-4 pt-10">
+    <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('add-to-suite-modal').classList.add('hidden')"></div>
+    <div class="relative bg-white rounded-lg shadow-xl max-w-lg w-full p-6">
+      <h3 class="text-lg font-medium text-gray-900 mb-1">Add to suite</h3>
+      <p class="text-xs text-gray-500 mb-4" id="add-to-suite-context">Adding test cases from <span id="add-to-suite-group-title" class="font-mono text-gray-700"></span>.</p>
+
+      {# Coverage filter: per-bucket chips, pre-selected = all #}
+      <div class="mb-4">
+        <label class="block text-xs font-medium text-gray-700 mb-1">Which test cases?</label>
+        <div id="ats-coverage-chips" class="flex flex-wrap gap-1"></div>
+        <p class="mt-1 text-xs text-gray-500">Click a chip to toggle. At least one must be selected.</p>
+      </div>
+
+      {# Suite picker: existing or new #}
+      <div class="space-y-2 mb-4">
+        <label class="block text-xs font-medium text-gray-700">Target suite</label>
+        <div class="flex items-center gap-2">
+          <select id="ats-suite-select" class="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm">
+            <option value="">— pick a suite —</option>
+            {% for s in suites %}
+            <option value="{{ s.id }}">{{ s.name }} <span class="text-gray-500">({{ s.suite_type }})</span></option>
+            {% endfor %}
+            <option value="__new__">+ Create new suite…</option>
+          </select>
+        </div>
+        <div id="ats-new-suite" class="hidden space-y-2 p-3 rounded border border-gray-200 bg-gray-50">
+          <div class="grid grid-cols-2 gap-2">
+            <input id="ats-new-name" placeholder="New suite name" class="rounded-md border border-gray-300 px-3 py-2 text-sm">
+            <select id="ats-new-type" class="rounded-md border border-gray-300 px-3 py-2 text-sm">
+              {% for opt in ['smoke','regression','sprint','custom'] %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between pt-2 border-t border-gray-100">
+        <div class="text-xs text-gray-500"><span id="ats-count">0</span> test case(s) will be added</div>
+        <div class="flex items-center gap-2">
+          <button type="button" onclick="document.getElementById('add-to-suite-modal').classList.add('hidden')"
+                  class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">Cancel</button>
+          <button id="ats-add-btn" disabled
+                  class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">Add</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---- Per-group "Add to suite" modal --------------------------------------
+// Opens on click of any `.add-group-to-suite` button. The clicked button
+// carries data-coverage-tc-ids (a JSON map of coverage_type -> [tc_ids])
+// and data-all-tc-ids (flat list) so the modal can offer per-coverage
+// filtering without another server round-trip.
+(function(){
+  const modal = document.getElementById('add-to-suite-modal');
+  if (!modal) return;
+  const titleEl = document.getElementById('add-to-suite-group-title');
+  const chipsEl = document.getElementById('ats-coverage-chips');
+  const countEl = document.getElementById('ats-count');
+  const suiteSel = document.getElementById('ats-suite-select');
+  const newSuiteBlock = document.getElementById('ats-new-suite');
+  const newNameEl = document.getElementById('ats-new-name');
+  const newTypeEl = document.getElementById('ats-new-type');
+  const addBtn = document.getElementById('ats-add-btn');
+
+  const COV_META = {
+    positive: { label: 'positive', cls: 'bg-green-50 text-green-700 ring-green-200' },
+    negative_validation: { label: 'negative validation', cls: 'bg-red-50 text-red-700 ring-red-200' },
+    boundary: { label: 'boundary', cls: 'bg-amber-50 text-amber-800 ring-amber-200' },
+    edge_case: { label: 'edge case', cls: 'bg-purple-50 text-purple-700 ring-purple-200' },
+    regression: { label: 'regression', cls: 'bg-sky-50 text-sky-700 ring-sky-200' },
+    other: { label: 'other', cls: 'bg-gray-50 text-gray-600 ring-gray-200' },
+  };
+
+  // Mutable state per open
+  let covMap = {};        // {coverage_type: [tc_ids]}
+  let selectedCov = new Set();
+  let allIds = [];
+
+  function updateCount() {
+    const n = Array.from(selectedCov).reduce((s, c) => s + (covMap[c]?.length || 0), 0);
+    countEl.textContent = n;
+    addBtn.disabled = n === 0 || (!suiteSel.value) ||
+      (suiteSel.value === '__new__' && !newNameEl.value.trim());
+  }
+
+  function renderChips() {
+    chipsEl.innerHTML = '';
+    Object.keys(covMap).forEach(k => {
+      const meta = COV_META[k] || COV_META.other;
+      const count = covMap[k].length;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'inline-flex items-center px-2 py-1 rounded text-xs font-medium ring-1 ' +
+                      meta.cls +
+                      (selectedCov.has(k) ? ' ring-2 shadow-inner' : ' opacity-60');
+      btn.textContent = count + ' ' + meta.label;
+      btn.addEventListener('click', () => {
+        if (selectedCov.has(k)) selectedCov.delete(k);
+        else selectedCov.add(k);
+        renderChips();
+        updateCount();
+      });
+      chipsEl.appendChild(btn);
+    });
+  }
+
+  suiteSel.addEventListener('change', () => {
+    newSuiteBlock.classList.toggle('hidden', suiteSel.value !== '__new__');
+    updateCount();
+  });
+  newNameEl.addEventListener('input', updateCount);
+
+  document.querySelectorAll('.add-group-to-suite').forEach(btn => {
+    btn.addEventListener('click', () => {
+      try {
+        covMap = JSON.parse(btn.dataset.coverageTcIds || '{}');
+      } catch (_) { covMap = {}; }
+      try {
+        allIds = JSON.parse(btn.dataset.allTcIds || '[]');
+      } catch (_) { allIds = []; }
+      selectedCov = new Set(Object.keys(covMap));  // all coverage types on by default
+      titleEl.textContent = btn.dataset.groupTitle || '';
+      // Reset suite picker state
+      suiteSel.value = '';
+      newSuiteBlock.classList.add('hidden');
+      newNameEl.value = (btn.dataset.groupTitle || '') + ' Tests';
+      newTypeEl.value = 'smoke';
+      renderChips();
+      updateCount();
+      modal.classList.remove('hidden');
+    });
+  });
+
+  async function api(method, url, body) {
+    const r = await fetch(url, {
+      method, credentials: 'same-origin',
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!r.ok) { await window.PrimeQA.showErrorFromResponse(r); throw new Error('failed'); }
+    return r.json();
+  }
+
+  addBtn.addEventListener('click', async () => {
+    const ids = Array.from(selectedCov).flatMap(c => covMap[c] || []);
+    if (!ids.length) return;
+
+    let suiteId = suiteSel.value;
+    try {
+      if (suiteId === '__new__') {
+        const name = newNameEl.value.trim();
+        if (!name) return;
+        // Create the suite first, then add TCs
+        const created = await api('POST', '/api/suites', {
+          name, suite_type: newTypeEl.value,
+        });
+        suiteId = (created?.data?.id || created?.id || '').toString();
+        if (!suiteId) throw new Error('create suite returned no id');
+      }
+      const result = await api('POST', '/api/suites/' + suiteId + '/test-cases/bulk',
+                                { test_case_ids: ids });
+      const addedN = (result.added || []).length;
+      const dupN = (result.already_in || []).length;
+      let msg = addedN + ' added to suite';
+      if (dupN) msg += ', ' + dupN + ' already there';
+      window.PrimeQA.toast(msg, 'success');
+      modal.classList.add('hidden');
+    } catch (_) {
+      addBtn.disabled = false;
+    }
+  });
+})();
+</script>
+{% endif %}
 
 <script>
 (function(){

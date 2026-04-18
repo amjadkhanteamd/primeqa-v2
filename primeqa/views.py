@@ -613,6 +613,7 @@ def test_cases_library():
     """
     from primeqa.test_management.repository import (
         SectionRepository, TestCaseRepository, RequirementRepository,
+        TestSuiteRepository,
     )
     from primeqa.test_management.models import TestCase
 
@@ -621,10 +622,23 @@ def test_cases_library():
         section_repo = SectionRepository(db)
         tc_repo = TestCaseRepository(db)
         req_repo = RequirementRepository(db)
+        suite_repo = TestSuiteRepository(db)
         tid = request.user["tenant_id"]
         uid = request.user["id"]
 
         sections = section_repo.get_section_tree(tid)
+
+        # Active suites for the per-group "Add to suite" dropdown. Small
+        # list (tenants usually have < 30 suites); no pagination needed.
+        suite_rows = suite_repo.list_suites(tid) if hasattr(suite_repo, "list_suites") else []
+        # list_suites may not exist; fall back to a direct query
+        if not suite_rows:
+            from primeqa.test_management.models import TestSuite
+            suite_rows = db.query(TestSuite).filter(
+                TestSuite.tenant_id == tid, TestSuite.deleted_at.is_(None),
+            ).order_by(TestSuite.name).all()
+        suites_data = [{"id": s.id, "name": s.name, "suite_type": s.suite_type}
+                       for s in suite_rows]
 
         # Shared list params
         page = request.args.get("page", 1, type=int) or 1
@@ -635,6 +649,12 @@ def test_cases_library():
         section_id = request.args.get("section_id", type=int)
         status = request.args.get("status") or None
         show_deleted = request.args.get("deleted", "").lower() in ("1", "true", "yes")
+        # Requirement sort order (grouped view only). Default activity so the
+        # most-recently-touched requirement sits on top; alternatives are
+        # alphabetical by Jira key (nulls last) or by summary/name.
+        req_sort = request.args.get("req_sort", "activity")
+        if req_sort not in ("activity", "jira_key", "name"):
+            req_sort = "activity"
 
         filters = {}
         if section_id:
@@ -704,12 +724,30 @@ def test_cases_library():
             for rid, tcs in by_req.items():
                 tcs.sort(key=_tc_sort_key)
 
-            # Sort groups by most-recent TC update (activity-first)
+            # Sort groups per req_sort:
+            #   activity  \u2014 most recent TC update (default, activity-first)
+            #   jira_key  \u2014 alphabetical by Jira key (nulls last)
+            #   name      \u2014 alphabetical by requirement summary / title
             def _group_recency(kv):
-                rid, tcs = kv
+                _rid, tcs = kv
                 return max((t.updated_at.timestamp() if t.updated_at else 0
                             for t in tcs), default=0)
-            sorted_groups = sorted(by_req.items(), key=_group_recency, reverse=True)
+            def _group_jira_key(kv):
+                rid, _tcs = kv
+                r = reqs_by_id.get(rid)
+                # None / empty jira_key sorts LAST (tuple (1, '') > (0, anything))
+                return (0, r.jira_key) if r and r.jira_key else (1, "")
+            def _group_name(kv):
+                rid, _tcs = kv
+                r = reqs_by_id.get(rid)
+                s = (r.jira_summary if r else None) or ""
+                return s.lower()
+            if req_sort == "jira_key":
+                sorted_groups = sorted(by_req.items(), key=_group_jira_key)
+            elif req_sort == "name":
+                sorted_groups = sorted(by_req.items(), key=_group_name)
+            else:
+                sorted_groups = sorted(by_req.items(), key=_group_recency, reverse=True)
 
             # Paginate requirements (not TCs)
             total_groups = len(sorted_groups)
@@ -731,11 +769,14 @@ def test_cases_library():
 
             for rid, tcs in page_slice:
                 req = reqs_by_id.get(rid)
-                # Coverage breakdown per group for the header chip
+                # Coverage breakdown per group for the header chip + the
+                # "Add to suite" modal's coverage-filter sub-chips.
                 cov_counts = {}
+                cov_tc_ids = {}  # coverage_type -> [tc_id, ...]
                 for tc in tcs:
                     k = tc.coverage_type or "other"
                     cov_counts[k] = cov_counts.get(k, 0) + 1
+                    cov_tc_ids.setdefault(k, []).append(tc.id)
                 groups.append({
                     "requirement_id": rid,
                     "jira_key": req.jira_key if req else None,
@@ -743,6 +784,11 @@ def test_cases_library():
                     "deleted": bool(req.deleted_at) if req else False,
                     "test_cases": [_tc_dict(tc) for tc in tcs],
                     "coverage_counts": cov_counts,
+                    # JSON-stringifiable: the template passes this to JS as
+                    # a data-* attribute and the modal reads it to build the
+                    # coverage-filter chips.
+                    "coverage_tc_ids": cov_tc_ids,
+                    "all_tc_ids": [tc.id for tc in tcs],
                 })
 
             unlinked_data = [_tc_dict(tc) for tc in unlinked_tcs]
@@ -785,9 +831,11 @@ def test_cases_library():
             test_cases=tc_data,           # flat mode
             groups=groups,                # grouped mode
             unlinked_test_cases=unlinked_data,  # grouped mode, page 1 only
+            suites=suites_data,           # for per-group "Add to suite" dropdown
             section_id=section_id, meta=meta,
             search=q, sort=sort, order=order, status_filter=status,
             coverage_filter=request.args.get("coverage_type"),
+            req_sort=req_sort,
             show_deleted=show_deleted, query_error=query_error,
         ))
     finally:
