@@ -121,7 +121,10 @@ def jira_ticket_search():
       limit   (optional, default 20, max 50)
     """
     from flask import render_template
-    env_id = request.args.get("env_id", type=int)
+    # Accept either `env_id` (canonical) or `environment_id` (matches the form
+    # field name, in case a future client uses hx-include on the select).
+    env_id = (request.args.get("env_id", type=int)
+              or request.args.get("environment_id", type=int))
     q = (request.args.get("q") or "").strip()
     limit = request.args.get("limit", default=20, type=int)
 

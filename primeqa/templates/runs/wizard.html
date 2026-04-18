@@ -126,7 +126,7 @@
                    hx-target="#jira-results"
                    hx-swap="innerHTML"
                    hx-indicator="#jira-search-indicator"
-                   hx-include="select[name=environment_id]">
+                   hx-vals='js:{env_id: document.querySelector("select[name=environment_id]").value}'>
             <svg class="absolute left-3 top-2.5 h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
             <span id="jira-search-indicator" class="htmx-indicator absolute right-3 top-2.5 text-xs text-gray-500">loading&hellip;</span>
           </div>

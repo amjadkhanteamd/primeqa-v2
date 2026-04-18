@@ -160,6 +160,46 @@ def run_tests():
     results.append(test("R7-10. /runs/new renders new Jira picker + summary",
                         t_wizard_renders_new_picker))
 
+    def t_wizard_sends_env_under_correct_name():
+        """Regression: the Jira search input MUST send the environment under the
+        query-string key `env_id` (the name the backend reads), not
+        `environment_id` (the form-field name that hx-include would use). A
+        mismatch silently breaks the entire picker."""
+        r = client.get("/runs/new")
+        assert r.status_code == 200
+        body = r.data.decode()
+        # The search input region
+        start = body.find('id="jira-search"')
+        assert start > 0
+        end = body.find(">", start)
+        search_tag = body[start:end]
+        # Must reference env_id (the backend's arg name)
+        assert "env_id" in search_tag, (
+            "Jira search input must send the env under `env_id`; a bare "
+            "hx-include on `environment_id` sends it under the wrong name "
+            "and the backend silently gets no env \u2192 the \u2018Pick an environment\u2019 "
+            "hint shows forever."
+        )
+    results.append(test("R7-11. Wizard Jira search sends env as env_id (not environment_id)",
+                        t_wizard_sends_env_under_correct_name))
+
+    def t_search_accepts_both_env_names_server_side():
+        """Defence in depth: even if a future client accidentally sends
+        `environment_id`, the backend falls back and doesn't silently
+        disable the search. Current canonical name is env_id."""
+        # Baseline: env_id works
+        r1 = client.get("/api/jira/search?env_id=1&q=hi&format=json")
+        assert r1.status_code == 200
+        # Fallback: environment_id also works
+        r2 = client.get("/api/jira/search?environment_id=1&q=hi&format=json")
+        assert r2.status_code == 200
+        # Both should produce comparable shape (either hint or results)
+        b1 = r1.get_json()
+        b2 = r2.get_json()
+        assert set(b1.keys()) == set(b2.keys()), f"shape diverged: {b1} vs {b2}"
+    results.append(test("R7-12. /api/jira/search accepts env_id OR environment_id",
+                        t_search_accepts_both_env_names_server_side))
+
     passed = sum(results); total = len(results)
     print(f"\n{'='*40}\nResults: {passed}/{total} passed")
     print("ALL R7 TESTS PASSED" if passed == total else f"{total - passed} FAILED")
