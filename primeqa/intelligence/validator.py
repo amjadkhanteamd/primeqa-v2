@@ -8,6 +8,7 @@ a Salesforce API burst:
   - Field not createable on a create step / not updateable on update
   - $var referenced but no prior step set state_ref
   - record_ref points to a state var that was never set
+  - SOQL strings that SELECT columns missing on the FROM object
 
 Each issue carries a severity (critical | warning | info) and, for
 "field/object not found" kinds, fuzzy suggestions from the actual
@@ -20,12 +21,11 @@ Usage:
     if report["status"] == "critical":
         # block execution OR surface banner
         ...
-
-The validator does NOT parse SOQL strings yet \u2014 that's Commit 2.
 """
 
+import re
 from difflib import get_close_matches
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 # Severity tiers. The UI maps these 1:1 to banner colors:
@@ -144,6 +144,29 @@ class TestCaseValidator:
                 target["assertions"] = asserts
         elif rule == "object_not_found":
             target["target_object"] = replacement
+        elif rule == "soql_from_object_not_found":
+            # Rewrite the FROM clause of the SOQL string. Only the first
+            # match is replaced (SOQL rarely has two FROMs outside
+            # subqueries, which we wouldn't touch anyway).
+            soql = target.get("soql") or ""
+            bad = issue.get("object_name")
+            if soql and bad:
+                target["soql"] = re.sub(
+                    r"(\bFROM\b\s+)" + re.escape(bad) + r"\b",
+                    r"\1" + replacement,
+                    soql, count=1, flags=re.IGNORECASE,
+                )
+        elif rule == "soql_column_not_found":
+            # Rewrite the bad column in the SELECT list. Whole-word match
+            # so "Name" doesn't replace "AccountName" accidentally.
+            soql = target.get("soql") or ""
+            bad = issue.get("field")
+            if soql and bad:
+                target["soql"] = re.sub(
+                    r"\b" + re.escape(bad) + r"\b",
+                    replacement,
+                    soql, count=1,
+                )
         elif rule == "unresolved_state_ref":
             # replacement is the step_order of the creator to mutate, not
             # a string in this step; skip \u2014 UI should direct the user
@@ -244,6 +267,157 @@ class TestCaseValidator:
                     state_ref=ref,
                     suggestions=_suggest(ref, list(seen_state_refs))))
 
+        # ---- Rule: SOQL validates against the FROM object ----
+        # query steps carry a full SOQL string; the target_object field
+        # may or may not match the FROM clause, and the SELECT field
+        # list is where the Last_Escalation_Date__c / wrong-column
+        # hallucinations usually hide. We parse what we can and flag
+        # columns the SELECT references that don't exist on FROM.
+        if action == "query":
+            soql = step.get("soql") or ""
+            if soql.strip():
+                issues.extend(self._validate_soql(order, soql))
+
+        return issues
+
+    # ---- SOQL parsing ---------------------------------------------------
+    #
+    # Full SOQL grammar is bigger than a regex \u2014 we don't try to be a
+    # parser, just pull out SELECT field list + FROM object. Relationship
+    # traversal (Account.Industry) is acknowledged but validated only at
+    # the top-level column segment. Subqueries, aggregates, typeof are
+    # best-effort: we skip columns we can't confidently identify.
+    #
+    # This is intentionally permissive: false negatives are acceptable
+    # (the SF runtime still catches them), false positives are not.
+
+    _SOQL_SELECT_RE = re.compile(
+        r"\bSELECT\b(?P<fields>.+?)\bFROM\b\s+(?P<obj>[A-Za-z0-9_]+)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    _SOQL_RESERVED = {
+        # Functions / keywords that aren't object fields
+        "count", "count_distinct", "sum", "avg", "min", "max",
+        "format", "tolabel", "convertcurrency", "calendar_year",
+        "calendar_quarter", "calendar_month", "day_in_month",
+        "distance", "geolocation", "typeof", "when", "then", "else", "end",
+    }
+
+    @classmethod
+    def _extract_soql_targets(cls, soql: str) -> Optional[Tuple[str, List[str]]]:
+        """Return (object_api_name, [top_level_field, ...]) or None if we
+        can't make sense of the query (subqueries, aggregates everywhere,
+        etc). Relationship paths are trimmed to their first segment so
+        'Account.Industry' becomes 'Account' at the object level \u2014 the
+        caller validates if it's a real relationship."""
+        m = cls._SOQL_SELECT_RE.search(soql)
+        if not m:
+            return None
+        obj = m.group("obj")
+        fields_src = m.group("fields")
+        # Strip comments
+        fields_src = re.sub(r"/\*.*?\*/", "", fields_src, flags=re.DOTALL)
+        # Split by commas that aren't inside parens (naive but good enough)
+        # Walk the string, track paren depth.
+        parts = []
+        buf = []
+        depth = 0
+        for ch in fields_src:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth = max(0, depth - 1)
+            if ch == "," and depth == 0:
+                parts.append("".join(buf).strip())
+                buf = []
+            else:
+                buf.append(ch)
+        if buf:
+            parts.append("".join(buf).strip())
+
+        fields = []
+        for p in parts:
+            # Skip subqueries: (SELECT ...) \u2014 parens at column position
+            if p.startswith("("):
+                continue
+            # Strip aliases: "Name alias" \u2192 "Name"
+            tokens = p.split()
+            if not tokens:
+                continue
+            token = tokens[0]
+            # Strip function wrappers: "COUNT(Id)" \u2192 "Id"
+            func_m = re.match(r"^([A-Za-z_]+)\s*\(\s*([^\)]+)\s*\)\s*$", token)
+            if func_m:
+                inner = func_m.group(2).strip()
+                token = inner if inner and inner != "*" else ""
+                if not token:
+                    continue
+            # Drop *
+            if token == "*":
+                continue
+            # First-segment only for relationship traversal
+            if "." in token:
+                token = token.split(".", 1)[0]
+            if token.lower() in cls._SOQL_RESERVED:
+                continue
+            fields.append(token)
+        return obj, fields
+
+    def _validate_soql(self, step_order: int, soql: str) -> List[Dict[str, Any]]:
+        """Return issues for a single SOQL string. Handles: FROM object
+        exists; SELECT columns exist on that object (with fuzzy suggestions).
+        Silently returns [] when the SOQL can't be parsed \u2014 we never
+        want a parser failure to block an otherwise-valid test."""
+        extracted = self._extract_soql_targets(soql)
+        if not extracted:
+            return []
+        obj_name, fields = extracted
+        issues: List[Dict[str, Any]] = []
+
+        if obj_name not in self._obj_by_name:
+            issues.append(self._issue(step_order, SEVERITY_CRITICAL,
+                "soql_from_object_not_found",
+                f"SOQL FROM '{obj_name}' does not exist in the environment's metadata",
+                object_name=obj_name,
+                suggestions=_suggest(obj_name, self._obj_names)))
+            # No further field checks without the object
+            return issues
+
+        obj = self._obj_by_name[obj_name]
+        obj_fields = self._fields_by_obj.get(obj.id, {})
+        if not obj_fields:
+            # Fields for this object not synced; cannot validate columns.
+            # One info-level nudge rather than a flurry of false positives.
+            issues.append(self._issue(step_order, SEVERITY_INFO,
+                "fields_not_synced",
+                f"SOQL columns on {obj_name} cannot be validated because "
+                f"that object's fields are not in this metadata version. "
+                f"Refresh the 'fields' category.",
+                object_name=obj_name))
+            return issues
+
+        field_names = list(obj_fields.keys())
+        for f in fields:
+            if f in obj_fields:
+                continue
+            # Salesforce relationship convention: a lookup field named
+            # FooId is traversed in SOQL as `Foo.Bar`. When the token
+            # we see is "Foo", check whether "FooId" exists as a
+            # reference-type field. If so, it's a valid relationship
+            # traversal \u2014 skip the complaint. "__r" suffix is the
+            # custom-relationship equivalent (Account__c \u2192 Account__r).
+            relationship_fk = f + "Id"
+            if relationship_fk in obj_fields:
+                continue
+            if f.endswith("__r"):
+                custom_fk = f[:-3] + "__c"
+                if custom_fk in obj_fields:
+                    continue
+            issues.append(self._issue(step_order, SEVERITY_CRITICAL,
+                "soql_column_not_found",
+                f"SOQL column '{f}' does not exist on {obj_name}",
+                object_name=obj_name, field=f,
+                suggestions=_suggest(f, field_names)))
         return issues
 
     # ---- Helpers -------------------------------------------------------
