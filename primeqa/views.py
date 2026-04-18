@@ -869,6 +869,7 @@ def test_cases_detail(tc_id):
             "version": tc.version, "current_version_id": tc.current_version_id,
         }
         cv_data = None
+        validation_report = None
         if current_version:
             cv_data = {
                 "version_number": current_version.version_number,
@@ -877,6 +878,9 @@ def test_cases_detail(tc_id):
                 "referenced_entities": current_version.referenced_entities or [],
                 "confidence_score": current_version.confidence_score,
             }
+            # Static validation report from migration 029. Drives the
+            # banner on the detail page and the per-issue Apply button.
+            validation_report = current_version.validation_report or None
         versions_data = [{
             "id": v.id, "version_number": v.version_number,
             "generation_method": v.generation_method,
@@ -907,6 +911,7 @@ def test_cases_detail(tc_id):
         return render_template("test_cases/detail.html", **ctx(
             active_page="test_cases", tc=tc_data, current_version=cv_data,
             versions=versions_data, run_history=run_history, environments=envs_data,
+            validation_report=validation_report,
         ))
     finally:
         db.close()

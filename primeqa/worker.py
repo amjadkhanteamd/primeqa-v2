@@ -199,6 +199,48 @@ def _run_execute_stage(stage, ctx):
                      test_case_id=tc.id, title=tc.title)
             continue
 
+        # ---- Pre-execution validation gate --------------------------------
+        # If the stored validation_report flags critical issues and the run
+        # config isn't opting into override, skip the TC with a clear
+        # failure rather than wasting a Salesforce API burst that would
+        # return a cryptic MALFORMED_ID anyway.
+        report = version.validation_report or {}
+        cfg = run.config or {}
+        override = bool(cfg.get("skip_validation") or cfg.get("force_run"))
+        if report.get("status") == "critical" and not override:
+            first = next((i for i in report.get("issues", [])
+                          if i.get("severity") == "critical"), {})
+            summary = f"{report['summary'].get('critical', 0)} critical issue(s)"
+            detail = first.get("message") or "See test case detail for issues."
+            rtr = rtr_repo.create_result(
+                run_id=run.id, test_case_id=tc.id,
+                test_case_version_id=version.id,
+                environment_id=env.id, status="error",
+                total_steps=len(version.steps),
+                failure_type="validation_blocked",
+                failure_summary=(f"Blocked by static validation: {detail}")[:500],
+            )
+            failed += 1
+            total += 1
+            emit_log(run.id,
+                     f"Test #{tc.id} '{tc.title}' blocked: {summary}. {detail}",
+                     level="error", tenant_id=tenant_id,
+                     test_case_id=tc.id)
+            try:
+                emit_test_finished(
+                    run.id, tc.id, "error",
+                    tenant_id=tenant_id,
+                    error_summary=f"Validation blocked: {detail}"[:200],
+                    title=tc.title,
+                )
+            except Exception:
+                pass
+            run_repo.update_run_status(
+                run.id, "running",
+                total_tests=total, passed=passed, failed=failed, skipped=skipped,
+            )
+            continue
+
         # Heartbeat per test case so the reaper doesn't kill the worker on
         # slow test suites.
         ctx["heartbeat_repo"].update_heartbeat(

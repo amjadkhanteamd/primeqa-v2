@@ -188,6 +188,11 @@ class TestManagementService:
         if not tcs_in_plan:
             raise ValidationError("Generator produced no test cases")
 
+        # Lazy import to keep cold-start light; validator is cheap to
+        # construct since metadata is hot in memory by this point.
+        from primeqa.intelligence.validator import TestCaseValidator
+        validator = TestCaseValidator(metadata_repo, env.current_meta_version_id)
+
         # Supersession: soft-delete all own-draft TCs for this requirement
         # across all prior batches. Approved / active stay.
         own_drafts = self.test_case_repo.list_test_cases(
@@ -270,6 +275,15 @@ class TestManagementService:
                 referenced_entities=plan_tc.get("referenced_entities", []),
             )
 
+            # Validate the freshly-generated steps and persist a report so
+            # the detail page shows issues inline, pre-flight can block on
+            # critical, and lists can badge the TC. Validation is
+            # idempotent and re-runnable via the Revalidate button.
+            report = validator.validate(plan_tc.get("steps", []))
+            self._store_validation_report(
+                version.id, report, env.current_meta_version_id,
+            )
+
             if float(plan_tc.get("confidence_score", 0.7)) < 0.7:
                 self.review_repo.create_review(
                     tenant_id=tenant_id,
@@ -287,6 +301,9 @@ class TestManagementService:
                 "description": plan_tc.get("description", ""),
                 "confidence": float(plan_tc.get("confidence_score", 0.7)),
                 "steps_count": len(plan_tc.get("steps", [])),
+                "validation_status": report["status"],
+                "validation_critical_count": report["summary"][
+                    "critical"] if "critical" in report["summary"] else 0,
             })
 
         self._log(tenant_id, created_by,
@@ -311,6 +328,110 @@ class TestManagementService:
             "superseded_count": superseded,
             "auto_reviews_created": auto_reviews,
         }
+
+    # ---- Validation plumbing ---------------------------------------------
+
+    def _store_validation_report(self, version_id, report, meta_version_id):
+        """Persist a validation_report JSONB onto a test_case_version.
+        Uses the repo's db session to keep this in the caller's transaction."""
+        from datetime import datetime, timezone
+        from primeqa.test_management.models import TestCaseVersion
+        db = self.test_case_repo.db
+        tcv = db.query(TestCaseVersion).filter(
+            TestCaseVersion.id == version_id,
+        ).first()
+        if not tcv:
+            return
+        tcv.validation_report = report
+        tcv.validated_at = datetime.now(timezone.utc)
+        tcv.validated_against_meta_version_id = meta_version_id
+        db.commit()
+
+    def revalidate_test_case_version(self, tc_id, tenant_id, metadata_repo,
+                                     env_repo=None, environment_id=None):
+        """Re-run the validator on a test case's current version. Falls
+        back to the version's stored metadata_version_id if no env is
+        passed, which matches the "Revalidate" button on the detail page
+        (no env context, just refresh against whatever was used)."""
+        from primeqa.intelligence.validator import TestCaseValidator
+        from primeqa.test_management.models import TestCase, TestCaseVersion
+
+        tc = self.test_case_repo.get_test_case(tc_id, tenant_id)
+        if not tc:
+            raise NotFoundError("Test case not found")
+        if not tc.current_version_id:
+            raise ValidationError("Test case has no current version")
+        tcv = self.test_case_repo.db.query(TestCaseVersion).filter(
+            TestCaseVersion.id == tc.current_version_id,
+        ).first()
+        if not tcv:
+            raise NotFoundError("Test case version not found")
+
+        # Resolve which meta version to validate against: explicit env wins,
+        # otherwise fall back to the version's original snapshot.
+        meta_version_id = None
+        if env_repo and environment_id:
+            env = env_repo.get_environment(environment_id, tenant_id)
+            if env and env.current_meta_version_id:
+                meta_version_id = env.current_meta_version_id
+        if not meta_version_id:
+            meta_version_id = tcv.metadata_version_id
+
+        validator = TestCaseValidator(metadata_repo, meta_version_id)
+        report = validator.validate(tcv.steps or [])
+        self._store_validation_report(tcv.id, report, meta_version_id)
+        return report
+
+    def apply_validation_fix(self, tc_id, tenant_id, issue, replacement,
+                             created_by, metadata_repo):
+        """Apply a single suggested fix by creating a NEW test case version
+        with the patched steps. Old version stays in history. Re-runs
+        validation on the new version so the UI can show the updated
+        issue count."""
+        from primeqa.intelligence.validator import TestCaseValidator
+        from primeqa.test_management.models import TestCase, TestCaseVersion
+
+        tc = self.test_case_repo.get_test_case(tc_id, tenant_id)
+        if not tc:
+            raise NotFoundError("Test case not found")
+        tcv = self.test_case_repo.db.query(TestCaseVersion).filter(
+            TestCaseVersion.id == tc.current_version_id,
+        ).first()
+        if not tcv:
+            raise NotFoundError("Test case version not found")
+
+        validator = TestCaseValidator(metadata_repo, tcv.metadata_version_id)
+        new_steps = validator.apply_fix(tcv.steps or [], issue, replacement)
+
+        # Create a new version (same convention as regenerate)
+        new_version = self.test_case_repo.create_version(
+            test_case_id=tc.id,
+            metadata_version_id=tcv.metadata_version_id,
+            created_by=created_by,
+            steps=new_steps,
+            expected_results=tcv.expected_results or [],
+            preconditions=tcv.preconditions or [],
+            generation_method="manual",
+            confidence_score=tcv.confidence_score,
+            referenced_entities=tcv.referenced_entities or [],
+        )
+        report = validator.validate(new_steps)
+        self._store_validation_report(
+            new_version.id, report, tcv.metadata_version_id,
+        )
+        self._log(tenant_id, created_by, "apply_validation_fix",
+                  "test_case", tc.id,
+                  {"from_version_id": tcv.id, "to_version_id": new_version.id,
+                   "rule": issue.get("rule"),
+                   "replacement": replacement})
+        return {
+            "test_case_id": tc.id,
+            "version_id": new_version.id,
+            "version_number": new_version.version_number,
+            "validation_report": report,
+        }
+
+    # ---------------------------------------------------------------------
 
     def generate_test_case(self, tenant_id, requirement_id, environment_id, created_by,
                            env_repo, conn_repo, metadata_repo, test_case_id=None):

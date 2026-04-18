@@ -788,6 +788,60 @@ def reorder_in_suite(suite_id, tc_id):
         db.close()
 
 
+@test_management_bp.route("/api/test-cases/<int:tc_id>/revalidate", methods=["POST"])
+@require_role("admin", "tester")
+def revalidate_test_case(tc_id):
+    """Re-run static validation on the test case's current version.
+    Optional body: {environment_id} to validate against a specific env's
+    current meta version instead of the one the TC was generated against.
+    """
+    data = request.get_json(silent=True) or {}
+    env_id = data.get("environment_id")
+    svc, db = _get_service()
+    try:
+        def run():
+            from primeqa.core.repository import EnvironmentRepository
+            from primeqa.metadata.repository import MetadataRepository
+            report = svc.revalidate_test_case_version(
+                tc_id, request.user["tenant_id"],
+                metadata_repo=MetadataRepository(db),
+                env_repo=EnvironmentRepository(db) if env_id else None,
+                environment_id=int(env_id) if env_id else None,
+            )
+            return jsonify(report), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/test-cases/<int:tc_id>/apply-validation-fix", methods=["POST"])
+@require_role("admin", "tester")
+def apply_validation_fix(tc_id):
+    """Create a new TC version with a single suggested fix applied.
+    Body: {issue: {...}, replacement: "LastActivityDate"}.
+    """
+    data = request.get_json(silent=True) or {}
+    issue = data.get("issue")
+    replacement = data.get("replacement")
+    if not issue or not replacement:
+        return json_error("VALIDATION_ERROR",
+                          "issue and replacement are required")
+    svc, db = _get_service()
+    try:
+        def run():
+            from primeqa.metadata.repository import MetadataRepository
+            result = svc.apply_validation_fix(
+                tc_id, request.user["tenant_id"],
+                issue, replacement,
+                created_by=request.user["id"],
+                metadata_repo=MetadataRepository(db),
+            )
+            return jsonify(result), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
 # ---- Reviews ----------------------------------------------------------------
 
 @test_management_bp.route("/api/reviews", methods=["GET"])

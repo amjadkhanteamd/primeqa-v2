@@ -8,7 +8,7 @@ from sqlalchemy import (
     BigInteger, Column, Integer, Numeric, String, Boolean, DateTime, Text, JSON, Float,
     ForeignKey, CheckConstraint, UniqueConstraint, Index,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -141,6 +141,14 @@ class TestCaseVersion(Base):
     referenced_entities = Column(JSON, nullable=False, server_default="[]")
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    # Migration 029: static validation output for this version (issues
+    # list + status + summary). Recomputed whenever a new version is
+    # created or the user clicks Revalidate.
+    validation_report = Column(JSONB)
+    validated_at = Column(DateTime(timezone=True))
+    validated_against_meta_version_id = Column(
+        Integer, ForeignKey("meta_versions.id", ondelete="SET NULL"),
+    )
 
     test_case = relationship("TestCase", back_populates="versions",
                              foreign_keys=[test_case_id])
