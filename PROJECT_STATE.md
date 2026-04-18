@@ -69,6 +69,12 @@ Continuous UX + infra improvements on top of R1–R7. Each commit is below.
 | `bfd0a48` | **Requirements UX refresh (phases 1–3).** (1) "+ New Requirement" button for manual requirements (no Jira). (2) Shared `components/generate_overlay.html` — rotating spinner labels so Generate doesn't look frozen; ended the double-click → dup-TC pattern. (3) Chip-picker in the Import modal with live HTMX search via `/api/jira/search?conn_id=...` (endpoint extended to accept direct connection id for the import flow); paste fallback for raw keys. |
 | `70db511` | **Bulk-generate (phase 4).** Checkbox per requirement + sticky bulk bar. `POST /api/requirements/bulk-generate` runs ≤5 in parallel via `ThreadPoolExecutor` with per-thread `Session(bind=engine)`, hard cap 20 per call. Modal summarises per-row results. |
 | `06d4673` | **Multi-TC generation (migration 028).** One click → 3–6 test cases covering `positive / negative_validation / boundary / edge_case / regression`. `TestCaseGenerator.generate_plan()` returns a plan; `generate_test_plan()` creates one `generation_batches` row + N TCs with `coverage_type` + `generation_batch_id`. Batch-wide supersession (all prior own-drafts replaced). Executor name prefix bumped to `PQA_{run_id}_{tc_id}_{logical_id}` to prevent same-requirement TCs colliding on SF name uniqueness. UI: Coverage column on Test Library with colored badges, "AI test plan rationale" callout on requirement detail with cost (superadmin), linked TCs grouped by coverage bucket. Bulk-generate modal reports "Generated 18 test cases across 4 requirements". |
+| `7044f10` | **Test Library group-by-requirement view.** Flat list was fine for 1 TC/requirement but became a stream with 3–6 TCs/requirement. Default view now groups TCs under their requirement with coverage breakdown chips and a coverage filter. Pagination moved up to "requirements per page" (20 default). Accordion state persists in `localStorage`. Flat toggle available. Requirement sort order: activity / jira_key / name. |
+| `dc52a58` | **Suite detail overhaul + bulk-add API.** `/suites/:id` was view-only; the backend add/remove/reorder API existed but was unwired. Now: inline edit (name/type/description), delete from detail, coverage + requirements-covered summary strip, `+ Add test cases` picker modal, ↑/↓ reorder, Remove per row. `POST /api/suites/:id/test-cases/bulk` — tenant-scoped, dedupe-aware, cap 200. |
+| `6ff40a4` | **Test Library per-group "+ Add to suite" + requirement sort.** Each accordion header on the grouped view gains an `+ Add to suite` button opening a coverage-chip modal (click chips to include/exclude subsets). Existing suites + `+ Create new suite` inline option. Requirement sort dropdown (activity / jira_key / name). |
+| `21287b3` | **Grouped suite picker + suites list metadata + release curation UI.** Suite picker now groups TCs by requirement with group select-all + 3-state indeterminate checkboxes. Suites list shows TC count + coverage chips + requirements covered per row (single JOIN, no N+1). Release detail: `+ Add requirements` button on Requirements tab with search + multi-select + bulk-add, `+ Add test cases` on Test Plan tab with the same grouped-by-requirement picker + priority selector, Remove per row, TC title / status / coverage badges. New bulk endpoints `POST /api/releases/:id/requirements/bulk` and `POST /api/releases/:id/test-plan/bulk`. |
+| `ab40337` | **Static test-case validator (migration 029).** New `TestCaseValidator` module catches AI hallucinations before runtime: object-not-found, field-not-found, field-not-createable, unresolved-`$var`, fields-not-synced. Fuzzy `difflib.get_close_matches(cutoff=0.6)` suggestions per issue. Three integration points: (1) after generation — validator runs during `generate_test_plan` and stores a `validation_report` JSONB on each new `test_case_version`; (2) before execution — worker blocks TCs with `status=='critical'` unless `config.skip_validation` / `force_run`; (3) during execution — existing `$var` fail-fast remains. API: `POST /api/test-cases/:id/revalidate`, `POST /api/test-cases/:id/apply-validation-fix`. UI: red/yellow/green banner on TC detail with per-issue Apply buttons that create a new version. |
+| `2e10581` | **Validator SOQL parsing.** Extends the validator to parse `query` steps' SOQL strings: `SELECT` column list + `FROM` object. Two new rules (`soql_from_object_not_found`, `soql_column_not_found`). Relationship-aware: `Owner.Id` is valid when `OwnerId` exists as a reference field (`__r`→`__c` for custom lookups). Permissive parser — silent no-op when the SOQL can't be parsed, to avoid false positives blocking valid tests. `apply_fix` extended to rewrite bad FROM or bad SELECT column in the SOQL text (word-boundary-safe). |
 
 ### Self-Validation Suite (`a9da9d3`) — shipped
 
@@ -99,11 +105,12 @@ columns)*, meta_objects, meta_fields, meta_validation_rules, meta_flows,
 meta_triggers, meta_record_types, **meta_sync_status**
 
 **Test Management** (17): sections, requirements, test_cases *(+
-`coverage_type`, `generation_batch_id`)*, test_case_versions, test_suites,
-suite_test_cases, ba_reviews, metadata_impacts, tags, test_case_tags,
-milestones, milestone_suites, custom_fields, custom_field_values,
-step_templates, test_case_parameter_sets, **generation_batches**
-*(all with soft-delete columns)*
+`coverage_type`, `generation_batch_id`)*, test_case_versions *(+
+`validation_report`, `validated_at`, `validated_against_meta_version_id`)*,
+test_suites, suite_test_cases, ba_reviews, metadata_impacts, tags,
+test_case_tags, milestones, milestone_suites, custom_fields,
+custom_field_values, step_templates, test_case_parameter_sets,
+**generation_batches** *(all with soft-delete columns)*
 
 **Execution** (15): pipeline_runs *(+ `source_refs`, `parent_run_id`)*,
 pipeline_stages, run_test_results, run_step_results *(+ 7 log-capture
@@ -123,7 +130,7 @@ release_test_plan_items, release_runs, release_decisions *(+
 
 **Vector** (1): embeddings
 
-## Migrations (001–028)
+## Migrations (001–029)
 - 001–015: platform, test management, execution, intelligence, release, data engine, risk, step comments, tags/milestones, custom fields
 - **016**: Test management soft delete + pg_trgm + composite/partial indexes
 - **017**: Super Admin role, `pipeline_runs.source_refs` + `parent_run_id`
@@ -138,6 +145,7 @@ release_test_plan_items, release_runs, release_decisions *(+
 - **026**: `meta_versions.delta_since_ts` for quick-refresh delta syncs driven by the preview-page drift banner
 - **027**: `run_events` durable pipeline log (id, run_id, tenant_id, ts, kind, level, message, context jsonb) + partial index on `(tenant_id, ts desc)` where level in (warn, error)
 - **028**: `test_cases.coverage_type` + `test_cases.generation_batch_id`, new `generation_batches` table (model, input/output tokens, cost_usd, explanation, coverage_types[]) for multi-TC test-plan generation
+- **029**: `test_case_versions.validation_report` (JSONB) + `validated_at` + `validated_against_meta_version_id` for the static validator that runs after every generation and before every execution
 
 ## API Endpoints (~140)
 
@@ -247,10 +255,12 @@ release, CI/CD).
 - **Parallel TC execution within a run**: serial today. With multi-TC,
   5×-parallel could cut bulk-run time significantly. Deferred; risks
   include API rate limits and cleanup interleaving.
-- **Post-generation linter**: the generator sometimes emits `$var`
-  references without a matching `state_ref`. The executor fail-fasts
-  with a clear message (post-R7 `defe03e`), but a save-time validator
-  would catch it before the first run.
+- **Post-generation linter**: **shipped** in commits `ab40337` + `2e10581`
+  (the TestCaseValidator). Catches object-not-found, field-not-found,
+  `$var` without prior `state_ref`, SOQL FROM / SELECT column mismatches,
+  with fuzzy suggestions and a one-click Apply button. Still deferred:
+  cross-object FLS / PLS permission checks, full SOQL grammar for
+  aggregate/TYPEOF/GROUP BY clauses, auto-correct "Fix all".
 - **Email provider** (Q4 deferred): `NOTIFICATIONS_PROVIDER=log` today.
   Flip to SendGrid / SES when chosen.
 - **Per-category meta retry without new version** (R3 caveat): retrying a

@@ -50,7 +50,7 @@ primeqa/                       # Main package
 ├── vector/                    # Embeddings (pgvector)
 ├── static/                    # Shared JS/CSS (toast, confirm, unsaved-changes)
 └── templates/                 # Jinja2 HTML templates
-migrations/                    # SQL migration files (001–028)
+migrations/                    # SQL migration files (001–029)
 scripts/                       # One-off operational SQL (data cleanup, etc.)
 docs/design/                   # Design docs (run-experience.md covers R1–R7)
 tests/                         # Integration test files
@@ -96,6 +96,38 @@ In `primeqa/intelligence/generation.py` + `primeqa/test_management/service.py`, 
 - Cost per batch is estimated from tokens using a model→$ lookup table and stored on `generation_batches.cost_usd`. Surfaced to superadmin only.
 - Executor name prefix is `PQA_{run_id}_{tc_id}_{logical_id}` to prevent 5 TCs from one requirement colliding on Salesforce Name uniqueness. Idempotency key carries `tc_id` too.
 - Fail-fast: `StepExecutor.execute_step` raises a clear error when a `$var` reference has no prior `state_ref`; message includes available vars and the fix hint. Catches the most common AI-generator quality bug before hitting Salesforce.
+
+## Static test-case validator (migration 029)
+
+`primeqa/intelligence/validator.py` — catches AI hallucinations **before** a run wastes an API burst.
+
+- `TestCaseValidator(metadata_repo, meta_version_id)` eager-hydrates an object-by-api-name index + `{object_id: {field_api: MetaField}}` nested map. Cheap to construct — one DB round-trip reused across many `.validate()` calls.
+- Rules (severity tier drives UI color + preflight block):
+
+  | Severity | Rule | What |
+  |---|---|---|
+  | `critical` | `object_not_found` | `target_object` missing in metadata |
+  | `critical` | `field_not_found` | `field_values` / `assertions` key missing |
+  | `critical` | `field_not_createable` | `create` step uses a read-only field |
+  | `warning` | `field_not_updateable` | `update` step uses a read-only field |
+  | `critical` | `unresolved_state_ref` | `$var` used without a prior `state_ref` |
+  | `critical` | `soql_from_object_not_found` | SOQL `FROM` points at a missing object |
+  | `critical` | `soql_column_not_found` | SOQL `SELECT` column missing on `FROM` object |
+  | `info` | `fields_not_synced` | Object exists but its fields weren't synced; skipping deep checks |
+
+- Fuzzy suggestions via `difflib.get_close_matches(cutoff=0.6)` for field / object / state-ref names — up to 3 candidates per issue. UI renders them as one-click **Apply** buttons.
+- Relationship-aware SOQL: `Owner.Id` is valid when `OwnerId` exists as a reference field (same for `__r` → `__c`). Doesn't cry wolf on standard lookups.
+- `apply_fix(steps, issue, replacement)` is a pure function returning new steps with the replacement applied. Used by `TestManagementService.apply_validation_fix` to create a new `test_case_version` (generation_method=`'manual'`).
+
+Three integration points:
+
+1. **After generation** — `generate_test_plan` runs the validator on each new version and stores the report in `test_case_versions.validation_report` (JSONB).
+2. **Before execution** — worker's `_run_execute_stage` checks the report before each TC. If `status == "critical"` and run config doesn't carry `skip_validation` / `force_run`, the TC is blocked with `failure_type='validation_blocked'` and a clear log event — no SF call wasted. Superadmin override via `config.skip_validation`.
+3. **During execution** — existing `$var` fail-fast in `executor.py` remains as the defence-in-depth runtime layer.
+
+APIs: `POST /api/test-cases/:id/revalidate` (optional `{environment_id}`), `POST /api/test-cases/:id/apply-validation-fix` (body `{issue, replacement}`).
+
+UI on test case detail page: red banner for critical, yellow for warnings, green "No issues" on clean. Each issue lists its suggested replacements as Apply buttons that patch the step JSON and reload.
 
 ## The Run Experience (R1–R7 + post-R7 enhancements)
 
@@ -194,7 +226,7 @@ python tests/test_system_validation.py   # 4 runner + 13 canonical suite outcome
 git push origin main                     # Railway auto-deploys 3 services
 
 # Apply a migration (idempotent since 016)
-psql "$DATABASE_URL" -f migrations/028_coverage_types_and_generation_batches.sql
+psql "$DATABASE_URL" -f migrations/029_test_case_version_validation.sql
 ```
 
 ## Environment variables

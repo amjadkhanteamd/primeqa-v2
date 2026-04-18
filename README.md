@@ -23,7 +23,7 @@ https://primeqa-v2-production.up.railway.app — login `admin@primeqa.io` / `cha
 11. **Live selection summary** — sticky pill showing "N Jira tickets, M suites → K test cases" that updates via `POST /api/runs/preview` on every chip change
 12. **Pre-flight checks** before queuing: credentials, metadata freshness, per-test metadata-stale skip, run-size caps, prod-safety
 13. **Live execution** — SSE-powered timeline updates per step, **plus a durable hierarchical "Pipeline log" panel** backed by `run_events` that survives page refresh and works across Railway's split web/worker services. Download any run's log as .txt or .json for tickets.
-14. **Fail-fast on test-data bugs** — executor catches unresolved `$var` references before hitting Salesforce and surfaces an actionable error ("Fix the test case so a prior create step sets `state_ref` to the matching $var"). No more cryptic `MALFORMED_ID` noise.
+14. **Static validation after generation** — every generated test case is validated against the org's metadata before you see it: object-not-found, field-not-found, unresolved `$var`, SOQL `FROM` / `SELECT` column mismatches. Fuzzy suggestions + one-click **Apply** button per issue. Critical issues block execution automatically (superadmin override available). Runtime fail-fast stays as a defence-in-depth layer.
 15. **Scheduled runs** — full cron (presets + advanced) for test suites with dead-man's-switch alerting
 16. **Fix-and-rerun agent** — on failure, triages the error, proposes a fix, auto-applies on sandbox at high confidence (production is always human-gated). Snapshot-based revert.
 17. **Cleanup engine** reverse-deletes entities with dependency retry
