@@ -50,12 +50,23 @@ def execute_stage(stage, ctx):
     """Dispatch a pipeline stage to its handler. Unimplemented stages pass
     through so execute-only runs (the common case) don't block on unused
     generate/store/metadata_refresh/jira_read.
+
+    Emits stage_started / stage_finished events so the run detail log
+    panel reflects progress. Events are written to both the in-process
+    EventBus (live) and the run_events DB table (durable + cross-service).
     """
+    from primeqa.runs.streams import emit_stage_started, emit_stage_finished
+
     stage_repo = ctx["stage_repo"]
+    run = ctx["run_repo"].get_run(stage.run_id)
+    tenant_id = run.tenant_id if run else None
+
+    t0 = time.time()
     stage_repo.update_stage(stage.id, "running")
     ctx["heartbeat_repo"].update_heartbeat(
         ctx["worker_id"], current_run_id=stage.run_id, current_stage=stage.stage_name,
     )
+    emit_stage_started(stage.run_id, stage.stage_name, tenant_id=tenant_id)
 
     try:
         if stage.stage_name == "execute":
@@ -70,9 +81,20 @@ def execute_stage(stage, ctx):
     except Exception as e:
         log.exception("stage %s on run %s failed: %s", stage.stage_name, stage.run_id, e)
         stage_repo.update_stage(stage.id, "failed", last_error=str(e)[:500])
+        emit_stage_finished(
+            stage.run_id, stage.stage_name, "failed",
+            tenant_id=tenant_id,
+            duration_ms=int((time.time() - t0) * 1000),
+            error_summary=str(e)[:200],
+        )
         return False
 
     stage_repo.update_stage(stage.id, "passed")
+    emit_stage_finished(
+        stage.run_id, stage.stage_name, "passed",
+        tenant_id=tenant_id,
+        duration_ms=int((time.time() - t0) * 1000),
+    )
     return True
 
 
@@ -94,18 +116,24 @@ def _run_execute_stage(stage, ctx):
     from primeqa.core.repository import EnvironmentRepository, ConnectionRepository
     from primeqa.test_management.models import TestCase, TestCaseVersion
     from primeqa.metadata.worker_runner import _oauth_token
+    from primeqa.runs.streams import emit_log, emit_test_started, emit_test_finished
 
     db = ctx["db"]
     run_repo = ctx["run_repo"]
     run = run_repo.get_run(stage.run_id)
     if not run:
         raise RuntimeError(f"run {stage.run_id} not found")
+    tenant_id = run.tenant_id
 
     # Resolve the test_case_ids this run needs to execute.
     tc_ids = _resolve_test_case_ids(db, run)
+    emit_log(run.id,
+             f"Resolved {len(tc_ids)} test case(s) from source_type={run.source_type}",
+             tenant_id=tenant_id, source_type=run.source_type)
     if not tc_ids:
-        log.info("run %s has no test cases to execute (source_type=%s); skipping",
-                 run.id, run.source_type)
+        emit_log(run.id,
+                 f"No test cases to execute (source_type={run.source_type})",
+                 level="warn", tenant_id=tenant_id)
         run_repo.update_run_status(run.id, "running",
                                    total_tests=0, passed=0, failed=0, skipped=0)
         return
@@ -122,6 +150,9 @@ def _run_execute_stage(stage, ctx):
     if not conn:
         raise RuntimeError("connection not found / could not decrypt")
 
+    emit_log(run.id,
+             f"Fetching Salesforce OAuth token for env #{env.id} ({env.name})",
+             tenant_id=tenant_id, env_id=env.id)
     access_token = _oauth_token(env, conn["config"])
     # Persist the fresh token so other services can reuse within the window.
     env_repo.store_credentials(
@@ -152,6 +183,9 @@ def _run_execute_stage(stage, ctx):
         ).first()
         if not tc or not tc.current_version_id:
             skipped += 1
+            emit_log(run.id,
+                     f"Skipped test #{tc_id}: test case or current version missing",
+                     level="warn", tenant_id=tenant_id, test_case_id=tc_id)
             continue
 
         version = db.query(TestCaseVersion).filter(
@@ -159,6 +193,10 @@ def _run_execute_stage(stage, ctx):
         ).first()
         if not version or not version.steps:
             skipped += 1
+            emit_log(run.id,
+                     f"Skipped test #{tc_id} '{tc.title}': no steps defined",
+                     level="warn", tenant_id=tenant_id,
+                     test_case_id=tc.id, title=tc.title)
             continue
 
         # Heartbeat per test case so the reaper doesn't kill the worker on
@@ -173,6 +211,9 @@ def _run_execute_stage(stage, ctx):
             environment_id=env.id, status="passed",
             total_steps=len(version.steps),
         )
+
+        emit_test_started(run.id, tc.id, tenant_id=tenant_id,
+                          total_steps=len(version.steps), title=tc.title)
 
         t0 = time.time()
         tc_failed_steps = 0
@@ -189,6 +230,7 @@ def _run_execute_stage(stage, ctx):
                 entity_repo=entity_repo,
                 idempotency_mgr=idem,
                 meta_vr_lookup=_has_vr,
+                tenant_id=tenant_id,
             )
             for step_def in version.steps:
                 step, status = executor.execute_step(
@@ -235,16 +277,25 @@ def _run_execute_stage(stage, ctx):
             total_tests=total, passed=passed, failed=failed, skipped=skipped,
         )
 
-        # Per-test SSE notification
+        # Per-test SSE + durable event
         try:
-            from primeqa.runs.streams import emit_test_finished
-            emit_test_finished(run.id, tc.id, tc_status,
-                               duration_ms=duration_ms,
-                               passed_steps=tc_passed_steps,
-                               failed_steps=tc_failed_steps)
+            emit_test_finished(
+                run.id, tc.id, tc_status,
+                tenant_id=tenant_id,
+                duration_ms=duration_ms,
+                passed_steps=tc_passed_steps,
+                failed_steps=tc_failed_steps,
+                error_summary=(failure_summary or "")[:200] if failure_summary else None,
+                title=tc.title,
+            )
         except Exception:
             pass
 
+    emit_log(run.id,
+             f"Execute finished: {total} tests ({passed} passed, {failed} failed, {skipped} skipped)",
+             level="info" if failed == 0 else "warn",
+             tenant_id=tenant_id,
+             total=total, passed=passed, failed=failed, skipped=skipped)
     log.info("run %s: executed %d tests (%d passed, %d failed, %d skipped)",
              run.id, total, passed, failed, skipped)
 

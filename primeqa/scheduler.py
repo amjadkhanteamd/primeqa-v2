@@ -134,6 +134,38 @@ def scheduler_tick(ctx):
     fire_scheduled_runs(ctx)
     dead_mans_switch_check(ctx)
     reap_stalled_metadata_jobs(ctx)
+    trim_run_events(ctx)
+
+
+_last_trim = {"at": 0}
+
+def trim_run_events(ctx):
+    """Keep at most 1000 events per run (oldest trimmed). Runs at most
+    once every ~10 min so the reaper is cheap. The hard cap protects
+    against runaway event volume from a misbehaving worker; normal
+    runs stay well under this.
+    """
+    import time
+    now = time.time()
+    if now - _last_trim["at"] < 600:  # 10 min
+        return
+    _last_trim["at"] = now
+    try:
+        from sqlalchemy import text
+        ctx["db"].execute(text("""
+            DELETE FROM run_events
+            WHERE id IN (
+                SELECT e.id
+                FROM (
+                    SELECT id, row_number() OVER (PARTITION BY run_id ORDER BY id DESC) AS rn
+                    FROM run_events
+                ) e
+                WHERE e.rn > 1000
+            )
+        """))
+        ctx["db"].commit()
+    except Exception as e:
+        log.warning("trim_run_events failed: %s", e)
 
 
 def reap_stalled_metadata_jobs(ctx):

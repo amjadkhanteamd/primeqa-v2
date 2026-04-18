@@ -319,12 +319,18 @@ def jira_sprints(connection_id, board_id):
 def stream_run_events(run_id):
     """Server-Sent Events endpoint for live run timeline updates.
 
-    Browser subscribes here; worker publishes step_started/step_finished/
-    run_status events to the in-process EventBus. Falls back to DB snapshots
-    every 5s when no bus events arrive (handles multi-process setups).
+    Three delivery channels are interleaved:
+      1. In-process EventBus (sub-second when web+worker share a process).
+      2. DB tail of `run_events` (cross-service on Railway \u2014 worker
+         writes to DB, web polls it every ~1s).
+      3. DB snapshot of status/counts every 5s.
+
+    On connect, the last ~200 events are backfilled so a page refresh
+    keeps the log panel populated.
     """
     from flask import Response
     from primeqa.runs.streams import stream_run_events as sse_gen
+    from primeqa.execution.models import RunEvent
     tenant_id = request.user["tenant_id"]
     db = next(get_db())
     try:
@@ -336,7 +342,6 @@ def stream_run_events(run_id):
         db.close()
 
     def snapshot():
-        # Fresh session per snapshot; keeps things simple and avoids stale reads
         snap_db = next(get_db())
         try:
             run = PipelineRunRepository(snap_db).get_run(run_id, tenant_id)
@@ -359,9 +364,107 @@ def stream_run_events(run_id):
         finally:
             snap_db.close()
 
-    resp = Response(sse_gen(run_id, snapshot), mimetype="text/event-stream")
+    def _event_to_dict(ev):
+        return {
+            "id": ev.id, "kind": ev.kind, "level": ev.level,
+            "message": ev.message, "context": ev.context or {},
+            "ts": ev.ts.isoformat() if ev.ts else None,
+        }
+
+    def initial_events():
+        """Last ~200 events on the run so refresh repopulates the log."""
+        ev_db = next(get_db())
+        try:
+            # Keep the tail (most recent 200) in chronological order
+            q = (ev_db.query(RunEvent)
+                 .filter(RunEvent.run_id == run_id,
+                         RunEvent.tenant_id == tenant_id)
+                 .order_by(RunEvent.id.desc())
+                 .limit(200))
+            rows = list(reversed(q.all()))
+            return [_event_to_dict(e) for e in rows]
+        finally:
+            ev_db.close()
+
+    def tail_events(since_id):
+        """Events newer than `since_id`, chronological."""
+        ev_db = next(get_db())
+        try:
+            q = (ev_db.query(RunEvent)
+                 .filter(RunEvent.run_id == run_id,
+                         RunEvent.tenant_id == tenant_id,
+                         RunEvent.id > (since_id or 0))
+                 .order_by(RunEvent.id.asc())
+                 .limit(200))
+            return [_event_to_dict(e) for e in q.all()]
+        finally:
+            ev_db.close()
+
+    resp = Response(
+        sse_gen(run_id, snapshot, tail_events,
+                initial_events_fn=initial_events),
+        mimetype="text/event-stream",
+    )
     resp.headers["Cache-Control"] = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"
+    return resp
+
+
+@execution_bp.route("/api/runs/<int:run_id>/events/download", methods=["GET"])
+@require_auth
+def download_run_events(run_id):
+    """Export ALL events for a run as JSON (or text).
+
+    Purpose: attach to a bug report or ticket; review after the run
+    completed. No size cap on download \u2014 we cap in the UI panel,
+    not on export.
+    """
+    from flask import Response
+    from primeqa.execution.models import RunEvent
+    import json
+
+    tenant_id = request.user["tenant_id"]
+    fmt = (request.args.get("format") or "json").lower()
+
+    db = next(get_db())
+    try:
+        run = PipelineRunRepository(db).get_run(run_id, tenant_id)
+        if not run:
+            return jsonify(error="Run not found"), 404
+
+        rows = (db.query(RunEvent)
+                .filter(RunEvent.run_id == run_id,
+                        RunEvent.tenant_id == tenant_id)
+                .order_by(RunEvent.id.asc())
+                .all())
+
+        events = [{
+            "id": e.id, "ts": e.ts.isoformat() if e.ts else None,
+            "kind": e.kind, "level": e.level,
+            "message": e.message, "context": e.context or {},
+        } for e in rows]
+    finally:
+        db.close()
+
+    fname = f"run-{run_id}-events"
+
+    if fmt == "txt":
+        lines = [f"[{e['ts']}] {e['level'].upper():5} {e['kind']:16} {e['message']}"
+                 for e in events]
+        body = "\n".join(lines) + "\n"
+        resp = Response(body, mimetype="text/plain; charset=utf-8")
+        resp.headers["Content-Disposition"] = f'attachment; filename="{fname}.txt"'
+        return resp
+
+    # default JSON
+    body = json.dumps({
+        "run_id": run_id, "tenant_id": tenant_id,
+        "exported_at": None,  # client-side stamps its own download time
+        "count": len(events),
+        "events": events,
+    }, indent=2, default=str)
+    resp = Response(body, mimetype="application/json")
+    resp.headers["Content-Disposition"] = f'attachment; filename="{fname}.json"'
     return resp
 
 

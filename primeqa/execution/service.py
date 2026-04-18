@@ -23,16 +23,27 @@ class PipelineService:
         )
         self.stage_repo.create_stages(run.id)
 
-        # R1: broadcast run_status for any SSE subscribers
+        # R1: broadcast run_status for any SSE subscribers + durable log
         try:
-            from primeqa.runs.streams import emit_run_status
-            emit_run_status(run.id, status="queued", terminal=False)
+            from primeqa.runs.streams import emit_run_status, emit_log
+            emit_run_status(run.id, status="queued", terminal=False,
+                            tenant_id=tenant_id)
+            emit_log(run.id,
+                     f"Run queued ({run_type} \u00b7 {source_type} \u00b7 {len(source_ids or [])} source(s))",
+                     tenant_id=tenant_id,
+                     run_type=run_type, source_type=source_type)
         except Exception:  # observability is best-effort
             pass
 
         slot_acquired = self.slot_repo.acquire_slot(environment_id, run.id)
         if slot_acquired:
             self.run_repo.update_run_status(run.id, "running")
+            try:
+                from primeqa.runs.streams import emit_run_status
+                emit_run_status(run.id, status="running", terminal=False,
+                                tenant_id=tenant_id)
+            except Exception:
+                pass
             run = self.run_repo.get_run(run.id)
             return self._run_dict(run, queue_position=0)
 
@@ -94,12 +105,14 @@ class PipelineService:
         run = self.run_repo.get_run(run_id)
         if not run:
             return
+        tenant_id = run.tenant_id
         self.run_repo.update_run_status(run.id, "completed")
         self.slot_repo.release_slot(run.environment_id, run.id)
         self._start_next_queued(run.environment_id)
         try:
             from primeqa.runs.streams import emit_run_status
-            emit_run_status(run_id, status="completed", terminal=True)
+            emit_run_status(run_id, status="completed", terminal=True,
+                            tenant_id=tenant_id)
         except Exception:
             pass
 
@@ -107,6 +120,7 @@ class PipelineService:
         run = self.run_repo.get_run(run_id)
         if not run:
             return
+        tenant_id = run.tenant_id
         self.run_repo.update_run_status(run.id, "failed", error_message=error_message)
         self.slot_repo.release_slot(run.environment_id, run.id)
         self.stage_repo.skip_remaining_stages(run.id)
@@ -114,6 +128,7 @@ class PipelineService:
         try:
             from primeqa.runs.streams import emit_run_status
             emit_run_status(run_id, status="failed", terminal=True,
+                            tenant_id=tenant_id,
                             error_message=error_message)
         except Exception:
             pass

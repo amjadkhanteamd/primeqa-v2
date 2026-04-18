@@ -6,9 +6,10 @@ Tables owned: pipeline_runs, pipeline_stages, run_test_results, run_step_results
 """
 
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, Text, JSON, Float,
+    BigInteger, Column, Integer, String, Boolean, DateTime, Text, JSON, Float,
     ForeignKey, CheckConstraint, UniqueConstraint, Index,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -200,6 +201,30 @@ class RunCleanupAttempt(Base):
                          name="run_cleanup_attempts_entity_attempt_unique"),
         CheckConstraint("status IN ('success', 'failed', 'skipped')"),
     )
+
+
+class RunEvent(Base):
+    """Durable, human-readable timeline of what happened on a run.
+
+    Populated from worker/executor milestones (stage transitions, test
+    start/finish, step start/finish, log lines). Read back by the SSE
+    endpoint as "events since event_id N" to deliver cross-service
+    real-time updates without Redis. Also powers the "Download logs"
+    export and the structured log panel in runs/detail.html.
+
+    Small per-row by design \u2014 no API bodies, no SOQL, no credentials.
+    Full per-step payloads live in run_step_results.
+    """
+    __tablename__ = "run_events"
+
+    id = Column(BigInteger, primary_key=True)
+    run_id = Column(Integer, ForeignKey("pipeline_runs.id", ondelete="CASCADE"), nullable=False)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    ts = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    kind = Column(String(30), nullable=False)
+    level = Column(String(10), nullable=False, server_default="info")
+    message = Column(Text, nullable=False)
+    context = Column(JSONB, nullable=False, server_default="{}")
 
 
 class ExecutionSlot(Base):

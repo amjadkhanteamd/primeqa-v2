@@ -151,11 +151,35 @@
   </details>
   {% endif %}
 
+  <!-- Pipeline log (durable, hierarchical, populated from run_events) -->
+  <div class="bg-white shadow rounded-lg">
+    <div class="px-4 py-3 border-b flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <h3 class="text-sm font-medium">Pipeline log</h3>
+        <span id="log-live" class="hidden text-xs text-blue-600 font-medium">\u25CF live</span>
+        <span id="log-count" class="text-xs text-gray-500"></span>
+      </div>
+      <div class="flex items-center space-x-2">
+        <label class="text-xs text-gray-600 flex items-center space-x-1">
+          <input id="log-autoscroll" type="checkbox" class="rounded" checked>
+          <span>Auto-scroll</span>
+        </label>
+        <a href="/api/runs/{{ run.id }}/events/download?format=txt"
+           class="text-xs rounded-md bg-white px-2 py-1 text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Download .txt</a>
+        <a href="/api/runs/{{ run.id }}/events/download?format=json"
+           class="text-xs rounded-md bg-white px-2 py-1 text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Download .json</a>
+      </div>
+    </div>
+    <div id="pipeline-log" class="px-4 py-3 max-h-96 overflow-y-auto font-mono text-xs space-y-0.5 bg-gray-50">
+      <div id="log-empty" class="text-gray-500 italic">Waiting for events&hellip;</div>
+    </div>
+  </div>
+
   <!-- Live timeline (populated via SSE) -->
   <div class="bg-white shadow rounded-lg">
     <div class="px-4 py-4 border-b flex items-center justify-between">
       <h3 class="text-lg font-medium">Timeline</h3>
-      <span id="live-indicator" class="hidden text-xs text-blue-600 font-medium">● live</span>
+      <span id="live-indicator" class="hidden text-xs text-blue-600 font-medium">\u25CF live</span>
     </div>
     <div id="timeline" class="divide-y divide-gray-200">
       {% if not results %}
@@ -199,7 +223,9 @@
     status: {{ run.status | tojson }}
   };
   const terminal = new Set(['completed', 'failed', 'cancelled']);
-  if (terminal.has(run.status)) return;
+  // Whether the run was still active when the page was loaded \u2014 drives
+  // whether to reload on terminal transition vs. just close the stream.
+  const wasActive = !terminal.has(run.status);
 
   const live = document.getElementById('live-indicator');
   const statusBadge = document.getElementById('run-status-badge');
@@ -207,6 +233,37 @@
   const failedEl = document.getElementById('run-failed');
   const totalEl = document.getElementById('run-total');
   const timeline = document.getElementById('timeline');
+
+  // Update the stage track (the colored bar across the top of the page)
+  // live as stage_started / stage_finished events arrive.
+  function updateStageBar(stageName, status) {
+    const cell = document.querySelector(`[data-stage="${stageName}"]`);
+    if (!cell) return;
+    const bar = cell.querySelector('.stage-bar');
+    const label = cell.querySelector('.stage-status');
+    if (!bar || !label) return;
+    bar.classList.remove('bg-green-500', 'bg-red-500', 'bg-blue-500',
+                         'bg-gray-300', 'bg-gray-200', 'animate-pulse-blue');
+    label.classList.remove('text-green-600', 'text-red-600',
+                           'text-blue-600', 'text-gray-400');
+    const barMap = {
+      passed: ['bg-green-500'],
+      failed: ['bg-red-500'],
+      running: ['bg-blue-500', 'animate-pulse-blue'],
+      skipped: ['bg-gray-300'],
+      pending: ['bg-gray-200'],
+    };
+    const textMap = {
+      passed: ['text-green-600'],
+      failed: ['text-red-600'],
+      running: ['text-blue-600'],
+      skipped: ['text-gray-400'],
+      pending: ['text-gray-400'],
+    };
+    (barMap[status] || barMap.pending).forEach(c => bar.classList.add(c));
+    (textMap[status] || textMap.pending).forEach(c => label.classList.add(c));
+    label.textContent = status;
+  }
 
   function setStatusBadge(status) {
     const classes = ['bg-green-100','text-green-800','bg-red-100','text-red-800',
@@ -271,9 +328,163 @@
     }
   }
 
+  // Pipeline log panel \u2014 structured, hierarchical, last-200 soft cap
+  const logEl = document.getElementById('pipeline-log');
+  const logEmpty = document.getElementById('log-empty');
+  const logLive = document.getElementById('log-live');
+  const logCount = document.getElementById('log-count');
+  const autoscrollEl = document.getElementById('log-autoscroll');
+  const LOG_SOFT_CAP = 200;
+  const seenEventIds = new Set();
+  let logRowCount = 0;
+
+  // Map each event kind to indent level for the hierarchical look
+  const INDENT = {
+    run_status: 0, log: 0,
+    stage_started: 1, stage_finished: 1,
+    test_started: 2, test_finished: 2,
+    step_started: 3, step_finished: 3,
+  };
+
+  const ICON = {
+    stage_started: '\u25B6',
+    stage_finished_passed: '\u2713',
+    stage_finished_failed: '\u2717',
+    stage_finished_skipped: '\u26A0',
+    test_started: '\u25B6',
+    test_finished_passed: '\u2713',
+    test_finished_failed: '\u2717',
+    test_finished_error: '\u2717',
+    step_started: '\u2192',
+    step_finished_passed: '\u2192',
+    step_finished_failed: '\u2192',
+    step_finished_error: '\u2192',
+    log_info: '\u00b7',
+    log_warn: '\u26A0',
+    log_error: '\u2717',
+    run_status_completed: '\u2713',
+    run_status_failed: '\u2717',
+    run_status_running: '\u25B6',
+    run_status_queued: '\u00b7',
+    run_status_cancelled: '\u26A0',
+  };
+
+  function logIconFor(kind, level, ctx) {
+    if (kind === 'stage_finished') return ICON['stage_finished_' + (ctx.status || 'passed')] || '\u2713';
+    if (kind === 'test_finished') return ICON['test_finished_' + (ctx.status || 'passed')] || '\u2713';
+    if (kind === 'step_finished') return ICON['step_finished_' + (ctx.status || 'passed')] || '\u2192';
+    if (kind === 'run_status') return ICON['run_status_' + (ctx.status || 'info')] || '\u00b7';
+    if (kind === 'log') return ICON['log_' + (level || 'info')] || '\u00b7';
+    return ICON[kind] || '\u00b7';
+  }
+
+  function logColorFor(kind, level, ctx) {
+    if (level === 'error' || ctx.status === 'failed' || ctx.status === 'error') return 'text-red-600';
+    if (level === 'warn' || ctx.status === 'skipped') return 'text-yellow-700';
+    if (kind === 'stage_finished' && ctx.status === 'passed') return 'text-green-600';
+    if (kind === 'test_finished' && ctx.status === 'passed') return 'text-green-600';
+    if (kind === 'step_finished' && ctx.status === 'passed') return 'text-green-600';
+    if (kind === 'run_status' && ctx.status === 'completed') return 'text-green-600';
+    return 'text-gray-700';
+  }
+
+  function appendLog(ev) {
+    // `ev` may come from DB tail (has `id`, `ts`, `kind`, `level`, `message`, `context`)
+    // or from in-process bus (has event-type-named top-level fields in `data`).
+    // We normalise by always passing DB-shaped objects \u2014 see normaliseEvent()
+    if (ev.id && seenEventIds.has(ev.id)) return;
+    if (ev.id) seenEventIds.add(ev.id);
+
+    if (logEmpty) logEmpty.remove();
+
+    const kind = ev.kind;
+    const level = ev.level || 'info';
+    const ctx = ev.context || {};
+    const indent = INDENT[kind] ?? 0;
+    const icon = logIconFor(kind, level, ctx);
+    const colorClass = logColorFor(kind, level, ctx);
+    const ts = ev.ts ? new Date(ev.ts).toLocaleTimeString([], {hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'}) : '';
+
+    const row = document.createElement('div');
+    row.className = 'flex items-start space-x-2 ' + colorClass;
+    row.innerHTML = `<span class="text-gray-400 tabular-nums">${ts}</span>
+      <span class="tabular-nums" style="padding-left: ${indent * 12}px">${icon}</span>
+      <span class="flex-1 whitespace-pre-wrap break-words">${escapeHtml(ev.message || '')}</span>`;
+    logEl.appendChild(row);
+    logRowCount += 1;
+
+    // Soft-cap: trim oldest so the DOM doesn't grow unbounded during
+    // long runs. Full history is always available via the Download button.
+    while (logRowCount > LOG_SOFT_CAP) {
+      const first = logEl.children[0];
+      if (!first || first === logEmpty) break;
+      first.remove();
+      logRowCount -= 1;
+    }
+    if (autoscrollEl.checked) {
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    logCount.textContent = logRowCount === LOG_SOFT_CAP
+      ? `showing last ${LOG_SOFT_CAP}`
+      : `${logRowCount} event${logRowCount === 1 ? '' : 's'}`;
+  }
+
+  function escapeHtml(s) {
+    return String(s || '').replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+  }
+
+  // Normalise in-process BUS events (flat payload, no id) so appendLog
+  // can treat them like DB-shaped events.
+  function normaliseBusEvent(type, data) {
+    return {
+      kind: type,
+      level: (data && data.status === 'failed') ? 'error' :
+             (data && data.status === 'skipped') ? 'warn' : 'info',
+      message: busMessage(type, data),
+      context: data || {},
+      ts: new Date().toISOString(),
+    };
+  }
+
+  function busMessage(type, d) {
+    d = d || {};
+    if (type === 'stage_started') return `Stage ${d.stage_name || '?'} started`;
+    if (type === 'stage_finished') return `Stage ${d.stage_name || '?'} ${d.status || '?'}` + (d.duration_ms ? ` (${d.duration_ms}ms)` : '');
+    if (type === 'test_started') return `Test #${d.test_case_id || '?'} started` + (d.total_steps ? ` (${d.total_steps} steps)` : '');
+    if (type === 'test_finished') return `Test #${d.test_case_id || '?'} ${d.status || '?'}` + (d.duration_ms ? ` in ${(d.duration_ms / 1000).toFixed(1)}s` : '') + (d.error_summary ? ` \u2014 ${d.error_summary}` : '');
+    if (type === 'step_started') return `Step ${d.step_order || '?'} ${d.action || ''} ${d.target_object || ''}`.trim();
+    if (type === 'step_finished') return `Step ${d.step_order || '?'} ${d.status || ''}` + (d.duration_ms ? ` (${d.duration_ms}ms)` : '') + (d.error_summary ? ` \u2014 ${d.error_summary}` : '');
+    if (type === 'run_status') return `Run ${d.status || ''}`;
+    return type + ' ' + JSON.stringify(d || {});
+  }
+
   const es = new EventSource('/api/runs/' + run.id + '/events');
-  es.addEventListener('open', () => live.classList.remove('hidden'));
+  es.addEventListener('open', () => {
+    live.classList.remove('hidden');
+    logLive.classList.remove('hidden');
+  });
   es.addEventListener('error', () => { /* browser auto-reconnects */ });
+
+  // DB-shape events (from the tail endpoint): these are the durable
+  // run_events rows. Each has an `id` so we can dedupe on reconnect.
+  ['stage_started', 'stage_finished', 'test_started', 'test_finished',
+   'log', 'run_started', 'run_finished'].forEach(kind => {
+    es.addEventListener(kind, e => {
+      try {
+        const payload = JSON.parse(e.data);
+        appendLog(payload);
+        // Keep the stage bar in sync as stages transition
+        const ctx = payload.context || payload;
+        if (kind === 'stage_started' && ctx.stage_name) {
+          updateStageBar(ctx.stage_name, 'running');
+        } else if (kind === 'stage_finished' && ctx.stage_name) {
+          updateStageBar(ctx.stage_name, ctx.status || 'passed');
+        }
+      } catch (_) {}
+    });
+  });
 
   es.addEventListener('run_snapshot', e => {
     try {
@@ -282,37 +493,73 @@
       if (snap.passed != null) passedEl.textContent = snap.passed;
       if (snap.failed != null) failedEl.textContent = snap.failed;
       if (snap.total_tests != null) totalEl.textContent = snap.total_tests;
+      if (Array.isArray(snap.stages)) {
+        snap.stages.forEach(s => updateStageBar(s.stage_name, s.status));
+      }
       if (terminal.has(snap.status)) {
         live.classList.add('hidden');
+        logLive.classList.add('hidden');
         es.close();
-        // Full page reload to pick up per-step detail rows freshly from DB
-        setTimeout(() => window.location.reload(), 600);
+        // Only reload if the run was active at page load \u2014 otherwise
+        // we'd loop on every terminal-snapshot.
+        if (wasActive) {
+          setTimeout(() => window.location.reload(), 600);
+        }
       }
     } catch (err) { console.warn('bad snapshot', err); }
   });
 
   es.addEventListener('step_started', e => {
-    try { upsertStep(JSON.parse(e.data)); } catch (_) {}
+    try {
+      const payload = JSON.parse(e.data);
+      // DB-tail events have `id` + `context`; bus events are flat
+      if (payload.id && payload.context) {
+        upsertStep(payload.context);
+        appendLog(payload);
+      } else {
+        upsertStep(payload);
+        appendLog(normaliseBusEvent('step_started', payload));
+      }
+    } catch (_) {}
   });
 
   es.addEventListener('step_finished', e => {
-    try { upsertStep(JSON.parse(e.data)); } catch (_) {}
+    try {
+      const payload = JSON.parse(e.data);
+      if (payload.id && payload.context) {
+        upsertStep(payload.context);
+        appendLog(payload);
+      } else {
+        upsertStep(payload);
+        appendLog(normaliseBusEvent('step_finished', payload));
+      }
+    } catch (_) {}
   });
 
   es.addEventListener('run_status', e => {
     try {
-      const d = JSON.parse(e.data);
+      const payload = JSON.parse(e.data);
+      const d = payload.context || payload;
       if (d.status) setStatusBadge(d.status);
+      if (payload.id && payload.context) {
+        appendLog(payload);
+      } else {
+        appendLog(normaliseBusEvent('run_status', d));
+      }
       if (d.terminal) {
         live.classList.add('hidden');
+        logLive.classList.add('hidden');
         es.close();
-        setTimeout(() => window.location.reload(), 600);
+        if (wasActive) {
+          setTimeout(() => window.location.reload(), 600);
+        }
       }
     } catch (_) {}
   });
 
   es.addEventListener('stream_ending', () => {
     live.classList.add('hidden');
+    logLive.classList.add('hidden');
     es.close();
   });
 })();

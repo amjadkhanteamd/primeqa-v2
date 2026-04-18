@@ -95,9 +95,11 @@ class StepExecutor:
     """Executes individual test steps against Salesforce."""
 
     def __init__(self, sf_client, run_id, capture_mode, step_result_repo,
-                 entity_repo, idempotency_mgr, meta_vr_lookup=None):
+                 entity_repo, idempotency_mgr, meta_vr_lookup=None,
+                 tenant_id=None):
         self.sf = sf_client
         self.run_id = run_id
+        self.tenant_id = tenant_id  # passed through to emit_step_* for durable event log
         self.capture_mode = capture_mode
         self.step_result_repo = step_result_repo
         self.entity_repo = entity_repo
@@ -135,6 +137,7 @@ class StepExecutor:
         # SSE event \u2014 step starting
         run_streams.emit_step_started(
             self.run_id, test_case_id or 0, step_order,
+            tenant_id=self.tenant_id,
             action=action, target_object=target_object,
             correlation_id=correlation_id,
         )
@@ -261,7 +264,10 @@ class StepExecutor:
         # render without fetching the row back over REST.
         run_streams.emit_step_finished(
             self.run_id, test_case_id or 0, step_order,
-            status=status,
+            status,
+            tenant_id=self.tenant_id,
+            action=action,
+            target_object=target_object,
             http_status=http_status,
             duration_ms=duration_ms,
             error_summary=(error_message[:140] if error_message else None),
