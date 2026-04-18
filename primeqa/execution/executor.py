@@ -270,7 +270,10 @@ class StepExecutor:
             target_object=target_object,
             http_status=http_status,
             duration_ms=duration_ms,
-            error_summary=(error_message[:140] if error_message else None),
+            # 300-char cap \u2014 enough for the "Fix the test case so a prior
+            # create step sets state_ref..." actionable tail of our custom
+            # error messages while still keeping the log line readable.
+            error_summary=(error_message[:300] if error_message else None),
             correlation_id=correlation_id,
         )
 
