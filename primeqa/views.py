@@ -3358,11 +3358,24 @@ def suites_list():
         except Exception as e:
             suites, meta, query_error = [], {"total": 0, "page": 1, "per_page": per_page, "total_pages": 0}, str(e)
 
-        suites_data = [{"id": s.id, "name": s.name, "suite_type": s.suite_type,
-                        "description": s.description,
-                        "updated_at": s.updated_at.isoformat() if s.updated_at else "",
-                        "created_at": s.created_at.isoformat() if s.created_at else ""}
-                       for s in suites]
+        # Load TC count + coverage breakdown + requirement count per suite
+        # in a single JOIN so the list doesn't N+1 as tenants grow.
+        counts_by_suite = repo.get_counts_by_suite([s.id for s in suites])
+
+        suites_data = []
+        for s in suites:
+            counts = counts_by_suite.get(s.id, {
+                "total": 0, "coverage": {}, "requirement_count": 0,
+            })
+            suites_data.append({
+                "id": s.id, "name": s.name, "suite_type": s.suite_type,
+                "description": s.description,
+                "updated_at": s.updated_at.isoformat() if s.updated_at else "",
+                "created_at": s.created_at.isoformat() if s.created_at else "",
+                "tc_count": counts["total"],
+                "coverage_counts": counts["coverage"],
+                "requirement_count": counts["requirement_count"],
+            })
         return render_template("suites/list.html", **ctx(
             active_page="suites", suites=suites_data,
             meta=meta, search=q, sort=sort, order=order,
@@ -3455,6 +3468,21 @@ def suites_detail(suite_id):
             "deleted": bool(reqs_by_id[rid].deleted_at) if rid in reqs_by_id else False,
         } for rid in sorted(requirement_ids)]
 
+        # All active requirements in this tenant, minimal shape. Passed to
+        # the picker modal as a data-attribute so the client can group the
+        # flat /api/test-cases response by requirement without a second
+        # fetch. Small payload \u2014 usually < 100 rows.
+        from primeqa.test_management.models import Requirement
+        all_req_rows = db.query(Requirement).filter(
+            Requirement.tenant_id == tid, Requirement.deleted_at.is_(None),
+        ).order_by(Requirement.jira_key.asc().nullslast(),
+                   Requirement.jira_summary.asc()).all()
+        all_requirements = [{
+            "id": r.id,
+            "jira_key": r.jira_key,
+            "summary": r.jira_summary or f"Requirement #{r.id}",
+        } for r in all_req_rows]
+
         envs = EnvironmentRepository(db).list_environments(
             tid, request.user["id"], request.user["role"],
         )
@@ -3470,6 +3498,7 @@ def suites_detail(suite_id):
             test_cases=test_cases, environments=envs_data,
             coverage_counts=coverage_counts,
             requirements_covered=requirements_covered,
+            all_requirements=all_requirements,
         ))
     finally:
         db.close()
@@ -3686,8 +3715,24 @@ def releases_detail(release_id):
         if not release:
             return redirect("/releases")
         tab = request.args.get("tab", "requirements")
+
+        # Picker data for the "+ Add" modals on Requirements and Test Plan
+        # tabs. All active requirements + an index for client-side grouping
+        # of test cases by requirement in the Test Plan picker.
+        tid = request.user["tenant_id"]
+        from primeqa.test_management.models import Requirement
+        req_rows = db.query(Requirement).filter(
+            Requirement.tenant_id == tid, Requirement.deleted_at.is_(None),
+        ).order_by(Requirement.jira_key.asc().nullslast(),
+                   Requirement.jira_summary.asc()).all()
+        all_requirements = [{
+            "id": r.id, "jira_key": r.jira_key,
+            "summary": r.jira_summary or f"Requirement #{r.id}",
+        } for r in req_rows]
+
         return render_template("releases/detail.html", **ctx(
             active_page="releases", release=release, tab=tab,
+            all_requirements=all_requirements,
         ))
     finally:
         db.close()

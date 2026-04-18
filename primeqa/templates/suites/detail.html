@@ -155,12 +155,13 @@
 
 {# ---- Add TCs picker modal ----------------------------------------------- #}
 {% if user.role in ['admin', 'tester', 'superadmin'] %}
-<div id="add-tcs-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+<div id="add-tcs-modal" class="hidden fixed inset-0 z-50 overflow-y-auto"
+     data-requirements='{{ all_requirements | tojson }}'>
   <div class="flex min-h-full items-start justify-center p-4 pt-10">
     <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('add-tcs-modal').classList.add('hidden')"></div>
     <div class="relative bg-white rounded-lg shadow-xl max-w-3xl w-full p-6">
       <h3 class="text-lg font-medium text-gray-900 mb-1">Add test cases to "{{ suite.name }}"</h3>
-      <p class="text-xs text-gray-500 mb-4">Filter the library, check the ones you want, click Add.</p>
+      <p class="text-xs text-gray-500 mb-4">Grouped by requirement. Use the group checkbox to add all test cases for a requirement at once, or pick individually.</p>
 
       <div class="flex flex-wrap gap-2 mb-3">
         <input id="picker-search" type="search" placeholder="Search by title…"
@@ -173,6 +174,12 @@
           <option value="">All coverage</option>
           {% for opt in ['positive','negative_validation','boundary','edge_case','regression'] %}
           <option value="{{ opt }}">{{ opt.replace('_',' ') }}</option>
+          {% endfor %}
+        </select>
+        <select id="picker-requirement" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm max-w-xs truncate">
+          <option value="">All requirements</option>
+          {% for r in all_requirements %}
+          <option value="{{ r.id }}">{% if r.jira_key %}{{ r.jira_key }} · {% endif %}{{ r.summary[:60] }}</option>
           {% endfor %}
         </select>
         <button id="picker-refresh" class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">Refresh</button>
@@ -315,20 +322,97 @@
     });
   });
 
-  // ---- Add TCs picker modal -------------------------------------------
+  // ---- Add TCs picker modal (grouped by requirement) ------------------
   const modal = document.getElementById('add-tcs-modal');
   const resultsEl = document.getElementById('picker-results');
   const searchEl = document.getElementById('picker-search');
   const statusEl = document.getElementById('picker-status');
   const coverageEl = document.getElementById('picker-coverage');
+  const reqFilterEl = document.getElementById('picker-requirement');
   const selCountEl = document.getElementById('picker-selected-count');
   const addBtn = document.getElementById('picker-add-btn');
   const refreshBtn = document.getElementById('picker-refresh');
   const existingIds = new Set(Array.from(document.querySelectorAll('#suite-tcs li')).map(li => parseInt(li.dataset.tcId, 10)));
   const selectedIds = new Set();
 
+  // Index of requirements: id -> {jira_key, summary}. Shipped in a
+  // data-attribute on the modal so the client can render group headers
+  // without a second API round-trip.
+  const REQS_BY_ID = {};
+  try {
+    const arr = JSON.parse(modal.dataset.requirements || '[]');
+    arr.forEach(r => { REQS_BY_ID[r.id] = r; });
+  } catch (_) {}
+
+  const COV_CLASS = {
+    positive: 'bg-green-50 text-green-700',
+    negative_validation: 'bg-red-50 text-red-700',
+    boundary: 'bg-amber-50 text-amber-800',
+    edge_case: 'bg-purple-50 text-purple-700',
+    regression: 'bg-sky-50 text-sky-700',
+  };
+
   function escapeHtml(s) {
     return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function refreshSelectionState() {
+    selCountEl.textContent = selectedIds.size;
+    addBtn.disabled = selectedIds.size === 0;
+    // Sync group checkboxes: full / partial / empty
+    resultsEl.querySelectorAll('.picker-group-check').forEach(gc => {
+      const scope = gc.closest('.picker-group');
+      if (!scope) return;
+      const rows = Array.from(scope.querySelectorAll('.picker-check'));
+      const checked = rows.filter(r => r.checked).length;
+      gc.checked = rows.length > 0 && checked === rows.length;
+      gc.indeterminate = checked > 0 && checked < rows.length;
+    });
+  }
+
+  function renderRow(tc) {
+    const c = tc.coverage_type || '';
+    const covClass = COV_CLASS[c] || 'bg-gray-50 text-gray-600';
+    const covLabel = c ? c.replace(/_/g, ' ') : '\u2014';
+    const statusClass = tc.status === 'active' ? 'bg-green-100 text-green-800'
+                      : tc.status === 'approved' ? 'bg-blue-100 text-blue-800'
+                      : 'bg-gray-100 text-gray-800';
+    return `
+      <label class="picker-row flex items-center gap-2 px-4 py-2 pl-10 hover:bg-gray-50 cursor-pointer">
+        <input type="checkbox" class="picker-check rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" value="${tc.id}" ${selectedIds.has(tc.id) ? 'checked' : ''}>
+        <span class="flex-1 truncate text-sm text-gray-800">${escapeHtml(tc.title)}</span>
+        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] ${covClass}">${covLabel}</span>
+        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] ${statusClass}">${tc.status}</span>
+      </label>`;
+  }
+
+  function renderGroupHeader(reqId, tcs) {
+    // reqId === 0 is the Unlinked bucket
+    const req = reqId ? REQS_BY_ID[reqId] : null;
+    const title = req
+      ? (req.jira_key ? `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700 mr-2">${escapeHtml(req.jira_key)}</span>${escapeHtml(req.summary)}`
+                      : escapeHtml(req.summary))
+      : '<span class="text-gray-600">Unlinked</span> <span class="text-xs text-gray-400">(no requirement)</span>';
+
+    // Coverage breakdown per group
+    const cov = {};
+    tcs.forEach(tc => { const k = tc.coverage_type || 'other'; cov[k] = (cov[k] || 0) + 1; });
+    const covChips = Object.entries(cov).map(([k, n]) => {
+      const cls = COV_CLASS[k] || 'bg-gray-50 text-gray-600';
+      return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] ${cls}">${n} ${k.replace(/_/g, ' ')}</span>`;
+    }).join(' ');
+
+    return `
+      <div class="flex items-center gap-2 px-3 py-2 bg-gray-50 border-t border-gray-200 sticky top-0">
+        <input type="checkbox" class="picker-group-check rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" aria-label="Select all in group">
+        <div class="flex-1 min-w-0 flex items-center gap-2 text-sm">
+          <span class="truncate">${title}</span>
+        </div>
+        <span class="text-xs text-gray-500 flex items-center gap-1 flex-shrink-0">
+          <span class="font-medium text-gray-700">${tcs.length} TC${tcs.length === 1 ? '' : 's'}</span>
+          ${covChips}
+        </span>
+      </div>`;
   }
 
   async function loadLibrary() {
@@ -338,43 +422,68 @@
     if (searchEl.value.trim()) params.set('q', searchEl.value.trim());
     if (statusEl.value) params.set('status', statusEl.value);
     if (coverageEl.value) params.set('coverage_type', coverageEl.value);
+    if (reqFilterEl.value) params.set('requirement_id', reqFilterEl.value);
     try {
       const body = await api('GET', '/api/test-cases?' + params.toString());
       const rows = (body.data || []).filter(tc => !existingIds.has(tc.id));
       if (!rows.length) {
         resultsEl.innerHTML = '<div class="px-4 py-6 text-sm text-gray-500">No matching test cases. Adjust filters or clear them.</div>';
+        refreshSelectionState();
         return;
       }
-      resultsEl.innerHTML = rows.map(tc => {
-        const c = tc.coverage_type || '';
-        const covClass = (
-          c === 'positive' ? 'bg-green-50 text-green-700' :
-          c === 'negative_validation' ? 'bg-red-50 text-red-700' :
-          c === 'boundary' ? 'bg-amber-50 text-amber-800' :
-          c === 'edge_case' ? 'bg-purple-50 text-purple-700' :
-          c === 'regression' ? 'bg-sky-50 text-sky-700' :
-          'bg-gray-50 text-gray-600'
-        );
-        const covLabel = c ? c.replace(/_/g, ' ') : '\u2014';
-        const statusClass = tc.status === 'active' ? 'bg-green-100 text-green-800'
-                          : tc.status === 'approved' ? 'bg-blue-100 text-blue-800'
-                          : 'bg-gray-100 text-gray-800';
-        return `
-          <label class="picker-row flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer">
-            <input type="checkbox" class="picker-check rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" value="${tc.id}" ${selectedIds.has(tc.id) ? 'checked' : ''}>
-            <span class="flex-1 truncate text-sm text-gray-800">${escapeHtml(tc.title)}</span>
-            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] ${covClass}">${covLabel}</span>
-            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] ${statusClass}">${tc.status}</span>
-          </label>`;
-      }).join('');
+
+      // Group by requirement_id (0 = unlinked)
+      const groups = new Map();
+      rows.forEach(tc => {
+        const key = tc.requirement_id || 0;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(tc);
+      });
+      // Ordered: requirements with Jira keys first (alpha by key), then
+      // keyless-summary, then unlinked (key=0) last
+      const ordered = Array.from(groups.entries()).sort((a, b) => {
+        if (a[0] === 0) return 1; if (b[0] === 0) return -1;
+        const ra = REQS_BY_ID[a[0]], rb = REQS_BY_ID[b[0]];
+        const ak = ra?.jira_key || '~' + (ra?.summary || '');
+        const bk = rb?.jira_key || '~' + (rb?.summary || '');
+        return ak.localeCompare(bk);
+      });
+
+      // Render: each group is one block of header + rows
+      resultsEl.innerHTML = ordered.map(([reqId, tcs]) => `
+        <div class="picker-group" data-req-id="${reqId}">
+          ${renderGroupHeader(reqId, tcs)}
+          ${tcs.map(renderRow).join('')}
+        </div>
+      `).join('');
+
+      // Wire per-row checkboxes
       resultsEl.querySelectorAll('.picker-check').forEach(cb => {
         cb.addEventListener('change', () => {
           const id = parseInt(cb.value, 10);
           if (cb.checked) selectedIds.add(id); else selectedIds.delete(id);
-          selCountEl.textContent = selectedIds.size;
-          addBtn.disabled = selectedIds.size === 0;
+          refreshSelectionState();
         });
       });
+
+      // Wire group-level checkboxes
+      resultsEl.querySelectorAll('.picker-group-check').forEach(gc => {
+        gc.addEventListener('change', (e) => {
+          const scope = gc.closest('.picker-group');
+          if (!scope) return;
+          const shouldCheck = gc.checked;
+          scope.querySelectorAll('.picker-check').forEach(rc => {
+            rc.checked = shouldCheck;
+            const id = parseInt(rc.value, 10);
+            if (shouldCheck) selectedIds.add(id); else selectedIds.delete(id);
+          });
+          refreshSelectionState();
+        });
+        // Prevent click-on-label cascading into group toggle
+        gc.addEventListener('click', (e) => e.stopPropagation());
+      });
+
+      refreshSelectionState();
     } catch (err) {
       resultsEl.innerHTML = '<div class="px-4 py-6 text-sm text-red-600">Failed to load library: ' + escapeHtml(String(err)) + '</div>';
     }
@@ -389,6 +498,7 @@
   searchEl?.addEventListener('input', onFilterChange);
   statusEl?.addEventListener('change', loadLibrary);
   coverageEl?.addEventListener('change', loadLibrary);
+  reqFilterEl?.addEventListener('change', loadLibrary);
   refreshBtn?.addEventListener('click', loadLibrary);
 
   document.getElementById('add-tcs-btn')?.addEventListener('click', () => {

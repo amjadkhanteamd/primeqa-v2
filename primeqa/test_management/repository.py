@@ -567,6 +567,41 @@ class TestSuiteRepository:
             return True
         return False
 
+    def get_counts_by_suite(self, suite_ids):
+        """For the suites list page: return {suite_id: {
+            "total": N, "coverage": {positive: n, ...}, "requirements": set(),
+        }} in one JOIN query \u2014 avoids N+1 on a list of many suites.
+        """
+        if not suite_ids:
+            return {}
+        from primeqa.test_management.models import TestCase
+        rows = (self.db.query(
+                    SuiteTestCase.suite_id,
+                    TestCase.coverage_type,
+                    TestCase.requirement_id,
+                )
+                .join(TestCase, TestCase.id == SuiteTestCase.test_case_id)
+                .filter(
+                    SuiteTestCase.suite_id.in_(list(suite_ids)),
+                    TestCase.deleted_at.is_(None),
+                )
+                .all())
+        out = {}
+        for suite_id, cov, req_id in rows:
+            bucket = out.setdefault(suite_id, {
+                "total": 0, "coverage": {}, "requirements": set(),
+            })
+            bucket["total"] += 1
+            key = cov or "other"
+            bucket["coverage"][key] = bucket["coverage"].get(key, 0) + 1
+            if req_id:
+                bucket["requirements"].add(req_id)
+        # Convert set to count for JSON-friendliness; keep ids if a caller needs them
+        for v in out.values():
+            v["requirement_count"] = len(v["requirements"])
+            del v["requirements"]
+        return out
+
     def add_test_cases_bulk(self, suite_id, test_case_ids):
         """Add many TCs at once, skipping those already in the suite.
         Assigns positions at the END of the current ordering so existing

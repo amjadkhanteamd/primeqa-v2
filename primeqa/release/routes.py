@@ -120,6 +120,50 @@ def remove_requirement(release_id, req_id):
         db.close()
 
 
+@release_bp.route("/api/releases/<int:release_id>/requirements/bulk", methods=["POST"])
+@require_role("admin", "tester")
+def add_requirements_bulk(release_id):
+    """Attach many requirements to a release. Body: {requirement_ids: [...]}.
+    Returns {added, already_in, skipped}."""
+    data = request.get_json(silent=True) or {}
+    ids = data.get("requirement_ids") or []
+    if not isinstance(ids, list) or not ids:
+        return jsonify(error="requirement_ids must be a non-empty array"), 400
+    svc, db = _get_service()
+    try:
+        result = svc.add_requirements_bulk(
+            release_id, request.user["tenant_id"], ids, request.user["id"],
+        )
+        return jsonify(result), 200
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    finally:
+        db.close()
+
+
+@release_bp.route("/api/releases/<int:release_id>/test-plan/bulk", methods=["POST"])
+@require_role("admin", "tester")
+def add_test_plan_items_bulk(release_id):
+    """Attach many test cases to a release's test plan.
+    Body: {test_case_ids: [...], priority?, inclusion_reason?}."""
+    data = request.get_json(silent=True) or {}
+    ids = data.get("test_case_ids") or []
+    if not isinstance(ids, list) or not ids:
+        return jsonify(error="test_case_ids must be a non-empty array"), 400
+    svc, db = _get_service()
+    try:
+        result = svc.add_test_plan_items_bulk(
+            release_id, request.user["tenant_id"], ids, request.user["id"],
+            priority=data.get("priority", "medium"),
+            inclusion_reason=data.get("inclusion_reason"),
+        )
+        return jsonify(result), 200
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    finally:
+        db.close()
+
+
 @release_bp.route("/api/releases/<int:release_id>/test-plan", methods=["POST"])
 @require_role("admin", "tester")
 def add_test_plan_item(release_id):

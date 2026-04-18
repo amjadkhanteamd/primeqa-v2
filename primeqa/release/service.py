@@ -62,11 +62,7 @@ class ReleaseService:
                 "id": i.id, "metadata_impact_id": i.metadata_impact_id,
                 "risk_score": i.risk_score, "risk_level": i.risk_level,
             } for i in impacts],
-            "test_plan": [{
-                "id": t.id, "test_case_id": t.test_case_id,
-                "priority": t.priority, "position": t.position,
-                "risk_score": t.risk_score, "inclusion_reason": t.inclusion_reason,
-            } for t in test_plan],
+            "test_plan": self._enrich_test_plan(test_plan, tenant_id),
             "runs": [{
                 "id": run.id, "pipeline_run_id": run.pipeline_run_id,
                 "triggered_at": run.triggered_at.isoformat() if run.triggered_at else None,
@@ -79,6 +75,33 @@ class ReleaseService:
                 "decided_at": latest_decision.decided_at.isoformat() if latest_decision.decided_at else None,
             } if latest_decision else None,
         }
+
+    def _enrich_test_plan(self, test_plan_rows, tenant_id):
+        """Join test_plan rows with TC title + coverage_type so the UI can
+        render something human-readable instead of just a bare id."""
+        from primeqa.test_management.models import TestCase
+        tc_ids = [t.test_case_id for t in test_plan_rows]
+        tc_by_id = {}
+        if tc_ids:
+            rows = self.release_repo.db.query(TestCase).filter(
+                TestCase.id.in_(tc_ids),
+                TestCase.tenant_id == tenant_id,
+            ).all()
+            tc_by_id = {r.id: r for r in rows}
+        out = []
+        for t in test_plan_rows:
+            tc = tc_by_id.get(t.test_case_id)
+            out.append({
+                "id": t.id, "test_case_id": t.test_case_id,
+                "priority": t.priority, "position": t.position,
+                "risk_score": t.risk_score, "inclusion_reason": t.inclusion_reason,
+                "title": tc.title if tc else f"Test Case #{t.test_case_id}",
+                "status": tc.status if tc else None,
+                "coverage_type": tc.coverage_type if tc else None,
+                "requirement_id": tc.requirement_id if tc else None,
+                "deleted": bool(tc.deleted_at) if tc else True,
+            })
+        return out
 
     def add_requirement(self, release_id, tenant_id, requirement_id, added_by):
         r = self.release_repo.get_release(release_id, tenant_id)
@@ -103,6 +126,97 @@ class ReleaseService:
         if not r:
             raise ValueError("Release not found")
         self.release_repo.remove_test_plan_item(release_id, test_case_id)
+
+    # ---- Bulk attach helpers (release curation) --------------------------
+    # Single-item add_requirement / add_test_plan_item are kept for existing
+    # callers; the bulk variants below tenant-scope the payload and skip
+    # duplicates in one commit so the UI can offer multi-select pickers.
+
+    def add_requirements_bulk(self, release_id, tenant_id, requirement_ids, added_by):
+        from primeqa.test_management.models import Requirement
+        from primeqa.release.models import ReleaseRequirement
+
+        r = self.release_repo.get_release(release_id, tenant_id)
+        if not r:
+            raise ValueError("Release not found")
+        ids = [int(x) for x in (requirement_ids or []) if str(x).strip()]
+        if len(ids) > 200:
+            raise ValueError("Bulk add capped at 200 requirements per call")
+        if not ids:
+            return {"added": [], "already_in": [], "skipped": []}
+
+        db = self.release_repo.db
+        valid_rows = db.query(Requirement.id).filter(
+            Requirement.id.in_(ids),
+            Requirement.tenant_id == tenant_id,
+            Requirement.deleted_at.is_(None),
+        ).all()
+        valid = {row[0] for row in valid_rows}
+        skipped = [i for i in ids if i not in valid]
+
+        existing = {row[0] for row in db.query(ReleaseRequirement.requirement_id).filter(
+            ReleaseRequirement.release_id == release_id,
+            ReleaseRequirement.requirement_id.in_(list(valid)),
+        ).all()}
+        added = []
+        for rid in ids:
+            if rid not in valid or rid in existing:
+                continue
+            db.add(ReleaseRequirement(
+                release_id=release_id, requirement_id=rid, added_by=added_by,
+            ))
+            added.append(rid)
+        if added:
+            db.commit()
+        return {"added": added, "already_in": sorted(existing), "skipped": skipped}
+
+    def add_test_plan_items_bulk(self, release_id, tenant_id, test_case_ids,
+                                 added_by, priority="medium", inclusion_reason=None):
+        from primeqa.test_management.models import TestCase
+        from primeqa.release.models import ReleaseTestPlanItem
+        from sqlalchemy import func as _sfunc
+
+        r = self.release_repo.get_release(release_id, tenant_id)
+        if not r:
+            raise ValueError("Release not found")
+        ids = [int(x) for x in (test_case_ids or []) if str(x).strip()]
+        if len(ids) > 200:
+            raise ValueError("Bulk add capped at 200 test cases per call")
+        if not ids:
+            return {"added": [], "already_in": [], "skipped": []}
+
+        db = self.release_repo.db
+        valid_rows = db.query(TestCase.id).filter(
+            TestCase.id.in_(ids),
+            TestCase.tenant_id == tenant_id,
+            TestCase.deleted_at.is_(None),
+        ).all()
+        valid = {row[0] for row in valid_rows}
+        skipped = [i for i in ids if i not in valid]
+
+        existing = {row[0] for row in db.query(ReleaseTestPlanItem.test_case_id).filter(
+            ReleaseTestPlanItem.release_id == release_id,
+            ReleaseTestPlanItem.test_case_id.in_(list(valid)),
+        ).all()}
+        max_pos = db.query(_sfunc.max(ReleaseTestPlanItem.position)).filter(
+            ReleaseTestPlanItem.release_id == release_id,
+        ).scalar()
+        next_pos = (max_pos or 0) + 1
+
+        added = []
+        for tc_id in ids:
+            if tc_id not in valid or tc_id in existing:
+                continue
+            db.add(ReleaseTestPlanItem(
+                release_id=release_id, test_case_id=tc_id,
+                priority=priority, position=next_pos,
+                inclusion_reason=inclusion_reason,
+            ))
+            added.append(tc_id)
+            next_pos += 1
+        if added:
+            db.commit()
+        return {"added": added, "already_in": sorted(existing), "skipped": skipped}
 
     @staticmethod
     def _release_dict(r):

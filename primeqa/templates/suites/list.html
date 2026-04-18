@@ -51,12 +51,40 @@
         {% if suites %}
         <ul class="divide-y divide-gray-200">
             {% for s in suites %}
-            <li class="px-6 py-4 hover:bg-gray-50 flex justify-between items-center" data-suite-id="{{ s.id }}">
+            <li class="px-6 py-4 hover:bg-gray-50 flex justify-between items-start gap-4" data-suite-id="{{ s.id }}">
                 <a href="/suites/{{ s.id }}" class="flex-1 min-w-0">
-                    <p class="text-sm font-medium text-indigo-600 hover:underline">{{ s.name }}</p>
-                    <p class="text-xs text-gray-500">{{ s.suite_type }}{% if s.description %} · {{ s.description[:80] }}{% endif %}</p>
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <p class="text-sm font-medium text-indigo-600 hover:underline">{{ s.name }}</p>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                            {% if s.suite_type == 'smoke' %}bg-emerald-50 text-emerald-700
+                            {% elif s.suite_type == 'regression' %}bg-sky-50 text-sky-700
+                            {% elif s.suite_type == 'sprint' %}bg-amber-50 text-amber-800
+                            {% else %}bg-gray-50 text-gray-700{% endif %}">{{ s.suite_type }}</span>
+                        <span class="text-xs text-gray-700 font-medium">{{ s.tc_count }} test case{{ '' if s.tc_count == 1 else 's' }}</span>
+                        {% if s.requirement_count %}
+                        <span class="text-xs text-gray-500">· covers {{ s.requirement_count }} req{{ '' if s.requirement_count == 1 else 's' }}</span>
+                        {% endif %}
+                    </div>
+                    {% if s.coverage_counts %}
+                    <div class="mt-1 flex flex-wrap gap-1">
+                        {% for c in ['positive', 'negative_validation', 'boundary', 'edge_case', 'regression', 'other'] %}
+                          {% if s.coverage_counts.get(c) %}
+                          <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px]
+                            {% if c == 'positive' %}bg-green-50 text-green-700
+                            {% elif c == 'negative_validation' %}bg-red-50 text-red-700
+                            {% elif c == 'boundary' %}bg-amber-50 text-amber-800
+                            {% elif c == 'edge_case' %}bg-purple-50 text-purple-700
+                            {% elif c == 'regression' %}bg-sky-50 text-sky-700
+                            {% else %}bg-gray-50 text-gray-600{% endif %}">{{ s.coverage_counts[c] }} {{ c.replace('_',' ') }}</span>
+                          {% endif %}
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    {% if s.description %}
+                    <p class="mt-1 text-xs text-gray-500 line-clamp-2">{{ s.description }}</p>
+                    {% endif %}
                 </a>
-                <div class="flex items-center space-x-3 ml-4">
+                <div class="flex items-center space-x-3 flex-shrink-0">
                   <span class="text-xs text-gray-400">{{ s.updated_at[:10] if s.updated_at else (s.created_at[:10] if s.created_at else '') }}</span>
                   {% if user.role in ['admin', 'tester', 'superadmin'] and not show_deleted %}
                   <button class="text-xs text-red-600 hover:text-red-800" data-delete-suite="{{ s.id }}" data-suite-name="{{ s.name }}">Delete</button>

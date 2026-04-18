@@ -105,28 +105,56 @@
         {% endif %}
     </div>
     {% elif tab == 'test_plan' %}
-    <div class="bg-white shadow rounded-lg p-6">
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-6 py-3 border-b flex items-center justify-between">
+            <h3 class="text-sm font-medium text-gray-700">Test Plan <span class="text-gray-500 font-normal">({{ release.test_plan | length }})</span></h3>
+            {% if user.role in ['admin', 'tester', 'superadmin'] %}
+            <button id="add-tp-btn" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">+ Add test cases</button>
+            {% endif %}
+        </div>
         {% if release.test_plan %}
-        <ul class="divide-y divide-gray-200">
+        <ul id="release-test-plan" class="divide-y divide-gray-200">
             {% for item in release.test_plan %}
-            <li class="py-3 flex justify-between items-center">
-                <div>
-                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+            <li class="px-6 py-3 flex justify-between items-center" data-tc-id="{{ item.test_case_id }}">
+                <div class="flex items-center gap-2 min-w-0">
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium flex-shrink-0
                         {% if item.priority == 'critical' %}bg-red-100 text-red-800
                         {% elif item.priority == 'high' %}bg-orange-100 text-orange-800
                         {% elif item.priority == 'medium' %}bg-yellow-100 text-yellow-800
-                        {% else %}bg-gray-100 text-gray-800{% endif %}">
-                        {{ item.priority }}
-                    </span>
-                    <a href="/test-cases/{{ item.test_case_id }}" class="ml-2 text-sm font-medium text-indigo-600 hover:text-indigo-800">Test Case #{{ item.test_case_id }}</a>
-                    {% if item.inclusion_reason %}<span class="ml-2 text-xs text-gray-500">{{ item.inclusion_reason }}</span>{% endif %}
+                        {% else %}bg-gray-100 text-gray-800{% endif %}">{{ item.priority }}</span>
+                    <a href="/test-cases/{{ item.test_case_id }}" class="text-sm font-medium text-indigo-600 hover:underline truncate">{{ item.title }}</a>
+                    {% if item.status %}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if item.status == 'active' %}bg-green-100 text-green-800{% elif item.status == 'approved' %}bg-blue-100 text-blue-800{% else %}bg-gray-100 text-gray-800{% endif %} flex-shrink-0">{{ item.status }}</span>
+                    {% endif %}
+                    {% if item.coverage_type %}
+                    {% set c = item.coverage_type %}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium flex-shrink-0
+                        {% if c == 'positive' %}bg-green-50 text-green-700
+                        {% elif c == 'negative_validation' %}bg-red-50 text-red-700
+                        {% elif c == 'boundary' %}bg-amber-50 text-amber-800
+                        {% elif c == 'edge_case' %}bg-purple-50 text-purple-700
+                        {% elif c == 'regression' %}bg-sky-50 text-sky-700
+                        {% else %}bg-gray-50 text-gray-600{% endif %}">{{ c.replace('_',' ') }}</span>
+                    {% endif %}
+                    {% if item.deleted %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-700 flex-shrink-0">deleted</span>{% endif %}
                 </div>
-                {% if item.risk_score %}<span class="text-sm text-gray-500">Risk: {{ item.risk_score }}</span>{% endif %}
+                <div class="flex items-center gap-3 flex-shrink-0 ml-3">
+                    {% if item.risk_score %}<span class="text-xs text-gray-500">Risk {{ item.risk_score }}</span>{% endif %}
+                    {% if item.inclusion_reason %}<span class="text-xs text-gray-400 italic">{{ item.inclusion_reason[:40] }}</span>{% endif %}
+                    {% if user.role in ['admin', 'tester', 'superadmin'] %}
+                    <button class="remove-tp text-xs text-red-600 hover:text-red-800" data-tc-id="{{ item.test_case_id }}">Remove</button>
+                    {% endif %}
+                </div>
             </li>
             {% endfor %}
         </ul>
         {% else %}
-        <p class="text-sm text-gray-500 text-center py-8">No tests in the plan yet. Add tests manually or generate from requirements.</p>
+        <p class="text-sm text-gray-500 text-center py-8">
+            No tests in the plan yet.
+            {% if user.role in ['admin', 'tester', 'superadmin'] %}
+            Click <strong>+ Add test cases</strong> to pick from the library.
+            {% endif %}
+        </p>
         {% endif %}
     </div>
     {% elif tab == 'runs' %}
@@ -164,23 +192,390 @@
     </div>
     {% else %}
     <!-- Requirements tab (default) -->
-    <div class="bg-white shadow rounded-lg p-6">
+    <div class="bg-white shadow rounded-lg">
+        <div class="px-6 py-3 border-b flex items-center justify-between">
+            <h3 class="text-sm font-medium text-gray-700">Requirements <span class="text-gray-500 font-normal">({{ release.requirements | length }})</span></h3>
+            {% if user.role in ['admin', 'tester', 'superadmin'] %}
+            <button id="add-reqs-btn" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">+ Add requirements</button>
+            {% endif %}
+        </div>
         {% if release.requirements %}
-        <ul class="divide-y divide-gray-200">
+        <ul id="release-reqs" class="divide-y divide-gray-200">
             {% for req in release.requirements %}
-            <li class="py-3 flex justify-between items-center">
-                <div>
-                    {% if req.jira_key %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700">{{ req.jira_key }}</span>{% endif %}
-                    <span class="ml-2 text-sm font-medium text-gray-900">{{ req.jira_summary or ('Requirement #' ~ req.id) }}</span>
-                    {% if req.is_stale %}<span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs bg-yellow-100 text-yellow-800">Stale</span>{% endif %}
+            <li class="px-6 py-3 flex justify-between items-center" data-req-id="{{ req.id }}">
+                <div class="flex items-center gap-2 min-w-0">
+                    {% if req.jira_key %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700 flex-shrink-0">{{ req.jira_key }}</span>{% endif %}
+                    <a href="/requirements/{{ req.id }}" class="text-sm font-medium text-indigo-600 hover:underline truncate">{{ req.jira_summary or ('Requirement #' ~ req.id) }}</a>
+                    {% if req.is_stale %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-yellow-100 text-yellow-800 flex-shrink-0">Stale</span>{% endif %}
                 </div>
+                {% if user.role in ['admin', 'tester', 'superadmin'] %}
+                <button class="remove-req text-xs text-red-600 hover:text-red-800 ml-3 flex-shrink-0" data-req-id="{{ req.id }}">Remove</button>
+                {% endif %}
             </li>
             {% endfor %}
         </ul>
         {% else %}
-        <p class="text-sm text-gray-500 text-center py-8">No requirements attached yet. Import from Jira or add manually.</p>
+        <p class="text-sm text-gray-500 text-center py-8">
+            No requirements attached yet.
+            {% if user.role in ['admin', 'tester', 'superadmin'] %}
+            Click <strong>+ Add requirements</strong> to pick from the library.
+            {% endif %}
+        </p>
         {% endif %}
     </div>
     {% endif %}
 </div>
+
+{# ---- Add Test Plan items picker modal (grouped by requirement) -------- #}
+{% if user.role in ['admin', 'tester', 'superadmin'] %}
+<div id="add-tp-modal" class="hidden fixed inset-0 z-50 overflow-y-auto"
+     data-requirements='{{ all_requirements | tojson }}'>
+  <div class="flex min-h-full items-start justify-center p-4 pt-10">
+    <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('add-tp-modal').classList.add('hidden')"></div>
+    <div class="relative bg-white rounded-lg shadow-xl max-w-3xl w-full p-6">
+      <h3 class="text-lg font-medium text-gray-900 mb-1">Add test cases to test plan</h3>
+      <p class="text-xs text-gray-500 mb-4">Grouped by requirement. Use the group checkbox to add all a requirement's test cases, or pick individually.</p>
+
+      <div class="flex flex-wrap gap-2 mb-3">
+        <input id="tp-picker-search" type="search" placeholder="Search by title…"
+               class="flex-1 min-w-[10rem] rounded-md border border-gray-300 px-3 py-1.5 text-sm">
+        <select id="tp-picker-status" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+          <option value="">All statuses</option>
+          {% for opt in ['draft','approved','active'] %}<option value="{{ opt }}">{{ opt }}</option>{% endfor %}
+        </select>
+        <select id="tp-picker-coverage" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+          <option value="">All coverage</option>
+          {% for opt in ['positive','negative_validation','boundary','edge_case','regression'] %}
+          <option value="{{ opt }}">{{ opt.replace('_',' ') }}</option>
+          {% endfor %}
+        </select>
+        <select id="tp-picker-priority" class="rounded-md border border-gray-300 px-2 py-1.5 text-sm ml-auto">
+          <option value="medium">Priority: medium</option>
+          <option value="low">Priority: low</option>
+          <option value="high">Priority: high</option>
+          <option value="critical">Priority: critical</option>
+        </select>
+      </div>
+
+      <div id="tp-picker-results" class="border border-gray-200 rounded max-h-96 overflow-y-auto">
+        <div class="px-4 py-6 text-sm text-gray-500 italic">Loading…</div>
+      </div>
+
+      <div class="mt-3 flex items-center justify-between">
+        <div class="text-xs text-gray-500"><span id="tp-picker-count">0</span> selected</div>
+        <div class="flex items-center gap-2">
+          <button type="button" onclick="document.getElementById('add-tp-modal').classList.add('hidden')"
+                  class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">Cancel</button>
+          <button id="tp-picker-add" disabled
+                  class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">Add</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ---- Add Requirements picker modal ------------------------------------- #}
+{% if user.role in ['admin', 'tester', 'superadmin'] %}
+<div id="add-reqs-modal" class="hidden fixed inset-0 z-50 overflow-y-auto"
+     data-requirements='{{ all_requirements | tojson }}'>
+  <div class="flex min-h-full items-start justify-center p-4 pt-10">
+    <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('add-reqs-modal').classList.add('hidden')"></div>
+    <div class="relative bg-white rounded-lg shadow-xl max-w-2xl w-full p-6">
+      <h3 class="text-lg font-medium text-gray-900 mb-1">Add requirements to "{{ release.name }}"</h3>
+      <p class="text-xs text-gray-500 mb-4">Pick the requirements that are in scope for this release. Each one's linked test cases can be added to the Test Plan separately.</p>
+
+      <input id="reqs-picker-search" type="search" placeholder="Search by Jira key or summary…"
+             class="w-full mb-3 rounded-md border border-gray-300 px-3 py-1.5 text-sm">
+
+      <div id="reqs-picker-results" class="border border-gray-200 rounded max-h-96 overflow-y-auto">
+        <div class="px-4 py-6 text-sm text-gray-500 italic">Loading…</div>
+      </div>
+
+      <div class="mt-3 flex items-center justify-between">
+        <div class="text-xs text-gray-500"><span id="reqs-picker-count">0</span> selected</div>
+        <div class="flex items-center gap-2">
+          <button type="button" onclick="document.getElementById('add-reqs-modal').classList.add('hidden')"
+                  class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">Cancel</button>
+          <button id="reqs-picker-add" disabled
+                  class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed">Add</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<script>
+(function(){
+  const releaseId = {{ release.id }};
+
+  async function api(method, url, body) {
+    const r = await fetch(url, {
+      method, credentials: 'same-origin',
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!r.ok) { await window.PrimeQA.showErrorFromResponse(r); throw new Error('failed'); }
+    return r.json();
+  }
+  function escapeHtml(s) {
+    return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // ---- Remove a requirement from the release
+  document.querySelectorAll('.remove-req').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const li = btn.closest('li');
+      const reqId = btn.dataset.reqId;
+      try {
+        await api('DELETE', '/api/releases/' + releaseId + '/requirements/' + reqId);
+        li.remove();
+        window.PrimeQA.toast('Removed from release', 'success');
+      } catch (_) {}
+    });
+  });
+
+  // ---- Remove a test plan item
+  document.querySelectorAll('.remove-tp').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const li = btn.closest('li');
+      const tcId = btn.dataset.tcId;
+      try {
+        await api('DELETE', '/api/releases/' + releaseId + '/test-plan/' + tcId);
+        li.remove();
+        window.PrimeQA.toast('Removed from test plan', 'success');
+      } catch (_) {}
+    });
+  });
+
+  // ---- Add Requirements picker modal
+  const reqsModal = document.getElementById('add-reqs-modal');
+  if (reqsModal) {
+    const resultsEl = document.getElementById('reqs-picker-results');
+    const searchEl = document.getElementById('reqs-picker-search');
+    const countEl = document.getElementById('reqs-picker-count');
+    const addBtn = document.getElementById('reqs-picker-add');
+    const openBtn = document.getElementById('add-reqs-btn');
+
+    const attachedIds = new Set(Array.from(document.querySelectorAll('#release-reqs li'))
+                                     .map(li => parseInt(li.dataset.reqId, 10)));
+    const selectedIds = new Set();
+    let allReqs = [];
+    try { allReqs = JSON.parse(reqsModal.dataset.requirements || '[]'); } catch (_) {}
+
+    function render(filterText) {
+      const q = (filterText || '').toLowerCase().trim();
+      const rows = allReqs
+        .filter(r => !attachedIds.has(r.id))
+        .filter(r => !q ||
+          (r.jira_key && r.jira_key.toLowerCase().includes(q)) ||
+          (r.summary && r.summary.toLowerCase().includes(q)));
+      if (!rows.length) {
+        resultsEl.innerHTML = '<div class="px-4 py-6 text-sm text-gray-500">No matching requirements.</div>';
+        return;
+      }
+      resultsEl.innerHTML = rows.map(r => `
+        <label class="flex items-center gap-2 px-3 py-2 hover:bg-gray-50 cursor-pointer border-b last:border-b-0 border-gray-100">
+          <input type="checkbox" class="reqs-check rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" value="${r.id}" ${selectedIds.has(r.id) ? 'checked' : ''}>
+          ${r.jira_key ? `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700">${escapeHtml(r.jira_key)}</span>` : ''}
+          <span class="flex-1 truncate text-sm text-gray-800">${escapeHtml(r.summary)}</span>
+        </label>`).join('');
+      resultsEl.querySelectorAll('.reqs-check').forEach(cb => {
+        cb.addEventListener('change', () => {
+          const id = parseInt(cb.value, 10);
+          if (cb.checked) selectedIds.add(id); else selectedIds.delete(id);
+          countEl.textContent = selectedIds.size;
+          addBtn.disabled = selectedIds.size === 0;
+        });
+      });
+    }
+
+    openBtn?.addEventListener('click', () => {
+      selectedIds.clear();
+      searchEl.value = '';
+      countEl.textContent = '0';
+      addBtn.disabled = true;
+      reqsModal.classList.remove('hidden');
+      render('');
+    });
+    searchEl?.addEventListener('input', () => render(searchEl.value));
+    addBtn?.addEventListener('click', async () => {
+      const ids = Array.from(selectedIds);
+      if (!ids.length) return;
+      try {
+        const result = await api('POST', '/api/releases/' + releaseId + '/requirements/bulk',
+                                  { requirement_ids: ids });
+        const n = (result.added || []).length;
+        window.PrimeQA.toast(n + ' requirement' + (n === 1 ? '' : 's') + ' added', 'success');
+        reqsModal.classList.add('hidden');
+        setTimeout(() => window.location.reload(), 300);
+      } catch (_) {}
+    });
+  }
+
+  // ---- Add Test Plan picker (grouped by requirement) ------------------
+  const tpModal = document.getElementById('add-tp-modal');
+  if (tpModal) {
+    const resultsEl = document.getElementById('tp-picker-results');
+    const searchEl = document.getElementById('tp-picker-search');
+    const statusEl = document.getElementById('tp-picker-status');
+    const coverageEl = document.getElementById('tp-picker-coverage');
+    const priorityEl = document.getElementById('tp-picker-priority');
+    const countEl = document.getElementById('tp-picker-count');
+    const addBtn = document.getElementById('tp-picker-add');
+    const openBtn = document.getElementById('add-tp-btn');
+
+    const existingIds = new Set(Array.from(document.querySelectorAll('#release-test-plan li'))
+                                     .map(li => parseInt(li.dataset.tcId, 10)));
+    const selectedIds = new Set();
+
+    const REQS_BY_ID = {};
+    try { JSON.parse(tpModal.dataset.requirements || '[]').forEach(r => REQS_BY_ID[r.id] = r); }
+    catch (_) {}
+
+    const COV_CLASS = {
+      positive: 'bg-green-50 text-green-700',
+      negative_validation: 'bg-red-50 text-red-700',
+      boundary: 'bg-amber-50 text-amber-800',
+      edge_case: 'bg-purple-50 text-purple-700',
+      regression: 'bg-sky-50 text-sky-700',
+    };
+
+    function refreshSelState() {
+      countEl.textContent = selectedIds.size;
+      addBtn.disabled = selectedIds.size === 0;
+      resultsEl.querySelectorAll('.tp-group-check').forEach(gc => {
+        const scope = gc.closest('.tp-group');
+        if (!scope) return;
+        const rows = Array.from(scope.querySelectorAll('.tp-check'));
+        const checked = rows.filter(r => r.checked).length;
+        gc.checked = rows.length > 0 && checked === rows.length;
+        gc.indeterminate = checked > 0 && checked < rows.length;
+      });
+    }
+
+    function renderRow(tc) {
+      const c = tc.coverage_type || '';
+      const covClass = COV_CLASS[c] || 'bg-gray-50 text-gray-600';
+      const covLabel = c ? c.replace(/_/g, ' ') : '\u2014';
+      const statusClass = tc.status === 'active' ? 'bg-green-100 text-green-800'
+                        : tc.status === 'approved' ? 'bg-blue-100 text-blue-800'
+                        : 'bg-gray-100 text-gray-800';
+      return `
+        <label class="flex items-center gap-2 px-4 py-2 pl-10 hover:bg-gray-50 cursor-pointer">
+          <input type="checkbox" class="tp-check rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" value="${tc.id}" ${selectedIds.has(tc.id) ? 'checked' : ''}>
+          <span class="flex-1 truncate text-sm text-gray-800">${escapeHtml(tc.title)}</span>
+          <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] ${covClass}">${covLabel}</span>
+          <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] ${statusClass}">${tc.status}</span>
+        </label>`;
+    }
+
+    function renderGroupHeader(reqId, tcs) {
+      const req = reqId ? REQS_BY_ID[reqId] : null;
+      const title = req
+        ? (req.jira_key ? `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700 mr-2">${escapeHtml(req.jira_key)}</span>${escapeHtml(req.summary)}`
+                        : escapeHtml(req.summary))
+        : '<span class="text-gray-600">Unlinked</span> <span class="text-xs text-gray-400">(no requirement)</span>';
+      const cov = {};
+      tcs.forEach(tc => { const k = tc.coverage_type || 'other'; cov[k] = (cov[k] || 0) + 1; });
+      const chips = Object.entries(cov).map(([k, n]) => {
+        const cls = COV_CLASS[k] || 'bg-gray-50 text-gray-600';
+        return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] ${cls}">${n} ${k.replace(/_/g, ' ')}</span>`;
+      }).join(' ');
+      return `
+        <div class="flex items-center gap-2 px-3 py-2 bg-gray-50 border-t border-gray-200 sticky top-0">
+          <input type="checkbox" class="tp-group-check rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" aria-label="Select all in group">
+          <div class="flex-1 min-w-0 flex items-center gap-2 text-sm truncate">${title}</div>
+          <span class="text-xs text-gray-500 flex items-center gap-1 flex-shrink-0">
+            <span class="font-medium text-gray-700">${tcs.length} TC${tcs.length === 1 ? '' : 's'}</span>
+            ${chips}
+          </span>
+        </div>`;
+    }
+
+    async function load() {
+      resultsEl.innerHTML = '<div class="px-4 py-6 text-sm text-gray-500 italic">Loading\u2026</div>';
+      const params = new URLSearchParams();
+      params.set('per_page', '50');
+      if (searchEl.value.trim()) params.set('q', searchEl.value.trim());
+      if (statusEl.value) params.set('status', statusEl.value);
+      if (coverageEl.value) params.set('coverage_type', coverageEl.value);
+      try {
+        const body = await api('GET', '/api/test-cases?' + params.toString());
+        const rows = (body.data || []).filter(tc => !existingIds.has(tc.id));
+        if (!rows.length) {
+          resultsEl.innerHTML = '<div class="px-4 py-6 text-sm text-gray-500">No matching test cases.</div>';
+          refreshSelState(); return;
+        }
+        const groups = new Map();
+        rows.forEach(tc => {
+          const k = tc.requirement_id || 0;
+          if (!groups.has(k)) groups.set(k, []);
+          groups.get(k).push(tc);
+        });
+        const ordered = Array.from(groups.entries()).sort((a, b) => {
+          if (a[0] === 0) return 1; if (b[0] === 0) return -1;
+          const ra = REQS_BY_ID[a[0]], rb = REQS_BY_ID[b[0]];
+          const ak = ra?.jira_key || '~' + (ra?.summary || '');
+          const bk = rb?.jira_key || '~' + (rb?.summary || '');
+          return ak.localeCompare(bk);
+        });
+        resultsEl.innerHTML = ordered.map(([reqId, tcs]) => `
+          <div class="tp-group" data-req-id="${reqId}">
+            ${renderGroupHeader(reqId, tcs)}
+            ${tcs.map(renderRow).join('')}
+          </div>`).join('');
+        resultsEl.querySelectorAll('.tp-check').forEach(cb => {
+          cb.addEventListener('change', () => {
+            const id = parseInt(cb.value, 10);
+            if (cb.checked) selectedIds.add(id); else selectedIds.delete(id);
+            refreshSelState();
+          });
+        });
+        resultsEl.querySelectorAll('.tp-group-check').forEach(gc => {
+          gc.addEventListener('change', () => {
+            const scope = gc.closest('.tp-group');
+            const should = gc.checked;
+            scope.querySelectorAll('.tp-check').forEach(rc => {
+              rc.checked = should;
+              const id = parseInt(rc.value, 10);
+              if (should) selectedIds.add(id); else selectedIds.delete(id);
+            });
+            refreshSelState();
+          });
+          gc.addEventListener('click', e => e.stopPropagation());
+        });
+        refreshSelState();
+      } catch (err) {
+        resultsEl.innerHTML = '<div class="px-4 py-6 text-sm text-red-600">Failed to load: ' + escapeHtml(String(err)) + '</div>';
+      }
+    }
+
+    let debounce;
+    searchEl?.addEventListener('input', () => { clearTimeout(debounce); debounce = setTimeout(load, 250); });
+    statusEl?.addEventListener('change', load);
+    coverageEl?.addEventListener('change', load);
+    openBtn?.addEventListener('click', () => {
+      selectedIds.clear();
+      countEl.textContent = '0';
+      addBtn.disabled = true;
+      tpModal.classList.remove('hidden');
+      load();
+    });
+    addBtn?.addEventListener('click', async () => {
+      const ids = Array.from(selectedIds);
+      if (!ids.length) return;
+      try {
+        const result = await api('POST', '/api/releases/' + releaseId + '/test-plan/bulk',
+                                  { test_case_ids: ids, priority: priorityEl.value });
+        const n = (result.added || []).length;
+        window.PrimeQA.toast(n + ' test case' + (n === 1 ? '' : 's') + ' added', 'success');
+        tpModal.classList.add('hidden');
+        setTimeout(() => window.location.reload(), 300);
+      } catch (_) {}
+    });
+  }
+})();
+</script>
 {% endblock %}
