@@ -1,6 +1,6 @@
 {% extends "settings/base.html" %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
-{% block title %}Syncing {{ env.name }} \u00b7 {{ mv.version_label }} - PrimeQA{% endblock %}
+{% block title %}Syncing {{ env.name }} · {{ mv.version_label }} - PrimeQA{% endblock %}
 {% block settings_content %}
 
 {{ breadcrumbs([
@@ -9,7 +9,7 @@
   ('Sync ' ~ mv.version_label, None),
 ]) }}
 
-{# Map status \u2192 readable label + colour #}
+{# Map status → readable label + colour #}
 {% set STATUS_CLASS = {
   'queued':       'bg-yellow-100 text-yellow-800',
   'in_progress':  'bg-blue-100 text-blue-800',
@@ -39,23 +39,23 @@
       <p class="mt-1 text-sm text-gray-500">
         <span id="mv-status-badge" class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
                {{ STATUS_CLASS.get(mv.status, 'bg-gray-100 text-gray-800') }}">{{ mv.status }}</span>
-        <span class="mx-1">\u00b7</span>
-        <span>elapsed <span id="elapsed">\u2014</span></span>
+        <span class="mx-1">·</span>
+        <span>elapsed <span id="elapsed">—</span></span>
         <span id="eta-wrap" class="hidden">
-          <span class="mx-1">\u00b7</span>
-          <span>ETA <span id="eta">\u2014</span></span>
+          <span class="mx-1">·</span>
+          <span>ETA <span id="eta">—</span></span>
         </span>
-        <span class="mx-1">\u00b7</span>
+        <span class="mx-1">·</span>
         <span id="progress-count">0 / 6</span>
       </p>
       <p class="mt-1 text-xs text-gray-400">
         {% if mv.parent_meta_version_id %}
           Retrying failed categories from
           <a href="/environments/{{ env.id }}/sync/{{ mv.parent_meta_version_id }}" class="text-indigo-600 hover:underline">v{{ mv.parent_meta_version_id }}</a>
-          \u00b7
+          ·
         {% endif %}
-        Queued {{ mv.queued_at[:19] if mv.queued_at else '\u2014' }}
-        {% if mv.worker_id %}\u00b7 worker <span class="font-mono">{{ mv.worker_id }}</span>{% endif %}
+        Queued {{ (mv.queued_at[:19] | replace('T', ' ')) if mv.queued_at else '—' }}
+        {% if mv.worker_id %}· worker <span class="font-mono">{{ mv.worker_id }}</span>{% endif %}
       </p>
     </div>
     <div class="flex items-center space-x-2">
@@ -65,7 +65,7 @@
       </form>
       {% endif %}
       {% if mv.cancel_requested and mv.status in ('queued', 'in_progress') %}
-      <span class="rounded-md bg-yellow-50 px-3 py-1.5 text-sm text-yellow-800 ring-1 ring-yellow-200">Cancelling\u2026</span>
+      <span class="rounded-md bg-yellow-50 px-3 py-1.5 text-sm text-yellow-800 ring-1 ring-yellow-200">Cancelling…</span>
       {% endif %}
       <a href="/environments/{{ env.id }}" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">&larr; Env</a>
     </div>
@@ -84,12 +84,12 @@
     <div class="px-6 py-3 flex items-center justify-between category-row" data-cat="{{ r.category }}">
       <div class="flex items-center space-x-3 min-w-0">
         <span class="cat-icon text-lg" data-status="{{ r.status }}">
-          {% if r.status == 'complete' %}\u2713
+          {% if r.status == 'complete' %}✓
           {% elif r.status == 'running' %}<svg class="animate-spin h-4 w-4 text-blue-600 inline" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" fill="none" stroke-width="3" stroke-dasharray="40 40"/></svg>
-          {% elif r.status == 'failed' %}\u2717
-          {% elif r.status in ('skipped', 'skipped_parent_failed') %}\u2014
-          {% elif r.status == 'cancelled' %}\u232B
-          {% else %}\u2022
+          {% elif r.status == 'failed' %}✗
+          {% elif r.status in ('skipped', 'skipped_parent_failed') %}—
+          {% elif r.status == 'cancelled' %}⌫
+          {% else %}•
           {% endif %}
         </span>
         <div>
@@ -216,11 +216,11 @@
   }
 
   function iconFor(status) {
-    if (status === 'complete') return '<span class="text-green-600">\u2713</span>';
+    if (status === 'complete') return '<span class="text-green-600">✓</span>';
     if (status === 'running')  return '<svg class="animate-spin h-4 w-4 text-blue-600 inline" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" fill="none" stroke-width="3" stroke-dasharray="40 40"/></svg>';
-    if (status === 'failed')   return '<span class="text-red-600">\u2717</span>';
-    if (status === 'skipped' || status === 'skipped_parent_failed') return '<span class="text-gray-400">\u2014</span>';
-    if (status === 'cancelled') return '<span class="text-gray-500">\u232B</span>';
+    if (status === 'failed')   return '<span class="text-red-600">✗</span>';
+    if (status === 'skipped' || status === 'skipped_parent_failed') return '<span class="text-gray-400">—</span>';
+    if (status === 'cancelled') return '<span class="text-gray-500">⌫</span>';
     return '<span class="text-gray-300">\u2022</span>';
   }
 
@@ -268,25 +268,25 @@
 
     if (snap.status === 'complete') {
       elActionSummary.innerHTML =
-        '<span class="text-green-700 font-medium">\u2713 Sync complete</span> \u00b7 ' +
+        '<span class="text-green-700 font-medium">✓ Sync complete</span> · ' +
         mv.version_label + ' is now current';
     } else if (snap.status === 'failed') {
       elActionSummary.innerHTML =
-        '<span class="text-red-700 font-medium">\u2717 Sync failed</span>' +
-        (completeCats.length ? ' \u00b7 ' + completeCats.length + ' of ' + cats.length +
+        '<span class="text-red-700 font-medium">✗ Sync failed</span>' +
+        (completeCats.length ? ' · ' + completeCats.length + ' of ' + cats.length +
          ' categor' + (completeCats.length === 1 ? 'y' : 'ies') + ' completed' : '');
       if (hasRetryableFailures && btnRetry) btnRetry.classList.remove('hidden');
     } else if (snap.status === 'cancelled') {
       elActionSummary.innerHTML =
-        '<span class="text-gray-700">\u232B Sync cancelled</span>' +
-        (completeCats.length ? ' \u00b7 ' + completeCats.length + ' categor' +
+        '<span class="text-gray-700">⌫ Sync cancelled</span>' +
+        (completeCats.length ? ' · ' + completeCats.length + ' categor' +
          (completeCats.length === 1 ? 'y' : 'ies') + ' completed before cancel' : '');
       if (hasRetryableFailures && btnRetry) btnRetry.classList.remove('hidden');
     } else if (snap.status === 'partial') {
       // Mixed outcome: some categories complete, some failed. Treat same as failed:
       // give user the Retry + Start over path so they can make forward progress.
       elActionSummary.innerHTML =
-        '<span class="text-yellow-700 font-medium">\u26a0 Partial sync</span> \u00b7 ' +
+        '<span class="text-yellow-700 font-medium">⚠ Partial sync</span> · ' +
         completeCats.length + ' of ' + cats.length + ' categories completed, ' +
         failedCats.length + ' failed or skipped';
       if (hasRetryableFailures && btnRetry) btnRetry.classList.remove('hidden');
