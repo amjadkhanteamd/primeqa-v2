@@ -30,7 +30,9 @@ class SalesforceExecutionClient:
     """Salesforce REST API client for step execution."""
 
     def __init__(self, instance_url, api_version, access_token):
-        self.base_url = f"{instance_url}/services/data/v{api_version}"
+        # rstrip('/') on instance_url \u2014 strict My-Domain orgs reject double
+        # slashes in the path with 400 Bad Request.
+        self.base_url = f"{instance_url.rstrip('/')}/services/data/v{api_version}"
         self.session = http_requests.Session()
         self.session.headers.update({
             "Authorization": f"Bearer {access_token}",

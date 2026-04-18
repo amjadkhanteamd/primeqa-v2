@@ -472,7 +472,10 @@ class SalesforceClient:
     """Thin wrapper around Salesforce REST + Tooling APIs."""
 
     def __init__(self, instance_url, api_version, access_token):
-        self.base_url = f"{instance_url}/services/data/v{api_version}"
+        # Strip any trailing slash on instance_url so the concat doesn't
+        # produce `.../my.salesforce.com//services/...` \u2014 My-Domain orgs with
+        # strict URL hygiene return 400 on double slashes (Spring '24 change).
+        self.base_url = f"{instance_url.rstrip('/')}/services/data/v{api_version}"
         self.session = http_requests.Session()
         self.session.headers["Authorization"] = f"Bearer {access_token}"
         self.session.headers["Accept"] = "application/json"

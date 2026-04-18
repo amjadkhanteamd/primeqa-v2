@@ -228,7 +228,7 @@ class EnvironmentService:
         if not creds or not creds.get("access_token"):
             raise ValueError("No credentials or access token stored for this environment")
 
-        url = f"{env.sf_instance_url}/services/data/v{env.sf_api_version}/"
+        url = f"{env.sf_instance_url.rstrip('/')}/services/data/v{env.sf_api_version}/"
         try:
             resp = http_requests.get(url, headers={
                 "Authorization": f"Bearer {creds['access_token']}",
@@ -343,7 +343,7 @@ class ConnectionService:
                 token_data = token_resp.json()
                 access_token = token_data.get("access_token", "")
                 instance_url = token_data.get("instance_url", cfg.get("instance_url", ""))
-                api_url = f"{instance_url}/services/data/v{cfg.get('api_version', '59.0')}/"
+                api_url = f"{instance_url.rstrip('/')}/services/data/v{cfg.get('api_version', '59.0')}/"
                 resp = http_requests.get(api_url, headers={
                     "Authorization": f"Bearer {access_token}",
                 }, timeout=15)
