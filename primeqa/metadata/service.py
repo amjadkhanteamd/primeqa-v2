@@ -27,6 +27,350 @@ class MetadataService:
         self.metadata_repo = metadata_repo
         self.env_repo = env_repo
 
+    # ------------------------------------------------------------------
+    # Background-job entrypoint (migration 025).
+    # ------------------------------------------------------------------
+    # Web route POSTs a queued meta_version and redirects to the progress
+    # page. The Railway `worker` service loops, claims queued rows, calls
+    # this method. Progress page streams per-category state via SSE (bus +
+    # DB-snapshot fallback, already in place).
+
+    def run_queued_sync(self, meta_version_id, worker_id,
+                         oauth_token_fetcher, heartbeat_cb=None):
+        """Execute a pre-queued metadata sync.
+
+        Contract:
+          - `meta_version_id` already exists with status='queued' and
+            meta_sync_status rows seeded (pending / skipped).
+          - `oauth_token_fetcher(env, conn_config) -> access_token` is a
+            callable the worker provides (so the service doesn't need to
+            know Flask / requests / which connection table to read).
+          - `heartbeat_cb()` is a no-arg callable that updates
+            meta_versions.heartbeat_at. Called between categories.
+
+        Returns the same summary dict as refresh_metadata() on success.
+        Raises on failure; caller is expected to update status='failed'.
+        """
+        from primeqa.metadata.sync_engine import (
+            ALL_CATEGORIES, DEPENDS_ON, emit_sync_event,
+        )
+        from primeqa.metadata.models import MetaSyncStatus, MetaVersion
+        from primeqa.core.models import Environment
+        from datetime import datetime, timezone as _tz
+
+        db = self.metadata_repo.db
+
+        mv = db.query(MetaVersion).filter(MetaVersion.id == meta_version_id).first()
+        if not mv:
+            raise ValueError(f"meta_version {meta_version_id} not found")
+        requested_cats = set(mv.categories_requested or list(ALL_CATEGORIES))
+        requested_cats &= set(ALL_CATEGORIES)
+        if not requested_cats:
+            requested_cats = set(ALL_CATEGORIES)
+
+        env = db.query(Environment).filter(Environment.id == mv.environment_id).first()
+        if not env:
+            raise ValueError("Environment not found")
+
+        # Read connection config (decrypted) and ask the worker to OAuth
+        from primeqa.core.repository import ConnectionRepository
+        conn_repo = ConnectionRepository(db)
+        if not env.connection_id:
+            raise ValueError("Environment has no Salesforce connection linked")
+        conn = conn_repo.get_connection_decrypted(env.connection_id, env.tenant_id)
+        if not conn:
+            raise ValueError("Connection not found")
+        access_token = oauth_token_fetcher(env, conn["config"])
+
+        # Persist fresh access token so subsequent pipelines / test executions reuse it
+        self.env_repo.store_credentials(
+            env.id,
+            client_id=conn["config"].get("client_id", ""),
+            client_secret=conn["config"].get("client_secret", ""),
+            access_token=access_token,
+        )
+
+        # Status-writer helpers (same contract as refresh_metadata)
+        def _update_status(cat, status, items=None, error=None):
+            row = db.query(MetaSyncStatus).filter_by(
+                meta_version_id=mv.id, category=cat).first()
+            if not row:
+                row = MetaSyncStatus(meta_version_id=mv.id, category=cat, status=status)
+                db.add(row)
+            row.status = status
+            if items is not None:
+                row.items_count = items
+            if error is not None:
+                row.error_message = error[:500]
+            if status == "running" and not row.started_at:
+                row.started_at = datetime.now(_tz.utc)
+            if status in ("complete", "failed", "skipped", "skipped_parent_failed", "cancelled"):
+                row.completed_at = datetime.now(_tz.utc)
+            row.updated_at = datetime.now(_tz.utc)
+            db.commit()
+            emit_sync_event(mv.id,
+                            "category_finished" if status != "running" else "category_started",
+                            category=cat, status=status,
+                            items_count=items if items is not None else 0,
+                            error_message=error[:200] if error else None)
+
+        def _mark_dependents_skipped(failed_cat):
+            for c, parents in DEPENDS_ON.items():
+                if failed_cat in parents and c in requested_cats:
+                    _update_status(c, "skipped_parent_failed",
+                                   error=f"Parent '{failed_cat}' failed; retry it first.")
+
+        def _cancel_check_and_bail():
+            """Re-read mv.cancel_requested; if set, cancel all pending/running rows."""
+            db.refresh(mv)
+            if mv.cancel_requested:
+                # Mark any running/pending rows as cancelled
+                for row in db.query(MetaSyncStatus).filter_by(meta_version_id=mv.id).all():
+                    if row.status in ("running", "pending"):
+                        row.status = "cancelled"
+                        row.completed_at = datetime.now(_tz.utc)
+                db.commit()
+                emit_sync_event(mv.id, "sync_finished", status="cancelled")
+                return True
+            return False
+
+        emit_sync_event(mv.id, "sync_started",
+                        categories=sorted(requested_cats))
+
+        # Previous version for diffing
+        prev_version = db.query(MetaVersion).filter(
+            MetaVersion.environment_id == env.id,
+            MetaVersion.status == "complete",
+            MetaVersion.lifecycle == "active",
+            MetaVersion.id != mv.id,
+        ).order_by(MetaVersion.completed_at.desc()).first()
+
+        try:
+            sf = SalesforceClient(env.sf_instance_url, env.sf_api_version, access_token)
+
+            # ---- objects ------------------------------------------------
+            if _cancel_check_and_bail(): return {"cancelled": True}
+            if "objects" in requested_cats:
+                _update_status("objects", "running")
+            sobjects = sf.get_objects()
+            filtered = [
+                o for o in sobjects
+                if o["name"] not in SYSTEM_OBJECTS_EXCLUDE
+                and (o.get("createable") or o.get("queryable"))
+                and not o["name"].endswith("ChangeEvent")
+                and not o["name"].endswith("Feed")
+                and not o["name"].endswith("Share")
+                and not o["name"].endswith("History")
+            ]
+            stored_objects = self.metadata_repo.store_objects(mv.id, [
+                {
+                    "api_name": o["name"], "label": o.get("label"),
+                    "key_prefix": o.get("keyPrefix"),
+                    "is_custom": o.get("custom", False),
+                    "is_queryable": o.get("queryable", True),
+                    "is_createable": o.get("createable", True),
+                    "is_updateable": o.get("updateable", True),
+                    "is_deletable": o.get("deletable", True),
+                }
+                for o in filtered
+            ])
+            if "objects" in requested_cats:
+                _update_status("objects", "complete", items=len(stored_objects))
+            if heartbeat_cb: heartbeat_cb()
+
+            # ---- fields + record_types (share describe loop) -----------
+            total_fields = 0
+            obj_map = {o.api_name: o for o in stored_objects}
+            if _cancel_check_and_bail(): return {"cancelled": True}
+            if "fields" in requested_cats:
+                _update_status("fields", "running")
+            if "record_types" in requested_cats:
+                _update_status("record_types", "running")
+
+            for obj in stored_objects:
+                try:
+                    describe = sf.describe_object(obj.api_name)
+                except Exception as e:
+                    log.warning(f"Failed to describe {obj.api_name}: {e}")
+                    continue
+                fields_data = [
+                    {
+                        "api_name": f["name"], "label": f.get("label"),
+                        "field_type": f["type"],
+                        "is_required": not f.get("nillable", True) and not f.get("defaultedOnCreate", False),
+                        "is_custom": f.get("custom", False),
+                        "is_createable": f.get("createable", True),
+                        "is_updateable": f.get("updateable", True),
+                        "reference_to": f["referenceTo"][0] if f.get("referenceTo") else None,
+                        "length": f.get("length"), "precision": f.get("precision"), "scale": f.get("scale"),
+                        "picklist_values": (
+                            [{"value": pv["value"], "label": pv.get("label")}
+                             for pv in f.get("picklistValues", [])]
+                            if f.get("picklistValues") else None
+                        ),
+                        "default_value": str(f["defaultValue"]) if f.get("defaultValue") is not None else None,
+                    }
+                    for f in describe.get("fields", [])
+                ]
+                self.metadata_repo.store_fields(mv.id, obj.id, fields_data)
+                total_fields += len(fields_data)
+                record_types = [
+                    {
+                        "api_name": rt.get("developerName", rt.get("name", "")),
+                        "label": rt.get("name"),
+                        "is_active": rt.get("active", True),
+                        "is_default": rt.get("defaultRecordTypeMapping", False),
+                    }
+                    for rt in describe.get("recordTypeInfos", [])
+                    if rt.get("developerName") != "Master"
+                ]
+                if record_types:
+                    self.metadata_repo.store_record_types(mv.id, obj.id, record_types)
+
+            if "fields" in requested_cats:
+                _update_status("fields", "complete", items=total_fields)
+            if "record_types" in requested_cats:
+                _update_status("record_types", "complete", items=0)
+            if heartbeat_cb: heartbeat_cb()
+
+            # ---- validation_rules --------------------------------------
+            vr_count = 0
+            if _cancel_check_and_bail(): return {"cancelled": True}
+            if "validation_rules" in requested_cats:
+                _update_status("validation_rules", "running")
+                vrs = sf.query_tooling(
+                    "SELECT Id, ValidationName, Active, "
+                    "EntityDefinition.QualifiedApiName, "
+                    "ErrorConditionFormula, ErrorMessage "
+                    "FROM ValidationRule"
+                )
+                for vr in vrs:
+                    obj_name = (vr.get("EntityDefinition") or {}).get("QualifiedApiName", "")
+                    obj = obj_map.get(obj_name)
+                    if obj:
+                        self.metadata_repo.store_validation_rules(mv.id, obj.id, [{
+                            "rule_name": vr.get("ValidationName", ""),
+                            "error_condition_formula": vr.get("ErrorConditionFormula"),
+                            "error_message": vr.get("ErrorMessage"),
+                            "is_active": vr.get("Active", True),
+                        }])
+                        vr_count += 1
+                _update_status("validation_rules", "complete", items=vr_count)
+            if heartbeat_cb: heartbeat_cb()
+
+            # ---- flows -------------------------------------------------
+            flows_data = []
+            if _cancel_check_and_bail(): return {"cancelled": True}
+            if "flows" in requested_cats:
+                _update_status("flows", "running")
+                flow_records = sf.query_tooling(
+                    "SELECT Id, ApiName, Label, ProcessType, TriggerType, "
+                    "TriggerObjectOrEvent.QualifiedApiName "
+                    "FROM Flow WHERE Status = 'Active'"
+                )
+                flow_type_map = {
+                    "AutoLaunchedFlow": "autolaunched", "Flow": "screen",
+                    "Workflow": "record_triggered", "CustomEvent": "record_triggered",
+                    "InvocableProcess": "process_builder",
+                }
+                trigger_event_map = {
+                    "RecordAfterSave": "create_or_update",
+                    "RecordBeforeSave": "create_or_update",
+                    "RecordBeforeDelete": "delete",
+                }
+                for f in flow_records:
+                    pt = f.get("ProcessType", "")
+                    flows_data.append({
+                        "api_name": f.get("ApiName", ""), "label": f.get("Label"),
+                        "flow_type": flow_type_map.get(pt, "autolaunched"),
+                        "trigger_object": (f.get("TriggerObjectOrEvent") or {}).get("QualifiedApiName"),
+                        "trigger_event": trigger_event_map.get(f.get("TriggerType")),
+                        "is_active": True,
+                    })
+                if flows_data:
+                    self.metadata_repo.store_flows(mv.id, flows_data)
+                _update_status("flows", "complete", items=len(flows_data))
+            if heartbeat_cb: heartbeat_cb()
+
+            # ---- triggers ----------------------------------------------
+            trigger_count = 0
+            if _cancel_check_and_bail(): return {"cancelled": True}
+            if "triggers" in requested_cats:
+                _update_status("triggers", "running")
+                trigger_records = sf.query_tooling(
+                    "SELECT Id, Name, TableEnumOrId, "
+                    "UsageBeforeInsert, UsageAfterInsert, "
+                    "UsageBeforeUpdate, UsageAfterUpdate, "
+                    "UsageBeforeDelete, UsageAfterDelete FROM ApexTrigger"
+                )
+                for t in trigger_records:
+                    obj_name = t.get("TableEnumOrId", "")
+                    obj = obj_map.get(obj_name)
+                    if obj:
+                        events = []
+                        if t.get("UsageBeforeInsert") or t.get("UsageAfterInsert"): events.append("insert")
+                        if t.get("UsageBeforeUpdate") or t.get("UsageAfterUpdate"): events.append("update")
+                        if t.get("UsageBeforeDelete") or t.get("UsageAfterDelete"): events.append("delete")
+                        self.metadata_repo.store_triggers(mv.id, obj.id, [{
+                            "trigger_name": t.get("Name", ""),
+                            "events": ",".join(events),
+                            "is_active": True,
+                        }])
+                        trigger_count += 1
+                _update_status("triggers", "complete", items=trigger_count)
+            if heartbeat_cb: heartbeat_cb()
+
+            # ---- finalize ----------------------------------------------
+            hash_input = sorted([o.api_name for o in stored_objects])
+            all_fields = self.metadata_repo.get_fields(mv.id)
+            hash_input.extend(sorted([f"{f.meta_object_id}:{f.api_name}" for f in all_fields]))
+            snapshot_hash = hashlib.sha256(json.dumps(hash_input).encode()).hexdigest()
+            counts = {
+                "objects": len(stored_objects),
+                "fields": total_fields,
+                "vrs": vr_count,
+                "flows": len(flows_data),
+                "triggers": trigger_count,
+            }
+            self.metadata_repo.complete_meta_version(mv.id, snapshot_hash, counts)
+            self.metadata_repo.set_current_version(env.id, mv.id)
+
+            diff_summary = None
+            changes_detected = False
+            if prev_version and prev_version.snapshot_hash != snapshot_hash:
+                changes_detected = True
+                diff_summary = self._compute_diffs(prev_version.id, mv.id)
+
+            self.metadata_repo.archive_old_versions(env.id)
+            emit_sync_event(mv.id, "sync_finished", status="complete",
+                            outcomes={k: "complete" for k in requested_cats})
+
+            return {
+                "version_id": mv.id, "version_label": mv.version_label,
+                "objects_count": counts["objects"], "fields_count": counts["fields"],
+                "vr_count": counts["vrs"], "flow_count": counts["flows"],
+                "trigger_count": counts["triggers"], "snapshot_hash": snapshot_hash,
+                "changes_detected": changes_detected, "diff_summary": diff_summary,
+            }
+        except Exception as e:
+            err_msg = str(e)
+            running = db.query(MetaSyncStatus).filter_by(
+                meta_version_id=mv.id, status="running",
+            ).first()
+            if running:
+                _update_status(running.category, "failed", error=err_msg)
+                _mark_dependents_skipped(running.category)
+            pending = db.query(MetaSyncStatus).filter_by(
+                meta_version_id=mv.id, status="pending",
+            ).all()
+            for p in pending:
+                _update_status(p.category, "skipped_parent_failed",
+                               error="Earlier category failed")
+            emit_sync_event(mv.id, "sync_finished", status="failed",
+                            error_message=err_msg[:240])
+            self.metadata_repo.fail_meta_version(mv.id)
+            raise
+
     def refresh_metadata(self, environment_id, tenant_id, categories=None):
         """Refresh metadata. If `categories` is passed, only those are touched;
         otherwise all 6 categories sync (backwards-compat).

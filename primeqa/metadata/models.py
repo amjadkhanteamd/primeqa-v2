@@ -31,11 +31,21 @@ class MetaVersion(Base):
     started_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     completed_at = Column(DateTime(timezone=True))
 
+    # Background-job columns (migration 025)
+    queued_at = Column(DateTime(timezone=True))
+    triggered_by = Column(Integer, ForeignKey("users.id"))
+    categories_requested = Column(JSON)  # list of category strings
+    worker_id = Column(String(100))
+    heartbeat_at = Column(DateTime(timezone=True))
+    cancel_requested = Column(Boolean, nullable=False, server_default="false")
+    parent_meta_version_id = Column(Integer, ForeignKey("meta_versions.id", ondelete="SET NULL"))
+
     objects = relationship("MetaObject", back_populates="meta_version")
 
     __table_args__ = (
         UniqueConstraint("environment_id", "version_label", name="meta_versions_env_label_unique"),
-        CheckConstraint("status IN ('in_progress', 'complete', 'partial', 'failed')"),
+        # CHECK is re-defined by migration 025 to include 'queued' and 'cancelled'
+        CheckConstraint("status IN ('queued', 'in_progress', 'complete', 'partial', 'failed', 'cancelled')"),
         CheckConstraint("lifecycle IN ('active', 'archived', 'deleted')"),
     )
 

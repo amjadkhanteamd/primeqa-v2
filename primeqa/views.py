@@ -1189,64 +1189,231 @@ def environments_test_connection(env_id):
 
 
 @views_bp.route("/environments/<int:env_id>/refresh-metadata", methods=["POST"])
-@role_required("admin")
+@role_required("admin", "superadmin")
 def environments_refresh_metadata(env_id):
+    """Queue a metadata-sync job and redirect to the progress page.
+
+    This used to run the sync inline on the web worker; now we just INSERT
+    a queued meta_version + meta_sync_status rows and return in ~100ms.
+    The Railway worker service picks up queued rows and executes.
+    """
     from flask import flash
     db = next(get_db())
     try:
-        from primeqa.metadata.repository import MetadataRepository
-        from primeqa.metadata.service import MetadataService
+        from primeqa.metadata.models import MetaVersion, MetaSyncStatus
+        from primeqa.metadata.sync_engine import ALL_CATEGORIES
+        from datetime import datetime, timezone as _tz
+
         env_repo = EnvironmentRepository(db)
-        conn_repo = ConnectionRepository(db)
         env = env_repo.get_environment(env_id, request.user["tenant_id"])
         if not env:
-            flash("Environment not found", "error")
-            return redirect("/environments")
+            flash("Environment not found", "error"); return redirect("/environments")
         if not env.connection_id:
-            flash("No Salesforce connection linked — cannot refresh metadata", "error")
+            flash("No Salesforce connection linked \u2014 cannot refresh metadata", "error")
             return redirect(f"/environments/{env_id}")
-        conn_data = conn_repo.get_connection_decrypted(env.connection_id, request.user["tenant_id"])
-        if not conn_data:
-            flash("Connection not found", "error")
-            return redirect(f"/environments/{env_id}")
-        # Do OAuth flow to get a fresh access token
-        import requests as http_requests
-        cfg = conn_data["config"]
-        login_url = cfg.get("instance_url", "").rstrip("/")
-        if not login_url:
-            org_type = cfg.get("org_type", "sandbox")
-            login_url = "https://test.salesforce.com" if org_type == "sandbox" else "https://login.salesforce.com"
-        token_body = {"client_id": cfg.get("client_id", ""), "client_secret": cfg.get("client_secret", "")}
-        if cfg.get("auth_flow") == "password":
-            token_body["grant_type"] = "password"
-            token_body["username"] = cfg.get("username", "")
-            token_body["password"] = cfg.get("password", "")
-        else:
-            token_body["grant_type"] = "client_credentials"
-        token_resp = http_requests.post(f"{login_url}/services/oauth2/token", data=token_body, timeout=15)
-        if token_resp.status_code != 200:
-            flash(f"OAuth failed: {token_resp.text[:300]}", "error")
-            return redirect(f"/environments/{env_id}")
-        token_data = token_resp.json()
-        access_token = token_data.get("access_token", "")
-        # Store fresh token on environment credentials
-        env_repo.store_credentials(
-            env_id,
-            client_id=cfg.get("client_id", ""),
-            client_secret=cfg.get("client_secret", ""),
-            access_token=access_token,
+
+        # Single-flight: refuse if a sync is already queued/running for this env
+        active = db.query(MetaVersion).filter(
+            MetaVersion.environment_id == env_id,
+            MetaVersion.status.in_(("queued", "in_progress")),
+        ).order_by(MetaVersion.queued_at.desc().nullslast()).first()
+        if active:
+            flash("A sync is already running for this environment. "
+                  "View its progress or cancel it first.", "warning")
+            return redirect(f"/environments/{env_id}/sync/{active.id}")
+
+        # Pick next unused version label (matches earlier fix for failed v1)
+        all_labels = {row[0] for row in db.query(MetaVersion.version_label)
+                                          .filter(MetaVersion.environment_id == env_id)
+                                          .all()}
+        n = 1
+        while f"v{n}" in all_labels:
+            n += 1
+
+        cats_raw = request.form.getlist("categories") or list(ALL_CATEGORIES)
+        requested_cats = [c for c in cats_raw if c in ALL_CATEGORIES] or list(ALL_CATEGORIES)
+
+        now = datetime.now(_tz.utc)
+        mv = MetaVersion(
+            environment_id=env_id,
+            version_label=f"v{n}",
+            status="queued",
+            queued_at=now,
+            triggered_by=request.user["id"],
+            categories_requested=requested_cats,
         )
-        meta_repo = MetadataRepository(db)
-        meta_svc = MetadataService(meta_repo, env_repo)
-        # R3: accept optional categories[] checkbox selection
-        cats = request.form.getlist("categories") or None
-        result = meta_svc.refresh_metadata(env_id, request.user["tenant_id"], categories=cats)
-        flash(f"Metadata refreshed: {result['objects_count']} objects, {result['fields_count']} fields", "success")
+        db.add(mv); db.commit(); db.refresh(mv)
+
+        # Seed status rows so the progress page has content immediately
+        for cat in ALL_CATEGORIES:
+            status = "pending" if cat in requested_cats else "skipped"
+            db.add(MetaSyncStatus(meta_version_id=mv.id, category=cat, status=status))
+        db.commit()
+
+        return redirect(f"/environments/{env_id}/sync/{mv.id}", code=303)
     except Exception as e:
-        flash(f"Metadata refresh failed: {e}", "error")
+        flash(f"Could not queue metadata sync: {e}", "error")
+        return redirect(f"/environments/{env_id}")
     finally:
         db.close()
-    return redirect(f"/environments/{env_id}")
+
+
+@views_bp.route("/environments/<int:env_id>/sync/<int:mv_id>")
+@role_required("admin", "superadmin")
+def environments_sync_progress(env_id, mv_id):
+    """Metadata-sync progress page. Reads from DB, opens SSE for live updates."""
+    db = next(get_db())
+    try:
+        from primeqa.metadata.models import MetaVersion, MetaSyncStatus
+        from primeqa.metadata.sync_engine import ALL_CATEGORIES
+        env_repo = EnvironmentRepository(db)
+        env = env_repo.get_environment(env_id, request.user["tenant_id"])
+        if not env:
+            return redirect("/environments")
+        mv = db.query(MetaVersion).filter(
+            MetaVersion.id == mv_id, MetaVersion.environment_id == env_id,
+        ).first()
+        if not mv:
+            return redirect(f"/environments/{env_id}")
+        rows = db.query(MetaSyncStatus).filter_by(meta_version_id=mv_id).all()
+        # Ensure consistent order (DAG order)
+        cat_order = {c: i for i, c in enumerate(ALL_CATEGORIES)}
+        rows = sorted(rows, key=lambda r: cat_order.get(r.category, 99))
+
+        # ETA: sum of rolling-avg duration across requested remaining categories
+        from sqlalchemy import func as sa_func, and_
+        avg_durations = {}
+        for cat in ALL_CATEGORIES:
+            avg_ms = db.query(sa_func.avg(
+                sa_func.extract("epoch", MetaSyncStatus.completed_at - MetaSyncStatus.started_at) * 1000,
+            )).join(MetaVersion, MetaSyncStatus.meta_version_id == MetaVersion.id).filter(
+                MetaVersion.environment_id == env_id,
+                MetaSyncStatus.category == cat,
+                MetaSyncStatus.status == "complete",
+                MetaSyncStatus.started_at.isnot(None),
+                MetaSyncStatus.completed_at.isnot(None),
+            ).scalar()
+            avg_durations[cat] = int(avg_ms) if avg_ms else 30000  # 30s default
+
+        mv_data = {
+            "id": mv.id, "version_label": mv.version_label, "status": mv.status,
+            "env_id": env.id, "env_name": env.name,
+            "queued_at": mv.queued_at.isoformat() if mv.queued_at else None,
+            "started_at": mv.started_at.isoformat() if mv.started_at else None,
+            "completed_at": mv.completed_at.isoformat() if mv.completed_at else None,
+            "cancel_requested": mv.cancel_requested,
+            "categories_requested": mv.categories_requested or list(ALL_CATEGORIES),
+            "worker_id": mv.worker_id,
+            "triggered_by": mv.triggered_by,
+            "parent_meta_version_id": mv.parent_meta_version_id,
+        }
+        rows_data = [{
+            "category": r.category, "status": r.status,
+            "items_count": r.items_count or 0,
+            "error_message": r.error_message,
+            "started_at": r.started_at.isoformat() if r.started_at else None,
+            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+        } for r in rows]
+        return render_template("environments/sync_progress.html", **ctx(
+            active_page="settings_environments", settings_page="environments",
+            env=env, mv=mv_data, rows=rows_data, avg_durations=avg_durations,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/environments/<int:env_id>/sync/<int:mv_id>/cancel", methods=["POST"])
+@role_required("admin", "superadmin")
+def environments_sync_cancel(env_id, mv_id):
+    """User-initiated cancel. Flips cancel_requested; worker checks between
+    categories and bails cleanly."""
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.metadata.models import MetaVersion
+        mv = db.query(MetaVersion).filter(
+            MetaVersion.id == mv_id, MetaVersion.environment_id == env_id,
+        ).first()
+        if not mv:
+            flash("Sync not found", "error")
+            return redirect(f"/environments/{env_id}")
+        if mv.status not in ("queued", "in_progress"):
+            flash(f"Sync is already {mv.status} \u2014 nothing to cancel", "warning")
+            return redirect(f"/environments/{env_id}/sync/{mv_id}")
+        mv.cancel_requested = True
+        # If still queued (no worker has claimed it), cancel immediately
+        if mv.status == "queued":
+            from datetime import datetime, timezone
+            mv.status = "cancelled"
+            mv.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        flash("Cancel requested. Worker will stop at the next category boundary.", "success")
+    finally:
+        db.close()
+    return redirect(f"/environments/{env_id}/sync/{mv_id}")
+
+
+@views_bp.route("/environments/<int:env_id>/sync/<int:mv_id>/retry", methods=["POST"])
+@role_required("admin", "superadmin")
+def environments_sync_retry(env_id, mv_id):
+    """Queue a new sync for the failed + skipped_parent_failed categories
+    of a prior sync, linked via parent_meta_version_id."""
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.metadata.models import MetaVersion, MetaSyncStatus
+        from primeqa.metadata.sync_engine import ALL_CATEGORIES
+        from datetime import datetime, timezone
+
+        parent = db.query(MetaVersion).filter(
+            MetaVersion.id == mv_id, MetaVersion.environment_id == env_id,
+        ).first()
+        if not parent:
+            return redirect(f"/environments/{env_id}")
+
+        # Single-flight
+        active = db.query(MetaVersion).filter(
+            MetaVersion.environment_id == env_id,
+            MetaVersion.status.in_(("queued", "in_progress")),
+        ).first()
+        if active:
+            flash("A sync is already running for this environment.", "warning")
+            return redirect(f"/environments/{env_id}/sync/{active.id}")
+
+        # Pick categories to retry
+        retry_cats = [
+            r.category for r in db.query(MetaSyncStatus).filter_by(meta_version_id=mv_id).all()
+            if r.status in ("failed", "skipped_parent_failed", "cancelled")
+        ]
+        if not retry_cats:
+            flash("No failed categories to retry. Use Start over for a full refresh.", "warning")
+            return redirect(f"/environments/{env_id}/sync/{mv_id}")
+
+        # Next unused version label
+        all_labels = {row[0] for row in db.query(MetaVersion.version_label)
+                                          .filter(MetaVersion.environment_id == env_id).all()}
+        n = 1
+        while f"v{n}" in all_labels:
+            n += 1
+
+        now = datetime.now(timezone.utc)
+        new_mv = MetaVersion(
+            environment_id=env_id, version_label=f"v{n}",
+            status="queued", queued_at=now,
+            triggered_by=request.user["id"],
+            categories_requested=retry_cats,
+            parent_meta_version_id=mv_id,
+        )
+        db.add(new_mv); db.commit(); db.refresh(new_mv)
+
+        # Seed status rows
+        for cat in ALL_CATEGORIES:
+            status = "pending" if cat in retry_cats else "skipped"
+            db.add(MetaSyncStatus(meta_version_id=new_mv.id, category=cat, status=status))
+        db.commit()
+        return redirect(f"/environments/{env_id}/sync/{new_mv.id}", code=303)
+    finally:
+        db.close()
 
 
 @views_bp.route("/environments/<int:env_id>/delete", methods=["POST"])

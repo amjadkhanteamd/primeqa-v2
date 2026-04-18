@@ -1,0 +1,315 @@
+{% extends "settings/base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% block title %}Syncing {{ env.name }} \u00b7 {{ mv.version_label }} - PrimeQA{% endblock %}
+{% block settings_content %}
+
+{{ breadcrumbs([
+  ('Environments', '/settings/environments'),
+  (env.name, '/environments/' ~ env.id),
+  ('Sync ' ~ mv.version_label, None),
+]) }}
+
+{# Map status \u2192 readable label + colour #}
+{% set STATUS_CLASS = {
+  'queued':       'bg-yellow-100 text-yellow-800',
+  'in_progress':  'bg-blue-100 text-blue-800',
+  'complete':     'bg-green-100 text-green-800',
+  'failed':       'bg-red-100 text-red-800',
+  'cancelled':    'bg-gray-200 text-gray-800',
+  'partial':      'bg-yellow-100 text-yellow-800',
+} %}
+{% set CAT_STATUS_CLASS = {
+  'pending':                'bg-gray-100 text-gray-600',
+  'running':                'bg-blue-100 text-blue-800',
+  'complete':               'bg-green-100 text-green-800',
+  'failed':                 'bg-red-100 text-red-800',
+  'skipped':                'bg-gray-100 text-gray-500',
+  'skipped_parent_failed':  'bg-orange-100 text-orange-800',
+  'cancelled':              'bg-gray-200 text-gray-700',
+} %}
+
+<div class="max-w-4xl space-y-6">
+  <!-- Header -->
+  <div class="flex items-start justify-between">
+    <div class="min-w-0">
+      <h1 class="text-2xl font-bold text-gray-900">
+        Syncing {{ env.name }}
+        <span class="ml-2 text-base font-mono text-gray-500">{{ mv.version_label }}</span>
+      </h1>
+      <p class="mt-1 text-sm text-gray-500">
+        <span id="mv-status-badge" class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+               {{ STATUS_CLASS.get(mv.status, 'bg-gray-100 text-gray-800') }}">{{ mv.status }}</span>
+        <span class="mx-1">\u00b7</span>
+        <span>elapsed <span id="elapsed">\u2014</span></span>
+        <span id="eta-wrap" class="hidden">
+          <span class="mx-1">\u00b7</span>
+          <span>ETA <span id="eta">\u2014</span></span>
+        </span>
+        <span class="mx-1">\u00b7</span>
+        <span id="progress-count">0 / 6</span>
+      </p>
+      <p class="mt-1 text-xs text-gray-400">
+        {% if mv.parent_meta_version_id %}
+          Retrying failed categories from
+          <a href="/environments/{{ env.id }}/sync/{{ mv.parent_meta_version_id }}" class="text-indigo-600 hover:underline">v{{ mv.parent_meta_version_id }}</a>
+          \u00b7
+        {% endif %}
+        Queued {{ mv.queued_at[:19] if mv.queued_at else '\u2014' }}
+        {% if mv.worker_id %}\u00b7 worker <span class="font-mono">{{ mv.worker_id }}</span>{% endif %}
+      </p>
+    </div>
+    <div class="flex items-center space-x-2">
+      {% if mv.status in ('queued', 'in_progress') and not mv.cancel_requested %}
+      <form method="POST" action="/environments/{{ env.id }}/sync/{{ mv.id }}/cancel">
+        <button class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Cancel</button>
+      </form>
+      {% endif %}
+      {% if mv.cancel_requested and mv.status in ('queued', 'in_progress') %}
+      <span class="rounded-md bg-yellow-50 px-3 py-1.5 text-sm text-yellow-800 ring-1 ring-yellow-200">Cancelling\u2026</span>
+      {% endif %}
+      <a href="/environments/{{ env.id }}" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">&larr; Env</a>
+    </div>
+  </div>
+
+  <!-- Overall progress bar -->
+  <div class="bg-white shadow rounded-lg p-4">
+    <div class="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+      <div id="progress-bar" class="bg-indigo-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+    </div>
+  </div>
+
+  <!-- Per-category rows -->
+  <div id="category-rows" class="bg-white shadow rounded-lg divide-y divide-gray-100">
+    {% for r in rows %}
+    <div class="px-6 py-3 flex items-center justify-between category-row" data-cat="{{ r.category }}">
+      <div class="flex items-center space-x-3 min-w-0">
+        <span class="cat-icon text-lg" data-status="{{ r.status }}">
+          {% if r.status == 'complete' %}\u2713
+          {% elif r.status == 'running' %}<svg class="animate-spin h-4 w-4 text-blue-600 inline" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" fill="none" stroke-width="3" stroke-dasharray="40 40"/></svg>
+          {% elif r.status == 'failed' %}\u2717
+          {% elif r.status in ('skipped', 'skipped_parent_failed') %}\u2014
+          {% elif r.status == 'cancelled' %}\u232B
+          {% else %}\u2022
+          {% endif %}
+        </span>
+        <div>
+          <p class="text-sm font-medium text-gray-900 capitalize">{{ r.category | replace('_', ' ') }}</p>
+          {% if r.error_message %}
+          <p class="text-xs text-red-600 mt-0.5 max-w-2xl truncate" title="{{ r.error_message }}">{{ r.error_message }}</p>
+          {% endif %}
+        </div>
+      </div>
+      <div class="flex items-center space-x-3 text-xs">
+        <span class="cat-items text-gray-500">{% if r.items_count %}{{ r.items_count }} items{% endif %}</span>
+        <span class="cat-duration text-gray-400">
+          {% if r.started_at and r.completed_at %}
+            {# duration computed client-side from ISO strings; server leaves blank #}
+          {% endif %}
+        </span>
+        <span class="cat-status-badge inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {{ CAT_STATUS_CLASS.get(r.status, 'bg-gray-100 text-gray-600') }}">
+          {{ r.status | replace('_', ' ') }}
+        </span>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Action bar (terminal states) -->
+  <div id="action-bar" class="hidden bg-white shadow rounded-lg p-4 flex items-center justify-between">
+    <div id="action-summary" class="text-sm text-gray-700"></div>
+    <div class="flex items-center space-x-2">
+      <form method="POST" action="/environments/{{ env.id }}/sync/{{ mv.id }}/retry" id="retry-failed-form">
+        <button type="submit" class="hidden rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500" id="btn-retry">Retry failed + skipped</button>
+      </form>
+      <form method="POST" action="/environments/{{ env.id }}/refresh-metadata">
+        {% for cat in ['objects','fields','record_types','validation_rules','flows','triggers'] %}
+        <input type="hidden" name="categories" value="{{ cat }}">
+        {% endfor %}
+        <button type="submit" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Start over</button>
+      </form>
+      <a href="/environments/{{ env.id }}" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Back to env</a>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const mv = {{ mv | tojson }};
+  const avgDurations = {{ avg_durations | tojson }};
+  const CATEGORY_ORDER = ['objects','fields','record_types','validation_rules','flows','triggers'];
+  const STATUS_CLASS = {{ STATUS_CLASS | tojson }};
+  const CAT_STATUS_CLASS = {{ CAT_STATUS_CLASS | tojson }};
+  const TERMINAL = new Set(['complete','failed','cancelled','partial']);
+
+  const elStatus  = document.getElementById('mv-status-badge');
+  const elProgCnt = document.getElementById('progress-count');
+  const elProgBar = document.getElementById('progress-bar');
+  const elElapsed = document.getElementById('elapsed');
+  const elEta     = document.getElementById('eta');
+  const elEtaWrap = document.getElementById('eta-wrap');
+  const elActionBar = document.getElementById('action-bar');
+  const elActionSummary = document.getElementById('action-summary');
+  const btnRetry = document.getElementById('btn-retry');
+
+  // Elapsed ticker
+  let startedAt = mv.started_at ? Date.parse(mv.started_at) : (mv.queued_at ? Date.parse(mv.queued_at) : Date.now());
+  function fmt(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    return Math.floor(s/60) + ':' + String(s % 60).padStart(2, '0');
+  }
+  setInterval(() => {
+    if (TERMINAL.has(currentStatus)) return;
+    elElapsed.textContent = fmt(Date.now() - startedAt);
+  }, 1000);
+
+  // Per-category state cache (updated by snapshots)
+  const catState = {};
+
+  function updateStatusBadge(status) {
+    currentStatus = status;
+    for (const cls of Object.values(STATUS_CLASS)) cls.split(' ').forEach(c => elStatus.classList.remove(c));
+    (STATUS_CLASS[status] || 'bg-gray-100 text-gray-800').split(' ').forEach(c => elStatus.classList.add(c));
+    elStatus.textContent = status;
+  }
+  let currentStatus = mv.status;
+
+  function updateCategoryRow(cat) {
+    const s = catState[cat];
+    if (!s) return;
+    const row = document.querySelector(`[data-cat="${cat}"]`);
+    if (!row) return;
+    // Status badge
+    const badge = row.querySelector('.cat-status-badge');
+    badge.className = 'cat-status-badge inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ' +
+      (CAT_STATUS_CLASS[s.status] || 'bg-gray-100 text-gray-600');
+    badge.textContent = (s.status || '').replace(/_/g, ' ');
+    // Icon
+    const icon = row.querySelector('.cat-icon');
+    icon.dataset.status = s.status;
+    icon.innerHTML = iconFor(s.status);
+    // Items
+    const items = row.querySelector('.cat-items');
+    items.textContent = s.items_count ? s.items_count + ' items' : '';
+    // Duration
+    const dur = row.querySelector('.cat-duration');
+    if (s.started_at && s.completed_at) {
+      const ms = Date.parse(s.completed_at) - Date.parse(s.started_at);
+      dur.textContent = fmt(ms);
+    } else if (s.status === 'running' && s.started_at) {
+      dur.textContent = fmt(Date.now() - Date.parse(s.started_at));
+    } else {
+      dur.textContent = '';
+    }
+    // Error
+    let errEl = row.querySelector('.cat-error');
+    if (s.error_message) {
+      if (!errEl) {
+        errEl = document.createElement('p');
+        errEl.className = 'cat-error text-xs text-red-600 mt-0.5 max-w-2xl truncate';
+        row.querySelector('div > div:last-child')?.after(errEl) ?? row.appendChild(errEl);
+      }
+      errEl.textContent = s.error_message;
+      errEl.title = s.error_message;
+    } else if (errEl) {
+      errEl.remove();
+    }
+  }
+
+  function iconFor(status) {
+    if (status === 'complete') return '<span class="text-green-600">\u2713</span>';
+    if (status === 'running')  return '<svg class="animate-spin h-4 w-4 text-blue-600 inline" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" fill="none" stroke-width="3" stroke-dasharray="40 40"/></svg>';
+    if (status === 'failed')   return '<span class="text-red-600">\u2717</span>';
+    if (status === 'skipped' || status === 'skipped_parent_failed') return '<span class="text-gray-400">\u2014</span>';
+    if (status === 'cancelled') return '<span class="text-gray-500">\u232B</span>';
+    return '<span class="text-gray-300">\u2022</span>';
+  }
+
+  function applySnapshot(snap) {
+    if (snap.status) updateStatusBadge(snap.status);
+    if (Array.isArray(snap.categories)) {
+      for (const s of snap.categories) {
+        catState[s.category] = s;
+        updateCategoryRow(s.category);
+      }
+    }
+    // Overall progress
+    const total = CATEGORY_ORDER.filter(c => catState[c] && catState[c].status !== 'skipped').length || 6;
+    const done = CATEGORY_ORDER.filter(c => catState[c] && ['complete','failed','skipped_parent_failed','cancelled'].includes(catState[c].status)).length;
+    elProgCnt.textContent = done + ' / ' + total;
+    elProgBar.style.width = Math.min(100, (done / total) * 100) + '%';
+
+    // ETA (remaining running/pending categories \u00d7 rolling avg)
+    if (!TERMINAL.has(currentStatus)) {
+      const remainingMs = CATEGORY_ORDER.reduce((acc, c) => {
+        const st = catState[c];
+        if (!st) return acc;
+        if (st.status === 'running' || st.status === 'pending') {
+          return acc + (avgDurations[c] || 30000);
+        }
+        return acc;
+      }, 0);
+      if (remainingMs > 0) {
+        elEtaWrap.classList.remove('hidden');
+        elEta.textContent = fmt(remainingMs);
+      }
+    }
+
+    if (TERMINAL.has(snap.status)) {
+      showActionBar(snap);
+    }
+  }
+
+  function showActionBar(snap) {
+    elActionBar.classList.remove('hidden');
+    const failed = (snap.categories || []).filter(c => ['failed','skipped_parent_failed'].includes(c.status));
+    if (snap.status === 'complete') {
+      elActionSummary.innerHTML = '<span class="text-green-700 font-medium">\u2713 Sync complete</span> \u00b7 ' + mv.version_label + ' is now current';
+    } else if (snap.status === 'failed') {
+      elActionSummary.innerHTML = '<span class="text-red-700 font-medium">\u2717 Sync failed</span>';
+      if (failed.length && btnRetry) btnRetry.classList.remove('hidden');
+    } else if (snap.status === 'cancelled') {
+      elActionSummary.innerHTML = '<span class="text-gray-700">\u232B Sync cancelled</span>';
+      if (failed.length && btnRetry) btnRetry.classList.remove('hidden');
+    } else {
+      elActionSummary.textContent = 'Sync ended in ' + snap.status + ' state';
+    }
+  }
+
+  // Open SSE
+  if (!TERMINAL.has(mv.status)) {
+    const es = new EventSource('/api/metadata/' + mv.id + '/sync-events');
+    es.addEventListener('run_snapshot', evt => {
+      try {
+        const snap = JSON.parse(evt.data);
+        applySnapshot(snap);
+        if (TERMINAL.has(snap.status)) es.close();
+      } catch (e) { console.warn('bad snapshot', e); }
+    });
+    es.addEventListener('category_started', evt => {
+      const d = JSON.parse(evt.data);
+      catState[d.category] = {...(catState[d.category]||{}), ...d};
+      updateCategoryRow(d.category);
+    });
+    es.addEventListener('category_finished', evt => {
+      const d = JSON.parse(evt.data);
+      catState[d.category] = {...(catState[d.category]||{}), ...d};
+      updateCategoryRow(d.category);
+    });
+    es.addEventListener('sync_finished', evt => {
+      const d = JSON.parse(evt.data);
+      updateStatusBadge(d.status);
+      setTimeout(() => window.location.reload(), 1000);
+    });
+  } else {
+    // Already terminal: populate the action bar immediately
+    showActionBar({status: mv.status, categories: {{ rows | tojson }}});
+  }
+
+  // Populate initial row data on page load
+  {% for r in rows %}
+  catState[{{ r.category | tojson }}] = {{ r | tojson }};
+  updateCategoryRow({{ r.category | tojson }});
+  {% endfor %}
+})();
+</script>
+{% endblock %}

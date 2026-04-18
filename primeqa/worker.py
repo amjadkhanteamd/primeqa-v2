@@ -90,13 +90,24 @@ def process_run(run, ctx):
 
 
 def worker_tick(ctx):
-    """Single poll iteration — find running runs with pending stages and process them."""
+    """Single poll iteration: drive pipeline runs AND metadata syncs."""
+    # 1) Pipeline runs (existing)
     run_repo = ctx["run_repo"]
     runs = run_repo.get_running_runs()
     for run in runs:
         stage = ctx["stage_repo"].get_next_pending_stage(run.id)
         if stage:
             process_run(run, ctx)
+
+    # 2) Metadata sync jobs (migration 025)
+    # Process at most one per tick to keep pipeline work responsive. The
+    # metadata sync is a long-running SF API burst, so one worker claims it
+    # and iterates categories; other workers (if any) still serve runs.
+    try:
+        from primeqa.metadata.worker_runner import poll_and_run_once
+        poll_and_run_once(ctx["db"], ctx["worker_id"])
+    except Exception as e:
+        log.warning("metadata worker tick failed: %s", e)
 
 
 def run_worker():

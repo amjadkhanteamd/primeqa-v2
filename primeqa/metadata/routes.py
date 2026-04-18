@@ -104,9 +104,15 @@ def stream_sync_events(meta_version_id):
         finally:
             snap_db.close()
 
-    # Reuse the run-stream generator but keyed on the negative meta_version_id
+    # Reuse the run-stream generator but keyed on the negative meta_version_id.
+    # Tighter snapshot interval (1s) so the metadata progress bar stays
+    # responsive across processes \u2014 the web SSE handler won't see the
+    # worker's in-process bus events, so DB polling is the de-facto
+    # delivery channel. LISTEN/NOTIFY could lower this further in a
+    # follow-up.
     resp = Response(
-        stream_run_events(sync_bus_key(meta_version_id), snapshot),
+        stream_run_events(sync_bus_key(meta_version_id), snapshot,
+                          snapshot_sec=1),
         mimetype="text/event-stream",
     )
     resp.headers["Cache-Control"] = "no-cache"

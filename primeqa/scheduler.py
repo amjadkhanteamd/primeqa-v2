@@ -133,6 +133,22 @@ def scheduler_tick(ctx):
     reap_stale_workers(ctx)
     fire_scheduled_runs(ctx)
     dead_mans_switch_check(ctx)
+    reap_stalled_metadata_jobs(ctx)
+
+
+def reap_stalled_metadata_jobs(ctx):
+    """Fail metadata-sync jobs whose worker has gone silent > 2 min.
+
+    Added with migration 025 / background-job architecture. Matches the
+    existing pattern for reaping stuck pipeline stages.
+    """
+    try:
+        from primeqa.metadata.worker_runner import reap_stalled_jobs
+        reaped = reap_stalled_jobs(ctx["db"])
+        if reaped:
+            log.info("reaped %d stalled metadata sync job(s)", reaped)
+    except Exception as e:
+        log.warning("metadata reaper failed: %s", e)
 
 
 def run_scheduler():
