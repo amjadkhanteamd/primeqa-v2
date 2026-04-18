@@ -157,6 +157,21 @@ class StepExecutor:
             resolved = self._resolve_refs(step_def.get("field_values", {}))
             record_ref = self._resolve_ref(step_def.get("record_ref"))
 
+            # Fail-fast on unresolved $vars \u2014 sending a literal "$foo" to
+            # Salesforce produces a cryptic MALFORMED_ID response; catch it
+            # here and surface an actionable error that points at the step
+            # definition. This usually means the AI generator emitted a
+            # reference without giving the prior create step a matching
+            # state_ref.
+            unresolved = [v for v in list(resolved.values()) + [record_ref]
+                          if isinstance(v, str) and v.startswith("$")]
+            if unresolved:
+                raise ValueError(
+                    "Unresolved reference variable(s): " + ", ".join(sorted(set(unresolved))) +
+                    f" \u2014 no prior step stored them. Available vars: {sorted(self.state_vars.keys()) or '(none)'}. "
+                    "Fix the test case so a prior create step sets `state_ref` to the matching $var."
+                )
+
             if self.capture_mode == "full" and action in ("update", "delete") and record_ref:
                 before_state = self._capture_state(target_object, record_ref)
 

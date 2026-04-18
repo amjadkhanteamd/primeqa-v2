@@ -155,10 +155,23 @@ class PipelineStageRepository:
         ).order_by(PipelineStage.stage_order).all()
 
     def get_next_pending_stage(self, run_id):
-        return self.db.query(PipelineStage).filter(
+        """Return the next stage to execute \u2014 but block if a predecessor
+        is still "running". Previously this would happily return "record"
+        while "execute" was still running (because record.status=='pending'
+        and execute.status=='running'), which is how a worker that died
+        mid-execute during a Railway deploy could leave execute stuck at
+        "running" while a second worker raced ahead and called complete_run
+        with stale counts.
+        """
+        stages = self.db.query(PipelineStage).filter(
             PipelineStage.run_id == run_id,
-            PipelineStage.status == "pending",
-        ).order_by(PipelineStage.stage_order).first()
+        ).order_by(PipelineStage.stage_order).all()
+        for s in stages:
+            if s.status == "running":
+                return None  # wait for the in-flight stage to complete
+            if s.status == "pending":
+                return s
+        return None
 
     def get_current_running_stage(self, run_id):
         return self.db.query(PipelineStage).filter(

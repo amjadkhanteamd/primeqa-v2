@@ -208,21 +208,32 @@ def _run_execute_stage(stage, ctx):
             failure_type = "unexpected_error"
             log.exception("test case %s on run %s crashed: %s", tc.id, run.id, e)
 
-        # Update rtr with final counts + status
+        # Atomic rtr update via repo (not direct ORM mutation) \u2014 previous
+        # attempts set attributes on a potentially-expired instance after
+        # multiple commits inside execute_step, so the assignments silently
+        # dropped. update_result re-fetches, mutates, commits.
         duration_ms = int((time.time() - t0) * 1000)
-        rtr.status = tc_status
-        rtr.passed_steps = tc_passed_steps
-        rtr.failed_steps = tc_failed_steps
-        rtr.failure_summary = (failure_summary or "")[:500] if failure_summary else None
-        rtr.failure_type = failure_type
-        rtr.duration_ms = duration_ms
-        db.commit()
+        rtr_repo.update_result(rtr.id, {
+            "status": tc_status,
+            "passed_steps": tc_passed_steps,
+            "failed_steps": tc_failed_steps,
+            "failure_summary": (failure_summary or "")[:500] if failure_summary else None,
+            "failure_type": failure_type,
+            "duration_ms": duration_ms,
+        })
 
         total += 1
         if tc_status == "passed":
             passed += 1
         else:
             failed += 1
+
+        # Write incremental totals after each test case so a worker crash
+        # leaves partial results visible in the UI and in the run record.
+        run_repo.update_run_status(
+            run.id, "running",
+            total_tests=total, passed=passed, failed=failed, skipped=skipped,
+        )
 
         # Per-test SSE notification
         try:
@@ -234,10 +245,6 @@ def _run_execute_stage(stage, ctx):
         except Exception:
             pass
 
-    run_repo.update_run_status(
-        run.id, "running",
-        total_tests=total, passed=passed, failed=failed, skipped=skipped,
-    )
     log.info("run %s: executed %d tests (%d passed, %d failed, %d skipped)",
              run.id, total, passed, failed, skipped)
 
