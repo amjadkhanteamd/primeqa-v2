@@ -1,50 +1,85 @@
 {% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'components/pagination.html' import render_meta_pagination, per_page_selector %}
 {% block title %}Runs - PrimeQA{% endblock %}
 {% block content %}
+
+{{ breadcrumbs([('Runs', None)]) }}
+
+{% set qs %}{% if status_filter %}&status={{ status_filter }}{% endif %}{% if meta.per_page and meta.per_page != 20 %}&per_page={{ meta.per_page }}{% endif %}{% endset %}
+
 <div class="space-y-6">
-    <div class="flex justify-between items-center">
-        <h1 class="text-2xl font-bold text-gray-900">Pipeline Runs</h1>
-        <div class="space-x-2">
-          {% if user.role in ['admin', 'tester', 'superadmin'] %}
-          <a href="/runs/scheduled" class="rounded-md bg-white px-3 py-2 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Scheduled</a>
-          <a href="/runs/new" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">New Run</a>
-          {% endif %}
-        </div>
+  <div class="flex justify-between items-center">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Pipeline Runs</h1>
+      <p class="mt-1 text-sm text-gray-500">History of all executions across environments.</p>
     </div>
-    <div class="flex space-x-4 text-sm">
-        <a href="/runs" class="{% if not status_filter %}font-semibold text-indigo-600{% else %}text-gray-500{% endif %}">All</a>
-        {% for s in ['queued','running','completed','failed','cancelled'] %}
-        <a href="/runs?status={{ s }}" class="{% if status_filter == s %}font-semibold text-indigo-600{% else %}text-gray-500{% endif %}">{{ s|capitalize }}</a>
+    <div class="space-x-2">
+      {% if user.role in ['admin', 'tester', 'superadmin'] %}
+      <a href="/runs/scheduled" class="rounded-md bg-white px-3 py-2 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Scheduled</a>
+      <a href="/runs/new" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">+ Trigger a new run</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Status filter chips -->
+  <div class="bg-white shadow rounded-lg p-3 flex flex-wrap items-center gap-2">
+    <div class="flex space-x-1 text-sm flex-1">
+      <a href="/runs" class="px-3 py-1 rounded-md {% if not status_filter %}bg-indigo-100 text-indigo-700 font-medium{% else %}text-gray-600 hover:bg-gray-50{% endif %}">All <span class="text-xs text-gray-500">({{ meta.total }})</span></a>
+      {% for s in ['queued','running','completed','failed','cancelled'] %}
+      <a href="/runs?status={{ s }}" class="px-3 py-1 rounded-md {% if status_filter == s %}bg-indigo-100 text-indigo-700 font-medium{% else %}text-gray-600 hover:bg-gray-50{% endif %}">{{ s|capitalize }}</a>
+      {% endfor %}
+    </div>
+    <div>{{ per_page_selector(meta.per_page, '/runs', qs, [10, 20, 50]) }}</div>
+  </div>
+
+  <div class="bg-white shadow rounded-lg overflow-x-auto">
+    <table class="min-w-full divide-y divide-gray-200">
+      <thead class="bg-gray-50">
+        <tr>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Run</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Source</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Priority</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Tests</th>
+          <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Queued</th>
+        </tr>
+      </thead>
+      <tbody class="bg-white divide-y divide-gray-200">
+        {% for run in runs %}
+        <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/runs/{{ run.id }}'">
+          <td class="px-6 py-4 text-sm font-medium text-indigo-600">#{{ run.id }}</td>
+          <td class="px-6 py-4">
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+              {% if run.status == 'completed' %}bg-green-100 text-green-800
+              {% elif run.status == 'failed' %}bg-red-100 text-red-800
+              {% elif run.status == 'running' %}bg-blue-100 text-blue-800 animate-pulse-blue
+              {% elif run.status == 'queued' %}bg-yellow-100 text-yellow-800
+              {% else %}bg-gray-100 text-gray-800{% endif %}">{{ run.status }}</span>
+          </td>
+          <td class="px-6 py-4 text-sm text-gray-500">{{ run.run_type }}</td>
+          <td class="px-6 py-4 text-sm text-gray-500">{{ run.source_type }}</td>
+          <td class="px-6 py-4 text-sm text-gray-500">{{ run.priority }}</td>
+          <td class="px-6 py-4 text-sm">
+            <span class="text-green-600">{{ run.passed }}</span>
+            {% if run.failed %} / <span class="text-red-600">{{ run.failed }}</span>{% endif %}
+            <span class="text-gray-500">/ {{ run.total_tests }}</span>
+          </td>
+          <td class="px-6 py-4 text-xs text-gray-500">{{ run.queued_at[:19] if run.queued_at else '' }}</td>
+        </tr>
         {% endfor %}
-    </div>
-    <div class="bg-white shadow rounded-lg overflow-x-auto">
-        <table class="min-w-full divide-y divide-gray-200">
-            <thead class="bg-gray-50">
-                <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Source</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Priority</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Tests</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Queued</th>
-                </tr>
-            </thead>
-            <tbody class="bg-white divide-y divide-gray-200">
-                {% for run in runs %}
-                <tr class="hover:bg-gray-50 cursor-pointer" onclick="window.location='/runs/{{ run.id }}'">
-                    <td class="px-6 py-4 text-sm font-medium text-indigo-600">#{{ run.id }}</td>
-                    <td class="px-6 py-4"><span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if run.status == 'completed' %}bg-green-100 text-green-800{% elif run.status == 'failed' %}bg-red-100 text-red-800{% elif run.status == 'running' %}bg-blue-100 text-blue-800{% elif run.status == 'queued' %}bg-yellow-100 text-yellow-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ run.status }}</span></td>
-                    <td class="px-6 py-4 text-sm text-gray-500">{{ run.run_type }}</td>
-                    <td class="px-6 py-4 text-sm text-gray-500">{{ run.source_type }}</td>
-                    <td class="px-6 py-4 text-sm text-gray-500">{{ run.priority }}</td>
-                    <td class="px-6 py-4 text-sm text-gray-500">{{ run.passed }}/{{ run.total_tests }}</td>
-                    <td class="px-6 py-4 text-sm text-gray-500">{{ run.queued_at[:19] if run.queued_at else '' }}</td>
-                </tr>
-                {% endfor %}
-                {% if not runs %}<tr><td colspan="7" class="px-6 py-8 text-center text-sm text-gray-500">No runs found</td></tr>{% endif %}
-            </tbody>
-        </table>
-    </div>
+        {% if not runs %}
+        <tr><td colspan="7" class="px-6 py-10 text-center text-sm text-gray-500">
+          {% if status_filter %}No runs with status <span class="font-mono">{{ status_filter }}</span>.
+            <a href="/runs" class="text-indigo-600 hover:underline">Clear filter</a>
+          {% else %}No runs yet. <a href="/runs/new" class="text-indigo-600 hover:underline">Trigger one</a>.
+          {% endif %}
+        </td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+  {{ render_meta_pagination(meta, '/runs', qs) }}
 </div>
 {% endblock %}

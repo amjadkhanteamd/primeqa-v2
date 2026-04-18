@@ -50,12 +50,12 @@
     {% for impact in impacts %}
     <div class="px-6 py-4" data-impact-id="{{ impact.id }}">
       <div class="flex justify-between items-start">
-        <div>
+        <a href="/impacts/{{ impact.id }}" class="flex-1 min-w-0 block hover:text-indigo-600">
           <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if 'removed' in impact.impact_type %}bg-red-100 text-red-800{% elif 'added' in impact.impact_type %}bg-green-100 text-green-800{% else %}bg-yellow-100 text-yellow-800{% endif %}">{{ impact.impact_type }}</span>
-          <span class="ml-2 text-sm font-medium text-gray-900">{{ impact.entity_ref }}</span>
-          <span class="ml-2 text-sm text-gray-500">affects <a href="/test-cases/{{ impact.test_case_id }}" class="text-indigo-600 hover:underline">test case #{{ impact.test_case_id }}</a></span>
+          <span class="ml-2 text-sm font-medium text-gray-900 hover:underline">{{ impact.entity_ref }}</span>
+          <span class="ml-2 text-sm text-gray-500">affects test case #{{ impact.test_case_id }}</span>
           <span class="ml-2 text-xs text-gray-400">{{ impact.created_at[:10] if impact.created_at else '' }}</span>
-        </div>
+        </a>
         <div class="flex space-x-2">
           {% if not show_deleted %}
           <form method="POST" action="/impacts/{{ impact.id }}/regenerate"><button class="text-xs rounded bg-indigo-600 text-white px-3 py-1 hover:bg-indigo-500 font-medium">AI Regenerate</button></form>

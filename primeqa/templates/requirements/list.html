@@ -53,14 +53,14 @@
             {% for req in requirements %}
             <li class="px-6 py-4 hover:bg-gray-50" data-req-id="{{ req.id }}">
                 <div class="flex justify-between items-center">
-                    <div class="flex-1 min-w-0">
+                    <a href="/requirements/{{ req.id }}" class="flex-1 min-w-0 block">
                         <div class="flex items-center space-x-2">
                             {% if req.jira_key %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700">{{ req.jira_key }}</span>{% endif %}
-                            <span class="text-sm font-medium text-gray-900 truncate">{{ req.jira_summary or 'Requirement #' ~ req.id }}</span>
+                            <span class="text-sm font-medium text-gray-900 truncate hover:text-indigo-600 hover:underline">{{ req.jira_summary or 'Requirement #' ~ req.id }}</span>
                             {% if req.is_stale %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-yellow-100 text-yellow-800">Stale</span>{% endif %}
                         </div>
                         {% if req.acceptance_criteria %}<p class="mt-1 text-xs text-gray-500 line-clamp-2">{{ req.acceptance_criteria }}</p>{% endif %}
-                    </div>
+                    </a>
                     <div class="flex items-center space-x-2">
                       {% if user.role in ['admin', 'tester', 'superadmin'] and not show_deleted %}
                       <form method="POST" action="/requirements/{{ req.id }}/generate" class="flex items-center space-x-2">

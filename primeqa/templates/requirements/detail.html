@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% block title %}Requirement {{ req.jira_key or '#' ~ req.id }} - PrimeQA{% endblock %}
+{% block content %}
+
+{{ breadcrumbs([
+  ('Requirements', '/requirements'),
+  (req.jira_key or ('Requirement #' ~ req.id), None),
+]) }}
+
+<div class="max-w-5xl space-y-6">
+  <!-- Header -->
+  <div class="flex items-start justify-between">
+    <div class="min-w-0">
+      <div class="flex items-center space-x-2">
+        {% if req.jira_key %}
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700">{{ req.jira_key }}</span>
+        {% endif %}
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if req.source == 'jira' %}bg-sky-100 text-sky-800{% else %}bg-gray-100 text-gray-700{% endif %}">{{ req.source }}</span>
+        {% if req.is_stale %}
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-yellow-100 text-yellow-800">Stale</span>
+        {% endif %}
+        {% if req.deleted_at %}
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-700">Deleted</span>
+        {% endif %}
+      </div>
+      <h1 class="mt-2 text-2xl font-bold text-gray-900">
+        {{ req.jira_summary or ('Requirement #' ~ req.id) }}
+      </h1>
+      <p class="mt-1 text-sm text-gray-500">
+        {% if req.section_name %}Section: <span class="font-medium">{{ req.section_name }}</span> \u00b7 {% endif %}
+        Updated {{ req.updated_at[:19] if req.updated_at else '-' }}
+      </p>
+    </div>
+    <div class="flex items-center space-x-2">
+      {% if req.deleted_at %}
+        <button class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500" data-restore-req="{{ req.id }}">Restore</button>
+        {% if user.role in ['admin', 'superadmin'] %}
+        <button class="rounded-md bg-white px-3 py-1.5 text-sm font-medium text-red-600 ring-1 ring-red-200 hover:bg-red-50" data-purge-req="{{ req.id }}">Purge</button>
+        {% endif %}
+      {% else %}
+        {% if user.role in ['admin', 'tester', 'superadmin'] and environments %}
+        <form method="POST" action="/requirements/{{ req.id }}/generate" class="flex items-center space-x-2">
+          <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+            <option value="">Pick env&hellip;</option>
+            {% for env in environments %}
+            <option value="{{ env.id }}">{{ env.name }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">
+            Generate test case
+          </button>
+        </form>
+        {% endif %}
+        {% if user.role in ['admin', 'tester', 'superadmin'] %}
+        <button class="rounded-md bg-white px-3 py-1.5 text-sm text-red-600 ring-1 ring-red-200 hover:bg-red-50" data-delete-req="{{ req.id }}">Delete</button>
+        {% endif %}
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Fields -->
+  <div class="bg-white shadow rounded-lg divide-y divide-gray-200">
+    <div class="px-6 py-4">
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Jira description</h3>
+      {% if req.jira_description %}
+      <p class="text-sm text-gray-800 whitespace-pre-wrap">{{ req.jira_description }}</p>
+      {% else %}
+      <p class="text-sm text-gray-400 italic">No description</p>
+      {% endif %}
+    </div>
+
+    <div class="px-6 py-4">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500">Acceptance criteria</h3>
+        {% if user.role in ['admin', 'tester', 'superadmin'] and not req.deleted_at %}
+        <button type="button" id="edit-ac-btn" class="text-xs text-indigo-600 hover:text-indigo-900">Edit</button>
+        {% endif %}
+      </div>
+      <div id="ac-view" class="text-sm text-gray-800 whitespace-pre-wrap">
+        {% if req.acceptance_criteria %}{{ req.acceptance_criteria }}{% else %}<span class="text-gray-400 italic">No acceptance criteria</span>{% endif %}
+      </div>
+      <form id="ac-form" method="POST" action="/requirements/{{ req.id }}/edit" class="hidden mt-2" data-unsaved-guard>
+        <textarea name="acceptance_criteria" rows="5" class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono">{{ req.acceptance_criteria }}</textarea>
+        <div class="mt-2 flex justify-end space-x-2">
+          <button type="button" id="edit-ac-cancel" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Cancel</button>
+          <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">Save</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="px-6 py-4 grid grid-cols-2 gap-4 text-sm">
+      <div>
+        <p class="text-xs text-gray-500 uppercase">Source</p>
+        <p class="font-medium">{{ req.source }}</p>
+      </div>
+      <div>
+        <p class="text-xs text-gray-500 uppercase">Jira version</p>
+        <p class="font-medium">{{ req.jira_version }}</p>
+      </div>
+      {% if req.jira_last_synced %}
+      <div>
+        <p class="text-xs text-gray-500 uppercase">Last Jira sync</p>
+        <p class="font-medium">{{ req.jira_last_synced[:19] }}</p>
+      </div>
+      {% endif %}
+      <div>
+        <p class="text-xs text-gray-500 uppercase">Created</p>
+        <p class="font-medium">{{ req.created_at[:19] if req.created_at else '-' }}</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Linked test cases -->
+  <div class="bg-white shadow rounded-lg">
+    <div class="px-4 py-3 border-b flex items-center justify-between">
+      <h3 class="text-sm font-semibold text-gray-700">Linked test cases <span class="text-gray-500 font-normal">({{ test_cases | length }})</span></h3>
+    </div>
+    {% if test_cases %}
+    <ul class="divide-y divide-gray-200">
+      {% for tc in test_cases %}
+      <li class="px-6 py-3 flex items-center justify-between">
+        <div class="flex items-center space-x-2">
+          <a href="/test-cases/{{ tc.id }}" class="text-sm font-medium text-indigo-600 hover:underline">{{ tc.title }}</a>
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium {% if tc.status == 'active' %}bg-green-100 text-green-800{% elif tc.status == 'approved' %}bg-blue-100 text-blue-800{% else %}bg-gray-100 text-gray-800{% endif %}">{{ tc.status }}</span>
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if tc.visibility == 'shared' %}bg-green-50 text-green-700{% else %}bg-gray-50 text-gray-600{% endif %}">{{ tc.visibility }}</span>
+        </div>
+        <span class="text-xs text-gray-500">{{ tc.updated_at[:10] if tc.updated_at else '' }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="px-6 py-8 text-sm text-gray-500">
+      No test cases yet.
+      {% if user.role in ['admin', 'tester', 'superadmin'] and environments and not req.deleted_at %}
+      Use the <strong>Generate test case</strong> button above to let AI create one from this requirement.
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+(function(){
+  const editBtn = document.getElementById('edit-ac-btn');
+  const cancelBtn = document.getElementById('edit-ac-cancel');
+  const view = document.getElementById('ac-view');
+  const form = document.getElementById('ac-form');
+  if (editBtn) editBtn.addEventListener('click', () => { view.classList.add('hidden'); form.classList.remove('hidden'); });
+  if (cancelBtn) cancelBtn.addEventListener('click', () => { view.classList.remove('hidden'); form.classList.add('hidden'); });
+
+  async function apiCall(method, url) {
+    const r = await fetch(url, { method: method, credentials: 'same-origin' });
+    if (!r.ok) { await window.PrimeQA.showErrorFromResponse(r); throw new Error('failed'); }
+    return r;
+  }
+  document.querySelectorAll('[data-delete-req]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.deleteReq;
+    window.PrimeQA.confirm({
+      title: 'Move to trash?', variant: 'danger',
+      message: 'This requirement will be moved to trash. Linked test cases keep their content but lose the requirement link.',
+      submitLabel: 'Move to trash',
+      onConfirm: async () => {
+        try { await apiCall('DELETE', '/api/requirements/' + id);
+          window.PrimeQA.toast('Moved to trash', 'success');
+          setTimeout(() => window.location = '/requirements', 300); } catch (_) {}
+      },
+    });
+  }));
+  document.querySelectorAll('[data-restore-req]').forEach(btn => btn.addEventListener('click', async () => {
+    try { await apiCall('POST', '/api/requirements/' + btn.dataset.restoreReq + '/restore');
+      window.PrimeQA.toast('Restored', 'success');
+      setTimeout(() => window.location.reload(), 300); } catch (_) {}
+  }));
+  document.querySelectorAll('[data-purge-req]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.purgeReq;
+    window.PrimeQA.confirm({
+      title: 'Permanently delete?', variant: 'danger',
+      message: 'This permanently deletes the requirement and all audit trail. Cannot be undone.',
+      typeTo: 'DELETE', submitLabel: 'Purge forever',
+      onConfirm: async () => {
+        try { await apiCall('POST', '/api/requirements/' + id + '/purge');
+          window.PrimeQA.toast('Purged', 'success');
+          setTimeout(() => window.location = '/requirements', 300); } catch (_) {}
+      },
+    });
+  }));
+})();
+</script>
+{% endblock %}

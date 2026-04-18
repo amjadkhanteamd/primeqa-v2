@@ -167,17 +167,37 @@ def runs_list():
     db = next(get_db())
     try:
         from primeqa.execution.repository import PipelineRunRepository
+        from primeqa.execution.models import PipelineRun
+        from sqlalchemy import or_
         repo = PipelineRunRepository(db)
         status_filter = request.args.get("status")
-        runs = repo.list_runs(request.user["tenant_id"], status=status_filter)
+        page = max(1, request.args.get("page", 1, type=int))
+        per_page = min(50, max(5, request.args.get("per_page", 20, type=int)))
+        # PipelineRunRepository.list_runs supports limit/offset but returns a
+        # plain list; we compute the count ourselves so we can render proper
+        # pagination. Status filter reused as-is.
+        base = db.query(PipelineRun).filter(PipelineRun.tenant_id == request.user["tenant_id"])
+        if status_filter:
+            base = base.filter(PipelineRun.status == status_filter)
+        total = base.order_by(None).count()
+        runs = base.order_by(PipelineRun.queued_at.desc()) \
+                   .offset((page - 1) * per_page).limit(per_page).all()
+
         runs_data = [{
             "id": r.id, "status": r.status, "run_type": r.run_type,
             "source_type": r.source_type, "priority": r.priority,
-            "passed": r.passed, "total_tests": r.total_tests,
+            "passed": r.passed, "failed": r.failed, "total_tests": r.total_tests,
             "queued_at": r.queued_at.isoformat() if r.queued_at else "",
+            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
         } for r in runs]
+        from math import ceil
+        meta = {
+            "total": total, "page": page, "per_page": per_page,
+            "total_pages": max(1, ceil(total / per_page)) if total else 0,
+        }
         return render_template("runs/list.html", **ctx(
-            active_page="runs", runs=runs_data, status_filter=status_filter,
+            active_page="runs", runs=runs_data,
+            status_filter=status_filter, meta=meta,
         ))
     finally:
         db.close()
@@ -1443,6 +1463,58 @@ def impacts_list():
         db.close()
 
 
+@views_bp.route("/impacts/<int:impact_id>")
+@role_required("admin", "tester", "superadmin")
+def impacts_detail(impact_id):
+    """Detail page for one metadata impact \u2014 shows the entity, change
+    details (diff), affected test case, and resolve/regenerate actions."""
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import (
+            MetadataImpactRepository, TestCaseRepository,
+        )
+        from primeqa.test_management.models import MetadataImpact, TestCase
+
+        tid = request.user["tenant_id"]
+        impact_repo = MetadataImpactRepository(db)
+        impact = impact_repo.get_impact(impact_id, tid, include_deleted=True)
+        if not impact:
+            return redirect("/impacts")
+
+        tc = TestCaseRepository(db).get_test_case(impact.test_case_id, tid)
+        tc_data = None
+        if tc:
+            tc_data = {
+                "id": tc.id, "title": tc.title, "status": tc.status,
+                "visibility": tc.visibility,
+            }
+
+        # Meta version labels for context
+        from primeqa.metadata.repository import MetadataRepository
+        meta_repo = MetadataRepository(db)
+        new_mv = meta_repo.get_version(impact.new_meta_version_id)
+        prev_mv = meta_repo.get_version(impact.prev_meta_version_id)
+
+        impact_data = {
+            "id": impact.id, "impact_type": impact.impact_type,
+            "entity_ref": impact.entity_ref,
+            "resolution": impact.resolution,
+            "test_case_id": impact.test_case_id,
+            "change_details": impact.change_details or {},
+            "resolved_by": impact.resolved_by,
+            "resolved_at": impact.resolved_at.isoformat() if impact.resolved_at else None,
+            "created_at": impact.created_at.isoformat() if impact.created_at else "",
+            "deleted_at": impact.deleted_at.isoformat() if getattr(impact, "deleted_at", None) else None,
+            "new_meta_version_label": new_mv.version_label if new_mv else None,
+            "prev_meta_version_label": prev_mv.version_label if prev_mv else None,
+        }
+        return render_template("impacts/detail.html", **ctx(
+            active_page="impacts", impact=impact_data, test_case=tc_data,
+        ))
+    finally:
+        db.close()
+
+
 @views_bp.route("/impacts/<int:impact_id>/resolve", methods=["POST"])
 @role_required("admin", "tester")
 def impacts_resolve(impact_id):
@@ -2433,6 +2505,100 @@ def requirements_list():
         db.close()
 
 
+@views_bp.route("/requirements/<int:req_id>")
+@login_required
+def requirements_detail(req_id):
+    """Detail page for a single requirement \u2014 Jira context, acceptance
+    criteria, linked test cases, inline edit, Re-sync, Generate, Delete."""
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import (
+            RequirementRepository, SectionRepository, TestCaseRepository,
+        )
+        from primeqa.test_management.models import TestCase
+        tid = request.user["tenant_id"]
+        req_repo = RequirementRepository(db)
+        req = req_repo.get_requirement(req_id, tid, include_deleted=True)
+        if not req:
+            return redirect("/requirements")
+
+        section = None
+        if req.section_id:
+            section = SectionRepository(db).get_section(req.section_id, tid)
+
+        # Linked test cases (non-deleted, visible-to-user)
+        tcs = db.query(TestCase).filter(
+            TestCase.tenant_id == tid,
+            TestCase.requirement_id == req_id,
+            TestCase.deleted_at.is_(None),
+        ).order_by(TestCase.updated_at.desc()).all()
+        tcs_data = [{
+            "id": t.id, "title": t.title, "status": t.status,
+            "visibility": t.visibility,
+            "updated_at": t.updated_at.isoformat() if t.updated_at else "",
+        } for t in tcs]
+
+        envs = EnvironmentRepository(db).list_environments(
+            tid, request.user["id"], request.user["role"])
+        envs_data = [{"id": e.id, "name": e.name}
+                     for e in envs if e.llm_connection_id]
+
+        req_data = {
+            "id": req.id, "jira_key": req.jira_key,
+            "jira_summary": req.jira_summary or "",
+            "jira_description": req.jira_description or "",
+            "acceptance_criteria": req.acceptance_criteria or "",
+            "source": req.source, "is_stale": req.is_stale,
+            "jira_version": req.jira_version,
+            "jira_last_synced": req.jira_last_synced.isoformat() if req.jira_last_synced else None,
+            "created_at": req.created_at.isoformat() if req.created_at else "",
+            "updated_at": req.updated_at.isoformat() if req.updated_at else "",
+            "deleted_at": req.deleted_at.isoformat() if req.deleted_at else None,
+            "section_id": req.section_id,
+            "section_name": section.name if section else None,
+            "version": req.version,
+        }
+        return render_template("requirements/detail.html", **ctx(
+            active_page="requirements", req=req_data,
+            test_cases=tcs_data, environments=envs_data,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/requirements/<int:req_id>/edit", methods=["POST"])
+@role_required("admin", "tester", "superadmin")
+def requirements_edit(req_id):
+    """Inline edit for acceptance_criteria + summary (for manual requirements
+    where Jira is not the source of truth)."""
+    from flask import flash
+    db = next(get_db())
+    try:
+        from primeqa.test_management.repository import RequirementRepository
+        repo = RequirementRepository(db)
+        tid = request.user["tenant_id"]
+        updates = {}
+        if request.form.get("acceptance_criteria") is not None:
+            updates["acceptance_criteria"] = request.form["acceptance_criteria"]
+        if request.form.get("jira_summary") is not None:
+            updates["jira_summary"] = request.form["jira_summary"]
+        if request.form.get("jira_description") is not None:
+            updates["jira_description"] = request.form["jira_description"]
+        if request.form.get("is_stale") == "0":
+            updates["is_stale"] = False
+
+        _req, result = repo.update_requirement(req_id, tid, updates)
+        if result == "not_found":
+            flash("Requirement not found", "error")
+        elif result == "conflict":
+            flash("Conflict: someone edited this requirement \u2014 please refresh", "error")
+        else:
+            flash("Requirement updated", "success")
+        return redirect(f"/requirements/{req_id}")
+    finally:
+        db.close()
+
+
 @views_bp.route("/requirements/import-jira", methods=["POST"])
 @role_required("admin", "tester")
 def requirements_import_jira():
@@ -2658,12 +2824,31 @@ def milestones_list():
     try:
         from primeqa.test_management.models import Milestone
         tid = request.user["tenant_id"]
-        milestones = db.query(Milestone).filter(Milestone.tenant_id == tid).order_by(Milestone.due_date.asc().nullslast()).all()
+        page = max(1, request.args.get("page", 1, type=int))
+        per_page = min(50, max(5, request.args.get("per_page", 20, type=int)))
+        q = (request.args.get("q") or "").strip()
+        status_filter = request.args.get("status") or None
+
+        base = db.query(Milestone).filter(Milestone.tenant_id == tid)
+        if q:
+            like = f"%{q.replace('%', chr(92) + '%')}%"
+            base = base.filter(Milestone.name.ilike(like, escape="\\"))
+        if status_filter:
+            base = base.filter(Milestone.status == status_filter)
+        total = base.order_by(None).count()
+        milestones = base.order_by(Milestone.due_date.asc().nullslast()) \
+                         .offset((page - 1) * per_page).limit(per_page).all()
         data = [{"id": m.id, "name": m.name, "description": m.description,
                  "status": m.status, "due_date": m.due_date.isoformat() if m.due_date else None}
                 for m in milestones]
+        from math import ceil
+        meta = {
+            "total": total, "page": page, "per_page": per_page,
+            "total_pages": max(1, ceil(total / per_page)) if total else 0,
+        }
         return render_template("milestones/list.html", **ctx(
-            active_page="milestones", milestones=data,
+            active_page="milestones", milestones=data, meta=meta,
+            search=q, status_filter=status_filter,
         ))
     finally:
         db.close()

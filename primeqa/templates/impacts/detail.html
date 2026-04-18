@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% block title %}Impact #{{ impact.id }} - PrimeQA{% endblock %}
+{% block content %}
+
+{{ breadcrumbs([
+  ('Impacts', '/impacts'),
+  ('#' ~ impact.id ~ ' \u2014 ' ~ impact.entity_ref, None),
+]) }}
+
+<div class="max-w-5xl space-y-6">
+  <!-- Header -->
+  <div class="flex items-start justify-between">
+    <div class="min-w-0">
+      <div class="flex items-center space-x-2">
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+          {% if 'removed' in impact.impact_type %}bg-red-100 text-red-800
+          {% elif 'added' in impact.impact_type %}bg-green-100 text-green-800
+          {% else %}bg-yellow-100 text-yellow-800{% endif %}">{{ impact.impact_type }}</span>
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+          {% if impact.resolution == 'pending' %}bg-orange-100 text-orange-800
+          {% elif impact.resolution == 'regenerated' %}bg-green-100 text-green-800
+          {% elif impact.resolution == 'dismissed' %}bg-gray-100 text-gray-700
+          {% else %}bg-blue-100 text-blue-800{% endif %}">{{ impact.resolution }}</span>
+        {% if impact.deleted_at %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-700">Deleted</span>{% endif %}
+      </div>
+      <h1 class="mt-2 text-2xl font-bold text-gray-900 font-mono">{{ impact.entity_ref }}</h1>
+      <p class="mt-1 text-sm text-gray-500">
+        {% if impact.prev_meta_version_label and impact.new_meta_version_label %}
+        <span class="font-mono">{{ impact.prev_meta_version_label }}</span>
+        &rarr;
+        <span class="font-mono">{{ impact.new_meta_version_label }}</span>
+        \u00b7
+        {% endif %}
+        Detected {{ impact.created_at[:19] if impact.created_at else '-' }}
+      </p>
+    </div>
+    <div class="flex items-center space-x-2">
+      {% if impact.resolution == 'pending' and not impact.deleted_at %}
+      <form method="POST" action="/impacts/{{ impact.id }}/regenerate">
+        <button class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">AI Regenerate</button>
+      </form>
+      <form method="POST" action="/impacts/{{ impact.id }}/resolve">
+        <input type="hidden" name="resolution" value="dismissed">
+        <button class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Dismiss</button>
+      </form>
+      {% endif %}
+      {% if not impact.deleted_at %}
+      <button class="rounded-md bg-white px-3 py-1.5 text-sm text-red-600 ring-1 ring-red-200 hover:bg-red-50" data-delete-impact="{{ impact.id }}">Trash</button>
+      {% else %}
+      <button class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500" data-restore-impact="{{ impact.id }}">Restore</button>
+      {% if user.role in ['admin', 'superadmin'] %}
+      <button class="rounded-md bg-white px-3 py-1.5 text-sm text-red-600 ring-1 ring-red-200 hover:bg-red-50" data-purge-impact="{{ impact.id }}">Purge</button>
+      {% endif %}
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Affected test case -->
+  <div class="bg-white shadow rounded-lg p-6">
+    <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-3">Affected test case</h3>
+    {% if test_case %}
+    <div class="flex items-center justify-between">
+      <div>
+        <a href="/test-cases/{{ test_case.id }}" class="text-sm font-medium text-indigo-600 hover:underline">{{ test_case.title }}</a>
+        <div class="mt-1 flex items-center space-x-2">
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+            {% if test_case.status == 'active' %}bg-green-100 text-green-800
+            {% elif test_case.status == 'approved' %}bg-blue-100 text-blue-800
+            {% else %}bg-gray-100 text-gray-800{% endif %}">{{ test_case.status }}</span>
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs {% if test_case.visibility == 'shared' %}bg-green-50 text-green-700{% else %}bg-gray-50 text-gray-600{% endif %}">{{ test_case.visibility }}</span>
+        </div>
+      </div>
+      <a href="/test-cases/{{ test_case.id }}/edit" class="rounded-md bg-yellow-100 px-3 py-1.5 text-sm text-yellow-700 hover:bg-yellow-200">Edit manually</a>
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-500 italic">Test case no longer exists (may have been deleted).</p>
+    {% endif %}
+  </div>
+
+  <!-- Change details -->
+  <div class="bg-white shadow rounded-lg p-6">
+    <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-3">Change details</h3>
+    {% if impact.change_details %}
+    <pre class="text-xs font-mono text-gray-800 bg-gray-50 border border-gray-200 rounded p-3 overflow-x-auto">{{ impact.change_details | tojson(indent=2) }}</pre>
+    {% else %}
+    <p class="text-sm text-gray-500 italic">No structured change details recorded.</p>
+    {% endif %}
+  </div>
+
+  {% if impact.resolution != 'pending' %}
+  <!-- Resolution audit -->
+  <div class="bg-white shadow rounded-lg p-6">
+    <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-3">Resolution</h3>
+    <p class="text-sm text-gray-700">
+      Resolved as <span class="font-medium">{{ impact.resolution }}</span>
+      {% if impact.resolved_by %}by user #{{ impact.resolved_by }}{% endif %}
+      {% if impact.resolved_at %}at {{ impact.resolved_at[:19] }}{% endif %}.
+    </p>
+  </div>
+  {% endif %}
+</div>
+
+<script>
+(function(){
+  async function apiCall(method, url) {
+    const r = await fetch(url, { method: method, credentials: 'same-origin' });
+    if (!r.ok) { await window.PrimeQA.showErrorFromResponse(r); throw new Error('failed'); }
+    return r;
+  }
+  document.querySelectorAll('[data-delete-impact]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.deleteImpact;
+    window.PrimeQA.confirm({
+      title: 'Move to trash?', variant: 'danger',
+      message: 'Impact #' + id + ' will be moved to trash.', submitLabel: 'Move to trash',
+      onConfirm: async () => {
+        try { await apiCall('DELETE', '/api/impacts/' + id);
+          window.PrimeQA.toast('Moved to trash', 'success');
+          setTimeout(() => window.location = '/impacts', 300); } catch (_) {}
+      },
+    });
+  }));
+  document.querySelectorAll('[data-restore-impact]').forEach(btn => btn.addEventListener('click', async () => {
+    try { await apiCall('POST', '/api/impacts/' + btn.dataset.restoreImpact + '/restore');
+      window.PrimeQA.toast('Restored', 'success');
+      setTimeout(() => window.location.reload(), 300); } catch (_) {}
+  }));
+  document.querySelectorAll('[data-purge-impact]').forEach(btn => btn.addEventListener('click', () => {
+    const id = btn.dataset.purgeImpact;
+    window.PrimeQA.confirm({
+      title: 'Permanently delete?', variant: 'danger',
+      message: 'This permanently deletes impact #' + id + '. Cannot be undone.',
+      typeTo: 'DELETE', submitLabel: 'Purge forever',
+      onConfirm: async () => {
+        try { await apiCall('POST', '/api/impacts/' + id + '/purge');
+          window.PrimeQA.toast('Purged', 'success');
+          setTimeout(() => window.location = '/impacts', 300); } catch (_) {}
+      },
+    });
+  }));
+})();
+</script>
+{% endblock %}
