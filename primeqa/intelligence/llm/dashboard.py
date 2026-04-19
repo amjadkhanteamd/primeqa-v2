@@ -24,137 +24,173 @@ def _window(days: int):
 def cost_summary(db, *, days: int = 30) -> Dict[str, Any]:
     """Totals + per-task + per-model + per-tenant rollups for the window.
 
-    Returns (all dicts keyed by name \u2192 {count, input_tokens,
-    output_tokens, cached_input_tokens, cost_usd}):
-      total
-      by_task     (e.g. "test_plan_generation": {...})
-      by_model
-      by_tenant   (top 20 by spend)
-      by_day      list of dicts {day, cost_usd, calls}  (newest last)
+    Audit A.4 (2026-04-19): previously 5 round-trips (total, by_day,
+    by_task, by_model, by_tenant). Over Railway's ~650ms RTT that's
+    ~3.3s of pure network. Now one SELECT with sub-aggregates returning
+    json_agg arrays — Postgres does the work internally for ~650ms.
+
+    Returns same shape as before:
+      total       dict {calls, input_tokens, output_tokens, cached_tokens, cost_usd}
+      by_task     list of dicts (same shape + key=task)
+      by_model    list of dicts (same shape + key=model)
+      by_tenant   list of dicts (same shape + key=tenant_id), top 20
+      by_day      list of dicts {day, calls, cost_usd}
     """
     from sqlalchemy import text as sql
 
     start, _end = _window(days)
 
-    def _agg(group_col: str, limit: Optional[int] = None, where_extra: str = "") -> List[Dict[str, Any]]:
-        lim = f"LIMIT {limit}" if limit else ""
-        q = sql(f"""
-            SELECT {group_col} AS key,
-                   COUNT(*) AS calls,
-                   COALESCE(SUM(input_tokens),0) AS input_tokens,
-                   COALESCE(SUM(output_tokens),0) AS output_tokens,
-                   COALESCE(SUM(cached_input_tokens),0) AS cached_tokens,
-                   COALESCE(SUM(cost_usd),0)::float AS cost_usd
-            FROM llm_usage_log
-            WHERE ts >= :start AND status = 'ok' {where_extra}
-            GROUP BY {group_col}
-            ORDER BY cost_usd DESC
-            {lim}
-        """)
-        return [dict(row._mapping) for row in db.execute(q, {"start": start})]
-
-    # total
-    total_row = db.execute(sql("""
-        SELECT COUNT(*) AS calls,
-               COALESCE(SUM(input_tokens),0) AS input_tokens,
-               COALESCE(SUM(output_tokens),0) AS output_tokens,
-               COALESCE(SUM(cached_input_tokens),0) AS cached_tokens,
-               COALESCE(SUM(cost_usd),0)::float AS cost_usd
-        FROM llm_usage_log
-        WHERE ts >= :start AND status = 'ok'
+    row = db.execute(sql("""
+        WITH ok_calls AS (
+          SELECT input_tokens, output_tokens, cached_input_tokens,
+                 cost_usd, task, model, tenant_id, ts
+          FROM llm_usage_log
+          WHERE ts >= :start AND status = 'ok'
+        ),
+        totals AS (
+          SELECT COUNT(*)                              AS calls,
+                 COALESCE(SUM(input_tokens), 0)        AS input_tokens,
+                 COALESCE(SUM(output_tokens), 0)       AS output_tokens,
+                 COALESCE(SUM(cached_input_tokens), 0) AS cached_tokens,
+                 COALESCE(SUM(cost_usd), 0)::float     AS cost_usd
+          FROM ok_calls
+        ),
+        by_task AS (
+          SELECT task AS key,
+                 COUNT(*) AS calls,
+                 COALESCE(SUM(input_tokens), 0)        AS input_tokens,
+                 COALESCE(SUM(output_tokens), 0)       AS output_tokens,
+                 COALESCE(SUM(cached_input_tokens), 0) AS cached_tokens,
+                 COALESCE(SUM(cost_usd), 0)::float     AS cost_usd
+          FROM ok_calls
+          GROUP BY task
+          ORDER BY cost_usd DESC
+        ),
+        by_model AS (
+          SELECT model AS key,
+                 COUNT(*) AS calls,
+                 COALESCE(SUM(input_tokens), 0)        AS input_tokens,
+                 COALESCE(SUM(output_tokens), 0)       AS output_tokens,
+                 COALESCE(SUM(cached_input_tokens), 0) AS cached_tokens,
+                 COALESCE(SUM(cost_usd), 0)::float     AS cost_usd
+          FROM ok_calls
+          GROUP BY model
+          ORDER BY cost_usd DESC
+        ),
+        by_tenant AS (
+          SELECT tenant_id AS key,
+                 COUNT(*) AS calls,
+                 COALESCE(SUM(input_tokens), 0)        AS input_tokens,
+                 COALESCE(SUM(output_tokens), 0)       AS output_tokens,
+                 COALESCE(SUM(cached_input_tokens), 0) AS cached_tokens,
+                 COALESCE(SUM(cost_usd), 0)::float     AS cost_usd
+          FROM ok_calls
+          GROUP BY tenant_id
+          ORDER BY cost_usd DESC
+          LIMIT 20
+        ),
+        by_day AS (
+          SELECT DATE(ts) AS day,
+                 COUNT(*) AS calls,
+                 COALESCE(SUM(cost_usd), 0)::float AS cost_usd
+          FROM ok_calls
+          GROUP BY DATE(ts)
+          ORDER BY DATE(ts) ASC
+        )
+        SELECT
+          (SELECT row_to_json(t) FROM totals t)                        AS total,
+          COALESCE((SELECT json_agg(b) FROM by_task b), '[]'::json)    AS by_task,
+          COALESCE((SELECT json_agg(b) FROM by_model b), '[]'::json)   AS by_model,
+          COALESCE((SELECT json_agg(b) FROM by_tenant b), '[]'::json)  AS by_tenant,
+          COALESCE((SELECT json_agg(d) FROM by_day d), '[]'::json)     AS by_day
     """), {"start": start}).one()._mapping
 
-    # per-day series
-    by_day_rows = db.execute(sql("""
-        SELECT DATE(ts) AS day,
-               COUNT(*) AS calls,
-               COALESCE(SUM(cost_usd),0)::float AS cost_usd
-        FROM llm_usage_log
-        WHERE ts >= :start AND status = 'ok'
-        GROUP BY DATE(ts)
-        ORDER BY DATE(ts) ASC
-    """), {"start": start}).all()
-    by_day = [
-        {"day": r._mapping["day"].isoformat(),
-         "calls": r._mapping["calls"],
-         "cost_usd": r._mapping["cost_usd"]}
-        for r in by_day_rows
-    ]
+    total = row["total"] or {
+        "calls": 0, "input_tokens": 0, "output_tokens": 0,
+        "cached_tokens": 0, "cost_usd": 0.0,
+    }
 
     return {
         "days": days,
-        "total": dict(total_row),
-        "by_task": _agg("task"),
-        "by_model": _agg("model"),
-        "by_tenant": _agg("tenant_id", limit=20),
-        "by_day": by_day,
+        "total": dict(total),
+        "by_task": list(row["by_task"] or []),
+        "by_model": list(row["by_model"] or []),
+        "by_tenant": list(row["by_tenant"] or []),
+        "by_day": list(row["by_day"] or []),
     }
 
 
 def efficiency_summary(db, *, days: int = 30) -> Dict[str, Any]:
-    """Cache hit rate, cost per generation, escalation rate."""
+    """Cache hit rate, cost per generation, escalation rate.
+
+    Audit A.4: 5 queries → 1 via CTEs. All sub-metrics scope over the
+    same window + rows so a single SELECT with conditional aggregates
+    is strictly better.
+    """
     from sqlalchemy import text as sql
 
     start, _end = _window(days)
 
-    # Cache hit rate (across tasks with caching enabled: currently
-    # test_plan_generation only). We define a "hit" as a call where
-    # cached_input_tokens > 0.
-    cache_row = db.execute(sql("""
-        SELECT COUNT(*) AS calls,
-               SUM(CASE WHEN cached_input_tokens > 0 THEN 1 ELSE 0 END) AS hits,
-               COALESCE(SUM(cached_input_tokens),0) AS cached_tokens_total,
-               COALESCE(SUM(input_tokens),0) AS uncached_input_total
-        FROM llm_usage_log
-        WHERE ts >= :start AND status = 'ok'
-          AND task = 'test_plan_generation'
+    row = db.execute(sql("""
+        WITH ok AS (
+          SELECT cached_input_tokens, input_tokens, cost_usd, task,
+                 escalated, status
+          FROM llm_usage_log
+          WHERE ts >= :start AND status = 'ok'
+        ),
+        all_calls AS (
+          SELECT status FROM llm_usage_log WHERE ts >= :start
+        ),
+        cache_stats AS (
+          SELECT COUNT(*) AS calls,
+                 SUM(CASE WHEN cached_input_tokens > 0 THEN 1 ELSE 0 END) AS hits,
+                 COALESCE(SUM(cost_usd), 0)::float AS cost_usd
+          FROM ok
+          WHERE task = 'test_plan_generation'
+        ),
+        escalation_stats AS (
+          SELECT COUNT(*) AS total,
+                 SUM(CASE WHEN escalated THEN 1 ELSE 0 END) AS escalated
+          FROM ok
+          WHERE task IN ('test_plan_generation', 'agent_fix')
+        ),
+        error_stats AS (
+          SELECT COUNT(*) AS total,
+                 SUM(CASE WHEN status <> 'ok' THEN 1 ELSE 0 END) AS errors
+          FROM all_calls
+        ),
+        top_errors AS (
+          SELECT status, COUNT(*) AS n
+          FROM llm_usage_log
+          WHERE ts >= :start AND status <> 'ok'
+          GROUP BY status
+          ORDER BY n DESC
+          LIMIT 10
+        )
+        SELECT
+          (SELECT calls    FROM cache_stats)       AS gen_calls,
+          (SELECT hits     FROM cache_stats)       AS cache_hits,
+          (SELECT cost_usd FROM cache_stats)       AS gen_cost_usd,
+          (SELECT total    FROM escalation_stats)  AS esc_total,
+          (SELECT escalated FROM escalation_stats) AS esc_hits,
+          (SELECT total    FROM error_stats)       AS err_total,
+          (SELECT errors   FROM error_stats)       AS err_hits,
+          COALESCE((SELECT json_agg(t) FROM top_errors t), '[]'::json) AS top_errors
     """), {"start": start}).one()._mapping
 
-    total_gen = cache_row["calls"] or 0
-    hits = cache_row["hits"] or 0
+    total_gen = int(row["gen_calls"] or 0)
+    hits = int(row["cache_hits"] or 0)
+    gen_cost = float(row["gen_cost_usd"] or 0.0)
     cache_hit_rate = (hits / total_gen) if total_gen else 0.0
+    avg_cost_per_gen = (gen_cost / total_gen) if total_gen else 0.0
 
-    # Cost per generation
-    cost_row = db.execute(sql("""
-        SELECT COUNT(*) AS calls,
-               COALESCE(SUM(cost_usd),0)::float AS cost_usd
-        FROM llm_usage_log
-        WHERE ts >= :start AND status = 'ok'
-          AND task = 'test_plan_generation'
-    """), {"start": start}).one()._mapping
-    avg_cost_per_gen = (cost_row["cost_usd"] / cost_row["calls"]) if cost_row["calls"] else 0.0
+    esc_total = int(row["esc_total"] or 0)
+    esc_hits = int(row["esc_hits"] or 0)
+    escalation_rate = (esc_hits / esc_total) if esc_total else 0.0
 
-    # Escalation rate (how often did test_plan_generation or agent_fix
-    # retry on the fallback model)
-    esc_row = db.execute(sql("""
-        SELECT COUNT(*) AS total,
-               SUM(CASE WHEN escalated THEN 1 ELSE 0 END) AS escalated
-        FROM llm_usage_log
-        WHERE ts >= :start AND status = 'ok'
-          AND task IN ('test_plan_generation','agent_fix')
-    """), {"start": start}).one()._mapping
-    escalation_rate = (
-        (esc_row["escalated"] or 0) / esc_row["total"]
-    ) if esc_row["total"] else 0.0
-
-    # Error rate (non-ok calls over total calls)
-    err_row = db.execute(sql("""
-        SELECT COUNT(*) AS total,
-               SUM(CASE WHEN status <> 'ok' THEN 1 ELSE 0 END) AS errors
-        FROM llm_usage_log
-        WHERE ts >= :start
-    """), {"start": start}).one()._mapping
-    error_rate = (err_row["errors"] / err_row["total"]) if err_row["total"] else 0.0
-
-    # Top error types
-    top_errors = db.execute(sql("""
-        SELECT status, COUNT(*) AS n
-        FROM llm_usage_log
-        WHERE ts >= :start AND status <> 'ok'
-        GROUP BY status
-        ORDER BY n DESC
-        LIMIT 10
-    """), {"start": start}).all()
+    err_total = int(row["err_total"] or 0)
+    err_hits = int(row["err_hits"] or 0)
+    error_rate = (err_hits / err_total) if err_total else 0.0
 
     return {
         "days": days,
@@ -162,11 +198,10 @@ def efficiency_summary(db, *, days: int = 30) -> Dict[str, Any]:
         "cache_hits": hits,
         "cache_total_calls": total_gen,
         "avg_cost_per_generation_usd": round(avg_cost_per_gen, 6),
-        "generations": cost_row["calls"],
+        "generations": total_gen,
         "escalation_rate": round(escalation_rate, 3),
         "error_rate": round(error_rate, 3),
-        "top_errors": [{"status": r._mapping["status"], "n": r._mapping["n"]}
-                       for r in top_errors],
+        "top_errors": [dict(e) for e in (row["top_errors"] or [])],
     }
 
 
