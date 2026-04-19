@@ -1,0 +1,112 @@
+{
+  "id": "basic_validation",
+  "description": "Simple required-field validation on Account — exercises the positive + negative_validation coverage flow.",
+
+  "input": {
+    "requirement": {
+      "id": 9001,
+      "jira_key": "EVAL-1",
+      "jira_summary": "Account.Industry is required when Type='Customer'",
+      "jira_description": "Sales requested that a new Account with Type='Customer' cannot be saved unless Industry is populated. This is enforced via a validation rule.",
+      "acceptance_criteria": "Given a new Account\nWhen Type='Customer' and Industry is empty\nThen save is rejected with the validation message 'Industry is required for customer accounts.'\n\nGiven a new Account\nWhen Type='Prospect'\nThen Industry can remain empty and the save succeeds."
+    },
+    "metadata_context": {
+      "objects": ["Account", "Contact"],
+      "validation_rules": ["Account.Industry_Required_For_Customer: Industry must be populated when Type='Customer'"]
+    },
+    "meta_version_id": 9999,
+    "min_tests": 3,
+    "max_tests": 6
+  },
+
+  "expected": {
+    "min_tests": 3,
+    "max_tests": 6,
+    "required_coverage_types": ["positive", "negative_validation"],
+    "allowed_objects": ["Account", "Contact"],
+    "forbidden_objects": ["Opportunity", "Case", "Lead"],
+    "min_confidence": 0.6,
+
+    "__comment__": "For DRY-MODE runs, supply an `output` dict that the scorer can evaluate. This lets us exercise the harness without calling the model. In LIVE mode, the scorer uses the model's actual output instead.",
+    "output": {
+      "test_plan": {
+        "explanation": "Mix of happy-path (Type=Prospect, no Industry required) plus two negative-validation checks for Type=Customer with / without Industry.",
+        "test_cases": [
+          {
+            "title": "Positive: Prospect without Industry saves cleanly",
+            "coverage_type": "positive",
+            "description": "Account with Type='Prospect' + no Industry should save.",
+            "preconditions": [],
+            "steps": [
+              {
+                "step_order": 1,
+                "action": "create",
+                "target_object": "Account",
+                "field_values": {"Name": "Acme Prospect", "Type": "Prospect"},
+                "state_ref": "$prospect_acct"
+              },
+              {
+                "step_order": 2,
+                "action": "verify",
+                "target_object": "Account",
+                "record_ref": "$prospect_acct",
+                "assertions": {"Type": "Prospect"}
+              }
+            ],
+            "expected_results": ["Record saved", "Verification passes"],
+            "referenced_entities": ["Account"],
+            "confidence_score": 0.9
+          },
+          {
+            "title": "Negative: Customer without Industry fails validation",
+            "coverage_type": "negative_validation",
+            "description": "Type='Customer' + empty Industry should be rejected by VR.",
+            "preconditions": [],
+            "steps": [
+              {
+                "step_order": 1,
+                "action": "create",
+                "target_object": "Account",
+                "field_values": {"Name": "Acme Customer", "Type": "Customer"}
+              }
+            ],
+            "expected_results": [
+              "Create is rejected with validation message 'Industry is required for customer accounts.'"
+            ],
+            "referenced_entities": ["Account.Industry_Required_For_Customer"],
+            "confidence_score": 0.85
+          },
+          {
+            "title": "Positive: Customer with Industry saves",
+            "coverage_type": "positive",
+            "description": "Type='Customer' + Industry populated passes VR.",
+            "preconditions": [],
+            "steps": [
+              {
+                "step_order": 1,
+                "action": "create",
+                "target_object": "Account",
+                "field_values": {
+                  "Name": "Acme Industries",
+                  "Type": "Customer",
+                  "Industry": "Technology"
+                },
+                "state_ref": "$customer_acct"
+              },
+              {
+                "step_order": 2,
+                "action": "verify",
+                "target_object": "Account",
+                "record_ref": "$customer_acct",
+                "assertions": {"Industry": "Technology"}
+              }
+            ],
+            "expected_results": ["Record saved", "Industry set correctly"],
+            "referenced_entities": ["Account.Industry", "Account.Type"],
+            "confidence_score": 0.88
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "id": "unresolved_var_regression",
+  "description": "Regression fixture for the no_unresolved_state_refs scorer check. If the scorer ever regresses, this fixture catches it — the output references $no_such that's never defined, so the check should FAIL (and therefore this fixture is expected to NOT pass the no-dangling-refs check).",
+
+  "input": {
+    "requirement": {
+      "id": 9002,
+      "jira_key": "EVAL-2",
+      "jira_summary": "Trivial placeholder for the scorer's dangling-$var regression",
+      "jira_description": "",
+      "acceptance_criteria": ""
+    },
+    "metadata_context": {"objects": ["Account"], "validation_rules": []},
+    "min_tests": 1, "max_tests": 6
+  },
+
+  "expected": {
+    "min_tests": 1,
+    "max_tests": 6,
+    "required_coverage_types": ["positive"],
+    "allowed_objects": ["Account"],
+    "min_confidence": 0.5,
+
+    "__comment__": "This output DELIBERATELY contains an unresolved $no_such — the scorer's no_unresolved_state_refs check must FAIL for this fixture. The meta-test is: if you run `--filter unresolved_var_regression --mode dry`, the fixture must be reported as FAILED on exactly that one check.",
+    "output": {
+      "test_plan": {
+        "explanation": "Minimal, only exercises the scorer.",
+        "test_cases": [
+          {
+            "title": "References a $var that was never set",
+            "coverage_type": "positive",
+            "description": "",
+            "preconditions": [],
+            "steps": [
+              {
+                "step_order": 1,
+                "action": "verify",
+                "target_object": "Account",
+                "record_ref": "$no_such",
+                "assertions": {"Name": "ok"}
+              }
+            ],
+            "expected_results": [],
+            "referenced_entities": [],
+            "confidence_score": 0.9
+          }
+        ]
+      }
+    }
+  }
+}
