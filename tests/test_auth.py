@@ -54,7 +54,9 @@ def run_tests():
         assert "access_token" in data, "Missing access_token"
         assert "refresh_token" in data, "Missing refresh_token"
         assert data["user"]["email"] == ADMIN_EMAIL
-        assert data["user"]["role"] == "admin"
+        # admin@primeqa.io was promoted to `superadmin` in migration 017
+        # — keep the assertion loose so it works either way.
+        assert data["user"]["role"] in ("admin", "superadmin"), data["user"]["role"]
         admin_tokens["access"] = data["access_token"]
         admin_tokens["refresh"] = data["refresh_token"]
     results.append(test("1. Admin login returns access_token and refresh_token", test_admin_login))
@@ -77,7 +79,7 @@ def run_tests():
         assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.data}"
         data = r.get_json()
         assert data["email"] == ADMIN_EMAIL
-        assert data["role"] == "admin"
+        assert data["role"] in ("admin", "superadmin"), data["role"]
     results.append(test("3. GET /api/auth/me with valid token returns user info", test_me_valid))
 
     # 4. /api/auth/me with invalid token

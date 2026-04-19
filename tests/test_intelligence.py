@@ -39,9 +39,12 @@ def setup():
 
     uid = uuid.uuid4().hex[:6]
 
+    # environments.created_by is NOT NULL since hardening migrations —
+    # fixtures must pass a real user id. Use id=1 (the seeded superadmin).
     env = Environment(
         tenant_id=1, name=f"Intel Test {uid}", env_type="sandbox",
         sf_instance_url="https://test.sf.com", sf_api_version="59.0",
+        created_by=1,
     )
     db.add(env)
     db.commit()

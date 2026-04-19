@@ -114,7 +114,9 @@ def create_user():
     required = ["email", "password", "full_name", "role"]
     missing = [f for f in required if not data.get(f)]
     if missing:
-        return jsonify(error=f"Missing required fields: {', '.join(missing)}"), 400
+        return json_error("VALIDATION_ERROR",
+                          f"Missing required fields: {', '.join(missing)}",
+                          http=400)
 
     if data["role"] not in ("admin", "tester", "ba", "viewer"):
         return json_error("VALIDATION_ERROR", "Invalid role", http=400)
@@ -130,7 +132,14 @@ def create_user():
         )
         return jsonify(user), 201
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e), http=400)
+        # Duplicate-email + tenant-cap are conflict states (resource
+        # already exists / state prevents the op), not validation errors.
+        msg = str(e)
+        low = msg.lower()
+        if "already exists" in low or "maximum of" in low:
+            code = "CONFLICT" if "already exists" in low else "TENANT_CAP"
+            return json_error(code, msg, http=409)
+        return json_error("VALIDATION_ERROR", msg, http=400)
     finally:
         db.close()
 
