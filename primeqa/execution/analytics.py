@@ -65,44 +65,54 @@ class AnalyticsService:
         return scored[:limit]
 
     def release_health(self, tenant_id):
-        from primeqa.release.models import Release, ReleaseDecision
-        from sqlalchemy import desc
-        active = self.db.query(Release).filter(
-            Release.tenant_id == tenant_id,
-            Release.status.in_(["planning", "in_progress", "ready"]),
-        ).order_by(Release.target_date.asc().nullslast()).limit(10).all()
-
-        result = []
-        for r in active:
-            latest = self.db.query(ReleaseDecision).filter(
-                ReleaseDecision.release_id == r.id,
-            ).order_by(desc(ReleaseDecision.created_at)).first()
-            result.append({
-                "id": r.id, "name": r.name, "status": r.status,
-                "target_date": r.target_date.isoformat() if r.target_date else None,
-                "recommendation": latest.recommendation if latest else None,
-                "final_decision": latest.final_decision if latest else None,
-            })
-        return result
+        """Audit fix M-7 (2026-04-19): eliminated N+1. Was iterating up to
+        10 active releases and issuing a SELECT per release for the
+        latest decision. Now one DISTINCT ON query."""
+        from sqlalchemy import text as sql
+        rows = self.db.execute(sql("""
+            WITH active AS (
+              SELECT id, name, status, target_date
+              FROM releases
+              WHERE tenant_id = :tid
+                AND status IN ('planning', 'in_progress', 'ready')
+              ORDER BY target_date ASC NULLS LAST
+              LIMIT 10
+            ),
+            latest_dec AS (
+              SELECT DISTINCT ON (release_id)
+                     release_id, recommendation, final_decision
+              FROM release_decisions
+              WHERE release_id IN (SELECT id FROM active)
+              ORDER BY release_id, created_at DESC
+            )
+            SELECT a.id, a.name, a.status, a.target_date,
+                   d.recommendation, d.final_decision
+            FROM active a
+            LEFT JOIN latest_dec d ON d.release_id = a.id
+            ORDER BY a.target_date ASC NULLS LAST
+        """), {"tid": tenant_id}).all()
+        return [{
+            "id": r._mapping["id"], "name": r._mapping["name"],
+            "status": r._mapping["status"],
+            "target_date": r._mapping["target_date"].isoformat() if r._mapping["target_date"] else None,
+            "recommendation": r._mapping["recommendation"],
+            "final_decision": r._mapping["final_decision"],
+        } for r in rows]
 
     def overall_stats(self, tenant_id, days=30):
-        from primeqa.execution.models import RunTestResult, PipelineRun
+        """Audit fix M-7: 2 queries → 1 (CASE aggregate)."""
+        from sqlalchemy import text as sql
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        total = self.db.query(func.count(RunTestResult.id)).join(
-            PipelineRun, PipelineRun.id == RunTestResult.run_id,
-        ).filter(
-            PipelineRun.tenant_id == tenant_id,
-            RunTestResult.executed_at >= cutoff,
-        ).scalar() or 0
-
-        passed = self.db.query(func.count(RunTestResult.id)).join(
-            PipelineRun, PipelineRun.id == RunTestResult.run_id,
-        ).filter(
-            PipelineRun.tenant_id == tenant_id,
-            RunTestResult.executed_at >= cutoff,
-            RunTestResult.status == "passed",
-        ).scalar() or 0
-
+        row = self.db.execute(sql("""
+            SELECT COUNT(*)::int AS total,
+                   SUM(CASE WHEN r.status = 'passed' THEN 1 ELSE 0 END)::int AS passed
+            FROM run_test_results r
+            JOIN pipeline_runs p ON p.id = r.run_id
+            WHERE p.tenant_id = :tid
+              AND r.executed_at >= :cutoff
+        """), {"tid": tenant_id, "cutoff": cutoff}).one()._mapping
+        total = int(row["total"] or 0)
+        passed = int(row["passed"] or 0)
         return {
             "total_results_30d": total,
             "passed_results_30d": passed,
