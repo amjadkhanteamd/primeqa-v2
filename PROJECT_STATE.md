@@ -175,7 +175,64 @@ release_test_plan_items, release_runs, release_decisions *(+
 
 **Vector** (1): embeddings
 
-## Migrations (001–034)
+### Destructive audit + remediation — shipped (April 2026)
+
+Full-system beast-mode audit surfaced 15 findings across security, UX,
+perf, and data integrity. All 15 shipped across 6 commits.
+
+**Critical (4) — security blockers**:
+- **C-1**: login no longer accepts client-supplied `tenant_id` — the
+  service now derives tenant from the email row (across-tenant lookup).
+  Prevents multi-tenant bypass if the same email exists in >1 tenant.
+- **C-2**: `/api/webhooks/ci-trigger` fails closed when `WEBHOOK_SECRET`
+  is unset (was silently accepting anyone).
+- **C-3**: Global Flask `errorhandler(Exception)` returns envelope
+  without stack for `/api/*` and minimal HTML for web routes. Four
+  specific 500-prone sites also hardened: sections.create (length),
+  feedback.capture_user_feedback (verdict type), test-cases/bulk
+  (id coerce), views + core.auth (JWT missing claims → 401 not 500).
+- **C-5**: 19 ghost `completed` pipeline_runs with 0 tests cleaned up;
+  migration 036 adds CHECK constraints preventing recurrence.
+
+**Major (6)**:
+- **M-1**: Optimistic lock on `PATCH /api/releases/:id` via
+  `updated_at` token. 409 with `current_updated_at` on conflict.
+- **M-2**: Hard 500-row cap on `core/repository.py` unbounded
+  `list_*` methods (users, environments, connections, groups).
+- **M-3**: `AuthService.update_user` revokes all refresh tokens on
+  role change or `is_active=false`. Shortens window for stale JWTs
+  post-demotion.
+- **M-7**: Home `/` dashboard 15 queries / 4.3s → **6 queries / 2.0s**.
+  Seven individual `count(*)` queries collapsed into 1 SELECT with
+  scalar subqueries; `analytics.release_health` N+1 eliminated via
+  CTE + DISTINCT ON; `overall_stats` 2 queries → 1.
+- **M-9**: `PipelineRunRepository.update_run_status` enforces valid
+  state transitions (terminal → anything = ValueError). Plus the DB
+  CHECK constraint from migration 036.
+- **M-10**: Duplicate `Pipeline Test Env` renamed; migration 036 adds
+  `UNIQUE (tenant_id, lower(name))` on `environments`.
+
+**Minor (5) — UI polish**:
+- **UI-7**: 3 native `confirm()` calls (connections/detail,
+  runs/scheduled_list, runs/detail) migrated to `data-confirm` +
+  `data-confirm-form` attribute-driven `PrimeQA.confirm()`.
+- **UI-12**: 6 hardcoded `bg-gray-600` Edit buttons migrated to new
+  `btn_edit()` macro. 3 empty-state holdouts (test_data/list ×2,
+  groups/list, runs/compare) migrated to the `empty_state()` macro.
+- **UI-13**: 13 existing modals patched in-place with
+  `role="dialog" aria-modal="true" aria-labelledby`. New
+  `components/_modal.html` (macro) + `static/js/modal.js` (focus trap
+  + Escape + Tab wrap + return-focus + body scroll lock) available
+  for future modals via `{% call modal_shell(id=..., title=...) %}`.
+- **UI-15**: `static/js/loading.js` — global submit + click listener
+  that disables buttons during in-flight actions + `aria-busy` +
+  optional spinner. Opt-out via `data-no-loading`.
+
+Migrations added: **035** (`run_test_results` FK ON DELETE SET NULL),
+**036** (pipeline_runs status CHECK + terminal-completed_at CHECK +
+environments UNIQUE).
+
+## Migrations (001–036)
 - 001–015: platform, test management, execution, intelligence, release, data engine, risk, step comments, tags/milestones, custom fields
 - **016**: Test management soft delete + pg_trgm + composite/partial indexes
 - **017**: Super Admin role, `pipeline_runs.source_refs` + `parent_run_id`
@@ -196,6 +253,8 @@ release_test_plan_items, release_runs, release_decisions *(+
 - **032**: `tenant_agent_settings.llm_max_calls_per_minute / _hour / _spend_per_day_usd / _always_use_opus / _allow_haiku` — shared-key rate-limit columns. NULL = unlimited (gentle onboarding)
 - **033**: `generation_quality_signals` — feedback-loop sink (signal_type, severity, rule, object, field, detail jsonb). Consumed by `feedback.recent_for_tenant()` and auto-loaded into the `test_plan_generation` prompt
 - **034**: `tenant_agent_settings.llm_tier VARCHAR(20)` with CHECK `∈ {starter, pro, enterprise, custom}`. Resolves to preset values via `primeqa.intelligence.llm.tiers`; per-tenant column overrides win over the preset. `custom` tier bypasses the preset entirely
+- **035**: `run_test_results.test_case_id` / `test_case_version_id` — drop NOT NULL + change FK from restrictive to `ON DELETE SET NULL`. Unblocks hard-purge of soft-deleted TCs while preserving run history.
+- **036**: `pipeline_runs_status_ck` CHECK (status enum) + `pipeline_runs_terminal_completed_at_ck` CHECK (terminal → completed_at NOT NULL) + `environments_tenant_name_uk` UNIQUE (tenant_id, lower(name)). Paired with `scripts/audit_cleanup_ghost_runs_2026_04_19.sql` (pre-flight data cleanup).
 
 ## API Endpoints (~140)
 

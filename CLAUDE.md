@@ -70,6 +70,30 @@ tests/                         # Integration test files
 - Settings pages live under `/settings/*` with a sidebar layout
 - **Superadmin is god-mode**: always passes `require_role` / `role_required`, sees cost + raw LLM prompts + agent settings
 
+## Security posture (post-audit 2026-04-19)
+
+- **Login never takes client-supplied `tenant_id`.** `AuthService.login(email, password)` derives tenant from the `users` row (same email can exist in >1 tenant; first active match with correct bcrypt wins). If a caller has legitimate reason to scope to a specific tenant (SSO), pass `tenant_id=` explicitly in the service call — never from user input.
+- **CSRF**: double-submit cookie via `primeqa/core/csrf.py`. `/api/*` with `Authorization: Bearer` skips CSRF (Bearer is cross-origin-safe). All HTML POST forms carry `{{ csrf_input | safe }}`. `static/js/csrf.js` auto-injects `X-CSRF-Token` header on same-origin `fetch()` + htmx.
+- **JWT**: `core/auth.py require_auth` tolerates missing optional claims (`email`, `role`, `full_name`) — defaults `role='viewer'` on missing. `sub` + `tenant_id` are required; missing = 401. Views.py `get_current_user` has the same tolerance so web pages don't crash on malformed tokens. **Role downgrade** → `AuthService.update_user` revokes all refresh tokens so stale access-tokens expire quickly.
+- **Webhook auth** fails closed: `/api/webhooks/ci-trigger` returns 503 `CONFIG_ERROR` when `WEBHOOK_SECRET` env is unset. HMAC signature required otherwise.
+- **Global 500 handler**: `app.errorhandler(Exception)` returns envelope (`/api/*`) or minimal HTML (web). Never leaks stack. Server-side full stack still logged.
+- **Input validation**: `create_section` length-validates name; `feedback.capture_user_feedback` type-checks verdict; bulk endpoints coerce ids to positive ints before hitting the DB.
+- **State machine**: `PipelineRunRepository.update_run_status` enforces valid transitions (terminal → anything raises). Paired with migration 036 CHECK constraints.
+- **Unbounded queries**: `core/repository.py list_*` capped at 500 rows. DB-side dashboard queries use CTEs + JOINs to avoid N+1.
+
+## UI component kit (`templates/components/`)
+
+- **`_buttons.html`** — `btn_primary`, `btn_secondary`, `btn_success`, `btn_edit`, `btn_danger_primary`, `btn_danger_link`. One macro per semantic role. Never hardcode `bg-indigo-600` / `bg-red-600` / `bg-gray-600` — import the macro.
+- **`_empty_state.html`** — `empty_state(title, description, cta_label, cta_url|cta_onclick, icon, compact)`. One visual for every "no rows" treatment.
+- **`_modal.html`** — `modal_shell(id, title, size, describedby)` via `{% call %}`. Produces dialog envelope with close button, overlay click-to-close, and full a11y (`role=dialog`, `aria-modal`, `aria-labelledby`). Paired with `static/js/modal.js` for focus trap + Escape + Tab wrap + return-focus.
+- **`breadcrumbs.html`** — `breadcrumbs([(label, href), ...])`. Every detail/edit page should call this.
+- **`pagination.html`** — `render_pagination`, `render_search`, `sort_header`, `per_page_selector`, `render_meta_pagination`.
+- **`confirm_modal.html`** + `static/js/confirm.js` — attribute-driven `data-confirm`, `data-confirm-form`, `data-confirm-variant`, `data-confirm-type-to`. Never use native `confirm()`.
+- **`feedback_modal.html`** + `static/js/tc_feedback.js` — thumbs feedback on AI-generated TCs.
+- **`static/js/loading.js`** — global listener that disables submit buttons + adds `aria-busy` during in-flight actions. Opt out via `data-no-loading`.
+
+**Rule**: every new page checks in with the component kit. If you find yourself writing `<button class="rounded-md bg-...">` or `<div ...No X yet...>`, you're doing it wrong.
+
 ## Cross-cutting primitives (`primeqa/shared/`)
 
 - `query_builder.ListQuery` — pagination/search/sort/filter with hard 50/page cap and sort-field whitelist
@@ -275,7 +299,8 @@ python tests/test_r6_polish.py           # 5  (R6)
 python tests/test_r7_jira_picker.py      # 10 (R7 Jira chip picker)
 python tests/test_system_validation.py   # 4 runner + 13 canonical suite outcomes
 python tests/test_llm_architecture.py    # 25 (Phases 1-7 — gateway / tiers / limits / dashboards / feedback loop)
-# ~195 total
+python tests/test_eval_harness.py        # 15 (offline prompt regression harness)
+# ~210 total
 
 # Deploy
 git push origin main                     # Railway auto-deploys 3 services

@@ -87,7 +87,7 @@ python -m primeqa.app        # :5000
 
 ## Tests
 ```bash
-# ~195 tests across 17 integration suites, all passing against Railway
+# ~210 tests across 18 integration suites, all passing against Railway
 for t in test_auth test_environments test_metadata test_management test_hardening \
          test_pipeline test_executor test_cleanup test_intelligence \
          test_run_experience test_r2_superadmin test_r3_metadata \
