@@ -230,9 +230,50 @@ perf, and data integrity. All 15 shipped across 6 commits.
 
 Migrations added: **035** (`run_test_results` FK ON DELETE SET NULL),
 **036** (pipeline_runs status CHECK + terminal-completed_at CHECK +
-environments UNIQUE).
+environments UNIQUE), **037** (rtr.failure_type enum expanded),
+**038** (worker_heartbeats.died_reason + died_at).
 
-## Migrations (001–036)
+### Worker-death recovery + ghost-rtr healing — shipped (April 2026)
+
+Uncovered by a live run where Salesforce rejected an AI-hallucinated
+`Opportunity.Contract_Value__c` field. Worker died mid-execute between
+the step-finished event and the rtr status update, which combined with
+an ancient CHECK-constraint bug left the rtr in ghost `passed` state
+and blocked the feedback loop from learning.
+
+Three bugs converged:
+1. Worker write-order: rtr status + feedback signal were written
+   AFTER the step loop, so SIGKILL between step-failure and loop-exit
+   left the rtr in its initial `passed` state.
+2. `run_test_results.failure_type` CHECK only allowed 5 legacy
+   values, but worker code had been setting `step_error` and
+   `unexpected_error` forever — every write silently rolled back.
+3. Scheduler path didn't register ORM mappers for
+   `tenants`/`test_cases`/`test_case_versions`, so
+   `feedback.capture` calls from healers silently failed FK
+   resolution and dropped the signal.
+
+Fixes:
+- worker.py writes rtr status + fires feedback.capture IMMEDIATELY
+  in-loop on step failure, before any subsequent code path that
+  could die.
+- Migration 037 expands the failure_type CHECK enum.
+- Migration 038 adds died_reason + died_at on worker_heartbeats for
+  observability.
+- worker.py main loop has SIGTERM/SIGHUP handlers + uncaught-exception
+  hook that write died_reason before exit. Structured lifecycle logs
+  (`worker_lifecycle=start|stop|sigterm|crash`).
+- scheduler.reap_orphan_rtrs (new): self-healing task that runs every
+  tick; finds rtrs with status='passed' + failed child step_results,
+  reconciles + fires the missed EXECUTION_FAILED signal. 6-hour
+  window.
+- scheduler.reap_stale_workers: passes `died_reason='heartbeat_timeout'`
+  + logs last_run + last_stage at death.
+- scripts/backfill_heal_ghost_rtrs_2026_04_19.sql: one-off SQL that
+  healed 9 historic ghost rtrs that predated the online healer's
+  6-hour window. Ghost count went 9 → 0.
+
+## Migrations (001–038)
 - 001–015: platform, test management, execution, intelligence, release, data engine, risk, step comments, tags/milestones, custom fields
 - **016**: Test management soft delete + pg_trgm + composite/partial indexes
 - **017**: Super Admin role, `pipeline_runs.source_refs` + `parent_run_id`
@@ -255,6 +296,8 @@ environments UNIQUE).
 - **034**: `tenant_agent_settings.llm_tier VARCHAR(20)` with CHECK `∈ {starter, pro, enterprise, custom}`. Resolves to preset values via `primeqa.intelligence.llm.tiers`; per-tenant column overrides win over the preset. `custom` tier bypasses the preset entirely
 - **035**: `run_test_results.test_case_id` / `test_case_version_id` — drop NOT NULL + change FK from restrictive to `ON DELETE SET NULL`. Unblocks hard-purge of soft-deleted TCs while preserving run history.
 - **036**: `pipeline_runs_status_ck` CHECK (status enum) + `pipeline_runs_terminal_completed_at_ck` CHECK (terminal → completed_at NOT NULL) + `environments_tenant_name_uk` UNIQUE (tenant_id, lower(name)). Paired with `scripts/audit_cleanup_ghost_runs_2026_04_19.sql` (pre-flight data cleanup).
+- **037**: `run_test_results.failure_type` CHECK expanded to include `step_error`, `unexpected_error`, `validation_blocked`. The worker had been writing these values since forever, but the original CHECK only allowed 5 legacy values — every write CHECK-violated silently, rolling back `update_result` and leaving rtrs in ghost `passed` state. Paired with the worker-death recovery fix in `primeqa/worker.py` (in-loop rtr + feedback signal persistence) and the new `reap_orphan_rtrs` scheduler task.
+- **038**: `worker_heartbeats.died_reason VARCHAR(255)` + `died_at TIMESTAMPTZ` + partial index. Lets ops distinguish graceful SIGTERM (Railway redeploy) from OOM-kill from uncaught exception. Populated by `worker.py` shutdown hooks (SIGTERM / KeyboardInterrupt / crash) and by `scheduler.reap_stale_workers` (generic `heartbeat_timeout`). Paired with `scripts/backfill_heal_ghost_rtrs_2026_04_19.sql` (9 historic ghost rtrs reconciled).
 
 ## API Endpoints (~140)
 
