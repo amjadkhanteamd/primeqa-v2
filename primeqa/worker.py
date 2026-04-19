@@ -508,30 +508,73 @@ def worker_tick(ctx):
 
 
 def run_worker():
-    """Main worker loop."""
+    """Main worker loop.
+
+    Observability contract (audit 2026-04-19):
+    - SIGTERM handler sets died_reason='SIGTERM' before the normal
+      finally block runs. Railway sends SIGTERM on deploy / restart —
+      this distinguishes 'clean redeploy' from 'actual crash'.
+    - Uncaught exception is caught in the outer except and written as
+      died_reason with the truncated exception string before re-raise.
+    - Structured start + stop log lines (JSON-ish key=value) so
+      anything scraping logs can filter on `worker_lifecycle`.
+    - KeyboardInterrupt still does the clean shutdown path.
+    """
+    import signal
+    import sys
+
     worker_id = f"worker-{uuid.uuid4().hex[:8]}"
-    print(f"Worker {worker_id} starting...")
+    pid = os.getpid()
+    log.info("worker_lifecycle=start worker_id=%s pid=%s", worker_id, pid)
+    print(f"Worker {worker_id} starting (pid={pid})...")
 
     ctx = create_worker_context()
     ctx["worker_id"] = worker_id
     ctx["heartbeat_repo"].register_worker(worker_id)
+
+    # State we want to persist on death — avoid recreating context.
+    _shutdown_reason = {"value": None}
+
+    def _sigterm(signum, frame):
+        _shutdown_reason["value"] = f"SIGTERM (signal {signum})"
+        log.warning("worker_lifecycle=sigterm worker_id=%s signal=%s", worker_id, signum)
+        # Let the main loop's KeyboardInterrupt handling run (raise it).
+        raise KeyboardInterrupt(f"SIGTERM {signum}")
+
+    signal.signal(signal.SIGTERM, _sigterm)
+    # Some Railway setups also send SIGHUP on reconfig; treat it the same.
+    try:
+        signal.signal(signal.SIGHUP, _sigterm)
+    except (AttributeError, ValueError):
+        pass  # Windows / non-main-thread
 
     last_heartbeat = time.time()
 
     try:
         while True:
             worker_tick(ctx)
-
             if time.time() - last_heartbeat > HEARTBEAT_INTERVAL:
                 ctx["heartbeat_repo"].update_heartbeat(worker_id)
                 last_heartbeat = time.time()
-
             time.sleep(POLL_INTERVAL)
     except KeyboardInterrupt:
-        print(f"Worker {worker_id} shutting down")
+        reason = _shutdown_reason["value"] or "KeyboardInterrupt"
+        log.info("worker_lifecycle=stop worker_id=%s reason=%s", worker_id, reason)
+        print(f"Worker {worker_id} shutting down: {reason}")
+        ctx["heartbeat_repo"].mark_dead(worker_id, died_reason=reason)
+    except Exception as e:
+        reason = f"{type(e).__name__}: {e}"[:255]
+        log.exception("worker_lifecycle=crash worker_id=%s reason=%s", worker_id, reason)
+        try:
+            ctx["heartbeat_repo"].mark_dead(worker_id, died_reason=reason)
+        except Exception:
+            pass
+        raise
     finally:
-        ctx["heartbeat_repo"].mark_dead(worker_id)
-        ctx["db"].close()
+        try:
+            ctx["db"].close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

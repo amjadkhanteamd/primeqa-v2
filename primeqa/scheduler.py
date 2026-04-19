@@ -90,12 +90,19 @@ def reap_stuck_slots(ctx):
 
 
 def reap_stale_workers(ctx):
-    """Mark workers with no heartbeat for 2+ minutes as dead."""
+    """Mark workers with no heartbeat for 2+ minutes as dead.
+
+    `died_reason='heartbeat_timeout'` is the generic fallback — a
+    worker that shut down gracefully will have already written a more
+    specific reason ('SIGTERM' or the exception string) before the
+    heartbeat expired, and the repo preserves the first-set reason.
+    """
     heartbeat_repo = ctx["heartbeat_repo"]
     dead = heartbeat_repo.find_dead_workers(timeout_seconds=120)
     for wh in dead:
-        heartbeat_repo.mark_dead(wh.worker_id)
-        log.warning(f"Marked worker {wh.worker_id} as dead")
+        heartbeat_repo.mark_dead(wh.worker_id, died_reason="heartbeat_timeout")
+        log.warning("Marked worker %s as dead (heartbeat_timeout); last_run=%s last_stage=%s",
+                    wh.worker_id, wh.current_run_id, wh.current_stage)
 
 
 def reap_stuck_runs(ctx):

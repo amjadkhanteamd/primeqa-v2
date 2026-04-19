@@ -342,12 +342,22 @@ class WorkerHeartbeatRepository:
             wh.current_stage = current_stage
             self.db.commit()
 
-    def mark_dead(self, worker_id):
+    def mark_dead(self, worker_id, died_reason=None):
+        """Mark a worker dead. `died_reason` (audit 2026-04-19):
+        short free-form string. Usual values: 'SIGTERM',
+        'heartbeat_timeout', or a truncated exception string. Helps
+        ops distinguish graceful Railway deploys from crashes."""
         wh = self.db.query(WorkerHeartbeat).filter(
             WorkerHeartbeat.worker_id == worker_id,
         ).first()
         if wh:
             wh.status = "dead"
+            if died_reason and not wh.died_reason:
+                # Don't overwrite a specific reason with a later
+                # generic one (e.g. the reaper's 'heartbeat_timeout'
+                # shouldn't clobber an explicit 'SIGTERM').
+                wh.died_reason = died_reason[:255]
+                wh.died_at = datetime.now(timezone.utc)
             self.db.commit()
 
     def find_dead_workers(self, timeout_seconds=120):

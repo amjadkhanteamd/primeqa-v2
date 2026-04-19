@@ -253,6 +253,12 @@ class WorkerHeartbeat(Base):
     current_stage = Column(String(50))
     last_heartbeat = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     started_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    # Migration 038 (2026-04-19): observability for worker deaths.
+    # Short string captured at shutdown — "SIGTERM", "heartbeat_timeout",
+    # or a truncated exception message. Lets ops + the dashboard
+    # distinguish graceful deploy-shutdown from crashes.
+    died_reason = Column(String(255))
+    died_at = Column(DateTime(timezone=True))
 
     __table_args__ = (
         CheckConstraint("status IN ('alive', 'dead')"),
