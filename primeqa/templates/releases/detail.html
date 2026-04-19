@@ -241,7 +241,7 @@
 
 {# ---- Run Test Plan modal: pick env, queue the run ------------------- #}
 {% if user.role in ['admin', 'tester', 'superadmin'] and release.test_plan %}
-<div id="run-plan-modal" class="hidden fixed inset-0 z-50 overflow-y-auto">
+<div id="run-plan-modal" class="hidden fixed inset-0 z-50 overflow-y-auto" role="dialog" aria-modal="true" aria-labelledby="run-plan-modal-title">
   <div class="flex min-h-full items-center justify-center p-4">
     <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('run-plan-modal').classList.add('hidden')"></div>
     <div class="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
@@ -277,7 +277,7 @@
 {# ---- Add Test Plan items picker modal (grouped by requirement) -------- #}
 {% if user.role in ['admin', 'tester', 'superadmin'] %}
 <div id="add-tp-modal" class="hidden fixed inset-0 z-50 overflow-y-auto"
-     data-requirements='{{ all_requirements | tojson }}'>
+     data-requirements='{{ all_requirements | tojson }}' role="dialog" aria-modal="true" aria-labelledby="add-tp-modal-title">
   <div class="flex min-h-full items-start justify-center p-4 pt-10">
     <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('add-tp-modal').classList.add('hidden')"></div>
     <div class="relative bg-white rounded-lg shadow-xl max-w-3xl w-full p-6">
@@ -326,7 +326,7 @@
 {# ---- Add Requirements picker modal ------------------------------------- #}
 {% if user.role in ['admin', 'tester', 'superadmin'] %}
 <div id="add-reqs-modal" class="hidden fixed inset-0 z-50 overflow-y-auto"
-     data-requirements='{{ all_requirements | tojson }}'>
+     data-requirements='{{ all_requirements | tojson }}' role="dialog" aria-modal="true" aria-labelledby="add-reqs-modal-title">
   <div class="flex min-h-full items-start justify-center p-4 pt-10">
     <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('add-reqs-modal').classList.add('hidden')"></div>
     <div class="relative bg-white rounded-lg shadow-xl max-w-2xl w-full p-6">

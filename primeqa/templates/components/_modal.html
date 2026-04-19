@@ -1,0 +1,63 @@
+{#
+  Accessible modal shell (audit UI #13, 2026-04-19).
+
+  Usage:
+    {% from 'components/_modal.html' import modal_shell %}
+    {% call modal_shell(id='my-modal', title='Create thing', size='md') %}
+      <form method="POST" action="...">
+        {{ csrf_input | safe }}
+        ... fields ...
+        <div class="flex justify-end space-x-2">
+          <button type="button" data-modal-close
+            class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700">Cancel</button>
+          <button type="submit"
+            class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Create</button>
+        </div>
+      </form>
+    {% endcall %}
+
+  Opens via window.PrimeQA.openModal('my-modal') or by clicking an
+  element with data-open-modal="my-modal". Closes via any element with
+  data-modal-close inside the modal (including the overlay). Escape
+  closes. Focus trap + first-focusable autofocus handled by modal.js.
+
+  Sizes: sm (max-w-md), md (max-w-lg — default), lg (max-w-2xl),
+  xl (max-w-4xl).
+#}
+
+{% macro modal_shell(id, title, size='md', describedby=None) %}
+{% set _SIZES = {
+  'sm': 'max-w-md',
+  'md': 'max-w-lg',
+  'lg': 'max-w-2xl',
+  'xl': 'max-w-4xl',
+} %}
+{% set _SZ = _SIZES.get(size, _SIZES['md']) %}
+<div id="{{ id }}"
+     class="hidden fixed inset-0 z-50 overflow-y-auto"
+     role="dialog"
+     aria-modal="true"
+     aria-labelledby="{{ id }}-title"
+     {% if describedby %}aria-describedby="{{ describedby }}"{% endif %}>
+  <div class="flex min-h-full items-center justify-center p-4">
+    {# Overlay — data-modal-close lets a click on it close the modal. #}
+    <div class="fixed inset-0 bg-gray-500 bg-opacity-50" data-modal-close aria-hidden="true"></div>
+
+    {# Panel #}
+    <div class="relative bg-white rounded-lg shadow-xl w-full {{ _SZ }} p-6">
+      <div class="flex items-start justify-between mb-4">
+        <h3 id="{{ id }}-title" class="text-lg font-medium text-gray-900">{{ title }}</h3>
+        <button type="button"
+                data-modal-close
+                aria-label="Close"
+                class="text-gray-400 hover:text-gray-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">
+          <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      {{ caller() }}
+    </div>
+  </div>
+</div>
+{% endmacro %}
