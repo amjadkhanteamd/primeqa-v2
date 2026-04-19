@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'components/_buttons.html' import btn_edit %}
 {% block title %}{{ release.name }} - PrimeQA{% endblock %}
 {% block content %}
 {{ breadcrumbs([('Releases', '/releases'), (release.name, None)]) }}
@@ -33,7 +34,7 @@
             {{ csrf_input | safe }}
                 <button type="submit" class="rounded-md bg-purple-600 px-3 py-2 text-sm font-semibold text-white hover:bg-purple-500">Evaluate GO/NO-GO</button>
             </form>
-            <a href="/releases/{{ release.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit</a>
+            {{ btn_edit('Edit', href='/releases/' ~ release.id ~ '/edit') }}
         </div>
         {% endif %}
     </div>

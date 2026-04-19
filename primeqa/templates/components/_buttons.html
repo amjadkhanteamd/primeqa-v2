@@ -65,6 +65,18 @@
 <button type="{{ type }}" {% if onclick %}onclick="{{ onclick }}"{% endif %} class="rounded-md bg-red-600 {{ sz }} font-semibold text-white hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600 disabled:bg-red-400 disabled:cursor-not-allowed {{ extra }}">{{ label }}</button>
 {% endmacro %}
 
+{% macro btn_edit(label, href=None, type='button', size='md', extra='') %}
+{# Neutral action on detail pages — "Edit", "Test Connection", "View Config".
+   Semantically distinct from btn_primary (indigo = "do the main thing") and
+   btn_secondary (white = "go back / cancel"). Filled gray-600. #}
+{% set sz = _SIZES.get(size, _SIZES['md']) %}
+{% if href %}
+  <a href="{{ href }}" class="rounded-md bg-gray-600 {{ sz }} font-semibold text-white hover:bg-gray-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-600 {{ extra }}">{{ label }}</a>
+{% else %}
+  <button type="{{ type }}" class="rounded-md bg-gray-600 {{ sz }} font-semibold text-white hover:bg-gray-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-600 disabled:bg-gray-400 disabled:cursor-not-allowed {{ extra }}">{{ label }}</button>
+{% endif %}
+{% endmacro %}
+
 {% macro btn_danger_link(label, onclick='', size='sm', extra='') %}
 {# For row-level destructive actions — "Delete" next to each row.
    Red text on transparent, no fill, no border. #}

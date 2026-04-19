@@ -1,13 +1,16 @@
 {% extends "settings/base.html" %}
+{% from 'components/_buttons.html' import btn_primary %}
+{% from 'components/_empty_state.html' import empty_state %}
 {% block title %}Groups - PrimeQA{% endblock %}
 {% block settings_content %}
 <div class="space-y-6">
     <div class="flex justify-between items-center">
         <h1 class="text-2xl font-bold text-gray-900">Groups</h1>
         {% if user.role in ['admin', 'superadmin'] %}
-        <a href="/groups/new" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Create Group</a>
+        {{ btn_primary('Create Group', href='/groups/new') }}
         {% endif %}
     </div>
+    {% if groups %}
     <div class="bg-white shadow rounded-lg overflow-x-auto">
         <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
@@ -27,9 +30,15 @@
                     <td class="px-6 py-4 text-sm text-gray-500">{{ g.environment_count }}</td>
                 </tr>
                 {% endfor %}
-                {% if not groups %}<tr><td colspan="4" class="px-6 py-8 text-center text-sm text-gray-500">No groups yet</td></tr>{% endif %}
             </tbody>
         </table>
     </div>
+    {% else %}
+        {{ empty_state(
+            title='No groups yet',
+            description='Groups scope environment access — e.g. "QA team" can see sandbox envs but not prod. Create one to organise permissions.',
+            cta_label='+ Create Group', cta_url='/groups/new',
+        ) }}
+    {% endif %}
 </div>
 {% endblock %}

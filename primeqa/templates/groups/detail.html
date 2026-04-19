@@ -1,4 +1,5 @@
 {% extends "settings/base.html" %}
+{% from 'components/_buttons.html' import btn_edit %}
 {% block title %}{{ group.name }} - PrimeQA{% endblock %}
 {% block settings_content %}
 <div class="space-y-6">
@@ -9,7 +10,7 @@
         </div>
         {% if user.role in ['admin', 'superadmin'] %}
         <div class="flex space-x-3">
-            <a href="/groups/{{ group.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit</a>
+            {{ btn_edit('Edit', href='/groups/' ~ group.id ~ '/edit') }}
             <form method="POST" action="/groups/{{ group.id }}/delete" id="delete-group-{{ group.id }}">
             {{ csrf_input | safe }}
                 <button type="button" onclick="showConfirmModal('Delete Group', 'This will remove all members and environment assignments. Are you sure?', 'delete-group-{{ group.id }}')" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">Delete</button>

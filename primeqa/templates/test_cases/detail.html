@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'components/_buttons.html' import btn_edit %}
 {% block title %}{{ tc.title }} - PrimeQA{% endblock %}
 {% block content %}
 
@@ -61,7 +62,7 @@
             <button onclick="document.getElementById('run-modal').classList.remove('hidden')" class="rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-500">▶ Run</button>
             {% endif %}
             {% if user.role in ['admin', 'tester', 'superadmin'] %}
-            <a href="/test-cases/{{ tc.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit Steps</a>
+            {{ btn_edit('Edit Steps', href='/test-cases/' ~ tc.id ~ '/edit') }}
             {% endif %}
             {% if tc.visibility == 'private' and tc.owner_id == user.id %}
             <form method="POST" action="/test-cases/{{ tc.id }}/share">

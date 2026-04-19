@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'components/_empty_state.html' import empty_state %}
 {% block title %}Compare Run #{{ this_run.id }} - PrimeQA{% endblock %}
 {% block content %}
 
@@ -11,9 +12,12 @@
   <h1 class="text-2xl font-bold text-gray-900">Compare to last green run</h1>
 
   {% if not prev_run %}
-  <div class="bg-yellow-50 border border-yellow-200 p-4 rounded-md text-sm text-yellow-800">
-    No prior fully-green run found for environment #{{ this_run.environment_id }}. Nothing to compare yet.
-  </div>
+  {{ empty_state(
+      title='No prior green run to compare against',
+      description='Once environment #' ~ this_run.environment_id ~ ' has a fully-green run, you can compare this one against it.',
+      cta_label='Back to this run', cta_url='/runs/' ~ this_run.id,
+      compact=True,
+  ) }}
   {% else %}
   <div class="bg-white shadow rounded-lg p-6">
     <p class="text-sm text-gray-600">

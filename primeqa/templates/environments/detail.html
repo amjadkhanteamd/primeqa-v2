@@ -1,4 +1,5 @@
 {% extends "settings/base.html" %}
+{% from 'components/_buttons.html' import btn_edit %}
 {% block title %}{{ env.name }} - PrimeQA{% endblock %}
 {% block settings_content %}
 <div class="space-y-6">
@@ -8,7 +9,7 @@
             <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium mt-1 {% if env.env_type == 'production' %}bg-red-100 text-red-800{% elif env.env_type == 'uat' %}bg-yellow-100 text-yellow-800{% else %}bg-green-100 text-green-800{% endif %}">{{ env.env_type }}</span>
         </div>
         <div class="flex space-x-3">
-            <a href="/environments/{{ env.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit</a>
+            {{ btn_edit('Edit', href='/environments/' ~ env.id ~ '/edit') }}
             <form method="POST" action="/environments/{{ env.id }}/delete" id="delete-env-{{ env.id }}">
             {{ csrf_input | safe }}
                 <button type="button" onclick="showConfirmModal('Delete Environment', 'This will deactivate the environment. Are you sure?', 'delete-env-{{ env.id }}')" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">Delete</button>
@@ -25,7 +26,7 @@
     </div>
     <div class="flex space-x-3">
         <form method="POST" action="/environments/{{ env.id }}/test-connection">
-            {{ csrf_input | safe }}<button type="submit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Test Connection</button></form>
+            {{ csrf_input | safe }}{{ btn_edit('Test Connection', type='submit') }}</form>
     </div>
     {% if message %}<div class="rounded-md {% if 'error' in message|lower %}bg-red-50 text-red-700{% else %}bg-green-50 text-green-700{% endif %} p-4 text-sm">{{ message }}</div>{% endif %}
 

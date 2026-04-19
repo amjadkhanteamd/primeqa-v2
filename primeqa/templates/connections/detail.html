@@ -13,7 +13,8 @@
         <div class="flex space-x-3">
             <form method="POST" action="/connections/{{ conn.id }}/test">
             {{ csrf_input | safe }}<button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Test Connection</button></form>
-            <a href="/connections/{{ conn.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit</a>
+            {% from 'components/_buttons.html' import btn_edit %}
+            {{ btn_edit('Edit', href='/connections/' ~ conn.id ~ '/edit') }}
             <form id="conn-delete-form" method="POST" action="/connections/{{ conn.id }}/delete" class="inline">{{ csrf_input | safe }}</form>
             <button type="button"
                     class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500"

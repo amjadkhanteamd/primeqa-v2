@@ -1,4 +1,5 @@
 {% extends "settings/base.html" %}
+{% from 'components/_empty_state.html' import empty_state %}
 {% block title %}Test Data - PrimeQA{% endblock %}
 {% block settings_content %}
 <div class="space-y-6">
@@ -27,7 +28,11 @@
                 </div>
             </div>
             {% endfor %}
-            {% if not templates %}<div class="px-6 py-8 text-center text-sm text-gray-500">No templates yet. Create reusable object definitions for consistent test data.</div>{% endif %}
+            {% if not templates %}{{ empty_state(
+                title='No templates yet',
+                description='Templates are reusable object definitions (e.g. a standard Account row) so tests share consistent data shapes.',
+                compact=True,
+            ) }}{% endif %}
         </div>
     </div>
 
@@ -48,7 +53,11 @@
                 </div>
             </div>
             {% endfor %}
-            {% if not factories %}<div class="px-6 py-8 text-center text-sm text-gray-500">No factories yet. Create generative producers for unique values (emails, IDs, phones).</div>{% endif %}
+            {% if not factories %}{{ empty_state(
+                title='No factories yet',
+                description='Factories generate unique values per run (emails, IDs, phones) so tests don\'t collide.',
+                compact=True,
+            ) }}{% endif %}
         </div>
     </div>
 </div>
