@@ -1,13 +1,15 @@
 """SQLAlchemy models for the intelligence domain.
 
 Tables owned: entity_dependencies, explanation_requests, failure_patterns,
-              behaviour_facts, step_causal_links
+              behaviour_facts, step_causal_links, agent_fix_attempts,
+              llm_usage_log
 """
 
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, Text, JSON, Float,
-    ForeignKey, CheckConstraint, UniqueConstraint, Index,
+    BigInteger, Column, Integer, Numeric, String, Boolean, DateTime, Text,
+    JSON, Float, ForeignKey, CheckConstraint, UniqueConstraint, Index,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from primeqa.db import Base
@@ -171,3 +173,47 @@ class StepCausalLink(Base):
         CheckConstraint("discovery_source IN ('execution_trace', 'metadata_analysis', 'llm_inferred')"),
         CheckConstraint("from_step_result_id <> to_step_result_id", name="step_causal_links_no_self"),
     )
+
+
+class LLMUsageLog(Base):
+    """One row per LLM call across every feature (migration 031).
+
+    Populated by primeqa.intelligence.llm.usage.record() from the
+    LLMGateway. Read back by the /settings/llm-usage superadmin
+    dashboard (Phase 3) and per-run cost panel.
+
+    Keep this append-only: dashboards do aggregate rollups, they don't
+    mutate rows. No PII in here \u2014 prompt text + response text live in
+    agent_fix_attempts / explanation_requests for the tasks that need
+    them, not in this table.
+    """
+    __tablename__ = "llm_usage_log"
+
+    id = Column(BigInteger, primary_key=True)
+    ts = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
+
+    task = Column(String(40), nullable=False)
+    model = Column(String(100), nullable=False)
+    prompt_version = Column(String(60), nullable=False)
+
+    input_tokens = Column(Integer, nullable=False, server_default="0")
+    output_tokens = Column(Integer, nullable=False, server_default="0")
+    cached_input_tokens = Column(Integer, nullable=False, server_default="0")
+    cache_write_tokens = Column(Integer, nullable=False, server_default="0")
+
+    cost_usd = Column(Numeric(10, 6), nullable=False, server_default="0")
+    latency_ms = Column(Integer)
+    status = Column(String(20), nullable=False, server_default="ok")
+
+    complexity = Column(String(10))
+    escalated = Column(Boolean, nullable=False, server_default="false")
+    request_id = Column(String(80))
+
+    run_id = Column(Integer, ForeignKey("pipeline_runs.id", ondelete="SET NULL"))
+    requirement_id = Column(Integer, ForeignKey("requirements.id", ondelete="SET NULL"))
+    test_case_id = Column(Integer, ForeignKey("test_cases.id", ondelete="SET NULL"))
+    generation_batch_id = Column(BigInteger, ForeignKey("generation_batches.id", ondelete="SET NULL"))
+
+    context = Column(JSONB, nullable=False, server_default="{}")

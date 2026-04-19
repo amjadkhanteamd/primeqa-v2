@@ -176,7 +176,11 @@ class IntelligenceService:
         )
 
         if self.llm_client:
-            llm_result = self._call_llm(structured_input)
+            llm_result = self._call_llm(
+                structured_input,
+                tenant_id=tenant_id,
+                run_test_result_id=run_test_result_id,
+            )
             parsed = llm_result.get("parsed_explanation", {})
             self.explanation_repo.complete_request(
                 req.id, llm_result.get("raw_response"),
@@ -244,7 +248,53 @@ class IntelligenceService:
             "extensions": {},
         }
 
-    def _call_llm(self, structured_input):
+    def _call_llm(self, structured_input, tenant_id=None, run_test_result_id=None):
+        """Failure analysis LLM call \u2014 routed through the Gateway so
+        the usage log captures it and backoff handles transient errors."""
+        from primeqa.intelligence.llm import llm_call, LLMError
+        # Extract api key + tenant from the llm_client the caller passed.
+        api_key = getattr(self.llm_client, "api_key", None)
+        effective_tenant = tenant_id or getattr(self.llm_client, "_pqa_tenant_id", None)
+
+        if not api_key or not effective_tenant:
+            # No gateway context \u2014 fall back to direct call (legacy).
+            return self._call_llm_legacy(structured_input)
+
+        try:
+            # Build a concise failure_analysis context
+            # (structured_input is already rich; pass key fields verbatim)
+            resp = llm_call(
+                task="failure_analysis",
+                tenant_id=effective_tenant,
+                api_key=api_key,
+                context={
+                    "error_text": json.dumps(structured_input)[:3000],
+                    "step_context": structured_input.get("step_summary", ""),
+                    "run_test_result_id": run_test_result_id,
+                },
+            )
+            parsed = resp.parsed_content or {}
+            return {
+                "raw_response": {"content": resp.raw_text},
+                "parsed_explanation": parsed,
+                "model": resp.model,
+                "prompt_tokens": resp.input_tokens,
+                "completion_tokens": resp.output_tokens,
+            }
+        except LLMError as e:
+            return {
+                "raw_response": {"error": e.message},
+                "parsed_explanation": {
+                    "root_cause": f"LLM analysis failed: {e.message}",
+                    "confidence": 0.0,
+                },
+                "model": "claude-sonnet-4-20250514",
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+            }
+
+    def _call_llm_legacy(self, structured_input):
+        """Fallback for tests / legacy callers that don't supply tenant_id."""
         try:
             response = self.llm_client.messages.create(
                 model="claude-sonnet-4-20250514",
@@ -254,19 +304,11 @@ class IntelligenceService:
                     "content": json.dumps({
                         "task": "failure_analysis",
                         "input": structured_input,
-                        "output_schema": {
-                            "root_cause": "string",
-                            "root_cause_entity": "string",
-                            "fix_suggestion": "string",
-                            "affected_steps": "array of integers",
-                            "confidence": "float 0-1",
-                            "reasoning_chain": "array of strings",
-                        },
                     }),
                 }],
             )
             content = response.content[0].text
-            parsed = json.loads(content)
+            parsed = json.loads(content) if content.strip().startswith("{") else {"root_cause": content, "confidence": 0.5}
             return {
                 "raw_response": {"content": content},
                 "parsed_explanation": parsed,
@@ -275,7 +317,7 @@ class IntelligenceService:
                 "completion_tokens": getattr(response.usage, "output_tokens", 0),
             }
         except Exception as e:
-            log.error(f"LLM call failed: {e}")
+            log.error(f"Legacy LLM call failed: {e}")
             return {
                 "raw_response": {"error": str(e)},
                 "parsed_explanation": {

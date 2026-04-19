@@ -83,80 +83,93 @@ PLAN_OUTPUT_SCHEMA = {
 
 
 class TestCaseGenerator:
-    def __init__(self, llm_client, metadata_repo):
+    def __init__(self, llm_client, metadata_repo, *,
+                 tenant_id=None, user_id=None, api_key=None):
+        # llm_client is retained for backwards compatibility but callers
+        # that route through the new gateway pass api_key directly.
         self.llm = llm_client
         self.metadata_repo = metadata_repo
+        self.tenant_id = tenant_id
+        self.user_id = user_id
+        self.api_key = api_key
 
-    # ---- New multi-TC API --------------------------------------------------
+    # ---- New multi-TC API (routed through LLMGateway) ----------------------
 
     def generate_plan(self, requirement, meta_version_id,
                       model="claude-sonnet-4-20250514",
-                      min_tests=3, max_tests=6):
-        """Generate a test plan (multiple test cases covering different angles).
+                      min_tests=3, max_tests=6,
+                      requirement_id=None):
+        """Generate a test plan via the LLM Gateway (migration 031).
 
-        Returns a dict:
-          {
-            "explanation": "...",
-            "test_cases": [ { title, coverage_type, description, steps,
-                              expected_results, preconditions,
-                              referenced_entities, confidence_score }, ... ],
-            "model_used": ...,
-            "prompt_tokens": ...,
-            "completion_tokens": ...,
-            "raw_response": ...,
-          }
+        Returns the same dict shape as before for backwards compatibility
+        with the service layer:
+          {explanation, test_cases, model_used, prompt_tokens,
+           completion_tokens, raw_response, cost_usd, cached_tokens}
         """
+        from primeqa.intelligence.llm import llm_call, LLMError
+
         metadata_context = self._build_metadata_context(meta_version_id)
-        prompt = self._build_plan_prompt(
-            requirement, metadata_context, min_tests, max_tests,
-        )
 
         try:
-            response = self.llm.messages.create(
-                model=model,
-                max_tokens=8192,  # plan can be large (3-6 TCs with 10+ steps each)
-                messages=[{"role": "user", "content": prompt}],
+            resp = llm_call(
+                task="test_plan_generation",
+                tenant_id=self.tenant_id,
+                api_key=self.api_key or getattr(self.llm, "api_key", None),
+                user_id=self.user_id,
+                context={
+                    "requirement": requirement,
+                    "metadata_context": metadata_context,
+                    "meta_version_id": meta_version_id,
+                    "min_tests": min_tests,
+                    "max_tests": max_tests,
+                },
+                requirement_id=requirement_id or getattr(requirement, "id", None),
+                # complexity auto-detected by the prompt module; model override
+                # only used when a caller explicitly wants to pin behaviour.
+                model_override=model if model and model != "claude-sonnet-4-20250514" else None,
             )
-            raw_content = response.content[0].text
-            parsed = self._parse_response(raw_content)
-            plan = parsed.get("test_plan") or parsed
-            tcs = plan.get("test_cases") or []
-
-            # Defensive: if the model produced nothing, fall back to a
-            # single TC by re-parsing under the old schema.
-            if not tcs and "steps" in parsed:
-                tcs = [{
-                    "title": requirement.jira_summary or f"Test for {requirement.jira_key or requirement.id}",
-                    "coverage_type": "positive",
-                    "description": parsed.get("explanation", ""),
-                    "steps": parsed.get("steps", []),
-                    "expected_results": parsed.get("expected_results", []),
-                    "preconditions": parsed.get("preconditions", []),
-                    "referenced_entities": parsed.get("referenced_entities", []),
-                    "confidence_score": float(parsed.get("confidence_score", 0.7)),
-                }]
-
-            # Normalise coverage_type against our known set; unknown types
-            # get mapped to "edge_case" rather than stored raw.
-            for tc in tcs:
-                ct = (tc.get("coverage_type") or "").strip().lower().replace("-", "_").replace(" ", "_")
-                if ct not in COVERAGE_TYPES:
-                    ct = "edge_case"
-                tc["coverage_type"] = ct
-                tc.setdefault("confidence_score", 0.7)
-                tc["confidence_score"] = float(tc["confidence_score"])
-
-            return {
-                "explanation": plan.get("explanation", ""),
-                "test_cases": tcs,
-                "model_used": model,
-                "prompt_tokens": getattr(response.usage, "input_tokens", 0),
-                "completion_tokens": getattr(response.usage, "output_tokens", 0),
-                "raw_response": raw_content,
-            }
-        except Exception as e:
-            log.error(f"Test plan generation failed: {e}")
+        except LLMError:
+            log.error(f"Test plan generation failed (gateway)")
             raise
+
+        parsed = resp.parsed_content or {}
+        plan = parsed.get("test_plan") or parsed
+        tcs = plan.get("test_cases") or []
+
+        # Back-compat: single-TC response shape
+        if not tcs and "steps" in parsed:
+            tcs = [{
+                "title": requirement.jira_summary or f"Test for {requirement.jira_key or requirement.id}",
+                "coverage_type": "positive",
+                "description": parsed.get("explanation", ""),
+                "steps": parsed.get("steps", []),
+                "expected_results": parsed.get("expected_results", []),
+                "preconditions": parsed.get("preconditions", []),
+                "referenced_entities": parsed.get("referenced_entities", []),
+                "confidence_score": float(parsed.get("confidence_score", 0.7)),
+            }]
+
+        # Normalise coverage_type against our known set
+        for tc in tcs:
+            ct = (tc.get("coverage_type") or "").strip().lower().replace("-", "_").replace(" ", "_")
+            if ct not in COVERAGE_TYPES:
+                ct = "edge_case"
+            tc["coverage_type"] = ct
+            tc.setdefault("confidence_score", 0.7)
+            tc["confidence_score"] = float(tc["confidence_score"])
+
+        return {
+            "explanation": plan.get("explanation", ""),
+            "test_cases": tcs,
+            "model_used": resp.model,
+            "prompt_tokens": resp.input_tokens,
+            "completion_tokens": resp.output_tokens,
+            "raw_response": resp.raw_text,
+            "cost_usd": resp.cost_usd,
+            "cached_tokens": resp.cached_input_tokens,
+            "escalated": resp.escalated,
+            "complexity": resp.complexity,
+        }
 
     # ---- Backwards-compat single-TC path -----------------------------------
     # Kept so the existing single-click "Generate" UI and bulk-generate

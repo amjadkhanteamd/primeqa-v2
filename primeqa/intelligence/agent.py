@@ -113,13 +113,54 @@ class FixProposal:
 
 def propose_fix(context: Dict[str, Any],
                 anthropic_client=None,
-                model: str = "claude-sonnet-4-20250514") -> Optional[FixProposal]:
+                model: str = "claude-sonnet-4-20250514",
+                *,
+                tenant_id: Optional[int] = None,
+                api_key: Optional[str] = None,
+                run_id: Optional[int] = None,
+                test_case_id: Optional[int] = None,
+                agent_fix_attempt_id: Optional[int] = None) -> Optional[FixProposal]:
     """Ask the LLM for a proposed fix.
 
     Returns None if no client available. Returns a FixProposal otherwise.
     `context` should include: failure_class, step_definition, error_message,
     api_request, api_response, recent_similar_failures, metadata_diff.
     """
+    # Prefer the LLM Gateway path when tenant_id + api_key are provided.
+    # The legacy anthropic_client direct path stays for tests that mock
+    # the SDK; in production the caller should always pass tenant_id.
+    if tenant_id and api_key:
+        from primeqa.intelligence.llm import llm_call, LLMError
+        try:
+            resp = llm_call(
+                task="agent_fix",
+                tenant_id=tenant_id,
+                api_key=api_key,
+                context={
+                    "failure_summary": context.get("error_message") or "",
+                    "original_step": context.get("step_definition") or {},
+                    "full_test_case": context.get("full_test_case") or [],
+                    "run_id": run_id,
+                    "test_case_id": test_case_id,
+                    "agent_fix_attempt_id": agent_fix_attempt_id,
+                },
+                run_id=run_id, test_case_id=test_case_id,
+            )
+            data = resp.parsed_content or {}
+            if data.get("_parse_error"):
+                return None
+            return FixProposal(
+                root_cause_summary=str(data.get("rationale", data.get("root_cause_summary", "")))[:1000],
+                confidence=float(data.get("confidence", 0.0)),
+                proposed_fix_type=str(data.get("fix_type", data.get("proposed_fix_type", "review"))),
+                changes=data.get("patch", data.get("changes", {})) or {},
+                raw_llm_response=resp.raw_text,
+            )
+        except LLMError as e:
+            log.warning("propose_fix via gateway failed: %s", e)
+            return None
+
+    # Legacy direct-SDK fallback
     if not anthropic_client:
         return None
 

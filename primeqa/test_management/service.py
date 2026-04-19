@@ -175,14 +175,23 @@ class TestManagementService:
         if not llm_conn:
             raise NotFoundError("LLM connection not found")
 
+        # Pass the API key + tenant/user through to the Gateway; the
+        # anthropic client instance is kept on the generator only for
+        # backwards compatibility with tests that inject a mock.
         import anthropic
-        llm_client = anthropic.Anthropic(api_key=llm_conn["config"].get("api_key", ""))
+        api_key = llm_conn["config"].get("api_key", "")
+        llm_client = anthropic.Anthropic(api_key=api_key)
+        llm_client.api_key = api_key  # ensure attr exists for gateway lookup
         model = llm_conn["config"].get("model", "claude-sonnet-4-20250514")
 
-        generator = TestCaseGenerator(llm_client, metadata_repo)
+        generator = TestCaseGenerator(
+            llm_client, metadata_repo,
+            tenant_id=tenant_id, user_id=created_by, api_key=api_key,
+        )
         plan = generator.generate_plan(
             requirement, env.current_meta_version_id, model=model,
             min_tests=min_tests, max_tests=max_tests,
+            requirement_id=requirement_id,
         )
         tcs_in_plan = plan.get("test_cases") or []
         if not tcs_in_plan:

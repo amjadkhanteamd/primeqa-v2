@@ -2686,30 +2686,28 @@ def runs_summarise_failures(run_id):
             flash("LLM connection could not be loaded.", "error")
             return redirect(f"/runs/{run_id}")
 
-        import anthropic
-        model = conn["config"].get("model", "claude-sonnet-4-20250514")
-        client = anthropic.Anthropic(api_key=conn["config"].get("api_key", ""))
-
-        prompt = (
-            "Summarise why these Salesforce test steps failed. Group by "
-            "root cause when possible. Keep it to 3-6 sentences. Be "
-            "specific: mention field / object / validation names. No "
-            "preamble.\n\n"
-            + "\n".join(failure_lines[:50])
-        )
+        # Route through the LLM Gateway \u2014 Haiku by default (see prompts
+        # router), backoff + usage log handled automatically.
+        from primeqa.intelligence.llm import llm_call, LLMError
+        api_key = conn["config"].get("api_key", "")
         try:
-            resp = client.messages.create(
-                model=model, max_tokens=600,
-                messages=[{"role": "user", "content": prompt}],
+            resp = llm_call(
+                task="failure_summary",
+                tenant_id=tid, user_id=request.user["id"],
+                api_key=api_key,
+                context={"failure_lines": failure_lines, "run_id": run_id},
+                run_id=run_id,
             )
-            summary = resp.content[0].text.strip()
-        except Exception as e:
-            msg = str(e)
-            if "credit balance" in msg.lower():
+            summary = resp.parsed_content
+        except LLMError as e:
+            if e.status == "quota_exceeded":
                 flash("AI summarisation failed: Anthropic credits "
                       "exhausted. Top up at console.anthropic.com.", "error")
+            elif e.status == "auth_error":
+                flash("AI summarisation failed: LLM connection API key "
+                      "is invalid. Check Settings \u2192 Connections.", "error")
             else:
-                flash(f"AI summarisation failed: {msg[:200]}", "error")
+                flash(f"AI summarisation failed: {e.message[:200]}", "error")
             return redirect(f"/runs/{run_id}")
 
         r = db.query(PipelineRun).filter(
@@ -2717,7 +2715,7 @@ def runs_summarise_failures(run_id):
         ).first()
         r.failure_summary_ai = summary
         r.failure_summary_at = datetime.now(timezone.utc)
-        r.failure_summary_model = model
+        r.failure_summary_model = resp.model
         db.commit()
         return redirect(f"/runs/{run_id}")
     finally:
