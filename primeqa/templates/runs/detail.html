@@ -275,6 +275,9 @@
           <input id="log-autoscroll" type="checkbox" class="rounded" checked>
           <span>Auto-scroll</span>
         </label>
+        <button type="button" id="log-copy"
+                class="text-xs rounded-md bg-white px-2 py-1 text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50"
+                title="Copy the visible log lines as plain text (paste into Jira, Slack, etc.)">Copy</button>
         <a href="/api/runs/{{ run.id }}/events/download?format=txt"
            class="text-xs rounded-md bg-white px-2 py-1 text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Download .txt</a>
         <a href="/api/runs/{{ run.id }}/events/download?format=json"
@@ -470,9 +473,57 @@
   const logLive = document.getElementById('log-live');
   const logCount = document.getElementById('log-count');
   const autoscrollEl = document.getElementById('log-autoscroll');
+  const logCopyBtn = document.getElementById('log-copy');
   const LOG_SOFT_CAP = 200;
   const seenEventIds = new Set();
   let logRowCount = 0;
+
+  // Copy-to-clipboard for the pipeline log. Builds a plain-text
+  // representation of the currently-rendered rows (timestamp + indented
+  // message) \u2014 good for pasting into Jira tickets, Slack threads, or
+  // emails. Uses navigator.clipboard with an execCommand fallback for
+  // older browsers. Success/failure is shown by briefly swapping the
+  // button label so the user doesn't wonder whether it worked.
+  if (logCopyBtn) {
+    logCopyBtn.addEventListener('click', async () => {
+      const lines = [];
+      for (const row of logEl.children) {
+        if (row.id === 'log-empty') continue;
+        // Each row has: [timestamp span][icon/indent span][message span]
+        const spans = row.querySelectorAll('span');
+        const ts = (spans[0] && spans[0].textContent || '').trim();
+        const msg = (spans[2] && spans[2].textContent || '').replace(/\s+$/, '');
+        const indentMatch = spans[1] && spans[1].style && /([0-9]+)px/.exec(spans[1].style.paddingLeft || '');
+        const indentPx = indentMatch ? parseInt(indentMatch[1], 10) : 0;
+        const indent = ' '.repeat(Math.floor(indentPx / 12) * 2);
+        lines.push(`${ts}  ${indent}${msg}`);
+      }
+      const text = lines.join('\n');
+      const originalLabel = logCopyBtn.textContent;
+      const flash = (label) => {
+        logCopyBtn.textContent = label;
+        setTimeout(() => { logCopyBtn.textContent = originalLabel; }, 1400);
+      };
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          // Fallback for non-HTTPS / older browsers
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        flash(`Copied (${lines.length} lines)`);
+      } catch (_) {
+        flash('Copy failed');
+      }
+    });
+  }
 
   // Map each event kind to indent level for the hierarchical look
   const INDENT = {
