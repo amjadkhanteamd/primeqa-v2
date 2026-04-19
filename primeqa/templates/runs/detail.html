@@ -127,27 +127,52 @@
     <summary class="cursor-pointer px-6 py-3 text-sm font-medium text-gray-700 flex items-center justify-between hover:bg-gray-50">
       <span class="flex items-center gap-2">
         AI spend for this run
-        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] bg-gray-100 text-gray-600 font-normal">Super Admin</span>
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] bg-purple-100 text-purple-800 font-normal">Super Admin</span>
       </span>
-      <span class="text-sm font-semibold text-gray-900">${{ '%.4f' | format(cost_panel.total_usd) }}</span>
+      <span class="text-sm font-semibold text-gray-900">${{ '%.6f' | format(cost_panel.total_usd) }}</span>
     </summary>
-    <div class="px-6 pb-4 space-y-2">
-      <div class="grid grid-cols-5 gap-3 text-xs text-gray-600 border-t border-gray-100 pt-3">
-        <div><span class="text-gray-400">Stage</span><br>Test generation</div>
-        <div><span class="text-gray-400">Spend</span><br><strong class="text-gray-900">${{ '%.4f' | format(cost_panel.generation.total_usd) }}</strong></div>
-        <div><span class="text-gray-400">Model(s)</span><br>
-          {% if cost_panel.generation.models %}
-            {% for m in cost_panel.generation.models %}<span class="font-mono text-[10px]">{{ m }}</span>{% if not loop.last %}<br>{% endif %}{% endfor %}
-          {% else %}—{% endif %}
-        </div>
-        <div><span class="text-gray-400">Tokens in / out</span><br>{{ cost_panel.generation.tokens_in }} / {{ cost_panel.generation.tokens_out }}</div>
-        <div><span class="text-gray-400">Batches</span><br>{{ cost_panel.generation.batches }}</div>
-      </div>
-      <div class="grid grid-cols-5 gap-3 text-xs text-gray-600 border-t border-gray-100 pt-3">
-        <div><span class="text-gray-400">Stage</span><br>Agent fix-and-rerun</div>
-        <div><span class="text-gray-400">Attempts</span><br><strong class="text-gray-900">{{ cost_panel.agent_fixes.attempts }}</strong></div>
-        <div class="col-span-3 text-gray-500">{{ cost_panel.agent_fixes.note }}</div>
-      </div>
+    <div class="px-6 pb-4 border-t border-gray-100">
+      {% if cost_panel.by_task %}
+      <table class="min-w-full text-xs mt-3">
+        <thead>
+          <tr class="text-left text-gray-500">
+            <th class="py-1 pr-4">Task</th>
+            <th class="py-1 pr-4">Calls</th>
+            <th class="py-1 pr-4">Tokens in / out</th>
+            <th class="py-1 pr-4">Cached</th>
+            <th class="py-1 pr-4">Model(s)</th>
+            <th class="py-1 text-right">Spend</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for task_name, t in cost_panel.by_task.items() %}
+          <tr>
+            <td class="py-1.5 pr-4 font-mono">{{ task_name }}</td>
+            <td class="py-1.5 pr-4">{{ t.calls }}</td>
+            <td class="py-1.5 pr-4 text-gray-600">{{ t.tokens_in }} / {{ t.tokens_out }}</td>
+            <td class="py-1.5 pr-4 text-gray-500">
+              {% if t.cached_tokens %}{{ t.cached_tokens }}{% else %}—{% endif %}
+            </td>
+            <td class="py-1.5 pr-4">
+              {% for m in t.models %}<div class="font-mono text-[10px] text-gray-700">{{ m }}</div>{% endfor %}
+            </td>
+            <td class="py-1.5 text-right font-medium text-gray-900">${{ '%.6f' | format(t.cost_usd) }}</td>
+          </tr>
+          {% endfor %}
+          <tr class="font-semibold border-t-2 border-gray-200">
+            <td class="py-1.5 pr-4">Total</td>
+            <td colspan="4"></td>
+            <td class="py-1.5 text-right">${{ '%.6f' | format(cost_panel.total_usd) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      {% else %}
+      <p class="text-xs text-gray-500 italic mt-3">No LLM calls attributed to this run yet.</p>
+      {% endif %}
+      <p class="mt-3 text-[10px] text-gray-400">
+        Aggregated from llm_usage_log (migration 031) via run_id and
+        generation_batch_id cross-references.
+      </p>
     </div>
   </details>
   {% endif %}

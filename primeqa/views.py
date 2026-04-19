@@ -577,46 +577,81 @@ def runs_detail(run_id):
                            "error_message": s.error_message} for s in steps],
             })
         # ---- Cost + LLM breakdown (superadmin only) --------------------
-        # Sums AI spend attributable to this run:
-        #   1. Test-case generation: sum cost_usd of generation_batches
-        #      that produced TCs in this run.
-        #   2. Agent fix-and-rerun: tokens aren't tracked per attempt
-        #      yet, so we show attempt counts + "model unknown" \u2014
-        #      a future migration can add tokens/cost columns.
+        # Phase 3 switch: pull from llm_usage_log for accurate per-task
+        # attribution of generation + agent_fix + failure_summary + any
+        # future task. Cross-referenced via run_id / test_case_id /
+        # generation_batch_id \u2014 populated by the LLMGateway.
         cost_panel = None
         if request.user.get("role") == "superadmin":
-            from primeqa.test_management.models import TestCase, GenerationBatch
+            from primeqa.test_management.models import TestCase
+            from primeqa.intelligence.models import LLMUsageLog
+            from sqlalchemy import or_, func as sf
+
             tc_ids = [r.test_case_id for r in results]
-            gen_batches = []
+            # Fetch generation_batch_ids owned by these TCs so gen spend
+            # attributes here even when the call site pre-dates run_id
+            # forwarding.
+            batch_ids = []
             if tc_ids:
-                batch_ids = {row[0] for row in db.query(TestCase.generation_batch_id)
+                batch_ids = [row[0] for row in db.query(TestCase.generation_batch_id)
                               .filter(TestCase.id.in_(tc_ids),
                                       TestCase.generation_batch_id.isnot(None)).all()
-                              if row[0]}
-                if batch_ids:
-                    gen_batches = db.query(GenerationBatch).filter(
-                        GenerationBatch.id.in_(list(batch_ids)),
-                    ).all()
-            gen_total = sum(float(b.cost_usd or 0) for b in gen_batches)
-            gen_in = sum(int(b.input_tokens or 0) for b in gen_batches)
-            gen_out = sum(int(b.output_tokens or 0) for b in gen_batches)
-            gen_models = sorted({b.llm_model for b in gen_batches if b.llm_model})
+                              if row[0]]
 
-            agent_fix_count = len(agent_fixes_data)
+            rows = db.query(
+                LLMUsageLog.task,
+                LLMUsageLog.model,
+                sf.count(LLMUsageLog.id).label("calls"),
+                sf.coalesce(sf.sum(LLMUsageLog.input_tokens), 0).label("ti"),
+                sf.coalesce(sf.sum(LLMUsageLog.output_tokens), 0).label("to"),
+                sf.coalesce(sf.sum(LLMUsageLog.cached_input_tokens), 0).label("tc"),
+                sf.coalesce(sf.sum(LLMUsageLog.cost_usd), 0).label("cost"),
+            ).filter(
+                or_(
+                    LLMUsageLog.run_id == run.id,
+                    LLMUsageLog.generation_batch_id.in_(batch_ids) if batch_ids else False,
+                ),
+                LLMUsageLog.status == "ok",
+            ).group_by(LLMUsageLog.task, LLMUsageLog.model).all()
+
+            by_task: dict[str, dict] = {}
+            grand_total = 0.0
+            for row in rows:
+                task_bucket = by_task.setdefault(row.task, {
+                    "calls": 0, "cost_usd": 0.0,
+                    "tokens_in": 0, "tokens_out": 0, "cached_tokens": 0,
+                    "models": set(),
+                })
+                task_bucket["calls"] += row.calls
+                task_bucket["cost_usd"] += float(row.cost)
+                task_bucket["tokens_in"] += int(row.ti)
+                task_bucket["tokens_out"] += int(row.to)
+                task_bucket["cached_tokens"] += int(row.tc)
+                task_bucket["models"].add(row.model)
+                grand_total += float(row.cost)
+
+            # Sort models for deterministic rendering
+            for b in by_task.values():
+                b["models"] = sorted(m for m in b["models"] if m and m != "(blocked)")
+                b["cost_usd"] = round(b["cost_usd"], 6)
+
             cost_panel = {
-                "generation": {
-                    "total_usd": round(gen_total, 4),
-                    "tokens_in": gen_in, "tokens_out": gen_out,
-                    "models": gen_models, "batches": len(gen_batches),
-                },
+                "total_usd": round(grand_total, 6),
+                "by_task": by_task,
+                # Legacy keys kept so the template doesn't break; we'll
+                # remove once the template is refactored in the same PR.
+                "generation": by_task.get("test_plan_generation", {
+                    "cost_usd": 0.0, "tokens_in": 0, "tokens_out": 0,
+                    "cached_tokens": 0, "models": [], "calls": 0,
+                }),
                 "agent_fixes": {
-                    "attempts": agent_fix_count,
-                    "note": "Agent fix-and-rerun token cost is not yet "
-                            "tracked per attempt; roll forward to a later "
-                            "migration to add input/output_tokens columns.",
+                    "attempts": len(agent_fixes_data),
+                    "cost_usd": by_task.get("agent_fix", {}).get("cost_usd", 0.0),
+                    "calls": by_task.get("agent_fix", {}).get("calls", 0),
                 },
-                # Run-level grand total is only the generation cost today.
-                "total_usd": round(gen_total, 4),
+                "failure_summary": by_task.get("failure_summary", {
+                    "cost_usd": 0.0, "calls": 0,
+                }),
             }
 
         return render_template("runs/detail.html", **ctx(
@@ -3012,6 +3047,47 @@ def scheduled_runs_delete(sid):
 
 
 # Super Admin settings: Agent autonomy (R2) --------------------------------
+@views_bp.route("/settings/llm-usage")
+@role_required("superadmin")
+def settings_llm_usage():
+    """Superadmin LLM-usage dashboard (Phase 3).
+
+    Three stacked views:
+      Cost control  \u2014 who spent what, per feature, per model, per day
+      Efficiency    \u2014 cache hit rate, avg cost/generation, escalation rate, errors
+      Quality proxy \u2014 regeneration rate, validation-critical rate, post-gen fail rate
+
+    Every query runs over llm_usage_log (migration 031) with indexes
+    added for this exact workload. Window defaults to 30 days; override
+    via ?days=7 or ?days=90.
+    """
+    from primeqa.intelligence.llm import dashboard
+    db = next(get_db())
+    try:
+        days = max(1, min(180, request.args.get("days", 30, type=int) or 30))
+        cost = dashboard.cost_summary(db, days=days)
+        eff = dashboard.efficiency_summary(db, days=days)
+        quality = dashboard.quality_proxy_summary(db, days=days)
+        spenders = dashboard.top_spenders(db, days=days)
+        # Enrich by_tenant with name for display
+        if cost["by_tenant"]:
+            from primeqa.core.models import Tenant
+            tids = [row["key"] for row in cost["by_tenant"]]
+            name_rows = db.query(Tenant.id, Tenant.name).filter(
+                Tenant.id.in_(tids),
+            ).all()
+            name_by_id = {r[0]: r[1] for r in name_rows}
+            for row in cost["by_tenant"]:
+                row["tenant_name"] = name_by_id.get(row["key"], f"Tenant #{row['key']}")
+        return render_template("settings/llm_usage.html", **ctx(
+            active_page="settings_llm_usage", settings_page="llm_usage",
+            cost=cost, efficiency=eff, quality=quality,
+            top_spenders=spenders, days=days,
+        ))
+    finally:
+        db.close()
+
+
 @views_bp.route("/settings/agent", methods=["GET"])
 @role_required("superadmin")
 def settings_agent_get():

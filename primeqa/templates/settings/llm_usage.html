@@ -1,0 +1,236 @@
+{% extends "settings/base.html" %}
+{% block title %}LLM Usage - PrimeQA{% endblock %}
+{% block settings_content %}
+
+<div class="space-y-6">
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">LLM usage <span class="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs bg-purple-100 text-purple-800 font-normal">Super Admin</span></h1>
+      <p class="mt-1 text-sm text-gray-500">Spend, efficiency, and quality signals across the LLM gateway.</p>
+    </div>
+    <form method="GET" action="/settings/llm-usage" class="flex items-center gap-2 text-sm">
+      <label for="days" class="text-gray-500">Window</label>
+      <select id="days" name="days" onchange="this.form.submit()" class="rounded-md border border-gray-300 px-2 py-1 text-sm">
+        {% for opt in [7, 30, 90, 180] %}
+        <option value="{{ opt }}" {% if days == opt %}selected{% endif %}>Last {{ opt }} days</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  {# ---- Top-line KPIs -------------------------------------------------- #}
+  <div class="grid grid-cols-4 gap-4">
+    <div class="bg-white shadow rounded-lg p-4">
+      <p class="text-xs text-gray-500 uppercase">Total spend</p>
+      <p class="mt-1 text-2xl font-semibold text-gray-900">${{ '%.4f' | format(cost.total.cost_usd) }}</p>
+      <p class="mt-1 text-xs text-gray-500">{{ cost.total.calls }} calls · {{ (cost.total.input_tokens + cost.total.output_tokens) | int }} tokens</p>
+    </div>
+    <div class="bg-white shadow rounded-lg p-4">
+      <p class="text-xs text-gray-500 uppercase">Cache hit rate <span class="text-gray-400">(gen)</span></p>
+      <p class="mt-1 text-2xl font-semibold text-gray-900">{{ (efficiency.cache_hit_rate * 100) | round(1) }}%</p>
+      <p class="mt-1 text-xs text-gray-500">{{ efficiency.cache_hits }} / {{ efficiency.cache_total_calls }}</p>
+    </div>
+    <div class="bg-white shadow rounded-lg p-4">
+      <p class="text-xs text-gray-500 uppercase">Avg cost per generation</p>
+      <p class="mt-1 text-2xl font-semibold text-gray-900">${{ '%.6f' | format(efficiency.avg_cost_per_generation_usd) }}</p>
+      <p class="mt-1 text-xs text-gray-500">{{ efficiency.generations }} generations</p>
+    </div>
+    <div class="bg-white shadow rounded-lg p-4">
+      <p class="text-xs text-gray-500 uppercase">Error rate</p>
+      <p class="mt-1 text-2xl font-semibold
+          {% if efficiency.error_rate > 0.05 %}text-red-600
+          {% elif efficiency.error_rate > 0.02 %}text-amber-600
+          {% else %}text-gray-900{% endif %}">
+        {{ (efficiency.error_rate * 100) | round(2) }}%
+      </p>
+      <p class="mt-1 text-xs text-gray-500">
+        {% if efficiency.top_errors %}
+          top: {{ efficiency.top_errors[0].status }} ({{ efficiency.top_errors[0].n }})
+        {% else %}no errors{% endif %}
+      </p>
+    </div>
+  </div>
+
+  {# ---- Spend by day (sparkline-ish) ---------------------------------- #}
+  <div class="bg-white shadow rounded-lg p-4">
+    <h3 class="text-sm font-medium text-gray-700 mb-3">Daily spend <span class="text-gray-400 font-normal">· last {{ days }} days</span></h3>
+    {% if cost.by_day %}
+    <div class="flex items-end gap-1 h-32">
+      {% set max_cost = cost.by_day | map(attribute='cost_usd') | max %}
+      {% for d in cost.by_day %}
+      {% set pct = ((d.cost_usd / max_cost) * 100) if max_cost else 0 %}
+      <div class="flex-1 flex flex-col items-center group relative" title="{{ d.day }}: ${{ '%.4f' | format(d.cost_usd) }} ({{ d.calls }} calls)">
+        <div class="w-full bg-indigo-400 rounded-t" style="height: {{ pct }}%"></div>
+        <div class="absolute -top-6 hidden group-hover:block bg-gray-900 text-white text-[10px] rounded px-1 py-0.5 whitespace-nowrap">
+          {{ d.day }}: ${{ '%.4f' | format(d.cost_usd) }}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-400 italic">No data in window.</p>
+    {% endif %}
+  </div>
+
+  <div class="grid grid-cols-2 gap-4">
+    {# ---- By task ---------------------------------------------------- #}
+    <div class="bg-white shadow rounded-lg p-4">
+      <h3 class="text-sm font-medium text-gray-700 mb-3">By task</h3>
+      {% if cost.by_task %}
+      <table class="min-w-full text-xs">
+        <thead><tr class="text-left text-gray-500 border-b">
+          <th class="py-1">Task</th><th class="py-1 text-right">Calls</th>
+          <th class="py-1 text-right">Tokens</th><th class="py-1 text-right">Cost</th>
+        </tr></thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for t in cost.by_task %}
+          <tr>
+            <td class="py-1 font-mono">{{ t.key }}</td>
+            <td class="py-1 text-right">{{ t.calls }}</td>
+            <td class="py-1 text-right">{{ (t.input_tokens + t.output_tokens) | int }}</td>
+            <td class="py-1 text-right font-medium">${{ '%.4f' | format(t.cost_usd) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}<p class="text-xs text-gray-400 italic">No calls yet.</p>{% endif %}
+    </div>
+
+    {# ---- By model --------------------------------------------------- #}
+    <div class="bg-white shadow rounded-lg p-4">
+      <h3 class="text-sm font-medium text-gray-700 mb-3">By model</h3>
+      {% if cost.by_model %}
+      <table class="min-w-full text-xs">
+        <thead><tr class="text-left text-gray-500 border-b">
+          <th class="py-1">Model</th><th class="py-1 text-right">Calls</th>
+          <th class="py-1 text-right">Cost</th>
+        </tr></thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for m in cost.by_model %}
+          <tr>
+            <td class="py-1 font-mono truncate max-w-xs">{{ m.key }}</td>
+            <td class="py-1 text-right">{{ m.calls }}</td>
+            <td class="py-1 text-right font-medium">${{ '%.4f' | format(m.cost_usd) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}<p class="text-xs text-gray-400 italic">No calls yet.</p>{% endif %}
+    </div>
+  </div>
+
+  {# ---- Top tenants by spend ------------------------------------------ #}
+  <div class="bg-white shadow rounded-lg p-4">
+    <h3 class="text-sm font-medium text-gray-700 mb-3">Top tenants by spend</h3>
+    {% if cost.by_tenant %}
+    <table class="min-w-full text-xs">
+      <thead><tr class="text-left text-gray-500 border-b">
+        <th class="py-1">Tenant</th><th class="py-1 text-right">Calls</th>
+        <th class="py-1 text-right">In tokens</th><th class="py-1 text-right">Out tokens</th>
+        <th class="py-1 text-right">Cached</th><th class="py-1 text-right">Cost</th>
+      </tr></thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for t in cost.by_tenant %}
+        <tr>
+          <td class="py-1">{{ t.tenant_name or ('Tenant #' ~ t.key) }}</td>
+          <td class="py-1 text-right">{{ t.calls }}</td>
+          <td class="py-1 text-right">{{ t.input_tokens | int }}</td>
+          <td class="py-1 text-right">{{ t.output_tokens | int }}</td>
+          <td class="py-1 text-right text-gray-500">{{ t.cached_tokens | int }}</td>
+          <td class="py-1 text-right font-medium">${{ '%.4f' | format(t.cost_usd) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="text-xs text-gray-400 italic">No calls yet.</p>{% endif %}
+  </div>
+
+  {# ---- Quality signals ----------------------------------------------- #}
+  <div class="bg-white shadow rounded-lg p-4">
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="text-sm font-medium text-gray-700">Quality signals <span class="text-gray-400 font-normal">· cheaper is not always better</span></h3>
+      <span class="text-xs text-gray-400">last {{ quality.days }} days</span>
+    </div>
+    <div class="grid grid-cols-3 gap-4 text-xs">
+      <div>
+        <p class="text-gray-500 uppercase text-[10px]">Regeneration rate</p>
+        <p class="mt-1 text-xl font-semibold
+            {% if quality.regeneration_rate > 0.4 %}text-red-600
+            {% elif quality.regeneration_rate > 0.2 %}text-amber-600
+            {% else %}text-green-700{% endif %}">
+          {{ (quality.regeneration_rate * 100) | round(1) }}%
+        </p>
+        <p class="text-gray-500 mt-1">{{ quality.regenerated_within_15m }} of {{ quality.total_generations }} generations superseded within 15 min</p>
+      </div>
+      <div>
+        <p class="text-gray-500 uppercase text-[10px]">Validation-critical rate</p>
+        <p class="mt-1 text-xl font-semibold
+            {% if quality.validation_critical_rate > 0.3 %}text-red-600
+            {% elif quality.validation_critical_rate > 0.1 %}text-amber-600
+            {% else %}text-green-700{% endif %}">
+          {{ (quality.validation_critical_rate * 100) | round(1) }}%
+        </p>
+        <p class="text-gray-500 mt-1">{{ quality.validations_critical }} of {{ quality.validations_total }} generated versions had critical issues</p>
+      </div>
+      <div>
+        <p class="text-gray-500 uppercase text-[10px]">Post-gen failure rate</p>
+        <p class="mt-1 text-xl font-semibold
+            {% if quality.post_gen_failure_rate > 0.4 %}text-red-600
+            {% elif quality.post_gen_failure_rate > 0.2 %}text-amber-600
+            {% else %}text-green-700{% endif %}">
+          {{ (quality.post_gen_failure_rate * 100) | round(1) }}%
+        </p>
+        <p class="text-gray-500 mt-1">{{ quality.failed_tcs }} of {{ quality.total_tcs }} generated TCs failed at least once</p>
+      </div>
+    </div>
+  </div>
+
+  {# ---- Top spenders ---------------------------------------------------- #}
+  <div class="bg-white shadow rounded-lg p-4">
+    <h3 class="text-sm font-medium text-gray-700 mb-3">Top users by spend</h3>
+    {% if top_spenders %}
+    <table class="min-w-full text-xs">
+      <thead><tr class="text-left text-gray-500 border-b">
+        <th class="py-1">User</th><th class="py-1">Tenant</th>
+        <th class="py-1 text-right">Calls</th><th class="py-1 text-right">Cost</th>
+      </tr></thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for u in top_spenders %}
+        <tr>
+          <td class="py-1">{{ u.email }}</td>
+          <td class="py-1 text-gray-500">#{{ u.tenant_id }}</td>
+          <td class="py-1 text-right">{{ u.calls }}</td>
+          <td class="py-1 text-right font-medium">${{ '%.4f' | format(u.cost_usd) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="text-xs text-gray-400 italic">No data yet.</p>{% endif %}
+  </div>
+
+  {# ---- Errors --------------------------------------------------------- #}
+  {% if efficiency.top_errors %}
+  <div class="bg-white shadow rounded-lg p-4">
+    <h3 class="text-sm font-medium text-gray-700 mb-3">Top error statuses</h3>
+    <div class="flex flex-wrap gap-2">
+      {% for e in efficiency.top_errors %}
+      <span class="inline-flex items-center gap-1 px-2 py-1 rounded text-xs
+        {% if e.status in ['auth_error','content_error','quota_exceeded'] %}bg-red-50 text-red-800
+        {% elif e.status in ['rate_limited','overloaded'] %}bg-amber-50 text-amber-800
+        {% else %}bg-gray-100 text-gray-700{% endif %}">
+        <span class="font-mono">{{ e.status }}</span>
+        <span class="text-gray-500">\u00d7 {{ e.n }}</span>
+      </span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <p class="text-xs text-gray-400 italic">
+    All data aggregated from llm_usage_log over the last {{ days }} days.
+    Escalation rate is for test_plan_generation + agent_fix only (the
+    tasks with fallback chains).
+  </p>
+</div>
+
+{% endblock %}
