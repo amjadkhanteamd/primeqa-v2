@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% from 'components/pagination.html' import render_meta_pagination, per_page_selector %}
+{% from 'components/_buttons.html' import btn_primary %}
+{% from 'components/_empty_state.html' import empty_state %}
 {% block title %}Milestones - PrimeQA{% endblock %}
 {% block content %}
 
@@ -58,13 +60,20 @@
     {% endfor %}
   </div>
   {% else %}
-  <div class="bg-white shadow rounded-lg p-12 text-center text-sm text-gray-500">
-    {% if search or status_filter %}
-      No milestones match your filters. <a href="/milestones" class="text-indigo-600 hover:underline">Clear</a>
-    {% else %}
-      No milestones yet. Click <strong>+ New Milestone</strong> to create one.
-    {% endif %}
-  </div>
+  {% if search or status_filter %}
+    {{ empty_state(
+        title='No milestones match your filters',
+        description='Clear your search or filter to see everything.',
+        cta_label='Clear filters', cta_url='/milestones',
+    ) }}
+  {% else %}
+    {{ empty_state(
+        title='No milestones yet',
+        description='Milestones tie suites together with a due date — great for tracking releases.',
+        cta_label='+ New Milestone',
+        cta_onclick="document.getElementById('new-milestone-modal').classList.remove('hidden')",
+    ) }}
+  {% endif %}
   {% endif %}
 
   {{ render_meta_pagination(meta, '/milestones', qs) }}

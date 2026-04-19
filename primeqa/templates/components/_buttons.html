@@ -1,0 +1,73 @@
+{#
+  Button macros — the single source of truth for button styling.
+
+  Usage:
+    {% from 'components/_buttons.html' import btn_primary, btn_secondary,
+                                              btn_success, btn_danger_primary,
+                                              btn_danger_link %}
+
+  Sizing: `size` defaults to 'md'; pass 'sm' for row-action buttons.
+
+  Rationale (audit U4/U8, 2026-04-19):
+  Previously Delete rendered as (a) text-red-600 link, (b) bg-red-600
+  white-on-red primary button, (c) white ring-1 ring-red-200 secondary.
+  Same for New / Run / Generate — green/blue/white scattered without
+  rule. This file defines:
+
+    btn_primary        — the page's primary action (indigo fill)
+    btn_secondary      — alternate actions (white + gray ring)
+    btn_success        — positive-outcome actions: Run, Approve (green fill)
+    btn_danger_primary — destructive primary (red fill) — Delete on detail
+    btn_danger_link    — destructive inline / row action (red text only)
+
+  Keep the surface minimal; resist adding an 8th style.
+#}
+
+{# Size classes pulled into one place so `sm` vs `md` is consistent. #}
+{% set _SIZES = {
+  'sm': 'px-2.5 py-1 text-xs',
+  'md': 'px-3 py-2 text-sm',
+  'lg': 'px-4 py-2.5 text-base',
+} %}
+
+{% macro btn_primary(label, href=None, type='button', size='md', extra='', name=None, value=None) %}
+{% set sz = _SIZES.get(size, _SIZES['md']) %}
+{% if href %}
+  <a href="{{ href }}" class="rounded-md bg-indigo-600 {{ sz }} font-semibold text-white hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 {{ extra }}">{{ label }}</a>
+{% else %}
+  <button type="{{ type }}" {% if name %}name="{{ name }}"{% endif %} {% if value is not none %}value="{{ value }}"{% endif %} class="rounded-md bg-indigo-600 {{ sz }} font-semibold text-white hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:bg-indigo-400 disabled:cursor-not-allowed {{ extra }}">{{ label }}</button>
+{% endif %}
+{% endmacro %}
+
+{% macro btn_secondary(label, href=None, type='button', size='md', extra='') %}
+{% set sz = _SIZES.get(size, _SIZES['md']) %}
+{% if href %}
+  <a href="{{ href }}" class="rounded-md bg-white ring-1 ring-gray-300 {{ sz }} font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 {{ extra }}">{{ label }}</a>
+{% else %}
+  <button type="{{ type }}" class="rounded-md bg-white ring-1 ring-gray-300 {{ sz }} font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed {{ extra }}">{{ label }}</button>
+{% endif %}
+{% endmacro %}
+
+{% macro btn_success(label, href=None, type='button', size='md', extra='') %}
+{# Success = positive outcome (Run, Approve). NOT "save" or generic primary. #}
+{% set sz = _SIZES.get(size, _SIZES['md']) %}
+{% if href %}
+  <a href="{{ href }}" class="rounded-md bg-green-600 {{ sz }} font-semibold text-white hover:bg-green-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-green-600 {{ extra }}">{{ label }}</a>
+{% else %}
+  <button type="{{ type }}" class="rounded-md bg-green-600 {{ sz }} font-semibold text-white hover:bg-green-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-green-600 disabled:bg-green-400 disabled:cursor-not-allowed {{ extra }}">{{ label }}</button>
+{% endif %}
+{% endmacro %}
+
+{% macro btn_danger_primary(label, type='button', size='md', extra='', onclick='') %}
+{# For destructive buttons that carry weight — detail-page "Delete",
+   modal "Delete forever". Fully-filled red. #}
+{% set sz = _SIZES.get(size, _SIZES['md']) %}
+<button type="{{ type }}" {% if onclick %}onclick="{{ onclick }}"{% endif %} class="rounded-md bg-red-600 {{ sz }} font-semibold text-white hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600 disabled:bg-red-400 disabled:cursor-not-allowed {{ extra }}">{{ label }}</button>
+{% endmacro %}
+
+{% macro btn_danger_link(label, onclick='', size='sm', extra='') %}
+{# For row-level destructive actions — "Delete" next to each row.
+   Red text on transparent, no fill, no border. #}
+{% set sz = _SIZES.get(size, _SIZES['md']) %}
+<button type="button" onclick="{{ onclick }}" class="inline-flex items-center {{ sz }} font-medium text-red-600 hover:text-red-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600 {{ extra }}">{{ label }}</button>
+{% endmacro %}

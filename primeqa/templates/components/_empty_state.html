@@ -1,0 +1,46 @@
+{#
+  Empty-state macro — one component for every "no rows" scenario.
+
+  Usage:
+    {% from 'components/_empty_state.html' import empty_state %}
+    {{ empty_state(
+        title='No test cases yet',
+        description='Generate test cases from a Requirement, or create one manually.',
+        cta_label='+ New Requirement',
+        cta_url='/requirements/new',
+    ) }}
+
+  Optional `icon` is an SVG path snippet (Heroicons d=... string); defaults
+  to an inbox/tray icon. Skip the CTA by omitting cta_label + cta_url.
+
+  Rationale (audit U5, 2026-04-19): 12 list templates shipped 12 different
+  empty-state treatments (inside-a-table, plain text, centered panel, no
+  CTA, wrong CTA). One macro, one visual, one CTA slot.
+#}
+
+{% macro empty_state(title, description='', cta_label=None, cta_url=None, cta_onclick=None, icon=None, compact=False) %}
+<div class="bg-white rounded-lg {% if not compact %}shadow border border-gray-100{% endif %} p-8 text-center" role="status" aria-live="polite">
+  <div class="mx-auto mb-3 h-10 w-10 flex items-center justify-center rounded-full bg-gray-50">
+    <svg class="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+      <path stroke-linecap="round" stroke-linejoin="round" d="{{ icon or 'M2.25 13.5h3.86a2.25 2.25 0 0 1 2.012 1.244l.256.512a2.25 2.25 0 0 0 2.013 1.244h3.218a2.25 2.25 0 0 0 2.013-1.244l.256-.512a2.25 2.25 0 0 1 2.013-1.244h3.859m-19.5.338V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18v-4.162c0-.224-.034-.447-.1-.661L19.24 5.338a2.25 2.25 0 0 0-2.15-1.588H6.911a2.25 2.25 0 0 0-2.15 1.588L2.35 13.177a2.25 2.25 0 0 0-.1.661Z' }}" />
+    </svg>
+  </div>
+  <h3 class="text-sm font-semibold text-gray-900">{{ title }}</h3>
+  {% if description %}
+  <p class="mt-1 text-xs text-gray-500 max-w-md mx-auto">{{ description }}</p>
+  {% endif %}
+  {% if cta_label and (cta_url or cta_onclick) %}
+  <div class="mt-4">
+    {% if cta_url %}
+    <a href="{{ cta_url }}" class="inline-flex items-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">
+      {{ cta_label }}
+    </a>
+    {% else %}
+    <button type="button" onclick="{{ cta_onclick }}" class="inline-flex items-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">
+      {{ cta_label }}
+    </button>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}

@@ -1,16 +1,19 @@
 {% extends "settings/base.html" %}
 {% from "components/pagination.html" import render_search, render_pagination, sort_header %}
+{% from "components/_buttons.html" import btn_primary %}
+{% from "components/_empty_state.html" import empty_state %}
 {% block title %}Users - PrimeQA{% endblock %}
 {% block settings_content %}
 <div class="space-y-4">
     <div class="flex justify-between items-center">
         <h1 class="text-2xl font-bold text-gray-900">Users</h1>
-        <a href="/users/new" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Add User</a>
+        {{ btn_primary('Add User', href='/users/new') }}
     </div>
     <div class="flex items-center justify-between">
         {{ render_search('/users', search or '', 'Search by name or email...') }}
         <span class="text-sm text-gray-500">{{ total }} user{{ 's' if total != 1 else '' }}</span>
     </div>
+    {% if users %}
     <div class="bg-white shadow rounded-lg overflow-x-auto">
         <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
@@ -39,15 +42,24 @@
                     </td>
                 </tr>
                 {% endfor %}
-                {% if not users %}
-                <tr><td colspan="6" class="px-6 py-8 text-center text-sm text-gray-500">
-                    No users found{% if search %} matching "{{ search }}"{% endif %}.
-                    {% if not search %}<a href="/users/new" class="text-indigo-600 hover:text-indigo-500">Add your first user.</a>{% endif %}
-                </td></tr>
-                {% endif %}
             </tbody>
         </table>
         {{ render_pagination(page, total_pages, '/users', extra_params) }}
     </div>
+    {% else %}
+      {% if search %}
+        {{ empty_state(
+            title='No users match "' ~ search ~ '"',
+            description='Try a different search, or clear the filter.',
+            cta_label='Clear search', cta_url='/users',
+        ) }}
+      {% else %}
+        {{ empty_state(
+            title='No users yet',
+            description='Invite your first teammate. You can give them viewer, tester, BA, or admin access.',
+            cta_label='+ Add User', cta_url='/users/new',
+        ) }}
+      {% endif %}
+    {% endif %}
 </div>
 {% endblock %}

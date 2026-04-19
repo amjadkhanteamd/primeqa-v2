@@ -2191,6 +2191,8 @@ def connections_detail(conn_id):
             return redirect("/connections")
         return render_template("connections/detail.html", **ctx(
             active_page="settings_connections", settings_page="connections", conn=conn,
+            breadcrumb_section="Connections", breadcrumb_section_url="/connections",
+            breadcrumb_item=conn.name,
             message=request.args.get("message"),
         ))
     finally:
@@ -2410,6 +2412,8 @@ def groups_detail(group_id):
 
         return render_template("groups/detail.html", **ctx(
             active_page="settings_groups", settings_page="groups", group=group,
+            breadcrumb_section="Groups", breadcrumb_section_url="/groups",
+            breadcrumb_item=group.get("name") if isinstance(group, dict) else getattr(group, "name", None),
             available_users=available_users, available_envs=available_envs,
         ))
     finally:
