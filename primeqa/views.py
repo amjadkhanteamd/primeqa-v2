@@ -3690,6 +3690,10 @@ def requirements_generate(req_id):
         elif "invalid x-api-key" in lower or "authentication_error" in lower:
             flash("Generation blocked: the LLM connection's API key is invalid. "
                   "Update it in Settings \u2192 Connections.", "error")
+        elif "tenant limit" in lower or "tenant daily spend" in lower:
+            # Hit by the per-tenant rate limiter in LLMGateway (Phase 2).
+            flash(f"Generation paused: {msg}. Contact your administrator "
+                  "to raise your tenant's LLM cap.", "error")
         elif "rate_limit" in lower or "rate limit" in lower or "429" in msg:
             flash("Generation blocked: Anthropic rate limit hit. Wait a minute "
                   "and retry, or reduce bulk size.", "error")

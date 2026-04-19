@@ -98,6 +98,36 @@ def llm_call(
     prompt = get_prompt(task)
     prompt_version = getattr(prompt, "VERSION", task)
 
+    # ---- Per-tenant rate limits (migration 032) ---------------------------
+    # Check BEFORE anything expensive. A blocked call writes an empty row
+    # to llm_usage_log so the dashboard attributes it correctly, then
+    # raises LLMError("rate_limited") so the UI can show a friendly
+    # "upgrade" flash rather than "500 error".
+    from primeqa.intelligence.llm import limits as _limits
+
+    # Tenant policy: caller can pass one explicitly; otherwise load from
+    # tenant_agent_settings (single DB roundtrip, cached within the call).
+    if tenant_policy is None:
+        tenant_limits, tenant_policy = _limits.load_tenant_config(tenant_id)
+    else:
+        tenant_limits, _ = _limits.load_tenant_config(tenant_id)
+
+    rc = _limits.check(tenant_id, tenant_limits)
+    if not rc.allowed:
+        usage.record(
+            tenant_id=tenant_id, user_id=user_id, task=task,
+            model="(blocked)", prompt_version=prompt_version,
+            input_tokens=0, output_tokens=0,
+            cost_usd=0.0, latency_ms=0,
+            status="rate_limited",
+            complexity=(complexity or "default"), escalated=False,
+            run_id=run_id, requirement_id=requirement_id,
+            test_case_id=test_case_id,
+            generation_batch_id=generation_batch_id,
+            context={"reason": rc.reason},
+        )
+        raise LLMError("rate_limited", rc.message or "Tenant rate limit hit")
+
     # Complexity: caller may override; otherwise the prompt module
     # detects from context. Falls through to "default" for tasks that
     # don't route by complexity.

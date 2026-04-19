@@ -5,7 +5,7 @@ Tables owned: tenants, users, refresh_tokens, environments,
 """
 
 from sqlalchemy import (
-    Column, Integer, String, Boolean, DateTime, Text, JSON,
+    Column, Integer, Float, String, Boolean, DateTime, Text, JSON,
     ForeignKey, CheckConstraint, UniqueConstraint, Index,
 )
 from sqlalchemy.orm import relationship
@@ -125,7 +125,7 @@ class EnvironmentCredential(Base):
 
 
 class TenantAgentSettings(Base):
-    """Per-tenant agent autonomy configuration (R2, configurable by Super Admin)."""
+    """Per-tenant agent autonomy + LLM policy (R2 + Phase 2 LLM gateway)."""
     __tablename__ = "tenant_agent_settings"
 
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"),
@@ -136,6 +136,13 @@ class TenantAgentSettings(Base):
     max_fix_attempts_per_run = Column(Integer, nullable=False, server_default="3")
     updated_by = Column(Integer, ForeignKey("users.id"))
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    # Migration 032: LLM rate limits + policy flags. NULL = unlimited.
+    llm_max_calls_per_minute = Column(Integer)
+    llm_max_calls_per_hour = Column(Integer)
+    llm_max_spend_per_day_usd = Column(Float)
+    llm_always_use_opus = Column(Boolean, nullable=False, server_default="false")
+    llm_allow_haiku = Column(Boolean, nullable=False, server_default="true")
 
 
 class ActivityLog(Base):
