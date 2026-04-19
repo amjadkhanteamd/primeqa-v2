@@ -39,6 +39,17 @@ UPDATE pipeline_runs
  WHERE status = 'running'
    AND started_at < now() - interval '24 hours';
 
+-- 3. Delete test-pollution users (userN@primeqa.io, 0..14) that
+--    saturated the 20-user cap and broke test_auth. The test creates
+--    these and never cleans up — safe to delete, cascades on
+--    refresh_tokens. DOES NOT touch tm_*, hd_*, or tester@primeqa.io
+--    which are stable fixtures used across multiple test suites.
+DELETE FROM refresh_tokens
+ WHERE user_id IN (
+    SELECT id FROM users WHERE email ~ '^user[0-9]+@primeqa\.io$'
+ );
+DELETE FROM users WHERE email ~ '^user[0-9]+@primeqa\.io$';
+
 COMMIT;
 
 -- Post-run verification (run separately):

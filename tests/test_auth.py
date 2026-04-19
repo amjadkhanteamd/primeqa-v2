@@ -42,6 +42,11 @@ def run_tests():
     results = []
     print("\n=== Auth Module Tests ===\n")
 
+    # Setup: delete any test-fixture users that may have leaked from a
+    # prior run (userN@primeqa.io, overflow@primeqa.io, tester@primeqa.io).
+    # Tests 8+ create these and depend on them not pre-existing.
+    _teardown_auth_test_users()
+
     # 1. Login with seeded admin
     def test_admin_login():
         r = client.post("/api/auth/login", json={
@@ -212,7 +217,10 @@ def run_tests():
             if r.status_code == 201:
                 created_user_ids.append(r.get_json()["id"])
             elif r.status_code == 409:
-                assert "maximum" in r.get_json().get("error", "").lower(), \
+                # Envelope shape: {"error": {"code": "...", "message": "..."}}
+                err = r.get_json().get("error", {})
+                msg = err.get("message", "") if isinstance(err, dict) else str(err)
+                assert "maximum" in msg.lower(), \
                     f"Expected user limit error, got: {r.data}"
                 break
 
@@ -225,7 +233,9 @@ def run_tests():
             "role": "viewer",
         })
         assert r.status_code == 409, f"Expected 409 (limit reached), got {r.status_code}: {r.data}"
-        assert "maximum" in r.get_json().get("error", "").lower()
+        err = r.get_json().get("error", {})
+        msg = err.get("message", "") if isinstance(err, dict) else str(err)
+        assert "maximum" in msg.lower(), f"Expected 'maximum' in message, got: {r.data}"
     results.append(test("14. 20-user limit enforced", test_user_limit))
 
     # 15. Logout revokes all tokens
@@ -241,6 +251,12 @@ def run_tests():
         assert r2.status_code == 401, f"Expected 401 after logout, got {r2.status_code}"
     results.append(test("15. Logout revokes refresh tokens", test_logout))
 
+    # Teardown — delete all test-created user artifacts so future runs
+    # don't saturate the 20-user tenant cap. Without this, the DB
+    # accumulates userN@primeqa.io rows on every run and eventually
+    # every test after #14 fails with TENANT_CAP.
+    _teardown_auth_test_users()
+
     # Summary
     passed = sum(results)
     total = len(results)
@@ -253,6 +269,44 @@ def run_tests():
     print()
 
     return passed == total
+
+
+def _teardown_auth_test_users():
+    """Delete test-fixture users created by this suite so prior-run
+    leftovers don't saturate the 20-user cap.
+
+    Covers:
+      userN@primeqa.io   (test 14 loop, 0..17)
+      overflow@primeqa.io (test 14 final)
+      tester@primeqa.io   (test 8 — test 9+ expect it to be newly created)
+
+    Idempotent; raw SQL so it doesn't need the app's session.
+    Also used as setup cleanup at the top of run_tests().
+    """
+    try:
+        import os
+        import psycopg2
+        url = os.environ.get("DATABASE_URL")
+        if not url:
+            return
+        conn = psycopg2.connect(url)
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    DELETE FROM refresh_tokens
+                    WHERE user_id IN (
+                        SELECT id FROM users
+                        WHERE email ~ '^(user[0-9]+|overflow|tester)@primeqa\\.io$'
+                    );
+                """)
+                cur.execute("""
+                    DELETE FROM users
+                    WHERE email ~ '^(user[0-9]+|overflow|tester)@primeqa\\.io$';
+                """)
+        conn.close()
+    except Exception as e:
+        # Best-effort — don't fail the test run if it errors.
+        print(f"  (teardown warning: {e})")
 
 
 if __name__ == "__main__":

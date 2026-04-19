@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from 'components/pagination.html' import render_meta_pagination, per_page_selector %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'components/_empty_state.html' import empty_state %}
 {% block title %}Reviews - PrimeQA{% endblock %}
 {% block content %}
 
@@ -70,11 +71,26 @@
       </div>
       {% endfor %}
       {% if not reviews %}
-      <div class="px-6 py-10 text-center text-sm text-gray-500">
-        {% if show_deleted %}Trash is empty.
-        {% elif status_filter %}No reviews match that status.
-        {% else %}No pending reviews{% endif %}
-      </div>
+        {% if show_deleted %}
+          {{ empty_state(
+              title='Trash is empty',
+              description='Deleted reviews would appear here.',
+              compact=True,
+          ) }}
+        {% elif status_filter %}
+          {{ empty_state(
+              title='No reviews with status "' ~ status_filter ~ '"',
+              description='Try a different status or clear the filter.',
+              cta_label='Clear filter', cta_url='/reviews',
+              compact=True,
+          ) }}
+        {% else %}
+          {{ empty_state(
+              title='No pending reviews',
+              description='You\'re all caught up. When a BA assigns a review it will appear here.',
+              compact=True,
+          ) }}
+        {% endif %}
       {% endif %}
     </div>
   </div>

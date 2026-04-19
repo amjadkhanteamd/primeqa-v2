@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from 'components/pagination.html' import render_meta_pagination, per_page_selector %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'components/_empty_state.html' import empty_state %}
 {% block title %}Metadata Impacts - PrimeQA{% endblock %}
 {% block content %}
 
@@ -74,13 +75,26 @@
     {% endfor %}
   </div>
   {% else %}
-  <div class="bg-white shadow rounded-lg p-8 text-center">
-    <p class="text-sm text-gray-500">
-      {% if show_deleted %}Trash is empty.
-      {% elif search or (resolution_filter and resolution_filter != 'pending') %}No impacts match your filters.
-      {% else %}No pending impacts. Your test cases are up to date.{% endif %}
-    </p>
-  </div>
+  {% if show_deleted %}
+    {{ empty_state(
+        title='Trash is empty',
+        description='Soft-deleted impacts would appear here.',
+        compact=True,
+    ) }}
+  {% elif search or (resolution_filter and resolution_filter != 'pending') %}
+    {{ empty_state(
+        title='No impacts match your filters',
+        description='Adjust your search or change the resolution status.',
+        cta_label='Clear filters', cta_url='/impacts',
+        compact=True,
+    ) }}
+  {% else %}
+    {{ empty_state(
+        title='No pending impacts',
+        description='All flagged metadata changes are accounted for. PrimeQA raises impacts when a metadata refresh detects drift that could affect tests.',
+        compact=True,
+    ) }}
+  {% endif %}
   {% endif %}
 
   {{ render_meta_pagination(meta, '/impacts', qs) }}
