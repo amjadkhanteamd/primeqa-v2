@@ -25,7 +25,8 @@ https://primeqa-v2-production.up.railway.app — login `admin@primeqa.io` / `cha
 13. **Live execution** — SSE-powered timeline updates per step, **plus a durable hierarchical "Pipeline log" panel** backed by `run_events` that survives page refresh and works across Railway's split web/worker services. Download any run's log as .txt or .json for tickets.
 14. **Static validation after generation** — every generated test case is validated against the org's metadata before you see it: object-not-found, field-not-found, unresolved `$var`, SOQL `FROM` / `SELECT` column mismatches. Fuzzy suggestions + one-click **Apply** button per issue. Critical issues block execution automatically (superadmin override available). Runtime fail-fast stays as a defence-in-depth layer.
 15. **Context-driven run triggers** — run from the source: per-requirement `▶ Run`, per-release `▶ Run test plan`, per-suite / per-TC buttons, with state-aware `Generate / Regenerate / Generate again` labels on requirements. Runs tab becomes history + live detail only; the wizard is reserved for mixed-source runs.
-16. **Per-run AI spend + label + AI failure summary** (superadmin) — run detail shows aggregated LLM cost (test-gen batches + agent fixes) with models and tokens; free-form inline-editable label with substring filter on history; on-demand "Summarise failures" cached on the run.
+16. **LLM architecture** — single `llm_call()` chokepoint routes every Anthropic call through one module (`primeqa.intelligence.llm`). Per-tenant rate limits (calls-per-minute / hour / daily-spend), Anthropic `tool_use` for the test-plan generator (parse failures become impossible), prompt caching with per-tenant isolation, PII redaction, and a feedback loop that captures validator-critical / regenerated-soon / execution-failed signals and auto-loads them into the next generation prompt. Product tiers (`starter` / `pro` / `enterprise` / `custom`) set sensible defaults; tenants see their own plan + soft-cap progress bars at `/settings/my-llm-usage`; superadmins track cost / efficiency / quality proxies at `/settings/llm-usage` and change tenant tiers inline.
+17. **Per-run AI spend + label + AI failure summary** (superadmin) — run detail shows aggregated LLM cost (test-gen batches + agent fixes) with models and tokens; free-form inline-editable label with substring filter on history; on-demand "Summarise failures" cached on the run.
 17. **Rerun granularity** — rerun all failed tests, or a single failed test, or the whole run *verbatim* with pinned test-case versions (the worker honors `run.config.version_pin` ahead of `current_version_id`).
 15. **Scheduled runs** — full cron (presets + advanced) for test suites with dead-man's-switch alerting
 16. **Fix-and-rerun agent** — on failure, triages the error, proposes a fix, auto-applies on sandbox at high confidence (production is always human-gated). Snapshot-based revert.
@@ -42,7 +43,7 @@ https://primeqa-v2-production.up.railway.app — login `admin@primeqa.io` / `cha
 - `metadata/` — versioned Salesforce org metadata with per-category sync DAG
 - `test_management/` — sections, requirements, test cases, versions, suites, reviews, tags, milestones
 - `execution/` — pipeline runs, step executor, cleanup, data engine, analytics, flake scoring
-- `intelligence/` — failure patterns, causal links, AI generation, risk engine, fix-and-rerun agent
+- `intelligence/` — failure patterns, causal links, AI generation, risk engine, fix-and-rerun agent, **llm/ gateway** (router, providers, prompts, tiers, feedback, usage, dashboards)
 - `release/` — releases, decisions, decision engine, CI webhooks
 - `vector/` — embeddings (pgvector)
 
@@ -86,11 +87,12 @@ python -m primeqa.app        # :5000
 
 ## Tests
 ```bash
-# ~155 tests across 15 integration suites, all passing against Railway
+# ~184 tests across 17 integration suites, all passing against Railway
 for t in test_auth test_environments test_metadata test_management test_hardening \
          test_pipeline test_executor test_cleanup test_intelligence \
          test_run_experience test_r2_superadmin test_r3_metadata \
-         test_r4_schedule test_r5_agent test_r6_polish; do
+         test_r4_schedule test_r5_agent test_r6_polish test_r7_jira_picker \
+         test_system_validation test_llm_architecture; do
   python tests/$t.py
 done
 ```

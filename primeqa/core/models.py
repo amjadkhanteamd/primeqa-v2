@@ -137,12 +137,18 @@ class TenantAgentSettings(Base):
     updated_by = Column(Integer, ForeignKey("users.id"))
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
-    # Migration 032: LLM rate limits + policy flags. NULL = unlimited.
+    # Migration 032: LLM rate limits + policy flags. NULL = unlimited
+    # (tenant uses the tier preset instead — see migration 034).
     llm_max_calls_per_minute = Column(Integer)
     llm_max_calls_per_hour = Column(Integer)
     llm_max_spend_per_day_usd = Column(Float)
     llm_always_use_opus = Column(Boolean, nullable=False, server_default="false")
     llm_allow_haiku = Column(Boolean, nullable=False, server_default="true")
+
+    # Migration 034: product tier. Named bundles of the five fields above;
+    # NULL overrides win over the preset. Values: starter | pro | enterprise
+    # | custom. `custom` bypasses the preset entirely (raw columns only).
+    llm_tier = Column(String(20), nullable=False, server_default="starter")
 
 
 class ActivityLog(Base):

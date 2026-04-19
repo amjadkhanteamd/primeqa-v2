@@ -1,0 +1,233 @@
+{% extends "settings/base.html" %}
+{% block title %}My LLM usage - PrimeQA{% endblock %}
+{% block settings_content %}
+
+<div class="space-y-6">
+
+  <!-- Header -->
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">LLM usage &amp; plan</h1>
+      <p class="mt-1 text-sm text-gray-500">Your tenant's AI spend and rate limits against the PrimeQA shared-key pool.</p>
+    </div>
+    <form method="GET" action="/settings/my-llm-usage" class="flex items-center gap-2 text-sm">
+      <label for="days" class="text-gray-500">Window</label>
+      <select id="days" name="days" onchange="this.form.submit()" class="rounded-md border border-gray-300 px-2 py-1 text-sm">
+        {% for opt in [7, 30, 90] %}
+        <option value="{{ opt }}" {% if days == opt %}selected{% endif %}>Last {{ opt }} days</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  <!-- Soft-cap banner: shown when any live bar >= 80%. -->
+  {% if snapshot.blocked %}
+  <div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 flex items-start gap-3">
+    <svg class="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.732 0 2.814-1.874 1.949-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126z" /></svg>
+    <div class="text-sm">
+      <p class="font-semibold text-red-900">Rate limit hit &mdash; new LLM calls are blocked.</p>
+      <p class="mt-1 text-red-800">You've saturated at least one cap on the <span class="font-medium">{{ preset.label }}</span> plan. Calls will unblock as the window rolls off, or upgrade your tier to raise the cap.</p>
+    </div>
+  </div>
+  {% elif snapshot.warn %}
+  <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-3">
+    <svg class="h-5 w-5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" /></svg>
+    <div class="text-sm">
+      <p class="font-semibold text-amber-900">Approaching a plan limit.</p>
+      <p class="mt-1 text-amber-800">One or more caps are at 80%+ of the <span class="font-medium">{{ preset.label }}</span> plan. New LLM work will start failing once the cap is reached.</p>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Tier panel -->
+  <div class="bg-white shadow rounded-lg p-5">
+    <div class="flex items-start justify-between gap-6">
+      <div>
+        <p class="text-xs text-gray-500 uppercase tracking-wider">Current plan</p>
+        <p class="mt-1 text-2xl font-semibold text-gray-900">{{ preset.label }}</p>
+        <p class="mt-2 text-sm text-gray-600 max-w-xl">{{ preset.description }}</p>
+      </div>
+      <div class="text-right">
+        <p class="text-xs text-gray-500 uppercase tracking-wider">Blocked calls this window</p>
+        <p class="mt-1 text-2xl font-semibold {% if summary.blocked_calls > 0 %}text-red-600{% else %}text-gray-900{% endif %}">
+          {{ summary.blocked_calls }}
+        </p>
+        <p class="text-xs text-gray-500">LLM calls rejected by rate limits in the last {{ days }} days</p>
+      </div>
+    </div>
+
+    <!-- Soft-cap progress bars -->
+    <div class="mt-5 grid grid-cols-3 gap-4">
+      {% macro bar(label, used, cap, pct, suffix='', total_fmt='{{value}}') %}
+      <div>
+        <div class="flex items-baseline justify-between text-xs text-gray-600">
+          <span>{{ label }}</span>
+          <span class="font-medium {% if pct is not none and pct >= 1.0 %}text-red-600{% elif pct is not none and pct >= 0.8 %}text-amber-600{% else %}text-gray-700{% endif %}">
+            {% if cap is none %}
+              {{ used }}{{ suffix }} <span class="text-gray-400">· no cap</span>
+            {% else %}
+              {{ used }}{{ suffix }} / {{ cap }}{{ suffix }}
+            {% endif %}
+          </span>
+        </div>
+        <div class="mt-1 h-2 w-full rounded-full bg-gray-100 overflow-hidden">
+          {% if cap is not none %}
+          {% set pct_px = (pct * 100) | round(0, 'floor') if pct is not none else 0 %}
+          {% if pct_px > 100 %}{% set pct_px = 100 %}{% endif %}
+          <div class="h-2 rounded-full
+              {% if pct is not none and pct >= 1.0 %}bg-red-500
+              {% elif pct is not none and pct >= 0.8 %}bg-amber-500
+              {% else %}bg-indigo-500{% endif %}"
+            style="width: {{ pct_px }}%"></div>
+          {% endif %}
+        </div>
+      </div>
+      {% endmacro %}
+
+      {{ bar('Calls / minute', snapshot.calls_last_minute, snapshot.cap_per_minute, snapshot.pct_per_minute) }}
+      {{ bar('Calls / hour', snapshot.calls_last_hour, snapshot.cap_per_hour, snapshot.pct_per_hour) }}
+      <div>
+        <div class="flex items-baseline justify-between text-xs text-gray-600">
+          <span>Spend today (UTC)</span>
+          <span class="font-medium {% if snapshot.pct_spend_today is not none and snapshot.pct_spend_today >= 1.0 %}text-red-600{% elif snapshot.pct_spend_today is not none and snapshot.pct_spend_today >= 0.8 %}text-amber-600{% else %}text-gray-700{% endif %}">
+            {% if snapshot.cap_spend_per_day_usd is none %}
+              ${{ '%.4f' | format(snapshot.spend_today_usd) }} <span class="text-gray-400">· no cap</span>
+            {% else %}
+              ${{ '%.4f' | format(snapshot.spend_today_usd) }} / ${{ '%.2f' | format(snapshot.cap_spend_per_day_usd) }}
+            {% endif %}
+          </span>
+        </div>
+        <div class="mt-1 h-2 w-full rounded-full bg-gray-100 overflow-hidden">
+          {% if snapshot.cap_spend_per_day_usd is not none %}
+          {% set pct = snapshot.pct_spend_today %}
+          {% set pct_px = (pct * 100) | round(0, 'floor') if pct is not none else 0 %}
+          {% if pct_px > 100 %}{% set pct_px = 100 %}{% endif %}
+          <div class="h-2 rounded-full
+              {% if pct is not none and pct >= 1.0 %}bg-red-500
+              {% elif pct is not none and pct >= 0.8 %}bg-amber-500
+              {% else %}bg-indigo-500{% endif %}"
+            style="width: {{ pct_px }}%"></div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <p class="mt-4 text-xs text-gray-500">
+      Rate limits reset on a rolling window &mdash; the per-minute and per-hour bars clear as old calls age out.
+      Daily spend resets at UTC midnight.
+    </p>
+  </div>
+
+  <!-- KPIs: window totals -->
+  <div class="grid grid-cols-4 gap-4">
+    <div class="bg-white shadow rounded-lg p-4">
+      <p class="text-xs text-gray-500 uppercase">Total spend</p>
+      <p class="mt-1 text-2xl font-semibold text-gray-900">${{ '%.4f' | format(summary.total.cost_usd) }}</p>
+      <p class="mt-1 text-xs text-gray-500">last {{ days }} days</p>
+    </div>
+    <div class="bg-white shadow rounded-lg p-4">
+      <p class="text-xs text-gray-500 uppercase">Calls</p>
+      <p class="mt-1 text-2xl font-semibold text-gray-900">{{ summary.total.calls }}</p>
+      <p class="mt-1 text-xs text-gray-500">successful LLM invocations</p>
+    </div>
+    <div class="bg-white shadow rounded-lg p-4">
+      <p class="text-xs text-gray-500 uppercase">Input tokens</p>
+      <p class="mt-1 text-2xl font-semibold text-gray-900">{{ summary.total.input_tokens | int }}</p>
+      <p class="mt-1 text-xs text-gray-500">{{ summary.total.cached_tokens | int }} cached (free reads)</p>
+    </div>
+    <div class="bg-white shadow rounded-lg p-4">
+      <p class="text-xs text-gray-500 uppercase">Output tokens</p>
+      <p class="mt-1 text-2xl font-semibold text-gray-900">{{ summary.total.output_tokens | int }}</p>
+      <p class="mt-1 text-xs text-gray-500">generated by the model</p>
+    </div>
+  </div>
+
+  <!-- Daily spend chart -->
+  <div class="bg-white shadow rounded-lg p-4">
+    <h3 class="text-sm font-medium text-gray-700 mb-3">Daily spend <span class="text-gray-400 font-normal">· last {{ days }} days</span></h3>
+    {% if summary.by_day %}
+    <div class="flex items-end gap-1 h-32">
+      {% set max_cost = summary.by_day | map(attribute='cost_usd') | max %}
+      {% for d in summary.by_day %}
+      {% set pct = ((d.cost_usd / max_cost) * 100) if max_cost else 0 %}
+      <div class="flex-1 flex flex-col items-center group relative" title="{{ d.day }}: ${{ '%.4f' | format(d.cost_usd) }} ({{ d.calls }} calls)">
+        <div class="w-full bg-indigo-400 rounded-t" style="height: {{ pct }}%"></div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-400 italic">No LLM calls recorded in this window.</p>
+    {% endif %}
+  </div>
+
+  <!-- By task -->
+  <div class="bg-white shadow rounded-lg p-4">
+    <h3 class="text-sm font-medium text-gray-700 mb-3">Spend by feature</h3>
+    {% if summary.by_task %}
+    <table class="min-w-full text-xs">
+      <thead><tr class="text-left text-gray-500 border-b">
+        <th class="py-1">Feature</th>
+        <th class="py-1 text-right">Calls</th>
+        <th class="py-1 text-right">Input</th>
+        <th class="py-1 text-right">Cached</th>
+        <th class="py-1 text-right">Output</th>
+        <th class="py-1 text-right">Cost</th>
+      </tr></thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for t in summary.by_task %}
+        <tr>
+          <td class="py-1 font-mono">{{ t.key }}</td>
+          <td class="py-1 text-right">{{ t.calls }}</td>
+          <td class="py-1 text-right">{{ t.input_tokens | int }}</td>
+          <td class="py-1 text-right text-gray-500">{{ t.cached_tokens | int }}</td>
+          <td class="py-1 text-right">{{ t.output_tokens | int }}</td>
+          <td class="py-1 text-right font-medium">${{ '%.4f' | format(t.cost_usd) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="text-xs text-gray-400 italic">No LLM calls recorded yet.</p>
+    {% endif %}
+  </div>
+
+  <!-- Tier comparison (read-only — tier upgrade is a sales motion today) -->
+  <div class="bg-white shadow rounded-lg p-4">
+    <h3 class="text-sm font-medium text-gray-700 mb-3">All plans</h3>
+    <table class="min-w-full text-xs">
+      <thead><tr class="text-left text-gray-500 border-b">
+        <th class="py-1.5">Plan</th>
+        <th class="py-1.5 text-right">Calls / min</th>
+        <th class="py-1.5 text-right">Calls / hour</th>
+        <th class="py-1.5 text-right">Spend / day</th>
+        <th class="py-1.5 text-right">Opus escalation</th>
+      </tr></thead>
+      <tbody class="divide-y divide-gray-100">
+        {% for tname, p in all_tiers.items() %}
+        {% if tname != 'custom' %}
+        <tr class="{% if tname == tier %}bg-indigo-50 font-medium{% endif %}">
+          <td class="py-1.5">
+            {{ p.label }}
+            {% if tname == tier %}<span class="ml-1 text-[10px] uppercase tracking-wider text-indigo-600">(current)</span>{% endif %}
+          </td>
+          <td class="py-1.5 text-right">{% if p.max_calls_per_minute is none %}<span class="text-gray-400">unlimited</span>{% else %}{{ p.max_calls_per_minute }}{% endif %}</td>
+          <td class="py-1.5 text-right">{% if p.max_calls_per_hour is none %}<span class="text-gray-400">unlimited</span>{% else %}{{ p.max_calls_per_hour }}{% endif %}</td>
+          <td class="py-1.5 text-right">{% if p.max_spend_per_day_usd is none %}<span class="text-gray-400">unlimited</span>{% else %}${{ '%.2f' | format(p.max_spend_per_day_usd) }}{% endif %}</td>
+          <td class="py-1.5 text-right">{% if p.always_use_opus %}always-on{% else %}on high complexity{% endif %}</td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="mt-3 text-xs text-gray-500">
+      To change plans, contact your PrimeQA account manager. Tier changes are applied by a platform admin.
+    </p>
+  </div>
+
+  <p class="text-xs text-gray-400 italic">
+    All figures aggregated from the PrimeQA LLM gateway over the last {{ days }} days.
+    Blocked-call counts include both explicit cap hits and provider-side rate limits.
+  </p>
+</div>
+
+{% endblock %}

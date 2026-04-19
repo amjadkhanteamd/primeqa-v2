@@ -79,6 +79,45 @@ Continuous UX + infra improvements on top of R1–R7. Each commit is below.
 | `78113a0` | **Ship 2 — AI spend panel on run detail.** Superadmin-only collapsible panel aggregating LLM cost per run: test generation total (from `generation_batches.cost_usd` joined via the run's TCs) + model list + tokens in/out + batch count; agent fix-and-rerun attempt count with a note that per-attempt token tracking is a future migration. Grand total in the summary line. |
 | `dad9612` | **Ship 3 + HPV (migration 030).** Four upgrades: (1) per-failed-row `↻ Rerun` button queues a new run for a single TC; (2) `↻ Rerun verbatim` pins each TC to its prior `test_case_version_id` via `run.config.version_pin`, worker honors it ahead of `current_version_id`; (3) inline-edit `label` on run detail (debounced auto-save) + substring label filter on the run history page; (4) `Summarise failures` superadmin-only AI panel — prompts the env's LLM with every failed step's error text, caches result in `pipeline_runs.failure_summary_ai / _at / _model`. All gated behind role + terminal state. |
 
+### LLM Architecture (Phases 1–6) — shipped
+
+An end-to-end rebuild of how PrimeQA talks to Anthropic. The old world had
+five call sites, inconsistent retry behaviour, no caching, no per-tenant
+rate limits, and no feedback loop from runtime back into prompts. The new
+world has a single chokepoint, a feedback-aware prompt registry, product
+tiers, and three superadmin dashboards.
+
+**Core thesis**: one chokepoint makes policy debuggable (one file to edit
+for any cross-cutting change); a feedback loop makes generation quality
+improve with usage (validator + execution + supersession signals flow
+back into the next prompt).
+
+| Phase | Commit | Scope |
+|---|---|---|
+| 1 | `4cb1367` | **LLMGateway foundation.** `primeqa.intelligence.llm` package — `llm_call()` is the single entry point. `PromptRegistry` (one file per task in `prompts/*`), `ModelRouter` with task × complexity × tenant_policy → chain, `pricing` table, `usage.record()` writes to new `llm_usage_log` table (migration 031). Exponential backoff + jittered retry on 429/529/timeout/network in `provider.py`. Replaces 5 scattered call sites with one. |
+| 2 | `b25815a` | **Per-tenant rate limits (migration 032).** `llm_max_calls_per_minute`, `llm_max_calls_per_hour`, `llm_max_spend_per_day_usd`, `llm_always_use_opus`, `llm_allow_haiku` columns on `tenant_agent_settings`. `limits.check()` runs three windowed queries against `llm_usage_log` before the expensive provider call. Blocked calls write a zero-token `status='rate_limited'` row so the dashboard attributes them correctly. NULL = unlimited. |
+| 3 | `c29c5e3` | **Superadmin LLM dashboard.** `/settings/llm-usage` — three stacked views (Cost control / Efficiency / Quality proxy). `dashboard.py` queries: total/by-task/by-model/by-tenant/by-day spend, cache hit rate, cost per generation, escalation rate, error rate + top errors, regeneration-within-15min rate, validation-critical rate, post-gen failure rate, top spenders. Per-run LLM cost panel on `/runs/:id` replaced with a `by_task` table sourced from `llm_usage_log` (including cached tokens). |
+| 4 | `eb41166` | **Feedback loop (migration 033).** New `generation_quality_signals` table captures: `validation_critical` from the static validator, `regenerated_soon` on batch-wide supersession, `execution_failed` when a TC ends failed/error (carries `failure_summary`). `feedback.capture()` is idempotent (dedup by `(signal_type, rule, object, field)`). `feedback.recent_for_tenant()` auto-loads into the test_plan_generation prompt so the next generation sees what hurt the last one. |
+| 5 | `e566ef1` | **Tool use + PII redaction + provider abstraction.** `test_plan_generation` migrated to Anthropic tool_use API (`submit_test_plan` with `_TEST_CASE_SCHEMA` + `_STEP_SCHEMA`) so parse failures become impossible. `redact.py` scrubs obvious PII (emails, IPs, SSN-shaped, long digit runs) before outbound prompts. `ProviderRegistry` routes by model-id prefix (`claude-*` → Anthropic, `gpt-*` / `o1-*` → OpenAI stub raising `NotImplementedError`) — architecture accepts cross-vendor fallback chains when OpenAI ships. |
+| **6** | **`<this commit>`** | **Product layer (migration 034): tenant LLM tiers + self-service view.** `llm_tier VARCHAR(20)` column on `tenant_agent_settings` with a CHECK constraint (starter / pro / enterprise / custom). `tiers.py` preset module — named bundles of the 5 caps. `limits.load_tenant_config` now resolves: tier preset → overridden by any non-NULL raw column. New `/settings/my-llm-usage` tenant-admin view with soft-cap progress bars (warn at 80%, block at 100%), current-plan panel, blocked-calls counter, per-feature spend breakdown, and a plan comparison table. Superadmin `/settings/llm-usage` gains a `Plan` column on the by-tenant table with a per-row tier picker (`POST /settings/tenant-tier/<tenant_id>` with activity_log). 14 new tests in `tests/test_llm_architecture.py`. |
+
+**Files**:
+- `primeqa/intelligence/llm/` — `gateway.py`, `router.py`, `provider.py`, `pricing.py`, `usage.py`, `limits.py`, `dashboard.py`, `feedback.py`, `redact.py`, `tiers.py`
+- `primeqa/intelligence/llm/prompts/` — registry + per-task modules (test_plan_generation, failure_summary, failure_analysis, agent_fix, connection_test)
+- `primeqa/intelligence/llm/providers/` — registry + `anthropic_provider.py` + `openai_provider.py` stub
+- `primeqa/templates/settings/llm_usage.html` — superadmin dashboard (now with tier picker)
+- `primeqa/templates/settings/my_llm_usage.html` — tenant self-service
+- Migrations 031 (llm_usage_log) / 032 (rate limits) / 033 (quality signals) / 034 (tier)
+
+**Call sites migrated to the gateway**:
+- `TestCaseGenerator.generate_plan()` — test-plan generation
+- `IntelligenceService._call_llm` — taxonomy classification + explanation
+- `AgentOrchestrator.propose_fix()` — agent fix proposal
+- `runs_summarise_failures` — run failure summary
+- `runs_detail` cost panel — now aggregates from `llm_usage_log` joined by `run_id`
+
+**Deliberately deferred** (present in architecture, not built): OpenAI provider implementation, cross-vendor fallback chain routing, offline eval harness, tenant-configurable redaction patterns, BA review capture path, signal-driven prompt A/B, standalone signals dashboard.
+
 ### Self-Validation Suite (`a9da9d3`) — shipped
 
 JSON-driven, workflow-level end-to-end suite that exercises PrimeQA through
@@ -97,11 +136,11 @@ its own HTTP surface. Motto: **"run PrimeQA on PrimeQA"** before every deploy.
 
 ---
 
-## Database (63+ tables)
+## Database (65+ tables)
 
 **Core domain** (11): tenants, users, refresh_tokens, environments,
 environment_credentials, activity_log, groups, group_members,
-group_environments, connections, **tenant_agent_settings**
+group_environments, connections, **tenant_agent_settings** *(+ llm_max_calls_per_minute/hour, llm_max_spend_per_day_usd, llm_always_use_opus, llm_allow_haiku, llm_tier)*
 
 **Metadata** (8): meta_versions *(+ `delta_since_ts`, background-job
 columns)*, meta_objects, meta_fields, meta_validation_rules, meta_flows,
@@ -122,8 +161,10 @@ run_artifacts, run_created_entities, run_cleanup_attempts,
 execution_slots, worker_heartbeats, data_templates, data_factories,
 data_snapshots, test_case_data_bindings, test_case_risk_factors
 
-**Intelligence** (6): entity_dependencies, explanation_requests,
-failure_patterns, behaviour_facts, step_causal_links, **agent_fix_attempts**
+**Intelligence** (8): entity_dependencies, explanation_requests,
+failure_patterns, behaviour_facts, step_causal_links, **agent_fix_attempts**,
+**llm_usage_log** *(migration 031 — per-call audit: tenant_id, user_id, task, model, prompt_version, tokens, cached_input_tokens, cost_usd, latency_ms, status, escalated, complexity, request_id, run_id, requirement_id, test_case_id, generation_batch_id, context jsonb)*,
+**generation_quality_signals** *(migration 033 — feedback loop: signal_type ∈ {validation_critical, regenerated_soon, execution_failed}, severity, rule, object, field, detail jsonb; dedup-by-identity via trigger)*
 
 **Release** (6): releases, release_requirements, release_impacts,
 release_test_plan_items, release_runs, release_decisions *(+
@@ -133,7 +174,7 @@ release_test_plan_items, release_runs, release_decisions *(+
 
 **Vector** (1): embeddings
 
-## Migrations (001–030)
+## Migrations (001–034)
 - 001–015: platform, test management, execution, intelligence, release, data engine, risk, step comments, tags/milestones, custom fields
 - **016**: Test management soft delete + pg_trgm + composite/partial indexes
 - **017**: Super Admin role, `pipeline_runs.source_refs` + `parent_run_id`
@@ -150,6 +191,10 @@ release_test_plan_items, release_runs, release_decisions *(+
 - **028**: `test_cases.coverage_type` + `test_cases.generation_batch_id`, new `generation_batches` table (model, input/output tokens, cost_usd, explanation, coverage_types[]) for multi-TC test-plan generation
 - **029**: `test_case_versions.validation_report` (JSONB) + `validated_at` + `validated_against_meta_version_id` for the static validator that runs after every generation and before every execution
 - **030**: `pipeline_runs.label` + `failure_summary_ai` + `failure_summary_at` + `failure_summary_model` for run tags, AI failure summaries, and filterable run history
+- **031**: `llm_usage_log` — per-call ledger feeding the gateway audit trail, superadmin dashboards, and rate-limit windowing. Indexes: `(tenant_id, ts)`, `(task, ts)`, `(run_id) where run_id is not null`, `(user_id, ts)`
+- **032**: `tenant_agent_settings.llm_max_calls_per_minute / _hour / _spend_per_day_usd / _always_use_opus / _allow_haiku` — shared-key rate-limit columns. NULL = unlimited (gentle onboarding)
+- **033**: `generation_quality_signals` — feedback-loop sink (signal_type, severity, rule, object, field, detail jsonb). Consumed by `feedback.recent_for_tenant()` and auto-loaded into the `test_plan_generation` prompt
+- **034**: `tenant_agent_settings.llm_tier VARCHAR(20)` with CHECK `∈ {starter, pro, enterprise, custom}`. Resolves to preset values via `primeqa.intelligence.llm.tiers`; per-tenant column overrides win over the preset. `custom` tier bypasses the preset entirely
 
 ## API Endpoints (~140)
 

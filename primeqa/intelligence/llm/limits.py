@@ -41,12 +41,66 @@ class LimitCheckResult:
     message: Optional[str] = None
 
 
+@dataclass
+class UsageSnapshot:
+    """Point-in-time window counts + caps. Used by the UI to draw
+    progress bars and warn at ~80% without re-running the three queries
+    in template context."""
+    calls_last_minute: int
+    calls_last_hour: int
+    spend_today_usd: float
+    cap_per_minute: Optional[int]
+    cap_per_hour: Optional[int]
+    cap_spend_per_day_usd: Optional[float]
+
+    def pct(self, used: float, cap: Optional[float]) -> Optional[float]:
+        """Return usage as 0.0–1.0+ against a cap, or None if uncapped."""
+        if cap is None or cap <= 0:
+            return None
+        return float(used) / float(cap)
+
+    @property
+    def pct_per_minute(self) -> Optional[float]:
+        return self.pct(self.calls_last_minute, self.cap_per_minute)
+
+    @property
+    def pct_per_hour(self) -> Optional[float]:
+        return self.pct(self.calls_last_hour, self.cap_per_hour)
+
+    @property
+    def pct_spend_today(self) -> Optional[float]:
+        return self.pct(self.spend_today_usd, self.cap_spend_per_day_usd)
+
+    @property
+    def warn(self) -> bool:
+        """True if ANY bar is >= 80% — UI shows the soft-cap banner."""
+        for p in (self.pct_per_minute, self.pct_per_hour, self.pct_spend_today):
+            if p is not None and p >= 0.80:
+                return True
+        return False
+
+    @property
+    def blocked(self) -> bool:
+        """True if ANY bar is fully saturated — next call will 429."""
+        for p in (self.pct_per_minute, self.pct_per_hour, self.pct_spend_today):
+            if p is not None and p >= 1.0:
+                return True
+        return False
+
+
 def load_tenant_config(tenant_id: int):
     """Return (TenantLimits, TenantPolicy) from tenant_agent_settings,
-    or defaults if no row exists."""
+    or defaults if no row exists.
+
+    Tier resolution (migration 034): start from the tier preset, then
+    let any non-NULL raw column override that slot. This is the only
+    place tier logic touches the hot path — the router + gateway stay
+    tier-agnostic (they only see the final TenantLimits + TenantPolicy).
+    """
     from sqlalchemy.orm import Session
     from primeqa.db import engine
     from primeqa.core.models import TenantAgentSettings
+    from primeqa.intelligence.llm import tiers
 
     sess = Session(bind=engine)
     try:
@@ -54,15 +108,32 @@ def load_tenant_config(tenant_id: int):
             TenantAgentSettings.tenant_id == tenant_id,
         ).first()
         if not row:
-            return TenantLimits(), TenantPolicy()
+            # No settings row → starter tier, no overrides.
+            resolved = tiers.resolve_limits(tiers.TIER_STARTER)
+            return (
+                TenantLimits(
+                    max_per_minute=resolved["max_per_minute"],
+                    max_per_hour=resolved["max_per_hour"],
+                    max_spend_per_day_usd=resolved["max_spend_per_day_usd"],
+                ),
+                TenantPolicy(),
+            )
+
+        tier = getattr(row, "llm_tier", None) or tiers.TIER_STARTER
+        resolved = tiers.resolve_limits(
+            tier,
+            override_per_minute=row.llm_max_calls_per_minute,
+            override_per_hour=row.llm_max_calls_per_hour,
+            override_spend_per_day=(
+                float(row.llm_max_spend_per_day_usd)
+                if row.llm_max_spend_per_day_usd is not None else None
+            ),
+        )
         return (
             TenantLimits(
-                max_per_minute=row.llm_max_calls_per_minute,
-                max_per_hour=row.llm_max_calls_per_hour,
-                max_spend_per_day_usd=(
-                    float(row.llm_max_spend_per_day_usd)
-                    if row.llm_max_spend_per_day_usd is not None else None
-                ),
+                max_per_minute=resolved["max_per_minute"],
+                max_per_hour=resolved["max_per_hour"],
+                max_spend_per_day_usd=resolved["max_spend_per_day_usd"],
             ),
             TenantPolicy(
                 always_use_opus=bool(row.llm_always_use_opus),
@@ -134,3 +205,53 @@ def check(tenant_id: int, limits: TenantLimits) -> LimitCheckResult:
         sess.close()
 
     return LimitCheckResult(allowed=True)
+
+
+def current_usage(tenant_id: int, limits: TenantLimits) -> UsageSnapshot:
+    """Return a UsageSnapshot for the three limit windows.
+
+    One round-trip — three CASE aggregates over the same index scan.
+    Cheap enough that pages can call it on every render without caching.
+    """
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy.orm import Session
+    from sqlalchemy import func as sf, case
+    from primeqa.db import engine
+    from primeqa.intelligence.models import LLMUsageLog
+
+    now = datetime.now(timezone.utc)
+    minute_start = now - timedelta(seconds=60)
+    hour_start = now - timedelta(seconds=3600)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # Take the widest of (day_start, hour_start) so we catch both.
+    window_start = day_start if day_start < hour_start else hour_start
+
+    sess = Session(bind=engine)
+    try:
+        row = sess.query(
+            sf.sum(case(
+                (LLMUsageLog.ts >= minute_start, 1), else_=0,
+            )).label("calls_minute"),
+            sf.sum(case(
+                (LLMUsageLog.ts >= hour_start, 1), else_=0,
+            )).label("calls_hour"),
+            sf.coalesce(sf.sum(case(
+                (LLMUsageLog.ts >= day_start, LLMUsageLog.cost_usd), else_=0,
+            )), 0).label("spend_day"),
+        ).filter(
+            LLMUsageLog.tenant_id == tenant_id,
+            LLMUsageLog.ts >= window_start,
+            LLMUsageLog.status == "ok",
+        ).one()
+
+        return UsageSnapshot(
+            calls_last_minute=int(row.calls_minute or 0),
+            calls_last_hour=int(row.calls_hour or 0),
+            spend_today_usd=float(row.spend_day or 0),
+            cap_per_minute=limits.max_per_minute,
+            cap_per_hour=limits.max_per_hour,
+            cap_spend_per_day_usd=limits.max_spend_per_day_usd,
+        )
+    finally:
+        sess.close()

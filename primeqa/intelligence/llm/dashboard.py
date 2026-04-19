@@ -266,6 +266,73 @@ def quality_proxy_summary(db, *, days: int = 30) -> Dict[str, Any]:
     }
 
 
+def tenant_summary(db, tenant_id: int, *, days: int = 30) -> Dict[str, Any]:
+    """Per-tenant view — same shape as cost_summary/efficiency_summary
+    merged into one dict, but filtered to one tenant.
+
+    Drives /settings/my-llm-usage (visible to admin, not just superadmin).
+    Keeps the template simple — one dict instead of three.
+    """
+    from sqlalchemy import text as sql
+
+    start, _end = _window(days)
+
+    total = db.execute(sql("""
+        SELECT COUNT(*) AS calls,
+               COALESCE(SUM(input_tokens),0) AS input_tokens,
+               COALESCE(SUM(output_tokens),0) AS output_tokens,
+               COALESCE(SUM(cached_input_tokens),0) AS cached_tokens,
+               COALESCE(SUM(cost_usd),0)::float AS cost_usd
+        FROM llm_usage_log
+        WHERE tenant_id = :tid AND ts >= :start AND status = 'ok'
+    """), {"tid": tenant_id, "start": start}).one()._mapping
+
+    by_task = db.execute(sql("""
+        SELECT task AS key,
+               COUNT(*) AS calls,
+               COALESCE(SUM(input_tokens),0) AS input_tokens,
+               COALESCE(SUM(output_tokens),0) AS output_tokens,
+               COALESCE(SUM(cached_input_tokens),0) AS cached_tokens,
+               COALESCE(SUM(cost_usd),0)::float AS cost_usd
+        FROM llm_usage_log
+        WHERE tenant_id = :tid AND ts >= :start AND status = 'ok'
+        GROUP BY task
+        ORDER BY cost_usd DESC
+    """), {"tid": tenant_id, "start": start}).all()
+
+    by_day_rows = db.execute(sql("""
+        SELECT DATE(ts) AS day,
+               COUNT(*) AS calls,
+               COALESCE(SUM(cost_usd),0)::float AS cost_usd
+        FROM llm_usage_log
+        WHERE tenant_id = :tid AND ts >= :start AND status = 'ok'
+        GROUP BY DATE(ts)
+        ORDER BY DATE(ts) ASC
+    """), {"tid": tenant_id, "start": start}).all()
+
+    # A friendly number: calls that were actually blocked because the
+    # tenant hit a cap. Surfaces "you've been throttled N times" — the
+    # single number every customer wants on the upgrade page.
+    blocked_calls = db.execute(sql("""
+        SELECT COUNT(*) AS n
+        FROM llm_usage_log
+        WHERE tenant_id = :tid AND ts >= :start AND status = 'rate_limited'
+    """), {"tid": tenant_id, "start": start}).scalar() or 0
+
+    return {
+        "days": days,
+        "total": dict(total),
+        "by_task": [dict(r._mapping) for r in by_task],
+        "by_day": [
+            {"day": r._mapping["day"].isoformat(),
+             "calls": r._mapping["calls"],
+             "cost_usd": r._mapping["cost_usd"]}
+            for r in by_day_rows
+        ],
+        "blocked_calls": int(blocked_calls),
+    }
+
+
 def top_spenders(db, *, days: int = 30, limit: int = 10) -> List[Dict[str, Any]]:
     """Top users by LLM spend in the window. For the superadmin dashboard."""
     from sqlalchemy import text as sql

@@ -3069,23 +3069,133 @@ def settings_llm_usage():
         eff = dashboard.efficiency_summary(db, days=days)
         quality = dashboard.quality_proxy_summary(db, days=days)
         spenders = dashboard.top_spenders(db, days=days)
-        # Enrich by_tenant with name for display
+        # Enrich by_tenant with name + current tier for display.
+        from primeqa.intelligence.llm import tiers as _tiers
         if cost["by_tenant"]:
-            from primeqa.core.models import Tenant
+            from primeqa.core.models import Tenant, TenantAgentSettings
             tids = [row["key"] for row in cost["by_tenant"]]
             name_rows = db.query(Tenant.id, Tenant.name).filter(
                 Tenant.id.in_(tids),
             ).all()
             name_by_id = {r[0]: r[1] for r in name_rows}
+            tier_rows = db.query(
+                TenantAgentSettings.tenant_id,
+                TenantAgentSettings.llm_tier,
+            ).filter(TenantAgentSettings.tenant_id.in_(tids)).all()
+            tier_by_id = {r[0]: r[1] for r in tier_rows}
             for row in cost["by_tenant"]:
                 row["tenant_name"] = name_by_id.get(row["key"], f"Tenant #{row['key']}")
+                row["tier"] = tier_by_id.get(row["key"], _tiers.TIER_STARTER)
         return render_template("settings/llm_usage.html", **ctx(
             active_page="settings_llm_usage", settings_page="llm_usage",
             cost=cost, efficiency=eff, quality=quality,
             top_spenders=spenders, days=days,
+            all_tiers=_tiers.all_presets(),
         ))
     finally:
         db.close()
+
+
+# Tenant self-service LLM usage + tier (Phase 6) ----------------------------
+@views_bp.route("/settings/my-llm-usage")
+@role_required("admin")
+def settings_my_llm_usage():
+    """Tenant-scoped LLM usage view.
+
+    Surfaces:
+      - current tier + preset values (plain-English copy, not raw caps)
+      - live soft-cap progress bars (80%+ shows amber banner)
+      - number of calls blocked by rate limits in window
+      - per-task spend for their tenant only
+      - daily spend bars
+
+    Visible to `admin` (plus superadmin via the role_required bypass).
+    Non-admins see `/settings/agent` and friends already; this one lives
+    alongside Test Data in the general admin flow — it's not a
+    superadmin-only concern the way /settings/llm-usage is.
+    """
+    from primeqa.intelligence.llm import dashboard, limits, tiers
+    from primeqa.core.models import TenantAgentSettings
+
+    tenant_id = request.user["tenant_id"]
+    days = max(1, min(180, request.args.get("days", 30, type=int) or 30))
+
+    db = next(get_db())
+    try:
+        tl, _tp = limits.load_tenant_config(tenant_id)
+        snap = limits.current_usage(tenant_id, tl)
+        summary = dashboard.tenant_summary(db, tenant_id, days=days)
+
+        # Which tier is set on this tenant? (Use raw row so we can show
+        # `custom` correctly, not just "uses overrides".)
+        row = db.query(TenantAgentSettings).filter(
+            TenantAgentSettings.tenant_id == tenant_id,
+        ).first()
+        tier_name = (row.llm_tier if row else None) or tiers.TIER_STARTER
+        preset = tiers.get_preset(tier_name)
+        all_tier_presets = tiers.all_presets()
+
+        return render_template("settings/my_llm_usage.html", **ctx(
+            active_page="settings_my_llm_usage",
+            settings_page="my_llm_usage",
+            days=days,
+            summary=summary,
+            snapshot=snap,
+            tier=tier_name,
+            preset=preset,
+            all_tiers=all_tier_presets,
+        ))
+    finally:
+        db.close()
+
+
+@views_bp.route("/settings/tenant-tier/<int:tenant_id>", methods=["POST"])
+@role_required("superadmin")
+def settings_change_tenant_tier(tenant_id):
+    """Superadmin-only: change a tenant's LLM tier.
+
+    Accepts form field `llm_tier` ∈ {starter, pro, enterprise, custom}.
+    Logs to activity_log so the change is audit-trail visible. Redirects
+    back to /settings/llm-usage (the superadmin view where the tier
+    picker lives).
+    """
+    from flask import flash
+    from primeqa.intelligence.llm import tiers
+    from primeqa.core.models import TenantAgentSettings, ActivityLog
+
+    new_tier = (request.form.get("llm_tier") or "").strip().lower()
+    if new_tier not in tiers.ALL_TIERS:
+        flash(f"Unknown tier: {new_tier!r}", "error")
+        return redirect("/settings/llm-usage")
+
+    db = next(get_db())
+    try:
+        row = db.query(TenantAgentSettings).filter(
+            TenantAgentSettings.tenant_id == tenant_id,
+        ).first()
+        if not row:
+            row = TenantAgentSettings(tenant_id=tenant_id, llm_tier=new_tier)
+            db.add(row)
+        else:
+            old_tier = row.llm_tier
+            row.llm_tier = new_tier
+            db.flush()
+            db.add(ActivityLog(
+                tenant_id=tenant_id,
+                user_id=request.user["id"],
+                action="update",
+                entity_type="tenant_llm_tier",
+                entity_id=tenant_id,
+                details={"old": old_tier, "new": new_tier},
+            ))
+        db.commit()
+        flash(f"Tenant #{tenant_id} moved to {new_tier}", "success")
+    except Exception as e:
+        db.rollback()
+        flash(f"Failed to change tier: {e}", "error")
+    finally:
+        db.close()
+    return redirect("/settings/llm-usage")
 
 
 @views_bp.route("/settings/agent", methods=["GET"])

@@ -40,6 +40,9 @@ primeqa/                       # Main package
 │                              # data_engine, analytics, flake scoring
 ├── intelligence/              # Explanations, failure patterns, causal links,
 │                              # generation (AI), risk_engine, fix-and-rerun agent
+│   └── llm/                   # LLM gateway — gateway.py, router.py, provider.py,
+│                              # prompts/*, pricing, usage, limits, tiers, feedback,
+│                              # redact, dashboard (Phases 1–6)
 ├── release/                   # Release model, decision_engine, CI webhooks
 ├── runs/                      # Run Wizard, Preflight, SSE streams, cost forecast,
 │                              # scheduled runs, Jira search client + cache
@@ -72,6 +75,26 @@ tests/                         # Integration test files
 - `api.json_page` / `json_error` — uniform `{data, meta}` + `{error:{code,message}}` envelopes
 - `observability` — request timing, SQLAlchemy slow-query log at 800 ms (tunable via `PRIMEQA_SLOW_QUERY_MS`; default threshold sits above Railway's ~400–500 ms RTT floor), counters at `GET /api/_internal/health`
 - `notifications` — stable `notify_*` API; log-only provider today (NOTIFICATIONS_PROVIDER env var flips it)
+
+## LLM architecture (`primeqa/intelligence/llm/`)
+
+Single chokepoint for every Anthropic call. Replaces five scattered call
+sites that drifted on retry policy, caching, and usage accounting.
+
+- **`gateway.llm_call(task=..., tenant_id=..., api_key=..., context=...)`** is the ONLY allowed entry point. Internal flow: load tenant config (tier → limits, policy) → check rate limits (minute / hour / daily-spend windows) → resolve complexity from prompt module → router picks `[primary, fallback]` chain → build prompt spec → redact PII → provider.invoke with backoff → escalate once on low-confidence if the prompt declares `SUPPORTS_ESCALATION` → record `llm_usage_log` row (always, success or fail) → return `LLMResponse`.
+- **Prompts** live one-per-file in `prompts/*`. Each module exposes `VERSION`, `build(context, tenant_id, recent_misses)`, `detect_complexity(context)`, optional `should_escalate(parsed, resp)`. Registry is a flat static dict — no dynamic loading.
+- **Router** (`router.py`): `_CHAINS` keyed by task × complexity, with `TenantPolicy` overrides (`always_use_opus`, `allow_haiku`, `force_model`). Chain length caps at 2 — one escalation hop, never more.
+- **Tool use**: `test_plan_generation` uses Anthropic `tool_use` API (`submit_test_plan` with strict JSON schema) so parse failures become impossible; escalation triggers on zero TCs / low confidence / tool not called.
+- **Prompt caching**: `cache_control: ephemeral` on grammar + metadata blocks. Cache key is per-tenant because metadata text is tenant-unique (correct isolation; no cross-tenant hits).
+- **Per-tenant rate limits** (migration 032 + tiers via migration 034): tier preset → override-wins on any non-NULL raw column. Blocked calls write a zero-token `status='rate_limited'` row to `llm_usage_log` and raise `LLMError("rate_limited")`. Three windows: 60 s / 3600 s / UTC-midnight spend.
+- **Product tiers** (`tiers.py`): `starter` (30/500/$5), `pro` (100/2000/$25), `enterprise` (None/None/None), `custom` (ignore preset, raw columns only). Tenant switches tier via the superadmin picker on `/settings/llm-usage` — writes to `tenant_agent_settings.llm_tier` + activity_log.
+- **Feedback loop** (migration 033): `generation_quality_signals` table. `feedback.capture()` called from validator (`validation_critical`), `TestManagementService.generate_test_plan` on batch-wide supersession (`regenerated_soon`), and worker on failed/error terminal TC status (`execution_failed`). `feedback.recent_for_tenant()` is auto-loaded into the test_plan_generation prompt so each generation sees what hurt the last one. Deduped on `(signal_type, rule, object, field)`.
+- **Dashboards**:
+  - **Superadmin** `/settings/llm-usage` — cost (total / by-task / by-model / by-tenant / by-day), efficiency (cache hit rate, avg cost per generation, escalation rate, error rate + top errors), quality proxy (regeneration-within-15min, validation-critical rate, post-gen failure rate), top spenders, **per-tenant tier picker**.
+  - **Tenant admin** `/settings/my-llm-usage` — current plan + description, **soft-cap progress bars** (warn at 80%, block at 100%), blocked-calls counter, KPIs (spend / calls / input / output tokens), daily-spend bars, spend-by-feature table, plan comparison table.
+- **Providers** (`providers/registry.py`): routes by model-id prefix. `claude-*` → Anthropic, `gpt-*` / `o1-*` → OpenAI stub (raises NotImplementedError today). Cross-vendor fallback chains are architecturally supported — the router just needs both sides present in the registry.
+- **PII redaction** (`redact.py`): compiled regexes scrub emails, IPs, SSN-shaped, long digit runs from outbound prompts. Structure-preserving.
+- **Migration**: never bypass the gateway. New callers always go through `llm_call()`. Legacy direct-Anthropic paths (`IntelligenceService._call_llm_legacy`) remain only as fallback when no `tenant_id` + `api_key` is available (i.e. system-level calls) and are scheduled for removal once every call site has a tenant context.
 
 ## Run event log (cross-service real-time)
 
@@ -248,7 +271,8 @@ python tests/test_r5_agent.py            # 7  (R5)
 python tests/test_r6_polish.py           # 5  (R6)
 python tests/test_r7_jira_picker.py      # 10 (R7 Jira chip picker)
 python tests/test_system_validation.py   # 4 runner + 13 canonical suite outcomes
-# ~170 total
+python tests/test_llm_architecture.py    # 14 (Phases 1-6 — gateway / tiers / limits / dashboards)
+# ~184 total
 
 # Deploy
 git push origin main                     # Railway auto-deploys 3 services
