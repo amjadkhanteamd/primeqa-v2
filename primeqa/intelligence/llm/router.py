@@ -33,9 +33,13 @@ COMPLEXITY_HIGH = "high"
 
 
 # ---- Canonical model ids --------------------------------------------------
+# Note: Anthropic has not published a Claude-4 Haiku at time of writing.
+# Stay on 3.5 Haiku for the "cheap-and-fast" tier; the Gateway was calling
+# an invented id (claude-haiku-4-20250514) and returning 404s for every
+# classification / failure-summary / connection-test.
 OPUS = "claude-opus-4-20250514"
 SONNET = "claude-sonnet-4-20250514"
-HAIKU = "claude-haiku-4-20250514"
+HAIKU = "claude-3-5-haiku-20241022"
 
 
 @dataclass(frozen=True)

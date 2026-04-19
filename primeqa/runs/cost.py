@@ -18,9 +18,8 @@ MODEL_PRICING: Dict[str, Dict[str, float]] = {
     "claude-opus-4-20250514":     {"in": 15.00, "out": 75.00},
     # Family: claude-sonnet-4-*
     "claude-sonnet-4-20250514":   {"in":  3.00, "out": 15.00},
-    # Family: claude-haiku-4-*
-    "claude-haiku-4-20250514":    {"in":  1.00, "out":  5.00},
-    # Older families still supported
+    # Older families still supported (no Claude-4 Haiku yet; cheap tier
+    # is 3.5 Haiku \u2014 see llm/router.HAIKU).
     "claude-3-7-sonnet-20250219": {"in":  3.00, "out": 15.00},
     "claude-3-5-haiku-20241022":  {"in":  0.80, "out":  4.00},
 }

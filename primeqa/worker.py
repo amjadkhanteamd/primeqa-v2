@@ -350,7 +350,16 @@ def _run_execute_stage(stage, ctx):
         # Feedback loop: when a TC ends in error/failed, feed the error
         # text back so the next generation in this tenant learns from
         # the miss (Phase 4 / migration 033).
-        if tc_status in ("failed", "error") and failure_summary:
+        #
+        # Guard against double-fire: step failures already emitted a signal
+        # in-loop (see ~L313). The post-loop capture is only needed for the
+        # crash branch (failure_type == "unexpected_error") where the loop
+        # was short-circuited by an exception before it could fire. Without
+        # this guard, every failed TC was producing two identical signals,
+        # doubling the noise in feedback_rules aggregation.
+        if (tc_status in ("failed", "error")
+                and failure_summary
+                and failure_type != "step_error"):
             try:
                 from primeqa.intelligence.llm import feedback as _fb
                 _fb.capture(
