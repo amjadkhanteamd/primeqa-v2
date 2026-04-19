@@ -779,11 +779,20 @@ def add_to_suite_bulk(suite_id):
     Body: {test_case_ids: [int, ...]}
     Returns: {added: [...], already_in: [...], skipped: [...]}
     """
+    from primeqa.shared.api import BULK_MAX_ITEMS
     data = request.get_json(silent=True) or {}
     tc_ids = data.get("test_case_ids") or []
     if not isinstance(tc_ids, list) or not tc_ids:
         return json_error("VALIDATION_ERROR",
                           "test_case_ids must be a non-empty array")
+    # Audit F5 (2026-04-19): non-destructive bulks still need a cap —
+    # an unbounded list turns into a DoS on the suite_test_cases table.
+    if len(tc_ids) > BULK_MAX_ITEMS:
+        return json_error(
+            "BULK_LIMIT",
+            f"Bulk operations are limited to {BULK_MAX_ITEMS} items per call",
+            http=400,
+        )
     svc, db = _get_service()
     try:
         def run():

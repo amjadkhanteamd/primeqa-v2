@@ -126,10 +126,17 @@ def remove_requirement(release_id, req_id):
 def add_requirements_bulk(release_id):
     """Attach many requirements to a release. Body: {requirement_ids: [...]}.
     Returns {added, already_in, skipped}."""
+    from primeqa.shared.api import BULK_MAX_ITEMS
     data = request.get_json(silent=True) or {}
     ids = data.get("requirement_ids") or []
     if not isinstance(ids, list) or not ids:
         return json_error("VALIDATION_ERROR", "requirement_ids must be a non-empty array", http=400)
+    if len(ids) > BULK_MAX_ITEMS:  # audit F5
+        return json_error(
+            "BULK_LIMIT",
+            f"Bulk operations are limited to {BULK_MAX_ITEMS} items per call",
+            http=400,
+        )
     svc, db = _get_service()
     try:
         result = svc.add_requirements_bulk(
@@ -147,10 +154,17 @@ def add_requirements_bulk(release_id):
 def add_test_plan_items_bulk(release_id):
     """Attach many test cases to a release's test plan.
     Body: {test_case_ids: [...], priority?, inclusion_reason?}."""
+    from primeqa.shared.api import BULK_MAX_ITEMS
     data = request.get_json(silent=True) or {}
     ids = data.get("test_case_ids") or []
     if not isinstance(ids, list) or not ids:
         return json_error("VALIDATION_ERROR", "test_case_ids must be a non-empty array", http=400)
+    if len(ids) > BULK_MAX_ITEMS:  # audit F5
+        return json_error(
+            "BULK_LIMIT",
+            f"Bulk operations are limited to {BULK_MAX_ITEMS} items per call",
+            http=400,
+        )
     svc, db = _get_service()
     try:
         result = svc.add_test_plan_items_bulk(
