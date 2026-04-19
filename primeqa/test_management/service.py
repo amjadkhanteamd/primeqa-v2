@@ -799,6 +799,29 @@ class TestManagementService:
 
     def update_test_case(self, test_case_id, tenant_id, updates,
                          expected_version=None, user_id=None):
+        # Capture a `user_edited` signal when the user edits an AI-
+        # generated TC. The signal flows into feedback_rules and the
+        # next generate_test_plan prompt sees it as an implicit
+        # correction — closes the Phase 7 feedback loop.
+        #
+        # Rule: look up the TC's current active version; if its
+        # generation_method is 'ai' or 'regenerated', this edit counts
+        # as AI-output correction. Deduped per (tc_id, 10-min bucket) so
+        # keystroke-level saves don't flood the signal table.
+        prior_ai_version_id = None
+        try:
+            from primeqa.test_management.models import TestCaseVersion
+            tc_before = self.test_case_repo.get_test_case(test_case_id, tenant_id)
+            if tc_before and tc_before.current_version_id:
+                cv = self.test_case_repo.db.query(TestCaseVersion).filter_by(
+                    id=tc_before.current_version_id,
+                ).first()
+                if cv and cv.generation_method in ("ai", "regenerated"):
+                    prior_ai_version_id = cv.id
+        except Exception:
+            # Best-effort — never break the user update.
+            prior_ai_version_id = None
+
         tc, result = self.test_case_repo.update_test_case(
             test_case_id, tenant_id, updates, expected_version,
         )
@@ -811,6 +834,23 @@ class TestManagementService:
                 details={"current_version": current.version if current else None},
             )
         self._log(tenant_id, user_id, "update", "test_case", test_case_id, updates)
+
+        if prior_ai_version_id is not None:
+            from primeqa.intelligence.llm import feedback
+            feedback.capture(
+                tenant_id=tenant_id,
+                signal_type=feedback.SIGNAL_USER_EDITED,
+                detail={
+                    "tc_id": test_case_id,
+                    "prior_version_id": prior_ai_version_id,
+                    "user_id": user_id,
+                    "source": feedback.SOURCE_IMPLICIT,
+                    "coverage_type": getattr(tc, "coverage_type", None),
+                },
+                test_case_id=test_case_id,
+                test_case_version_id=prior_ai_version_id,
+                dedup_window_minutes=10,
+            )
         return self._tc_dict(tc)
 
     def share_test_case(self, test_case_id, tenant_id, user_id):
@@ -824,6 +864,54 @@ class TestManagementService:
         )
         self._log(tenant_id, user_id, "share", "test_case", test_case_id)
         return self._tc_dict(tc)
+
+    def submit_user_feedback(self, test_case_id, tenant_id, user_id,
+                             verdict, reason=None, reason_text=None):
+        """Phase 7: explicit user feedback (thumbs up/down) on a TC.
+
+        Returns the status dict from `feedback.capture_user_feedback`
+        (contains throttled flag for rate-limited spam).
+
+        Verifies the TC exists + is visible to this user, then
+        delegates. Visibility matters — if a private TC belongs to
+        someone else, we return NotFound (same semantics as get_test_case).
+        """
+        tc = self.test_case_repo.get_test_case(test_case_id, tenant_id)
+        if not tc:
+            raise NotFoundError("Test case not found")
+        if tc.visibility == "private" and tc.owner_id != user_id:
+            raise NotFoundError("Test case not found")
+
+        from primeqa.intelligence.llm import feedback as _feedback
+
+        try:
+            result = _feedback.capture_user_feedback(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                test_case_id=test_case_id,
+                verdict=verdict,
+                reason=reason,
+                reason_text=reason_text,
+                coverage_type=getattr(tc, "coverage_type", None),
+                test_case_version_id=getattr(tc, "current_version_id", None),
+                generation_batch_id=getattr(tc, "generation_batch_id", None),
+            )
+        except ValueError as e:
+            raise ValidationError(str(e))
+
+        # Audit trail: every explicit feedback lands in activity_log too
+        # so a tenant admin can review what reviewers said. Silent no-ops
+        # (throttled) don't log — throttling is designed to be invisible.
+        if result.get("ok") and not result.get("throttled"):
+            self._log(
+                tenant_id, user_id, "feedback", "test_case", test_case_id,
+                {
+                    "verdict": verdict,
+                    "reason": reason,
+                    "signal_type": result.get("signal_type"),
+                },
+            )
+        return result
 
     def activate_test_case(self, test_case_id, tenant_id, user_id=None):
         tc = self.test_case_repo.get_test_case(test_case_id, tenant_id)
@@ -1093,7 +1181,7 @@ class TestManagementService:
         )
 
     def submit_review(self, review_id, status, feedback=None, reviewed_by=None,
-                      step_comments=None):
+                      step_comments=None, reason=None):
         review = self.review_repo.update_review(
             review_id, status, feedback, reviewed_by, step_comments=step_comments,
         )
@@ -1110,6 +1198,34 @@ class TestManagementService:
                     tcv.test_case_id, review.tenant_id,
                     {"status": "approved", "visibility": "shared"},
                 )
+
+        # Phase 7: wire the dead `ba_rejected` signal. BA rejection is
+        # the highest-quality human signal we have; feed it into the
+        # next generation prompt via feedback_rules.
+        if status == "rejected":
+            try:
+                from primeqa.intelligence.llm import feedback as _feedback
+                from primeqa.test_management.models import TestCaseVersion
+                tcv = self.test_case_repo.db.query(TestCaseVersion).filter_by(
+                    id=review.test_case_version_id,
+                ).first()
+                _feedback.capture(
+                    tenant_id=review.tenant_id,
+                    signal_type=_feedback.SIGNAL_BA_REJECTED,
+                    detail={
+                        "tc_id": tcv.test_case_id if tcv else None,
+                        "version_id": review.test_case_version_id,
+                        "reason": reason,
+                        "reason_text": feedback or "",
+                        "reviewed_by": reviewed_by,
+                        "source": _feedback.SOURCE_EXPLICIT,
+                    },
+                    test_case_id=(tcv.test_case_id if tcv else None),
+                    test_case_version_id=review.test_case_version_id,
+                )
+            except Exception:
+                # Best-effort — never break the review flow.
+                pass
 
         return self._review_dict(review)
 

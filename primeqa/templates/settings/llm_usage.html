@@ -130,6 +130,7 @@
       <thead><tr class="text-left text-gray-500 border-b">
         <th class="py-1">Tenant</th>
         <th class="py-1">Plan</th>
+        <th class="py-1 text-right">Correction</th>
         <th class="py-1 text-right">Calls</th>
         <th class="py-1 text-right">In tokens</th>
         <th class="py-1 text-right">Out tokens</th>
@@ -149,6 +150,13 @@
               </select>
               <button type="submit" class="text-[10px] uppercase tracking-wider text-indigo-600 hover:text-indigo-800 px-2 py-0.5 rounded border border-indigo-200">Save</button>
             </form>
+          </td>
+          <td class="py-1.5 text-right" title="AI-generated TCs that needed human correction in the window">
+            {% if t.correction_rate is none %}<span class="text-gray-400">&mdash;</span>
+            {% elif t.correction_total == 0 %}<span class="text-gray-400">&mdash;</span>
+            {% else %}<span class="{% if t.correction_rate >= 0.4 %}text-red-600{% elif t.correction_rate >= 0.2 %}text-amber-600{% else %}text-green-700{% endif %}">{{ (t.correction_rate * 100) | round(1) }}%</span>
+              <span class="text-gray-400">/{{ t.correction_total }}</span>
+            {% endif %}
           </td>
           <td class="py-1.5 text-right">{{ t.calls }}</td>
           <td class="py-1.5 text-right">{{ t.input_tokens | int }}</td>

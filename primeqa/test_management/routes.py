@@ -500,6 +500,44 @@ def update_test_case(tc_id):
         db.close()
 
 
+@test_management_bp.route("/api/test-cases/<int:tc_id>/feedback", methods=["POST"])
+@require_auth
+def submit_test_case_feedback(tc_id):
+    """Phase 7: explicit user feedback on an AI-generated test case.
+
+    Body: {
+      verdict: "up" | "down"            (required)
+      reason:  "wrong_object_or_field" | "invalid_steps" |
+               "missing_coverage" | "redundant" | "other"   (optional; for down)
+      reason_text: string                                   (optional; required for "other")
+    }
+
+    Always returns 200 on successful submission. When the user has
+    exceeded the per-TC daily limit (5 signals), the response carries
+    `throttled: true` and no signal is written — this is intentional to
+    not give spammers a visible rejection signal.
+
+    Open to any authenticated user: feedback signal value is in volume;
+    gating it cuts the volume with no quality upside.
+    """
+    data = request.get_json(silent=True) or {}
+    svc, db = _get_service()
+    try:
+        def run():
+            result = svc.submit_user_feedback(
+                tc_id,
+                request.user["tenant_id"],
+                request.user["id"],
+                verdict=data.get("verdict"),
+                reason=data.get("reason"),
+                reason_text=data.get("reason_text"),
+            )
+            return jsonify(result), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
 @test_management_bp.route("/api/test-cases/<int:tc_id>", methods=["DELETE"])
 @require_role("admin", "tester")
 def delete_test_case(tc_id):
@@ -924,6 +962,7 @@ def submit_review(review_id):
                 feedback=data.get("feedback"),
                 reviewed_by=request.user["id"],
                 step_comments=data.get("step_comments"),
+                reason=data.get("reason"),
             )
             return jsonify(review), 200
         return _handle(run)

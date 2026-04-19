@@ -118,6 +118,97 @@
     </p>
   </div>
 
+  {# ---- AI quality (Phase 7) --------------------------------------------
+       Correction rate is the north-star: what fraction of AI-generated TCs
+       needed human correction in the window? Below the hero number, the
+       signal counts + top recurring issues + daily trend. This is the
+       payoff for giving feedback: tenants see their AI quality improve. #}
+  <div class="bg-white shadow rounded-lg p-5">
+    <div class="flex items-center justify-between mb-3">
+      <h3 class="text-sm font-medium text-gray-700">AI quality feedback</h3>
+      <span class="text-xs text-gray-400">last {{ days }} days</span>
+    </div>
+    {% set cr = feedback.correction_rate %}
+    <div class="grid grid-cols-3 gap-4">
+      {# --- correction rate hero --- #}
+      <div class="col-span-1">
+        <p class="text-xs text-gray-500 uppercase tracking-wider">Correction rate</p>
+        <p class="mt-1 text-3xl font-semibold
+            {% if cr.rate >= 0.4 %}text-red-600
+            {% elif cr.rate >= 0.2 %}text-amber-600
+            {% else %}text-green-700{% endif %}">
+          {{ (cr.rate * 100) | round(1) }}%
+          {% if cr.delta is not none %}
+          <span class="ml-1 text-xs font-normal
+              {% if cr.delta > 0.01 %}text-red-500
+              {% elif cr.delta < -0.01 %}text-green-600
+              {% else %}text-gray-400{% endif %}">
+            {% if cr.delta > 0 %}&uarr;{% elif cr.delta < 0 %}&darr;{% else %}&horbar;{% endif %}
+            {{ (cr.delta * 100) | round(1) | abs }}%
+          </span>
+          {% endif %}
+        </p>
+        <p class="mt-1 text-xs text-gray-500">
+          {{ cr.corrected }} of {{ cr.total }} AI-generated TCs were edited, rejected, or thumbs-downed.
+        </p>
+        <p class="mt-1 text-[11px] text-gray-400">
+          Lower is better &mdash; fewer corrections means the AI is getting it right more often.
+        </p>
+      </div>
+      {# --- signal counts --- #}
+      <div class="col-span-2">
+        <p class="text-xs text-gray-500 uppercase tracking-wider mb-2">Signals captured</p>
+        <div class="grid grid-cols-4 gap-3 text-xs">
+          {% set c = feedback.counts %}
+          <div class="rounded bg-green-50 text-green-800 px-3 py-2">
+            <p class="text-lg font-semibold">{{ c.get('user_thumbs_up', 0) }}</p>
+            <p class="text-[10px] uppercase tracking-wider">&#128077; thumbs up</p>
+          </div>
+          <div class="rounded bg-red-50 text-red-800 px-3 py-2">
+            <p class="text-lg font-semibold">{{ c.get('user_thumbs_down', 0) }}</p>
+            <p class="text-[10px] uppercase tracking-wider">&#128078; thumbs down</p>
+          </div>
+          <div class="rounded bg-amber-50 text-amber-800 px-3 py-2">
+            <p class="text-lg font-semibold">{{ c.get('user_edited', 0) }}</p>
+            <p class="text-[10px] uppercase tracking-wider">&#9998; edits</p>
+          </div>
+          <div class="rounded bg-purple-50 text-purple-800 px-3 py-2">
+            <p class="text-lg font-semibold">{{ c.get('ba_rejected', 0) }}</p>
+            <p class="text-[10px] uppercase tracking-wider">BA rejects</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {# --- top recurring issues --- #}
+    {% if feedback.top_issues %}
+    <div class="mt-5">
+      <h4 class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Top recurring issues</h4>
+      <ol class="text-xs space-y-2">
+        {% for issue in feedback.top_issues %}
+        <li class="flex items-start gap-3">
+          <span class="flex-shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full bg-gray-100 text-gray-700 text-[10px] font-semibold">{{ loop.index }}</span>
+          <div class="flex-1">
+            <p class="text-gray-800">{{ issue.label }}</p>
+            {% if issue.examples %}
+            <p class="text-gray-500 mt-0.5">Recent: <span class="font-mono">{{ issue.examples | join('; ') | truncate(140, True) }}</span></p>
+            {% endif %}
+          </div>
+          <span class="flex-shrink-0 text-gray-400">{{ issue.count }} signal{% if issue.count != 1 %}s{% endif %}</span>
+        </li>
+        {% endfor %}
+      </ol>
+      <p class="mt-3 text-[11px] text-gray-400 italic">
+        These rules are injected into the next generation prompt for your tenant &mdash; the AI sees them as "don't do this" context.
+      </p>
+    </div>
+    {% else %}
+    <p class="mt-5 text-xs text-gray-400 italic">
+      No feedback signals captured yet. When your team gives thumbs-down or edits AI-generated tests, patterns show up here &mdash; and flow straight into the next prompt.
+    </p>
+    {% endif %}
+  </div>
+
   <!-- KPIs: window totals -->
   <div class="grid grid-cols-4 gap-4">
     <div class="bg-white shadow rounded-lg p-4">

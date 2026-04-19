@@ -1,0 +1,94 @@
+{# Phase 7: reason picker modal for 👎 feedback on AI-generated test cases.
+
+   Include once on any page that needs to gather thumbs-down feedback.
+   The modal is driven by `window.PrimeQA.openFeedbackModal(tcId, verdict)`
+   from tc_feedback.js — see that module for the full interaction.
+
+   The `tcFeedbackModal` id is referenced from tc_feedback.js. Don't rename
+   without updating both sides. #}
+
+<div id="tcFeedbackModal"
+     class="hidden fixed inset-0 z-50 overflow-y-auto"
+     role="dialog" aria-modal="true" aria-labelledby="tcFeedbackModalTitle">
+  <div class="flex min-h-full items-center justify-center p-4">
+    <div class="fixed inset-0 bg-gray-500 bg-opacity-50"
+         onclick="window.PrimeQA.closeFeedbackModal()"></div>
+
+    <div class="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+      <div class="flex items-center gap-2 mb-1">
+        <svg class="h-5 w-5 text-red-500" fill="none" viewBox="0 0 24 24"
+             stroke-width="1.8" stroke="currentColor"
+             aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round"
+                d="M7.5 15h2.25m8.024-9.75c.011.05.028.1.052.148.591 1.2.924 2.55.924 3.977a8.96 8.96 0 01-.999 4.125m.023-8.25c-.076-.365.183-.75.575-.75h.908c.889 0 1.713.518 1.972 1.368.339 1.11.521 2.287.521 3.507 0 1.553-.295 3.036-.831 4.398C20.613 14.547 19.833 15 19 15h-1.053c-.472 0-.745-.556-.5-.96a8.95 8.95 0 00.303-.54m.023-8.25H16.48a4.5 4.5 0 01-1.423-.23l-3.114-1.04a4.5 4.5 0 00-1.423-.23H6.504c-.618 0-1.217.247-1.605.729A11.95 11.95 0 002.25 12c0 .434.023.863.068 1.285C2.427 14.306 3.346 15 4.372 15h3.126c.618 0 .991.724.725 1.282A7.471 7.471 0 007.5 19.5a2.25 2.25 0 002.25 2.25.75.75 0 00.75-.75v-.633c0-.573.11-1.14.322-1.672.304-.76.93-1.33 1.653-1.715a9.04 9.04 0 002.86-2.4c.498-.634 1.226-1.08 2.032-1.08h.384" />
+        </svg>
+        <h3 id="tcFeedbackModalTitle" class="text-lg font-medium text-gray-900">
+          Tell the AI what went wrong
+        </h3>
+      </div>
+      <p class="text-xs text-gray-500 mb-4">
+        Your feedback is used to improve future generations for your tenant.
+        Patterns here flow directly into the next test plan's prompt.
+      </p>
+
+      <form id="tcFeedbackModalForm" class="space-y-4">
+        <input type="hidden" name="tc_id" id="tcFeedbackModalTcId" value="">
+        <input type="hidden" name="verdict" value="down">
+
+        <fieldset>
+          <legend class="text-sm font-medium text-gray-700 mb-2">Reason (optional)</legend>
+          <div class="space-y-2 text-sm">
+            <label class="flex items-start gap-2 cursor-pointer">
+              <input type="radio" name="reason" value="wrong_object_or_field" class="mt-0.5">
+              <span><span class="font-medium">Wrong object or field</span>
+                <span class="block text-xs text-gray-500">The test references something that doesn't exist in your metadata.</span></span>
+            </label>
+            <label class="flex items-start gap-2 cursor-pointer">
+              <input type="radio" name="reason" value="invalid_steps" class="mt-0.5">
+              <span><span class="font-medium">Invalid steps</span>
+                <span class="block text-xs text-gray-500">The steps can't possibly work as written (bad action + target, unresolved $vars).</span></span>
+            </label>
+            <label class="flex items-start gap-2 cursor-pointer">
+              <input type="radio" name="reason" value="redundant" class="mt-0.5">
+              <span><span class="font-medium">Redundant</span>
+                <span class="block text-xs text-gray-500">Overlaps another test case for this requirement.</span></span>
+            </label>
+            <label class="flex items-start gap-2 cursor-pointer">
+              <input type="radio" name="reason" value="missing_coverage" class="mt-0.5">
+              <span><span class="font-medium">Missing coverage</span>
+                <span class="block text-xs text-gray-500">Skips an important case the requirement called out.</span></span>
+            </label>
+            <label class="flex items-start gap-2 cursor-pointer">
+              <input type="radio" name="reason" value="other" class="mt-0.5">
+              <span><span class="font-medium">Other</span>
+                <span class="block text-xs text-gray-500">Please describe — required below if you pick this.</span></span>
+            </label>
+          </div>
+        </fieldset>
+
+        <div>
+          <label for="tcFeedbackModalText" class="block text-sm font-medium text-gray-700 mb-1">
+            Details <span class="text-xs text-gray-400 font-normal">(optional, 500 char max)</span>
+          </label>
+          <textarea id="tcFeedbackModalText" name="reason_text" rows="3" maxlength="500"
+                    class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+                    placeholder="E.g. 'Wrong object — should be Opportunity, not Lead'"></textarea>
+        </div>
+
+        <div id="tcFeedbackModalError"
+             class="hidden text-xs text-red-600"></div>
+
+        <div class="flex justify-end space-x-2">
+          <button type="button" onclick="window.PrimeQA.closeFeedbackModal()"
+                  class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700">
+            Cancel
+          </button>
+          <button type="submit" id="tcFeedbackModalSubmit"
+                  class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">
+            Submit feedback
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>

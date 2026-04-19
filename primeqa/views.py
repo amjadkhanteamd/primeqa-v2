@@ -955,6 +955,12 @@ def test_cases_detail(tc_id):
             "id": tc.id, "title": tc.title, "status": tc.status,
             "visibility": tc.visibility, "owner_id": tc.owner_id,
             "version": tc.version, "current_version_id": tc.current_version_id,
+            # Phase 7: thumbs buttons conditionally render on AI-generated
+            # TCs. `generation_batch_id IS NOT NULL` is the canonical
+            # "the AI produced this" marker.
+            "generation_batch_id": getattr(tc, "generation_batch_id", None),
+            "coverage_type": getattr(tc, "coverage_type", None),
+            "updated_at": tc.updated_at.isoformat() if tc.updated_at else None,
         }
         cv_data = None
         validation_report = None
@@ -3069,8 +3075,9 @@ def settings_llm_usage():
         eff = dashboard.efficiency_summary(db, days=days)
         quality = dashboard.quality_proxy_summary(db, days=days)
         spenders = dashboard.top_spenders(db, days=days)
-        # Enrich by_tenant with name + current tier for display.
+        # Enrich by_tenant with name + current tier + correction rate.
         from primeqa.intelligence.llm import tiers as _tiers
+        from primeqa.intelligence.llm import feedback_rules as _feedback_rules
         if cost["by_tenant"]:
             from primeqa.core.models import Tenant, TenantAgentSettings
             tids = [row["key"] for row in cost["by_tenant"]]
@@ -3086,6 +3093,16 @@ def settings_llm_usage():
             for row in cost["by_tenant"]:
                 row["tenant_name"] = name_by_id.get(row["key"], f"Tenant #{row['key']}")
                 row["tier"] = tier_by_id.get(row["key"], _tiers.TIER_STARTER)
+                # Correction rate for the same window as the cost roll-up.
+                # One query per visible tenant — capped at 20 rows by the
+                # dashboard. <100ms per call over the signal index.
+                try:
+                    cr = _feedback_rules.correction_rate(db, row["key"], days=days)
+                    row["correction_rate"] = cr.get("rate", 0.0)
+                    row["correction_total"] = cr.get("total", 0)
+                except Exception:
+                    row["correction_rate"] = None
+                    row["correction_total"] = None
         return render_template("settings/llm_usage.html", **ctx(
             active_page="settings_llm_usage", settings_page="llm_usage",
             cost=cost, efficiency=eff, quality=quality,
@@ -3125,6 +3142,11 @@ def settings_my_llm_usage():
         tl, _tp = limits.load_tenant_config(tenant_id)
         snap = limits.current_usage(tenant_id, tl)
         summary = dashboard.tenant_summary(db, tenant_id, days=days)
+        # Phase 7: AI-quality feedback block — correction rate is the
+        # north-star, plus top-5 recurring issues + per-signal counts.
+        feedback_view = dashboard.tenant_feedback_summary(
+            db, tenant_id, days=days,
+        )
 
         # Which tier is set on this tenant? (Use raw row so we can show
         # `custom` correctly, not just "uses overrides".)
@@ -3140,6 +3162,7 @@ def settings_my_llm_usage():
             settings_page="my_llm_usage",
             days=days,
             summary=summary,
+            feedback=feedback_view,
             snapshot=snap,
             tier=tier_name,
             preset=preset,

@@ -208,9 +208,24 @@ def detect_complexity(context: Dict[str, Any]) -> str:
 
 # ---- Builder --------------------------------------------------------------
 
-def _format_recent_misses(recent_misses: Optional[List[Dict[str, Any]]]) -> str:
+def _format_recent_misses(recent_misses) -> str:
+    """Accept either:
+      (a) a pre-rendered string from feedback_rules.build_rules_block()
+          (the Phase 7+ path — the string is already a prompt-ready
+          "Common mistakes to avoid" block)
+      (b) a raw list of signal dicts (legacy callers + tests)
+      (c) None or empty — returns ""
+
+    We keep the legacy list path so non-gateway callers (offline eval,
+    tests, ad-hoc scripts) don't break. The canonical production path
+    is (a) — rules block rendered once in feedback_rules.
+    """
     if not recent_misses:
         return ""
+    if isinstance(recent_misses, str):
+        # Already prompt-ready — append verbatim.
+        return "\n" + recent_misses
+
     lines = []
     for m in recent_misses[:5]:
         sig = m.get("signal_type", "unknown")
@@ -222,6 +237,13 @@ def _format_recent_misses(recent_misses: Optional[List[Dict[str, Any]]]) -> str:
             lines.append(f"  - Runtime failure: {detail['error'][:140]}")
         elif sig == "regenerated_soon":
             lines.append(f"  - User rejected a prior draft: {detail.get('reason','no reason recorded')}")
+        elif sig == "user_thumbs_down":
+            lines.append(f"  - Explicit thumbs-down: {detail.get('reason','')} "
+                         f"{detail.get('reason_text','')}".rstrip())
+        elif sig == "ba_rejected":
+            lines.append(f"  - BA rejected a prior version: {detail.get('reason_text') or detail.get('reason','no reason given')}")
+        elif sig == "user_edited":
+            lines.append(f"  - User edited an AI-generated TC (implicit correction)")
         else:
             lines.append(f"  - {sig}: {json.dumps(detail)[:140]}")
     return ("\n## Recent failures in this tenant (learn from these; do NOT repeat)\n\n"

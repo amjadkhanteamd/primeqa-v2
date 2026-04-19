@@ -42,7 +42,8 @@ primeqa/                       # Main package
 │                              # generation (AI), risk_engine, fix-and-rerun agent
 │   └── llm/                   # LLM gateway — gateway.py, router.py, provider.py,
 │                              # prompts/*, pricing, usage, limits, tiers, feedback,
-│                              # redact, dashboard (Phases 1–6)
+│                              # feedback_rules (aggregation), redact, dashboard
+│                              # (Phases 1–7)
 ├── release/                   # Release model, decision_engine, CI webhooks
 ├── runs/                      # Run Wizard, Preflight, SSE streams, cost forecast,
 │                              # scheduled runs, Jira search client + cache
@@ -88,7 +89,9 @@ sites that drifted on retry policy, caching, and usage accounting.
 - **Prompt caching**: `cache_control: ephemeral` on grammar + metadata blocks. Cache key is per-tenant because metadata text is tenant-unique (correct isolation; no cross-tenant hits).
 - **Per-tenant rate limits** (migration 032 + tiers via migration 034): tier preset → override-wins on any non-NULL raw column. Blocked calls write a zero-token `status='rate_limited'` row to `llm_usage_log` and raise `LLMError("rate_limited")`. Three windows: 60 s / 3600 s / UTC-midnight spend.
 - **Product tiers** (`tiers.py`): `starter` (30/500/$5), `pro` (100/2000/$25), `enterprise` (None/None/None), `custom` (ignore preset, raw columns only). Tenant switches tier via the superadmin picker on `/settings/llm-usage` — writes to `tenant_agent_settings.llm_tier` + activity_log.
-- **Feedback loop** (migration 033): `generation_quality_signals` table. `feedback.capture()` called from validator (`validation_critical`), `TestManagementService.generate_test_plan` on batch-wide supersession (`regenerated_soon`), and worker on failed/error terminal TC status (`execution_failed`). `feedback.recent_for_tenant()` is auto-loaded into the test_plan_generation prompt so each generation sees what hurt the last one. Deduped on `(signal_type, rule, object, field)`.
+- **Feedback loop** (migration 033, extended in Phase 7): `generation_quality_signals` table. Machine signals: `validation_critical` (validator), `regenerated_soon` (batch supersession), `execution_failed` (worker). **Human signals** (Phase 7): `user_thumbs_up` / `user_thumbs_down` via `POST /api/test-cases/:id/feedback`, `user_edited` on first AI-output edit (10-min dedup bucket), `ba_rejected` on BA review reject. Severity is reason-mapped: `wrong_object_or_field` / `invalid_steps` → high; `redundant` → low. Feedback POST is rate-limited at 5 / TC / user / day — 6th call returns 200 with `throttled:true` (no 429, no visible rejection) so spammers get no feedback signal of their own. Deduped on `(signal_type, rule, object, field, reason)`.
+- **Rules aggregation** (`feedback_rules.py`, Phase 7): signals are transformed into a prompt-ready `### Common mistakes to avoid:` block — natural-language imperatives with concrete recent examples, ranked by severity × frequency, top-5. Gateway's auto-load path now calls `feedback_rules.build_rules_block(tenant_id)` instead of passing raw signal dicts. Same aggregator powers the "Top recurring issues" list on the tenant dashboard.
+- **Correction rate** (Phase 7): the north-star quality metric. `(user_edited + ba_rejected + user_thumbs_down) / AI-generated TCs in window`. Shown as a hero number on `/settings/my-llm-usage` (with window-over-window delta) and as a column on the superadmin by-tenant table.
 - **Dashboards**:
   - **Superadmin** `/settings/llm-usage` — cost (total / by-task / by-model / by-tenant / by-day), efficiency (cache hit rate, avg cost per generation, escalation rate, error rate + top errors), quality proxy (regeneration-within-15min, validation-critical rate, post-gen failure rate), top spenders, **per-tenant tier picker**.
   - **Tenant admin** `/settings/my-llm-usage` — current plan + description, **soft-cap progress bars** (warn at 80%, block at 100%), blocked-calls counter, KPIs (spend / calls / input / output tokens), daily-spend bars, spend-by-feature table, plan comparison table.
@@ -271,8 +274,8 @@ python tests/test_r5_agent.py            # 7  (R5)
 python tests/test_r6_polish.py           # 5  (R6)
 python tests/test_r7_jira_picker.py      # 10 (R7 Jira chip picker)
 python tests/test_system_validation.py   # 4 runner + 13 canonical suite outcomes
-python tests/test_llm_architecture.py    # 14 (Phases 1-6 — gateway / tiers / limits / dashboards)
-# ~184 total
+python tests/test_llm_architecture.py    # 25 (Phases 1-7 — gateway / tiers / limits / dashboards / feedback loop)
+# ~195 total
 
 # Deploy
 git push origin main                     # Railway auto-deploys 3 services

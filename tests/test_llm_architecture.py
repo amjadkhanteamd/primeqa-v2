@@ -271,8 +271,335 @@ def test_superadmin_llm_usage_exposes_all_tiers_context():
     assert r.status_code == 200, r.data.decode()[:400]
 
 
+# ===========================================================================
+# Phase 7: Human feedback loop
+# ===========================================================================
+
+def _get_any_tc(tenant_id):
+    """Return a TC id for this tenant, or None if none exist. Used by
+    feedback tests to avoid depending on a specific fixture."""
+    db = SessionLocal()
+    try:
+        from primeqa.test_management.models import TestCase
+        tc = db.query(TestCase).filter(
+            TestCase.tenant_id == tenant_id,
+            TestCase.deleted_at.is_(None),
+        ).first()
+        return tc.id if tc else None
+    finally:
+        db.close()
+
+
+def _clear_user_feedback_24h(tenant_id, test_case_id, user_id):
+    """Delete any user_thumbs_{up,down} signals for this (user, TC) pair
+    from the last 24h so the rate-limit counter resets.
+
+    Feedback tests fire multiple POSTs per run; without this they would
+    saturate the 5-per-day cap within the suite and flake depending on
+    ordering. Production signals are never affected — we only delete
+    rows whose detail.user_id matches the test user.
+    """
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import text as sql
+    db = SessionLocal()
+    try:
+        db.execute(sql("""
+            DELETE FROM generation_quality_signals
+            WHERE tenant_id = :tid
+              AND test_case_id = :tc
+              AND signal_type IN ('user_thumbs_up', 'user_thumbs_down')
+              AND captured_at >= :since
+              AND (detail->>'user_id')::int = :uid
+        """), {
+            "tid": tenant_id, "tc": test_case_id, "uid": user_id,
+            "since": datetime.now(timezone.utc) - timedelta(hours=24),
+        })
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_feedback_severity_mapping():
+    """Signal severity should follow the reason, not always default to medium."""
+    from primeqa.intelligence.llm import feedback
+    # Thumbs-down with a high-severity reason → high
+    assert feedback._severity_for(
+        feedback.SIGNAL_USER_THUMBS_DOWN,
+        feedback.REASON_WRONG_OBJECT_OR_FIELD,
+    ) == "high"
+    # Thumbs-down with a low-severity reason → low
+    assert feedback._severity_for(
+        feedback.SIGNAL_USER_THUMBS_DOWN,
+        feedback.REASON_REDUNDANT,
+    ) == "low"
+    # BA reject always high
+    assert feedback._severity_for(feedback.SIGNAL_BA_REJECTED) == "high"
+    # Implicit user-edited is medium
+    assert feedback._severity_for(feedback.SIGNAL_USER_EDITED) == "medium"
+
+
+def test_feedback_rules_block_empty_for_clean_tenant():
+    """No signals → empty string (safe to include unconditionally in prompt)."""
+    from primeqa.intelligence.llm import feedback_rules
+    # Use a fresh tenant id (9999 — unlikely to exist) so we're guaranteed
+    # no signals. If the module stops being a pure read, revisit.
+    block = feedback_rules.build_rules_block(99999, window_days=30)
+    assert block == "", f"expected empty, got {block!r}"
+
+
+def test_feedback_rules_classify_and_render():
+    """_classify_signal maps signals to rule keys; _RULE_TEXTS has each."""
+    from primeqa.intelligence.llm import feedback, feedback_rules
+    # validator critical with a rule → uses the rule verbatim
+    rule = feedback_rules._classify_signal({
+        "signal_type": feedback.SIGNAL_VALIDATION_CRITICAL,
+        "severity": "high",
+        "detail": {"rule": "field_not_found", "object": "Account", "field": "Foo"},
+    })
+    assert rule == "field_not_found"
+    # thumbs_down with reason → reason-based rule
+    rule = feedback_rules._classify_signal({
+        "signal_type": feedback.SIGNAL_USER_THUMBS_DOWN,
+        "severity": "high",
+        "detail": {"reason": "wrong_object_or_field"},
+    })
+    assert rule == "wrong_object_or_field"
+    # unknown reason folds into generic rejection
+    rule = feedback_rules._classify_signal({
+        "signal_type": feedback.SIGNAL_USER_THUMBS_DOWN,
+        "severity": "medium",
+        "detail": {},
+    })
+    assert rule == "generic_rejection"
+    # every rule key we emit must have a rendered text
+    for key in [rule, "field_not_found", "wrong_object_or_field", "invalid_steps"]:
+        assert key in feedback_rules._RULE_TEXTS, f"missing text for {key}"
+
+
+def _tc_and_uid_for_superadmin():
+    """Return (token, tenant_id, user_id, tc_id) for the superadmin so we
+    can clear their feedback before each POST test."""
+    db = SessionLocal()
+    try:
+        u = db.query(User).filter(User.role == "superadmin").first()
+        if u is None:
+            return None, None, None, None
+        token = jwt.encode({
+            "sub": str(u.id), "tenant_id": u.tenant_id, "email": u.email,
+            "role": u.role, "full_name": u.full_name or u.email,
+        }, os.environ["JWT_SECRET"], algorithm="HS256")
+        tc_id = _get_any_tc(u.tenant_id)
+        return token, u.tenant_id, u.id, tc_id
+    finally:
+        db.close()
+
+
+def test_post_feedback_happy_path_thumbs_up():
+    token, tid, uid, tc_id = _tc_and_uid_for_superadmin()
+    if tc_id is None:
+        print("    (no test case in tenant — skipping)")
+        return
+    _clear_user_feedback_24h(tid, tc_id, uid)
+    c = app.test_client()
+    c.set_cookie(domain="localhost", key="access_token", value=token)
+    r = c.post(f"/api/test-cases/{tc_id}/feedback", json={"verdict": "up"})
+    assert r.status_code == 200, r.data.decode()[:200]
+    data = r.get_json()
+    assert data["ok"] is True
+    assert data["signal_type"] == "user_thumbs_up"
+    assert data.get("throttled") is False, f"unexpected throttle: {data}"
+
+
+def test_post_feedback_happy_path_thumbs_down_with_reason():
+    token, tid, uid, tc_id = _tc_and_uid_for_superadmin()
+    if tc_id is None:
+        print("    (no test case — skipping)")
+        return
+    _clear_user_feedback_24h(tid, tc_id, uid)
+    c = app.test_client()
+    c.set_cookie(domain="localhost", key="access_token", value=token)
+    r = c.post(f"/api/test-cases/{tc_id}/feedback", json={
+        "verdict": "down",
+        "reason": "wrong_object_or_field",
+        "reason_text": "test-seeded",
+    })
+    assert r.status_code == 200, r.data.decode()[:200]
+    data = r.get_json()
+    assert data["signal_type"] == "user_thumbs_down"
+    assert data["severity"] == "high", f"wrong_object_or_field should be high, got {data}"
+
+
+def test_post_feedback_invalid_verdict():
+    token, tid = _mint_jwt("superadmin")
+    tc_id = _get_any_tc(tid)
+    if tc_id is None:
+        print("    (no test case — skipping)")
+        return
+    c = app.test_client()
+    c.set_cookie(domain="localhost", key="access_token", value=token)
+    r = c.post(f"/api/test-cases/{tc_id}/feedback", json={"verdict": "maybe"})
+    assert r.status_code == 400, r.data.decode()[:200]
+    body = r.get_json()
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_post_feedback_other_requires_text():
+    """reason=other without reason_text must 400."""
+    token, tid = _mint_jwt("superadmin")
+    tc_id = _get_any_tc(tid)
+    if tc_id is None:
+        print("    (no test case — skipping)")
+        return
+    c = app.test_client()
+    c.set_cookie(domain="localhost", key="access_token", value=token)
+    r = c.post(f"/api/test-cases/{tc_id}/feedback", json={
+        "verdict": "down", "reason": "other",
+    })
+    assert r.status_code == 400
+    body = r.get_json()
+    assert "reason_text" in body["error"]["message"]
+
+
+def test_post_feedback_rate_limit_throttles_silently():
+    """6th submission on the same TC by the same user in 24h → throttled:true, 200 status."""
+    token, tid, uid, tc_id = _tc_and_uid_for_superadmin()
+    if tc_id is None:
+        print("    (no test case — skipping)")
+        return
+    _clear_user_feedback_24h(tid, tc_id, uid)
+    c = app.test_client()
+    c.set_cookie(domain="localhost", key="access_token", value=token)
+    last = None
+    for _ in range(6):
+        r = c.post(f"/api/test-cases/{tc_id}/feedback", json={"verdict": "up"})
+        last = r.get_json()
+    # Final call must be 200 (never 429) AND throttled=True.
+    assert r.status_code == 200
+    assert last.get("throttled") is True, f"expected throttled=True, got {last}"
+
+
+def test_user_edited_captured_on_ai_tc_edit():
+    """Editing an AI-generated TC for the first time writes a user_edited signal,
+    deduped per 10-minute window."""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import text as sql
+    from primeqa.test_management.service import TestManagementService
+    from primeqa.test_management.repository import (
+        SectionRepository, RequirementRepository, TestCaseRepository,
+        TestSuiteRepository, BAReviewRepository, MetadataImpactRepository,
+    )
+    from primeqa.core.repository import ActivityLogRepository
+    from primeqa.test_management.models import TestCase, TestCaseVersion
+    from primeqa.intelligence.models import GenerationQualitySignal
+    from primeqa.intelligence.llm import feedback
+
+    db = SessionLocal()
+    try:
+        # Find any AI-generated TC whose CURRENT version is still AI.
+        # A prior test run may have switched it to `manual` by editing;
+        # skip those and look for a genuinely-AI current version.
+        candidates = db.query(TestCase).filter(
+            TestCase.generation_batch_id.isnot(None),
+            TestCase.deleted_at.is_(None),
+        ).limit(20).all()
+        tc = None
+        for cand in candidates:
+            cv = db.query(TestCaseVersion).filter_by(id=cand.current_version_id).first()
+            if cv and cv.generation_method in ("ai", "regenerated"):
+                tc = cand
+                break
+        if tc is None:
+            print("    (no AI-generated TC with AI current_version in DB — skipping)")
+            return
+
+        # Clear any user_edited signals in the dedup window so the
+        # "first edit after 10 min" check can fire cleanly. Same
+        # approach as _clear_user_feedback_24h.
+        db.execute(sql("""
+            DELETE FROM generation_quality_signals
+            WHERE tenant_id = :tid
+              AND test_case_id = :tc
+              AND signal_type = 'user_edited'
+              AND captured_at >= :since
+        """), {
+            "tid": tc.tenant_id, "tc": tc.id,
+            "since": datetime.now(timezone.utc) - timedelta(minutes=15),
+        })
+        db.commit()
+
+        svc = TestManagementService(
+            section_repo=SectionRepository(db),
+            requirement_repo=RequirementRepository(db),
+            test_case_repo=TestCaseRepository(db),
+            suite_repo=TestSuiteRepository(db),
+            review_repo=BAReviewRepository(db),
+            impact_repo=MetadataImpactRepository(db),
+            activity_repo=ActivityLogRepository(db),
+        )
+
+        before = db.query(GenerationQualitySignal).filter(
+            GenerationQualitySignal.test_case_id == tc.id,
+            GenerationQualitySignal.signal_type == feedback.SIGNAL_USER_EDITED,
+        ).count()
+
+        # Fire two updates in quick succession — only the first should
+        # capture a signal because of the 10-minute dedup window.
+        svc.update_test_case(
+            tc.id, tc.tenant_id,
+            {"title": tc.title + " (Phase 7 test)"},
+            user_id=tc.owner_id,
+        )
+        svc.update_test_case(
+            tc.id, tc.tenant_id,
+            {"title": tc.title + " (Phase 7 test 2)"},
+            user_id=tc.owner_id,
+        )
+
+        after = db.query(GenerationQualitySignal).filter(
+            GenerationQualitySignal.test_case_id == tc.id,
+            GenerationQualitySignal.signal_type == feedback.SIGNAL_USER_EDITED,
+        ).count()
+        delta = after - before
+        # Dedup window allows at most 1. Zero means the signal wasn't
+        # captured at all — a bug.
+        assert delta == 1, f"expected exactly 1 new user_edited signal, got {delta}"
+    finally:
+        db.close()
+
+
+def test_correction_rate_returns_valid_shape():
+    """correction_rate always returns a dict with {days, corrected, total, rate, prev_rate, delta}."""
+    from primeqa.intelligence.llm import feedback_rules
+    db = SessionLocal()
+    try:
+        cr = feedback_rules.correction_rate(db, 1, days=30)
+    finally:
+        db.close()
+    assert set(cr.keys()) == {
+        "days", "corrected", "total", "rate", "prev_rate", "delta",
+    }
+    assert cr["days"] == 30
+    assert 0.0 <= cr["rate"] <= 1.0
+    assert cr["corrected"] <= cr["total"]
+
+
+def test_tenant_dashboard_includes_feedback_section():
+    token, _tid = _mint_jwt("superadmin")
+    c = app.test_client()
+    c.set_cookie(domain="localhost", key="access_token", value=token)
+    r = c.get("/settings/my-llm-usage")
+    assert r.status_code == 200
+    body = r.data.decode()
+    assert "AI quality feedback" in body
+    assert "Correction rate" in body
+    # Signal count cards should all render even with zero values.
+    assert "thumbs up" in body
+    assert "thumbs down" in body
+
+
 def main():
     tests = [
+        # Phases 1-6 (existing)
         ("tier_presets_have_all_four", test_tier_presets_have_all_four),
         ("tier_resolve_limits_uses_preset", test_tier_resolve_limits_uses_preset),
         ("tier_resolve_limits_override_wins", test_tier_resolve_limits_override_wins),
@@ -287,9 +614,21 @@ def main():
         ("tenant_tier_rejects_unknown_value", test_tenant_tier_rejects_unknown_value),
         ("tenant_tier_change_rejects_non_superadmin", test_tenant_tier_change_rejects_non_superadmin),
         ("superadmin_llm_usage_exposes_all_tiers_context", test_superadmin_llm_usage_exposes_all_tiers_context),
+        # Phase 7: human feedback loop
+        ("feedback_severity_mapping", test_feedback_severity_mapping),
+        ("feedback_rules_block_empty_for_clean_tenant", test_feedback_rules_block_empty_for_clean_tenant),
+        ("feedback_rules_classify_and_render", test_feedback_rules_classify_and_render),
+        ("post_feedback_happy_path_thumbs_up", test_post_feedback_happy_path_thumbs_up),
+        ("post_feedback_happy_path_thumbs_down_with_reason", test_post_feedback_happy_path_thumbs_down_with_reason),
+        ("post_feedback_invalid_verdict", test_post_feedback_invalid_verdict),
+        ("post_feedback_other_requires_text", test_post_feedback_other_requires_text),
+        ("post_feedback_rate_limit_throttles_silently", test_post_feedback_rate_limit_throttles_silently),
+        ("user_edited_captured_on_ai_tc_edit", test_user_edited_captured_on_ai_tc_edit),
+        ("correction_rate_returns_valid_shape", test_correction_rate_returns_valid_shape),
+        ("tenant_dashboard_includes_feedback_section", test_tenant_dashboard_includes_feedback_section),
     ]
     print("=" * 60)
-    print("LLM architecture tests (Phases 1-6)")
+    print("LLM architecture tests (Phases 1-7)")
     print("=" * 60)
     passed = sum(1 for n, fn in tests if test(n, fn))
     print(f"\n{passed}/{len(tests)} passed\n")

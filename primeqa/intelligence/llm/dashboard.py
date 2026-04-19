@@ -266,6 +266,58 @@ def quality_proxy_summary(db, *, days: int = 30) -> Dict[str, Any]:
     }
 
 
+def tenant_feedback_summary(db, tenant_id: int, *, days: int = 30) -> Dict[str, Any]:
+    """Per-tenant feedback counts for the `/settings/my-llm-usage` dashboard.
+
+    Returns a dict with:
+      counts    — dict keyed by signal_type → int
+      by_day    — list of {day, counts: {...}}  for the trend chart
+      top_issues — top-5 recurring rule groups (from feedback_rules)
+      correction_rate — the north-star dict from feedback_rules
+
+    All queries hit `generation_quality_signals` and `test_cases` —
+    indexed on (tenant_id, captured_at desc) so <100ms even at scale.
+    """
+    from sqlalchemy import text as sql
+    from primeqa.intelligence.llm import feedback_rules
+
+    start, _end = _window(days)
+
+    counts_rows = db.execute(sql("""
+        SELECT signal_type, COUNT(*)::int AS n
+        FROM generation_quality_signals
+        WHERE tenant_id = :tid AND captured_at >= :start
+        GROUP BY signal_type
+    """), {"tid": tenant_id, "start": start}).all()
+    counts = {r._mapping["signal_type"]: r._mapping["n"] for r in counts_rows}
+
+    # Per-day series — one row per (day, signal_type). Aggregate into
+    # {day: {signal_type: n}} client-side (small result set).
+    by_day_rows = db.execute(sql("""
+        SELECT DATE(captured_at) AS day, signal_type, COUNT(*)::int AS n
+        FROM generation_quality_signals
+        WHERE tenant_id = :tid AND captured_at >= :start
+        GROUP BY DATE(captured_at), signal_type
+        ORDER BY DATE(captured_at) ASC
+    """), {"tid": tenant_id, "start": start}).all()
+    by_day_map: Dict[str, Dict[str, int]] = {}
+    for r in by_day_rows:
+        day = r._mapping["day"].isoformat()
+        by_day_map.setdefault(day, {})[r._mapping["signal_type"]] = r._mapping["n"]
+    by_day = [{"day": d, "counts": c} for d, c in sorted(by_day_map.items())]
+
+    top_issues = feedback_rules.top_recurring_issues(tenant_id, window_days=days)
+    correction = feedback_rules.correction_rate(db, tenant_id, days=days)
+
+    return {
+        "days": days,
+        "counts": counts,
+        "by_day": by_day,
+        "top_issues": top_issues,
+        "correction_rate": correction,
+    }
+
+
 def tenant_summary(db, tenant_id: int, *, days: int = 30) -> Dict[str, Any]:
     """Per-tenant view — same shape as cost_summary/efficiency_summary
     merged into one dict, but filtered to one tenant.

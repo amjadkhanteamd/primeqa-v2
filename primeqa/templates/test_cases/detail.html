@@ -5,6 +5,12 @@
 
 {{ breadcrumbs([('Test Library', '/test-cases'), (tc.title, None)]) }}
 
+{# Phase 7: human feedback modal — only relevant on AI-generated TCs but
+   we include unconditionally so the form HTML is in the DOM from page
+   load. The thumbs buttons are conditionally shown below. #}
+{% include 'components/feedback_modal.html' %}
+<script src="/static/js/tc_feedback.js" defer></script>
+
 <div class="space-y-6">
     <div class="flex justify-between items-center">
         <div>
@@ -31,6 +37,26 @@
             </div>
         </div>
         <div class="flex space-x-3">
+            {# Phase 7: thumbs feedback — only on AI-generated TCs. The
+               loop closes via feedback_rules.build_rules_block → next
+               generate_test_plan prompt. Anyone with view access can submit. #}
+            {% if tc.generation_batch_id %}
+            <div class="inline-flex items-center rounded-md ring-1 ring-gray-200 bg-white overflow-hidden"
+                 role="group" aria-label="Feedback on this AI-generated test case">
+              <button type="button"
+                      onclick="window.PrimeQA.submitThumbsUp({{ tc.id }})"
+                      class="px-2.5 py-2 text-sm text-gray-600 hover:bg-green-50 hover:text-green-700 border-r border-gray-200"
+                      title="This test case is good">
+                &#128077;
+              </button>
+              <button type="button"
+                      onclick="window.PrimeQA.openFeedbackModal({{ tc.id }})"
+                      class="px-2.5 py-2 text-sm text-gray-600 hover:bg-red-50 hover:text-red-700"
+                      title="This test case is wrong — tell us why">
+                &#128078;
+              </button>
+            </div>
+            {% endif %}
             {% if user.role in ['admin', 'tester', 'superadmin'] and environments %}
             <button onclick="document.getElementById('run-modal').classList.remove('hidden')" class="rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-500">▶ Run</button>
             {% endif %}

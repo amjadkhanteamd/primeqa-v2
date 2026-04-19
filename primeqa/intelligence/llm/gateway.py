@@ -149,11 +149,17 @@ def llm_call(
 
     # Auto-load feedback signals for tasks that benefit. Caller override
     # still wins (pass recent_misses=... to inject specific ones).
+    #
+    # Phase 7: `recent_misses` was a raw list of signal dicts that the
+    # prompt had to format itself. We now aggregate signals into a
+    # pre-rendered "Common mistakes to avoid" rules block (see
+    # feedback_rules.build_rules_block) and pass that string through.
+    # Callers passing a list still work via the prompt's back-compat path.
     if recent_misses is None and task == "test_plan_generation":
-        from primeqa.intelligence.llm import feedback
-        recent_misses = feedback.recent_for_tenant(tenant_id, limit=5)
+        from primeqa.intelligence.llm import feedback_rules
+        recent_misses = feedback_rules.build_rules_block(tenant_id) or None
 
-    # Build the prompt spec once \u2014 escalation reuses the same spec
+    # Build the prompt spec once — escalation reuses the same spec
     # (same prompt, different model) to keep comparisons clean.
     spec = prompt.build(context, tenant_id=tenant_id,
                         recent_misses=recent_misses)
