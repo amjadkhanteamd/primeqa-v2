@@ -60,8 +60,17 @@ class UserRepository:
         self.db.refresh(user)
         return user
 
+    # Audit fix M-2 (2026-04-19): every `.all()` below caps at 500 so a
+    # pathological tenant can't OOM the worker. Small prod (< 100 rows
+    # per tenant) sees no change; catastrophic tenant sees truncation
+    # with a log line so ops can investigate. Callers that need more
+    # than 500 should migrate to ListQuery pagination.
+    _HARD_LIMIT = 500
+
     def list_users(self, tenant_id):
-        return self.db.query(User).filter(User.tenant_id == tenant_id).all()
+        return self.db.query(User).filter(
+            User.tenant_id == tenant_id,
+        ).order_by(User.id).limit(self._HARD_LIMIT).all()
 
     def count_active_users(self, tenant_id):
         # Q: superadmin is excluded from the 20-user cap.
@@ -171,7 +180,8 @@ class EnvironmentRepository:
                 (Environment.created_by == user_id) |
                 (Environment.id.in_(group_env_ids))
             )
-        return q.all()
+        # Audit M-2: hard 500-row cap.
+        return q.limit(500).all()
 
     def update_environment(self, environment_id, tenant_id, updates):
         env = self.get_environment(environment_id, tenant_id)
@@ -283,7 +293,8 @@ class ConnectionRepository:
         q = self.db.query(Connection).filter(Connection.tenant_id == tenant_id)
         if connection_type:
             q = q.filter(Connection.connection_type == connection_type)
-        return q.order_by(Connection.created_at.desc()).all()
+        # Audit M-2: hard 500-row cap.
+        return q.order_by(Connection.created_at.desc()).limit(500).all()
 
     def update_connection(self, connection_id, tenant_id, updates):
         conn = self.get_connection(connection_id, tenant_id)
@@ -380,7 +391,8 @@ class GroupRepository:
                 GroupMember.user_id == user_id,
             ).subquery()
             q = q.filter(Group.id.in_(member_group_ids))
-        return q.order_by(Group.name).all()
+        # Audit M-2: hard 500-row cap.
+        return q.order_by(Group.name).limit(500).all()
 
     def update_group(self, group_id, tenant_id, updates):
         group = self.get_group(group_id, tenant_id)

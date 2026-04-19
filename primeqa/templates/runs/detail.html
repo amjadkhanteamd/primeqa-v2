@@ -220,11 +220,15 @@
             {{ csrf_input | safe }}
               <button type="submit" class="rounded-md bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-500">Accept</button>
             </form>
-            <form method="POST" action="/runs/agent-fixes/{{ f.id }}/revert" class="inline"
-                  onsubmit="return confirm('Revert this fix? The before-state snapshot will be restored.')">
-            {{ csrf_input | safe }}
-              <button type="submit" class="rounded-md bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-500">Revert</button>
-            </form>
+            <form id="revert-fix-{{ f.id }}" method="POST" action="/runs/agent-fixes/{{ f.id }}/revert" class="inline">{{ csrf_input | safe }}</form>
+            <button type="button"
+                    class="rounded-md bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-500"
+                    data-confirm
+                    data-confirm-title="Revert this fix?"
+                    data-confirm-message="The before-state snapshot will be restored. This cannot be undone once further runs execute."
+                    data-confirm-variant="danger"
+                    data-confirm-submit="Revert"
+                    data-confirm-form="#revert-fix-{{ f.id }}">Revert</button>
             <a href="/test-cases/{{ f.test_case_id }}/edit" class="rounded-md bg-white px-3 py-1 text-xs font-medium text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Edit</a>
           </div>
           {% endif %}

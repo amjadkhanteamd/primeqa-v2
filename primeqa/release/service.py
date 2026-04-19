@@ -23,12 +23,24 @@ class ReleaseService:
         r = self.release_repo.create_release(tenant_id, name, created_by, **kwargs)
         return self._release_dict(r)
 
-    def update_release(self, release_id, tenant_id, updates):
+    def update_release(self, release_id, tenant_id, updates,
+                       expected_updated_at=None):
         if "status" in updates and updates["status"] not in VALID_STATUSES:
             raise ValueError(f"Invalid status. Must be one of: {', '.join(VALID_STATUSES)}")
-        r = self.release_repo.update_release(release_id, tenant_id, updates)
-        if not r:
+        r, result = self.release_repo.update_release(
+            release_id, tenant_id, updates,
+            expected_updated_at=expected_updated_at,
+        )
+        if result == "not_found":
             raise ValueError("Release not found")
+        if result == "conflict":
+            # Surface a structured conflict so the route returns 409
+            # with the current row so the UI can render a diff banner.
+            from primeqa.shared.api import ConflictError
+            raise ConflictError(
+                "Release was modified by another user",
+                details={"current_updated_at": r.updated_at.isoformat() if r and r.updated_at else None},
+            )
         return self._release_dict(r)
 
     def delete_release(self, release_id, tenant_id):

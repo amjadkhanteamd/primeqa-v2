@@ -40,17 +40,46 @@ class ReleaseRepository:
             q = q.filter(Release.status == status)
         return q.order_by(Release.target_date.asc().nullslast(), Release.created_at.desc()).all()
 
-    def update_release(self, release_id, tenant_id, updates):
+    def update_release(self, release_id, tenant_id, updates,
+                       expected_updated_at=None):
+        """Audit M-1 (2026-04-19): optimistic lock via `updated_at` token.
+
+        Returns a 2-tuple `(row, status)` where status is 'ok',
+        'not_found', or 'conflict'. Caller maps:
+          conflict → 409 with diff banner
+          not_found → 404
+        `expected_updated_at` may be None (legacy caller that doesn't
+        care about races — discouraged but supported).
+        """
         r = self.get_release(release_id, tenant_id)
         if not r:
-            return None
+            return None, "not_found"
+        if expected_updated_at is not None:
+            # Accept either an ISO string or a datetime; compare loosely
+            # (trim sub-second drift) so clients can echo what they got.
+            incoming = expected_updated_at
+            if isinstance(incoming, str):
+                try:
+                    incoming = datetime.fromisoformat(incoming.rstrip("Z"))
+                except ValueError:
+                    return None, "conflict"
+            if not incoming.tzinfo:
+                incoming = incoming.replace(tzinfo=timezone.utc)
+            current = r.updated_at
+            if current and not current.tzinfo:
+                current = current.replace(tzinfo=timezone.utc)
+            # Compare at second resolution — Postgres stores microseconds
+            # but JSON serialisation commonly rounds.
+            if current and abs((current - incoming).total_seconds()) > 1:
+                return r, "conflict"
         for k, v in updates.items():
-            if hasattr(r, k) and k not in ("id", "tenant_id", "created_by", "created_at"):
+            if hasattr(r, k) and k not in ("id", "tenant_id", "created_by",
+                                            "created_at", "updated_at"):
                 setattr(r, k, v)
         r.updated_at = datetime.now(timezone.utc)
         self.db.commit()
         self.db.refresh(r)
-        return r
+        return r, "ok"
 
     def delete_release(self, release_id, tenant_id):
         r = self.get_release(release_id, tenant_id)

@@ -108,9 +108,29 @@ class AuthService:
         updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         if not updates:
             raise ValueError("No valid fields to update")
+        # Capture the old row so we can detect a role change (audit M-3).
+        old = self.user_repo.get_user_by_id(user_id)
+        old_role = old.role if old else None
         user = self.user_repo.update_user(user_id, updates)
         if not user:
             raise ValueError("User not found")
+
+        # Audit fix M-3 (2026-04-19): revoke all refresh tokens on any
+        # role change (especially downgrades). The user's existing
+        # JWT access_token still works until expiry (that's JWTs), but
+        # once it expires they can't refresh without the new role
+        # claim, and any fresh login issues tokens under the new role.
+        # Also revoke on is_active=false so disabled users can't ride
+        # existing tokens to expiry.
+        try:
+            if "role" in updates and updates["role"] != old_role:
+                self.token_repo.revoke_all_user_tokens(user_id)
+            elif updates.get("is_active") is False:
+                self.token_repo.revoke_all_user_tokens(user_id)
+        except Exception:
+            # Don't block the user-update on a revocation failure —
+            # the row change already committed.
+            pass
         return self._user_dict(user)
 
     def list_users(self, tenant_id):

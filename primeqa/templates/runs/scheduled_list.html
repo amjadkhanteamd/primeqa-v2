@@ -54,11 +54,14 @@
             {{ csrf_input | safe }}
               <button type="submit" class="text-gray-600 hover:text-gray-900">{{ 'Pause' if s.enabled else 'Resume' }}</button>
             </form>
-            <form method="POST" action="/runs/scheduled/{{ s.id }}/delete" class="inline"
-                  onsubmit="return confirm('Delete this schedule?')">
-            {{ csrf_input | safe }}
-              <button type="submit" class="text-red-600 hover:text-red-800">Delete</button>
-            </form>
+            <form id="sched-delete-{{ s.id }}" method="POST" action="/runs/scheduled/{{ s.id }}/delete" class="inline">{{ csrf_input | safe }}</form>
+            <button type="button" class="text-red-600 hover:text-red-800"
+                    data-confirm
+                    data-confirm-title="Delete schedule?"
+                    data-confirm-message="Remove this scheduled run? Future runs won't fire."
+                    data-confirm-variant="danger"
+                    data-confirm-submit="Delete"
+                    data-confirm-form="#sched-delete-{{ s.id }}">Delete</button>
           </td>
         </tr>
       {% endfor %}

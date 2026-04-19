@@ -9,7 +9,7 @@ from primeqa.core.auth import require_auth, require_role
 from primeqa.db import get_db
 from primeqa.release.repository import ReleaseRepository
 from primeqa.release.service import ReleaseService
-from primeqa.shared.api import json_error
+from primeqa.shared.api import json_error, json_error_from, ConflictError
 
 release_bp = Blueprint("release", __name__)
 
@@ -68,12 +68,21 @@ def get_release(release_id):
 @release_bp.route("/api/releases/<int:release_id>", methods=["PATCH"])
 @require_role("admin", "tester")
 def update_release(release_id):
+    """Audit M-1: accepts optional `expected_updated_at` — client echoes
+    the token it got on the last GET. Mismatch → 409 CONFLICT with the
+    current row so the UI can show a "reloaded" diff banner."""
     data = request.get_json(silent=True) or {}
+    expected = data.pop("expected_updated_at", None)
     svc, db = _get_service()
     try:
-        return jsonify(svc.update_release(release_id, request.user["tenant_id"], data)), 200
+        return jsonify(svc.update_release(
+            release_id, request.user["tenant_id"], data,
+            expected_updated_at=expected,
+        )), 200
     except ValueError as e:
         return json_error("VALIDATION_ERROR", str(e), http=400)
+    except ConflictError as e:
+        return json_error_from(e)
     finally:
         db.close()
 
