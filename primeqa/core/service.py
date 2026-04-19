@@ -26,24 +26,42 @@ class AuthService:
         self.user_repo = user_repo
         self.token_repo = token_repo
 
-    def login(self, tenant_id, email, password):
-        user = self.user_repo.get_user_by_email(tenant_id, email)
-        if not user or not user.is_active:
-            return None
+    def login(self, email, password, tenant_id=None):
+        """Authenticate a user. Tenant resolution (audit fix C-1):
 
-        if not bcrypt.checkpw(password.encode("utf-8"), user.password_hash.encode("utf-8")):
-            return None
+          - If `tenant_id` is None, look up the user by email across ALL
+            tenants and accept the first active match whose password
+            verifies. This is the normal path — email is the primary
+            identifier the human types.
+          - If `tenant_id` is explicitly provided (e.g. by an SSO flow
+            that already knows the tenant), honour it and only accept
+            a user from that tenant.
 
-        self.user_repo.update_last_login(user.id)
+        Returning the same `None` for "bad email" + "bad password" +
+        "wrong tenant" prevents user-enumeration (attacker can't tell
+        if an email exists in a given tenant).
+        """
+        if tenant_id is not None:
+            candidates = [self.user_repo.get_user_by_email(tenant_id, email)]
+        else:
+            candidates = self.user_repo.get_users_by_email_any_tenant(email)
 
-        access_token = self._create_access_token(user)
-        raw_refresh, _ = self._create_refresh_token(user.id)
-
-        return {
-            "access_token": access_token,
-            "refresh_token": raw_refresh,
-            "user": self._user_dict(user),
-        }
+        for user in candidates:
+            if not user or not user.is_active:
+                continue
+            if not bcrypt.checkpw(password.encode("utf-8"),
+                                  user.password_hash.encode("utf-8")):
+                continue
+            # Found a match.
+            self.user_repo.update_last_login(user.id)
+            access_token = self._create_access_token(user)
+            raw_refresh, _ = self._create_refresh_token(user.id)
+            return {
+                "access_token": access_token,
+                "refresh_token": raw_refresh,
+                "user": self._user_dict(user),
+            }
+        return None
 
     def refresh(self, raw_refresh_token):
         token_hash = self._hash_token(raw_refresh_token)

@@ -34,17 +34,23 @@ def _get_env_service():
 
 @core_bp.route("/api/auth/login", methods=["POST"])
 def login():
+    """Audit fix C-1 (2026-04-19): tenant_id is NO LONGER accepted from
+    the client. Previously `tenant_id = data.get("tenant_id", 1)` let
+    anyone bypass multi-tenant isolation by guessing tenant ids. The
+    service now derives tenant from the email record on the user table."""
     data = request.get_json(silent=True) or {}
     email = data.get("email")
     password = data.get("password")
-    tenant_id = data.get("tenant_id", 1)
 
     if not email or not password:
         return json_error("VALIDATION_ERROR", "email and password are required", http=400)
+    if not isinstance(email, str) or not isinstance(password, str):
+        return json_error("VALIDATION_ERROR",
+                          "email and password must be strings", http=400)
 
     svc, db = _get_auth_service()
     try:
-        result = svc.login(tenant_id, email, password)
+        result = svc.login(email, password)
         if not result:
             return json_error("UNAUTHORIZED", "Invalid email or password", http=401)
         return jsonify(result), 200

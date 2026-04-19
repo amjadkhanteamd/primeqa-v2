@@ -620,6 +620,19 @@ class TestManagementService:
     # ---- Sections ------------------------------------------------------------
 
     def create_section(self, tenant_id, name, created_by, **kwargs):
+        # Audit fix C-3 (2026-04-19): validate inputs BEFORE hitting the
+        # DB, so that 1MB strings / emoji spam / null bytes return a
+        # clean 400 instead of a 500 from Postgres's VARCHAR(255) overflow.
+        if not isinstance(name, str):
+            raise ValidationError("name must be a string")
+        name = name.strip()
+        if not name:
+            raise ValidationError("name is required")
+        # Guard on byte-length too — Postgres VARCHAR counts characters,
+        # but with 4-byte emoji a 60-char name is 240 bytes. Keep it
+        # conservative at 200 chars / 500 bytes.
+        if len(name) > 200 or len(name.encode("utf-8")) > 500:
+            raise ValidationError("name too long (max 200 characters)")
         s = self.section_repo.create_section(tenant_id, name, created_by, **kwargs)
         self._log(tenant_id, created_by, "create", "section", s.id, {"name": name})
         return self._section_dict(s)

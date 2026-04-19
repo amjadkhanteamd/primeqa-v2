@@ -312,13 +312,23 @@ def ci_webhook_trigger():
     import hashlib
     import os
 
+    # Audit fix C-2 (2026-04-19): fail closed. Previously `if secret:`
+    # meant that deployment without WEBHOOK_SECRET accepted ANY request
+    # — sloppy deploy = open door. Now a missing secret is a
+    # configuration error, 503 is returned, and the CI job fails
+    # loudly rather than silently succeeding.
     secret = os.getenv("WEBHOOK_SECRET", "")
-    if secret:
-        provided_sig = request.headers.get("X-PrimeQA-Signature", "")
-        body = request.get_data()
-        expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected, provided_sig):
-            return json_error("UNAUTHORIZED", "Invalid signature", http=401)
+    if not secret:
+        return json_error(
+            "CONFIG_ERROR",
+            "WEBHOOK_SECRET is not configured — webhook endpoint disabled",
+            http=503,
+        )
+    provided_sig = request.headers.get("X-PrimeQA-Signature", "")
+    body = request.get_data()
+    expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, provided_sig):
+        return json_error("UNAUTHORIZED", "Invalid signature", http=401)
 
     data = request.get_json(silent=True) or {}
     release_id = data.get("release_id")

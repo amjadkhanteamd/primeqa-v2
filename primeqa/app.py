@@ -65,6 +65,38 @@ def create_app():
     # state-changing request.
     csrf.install(application)
 
+    # Audit fix C-3 (2026-04-19): global 500 handler so uncaught
+    # exceptions return a clean envelope for /api/* and a friendly HTML
+    # page for web routes. Never leak stack traces to the response body.
+    # Server-side the exception is still logged via Flask's default.
+    import logging
+    _err_log = logging.getLogger("primeqa.errors")
+
+    @application.errorhandler(Exception)
+    def _handle_unhandled_exception(err):
+        # Let Flask's HTTPException subclasses flow through (404, 403,
+        # etc.). We only want to catch genuinely unhandled exceptions.
+        from werkzeug.exceptions import HTTPException
+        if isinstance(err, HTTPException):
+            return err
+        # Log the full stack once so ops can diagnose.
+        _err_log.exception("Unhandled %s on %s %s", type(err).__name__,
+                           request.method, request.path)
+        from flask import request as _req
+        if _req.path.startswith("/api/"):
+            return jsonify({"error": {
+                "code": "SERVER_ERROR",
+                "message": "An unexpected error occurred. Reference the server log.",
+            }}), 500
+        # HTML path — minimal, no stack. Production Flask already hides
+        # stacks when FLASK_ENV != development, but this belt-and-braces
+        # prevents leak even with misconfigured env.
+        return (
+            "<h1>Something went wrong</h1>"
+            "<p>We logged the error. Reload and try again.</p>",
+            500,
+        )
+
     @application.route("/health")
     def health():
         try:

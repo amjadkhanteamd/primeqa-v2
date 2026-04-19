@@ -1196,11 +1196,25 @@ _DESTRUCTIVE_BULK_ACTIONS = {"soft_delete"}
 @require_role("admin", "tester")
 def bulk_test_cases():
     data = request.get_json(silent=True) or {}
-    ids = data.get("ids") or []
+    raw_ids = data.get("ids") or []
     action = data.get("action")
     payload = data.get("payload") or {}
-    if not ids or not action:
+    if not raw_ids or not action:
         return json_error("VALIDATION_ERROR", "ids and action are required")
+    # Audit fix C-3 (2026-04-19): coerce each id to a positive int. A
+    # string like "a" or None previously crashed with int() ValueError.
+    ids = []
+    for x in raw_ids:
+        try:
+            n = int(x)
+        except (TypeError, ValueError):
+            return json_error("VALIDATION_ERROR",
+                              f"every id must be a positive integer; got {x!r}",
+                              http=400)
+        if n <= 0:
+            return json_error("VALIDATION_ERROR",
+                              f"every id must be positive; got {n}", http=400)
+        ids.append(n)
 
     svc, db = _get_service()
     try:
@@ -1229,9 +1243,21 @@ def bulk_test_cases():
 @require_role("admin")
 def bulk_purge_test_cases():
     data = request.get_json(silent=True) or {}
-    ids = data.get("ids") or []
-    if not ids:
+    raw_ids = data.get("ids") or []
+    if not raw_ids:
         return json_error("VALIDATION_ERROR", "ids is required")
+    ids = []
+    for x in raw_ids:
+        try:
+            n = int(x)
+        except (TypeError, ValueError):
+            return json_error("VALIDATION_ERROR",
+                              f"every id must be a positive integer; got {x!r}",
+                              http=400)
+        if n <= 0:
+            return json_error("VALIDATION_ERROR",
+                              f"every id must be positive; got {n}", http=400)
+        ids.append(n)
     svc, db = _get_service()
     try:
         def run():

@@ -283,7 +283,15 @@ def capture_user_feedback(
     text that accompanies any reason (required for `other`, optional
     otherwise).
     """
-    verdict = (verdict or "").strip().lower()
+    # Audit fix C-3 (2026-04-19): verdict could be int / bool / list
+    # from a malformed client — coerce to string first, and reject if
+    # it's not a string. Previously `bool.strip()` threw AttributeError
+    # → 500.
+    if verdict is None:
+        verdict = ""
+    elif not isinstance(verdict, str):
+        raise ValueError(f"verdict must be a string, got {type(verdict).__name__}")
+    verdict = verdict.strip().lower()
     if verdict not in ("up", "down"):
         raise ValueError(f"verdict must be 'up' or 'down', got {verdict!r}")
 

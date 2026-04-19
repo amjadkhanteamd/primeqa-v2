@@ -37,17 +37,25 @@ def require_auth(f):
         try:
             payload = jwt.decode(token, _get_jwt_secret(), algorithms=["HS256"])
         except jwt.ExpiredSignatureError:
-            return jsonify(error="Token expired", code="TOKEN_EXPIRED"), 401
+            return json_error("TOKEN_EXPIRED", "Token expired", http=401)
         except jwt.InvalidTokenError:
             return json_error("UNAUTHORIZED", "Invalid token", http=401)
 
-        request.user = {
-            "id": int(payload["sub"]),
-            "tenant_id": payload["tenant_id"],
-            "email": payload["email"],
-            "role": payload["role"],
-            "full_name": payload["full_name"],
-        }
+        # Audit fix C-4: tolerate missing / malformed claims — treat as
+        # invalid token rather than crashing with KeyError. `sub` and
+        # `tenant_id` are required; others default.
+        if "sub" not in payload or "tenant_id" not in payload:
+            return json_error("UNAUTHORIZED", "Malformed token", http=401)
+        try:
+            request.user = {
+                "id": int(payload["sub"]),
+                "tenant_id": payload["tenant_id"],
+                "email": payload.get("email", ""),
+                "role": payload.get("role", "viewer"),
+                "full_name": payload.get("full_name", ""),
+            }
+        except (ValueError, TypeError):
+            return json_error("UNAUTHORIZED", "Malformed token", http=401)
         return f(*args, **kwargs)
     return decorated
 

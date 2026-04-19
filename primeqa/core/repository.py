@@ -24,6 +24,14 @@ class UserRepository:
             User.email == email,
         ).first()
 
+    def get_users_by_email_any_tenant(self, email):
+        """Return all users with this email across all tenants. Used by
+        login — the email→tenant mapping is server-side so the client
+        can't supply an arbitrary tenant_id (audit fix C-1, 2026-04-19).
+        Emails are NOT globally unique (same person can exist in multiple
+        tenants), so we return the list and let the caller decide."""
+        return self.db.query(User).filter(User.email == email).all()
+
     def get_user_by_id(self, user_id):
         return self.db.query(User).filter(User.id == user_id).first()
 

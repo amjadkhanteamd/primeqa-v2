@@ -24,19 +24,26 @@ JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 
 
 def get_current_user():
+    """Audit fix C-4 (2026-04-19): tolerate a JWT that's missing the
+    `role` / `tenant_id` / `email` claims (malformed, from an earlier
+    schema, or forged). Previously a `KeyError` leaked through and
+    crashed every web page with a 500. Now missing claims → treat as
+    not-authenticated (returns None → handler redirects to /login)."""
     token = request.cookies.get("access_token")
     if not token:
         return None
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        if "sub" not in payload or "tenant_id" not in payload:
+            return None  # malformed — drop to login flow
         return {
             "id": int(payload["sub"]),
             "tenant_id": payload["tenant_id"],
-            "email": payload["email"],
-            "role": payload["role"],
-            "full_name": payload["full_name"],
+            "email": payload.get("email", ""),
+            "role": payload.get("role", "viewer"),
+            "full_name": payload.get("full_name", ""),
         }
-    except jwt.InvalidTokenError:
+    except (jwt.InvalidTokenError, ValueError, TypeError):
         return None
 
 
@@ -84,7 +91,8 @@ def login_submit():
     db = next(get_db())
     try:
         svc = AuthService(UserRepository(db), RefreshTokenRepository(db))
-        result = svc.login(1, email, password)
+        # Tenant derived from email on the users table — no client override (audit C-1).
+        result = svc.login(email, password)
         if not result:
             return render_template("auth/login.html", user=None, error="Invalid email or password")
         resp = make_response(redirect("/"))
