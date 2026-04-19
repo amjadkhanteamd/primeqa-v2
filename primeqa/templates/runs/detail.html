@@ -5,7 +5,7 @@
 
 {{ breadcrumbs([('Runs', '/runs'), ('Run #' ~ run.id, None)]) }}
 
-<div class="space-y-6">
+<div class="space-y-6" data-run-summary>
   <div class="flex justify-between items-start">
     <div class="flex-1 min-w-0">
       <h1 class="text-2xl font-bold text-gray-900">Run #{{ run.id }}</h1>
@@ -623,11 +623,13 @@
         live.classList.add('hidden');
         logLive.classList.add('hidden');
         es.close();
-        // Only reload if the run was active at page load \u2014 otherwise
-        // we'd loop on every terminal-snapshot.
-        if (wasActive) {
-          setTimeout(() => window.location.reload(), 600);
-        }
+        // No auto-reload: the pipeline log is the main thing users
+        // are reading when a run ends, and a reload flashes it to
+        // blank before backfill re-renders it. Status badge, stage
+        // bar, counts, and test timeline are already live-updated
+        // by SSE; server-rendered panels (cost, failure-summary)
+        // stay until the user manually refreshes.
+        if (wasActive) showRefreshHint();
       }
     } catch (err) { console.warn('bad snapshot', err); }
   });
@@ -673,9 +675,7 @@
         live.classList.add('hidden');
         logLive.classList.add('hidden');
         es.close();
-        if (wasActive) {
-          setTimeout(() => window.location.reload(), 600);
-        }
+        if (wasActive) showRefreshHint();
       }
     } catch (_) {}
   });
@@ -685,6 +685,25 @@
     logLive.classList.add('hidden');
     es.close();
   });
+
+  // Small, dismissible hint shown after a live-watched run ends: nudges
+  // the user to manually refresh if they want to see server-rendered
+  // panels (cost, failure summary, cleanup) that don't stream over SSE.
+  // Preserves the pipeline log in place \u2014 no auto-reload flash.
+  function showRefreshHint() {
+    if (document.getElementById('refresh-hint')) return;
+    const banner = document.createElement('div');
+    banner.id = 'refresh-hint';
+    banner.className = 'mt-3 flex items-center justify-between rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800';
+    banner.innerHTML = `
+      <span>Run finished. Refresh to load cost + failure summary.</span>
+      <span class="space-x-3">
+        <a href="#" onclick="event.preventDefault(); window.location.reload();" class="font-medium underline hover:no-underline">Refresh</a>
+        <a href="#" onclick="event.preventDefault(); this.closest('#refresh-hint').remove();" class="text-blue-600 hover:text-blue-900">Dismiss</a>
+      </span>`;
+    const host = document.querySelector('[data-run-summary]') || document.body;
+    host.insertAdjacentElement('afterbegin', banner);
+  }
 })();
 </script>
 
