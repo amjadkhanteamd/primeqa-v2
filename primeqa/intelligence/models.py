@@ -217,3 +217,23 @@ class LLMUsageLog(Base):
     generation_batch_id = Column(BigInteger, ForeignKey("generation_batches.id", ondelete="SET NULL"))
 
     context = Column(JSONB, nullable=False, server_default="{}")
+
+
+class GenerationQualitySignal(Base):
+    """Feedback-loop signals emitted by the validator, worker, and BA
+    flow after generation (migration 033). Read by FeedbackCollector
+    and PromptBuilder so future generations include "don't do this"
+    examples from the same tenant."""
+    __tablename__ = "generation_quality_signals"
+
+    id = Column(BigInteger, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    generation_batch_id = Column(BigInteger, ForeignKey("generation_batches.id", ondelete="SET NULL"))
+    test_case_id = Column(Integer, ForeignKey("test_cases.id", ondelete="SET NULL"))
+    test_case_version_id = Column(Integer, ForeignKey("test_case_versions.id", ondelete="SET NULL"))
+
+    signal_type = Column(String(40), nullable=False)
+    severity = Column(String(10), nullable=False, server_default="medium")
+    detail = Column(JSONB, nullable=False, server_default="{}")
+    captured_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at = Column(DateTime(timezone=True))

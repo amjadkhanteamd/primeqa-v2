@@ -219,6 +219,28 @@ class TestManagementService:
                       "supersede_test_case", "test_case", stale.id,
                       {"reason": "regenerate_plan"})
             superseded += 1
+            # Feedback signal: supersession means the user rejected the
+            # prior draft \u2014 a useful hint to the next generation. We
+            # record once per stale draft so the signal weight scales
+            # with how many were invalidated.
+            try:
+                from primeqa.intelligence.llm import feedback as _fb
+                prior_batch = getattr(stale, "generation_batch_id", None)
+                _fb.capture(
+                    tenant_id=tenant_id,
+                    signal_type=_fb.SIGNAL_REGENERATED_SOON,
+                    severity="medium",
+                    detail={
+                        "prior_batch_id": prior_batch,
+                        "superseded_test_case_id": stale.id,
+                        "reason": "user regenerated",
+                    },
+                    generation_batch_id=None,  # the *new* batch hasn't been created yet
+                    test_case_id=stale.id,
+                    ttl_days=7,
+                )
+            except Exception:
+                pass
 
         # Create the batch row first so each TC can reference its id.
         cost = self._estimate_cost(
@@ -292,6 +314,32 @@ class TestManagementService:
             self._store_validation_report(
                 version.id, report, env.current_meta_version_id,
             )
+
+            # Feed critical validator findings back into the feedback
+            # loop so the NEXT generation for this tenant includes them
+            # as "don't do this" context (Phase 4 / migration 033).
+            try:
+                from primeqa.intelligence.llm import feedback as _fb
+                for issue in (report.get("issues") or []):
+                    if issue.get("severity") != "critical":
+                        continue
+                    _fb.capture(
+                        tenant_id=tenant_id,
+                        signal_type=_fb.SIGNAL_VALIDATION_CRITICAL,
+                        severity="high",
+                        detail={
+                            "rule": issue.get("rule"),
+                            "object": issue.get("object_name"),
+                            "field": issue.get("field"),
+                            "message": (issue.get("message") or "")[:200],
+                        },
+                        generation_batch_id=batch.id,
+                        test_case_id=tc.id,
+                        test_case_version_id=version.id,
+                        ttl_days=14,   # stale validator info decays
+                    )
+            except Exception:
+                pass  # feedback is best-effort
 
             if float(plan_tc.get("confidence_score", 0.7)) < 0.7:
                 self.review_repo.create_review(

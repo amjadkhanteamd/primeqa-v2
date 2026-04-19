@@ -312,6 +312,28 @@ def _run_execute_stage(stage, ctx):
             "duration_ms": duration_ms,
         })
 
+        # Feedback loop: when a TC ends in error/failed, feed the error
+        # text back so the next generation in this tenant learns from
+        # the miss (Phase 4 / migration 033).
+        if tc_status in ("failed", "error") and failure_summary:
+            try:
+                from primeqa.intelligence.llm import feedback as _fb
+                _fb.capture(
+                    tenant_id=tenant_id,
+                    signal_type=_fb.SIGNAL_EXECUTION_FAILED,
+                    severity="high",
+                    detail={
+                        "error": (failure_summary or "")[:300],
+                        "failure_type": failure_type or "unknown",
+                    },
+                    generation_batch_id=getattr(tc, "generation_batch_id", None),
+                    test_case_id=tc.id,
+                    test_case_version_id=version.id,
+                    ttl_days=14,
+                )
+            except Exception:
+                pass
+
         total += 1
         if tc_status == "passed":
             passed += 1

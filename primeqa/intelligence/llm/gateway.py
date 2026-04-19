@@ -147,6 +147,12 @@ def llm_call(
         raise LLMError("content_error",
                        f"no model available for task={task} complexity={complexity}")
 
+    # Auto-load feedback signals for tasks that benefit. Caller override
+    # still wins (pass recent_misses=... to inject specific ones).
+    if recent_misses is None and task == "test_plan_generation":
+        from primeqa.intelligence.llm import feedback
+        recent_misses = feedback.recent_for_tenant(tenant_id, limit=5)
+
     # Build the prompt spec once \u2014 escalation reuses the same spec
     # (same prompt, different model) to keep comparisons clean.
     spec = prompt.build(context, tenant_id=tenant_id,
