@@ -98,6 +98,49 @@ def reap_stale_workers(ctx):
         log.warning(f"Marked worker {wh.worker_id} as dead")
 
 
+def reap_stuck_runs(ctx):
+    """Run-level reaper (audit F2, 2026-04-19).
+
+    `reap_stuck_stages` handles the common case — a stage stuck in
+    running. But when a worker dies between stages (post-stage-finished,
+    pre-next-stage-started) the RUN itself sits in `running` even though
+    no stage is `running`. That's how we got 27 orphan runs (46.6% of
+    the run table) before this reaper existed.
+
+    Rule: if pipeline_runs.status='running' AND started_at < now-1h
+    AND no stage on this run is currently 'running', mark the run failed.
+    Conservative threshold — legitimate long-running tests are rare
+    (max_execution_time_sec caps most at 30 min) and the stage reaper
+    catches faster failures at 5 minutes.
+    """
+    from datetime import datetime, timezone, timedelta
+    from primeqa.execution.models import PipelineRun, PipelineStage
+
+    db = ctx["db"]
+    service = ctx["service"]
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+    stuck = db.query(PipelineRun).filter(
+        PipelineRun.status == "running",
+        PipelineRun.started_at < cutoff,
+    ).all()
+
+    for run in stuck:
+        active_stages = db.query(PipelineStage).filter(
+            PipelineStage.run_id == run.id,
+            PipelineStage.status == "running",
+        ).count()
+        if active_stages > 0:
+            # Stage reaper will pick this up on its own.
+            continue
+        service.fail_run(
+            run.id,
+            error_message="Auto-reaped: run stuck in 'running' with no active stage",
+        )
+        log.warning("Reaped stuck run %s (started %s)",
+                    run.id, run.started_at)
+
+
 def fire_scheduled_runs(ctx):
     """R4: poll scheduled_runs, create pipeline_runs for due schedules."""
     try:
@@ -130,6 +173,7 @@ def scheduler_tick(ctx):
     """Single reaper iteration."""
     reap_stuck_stages(ctx)
     reap_stuck_slots(ctx)
+    reap_stuck_runs(ctx)          # audit F2 (2026-04-19)
     reap_stale_workers(ctx)
     fire_scheduled_runs(ctx)
     dead_mans_switch_check(ctx)

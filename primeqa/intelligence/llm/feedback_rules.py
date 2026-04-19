@@ -224,6 +224,7 @@ def build_rules_block(
     max_rules: int = 5,
     max_examples_per_rule: int = 3,
     min_signal_count: int = 1,
+    db=None,
 ) -> str:
     """Assemble a prompt-ready 'Common mistakes to avoid' block.
 
@@ -244,6 +245,7 @@ def build_rules_block(
         window_days=window_days,
         min_severity="medium",
         exclude_positive=True,
+        db=db,
     )
     if not signals:
         return ""
@@ -294,6 +296,7 @@ def top_recurring_issues(
     *,
     window_days: int = 30,
     limit: int = 5,
+    db=None,
 ) -> List[Dict[str, Any]]:
     """Dashboard-facing aggregation. Same grouping as the prompt block
     but returns structured rows for rendering in a table."""
@@ -303,6 +306,7 @@ def top_recurring_issues(
         window_days=window_days,
         min_severity="medium",
         exclude_positive=True,
+        db=db,
     )
     if not signals:
         return []
@@ -362,48 +366,46 @@ def correction_rate(
     start = now - timedelta(days=days)
     prev_start = now - timedelta(days=days * 2)
 
-    # Denominator: AI-generated TCs in window (rely on generation_batch_id
-    # as the canonical "AI produced this" marker).
-    # test_cases has no created_at column; we use updated_at as a proxy
-    # (AI-generated TCs are rarely edited post-creation, so updated_at
-    # ~= created_at for our purposes). Same convention as
-    # `quality_proxy_summary` in this module.
-    denom = db.execute(sql("""
-        SELECT COUNT(*)::int AS n
-        FROM test_cases
-        WHERE tenant_id = :tid
-          AND generation_batch_id IS NOT NULL
-          AND deleted_at IS NULL
-          AND updated_at >= :start
-    """), {"tid": tenant_id, "start": start}).scalar() or 0
+    # Single round-trip: compute all four numbers (current + previous
+    # window for both denom + corrected) in one SELECT using conditional
+    # aggregation. At Railway's ~650ms RTT, 4 queries → 1 saves ~2 sec.
+    # test_cases has no created_at; we use updated_at as a proxy (AI TCs
+    # are rarely edited post-creation, so updated_at ≈ created_at).
+    row = db.execute(sql("""
+        WITH tc_in_window AS (
+          SELECT id,
+            CASE WHEN updated_at >= :start THEN 1 ELSE 0 END AS in_cur,
+            CASE WHEN updated_at >= :prev_start AND updated_at < :start THEN 1 ELSE 0 END AS in_prev
+          FROM test_cases
+          WHERE tenant_id = :tid
+            AND generation_batch_id IS NOT NULL
+            AND deleted_at IS NULL
+            AND updated_at >= :prev_start
+        ),
+        corrections AS (
+          SELECT DISTINCT test_case_id,
+            MIN(CASE WHEN captured_at >= :start THEN 1 ELSE 0 END) AS ignore_a,
+            MAX(CASE WHEN captured_at >= :start THEN 1 ELSE 0 END) AS hit_cur,
+            MAX(CASE WHEN captured_at >= :prev_start AND captured_at < :start THEN 1 ELSE 0 END) AS hit_prev
+          FROM generation_quality_signals
+          WHERE tenant_id = :tid
+            AND captured_at >= :prev_start
+            AND test_case_id IS NOT NULL
+            AND signal_type IN ('user_edited', 'ba_rejected', 'user_thumbs_down')
+          GROUP BY test_case_id
+        )
+        SELECT
+          COALESCE(SUM(tc_in_window.in_cur), 0)::int  AS denom,
+          COALESCE(SUM(tc_in_window.in_prev), 0)::int AS prev_denom,
+          (SELECT COALESCE(SUM(hit_cur), 0)::int  FROM corrections) AS corrected,
+          (SELECT COALESCE(SUM(hit_prev), 0)::int FROM corrections) AS prev_corrected
+        FROM tc_in_window
+    """), {"tid": tenant_id, "start": start, "prev_start": prev_start}).one()._mapping
 
-    # Numerator: distinct TCs with a correction signal in window.
-    corrected = db.execute(sql("""
-        SELECT COUNT(DISTINCT test_case_id)::int AS n
-        FROM generation_quality_signals
-        WHERE tenant_id = :tid
-          AND captured_at >= :start
-          AND test_case_id IS NOT NULL
-          AND signal_type IN ('user_edited', 'ba_rejected', 'user_thumbs_down')
-    """), {"tid": tenant_id, "start": start}).scalar() or 0
-
-    # Previous-window comparison so the UI can render an arrow.
-    prev_denom = db.execute(sql("""
-        SELECT COUNT(*)::int AS n
-        FROM test_cases
-        WHERE tenant_id = :tid
-          AND generation_batch_id IS NOT NULL
-          AND deleted_at IS NULL
-          AND updated_at >= :prev_start AND updated_at < :start
-    """), {"tid": tenant_id, "prev_start": prev_start, "start": start}).scalar() or 0
-    prev_corrected = db.execute(sql("""
-        SELECT COUNT(DISTINCT test_case_id)::int AS n
-        FROM generation_quality_signals
-        WHERE tenant_id = :tid
-          AND captured_at >= :prev_start AND captured_at < :start
-          AND test_case_id IS NOT NULL
-          AND signal_type IN ('user_edited', 'ba_rejected', 'user_thumbs_down')
-    """), {"tid": tenant_id, "prev_start": prev_start, "start": start}).scalar() or 0
+    denom = row["denom"] or 0
+    prev_denom = row["prev_denom"] or 0
+    corrected = row["corrected"] or 0
+    prev_corrected = row["prev_corrected"] or 0
 
     rate = (corrected / denom) if denom else 0.0
     prev_rate = (prev_corrected / prev_denom) if prev_denom else None

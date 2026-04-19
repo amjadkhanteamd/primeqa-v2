@@ -283,30 +283,34 @@ def tenant_feedback_summary(db, tenant_id: int, *, days: int = 30) -> Dict[str, 
 
     start, _end = _window(days)
 
-    counts_rows = db.execute(sql("""
-        SELECT signal_type, COUNT(*)::int AS n
-        FROM generation_quality_signals
-        WHERE tenant_id = :tid AND captured_at >= :start
-        GROUP BY signal_type
-    """), {"tid": tenant_id, "start": start}).all()
-    counts = {r._mapping["signal_type"]: r._mapping["n"] for r in counts_rows}
+    # Audit U2: merge counts + by_day into one round-trip.
+    row = db.execute(sql("""
+        WITH win AS (
+          SELECT signal_type, captured_at
+          FROM generation_quality_signals
+          WHERE tenant_id = :tid AND captured_at >= :start
+        ),
+        totals AS (
+          SELECT signal_type, COUNT(*)::int AS n FROM win GROUP BY signal_type
+        ),
+        per_day AS (
+          SELECT DATE(captured_at) AS day, signal_type, COUNT(*)::int AS n
+          FROM win
+          GROUP BY DATE(captured_at), signal_type
+          ORDER BY DATE(captured_at) ASC
+        )
+        SELECT
+          COALESCE((SELECT json_agg(t) FROM totals t), '[]'::json) AS counts,
+          COALESCE((SELECT json_agg(d) FROM per_day d), '[]'::json) AS by_day
+    """), {"tid": tenant_id, "start": start}).one()._mapping
 
-    # Per-day series — one row per (day, signal_type). Aggregate into
-    # {day: {signal_type: n}} client-side (small result set).
-    by_day_rows = db.execute(sql("""
-        SELECT DATE(captured_at) AS day, signal_type, COUNT(*)::int AS n
-        FROM generation_quality_signals
-        WHERE tenant_id = :tid AND captured_at >= :start
-        GROUP BY DATE(captured_at), signal_type
-        ORDER BY DATE(captured_at) ASC
-    """), {"tid": tenant_id, "start": start}).all()
+    counts = {c["signal_type"]: c["n"] for c in (row["counts"] or [])}
     by_day_map: Dict[str, Dict[str, int]] = {}
-    for r in by_day_rows:
-        day = r._mapping["day"].isoformat()
-        by_day_map.setdefault(day, {})[r._mapping["signal_type"]] = r._mapping["n"]
+    for d in row["by_day"] or []:
+        by_day_map.setdefault(d["day"], {})[d["signal_type"]] = d["n"]
     by_day = [{"day": d, "counts": c} for d, c in sorted(by_day_map.items())]
 
-    top_issues = feedback_rules.top_recurring_issues(tenant_id, window_days=days)
+    top_issues = feedback_rules.top_recurring_issues(tenant_id, window_days=days, db=db)
     correction = feedback_rules.correction_rate(db, tenant_id, days=days)
 
     return {
@@ -329,59 +333,78 @@ def tenant_summary(db, tenant_id: int, *, days: int = 30) -> Dict[str, Any]:
 
     start, _end = _window(days)
 
-    total = db.execute(sql("""
-        SELECT COUNT(*) AS calls,
-               COALESCE(SUM(input_tokens),0) AS input_tokens,
-               COALESCE(SUM(output_tokens),0) AS output_tokens,
-               COALESCE(SUM(cached_input_tokens),0) AS cached_tokens,
-               COALESCE(SUM(cost_usd),0)::float AS cost_usd
-        FROM llm_usage_log
-        WHERE tenant_id = :tid AND ts >= :start AND status = 'ok'
+    # Audit U2 (2026-04-19): previously four separate round-trips. Over
+    # Railway's ~650ms RTT that was ~2.6s of pure network. Now one
+    # SELECT with two sub-aggregates; Postgres handles the extra work
+    # internally for ~650ms.
+    #
+    # We return: totals (single row) + by_task (array) + by_day (array)
+    # + blocked_calls (single int).
+    row = db.execute(sql("""
+        WITH ok_calls AS (
+          SELECT input_tokens, output_tokens, cached_input_tokens,
+                 cost_usd, task, ts
+          FROM llm_usage_log
+          WHERE tenant_id = :tid AND ts >= :start AND status = 'ok'
+        ),
+        totals AS (
+          SELECT COUNT(*)                            AS calls,
+                 COALESCE(SUM(input_tokens), 0)      AS input_tokens,
+                 COALESCE(SUM(output_tokens), 0)     AS output_tokens,
+                 COALESCE(SUM(cached_input_tokens), 0) AS cached_tokens,
+                 COALESCE(SUM(cost_usd), 0)::float   AS cost_usd
+          FROM ok_calls
+        ),
+        by_task AS (
+          SELECT task AS key,
+                 COUNT(*) AS calls,
+                 COALESCE(SUM(input_tokens), 0)      AS input_tokens,
+                 COALESCE(SUM(output_tokens), 0)     AS output_tokens,
+                 COALESCE(SUM(cached_input_tokens), 0) AS cached_tokens,
+                 COALESCE(SUM(cost_usd), 0)::float   AS cost_usd
+          FROM ok_calls
+          GROUP BY task
+          ORDER BY cost_usd DESC
+        ),
+        by_day AS (
+          SELECT DATE(ts) AS day,
+                 COUNT(*) AS calls,
+                 COALESCE(SUM(cost_usd), 0)::float AS cost_usd
+          FROM ok_calls
+          GROUP BY DATE(ts)
+          ORDER BY DATE(ts) ASC
+        )
+        SELECT
+          (SELECT row_to_json(t) FROM totals t) AS total,
+          COALESCE((SELECT json_agg(b) FROM by_task b), '[]'::json) AS by_task,
+          COALESCE((SELECT json_agg(d) FROM by_day d), '[]'::json) AS by_day,
+          (SELECT COUNT(*)::int
+             FROM llm_usage_log
+             WHERE tenant_id = :tid AND ts >= :start
+               AND status = 'rate_limited') AS blocked_calls
     """), {"tid": tenant_id, "start": start}).one()._mapping
 
-    by_task = db.execute(sql("""
-        SELECT task AS key,
-               COUNT(*) AS calls,
-               COALESCE(SUM(input_tokens),0) AS input_tokens,
-               COALESCE(SUM(output_tokens),0) AS output_tokens,
-               COALESCE(SUM(cached_input_tokens),0) AS cached_tokens,
-               COALESCE(SUM(cost_usd),0)::float AS cost_usd
-        FROM llm_usage_log
-        WHERE tenant_id = :tid AND ts >= :start AND status = 'ok'
-        GROUP BY task
-        ORDER BY cost_usd DESC
-    """), {"tid": tenant_id, "start": start}).all()
-
-    by_day_rows = db.execute(sql("""
-        SELECT DATE(ts) AS day,
-               COUNT(*) AS calls,
-               COALESCE(SUM(cost_usd),0)::float AS cost_usd
-        FROM llm_usage_log
-        WHERE tenant_id = :tid AND ts >= :start AND status = 'ok'
-        GROUP BY DATE(ts)
-        ORDER BY DATE(ts) ASC
-    """), {"tid": tenant_id, "start": start}).all()
-
-    # A friendly number: calls that were actually blocked because the
-    # tenant hit a cap. Surfaces "you've been throttled N times" — the
-    # single number every customer wants on the upgrade page.
-    blocked_calls = db.execute(sql("""
-        SELECT COUNT(*) AS n
-        FROM llm_usage_log
-        WHERE tenant_id = :tid AND ts >= :start AND status = 'rate_limited'
-    """), {"tid": tenant_id, "start": start}).scalar() or 0
+    total = row["total"] or {
+        "calls": 0, "input_tokens": 0, "output_tokens": 0,
+        "cached_tokens": 0, "cost_usd": 0.0,
+    }
+    by_task = row["by_task"] or []
+    # by_day: day is a date; json_agg serialises it as ISO string, good.
+    by_day_raw = row["by_day"] or []
+    blocked_calls = int(row["blocked_calls"] or 0)
 
     return {
         "days": days,
         "total": dict(total),
-        "by_task": [dict(r._mapping) for r in by_task],
+        "by_task": list(by_task),
         "by_day": [
-            {"day": r._mapping["day"].isoformat(),
-             "calls": r._mapping["calls"],
-             "cost_usd": r._mapping["cost_usd"]}
-            for r in by_day_rows
+            # json_agg returns day as ISO-string already, just normalise
+            {"day": d.get("day"),
+             "calls": d.get("calls", 0),
+             "cost_usd": d.get("cost_usd", 0.0)}
+            for d in by_day_raw
         ],
-        "blocked_calls": int(blocked_calls),
+        "blocked_calls": blocked_calls,
     }
 
 

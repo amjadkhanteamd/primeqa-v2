@@ -3081,9 +3081,10 @@ def settings_llm_usage():
         spenders = dashboard.top_spenders(db, days=days)
         # Enrich by_tenant with name + current tier + correction rate.
         from primeqa.intelligence.llm import tiers as _tiers
-        from primeqa.intelligence.llm import feedback_rules as _feedback_rules
         if cost["by_tenant"]:
             from primeqa.core.models import Tenant, TenantAgentSettings
+            from sqlalchemy import text as _sql
+            from datetime import datetime, timedelta, timezone
             tids = [row["key"] for row in cost["by_tenant"]]
             name_rows = db.query(Tenant.id, Tenant.name).filter(
                 Tenant.id.in_(tids),
@@ -3094,19 +3095,49 @@ def settings_llm_usage():
                 TenantAgentSettings.llm_tier,
             ).filter(TenantAgentSettings.tenant_id.in_(tids)).all()
             tier_by_id = {r[0]: r[1] for r in tier_rows}
+
+            # Correction rate across ALL visible tenants in ONE query.
+            # Audit U3 (2026-04-19): previously called feedback_rules.
+            # correction_rate() in a loop — one query per tenant × Railway
+            # RTT. At 20 tenants = 13 seconds. Now one CTE does the lot.
+            start = datetime.now(timezone.utc) - timedelta(days=days)
+            rate_rows = db.execute(_sql("""
+                WITH tc_per_tenant AS (
+                  SELECT tenant_id, COUNT(*)::int AS denom
+                  FROM test_cases
+                  WHERE tenant_id = ANY(:tids)
+                    AND generation_batch_id IS NOT NULL
+                    AND deleted_at IS NULL
+                    AND updated_at >= :start
+                  GROUP BY tenant_id
+                ),
+                corrected_per_tenant AS (
+                  SELECT tenant_id, COUNT(DISTINCT test_case_id)::int AS corrected
+                  FROM generation_quality_signals
+                  WHERE tenant_id = ANY(:tids)
+                    AND captured_at >= :start
+                    AND test_case_id IS NOT NULL
+                    AND signal_type IN ('user_edited', 'ba_rejected', 'user_thumbs_down')
+                  GROUP BY tenant_id
+                )
+                SELECT t.id AS tenant_id,
+                       COALESCE(d.denom, 0) AS denom,
+                       COALESCE(c.corrected, 0) AS corrected
+                FROM (SELECT unnest(:tids) AS id) t
+                LEFT JOIN tc_per_tenant d ON d.tenant_id = t.id
+                LEFT JOIN corrected_per_tenant c ON c.tenant_id = t.id
+            """), {"tids": list(tids), "start": start}).all()
+            rate_by_id = {
+                r._mapping["tenant_id"]: (r._mapping["corrected"], r._mapping["denom"])
+                for r in rate_rows
+            }
+
             for row in cost["by_tenant"]:
                 row["tenant_name"] = name_by_id.get(row["key"], f"Tenant #{row['key']}")
                 row["tier"] = tier_by_id.get(row["key"], _tiers.TIER_STARTER)
-                # Correction rate for the same window as the cost roll-up.
-                # One query per visible tenant — capped at 20 rows by the
-                # dashboard. <100ms per call over the signal index.
-                try:
-                    cr = _feedback_rules.correction_rate(db, row["key"], days=days)
-                    row["correction_rate"] = cr.get("rate", 0.0)
-                    row["correction_total"] = cr.get("total", 0)
-                except Exception:
-                    row["correction_rate"] = None
-                    row["correction_total"] = None
+                corrected, total = rate_by_id.get(row["key"], (0, 0))
+                row["correction_total"] = int(total)
+                row["correction_rate"] = (float(corrected) / float(total)) if total else 0.0
         return render_template("settings/llm_usage.html", **ctx(
             active_page="settings_llm_usage", settings_page="llm_usage",
             cost=cost, efficiency=eff, quality=quality,
@@ -3143,8 +3174,15 @@ def settings_my_llm_usage():
 
     db = next(get_db())
     try:
-        tl, _tp = limits.load_tenant_config(tenant_id)
-        snap = limits.current_usage(tenant_id, tl)
+        # Single-session pass-through (audit U2, 2026-04-19): all
+        # dashboard helpers share this one `db` so we amortise Railway's
+        # ~650ms RTT over fewer connections. `return_row=True` hands back
+        # the raw TenantAgentSettings row so we don't re-query it for
+        # the tier picker below.
+        tl, _tp, tas_row = limits.load_tenant_config(
+            tenant_id, db=db, return_row=True,
+        )
+        snap = limits.current_usage(tenant_id, tl, db=db)
         summary = dashboard.tenant_summary(db, tenant_id, days=days)
         # Phase 7: AI-quality feedback block — correction rate is the
         # north-star, plus top-5 recurring issues + per-signal counts.
@@ -3152,12 +3190,8 @@ def settings_my_llm_usage():
             db, tenant_id, days=days,
         )
 
-        # Which tier is set on this tenant? (Use raw row so we can show
-        # `custom` correctly, not just "uses overrides".)
-        row = db.query(TenantAgentSettings).filter(
-            TenantAgentSettings.tenant_id == tenant_id,
-        ).first()
-        tier_name = (row.llm_tier if row else None) or tiers.TIER_STARTER
+        tier_name = (getattr(tas_row, "llm_tier", None)
+                     if tas_row else None) or tiers.TIER_STARTER
         preset = tiers.get_preset(tier_name)
         all_tier_presets = tiers.all_presets()
 

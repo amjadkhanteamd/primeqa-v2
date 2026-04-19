@@ -88,7 +88,7 @@ class UsageSnapshot:
         return False
 
 
-def load_tenant_config(tenant_id: int):
+def load_tenant_config(tenant_id: int, *, db=None, return_row: bool = False):
     """Return (TenantLimits, TenantPolicy) from tenant_agent_settings,
     or defaults if no row exists.
 
@@ -96,13 +96,25 @@ def load_tenant_config(tenant_id: int):
     let any non-NULL raw column override that slot. This is the only
     place tier logic touches the hot path — the router + gateway stay
     tier-agnostic (they only see the final TenantLimits + TenantPolicy).
+
+    Optional `db` parameter (audit U2, 2026-04-19): when provided, reuse
+    the caller's session instead of opening our own. Dashboards call
+    multiple helpers in a row over Railway's ~650ms RTT; passing the
+    same session through cuts dashboard latency significantly without
+    changing the contract for ad-hoc callers (worker, API routes) that
+    don't have a session handy.
+
+    `return_row=True` additionally returns the raw `TenantAgentSettings`
+    ORM row (or None) so the caller can read fields like `llm_tier`
+    without a second round-trip. Used by the my-llm-usage view.
     """
     from sqlalchemy.orm import Session
     from primeqa.db import engine
     from primeqa.core.models import TenantAgentSettings
     from primeqa.intelligence.llm import tiers
 
-    sess = Session(bind=engine)
+    owns_session = db is None
+    sess = db if db is not None else Session(bind=engine)
     try:
         row = sess.query(TenantAgentSettings).filter(
             TenantAgentSettings.tenant_id == tenant_id,
@@ -110,7 +122,7 @@ def load_tenant_config(tenant_id: int):
         if not row:
             # No settings row → starter tier, no overrides.
             resolved = tiers.resolve_limits(tiers.TIER_STARTER)
-            return (
+            result = (
                 TenantLimits(
                     max_per_minute=resolved["max_per_minute"],
                     max_per_hour=resolved["max_per_hour"],
@@ -118,6 +130,7 @@ def load_tenant_config(tenant_id: int):
                 ),
                 TenantPolicy(),
             )
+            return (*result, None) if return_row else result
 
         tier = getattr(row, "llm_tier", None) or tiers.TIER_STARTER
         resolved = tiers.resolve_limits(
@@ -129,7 +142,7 @@ def load_tenant_config(tenant_id: int):
                 if row.llm_max_spend_per_day_usd is not None else None
             ),
         )
-        return (
+        result = (
             TenantLimits(
                 max_per_minute=resolved["max_per_minute"],
                 max_per_hour=resolved["max_per_hour"],
@@ -140,8 +153,10 @@ def load_tenant_config(tenant_id: int):
                 allow_haiku=bool(row.llm_allow_haiku),
             ),
         )
+        return (*result, row) if return_row else result
     finally:
-        sess.close()
+        if owns_session:
+            sess.close()
 
 
 def check(tenant_id: int, limits: TenantLimits) -> LimitCheckResult:
@@ -207,11 +222,13 @@ def check(tenant_id: int, limits: TenantLimits) -> LimitCheckResult:
     return LimitCheckResult(allowed=True)
 
 
-def current_usage(tenant_id: int, limits: TenantLimits) -> UsageSnapshot:
+def current_usage(tenant_id: int, limits: TenantLimits, *, db=None) -> UsageSnapshot:
     """Return a UsageSnapshot for the three limit windows.
 
     One round-trip — three CASE aggregates over the same index scan.
     Cheap enough that pages can call it on every render without caching.
+
+    Optional `db` (audit U2, 2026-04-19): reuse the caller's session.
     """
     from datetime import datetime, timezone, timedelta
     from sqlalchemy.orm import Session
@@ -227,7 +244,8 @@ def current_usage(tenant_id: int, limits: TenantLimits) -> UsageSnapshot:
     # Take the widest of (day_start, hour_start) so we catch both.
     window_start = day_start if day_start < hour_start else hour_start
 
-    sess = Session(bind=engine)
+    owns_session = db is None
+    sess = db if db is not None else Session(bind=engine)
     try:
         row = sess.query(
             sf.sum(case(
@@ -254,4 +272,5 @@ def current_usage(tenant_id: int, limits: TenantLimits) -> UsageSnapshot:
             cap_spend_per_day_usd=limits.max_spend_per_day_usd,
         )
     finally:
-        sess.close()
+        if owns_session:
+            sess.close()

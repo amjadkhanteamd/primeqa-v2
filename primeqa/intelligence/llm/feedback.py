@@ -379,6 +379,7 @@ def recent_for_tenant(
     window_days: int = 7,
     min_severity: str = "medium",
     exclude_positive: bool = True,
+    db=None,
 ) -> List[Dict[str, Any]]:
     """Return up to `limit` recent quality signals for a tenant, newest
     first, filtered by severity. Used by feedback_rules.build_rules_block()
@@ -389,6 +390,9 @@ def recent_for_tenant(
 
     Positive signals (thumbs_up) are excluded by default — "what the AI
     got right" is noise in a "don't do this" prompt context.
+
+    Optional `db` (audit U2, 2026-04-19): reuse the caller's session to
+    amortise Railway RTT across a chain of dashboard queries.
     """
     try:
         from sqlalchemy.orm import Session
@@ -401,7 +405,8 @@ def recent_for_tenant(
         window_start = datetime.now(timezone.utc) - timedelta(days=window_days)
         now = datetime.now(timezone.utc)
 
-        sess = Session(bind=engine)
+        owns_session = db is None
+        sess = db if db is not None else Session(bind=engine)
         try:
             q = sess.query(GenerationQualitySignal).filter(
                 GenerationQualitySignal.tenant_id == tenant_id,
@@ -445,7 +450,8 @@ def recent_for_tenant(
                     break
             return out
         finally:
-            sess.close()
+            if owns_session:
+                sess.close()
     except Exception as e:
         log.warning("feedback.recent_for_tenant failed tenant=%s: %s",
                     tenant_id, e)
