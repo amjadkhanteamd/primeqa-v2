@@ -58,6 +58,33 @@ def _mint_jwt(role: str):
         db.close()
 
 
+def _csrf_client(jwt_token):
+    """Return a Flask test_client ready for cookie-auth POST: JWT cookie
+    set, CSRF cookie minted via a GET, and a helper that includes the
+    CSRF header on subsequent POSTs.
+
+    Post-audit (CSRF enabled in Apr 2026) any cookie-authenticated POST
+    needs X-CSRF-Token matching the csrf_token cookie. Bearer-auth
+    /api/* requests skip CSRF — but most of these feedback tests use
+    cookie auth so they need the token.
+    """
+    c = app.test_client()
+    c.set_cookie(domain="localhost", key="access_token", value=jwt_token)
+    # Trigger the after_request CSRF cookie mint.
+    c.get("/login")
+    tok = c._cookies.get(("localhost", "/", "csrf_token"))
+    token_val = tok.value if tok else ""
+    # Monkey-patch the client's open() to auto-include the header.
+    _orig_open = c.open
+    def _open(*args, **kwargs):
+        headers = dict(kwargs.get("headers") or {})
+        headers.setdefault("X-CSRF-Token", token_val)
+        kwargs["headers"] = headers
+        return _orig_open(*args, **kwargs)
+    c.open = _open
+    return c
+
+
 # ---- tier module -----------------------------------------------------------
 
 def test_tier_presets_have_all_four():
@@ -166,8 +193,7 @@ def test_usage_snapshot_warn_threshold():
 
 def test_my_llm_usage_renders_for_admin():
     token, _tid = _mint_jwt("superadmin")  # superadmin passes admin gate
-    c = app.test_client()
-    c.set_cookie(domain="localhost", key="access_token", value=token)
+    c = _csrf_client(token)
     r = c.get("/settings/my-llm-usage")
     assert r.status_code == 200, r.data.decode()[:400]
     body = r.data.decode()
@@ -183,8 +209,7 @@ def test_my_llm_usage_rejects_non_admin():
     except RuntimeError:
         print("    (no viewer user — skipping)")
         return
-    c = app.test_client()
-    c.set_cookie(domain="localhost", key="access_token", value=token)
+    c = _csrf_client(token)
     r = c.get("/settings/my-llm-usage", follow_redirects=False)
     # role_required redirects to "/" on rejection
     assert r.status_code in (302, 303), r.status_code
@@ -197,8 +222,7 @@ def test_tenant_tier_change_writes_and_logs():
     from primeqa.intelligence.llm import tiers
 
     token, tid = _mint_jwt("superadmin")
-    c = app.test_client()
-    c.set_cookie(domain="localhost", key="access_token", value=token)
+    c = _csrf_client(token)
 
     # Capture baseline so we can restore after.
     db = SessionLocal()
@@ -238,8 +262,7 @@ def test_tenant_tier_change_writes_and_logs():
 
 def test_tenant_tier_rejects_unknown_value():
     token, tid = _mint_jwt("superadmin")
-    c = app.test_client()
-    c.set_cookie(domain="localhost", key="access_token", value=token)
+    c = _csrf_client(token)
     r = c.post(f"/settings/tenant-tier/{tid}", data={"llm_tier": "not-a-tier"})
     # Rejected: redirects back with a flash, but does NOT change the row.
     assert r.status_code in (302, 303)
@@ -251,8 +274,7 @@ def test_tenant_tier_change_rejects_non_superadmin():
     except RuntimeError:
         print("    (no admin user — skipping)")
         return
-    c = app.test_client()
-    c.set_cookie(domain="localhost", key="access_token", value=token)
+    c = _csrf_client(token)
     r = c.post(f"/settings/tenant-tier/{tid}", data={"llm_tier": "pro"},
                follow_redirects=False)
     # role_required("superadmin") bounces to /
@@ -265,8 +287,7 @@ def test_tenant_tier_change_rejects_non_superadmin():
 
 def test_superadmin_llm_usage_exposes_all_tiers_context():
     token, _tid = _mint_jwt("superadmin")
-    c = app.test_client()
-    c.set_cookie(domain="localhost", key="access_token", value=token)
+    c = _csrf_client(token)
     r = c.get("/settings/llm-usage")
     assert r.status_code == 200, r.data.decode()[:400]
 
@@ -400,8 +421,7 @@ def test_post_feedback_happy_path_thumbs_up():
         print("    (no test case in tenant — skipping)")
         return
     _clear_user_feedback_24h(tid, tc_id, uid)
-    c = app.test_client()
-    c.set_cookie(domain="localhost", key="access_token", value=token)
+    c = _csrf_client(token)
     r = c.post(f"/api/test-cases/{tc_id}/feedback", json={"verdict": "up"})
     assert r.status_code == 200, r.data.decode()[:200]
     data = r.get_json()
@@ -416,8 +436,7 @@ def test_post_feedback_happy_path_thumbs_down_with_reason():
         print("    (no test case — skipping)")
         return
     _clear_user_feedback_24h(tid, tc_id, uid)
-    c = app.test_client()
-    c.set_cookie(domain="localhost", key="access_token", value=token)
+    c = _csrf_client(token)
     r = c.post(f"/api/test-cases/{tc_id}/feedback", json={
         "verdict": "down",
         "reason": "wrong_object_or_field",
@@ -435,8 +454,7 @@ def test_post_feedback_invalid_verdict():
     if tc_id is None:
         print("    (no test case — skipping)")
         return
-    c = app.test_client()
-    c.set_cookie(domain="localhost", key="access_token", value=token)
+    c = _csrf_client(token)
     r = c.post(f"/api/test-cases/{tc_id}/feedback", json={"verdict": "maybe"})
     assert r.status_code == 400, r.data.decode()[:200]
     body = r.get_json()
@@ -450,8 +468,7 @@ def test_post_feedback_other_requires_text():
     if tc_id is None:
         print("    (no test case — skipping)")
         return
-    c = app.test_client()
-    c.set_cookie(domain="localhost", key="access_token", value=token)
+    c = _csrf_client(token)
     r = c.post(f"/api/test-cases/{tc_id}/feedback", json={
         "verdict": "down", "reason": "other",
     })
@@ -467,8 +484,7 @@ def test_post_feedback_rate_limit_throttles_silently():
         print("    (no test case — skipping)")
         return
     _clear_user_feedback_24h(tid, tc_id, uid)
-    c = app.test_client()
-    c.set_cookie(domain="localhost", key="access_token", value=token)
+    c = _csrf_client(token)
     last = None
     for _ in range(6):
         r = c.post(f"/api/test-cases/{tc_id}/feedback", json={"verdict": "up"})
@@ -585,8 +601,7 @@ def test_correction_rate_returns_valid_shape():
 
 def test_tenant_dashboard_includes_feedback_section():
     token, _tid = _mint_jwt("superadmin")
-    c = app.test_client()
-    c.set_cookie(domain="localhost", key="access_token", value=token)
+    c = _csrf_client(token)
     r = c.get("/settings/my-llm-usage")
     assert r.status_code == 200
     body = r.data.decode()
