@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'components/_buttons.html' import btn_primary, btn_secondary, btn_danger_link %}
+{% from 'components/_empty_state.html' import empty_state %}
+{% block title %}Sections - PrimeQA{% endblock %}
+{% block content %}
+
+{{ breadcrumbs([('Sections', None)]) }}
+
+<div class="space-y-6">
+  <div class="flex justify-between items-start">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Sections</h1>
+      <p class="mt-1 text-sm text-gray-500">Organise test cases into a hierarchical structure. Most teams use 1&ndash;2 levels; nest deeper when a module has many sub-areas.</p>
+    </div>
+    {% if user.role in ['admin', 'tester', 'superadmin'] %}
+    <button onclick="document.getElementById('new-section-modal').classList.remove('hidden')"
+            class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">
+      + New Section
+    </button>
+    {% endif %}
+  </div>
+
+  {% if sections %}
+  <div class="bg-white shadow rounded-lg divide-y divide-gray-100" role="tree" aria-label="Section hierarchy">
+    {% for node in sections %}
+      {% set depth = node.depth or 0 %}
+      <div class="px-4 py-3 flex items-center justify-between hover:bg-gray-50"
+           role="treeitem" aria-level="{{ depth + 1 }}"
+           style="padding-left: {{ 16 + depth * 24 }}px">
+        <div class="flex items-center gap-2 flex-1 min-w-0">
+          {% if depth > 0 %}
+          <svg class="h-3.5 w-3.5 text-gray-300 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5"/>
+          </svg>
+          {% endif %}
+          <span class="text-sm font-medium text-gray-900 truncate">{{ node.name }}</span>
+          {% if node.test_case_count %}
+          <span class="ml-2 inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700" title="Test cases in this section">
+            {{ node.test_case_count }} TC{% if node.test_case_count != 1 %}s{% endif %}
+          </span>
+          {% endif %}
+        </div>
+        {% if user.role in ['admin', 'tester', 'superadmin'] %}
+        <div class="flex items-center gap-3 ml-4 flex-shrink-0">
+          <a href="/test-cases?section_id={{ node.id }}" class="text-xs text-indigo-600 hover:text-indigo-800">View TCs</a>
+          <button type="button"
+                  data-rename-section="{{ node.id }}"
+                  data-section-name="{{ node.name | e }}"
+                  class="text-xs text-gray-600 hover:text-gray-800">Rename</button>
+          {{ btn_danger_link('Delete',
+              onclick="window.PrimeQA.confirm({title:'Move to trash?', variant:'danger', message:'Soft-delete section \u201C' + " + node.name|tojson + " + '\u201D? Any child sections go with it. Test cases inside stay put.', submitLabel:'Move to trash', onConfirm: async () => { const r = await fetch('/api/sections/" + node.id|string + "', {method:'DELETE', credentials:'same-origin'}); if (r.ok) { window.PrimeQA.toast('Section moved to trash', 'success'); setTimeout(() => location.reload(), 300); } })",
+              size='sm') }}
+        </div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+  {% else %}
+    {{ empty_state(
+        title='No sections yet',
+        description='Sections organise test cases into a tree. Start with top-level modules (Auth, Checkout, Reports) and nest as needed.',
+        cta_label='+ New Section',
+        cta_onclick="document.getElementById('new-section-modal').classList.remove('hidden')",
+    ) }}
+  {% endif %}
+</div>
+
+{# ---- New section modal ---------------------------------------------- #}
+<div id="new-section-modal" class="hidden fixed inset-0 z-50 overflow-y-auto" role="dialog" aria-modal="true">
+  <div class="flex min-h-full items-center justify-center p-4">
+    <div class="fixed inset-0 bg-gray-500 bg-opacity-50" onclick="document.getElementById('new-section-modal').classList.add('hidden')"></div>
+    <div class="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+      <h3 class="text-lg font-medium text-gray-900 mb-4">Create Section</h3>
+      <form id="new-section-form" class="space-y-4">
+        <div>
+          <label for="new-section-name" class="block text-sm font-medium text-gray-700">Name</label>
+          <input id="new-section-name" name="name" required
+                 class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+        </div>
+        <div>
+          <label for="new-section-parent" class="block text-sm font-medium text-gray-700">Parent section <span class="text-xs text-gray-400 font-normal">(optional)</span></label>
+          <select id="new-section-parent" name="parent_id"
+                  class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">
+            <option value="">(top level)</option>
+            {% for node in sections %}
+            <option value="{{ node.id }}">{{ ('— ' * (node.depth or 0)) ~ node.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div id="new-section-error" class="hidden text-xs text-red-600"></div>
+        <div class="flex justify-end space-x-2">
+          <button type="button" onclick="document.getElementById('new-section-modal').classList.add('hidden')"
+                  class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700">Cancel</button>
+          <button type="submit" id="new-section-submit"
+                  class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:bg-indigo-400">
+            Create
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  async function api(method, url, body) {
+    const r = await fetch(url, {
+      method, credentials: 'same-origin',
+      headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!r.ok) { await window.PrimeQA.showErrorFromResponse(r); throw new Error('failed'); }
+    return r.json();
+  }
+
+  /* Create section */
+  const form = document.getElementById('new-section-form');
+  form?.addEventListener('submit', async (evt) => {
+    evt.preventDefault();
+    const err = document.getElementById('new-section-error');
+    err.classList.add('hidden');
+    const submit = document.getElementById('new-section-submit');
+    submit.disabled = true;
+    try {
+      const name = document.getElementById('new-section-name').value.trim();
+      if (!name) return;
+      const parentSel = document.getElementById('new-section-parent').value;
+      await api('POST', '/api/sections', {
+        name,
+        parent_id: parentSel ? parseInt(parentSel, 10) : null,
+      });
+      window.PrimeQA.toast('Section created', 'success');
+      setTimeout(() => location.reload(), 300);
+    } catch (e) {
+      err.textContent = 'Create failed. Check the name isn\u2019t blank or already in use.';
+      err.classList.remove('hidden');
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  /* Rename — simple prompt() flow; a full inline-edit is overkill for a
+     rarely-used admin page. */
+  document.querySelectorAll('[data-rename-section]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.renameSection;
+      const current = btn.dataset.sectionName;
+      // eslint-disable-next-line no-alert
+      const next = window.prompt('Rename section', current);
+      if (!next || next === current) return;
+      try {
+        await api('PATCH', '/api/sections/' + id, { name: next });
+        window.PrimeQA.toast('Renamed', 'success');
+        setTimeout(() => location.reload(), 300);
+      } catch (_) { /* surfaced */ }
+    });
+  });
+})();
+</script>
+
+{% endblock %}

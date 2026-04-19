@@ -4201,6 +4201,63 @@ def milestones_list():
         db.close()
 
 
+# Sections list (audit finding — previously 404). Minimal management UI;
+# tree view + create/rename/soft-delete. Deep organisation still happens
+# inline in the Test Library where sections are embedded.
+@views_bp.route("/sections")
+@login_required
+def sections_list():
+    from primeqa.test_management.repository import (
+        SectionRepository, TestCaseRepository,
+    )
+    from primeqa.test_management.models import Section, TestCase
+    from sqlalchemy import func as sf
+
+    db = next(get_db())
+    try:
+        tenant_id = request.user["tenant_id"]
+        # Fetch all non-deleted sections for the tenant in one query,
+        # plus a TC count per section via a separate grouped count. At
+        # typical section counts (<200) this is fine; at scale, promote
+        # test_case_count to a materialized column.
+        rows = db.query(Section).filter(
+            Section.tenant_id == tenant_id,
+            Section.deleted_at.is_(None),
+        ).order_by(Section.parent_id.nullsfirst(), Section.position).all()
+
+        tc_counts = dict(db.query(
+            TestCase.section_id, sf.count(TestCase.id),
+        ).filter(
+            TestCase.tenant_id == tenant_id,
+            TestCase.deleted_at.is_(None),
+            TestCase.section_id.isnot(None),
+        ).group_by(TestCase.section_id).all())
+
+        # Build a flat ordered list with depth so the template can just
+        # indent rather than recursively nest divs.
+        by_parent = {}
+        for r in rows:
+            by_parent.setdefault(r.parent_id, []).append(r)
+
+        flat = []
+        def _walk(parent_id, depth):
+            for node in by_parent.get(parent_id, []):
+                flat.append({
+                    "id": node.id, "name": node.name,
+                    "parent_id": node.parent_id,
+                    "depth": depth,
+                    "test_case_count": tc_counts.get(node.id, 0),
+                })
+                _walk(node.id, depth + 1)
+        _walk(None, 0)
+
+        return render_template("sections/list.html", **ctx(
+            active_page="sections", sections=flat,
+        ))
+    finally:
+        db.close()
+
+
 @views_bp.route("/milestones", methods=["POST"])
 @role_required("admin", "tester")
 def milestones_create():

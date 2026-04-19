@@ -263,9 +263,16 @@ def run_tests():
         mock_llm.messages.create.assert_not_called()
     results.append(test("4. Pattern match skips LLM on second occurrence", test_pattern_match))
 
-    # 5. Novel failure calls LLM
+    # 5. Novel failure calls LLM (legacy path — no gateway tenant context).
     def test_llm_fallback():
         mock_llm = MagicMock()
+        # Phase 1 refactor: IntelligenceService._call_llm routes through
+        # the gateway when the client has api_key + _pqa_tenant_id.
+        # MagicMock().attr returns a fresh Mock (truthy), so we must
+        # explicitly set these to None to force the legacy direct path
+        # that the test exercises.
+        mock_llm.api_key = None
+        mock_llm._pqa_tenant_id = None
         mock_llm.messages.create.return_value = MagicMock(
             content=[MagicMock(text='{"root_cause": "Unknown system error", "root_cause_entity": "System", "confidence": 0.6}')],
             model="claude-sonnet-4-20250514",
