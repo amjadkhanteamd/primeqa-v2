@@ -38,9 +38,11 @@
     <div class="flex items-center space-x-2">
       {% if impact.resolution == 'pending' and not impact.deleted_at %}
       <form method="POST" action="/impacts/{{ impact.id }}/regenerate">
+            {{ csrf_input | safe }}
         <button class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">AI Regenerate</button>
       </form>
       <form method="POST" action="/impacts/{{ impact.id }}/resolve">
+            {{ csrf_input | safe }}
         <input type="hidden" name="resolution" value="dismissed">
         <button class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Dismiss</button>
       </form>

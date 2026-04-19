@@ -27,6 +27,7 @@ import primeqa.release.models  # noqa: F401
 import primeqa.execution.data_engine  # noqa: F401
 import primeqa.runs.schedule  # noqa: F401 \u2014 R4 ScheduledRun model
 
+from primeqa.core import csrf
 from primeqa.core.routes import core_bp
 from primeqa.metadata.routes import metadata_bp
 from primeqa.test_management.routes import test_management_bp
@@ -58,6 +59,11 @@ def create_app():
 
     # Install request-timing + slow-query hooks after blueprints/engine are ready
     obs.install(application)
+
+    # Install CSRF protection (double-submit cookie). See primeqa.core.csrf.
+    # Skips /api/* requests that carry Bearer auth; enforced on every other
+    # state-changing request.
+    csrf.install(application)
 
     @application.route("/health")
     def health():

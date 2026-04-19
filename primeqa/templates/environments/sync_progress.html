@@ -61,6 +61,7 @@
     <div class="flex items-center space-x-2">
       {% if mv.status in ('queued', 'in_progress') and not mv.cancel_requested %}
       <form method="POST" action="/environments/{{ env.id }}/sync/{{ mv.id }}/cancel">
+            {{ csrf_input | safe }}
         <button class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Cancel</button>
       </form>
       {% endif %}
@@ -119,9 +120,11 @@
     <div id="action-summary" class="text-sm text-gray-700"></div>
     <div class="flex items-center space-x-2">
       <form method="POST" action="/environments/{{ env.id }}/sync/{{ mv.id }}/retry" id="retry-failed-form">
+            {{ csrf_input | safe }}
         <button type="submit" class="hidden rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500" id="btn-retry">Retry failed + skipped</button>
       </form>
       <form method="POST" action="/environments/{{ env.id }}/refresh-metadata">
+            {{ csrf_input | safe }}
         {% for cat in ['objects','fields','record_types','validation_rules','flows','triggers'] %}
         <input type="hidden" name="categories" value="{{ cat }}">
         {% endfor %}

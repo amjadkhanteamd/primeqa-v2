@@ -11,6 +11,7 @@
         <div class="flex space-x-3">
             <a href="/groups/{{ group.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit</a>
             <form method="POST" action="/groups/{{ group.id }}/delete" id="delete-group-{{ group.id }}">
+            {{ csrf_input | safe }}
                 <button type="button" onclick="showConfirmModal('Delete Group', 'This will remove all members and environment assignments. Are you sure?', 'delete-group-{{ group.id }}')" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">Delete</button>
             </form>
         </div>
@@ -33,6 +34,7 @@
                         </div>
                         {% if user.role in ['admin', 'superadmin'] %}
                         <form method="POST" action="/groups/{{ group.id }}/members/{{ m.id }}/remove">
+            {{ csrf_input | safe }}
                             <button type="submit" class="text-xs text-red-600 hover:text-red-800">Remove</button>
                         </form>
                         {% endif %}
@@ -45,6 +47,7 @@
                 {% if user.role in ['admin', 'superadmin'] %}
                 <div class="px-6 py-4 border-t bg-gray-50">
                     <form method="POST" action="/groups/{{ group.id }}/members" class="flex space-x-2">
+            {{ csrf_input | safe }}
                         <select name="user_id" class="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm">
                             {% for u in available_users %}
                             <option value="{{ u.id }}">{{ u.full_name }} ({{ u.email }})</option>
@@ -72,6 +75,7 @@
                         </div>
                         {% if user.role in ['admin', 'superadmin'] %}
                         <form method="POST" action="/groups/{{ group.id }}/environments/{{ e.id }}/remove">
+            {{ csrf_input | safe }}
                             <button type="submit" class="text-xs text-red-600 hover:text-red-800">Remove</button>
                         </form>
                         {% endif %}
@@ -84,6 +88,7 @@
                 {% if user.role in ['admin', 'superadmin'] and available_envs %}
                 <div class="px-6 py-4 border-t bg-gray-50">
                     <form method="POST" action="/groups/{{ group.id }}/environments" class="flex space-x-2">
+            {{ csrf_input | safe }}
                         <select name="environment_id" class="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm">
                             {% for e in available_envs %}
                             <option value="{{ e.id }}">{{ e.name }} ({{ e.env_type }})</option>

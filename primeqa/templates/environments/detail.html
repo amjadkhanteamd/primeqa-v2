@@ -10,6 +10,7 @@
         <div class="flex space-x-3">
             <a href="/environments/{{ env.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit</a>
             <form method="POST" action="/environments/{{ env.id }}/delete" id="delete-env-{{ env.id }}">
+            {{ csrf_input | safe }}
                 <button type="button" onclick="showConfirmModal('Delete Environment', 'This will deactivate the environment. Are you sure?', 'delete-env-{{ env.id }}')" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">Delete</button>
             </form>
         </div>
@@ -23,7 +24,8 @@
         <div><span class="text-xs text-gray-500 uppercase">Cleanup Mandatory</span><p class="font-medium">{{ 'Yes' if env.cleanup_mandatory else 'No' }}</p></div>
     </div>
     <div class="flex space-x-3">
-        <form method="POST" action="/environments/{{ env.id }}/test-connection"><button type="submit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Test Connection</button></form>
+        <form method="POST" action="/environments/{{ env.id }}/test-connection">
+            {{ csrf_input | safe }}<button type="submit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Test Connection</button></form>
     </div>
     {% if message %}<div class="rounded-md {% if 'error' in message|lower %}bg-red-50 text-red-700{% else %}bg-green-50 text-green-700{% endif %} p-4 text-sm">{{ message }}</div>{% endif %}
 
@@ -35,6 +37,7 @@
       </div>
 
       <form method="POST" action="/environments/{{ env.id }}/refresh-metadata" class="space-y-4">
+            {{ csrf_input | safe }}
         <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
           {% for cat in ['objects','fields','record_types','validation_rules','flows','triggers'] %}
           {% set s = sync_statuses.get(cat) %}

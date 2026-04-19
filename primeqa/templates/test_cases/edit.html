@@ -21,6 +21,7 @@
     {% if error %}<div class="rounded-md bg-red-50 p-4"><p class="text-sm text-red-700">{{ error }}</p></div>{% endif %}
 
     <form method="POST" action="/test-cases/{{ tc.id }}/edit" id="edit-form" class="space-y-6" data-unsaved-guard>
+            {{ csrf_input | safe }}
         <input type="hidden" name="steps_json" id="steps-json">
         <input type="hidden" name="environment_id" value="{{ env_id or '' }}">
         <input type="hidden" name="expected_version" value="{{ tc.version or 1 }}">

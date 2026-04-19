@@ -45,6 +45,7 @@
            least one linked TC. Env picker reuses the existing list. #}
         {% if test_cases %}
         <form method="POST" action="/requirements/{{ req.id }}/run" class="flex items-center space-x-2">
+            {{ csrf_input | safe }}
           <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
             <option value="">Run env&hellip;</option>
             {% for env in environments %}
@@ -57,6 +58,7 @@
         </form>
         {% endif %}
         <form method="POST" action="/requirements/{{ req.id }}/generate" class="flex items-center space-x-2">
+            {{ csrf_input | safe }}
           <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
             <option value="">Gen env&hellip;</option>
             {% for env in environments %}
@@ -101,6 +103,7 @@
         {% if req.acceptance_criteria %}{{ req.acceptance_criteria }}{% else %}<span class="text-gray-400 italic">No acceptance criteria</span>{% endif %}
       </div>
       <form id="ac-form" method="POST" action="/requirements/{{ req.id }}/edit" class="hidden mt-2" data-unsaved-guard>
+            {{ csrf_input | safe }}
         <textarea name="acceptance_criteria" rows="5" class="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono">{{ req.acceptance_criteria }}</textarea>
         <div class="mt-2 flex justify-end space-x-2">
           <button type="button" id="edit-ac-cancel" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Cancel</button>

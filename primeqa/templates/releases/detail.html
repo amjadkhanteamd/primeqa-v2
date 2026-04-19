@@ -26,9 +26,11 @@
         {% if user.role in ['admin', 'tester', 'superadmin'] %}
         <div class="flex space-x-3">
             <form method="POST" action="/releases/{{ release.id }}/score-risks">
+            {{ csrf_input | safe }}
                 <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Score Risks</button>
             </form>
             <form method="POST" action="/releases/{{ release.id }}/evaluate-decision">
+            {{ csrf_input | safe }}
                 <button type="submit" class="rounded-md bg-purple-600 px-3 py-2 text-sm font-semibold text-white hover:bg-purple-500">Evaluate GO/NO-GO</button>
             </form>
             <a href="/releases/{{ release.id }}/edit" class="rounded-md bg-gray-600 px-3 py-2 text-sm font-semibold text-white hover:bg-gray-500">Edit</a>
@@ -245,6 +247,7 @@
       <h3 class="text-lg font-medium text-gray-900 mb-1">Run release test plan</h3>
       <p class="text-xs text-gray-500 mb-4">{{ release.test_plan | length }} test cases will be executed against the selected environment.</p>
       <form method="POST" action="/releases/{{ release.id }}/run" class="space-y-4">
+            {{ csrf_input | safe }}
         <div>
           <label class="block text-sm font-medium text-gray-700">Environment</label>
           <select name="environment_id" required class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm">

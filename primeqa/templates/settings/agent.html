@@ -11,6 +11,7 @@
   </div>
 
   <form method="POST" action="/settings/agent" class="bg-white shadow rounded-lg p-6 space-y-5">
+            {{ csrf_input | safe }}
     <div>
       <label class="inline-flex items-center space-x-3">
         <input type="checkbox" name="agent_enabled" value="1" {% if settings.agent_enabled %}checked{% endif %}

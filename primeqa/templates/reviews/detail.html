@@ -25,6 +25,7 @@
 
     {% if review.status == 'pending' %}
     <form method="POST" action="/reviews/{{ review.id }}" id="review-form" class="space-y-4">
+            {{ csrf_input | safe }}
         {% if version and version.steps %}
         <div class="bg-white shadow rounded-lg p-6">
             <h3 class="text-lg font-medium text-gray-900 mb-4">Review Steps</h3>

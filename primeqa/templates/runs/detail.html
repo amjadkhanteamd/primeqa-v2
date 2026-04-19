@@ -26,6 +26,7 @@
     <div class="flex items-center space-x-2">
       {% if run.status in ['queued', 'running'] and user.role in ['admin', 'tester', 'superadmin'] %}
       <form method="POST" action="/runs/{{ run.id }}/cancel">
+            {{ csrf_input | safe }}
         <button type="submit" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500">Cancel</button>
       </form>
       {% endif %}
@@ -35,11 +36,13 @@
       {% if run.status in ['completed', 'failed'] and user.role in ['admin','tester','superadmin'] %}
       <form method="POST" action="/runs/{{ run.id }}/rerun-verbatim"
             title="Replay this run with the same test-case versions pinned. Useful for reproducing a failure when the TC has moved on.">
+            {{ csrf_input | safe }}
         <button type="submit" class="rounded-md bg-white px-3 py-2 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">↻ Rerun verbatim</button>
       </form>
       {% endif %}
       {% if run.status in ['completed', 'failed'] and run.failed and user.role in ['admin','tester','superadmin'] %}
       <form method="POST" action="/runs/{{ run.id }}/rerun-failed">
+            {{ csrf_input | safe }}
         <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Rerun failed</button>
       </form>
       {% endif %}
@@ -113,6 +116,7 @@
         {% endif %}
       </div>
       <form method="POST" action="/runs/{{ run.id }}/summarise-failures" class="flex-shrink-0">
+            {{ csrf_input | safe }}
         <button type="submit" class="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-amber-500">
           {% if run.failure_summary_ai %}Regenerate{% else %}Summarise failures{% endif %}
         </button>
@@ -213,10 +217,12 @@
           {% if not f.user_decision and f.auto_applied %}
           <div class="flex space-x-2 ml-4">
             <form method="POST" action="/runs/agent-fixes/{{ f.id }}/accept" class="inline">
+            {{ csrf_input | safe }}
               <button type="submit" class="rounded-md bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-500">Accept</button>
             </form>
             <form method="POST" action="/runs/agent-fixes/{{ f.id }}/revert" class="inline"
                   onsubmit="return confirm('Revert this fix? The before-state snapshot will be restored.')">
+            {{ csrf_input | safe }}
               <button type="submit" class="rounded-md bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-500">Revert</button>
             </form>
             <a href="/test-cases/{{ f.test_case_id }}/edit" class="rounded-md bg-white px-3 py-1 text-xs font-medium text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Edit</a>
@@ -298,6 +304,7 @@
             {% if run.status in ['completed', 'failed'] and r.status in ['failed', 'error'] and user.role in ['admin','tester','superadmin'] %}
             <form method="POST" action="/runs/{{ run.id }}/rerun-one" class="inline"
                   title="Rerun just this test case in a new run (isolates confirmation without the whole suite).">
+            {{ csrf_input | safe }}
               <input type="hidden" name="test_case_id" value="{{ r.test_case_id }}">
               <button type="submit" class="text-xs rounded-md bg-white px-2 py-0.5 text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-50">
                 ↻ Rerun

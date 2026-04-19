@@ -12,6 +12,7 @@
   </h1>
 
   <form method="POST" action="{{ action_url }}" class="bg-white shadow rounded-lg p-6 space-y-5">
+            {{ csrf_input | safe }}
     {% if error %}
     <div class="rounded-md bg-red-50 border border-red-200 p-3 text-sm text-red-700">{{ error }}</div>
     {% endif %}

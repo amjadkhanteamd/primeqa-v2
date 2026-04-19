@@ -34,11 +34,13 @@
       </div>
       <div class="flex space-x-2 ml-3">
         <form method="POST" action="/environments/{{ environment_id }}/quick-refresh">
+            {{ csrf_input | safe }}
           <button type="submit" class="rounded-md bg-yellow-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-yellow-500">
             Quick-refresh changed
           </button>
         </form>
         <form method="POST" action="/environments/{{ environment_id }}/refresh-metadata">
+            {{ csrf_input | safe }}
           <button type="submit" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">
             Full re-sync
           </button>
@@ -179,6 +181,7 @@
 
   <!-- Run form -->
   <form method="POST" action="/runs" class="bg-white shadow rounded-lg p-6 flex items-end justify-between">
+            {{ csrf_input | safe }}
     <input type="hidden" name="environment_id" value="{{ environment_id }}">
     <input type="hidden" name="run_type" value="{{ run_type }}">
     <input type="hidden" name="priority" value="{{ priority }}">

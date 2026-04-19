@@ -6,6 +6,21 @@
     <title>{% block title %}PrimeQA{% endblock %}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    {# CSRF — must load BEFORE any script that uses fetch() so the
+       global fetch wrapper is installed early. Same-origin,
+       state-changing requests (POST/PUT/PATCH/DELETE) auto-gain the
+       X-CSRF-Token header from the csrf_token cookie. #}
+    <script src="/static/js/csrf.js"></script>
+    <script>
+      /* Also hand the token to HTMX so hx-post / hx-delete pass CSRF. */
+      document.addEventListener('DOMContentLoaded', function () {
+        if (!window.htmx) return;
+        document.body.addEventListener('htmx:configRequest', function (evt) {
+          const m = document.cookie.match('(?:^|;)\\s*csrf_token=([^;]+)');
+          if (m) evt.detail.headers['X-CSRF-Token'] = decodeURIComponent(m[1]);
+        });
+      });
+    </script>
     <style>
         @keyframes pulse-blue { 0%,100%{opacity:1} 50%{opacity:.5} }
         .animate-pulse-blue { animation: pulse-blue 2s cubic-bezier(0.4,0,0.6,1) infinite; }

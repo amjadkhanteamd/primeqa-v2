@@ -59,9 +59,11 @@
         </a>
         <div class="flex space-x-2">
           {% if not show_deleted %}
-          <form method="POST" action="/impacts/{{ impact.id }}/regenerate"><button class="text-xs rounded bg-indigo-600 text-white px-3 py-1 hover:bg-indigo-500 font-medium">AI Regenerate</button></form>
+          <form method="POST" action="/impacts/{{ impact.id }}/regenerate">
+            {{ csrf_input | safe }}<button class="text-xs rounded bg-indigo-600 text-white px-3 py-1 hover:bg-indigo-500 font-medium">AI Regenerate</button></form>
           <a href="/test-cases/{{ impact.test_case_id }}/edit" class="text-xs rounded bg-yellow-100 text-yellow-700 px-2 py-1 hover:bg-yellow-200">Edit Manually</a>
-          <form method="POST" action="/impacts/{{ impact.id }}/resolve"><input type="hidden" name="resolution" value="dismissed"><button class="text-xs rounded bg-gray-100 text-gray-700 px-2 py-1 hover:bg-gray-200">Dismiss</button></form>
+          <form method="POST" action="/impacts/{{ impact.id }}/resolve">
+            {{ csrf_input | safe }}<input type="hidden" name="resolution" value="dismissed"><button class="text-xs rounded bg-gray-100 text-gray-700 px-2 py-1 hover:bg-gray-200">Dismiss</button></form>
           <button class="text-xs rounded bg-white text-red-600 px-2 py-1 ring-1 ring-red-200 hover:bg-red-50" data-delete-impact="{{ impact.id }}">Trash</button>
           {% else %}
           <button class="text-xs rounded bg-white text-indigo-600 px-2 py-1 ring-1 ring-indigo-200 hover:bg-indigo-50" data-restore-impact="{{ impact.id }}">Restore</button>

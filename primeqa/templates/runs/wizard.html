@@ -13,6 +13,7 @@
   </p>
 
   <form method="POST" action="/runs/new/preview" class="space-y-6">
+            {{ csrf_input | safe }}
     <!-- Environment + run type -->
     <div class="bg-white shadow rounded-lg p-6 space-y-4">
       <h3 class="text-sm font-semibold text-gray-700 uppercase tracking-wide">Target</h3>

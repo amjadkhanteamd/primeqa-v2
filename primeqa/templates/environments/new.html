@@ -13,6 +13,7 @@
     </div>
     {% else %}
     <form method="POST" action="/environments" class="bg-white shadow rounded-lg p-6 space-y-6">
+            {{ csrf_input | safe }}
         <div>
             <label class="block text-sm font-medium text-gray-700">Salesforce Connection</label>
             <select name="connection_id" id="conn-select" onchange="updateFromConnection()" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 sm:text-sm">

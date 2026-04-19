@@ -118,6 +118,7 @@
                       {# \u25B6 Run \u2014 shown only when this requirement has test cases. #}
                       {% if req.tc_count %}
                       <form method="POST" action="/requirements/{{ req.id }}/run" class="flex items-center space-x-2">
+            {{ csrf_input | safe }}
                           <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1 text-xs">
                               <option value="">Run env...</option>
                               {% for env in environments %}
@@ -131,6 +132,7 @@
                       {% endif %}
                       {# Generate / Regenerate / Generate again \u2014 state-aware label. #}
                       <form method="POST" action="/requirements/{{ req.id }}/generate" class="flex items-center space-x-2">
+            {{ csrf_input | safe }}
                           <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1 text-xs">
                               <option value="">Gen env...</option>
                               {% for env in environments %}
@@ -207,6 +209,7 @@
             <h3 class="text-lg font-medium text-gray-900 mb-1">New Requirement</h3>
             <p class="text-xs text-gray-500 mb-4">Create a requirement without a Jira ticket. You can attach a Jira key later.</p>
             <form method="POST" action="/requirements/new" class="space-y-4">
+            {{ csrf_input | safe }}
                 <div>
                     <label class="block text-sm font-medium text-gray-700">Title <span class="text-red-500">*</span></label>
                     <input name="title" required maxlength="500"
@@ -257,6 +260,7 @@ Multiple AC separated by blank lines"></textarea>
             <h3 class="text-lg font-medium text-gray-900 mb-1">Import from Jira</h3>
             <p class="text-xs text-gray-500 mb-4">Search and pick multiple tickets, or paste a list of keys. Each becomes a requirement.</p>
             <form method="POST" action="/requirements/import-jira" class="space-y-4" id="import-jira-form">
+            {{ csrf_input | safe }}
                 <div class="grid grid-cols-2 gap-3">
                   <div>
                     <label class="block text-sm font-medium text-gray-700">Section</label>
