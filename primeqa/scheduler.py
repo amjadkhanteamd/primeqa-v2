@@ -141,6 +141,104 @@ def reap_stuck_runs(ctx):
                     run.id, run.started_at)
 
 
+def reap_orphan_rtrs(ctx):
+    """Self-healing for ghost run_test_results (audit 2026-04-19).
+
+    When a worker dies mid-TC (after executor writes step_results but
+    before worker.py calls update_result), the rtr stays in its initial
+    `passed` state even though step_results contain failed/error rows.
+    This lies to dashboards AND blocks the feedback loop because the
+    execution_failed signal never fires.
+
+    This task finds such rtrs in the last 6 hours and reconciles:
+      - rtr.status = worst child step status (failed > error > passed)
+      - failure_summary = first failed step's error
+      - failure_type = 'step_error' (post-hoc inference)
+      - fires the missed EXECUTION_FAILED feedback signal
+
+    6-hour window balances "catch runs before they fall off the
+    dashboard" vs "don't rewrite ancient data". Runs older than 6h
+    are assumed settled — manual intervention if needed.
+    """
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import text as sql
+    # Eager-import every model so ORM FK resolution works when we call
+    # feedback.capture (which cross-references tenants, test_cases,
+    # test_case_versions, generation_batches). Scheduler boot is
+    # lighter than web app; unless we register mappers here, feedback
+    # writes silently fail with "could not find table X".
+    import primeqa.core.models              # noqa: F401
+    import primeqa.metadata.models          # noqa: F401
+    import primeqa.test_management.models   # noqa: F401
+    import primeqa.execution.models         # noqa: F401
+    import primeqa.intelligence.models      # noqa: F401
+    import primeqa.release.models           # noqa: F401
+    from primeqa.intelligence.llm import feedback as _fb
+
+    db = ctx["db"]
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
+
+    # Find rtrs that claim 'passed' but have a failed/error child step.
+    rows = db.execute(sql("""
+        SELECT r.id, r.run_id, r.test_case_id, r.test_case_version_id,
+               p.tenant_id, tc.generation_batch_id,
+               (SELECT error_message FROM run_step_results
+                 WHERE run_test_result_id = r.id
+                   AND status IN ('failed', 'error')
+                 ORDER BY step_order LIMIT 1) AS first_err
+        FROM run_test_results r
+        JOIN pipeline_runs p ON p.id = r.run_id
+        LEFT JOIN test_cases tc ON tc.id = r.test_case_id
+        WHERE r.status = 'passed'
+          AND r.executed_at >= :cutoff
+          AND EXISTS (
+            SELECT 1 FROM run_step_results s
+            WHERE s.run_test_result_id = r.id
+              AND s.status IN ('failed', 'error')
+          )
+        LIMIT 100
+    """), {"cutoff": cutoff}).all()
+
+    for row in rows:
+        rtr_id = row._mapping["id"]
+        err = (row._mapping["first_err"] or "Ghost rtr: worker crashed mid-TC")[:500]
+        try:
+            db.execute(sql("""
+                UPDATE run_test_results
+                   SET status = 'failed',
+                       failure_summary = :err,
+                       failure_type = 'step_error'
+                 WHERE id = :id
+            """), {"id": rtr_id, "err": err})
+            db.commit()
+        except Exception as e:
+            log.exception("orphan-rtr heal failed for %s: %s", rtr_id, e)
+            db.rollback()
+            continue
+
+        # Fire the missed feedback signal so the loop isn't blind.
+        try:
+            _fb.capture(
+                tenant_id=row._mapping["tenant_id"],
+                signal_type=_fb.SIGNAL_EXECUTION_FAILED,
+                severity="high",
+                detail={
+                    "error": err[:300],
+                    "failure_type": "step_error",
+                    "source": "orphan_rtr_healer",
+                },
+                generation_batch_id=row._mapping["generation_batch_id"],
+                test_case_id=row._mapping["test_case_id"],
+                test_case_version_id=row._mapping["test_case_version_id"],
+                ttl_days=14,
+            )
+        except Exception:
+            pass
+        log.warning("Healed orphan rtr %s on run %s (TC %s): %s",
+                    rtr_id, row._mapping["run_id"], row._mapping["test_case_id"],
+                    err[:80])
+
+
 def fire_scheduled_runs(ctx):
     """R4: poll scheduled_runs, create pipeline_runs for due schedules."""
     try:
@@ -174,6 +272,7 @@ def scheduler_tick(ctx):
     reap_stuck_stages(ctx)
     reap_stuck_slots(ctx)
     reap_stuck_runs(ctx)          # audit F2 (2026-04-19)
+    reap_orphan_rtrs(ctx)          # worker-death recovery (2026-04-19)
     reap_stale_workers(ctx)
     fire_scheduled_runs(ctx)
     dead_mans_switch_check(ctx)

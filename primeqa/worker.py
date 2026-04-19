@@ -291,6 +291,41 @@ def _run_execute_stage(stage, ctx):
                     tc_status = "failed" if status == "failed" else "error"
                     failure_summary = step.error_message if hasattr(step, "error_message") else None
                     failure_type = "step_error"
+                    # AUDIT FIX (2026-04-19): persist failure state +
+                    # fire feedback signal IMMEDIATELY, in-loop. If the
+                    # worker is OOM-killed / SIGTERM'd between here and
+                    # the post-loop update_result, the DB still reflects
+                    # reality (previously left the rtr in initial
+                    # 'passed' + no feedback signal). In-loop write is
+                    # idempotent with the post-loop write at line 306.
+                    try:
+                        rtr_repo.update_result(rtr.id, {
+                            "status": tc_status,
+                            "passed_steps": tc_passed_steps,
+                            "failed_steps": tc_failed_steps,
+                            "failure_summary": (failure_summary or "")[:500],
+                            "failure_type": failure_type,
+                            "duration_ms": int((time.time() - t0) * 1000),
+                        })
+                    except Exception as uex:
+                        log.exception("in-loop rtr update failed: %s", uex)
+                    try:
+                        from primeqa.intelligence.llm import feedback as _fb
+                        _fb.capture(
+                            tenant_id=tenant_id,
+                            signal_type=_fb.SIGNAL_EXECUTION_FAILED,
+                            severity="high",
+                            detail={
+                                "error": (failure_summary or "")[:300],
+                                "failure_type": failure_type,
+                            },
+                            generation_batch_id=getattr(tc, "generation_batch_id", None),
+                            test_case_id=tc.id,
+                            test_case_version_id=version.id,
+                            ttl_days=14,
+                        )
+                    except Exception:
+                        pass
                     break  # stop on first non-pass (classic SF test harness behavior)
         except Exception as e:
             tc_status = "error"
