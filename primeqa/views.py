@@ -608,7 +608,8 @@ def runs_detail(run_id):
                 "failure_summary": r.failure_summary,
                 "steps": [{"step_order": s.step_order, "step_action": s.step_action,
                            "target_object": s.target_object, "status": s.status,
-                           "error_message": s.error_message} for s in steps],
+                           "error_message": s.error_message,
+                           "failure_class": s.failure_class} for s in steps],
             })
         # ---- Cost + LLM breakdown (superadmin only) --------------------
         # Phase 3 switch: pull from llm_usage_log for accurate per-task

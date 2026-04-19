@@ -167,6 +167,9 @@ class TestCaseGenerator:
             "raw_response": resp.raw_text,
             "cost_usd": resp.cost_usd,
             "cached_tokens": resp.cached_input_tokens,
+            # Forwarded so the service can back-link the usage_log row
+            # to the batch it ends up creating (cost dashboard accuracy).
+            "usage_log_id": getattr(resp, "usage_log_id", None),
             "escalated": resp.escalated,
             "complexity": resp.complexity,
         }

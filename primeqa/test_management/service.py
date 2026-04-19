@@ -262,6 +262,18 @@ class TestManagementService:
         self.test_case_repo.db.commit()
         self.test_case_repo.db.refresh(batch)
 
+        # Attribution: the LLM call that produced this plan was logged
+        # BEFORE the batch row existed (we need the response to set the
+        # batch's tokens + cost). Back-link the usage_log row here so the
+        # superadmin "Spend for this run" panel credits the right batch.
+        usage_log_id = plan.get("usage_log_id")
+        if usage_log_id:
+            try:
+                from primeqa.intelligence.llm import usage as _usage
+                _usage.attach_batch(usage_log_id, batch.id)
+            except Exception:
+                pass  # observability-only; never block generation
+
         # Build N TCs + N TestCaseVersions + optionally BA reviews
         created = []
         auto_reviews = 0

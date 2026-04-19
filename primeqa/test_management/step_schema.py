@@ -3,6 +3,17 @@
 Defines the structured actions available in test steps and validation logic.
 The UI renders form fields based on this schema; the generator produces matching
 steps; the executor runs them.
+
+Cross-action optional flags (apply to any step regardless of action):
+
+  - ``expect_fail`` (bool, default False): set True on the step you expect
+    Salesforce to block. The executor inverts the result: a SF-side failure
+    counts as the test passing (the validation rule fired as designed), and
+    a success counts as the test failing (the rule may have been weakened).
+    Used mostly in ``negative_validation`` / ``boundary`` coverage TCs.
+
+Unresolved $var references are still treated as real failures even when
+``expect_fail=True`` \u2014 those are generator bugs, not negative paths.
 """
 
 # Each action's schema: which fields it requires, their type hint, and UI widget

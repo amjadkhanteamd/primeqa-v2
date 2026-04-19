@@ -70,27 +70,29 @@ _CHAINS: Dict[str, Dict[str, List[str]]] = {
         "default": [SONNET, OPUS],
     },
 
-    # Failure root-cause analysis: Sonnet only (no escalation \u2014
-    # quality is fine, cost matters more than extra depth).
+    # Failure root-cause analysis: prefer Sonnet; fall back to Opus if
+    # the tenant's API key doesn't serve Sonnet (we've seen 404s on
+    # 3.5-Haiku + 4-Sonnet for keys restricted to the 4-Opus endpoint).
     "failure_analysis": {
-        "default": [SONNET],
+        "default": [SONNET, OPUS],
     },
 
-    # Failure summary panel: Haiku only. Summarization / grouping is
-    # a classic Haiku strength and the cost is ~5x cheaper.
+    # Failure summary panel: cheap-tier Haiku for summarisation, with
+    # Opus as fallback so "Summarise failures" always works even when
+    # the cheaper tiers aren't available to this key.
     "failure_summary": {
-        "default": [HAIKU],
+        "default": [HAIKU, OPUS],
     },
 
     # Lightweight classification (taxonomy fallback, AC extraction).
     "classification": {
-        "default": [HAIKU],
+        "default": [HAIKU, OPUS],
     },
 
-    # Connection ping \u2014 10 tokens, Haiku is overkill but honest about
-    # using the cheapest available tier.
+    # Connection ping \u2014 10 tokens. Fallback to Opus is almost free
+    # in absolute terms and keeps the ping green on restricted keys.
     "connection_test": {
-        "default": [HAIKU],
+        "default": [HAIKU, OPUS],
     },
 }
 

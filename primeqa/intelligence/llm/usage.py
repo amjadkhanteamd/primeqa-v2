@@ -39,10 +39,15 @@ def record(
     test_case_id: Optional[int] = None,
     generation_batch_id: Optional[int] = None,
     context: Optional[Dict[str, Any]] = None,
-) -> None:
+) -> Optional[int]:
     """Fire-and-forget write to llm_usage_log. Never raises into the
     caller \u2014 if the write fails we log-warn and move on rather than
-    breaking the user's Generate button on an observability hiccup."""
+    breaking the user's Generate button on an observability hiccup.
+
+    Returns the inserted row id on success (None on write failure) so
+    callers that only know their batch/run id AFTER the LLM call can
+    back-link via attach_batch() below.
+    """
     try:
         from sqlalchemy.orm import Session
         from primeqa.db import engine
@@ -74,8 +79,41 @@ def record(
             )
             sess.add(row)
             sess.commit()
+            return row.id
         finally:
             sess.close()
     except Exception as e:
         log.warning("llm usage log write failed task=%s tenant=%s: %s",
                     task, tenant_id, e)
+        return None
+
+
+def attach_batch(usage_log_id: int, generation_batch_id: int) -> None:
+    """Post-hoc link a usage_log row to the batch it produced.
+
+    Used by test_plan_generation: the LLM call happens BEFORE the batch
+    row exists (we need the response to populate batch.input_tokens /
+    cost_usd), so we attach the batch id back to the usage log once the
+    batch has been created. Keeps the cost dashboard's per-run
+    attribution accurate.
+    """
+    if not usage_log_id or not generation_batch_id:
+        return
+    try:
+        from sqlalchemy.orm import Session
+        from primeqa.db import engine
+        from primeqa.intelligence.models import LLMUsageLog
+
+        sess = Session(bind=engine)
+        try:
+            row = sess.query(LLMUsageLog).filter(
+                LLMUsageLog.id == usage_log_id,
+            ).first()
+            if row and row.generation_batch_id is None:
+                row.generation_batch_id = generation_batch_id
+                sess.commit()
+        finally:
+            sess.close()
+    except Exception as e:
+        log.warning("llm usage attach_batch failed id=%s batch=%s: %s",
+                    usage_log_id, generation_batch_id, e)

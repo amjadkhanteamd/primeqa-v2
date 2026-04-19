@@ -53,6 +53,11 @@ class LLMResponse:
     status: str
     request_id: Optional[str] = None
     complexity: Optional[str] = None
+    # Row id of the llm_usage_log entry this call produced. Callers that
+    # only know their generation_batch_id / run_id AFTER the LLM call
+    # use this to back-link via usage.attach_batch(...) so the cost
+    # dashboard attributes the spend correctly.
+    usage_log_id: Optional[int] = None
 
 
 class LLMError(Exception):
@@ -241,7 +246,7 @@ def llm_call(
             cache_write_tokens=provider_resp.cache_write_tokens,
         )
 
-        usage.record(
+        usage_log_id = usage.record(
             tenant_id=tenant_id, user_id=user_id, task=task,
             model=provider_resp.model, prompt_version=prompt_version,
             input_tokens=provider_resp.input_tokens,
@@ -278,6 +283,7 @@ def llm_call(
             status="ok",
             request_id=provider_resp.request_id,
             complexity=complexity,
+            usage_log_id=usage_log_id,
         )
 
     # Fell off the end of the chain on transient errors.

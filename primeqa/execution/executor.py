@@ -233,6 +233,36 @@ class StepExecutor:
             status = "error"
             error_message = str(e)
 
+        # ---- expect_fail handling ------------------------------------------
+        # Negative-validation / boundary TCs often contain a step that SHOULD
+        # be blocked by a Salesforce validation rule (e.g. Closing Won an
+        # Opportunity with Contract Value = 0). The test proves the rule is
+        # enforced; a Salesforce-side error IS the passing outcome. Flip the
+        # status here so the test result reflects intent rather than raw
+        # SF response.
+        #
+        # Unresolved $var errors are generator bugs, not real negative paths;
+        # they always fail regardless of expect_fail so we don't silently
+        # mask broken test plans.
+        expect_fail = bool(step_def.get("expect_fail"))
+        unresolved_ref_error = isinstance(error_message, str) and "Unresolved reference variable" in error_message
+        expect_fail_class = None
+        if expect_fail and not unresolved_ref_error:
+            if status in ("failed", "error"):
+                # Expected failure happened \u2014 this is a pass. Preserve the
+                # original error in a dedicated field so the UI can render
+                # "Expected fail: <msg>" as an info note rather than an error.
+                error_message = f"Expected failure (verified): {error_message}"[:500] if error_message else "Expected failure (verified)"
+                status = "passed"
+                expect_fail_class = "expected_fail_verified"
+            else:
+                # Step succeeded when we expected it to fail \u2014 that's a real
+                # test failure. The validation rule may have been weakened or
+                # the test setup didn't exercise it.
+                error_message = "Expected this step to fail (expect_fail=true), but it succeeded. Validation rule may not be in effect."
+                status = "failed"
+                expect_fail_class = "expected_fail_unverified"
+
         end_time = time.time()
         duration_ms = int((end_time - start_time) * 1000)
         execution_state = "completed" if status != "error" else "partially_completed"
@@ -244,7 +274,7 @@ class StepExecutor:
             "capture_ms": int((end_time - t_sf_done) * 1000),
         }
 
-        self.step_result_repo.update_step_result(step_result.id, {
+        update_payload = {
             "status": status,
             "execution_state": execution_state,
             "target_record_id": target_record_id,
@@ -258,7 +288,10 @@ class StepExecutor:
             "timings": timings,
             "error_message": error_message,
             "duration_ms": duration_ms,
-        })
+        }
+        if expect_fail_class:
+            update_payload["failure_class"] = expect_fail_class
+        self.step_result_repo.update_step_result(step_result.id, update_payload)
 
         # SSE event \u2014 step finished. Include enough for the UI timeline to
         # render without fetching the row back over REST.

@@ -326,8 +326,21 @@
             <span class="w-4">{{ s.step_order }}.</span>
             <span class="font-mono">{{ s.step_action }}</span>
             <span>{{ s.target_object }}</span>
+            {% if s.failure_class == 'expected_fail_verified' %}
+              <span class="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20"
+                    title="This step was expected to be blocked by a Salesforce rule. The rule fired, so this counts as test PASS.">Expected fail &#x2713;</span>
+            {% elif s.failure_class == 'expected_fail_unverified' %}
+              <span class="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-medium text-red-700 ring-1 ring-inset ring-red-600/20"
+                    title="Step was flagged expect_fail=true but Salesforce accepted it. Validation rule may not be in effect.">Expected fail &#x2717;</span>
+            {% endif %}
             <span class="ml-auto step-status {% if s.status == 'passed' %}text-green-500{% elif s.status == 'failed' %}text-red-500{% else %}text-gray-400{% endif %}">{{ s.status }}</span>
-            {% if s.error_message %}<span class="text-red-400 truncate max-w-xs">{{ s.error_message[:80] }}</span>{% endif %}
+            {% if s.error_message %}
+              {% if s.failure_class == 'expected_fail_verified' %}
+                <span class="text-amber-600 truncate max-w-xs">{{ s.error_message[:80] }}</span>
+              {% else %}
+                <span class="text-red-400 truncate max-w-xs">{{ s.error_message[:80] }}</span>
+              {% endif %}
+            {% endif %}
           </li>
           {% endfor %}
         </ol>

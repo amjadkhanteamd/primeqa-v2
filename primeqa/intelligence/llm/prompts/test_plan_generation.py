@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 from primeqa.intelligence.llm.prompts.base import PromptSpec
 
 
-VERSION = "test_plan_generation@v2"   # v2: tool use for structured output
+VERSION = "test_plan_generation@v3"   # v3: expect_fail flag for neg/boundary TCs
 MAX_TOKENS = 8192
 SUPPORTS_CACHE = True
 SUPPORTS_ESCALATION = True
@@ -51,6 +51,13 @@ _STEP_SCHEMA = {
         "convert_to": {"type": "array", "items": {"type": "string"}},
         "duration_sec": {"type": "integer"},
         "reason": {"type": "string"},
+        # Set True ONLY on the single step you expect Salesforce to block
+        # (validation rule fires, required field missing, flow error).
+        # The executor treats a SF-side failure here as the test passing
+        # and a SF-side success as the test failing. Use in coverage
+        # types negative_validation and boundary; do NOT set on happy-path
+        # steps in positive/edge_case/regression tests.
+        "expect_fail": {"type": "boolean"},
     },
     "required": ["step_order", "action"],
 }
@@ -125,20 +132,34 @@ Each step must be one of these structured actions:
 
 7. wait \u2014 pause execution
    Fields: duration_sec (integer), reason (string)
+
+Cross-action flag: `expect_fail` (optional boolean)
+   Set `expect_fail: true` on the single step you expect Salesforce to
+   reject (validation rule, required field, flow error). The executor
+   inverts the result: a SF-side failure on that step = test PASS
+   (the rule fired correctly); a SF-side success on that step = test
+   FAIL (the rule didn't fire as the spec required). Without this flag,
+   any SF-side error makes the whole test fail \u2014 so negative_validation
+   and boundary TCs that probe a block MUST set it or they'll never pass.
 """
 
 COVERAGE_SPEC = """
 Coverage types (pick 1 per test case):
 
 - positive: the happy-path scenario works end-to-end.
+  NO step should have expect_fail=true.
 - negative_validation: a forbidden combination is correctly REJECTED
   (validation rule, required-field check, flow error).
-  Assert the expected error in `expected_results`.
+  Assert the expected error in `expected_results`, AND set
+  `expect_fail: true` on the step you expect Salesforce to block.
 - boundary: at-threshold values (null, zero, max length).
+  If the boundary is meant to be REJECTED by a rule, set
+  `expect_fail: true` on the step that crosses it.
 - edge_case: unusual but legal combinations (alt flows, cross-object).
+  These SHOULD succeed; do NOT set expect_fail.
 - regression: existing records that already satisfy the new constraint
   should not be broken; unrelated fields on related objects should not
-  be mutated by the new behavior.
+  be mutated by the new behavior. Do NOT set expect_fail.
 """
 
 OUTPUT_SCHEMA = {
