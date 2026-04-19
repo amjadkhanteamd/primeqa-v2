@@ -9,6 +9,7 @@ from functools import wraps
 
 import jwt
 from flask import request, jsonify
+from primeqa.shared.api import json_error
 
 
 def _get_jwt_secret():
@@ -31,14 +32,14 @@ def require_auth(f):
             token = request.cookies.get("access_token")
 
         if not token:
-            return jsonify(error="Missing or invalid Authorization header"), 401
+            return json_error("UNAUTHORIZED", "Missing or invalid Authorization header", http=401)
 
         try:
             payload = jwt.decode(token, _get_jwt_secret(), algorithms=["HS256"])
         except jwt.ExpiredSignatureError:
             return jsonify(error="Token expired", code="TOKEN_EXPIRED"), 401
         except jwt.InvalidTokenError:
-            return jsonify(error="Invalid token"), 401
+            return json_error("UNAUTHORIZED", "Invalid token", http=401)
 
         request.user = {
             "id": int(payload["sub"]),
@@ -63,7 +64,7 @@ def require_role(*roles):
             if role == "superadmin":
                 return f(*args, **kwargs)
             if role not in roles:
-                return jsonify(error="Insufficient permissions"), 403
+                return json_error("FORBIDDEN", "Insufficient permissions", http=403)
             return f(*args, **kwargs)
         return decorated
     return decorator

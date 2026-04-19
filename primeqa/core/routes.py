@@ -12,6 +12,7 @@ from primeqa.core.repository import (
     ConnectionRepository, GroupRepository,
 )
 from primeqa.core.service import AuthService, EnvironmentService, ConnectionService, GroupService
+from primeqa.shared.api import json_error
 
 core_bp = Blueprint("core", __name__)
 
@@ -39,13 +40,13 @@ def login():
     tenant_id = data.get("tenant_id", 1)
 
     if not email or not password:
-        return jsonify(error="email and password are required"), 400
+        return json_error("VALIDATION_ERROR", "email and password are required", http=400)
 
     svc, db = _get_auth_service()
     try:
         result = svc.login(tenant_id, email, password)
         if not result:
-            return jsonify(error="Invalid email or password"), 401
+            return json_error("UNAUTHORIZED", "Invalid email or password", http=401)
         return jsonify(result), 200
     finally:
         db.close()
@@ -57,13 +58,13 @@ def refresh():
     refresh_token = data.get("refresh_token")
 
     if not refresh_token:
-        return jsonify(error="refresh_token is required"), 400
+        return json_error("VALIDATION_ERROR", "refresh_token is required", http=400)
 
     svc, db = _get_auth_service()
     try:
         result = svc.refresh(refresh_token)
         if not result:
-            return jsonify(error="Invalid or expired refresh token"), 401
+            return json_error("UNAUTHORIZED", "Invalid or expired refresh token", http=401)
         return jsonify(result), 200
     finally:
         db.close()
@@ -87,7 +88,7 @@ def me():
     try:
         user = svc.get_user(request.user["id"])
         if not user:
-            return jsonify(error="User not found"), 404
+            return json_error("NOT_FOUND", "User not found", http=404)
         return jsonify(user), 200
     finally:
         db.close()
@@ -116,7 +117,7 @@ def create_user():
         return jsonify(error=f"Missing required fields: {', '.join(missing)}"), 400
 
     if data["role"] not in ("admin", "tester", "ba", "viewer"):
-        return jsonify(error="Invalid role"), 400
+        return json_error("VALIDATION_ERROR", "Invalid role", http=400)
 
     svc, db = _get_auth_service()
     try:
@@ -129,7 +130,7 @@ def create_user():
         )
         return jsonify(user), 201
     except ValueError as e:
-        return jsonify(error=str(e)), 409
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 409
     finally:
         db.close()
 
@@ -143,7 +144,7 @@ def update_user(user_id):
         user = svc.update_user(user_id, **data)
         return jsonify(user), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -188,7 +189,7 @@ def create_environment():
         )
         return jsonify(env), 201
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -200,7 +201,7 @@ def get_environment(env_id):
     try:
         env = svc.get_environment(env_id, request.user["tenant_id"])
         if not env:
-            return jsonify(error="Environment not found"), 404
+            return json_error("NOT_FOUND", "Environment not found", http=404)
         return jsonify(env), 200
     finally:
         db.close()
@@ -215,7 +216,7 @@ def update_environment(env_id):
         env = svc.update_environment(env_id, request.user["tenant_id"], data)
         return jsonify(env), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -228,7 +229,7 @@ def test_connection(env_id):
         result = svc.test_connection(env_id, request.user["tenant_id"])
         return jsonify(result), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -254,7 +255,7 @@ def store_credentials(env_id):
         )
         return jsonify(result), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -282,14 +283,14 @@ def create_connection():
     data = request.get_json(silent=True) or {}
     for f in ["connection_type", "name", "config"]:
         if not data.get(f):
-            return jsonify(error=f"{f} is required"), 400
+            return json_error("VALIDATION_ERROR", f"{f} is required", http=400)
     svc, db = _get_conn_service()
     try:
         conn = svc.create_connection(request.user["tenant_id"], data["connection_type"],
                                      data["name"], data["config"], request.user["id"])
         return jsonify(conn), 201
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -301,7 +302,7 @@ def get_connection(conn_id):
     try:
         conn = svc.get_connection(conn_id, request.user["tenant_id"])
         if not conn:
-            return jsonify(error="Connection not found"), 404
+            return json_error("NOT_FOUND", "Connection not found", http=404)
         return jsonify(conn), 200
     finally:
         db.close()
@@ -315,7 +316,7 @@ def delete_connection(conn_id):
         svc.delete_connection(conn_id, request.user["tenant_id"])
         return jsonify(message="Deleted"), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 404
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 404
     finally:
         db.close()
 
@@ -328,7 +329,7 @@ def test_connection_api(conn_id):
         result = svc.test_connection(conn_id, request.user["tenant_id"])
         return jsonify(result), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -355,7 +356,7 @@ def list_groups():
 def create_group():
     data = request.get_json(silent=True) or {}
     if not data.get("name"):
-        return jsonify(error="name is required"), 400
+        return json_error("VALIDATION_ERROR", "name is required", http=400)
     svc, db = _get_group_service()
     try:
         return jsonify(svc.create_group(request.user["tenant_id"], data["name"],
@@ -371,7 +372,7 @@ def get_group(group_id):
     try:
         detail = svc.get_group_detail(group_id, request.user["tenant_id"])
         if not detail:
-            return jsonify(error="Group not found"), 404
+            return json_error("NOT_FOUND", "Group not found", http=404)
         return jsonify(detail), 200
     finally:
         db.close()
@@ -385,7 +386,7 @@ def delete_group(group_id):
         svc.delete_group(group_id, request.user["tenant_id"])
         return jsonify(message="Deleted"), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 404
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 404
     finally:
         db.close()
 
@@ -395,13 +396,13 @@ def delete_group(group_id):
 def add_group_member(group_id):
     data = request.get_json(silent=True) or {}
     if not data.get("user_id"):
-        return jsonify(error="user_id is required"), 400
+        return json_error("VALIDATION_ERROR", "user_id is required", http=400)
     svc, db = _get_group_service()
     try:
         svc.add_member(group_id, request.user["tenant_id"], data["user_id"], request.user["id"])
         return jsonify(message="Added"), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -414,7 +415,7 @@ def remove_group_member(group_id, user_id):
         svc.remove_member(group_id, request.user["tenant_id"], user_id)
         return jsonify(message="Removed"), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -424,13 +425,13 @@ def remove_group_member(group_id, user_id):
 def add_group_environment(group_id):
     data = request.get_json(silent=True) or {}
     if not data.get("environment_id"):
-        return jsonify(error="environment_id is required"), 400
+        return json_error("VALIDATION_ERROR", "environment_id is required", http=400)
     svc, db = _get_group_service()
     try:
         svc.add_environment(group_id, request.user["tenant_id"], data["environment_id"], request.user["id"])
         return jsonify(message="Added"), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -443,6 +444,6 @@ def remove_group_environment(group_id, env_id):
         svc.remove_environment(group_id, request.user["tenant_id"], env_id)
         return jsonify(message="Removed"), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()

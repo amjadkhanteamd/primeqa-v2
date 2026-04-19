@@ -9,6 +9,7 @@ from primeqa.core.auth import require_auth, require_role
 from primeqa.db import get_db
 from primeqa.release.repository import ReleaseRepository
 from primeqa.release.service import ReleaseService
+from primeqa.shared.api import json_error
 
 release_bp = Blueprint("release", __name__)
 
@@ -35,7 +36,7 @@ def list_releases():
 def create_release():
     data = request.get_json(silent=True) or {}
     if not data.get("name"):
-        return jsonify(error="name is required"), 400
+        return json_error("VALIDATION_ERROR", "name is required", http=400)
     svc, db = _get_service()
     try:
         return jsonify(svc.create_release(
@@ -46,7 +47,7 @@ def create_release():
             decision_criteria=data.get("decision_criteria"),
         )), 201
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -58,7 +59,7 @@ def get_release(release_id):
     try:
         detail = svc.get_release_detail(release_id, request.user["tenant_id"])
         if not detail:
-            return jsonify(error="Release not found"), 404
+            return json_error("NOT_FOUND", "Release not found", http=404)
         return jsonify(detail), 200
     finally:
         db.close()
@@ -72,7 +73,7 @@ def update_release(release_id):
     try:
         return jsonify(svc.update_release(release_id, request.user["tenant_id"], data)), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -85,7 +86,7 @@ def delete_release(release_id):
         svc.delete_release(release_id, request.user["tenant_id"])
         return jsonify(message="Deleted"), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 404
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 404
     finally:
         db.close()
 
@@ -95,14 +96,14 @@ def delete_release(release_id):
 def add_requirement(release_id):
     data = request.get_json(silent=True) or {}
     if not data.get("requirement_id"):
-        return jsonify(error="requirement_id is required"), 400
+        return json_error("VALIDATION_ERROR", "requirement_id is required", http=400)
     svc, db = _get_service()
     try:
         svc.add_requirement(release_id, request.user["tenant_id"],
                             data["requirement_id"], request.user["id"])
         return jsonify(message="Added"), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -115,7 +116,7 @@ def remove_requirement(release_id, req_id):
         svc.remove_requirement(release_id, request.user["tenant_id"], req_id)
         return jsonify(message="Removed"), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -128,7 +129,7 @@ def add_requirements_bulk(release_id):
     data = request.get_json(silent=True) or {}
     ids = data.get("requirement_ids") or []
     if not isinstance(ids, list) or not ids:
-        return jsonify(error="requirement_ids must be a non-empty array"), 400
+        return json_error("VALIDATION_ERROR", "requirement_ids must be a non-empty array", http=400)
     svc, db = _get_service()
     try:
         result = svc.add_requirements_bulk(
@@ -136,7 +137,7 @@ def add_requirements_bulk(release_id):
         )
         return jsonify(result), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -149,7 +150,7 @@ def add_test_plan_items_bulk(release_id):
     data = request.get_json(silent=True) or {}
     ids = data.get("test_case_ids") or []
     if not isinstance(ids, list) or not ids:
-        return jsonify(error="test_case_ids must be a non-empty array"), 400
+        return json_error("VALIDATION_ERROR", "test_case_ids must be a non-empty array", http=400)
     svc, db = _get_service()
     try:
         result = svc.add_test_plan_items_bulk(
@@ -159,7 +160,7 @@ def add_test_plan_items_bulk(release_id):
         )
         return jsonify(result), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -169,7 +170,7 @@ def add_test_plan_items_bulk(release_id):
 def add_test_plan_item(release_id):
     data = request.get_json(silent=True) or {}
     if not data.get("test_case_id"):
-        return jsonify(error="test_case_id is required"), 400
+        return json_error("VALIDATION_ERROR", "test_case_id is required", http=400)
     svc, db = _get_service()
     try:
         svc.add_test_plan_item(
@@ -180,7 +181,7 @@ def add_test_plan_item(release_id):
         )
         return jsonify(message="Added"), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -193,7 +194,7 @@ def remove_test_plan_item(release_id, tc_id):
         svc.remove_test_plan_item(release_id, request.user["tenant_id"], tc_id)
         return jsonify(message="Removed"), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -206,7 +207,7 @@ def evaluate_decision(release_id):
     try:
         release = svc.release_repo.get_release(release_id, request.user["tenant_id"])
         if not release:
-            return jsonify(error="Release not found"), 404
+            return json_error("NOT_FOUND", "Release not found", http=404)
         engine = DecisionEngine(db)
         result = engine.evaluate(release)
         svc.release_repo.create_decision(
@@ -228,12 +229,12 @@ def finalize_decision(release_id, decision_id):
     data = request.get_json(silent=True) or {}
     final = data.get("final_decision")
     if final not in ("go", "conditional_go", "no_go"):
-        return jsonify(error="Invalid final_decision"), 400
+        return json_error("VALIDATION_ERROR", "Invalid final_decision", http=400)
     svc, db = _get_service()
     try:
         d = svc.release_repo.finalize_decision(decision_id, final, request.user["id"], data.get("override_reason"))
         if not d:
-            return jsonify(error="Decision not found"), 404
+            return json_error("NOT_FOUND", "Decision not found", http=404)
         return jsonify({"final_decision": d.final_decision}), 200
     finally:
         db.close()
@@ -255,7 +256,7 @@ def public_release_status(release_id):
         from sqlalchemy import desc
         release = db.query(Release).filter(Release.id == release_id).first()
         if not release:
-            return jsonify(error="Release not found"), 404
+            return json_error("NOT_FOUND", "Release not found", http=404)
         latest = db.query(ReleaseDecision).filter(
             ReleaseDecision.release_id == release_id,
         ).order_by(desc(ReleaseDecision.created_at)).first()
@@ -303,7 +304,7 @@ def ci_webhook_trigger():
         body = request.get_data()
         expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
         if not hmac.compare_digest(expected, provided_sig):
-            return jsonify(error="Invalid signature"), 401
+            return json_error("UNAUTHORIZED", "Invalid signature", http=401)
 
     data = request.get_json(silent=True) or {}
     release_id = data.get("release_id")
@@ -311,7 +312,7 @@ def ci_webhook_trigger():
     commit_sha = data.get("commit_sha", "unknown")
 
     if not release_id or not environment_id:
-        return jsonify(error="release_id and environment_id required"), 400
+        return json_error("VALIDATION_ERROR", "release_id and environment_id required", http=400)
 
     db = next(get_db())
     try:
@@ -323,14 +324,14 @@ def ci_webhook_trigger():
         from primeqa.execution.service import PipelineService
         release = db.query(Release).filter(Release.id == release_id).first()
         if not release:
-            return jsonify(error="Release not found"), 404
+            return json_error("NOT_FOUND", "Release not found", http=404)
 
         plan_items = db.query(ReleaseTestPlanItem).filter(
             ReleaseTestPlanItem.release_id == release_id,
         ).all()
         tc_ids = [item.test_case_id for item in plan_items]
         if not tc_ids:
-            return jsonify(error="No test cases in release plan"), 400
+            return json_error("VALIDATION_ERROR", "No test cases in release plan", http=400)
 
         svc = PipelineService(
             PipelineRunRepository(db), PipelineStageRepository(db),
@@ -363,7 +364,7 @@ def score_release_risks(release_id):
     try:
         release = svc.release_repo.get_release(release_id, request.user["tenant_id"])
         if not release:
-            return jsonify(error="Release not found"), 404
+            return json_error("NOT_FOUND", "Release not found", http=404)
         engine = RiskEngine(db)
         impact_count = engine.score_all_release_impacts(release_id)
         plan_count = engine.rank_release_test_plan(release_id)

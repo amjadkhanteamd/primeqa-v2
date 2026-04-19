@@ -16,6 +16,7 @@ from primeqa.execution.repository import (
 from primeqa.execution.service import PipelineService
 from primeqa.execution.cleanup import CleanupEngine, CleanupAttemptRepository
 from primeqa.execution.data_engine import DataEngineService, DataTemplate, DataFactory
+from primeqa.shared.api import json_error
 
 execution_bp = Blueprint("execution", __name__)
 
@@ -52,7 +53,7 @@ def create_run():
         )
         return jsonify(result), 201
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -239,7 +240,7 @@ def run_preview():
         try:
             resolved = resolver.resolve(request.user["tenant_id"], selection)
         except Exception as e:
-            return jsonify(error=str(e)), 400
+            return json_error("VALIDATION_ERROR", str(e, http=400)), 400
 
         jira_summary = (resolved.source_refs or {}).get("jira") or []
         req_count = len((resolved.source_refs or {}).get("requirements") or [])
@@ -290,10 +291,10 @@ def jira_projects(connection_id):
     try:
         client = _jira_client(db, connection_id, request.user["tenant_id"])
         if not client:
-            return jsonify(error="Jira connection not found"), 404
+            return json_error("NOT_FOUND", "Jira connection not found", http=404)
         return jsonify(client.list_projects()), 200
     except Exception as e:
-        return jsonify(error=f"Jira fetch failed: {e}"), 502
+        return json_error("PROVIDER_ERROR", f"Jira fetch failed: {e}", http=502)
     finally:
         db.close()
 
@@ -305,10 +306,10 @@ def jira_boards(connection_id, project_key):
     try:
         client = _jira_client(db, connection_id, request.user["tenant_id"])
         if not client:
-            return jsonify(error="Jira connection not found"), 404
+            return json_error("NOT_FOUND", "Jira connection not found", http=404)
         return jsonify(client.list_boards_for_project(project_key)), 200
     except Exception as e:
-        return jsonify(error=f"Jira fetch failed: {e}"), 502
+        return json_error("PROVIDER_ERROR", f"Jira fetch failed: {e}", http=502)
     finally:
         db.close()
 
@@ -320,11 +321,11 @@ def jira_sprints(connection_id, board_id):
     try:
         client = _jira_client(db, connection_id, request.user["tenant_id"])
         if not client:
-            return jsonify(error="Jira connection not found"), 404
+            return json_error("NOT_FOUND", "Jira connection not found", http=404)
         states = request.args.get("state", "active,closed,future")
         return jsonify(client.list_sprints(board_id, states)), 200
     except Exception as e:
-        return jsonify(error=f"Jira fetch failed: {e}"), 502
+        return json_error("PROVIDER_ERROR", f"Jira fetch failed: {e}", http=502)
     finally:
         db.close()
 
@@ -352,7 +353,7 @@ def stream_run_events(run_id):
         # Authorization: confirm the user can see this run (tenant-scoped)
         run = PipelineRunRepository(db).get_run(run_id, tenant_id)
         if not run:
-            return jsonify(error="Run not found"), 404
+            return json_error("NOT_FOUND", "Run not found", http=404)
     finally:
         db.close()
 
@@ -445,7 +446,7 @@ def download_run_events(run_id):
     try:
         run = PipelineRunRepository(db).get_run(run_id, tenant_id)
         if not run:
-            return jsonify(error="Run not found"), 404
+            return json_error("NOT_FOUND", "Run not found", http=404)
 
         rows = (db.query(RunEvent)
                 .filter(RunEvent.run_id == run_id,
@@ -490,7 +491,7 @@ def get_run(run_id):
     try:
         result = svc.get_run_status(run_id, request.user["tenant_id"])
         if not result:
-            return jsonify(error="Run not found"), 404
+            return json_error("NOT_FOUND", "Run not found", http=404)
         return jsonify(result), 200
     finally:
         db.close()
@@ -504,7 +505,7 @@ def cancel_run(run_id):
         result = svc.cancel_run(run_id, request.user["tenant_id"])
         return jsonify(result), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     finally:
         db.close()
 
@@ -527,7 +528,7 @@ def get_slots(env_id):
     try:
         status = svc.get_slot_status(env_id)
         if not status:
-            return jsonify(error="Environment not found"), 404
+            return json_error("NOT_FOUND", "Environment not found", http=404)
         return jsonify(status), 200
     finally:
         db.close()
@@ -614,7 +615,7 @@ def retry_cleanup(run_id):
         from primeqa.execution.models import PipelineRun
         run = db.query(PipelineRun).filter(PipelineRun.id == run_id).first()
         if not run:
-            return jsonify(error="Run not found"), 404
+            return json_error("NOT_FOUND", "Run not found", http=404)
         env = db.query(Environment).filter(Environment.id == run.environment_id).first()
         entity_repo = RunCreatedEntityRepository(db)
         cleanup_repo = CleanupAttemptRepository(db)
@@ -649,10 +650,10 @@ def emergency_cleanup(env_id):
         env_repo = EnvironmentRepository(db)
         env = env_repo.get_environment(env_id)
         if not env:
-            return jsonify(error="Environment not found"), 404
+            return json_error("NOT_FOUND", "Environment not found", http=404)
         creds = env_repo.get_credentials_decrypted(env_id)
         if not creds or not creds.get("access_token"):
-            return jsonify(error="No credentials for this environment"), 400
+            return json_error("VALIDATION_ERROR", "No credentials for this environment", http=400)
         from primeqa.execution.executor import SalesforceExecutionClient
         sf = SalesforceExecutionClient(env.sf_instance_url, env.sf_api_version, creds["access_token"])
         entity_repo = RunCreatedEntityRepository(db)
@@ -688,7 +689,7 @@ def create_data_template():
     data = request.get_json(silent=True) or {}
     for f in ["name", "object_type"]:
         if not data.get(f):
-            return jsonify(error=f"{f} is required"), 400
+            return json_error("VALIDATION_ERROR", f"{f} is required", http=400)
     db = next(get_db())
     try:
         svc = DataEngineService(db)
@@ -723,7 +724,7 @@ def create_data_factory():
     data = request.get_json(silent=True) or {}
     for f in ["name", "factory_type"]:
         if not data.get(f):
-            return jsonify(error=f"{f} is required"), 400
+            return json_error("VALIDATION_ERROR", f"{f} is required", http=400)
     db = next(get_db())
     try:
         svc = DataEngineService(db)
@@ -746,7 +747,7 @@ def preview_factory(fid):
             DataFactory.id == fid, DataFactory.tenant_id == request.user["tenant_id"],
         ).first()
         if not f:
-            return jsonify(error="Factory not found"), 404
+            return json_error("NOT_FOUND", "Factory not found", http=404)
         svc = DataEngineService(db)
         samples = [svc.generate_value(f.factory_type, f.config) for _ in range(5)]
         return jsonify({"samples": samples}), 200

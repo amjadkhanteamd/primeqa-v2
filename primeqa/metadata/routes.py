@@ -10,6 +10,7 @@ from primeqa.db import get_db
 from primeqa.core.repository import EnvironmentRepository
 from primeqa.metadata.repository import MetadataRepository
 from primeqa.metadata.service import MetadataService
+from primeqa.shared.api import json_error
 
 metadata_bp = Blueprint("metadata", __name__)
 
@@ -38,9 +39,9 @@ def refresh_metadata(environment_id):
         )
         return jsonify(result), 200
     except ValueError as e:
-        return jsonify(error=str(e)), 400
+        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
     except Exception as e:
-        return jsonify(error=f"Metadata refresh failed: {str(e)}"), 500
+        return json_error("VALIDATION_ERROR", f"Metadata refresh failed: {str(e, http=400)}"), 500
     finally:
         db.close()
 
@@ -81,7 +82,7 @@ def stream_sync_events(meta_version_id):
         # Scope check: the meta_version must belong to a tenant-visible env
         mv = svc.metadata_repo.get_version(meta_version_id)
         if not mv:
-            return jsonify(error="meta_version not found"), 404
+            return json_error("NOT_FOUND", "meta_version not found", http=404)
     finally:
         db.close()
 
@@ -127,7 +128,7 @@ def get_current_version(environment_id):
     try:
         result = svc.get_current_version_summary(environment_id)
         if not result:
-            return jsonify(error="No metadata version found"), 404
+            return json_error("NOT_FOUND", "No metadata version found", http=404)
         return jsonify(result), 200
     finally:
         db.close()
@@ -140,7 +141,7 @@ def get_diff(environment_id):
     try:
         result = svc.get_diff(environment_id)
         if not result:
-            return jsonify(error="No diff available (need at least 2 versions)"), 404
+            return json_error("VALIDATION_ERROR", "No diff available (need at least 2 versions, http=400)"), 404
         return jsonify(result), 200
     finally:
         db.close()
