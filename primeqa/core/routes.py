@@ -130,7 +130,7 @@ def create_user():
         )
         return jsonify(user), 201
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 409
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -144,7 +144,7 @@ def update_user(user_id):
         user = svc.update_user(user_id, **data)
         return jsonify(user), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -189,7 +189,7 @@ def create_environment():
         )
         return jsonify(env), 201
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -216,7 +216,7 @@ def update_environment(env_id):
         env = svc.update_environment(env_id, request.user["tenant_id"], data)
         return jsonify(env), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -229,7 +229,7 @@ def test_connection(env_id):
         result = svc.test_connection(env_id, request.user["tenant_id"])
         return jsonify(result), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -255,7 +255,7 @@ def store_credentials(env_id):
         )
         return jsonify(result), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -290,7 +290,7 @@ def create_connection():
                                      data["name"], data["config"], request.user["id"])
         return jsonify(conn), 201
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -316,7 +316,7 @@ def delete_connection(conn_id):
         svc.delete_connection(conn_id, request.user["tenant_id"])
         return jsonify(message="Deleted"), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 404
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -329,7 +329,7 @@ def test_connection_api(conn_id):
         result = svc.test_connection(conn_id, request.user["tenant_id"])
         return jsonify(result), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -386,7 +386,7 @@ def delete_group(group_id):
         svc.delete_group(group_id, request.user["tenant_id"])
         return jsonify(message="Deleted"), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 404
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -402,7 +402,7 @@ def add_group_member(group_id):
         svc.add_member(group_id, request.user["tenant_id"], data["user_id"], request.user["id"])
         return jsonify(message="Added"), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -415,7 +415,7 @@ def remove_group_member(group_id, user_id):
         svc.remove_member(group_id, request.user["tenant_id"], user_id)
         return jsonify(message="Removed"), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -431,7 +431,7 @@ def add_group_environment(group_id):
         svc.add_environment(group_id, request.user["tenant_id"], data["environment_id"], request.user["id"])
         return jsonify(message="Added"), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -444,6 +444,6 @@ def remove_group_environment(group_id, env_id):
         svc.remove_environment(group_id, request.user["tenant_id"], env_id)
         return jsonify(message="Removed"), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()

@@ -47,7 +47,7 @@ def create_release():
             decision_criteria=data.get("decision_criteria"),
         )), 201
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -73,7 +73,7 @@ def update_release(release_id):
     try:
         return jsonify(svc.update_release(release_id, request.user["tenant_id"], data)), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -86,7 +86,7 @@ def delete_release(release_id):
         svc.delete_release(release_id, request.user["tenant_id"])
         return jsonify(message="Deleted"), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 404
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -103,7 +103,7 @@ def add_requirement(release_id):
                             data["requirement_id"], request.user["id"])
         return jsonify(message="Added"), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -116,7 +116,7 @@ def remove_requirement(release_id, req_id):
         svc.remove_requirement(release_id, request.user["tenant_id"], req_id)
         return jsonify(message="Removed"), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -137,7 +137,7 @@ def add_requirements_bulk(release_id):
         )
         return jsonify(result), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -160,7 +160,7 @@ def add_test_plan_items_bulk(release_id):
         )
         return jsonify(result), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -181,7 +181,7 @@ def add_test_plan_item(release_id):
         )
         return jsonify(message="Added"), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -194,7 +194,7 @@ def remove_test_plan_item(release_id, tc_id):
         svc.remove_test_plan_item(release_id, request.user["tenant_id"], tc_id)
         return jsonify(message="Removed"), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 

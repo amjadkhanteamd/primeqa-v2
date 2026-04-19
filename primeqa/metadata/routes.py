@@ -39,9 +39,9 @@ def refresh_metadata(environment_id):
         )
         return jsonify(result), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     except Exception as e:
-        return json_error("VALIDATION_ERROR", f"Metadata refresh failed: {str(e, http=400)}"), 500
+        return json_error("SERVER_ERROR", f"Metadata refresh failed: {str(e)}", http=500)
     finally:
         db.close()
 

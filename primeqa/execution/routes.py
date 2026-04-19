@@ -53,7 +53,7 @@ def create_run():
         )
         return jsonify(result), 201
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
@@ -240,7 +240,7 @@ def run_preview():
         try:
             resolved = resolver.resolve(request.user["tenant_id"], selection)
         except Exception as e:
-            return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+            return json_error("VALIDATION_ERROR", str(e), http=400)
 
         jira_summary = (resolved.source_refs or {}).get("jira") or []
         req_count = len((resolved.source_refs or {}).get("requirements") or [])
@@ -505,7 +505,7 @@ def cancel_run(run_id):
         result = svc.cancel_run(run_id, request.user["tenant_id"])
         return jsonify(result), 200
     except ValueError as e:
-        return json_error("VALIDATION_ERROR", str(e, http=400)), 400
+        return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
         db.close()
 
