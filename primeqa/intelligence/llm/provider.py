@@ -45,6 +45,11 @@ class ProviderResponse:
     latency_ms: int = 0
     request_id: Optional[str] = None
     stop_reason: Optional[str] = None
+    # Phase 5: when the response used Anthropic tool_use, this holds the
+    # FIRST tool_use block's .input dict (the parsed structured output).
+    # None when the response was a plain text reply.
+    tool_input: Optional[Any] = None
+    tool_name: Optional[str] = None
 
 
 class ProviderError(Exception):
@@ -154,12 +159,18 @@ def invoke(
 
             latency_ms = int((time.time() - started) * 1000)
 
-            # Concatenate text blocks; for tool-use responses the caller
-            # will re-read the structured content from .content.
+            # Extract text blocks and (when tool use was requested) the
+            # first tool_use block's parsed input.
             raw_text_parts = []
+            tool_input = None
+            tool_name = None
             for block in getattr(resp, "content", []) or []:
-                if getattr(block, "type", None) == "text":
+                btype = getattr(block, "type", None)
+                if btype == "text":
                     raw_text_parts.append(getattr(block, "text", ""))
+                elif btype == "tool_use" and tool_input is None:
+                    tool_input = getattr(block, "input", None)
+                    tool_name = getattr(block, "name", None)
             raw_text = "".join(raw_text_parts)
 
             usage = getattr(resp, "usage", None)
@@ -174,6 +185,8 @@ def invoke(
                 latency_ms=latency_ms,
                 request_id=getattr(resp, "id", None),
                 stop_reason=getattr(resp, "stop_reason", None),
+                tool_input=tool_input,
+                tool_name=tool_name,
             )
 
         except Exception as e:

@@ -24,10 +24,79 @@ from typing import Any, Dict, List, Optional
 from primeqa.intelligence.llm.prompts.base import PromptSpec
 
 
-VERSION = "test_plan_generation@v1"
+VERSION = "test_plan_generation@v2"   # v2: tool use for structured output
 MAX_TOKENS = 8192
 SUPPORTS_CACHE = True
 SUPPORTS_ESCALATION = True
+
+
+# ---- Tool-use schema (Phase 5) --------------------------------------------
+# Using Anthropic's tool_use API eliminates the "AI returned broken JSON"
+# failure mode entirely \u2014 the model returns a structured dict that
+# validates against the schema before we ever see it.
+
+_STEP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "step_order": {"type": "integer"},
+        "action": {"type": "string",
+                   "enum": ["create", "update", "query", "verify",
+                            "delete", "convert", "wait"]},
+        "target_object": {"type": "string"},
+        "state_ref": {"type": "string"},
+        "field_values": {"type": "object"},
+        "record_ref": {"type": "string"},
+        "assertions": {"type": "object"},
+        "soql": {"type": "string"},
+        "convert_to": {"type": "array", "items": {"type": "string"}},
+        "duration_sec": {"type": "integer"},
+        "reason": {"type": "string"},
+    },
+    "required": ["step_order", "action"],
+}
+
+_TEST_CASE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "coverage_type": {
+            "type": "string",
+            "enum": ["positive", "negative_validation", "boundary",
+                     "edge_case", "regression"],
+        },
+        "description": {"type": "string"},
+        "preconditions": {"type": "array", "items": {"type": "string"}},
+        "steps": {"type": "array", "items": _STEP_SCHEMA},
+        "expected_results": {"type": "array", "items": {"type": "string"}},
+        "referenced_entities": {"type": "array", "items": {"type": "string"}},
+        "confidence_score": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+    "required": ["title", "coverage_type", "steps", "confidence_score"],
+}
+
+_TOOL_SCHEMA = {
+    "name": "submit_test_plan",
+    "description": (
+        "Submit the generated test plan. This is the only way to return "
+        "output \u2014 do not reply with text."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "explanation": {
+                "type": "string",
+                "description": "1-3 sentences: why this coverage mix for this requirement",
+            },
+            "test_cases": {
+                "type": "array",
+                "items": _TEST_CASE_SCHEMA,
+                "minItems": 1,
+                "maxItems": 8,
+            },
+        },
+        "required": ["explanation", "test_cases"],
+    },
+}
 
 
 # ---- Static pieces (cacheable across tenants) -----------------------------
@@ -253,7 +322,15 @@ def build(
     user_blocks = [metadata_block, {"type": "text", "text": dynamic_text}]
 
     def _parse(resp):
-        """Extract a plan dict from the response's text content."""
+        """Tool-use path: the structured plan arrives pre-parsed as
+        resp.tool_input. Text-path fallback handles models that ignore
+        the tool_choice constraint (rare, but possible on overloaded
+        retries that swapped to a different model family)."""
+        if resp.tool_input is not None:
+            # Already a dict matching the tool's input_schema. Wrap in
+            # the {test_plan: {...}} shape the service expects.
+            return {"test_plan": resp.tool_input}
+
         text = (resp.raw_text or "").strip()
         if text.startswith("```"):
             lines = text.split("\n")
@@ -273,6 +350,8 @@ def build(
         parse=_parse,
         max_tokens=MAX_TOKENS,
         has_cache_blocks=True,
+        tools=[_TOOL_SCHEMA],
+        force_tool_name="submit_test_plan",
         context_for_log={
             "requirement_id": getattr(req, "id", None),
             "meta_version_id": context.get("meta_version_id"),

@@ -35,6 +35,18 @@ class PromptSpec:
     # saved" metric correctly on the usage log.
     has_cache_blocks: bool = False
 
+    # Phase 5: structured output via Anthropic tool use. When set, the
+    # provider passes tools + tool_choice to the API and the response
+    # carries a parsed JSON object inside the tool_use content block
+    # \u2014 eliminating the JSON-parse failure mode entirely.
+    #
+    # tools: list of Anthropic tool definitions (name, description,
+    #        input_schema).
+    # force_tool_name: name of the tool to force; maps to
+    #        tool_choice={"type":"tool","name":<force_tool_name>}
+    tools: Optional[List[Dict[str, Any]]] = None
+    force_tool_name: Optional[str] = None
+
 
 class PromptModule(Protocol):
     """Duck-typed interface each prompt file must satisfy."""

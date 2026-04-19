@@ -161,14 +161,39 @@ def llm_call(
     escalated = False
     last_error: Optional[LLMError] = None
 
+    # Phase 5: Redact obvious PII from outbound prompts before the
+    # provider sees them. Safe + fast \u2014 regex-only, preserves structure.
+    from primeqa.intelligence.llm import redact
+    safe_messages = redact.redact_messages(spec.messages)
+    safe_system = (
+        redact.redact_messages(
+            [{"role": "system", "content": spec.system}]
+        )[0]["content"] if spec.system else None
+    )
+
+    # Tool use plumbing \u2014 if the prompt declares tools, build the
+    # tool_choice parameter to force Anthropic to call it.
+    tools_param = spec.tools
+    tool_choice_param = None
+    if spec.tools and spec.force_tool_name:
+        tool_choice_param = {"type": "tool", "name": spec.force_tool_name}
+
+    from primeqa.intelligence.llm.providers import get_provider_for_model
+
     for attempt, model in enumerate(chain):
         try:
-            provider_resp = provider_invoke(
+            # Route to the provider that supports this model id. Today
+            # every chain is Anthropic, but the architecture accepts
+            # cross-vendor fallback chains (Phase 5.5 when OpenAI ships).
+            provider = get_provider_for_model(model)
+            provider_resp = provider.invoke(
                 api_key=api_key,
                 model=model,
-                messages=spec.messages,
-                system=spec.system,
+                messages=safe_messages,
+                system=safe_system,
                 max_tokens=spec.max_tokens,
+                tools=tools_param,
+                tool_choice=tool_choice_param,
             )
         except ProviderError as pe:
             _log_usage_error(
