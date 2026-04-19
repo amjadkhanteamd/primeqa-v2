@@ -72,10 +72,30 @@ class PipelineRunRepository:
             q = q.filter(PipelineRun.triggered_by == triggered_by)
         return q.order_by(PipelineRun.queued_at.desc()).offset(offset).limit(limit).all()
 
+    # Audit fix M-9 (2026-04-19): valid state transitions. The DB
+    # CHECK constraint (migration 036) enforces that status is in the
+    # known set, but nothing prevented code from flipping a terminal
+    # run back to 'running' — invalid data that'd break the dashboards.
+    _VALID_TRANSITIONS = {
+        "queued":    {"running", "cancelled", "failed"},
+        "running":   {"completed", "failed", "cancelled"},
+        "completed": set(),      # terminal
+        "failed":    set(),      # terminal
+        "cancelled": set(),      # terminal
+    }
+
     def update_run_status(self, run_id, status, **kwargs):
         run = self.db.query(PipelineRun).filter(PipelineRun.id == run_id).first()
         if not run:
             return None
+        # Allow idempotent no-op (same→same), else verify legal transition.
+        if run.status != status:
+            allowed = self._VALID_TRANSITIONS.get(run.status, set())
+            if status not in allowed:
+                raise ValueError(
+                    f"Invalid run state transition: {run.status} → {status} "
+                    f"(allowed from {run.status}: {sorted(allowed) or 'none (terminal)'})"
+                )
         run.status = status
         if status == "running" and not run.started_at:
             run.started_at = datetime.now(timezone.utc)
