@@ -57,7 +57,15 @@ class LLMResponse:
     # only know their generation_batch_id / run_id AFTER the LLM call
     # use this to back-link via usage.attach_batch(...) so the cost
     # dashboard attributes the spend correctly.
+    #
+    # `usage_log_id` is the LAST (final) attempt's row id \u2014 i.e. the one
+    # whose response this LLMResponse carries. On chain traversal with
+    # escalation, each attempt's usage row is logged; `usage_log_ids`
+    # holds them ALL so the caller can back-link every billable attempt
+    # to the batch (not just the final successful one \u2014 a primary that
+    # was escalated past STILL costs money and must be attributed).
     usage_log_id: Optional[int] = None
+    usage_log_ids: List[int] = field(default_factory=list)
 
 
 class LLMError(Exception):
@@ -171,6 +179,11 @@ def llm_call(
 
     escalated = False
     last_error: Optional[LLMError] = None
+    # Every attempt's usage_log row id \u2014 success AND error \u2014 collected so
+    # the caller can back-attribute all billable attempts to their batch
+    # via usage.attach_batch(). Without this, a primary-that-got-escalated-
+    # past was invisible in the per-run cost panel.
+    attempt_log_ids: List[int] = []
 
     # Phase 5: Redact obvious PII from outbound prompts before the
     # provider sees them. Safe + fast \u2014 regex-only, preserves structure.
@@ -207,7 +220,7 @@ def llm_call(
                 tool_choice=tool_choice_param,
             )
         except ProviderError as pe:
-            _log_usage_error(
+            err_log_id = _log_usage_error(
                 tenant_id=tenant_id, user_id=user_id, task=task,
                 model=model, prompt_version=prompt_version,
                 complexity=complexity, escalated=(attempt > 0),
@@ -218,6 +231,8 @@ def llm_call(
                 generation_batch_id=generation_batch_id,
                 context=spec.context_for_log,
             )
+            if err_log_id:
+                attempt_log_ids.append(err_log_id)
             # For non-retryable terminal statuses, bubble up now.
             if pe.status in ("auth_error", "content_error", "quota_exceeded"):
                 raise LLMError(pe.status, pe.message, pe.request_id) from pe
@@ -262,6 +277,8 @@ def llm_call(
             generation_batch_id=generation_batch_id,
             context=spec.context_for_log,
         )
+        if usage_log_id:
+            attempt_log_ids.append(usage_log_id)
 
         if should_retry:
             escalated = True
@@ -284,6 +301,7 @@ def llm_call(
             request_id=provider_resp.request_id,
             complexity=complexity,
             usage_log_id=usage_log_id,
+            usage_log_ids=list(attempt_log_ids),
         )
 
     # Fell off the end of the chain on transient errors.
@@ -294,6 +312,9 @@ def llm_call(
 
 def _log_usage_error(**kwargs):
     """Wrapper so every transient-error path writes a usage row without
-    duplicating the field list."""
+    duplicating the field list. Returns the inserted row id so callers
+    can include it in batch-attribution loops (errors still consume
+    input tokens and need to be cost-attributed).
+    """
     kwargs.setdefault("status", "provider_error")
-    usage.record(**kwargs)
+    return usage.record(**kwargs)

@@ -262,15 +262,23 @@ class TestManagementService:
         self.test_case_repo.db.commit()
         self.test_case_repo.db.refresh(batch)
 
-        # Attribution: the LLM call that produced this plan was logged
+        # Attribution: every LLM call that produced this plan was logged
         # BEFORE the batch row existed (we need the response to set the
-        # batch's tokens + cost). Back-link the usage_log row here so the
+        # batch's tokens + cost). Back-link ALL attempt rows here so the
         # superadmin "Spend for this run" panel credits the right batch.
-        usage_log_id = plan.get("usage_log_id")
-        if usage_log_id:
+        # Chain escalation fires multiple billable calls: the primary
+        # (thrown away) + the escalation (used) both cost money; prior
+        # implementation only attached the final one so the panel
+        # under-reported by ~50% when escalation fired.
+        usage_log_ids = plan.get("usage_log_ids") or (
+            [plan.get("usage_log_id")] if plan.get("usage_log_id") else []
+        )
+        if usage_log_ids:
             try:
                 from primeqa.intelligence.llm import usage as _usage
-                _usage.attach_batch(usage_log_id, batch.id)
+                for uid in usage_log_ids:
+                    if uid:
+                        _usage.attach_batch(uid, batch.id)
             except Exception:
                 pass  # observability-only; never block generation
 

@@ -36,8 +36,6 @@ COMPLEXITY_HIGH = "high"
 # Verified against /v1/models + live 5-token probes on 2026-04-20 using
 # the tenant's actual API key (scripts/probe_llm_models.py). Picks:
 #   OPUS   \u2014 UPGRADED to 4.7 (newest available, no deprecation window).
-#            Still rolling back to 4.5-dated if 4.7 errors via chain
-#            fallback; legacy 4 stays priced in for older stored configs.
 #   SONNET \u2014 UPGRADED from Sonnet 4 to Sonnet 4.5: newer, same price
 #            tier, better reasoning. Sonnet 4 also works but is
 #            deprecated on the same schedule as Opus 4.
@@ -47,10 +45,6 @@ COMPLEXITY_HIGH = "high"
 OPUS = "claude-opus-4-7"
 SONNET = "claude-sonnet-4-5-20250929"
 HAIKU = "claude-haiku-4-5-20251001"
-# Fallback Opus id used as the tail of every Opus-bearing chain \u2014
-# guarantees graceful degradation if the newest Opus ever 404s for a
-# tenant (e.g. newly-provisioned key without 4.7 access yet).
-_OPUS_LEGACY = "claude-opus-4-5-20251101"
 
 
 @dataclass(frozen=True)
@@ -69,41 +63,48 @@ class TenantPolicy:
 
 _CHAINS: Dict[str, Dict[str, List[str]]] = {
     # Test plan generation: the whale, escalates on complexity and on
-    # low-confidence retry. Every Opus-using chain has _OPUS_LEGACY
-    # appended as a last-resort fallback so a 4.7 404 still completes.
+    # low-confidence retry.
+    #
+    # Chain length note: the gateway treats every non-first entry as an
+    # ESCALATION TARGET (retried on low-confidence success). Adding a
+    # same-tier-or-lower model as a "safety net" therefore burns money
+    # on pointless escalations (we saw HIGH requirements spend ~$0.60
+    # by escalating Opus 4.7 \u2192 Opus 4.5). Keep chains to genuine
+    # upgrades only: cheap primary \u2192 better fallback. Single-entry
+    # chains are fine \u2014 they fail loud rather than escalating
+    # laterally.
     "test_plan_generation": {
-        COMPLEXITY_LOW:    [SONNET, _OPUS_LEGACY],
-        COMPLEXITY_MEDIUM: [SONNET, OPUS, _OPUS_LEGACY],
-        COMPLEXITY_HIGH:   [OPUS, _OPUS_LEGACY],
+        COMPLEXITY_LOW:    [SONNET],
+        COMPLEXITY_MEDIUM: [SONNET, OPUS],
+        COMPLEXITY_HIGH:   [OPUS],
     },
 
-    # Agent fix proposal: Sonnet default, escalate on low confidence.
+    # Agent fix proposal: Sonnet default, escalate to Opus on low confidence.
     "agent_fix": {
-        "default": [SONNET, OPUS, _OPUS_LEGACY],
+        "default": [SONNET, OPUS],
     },
 
-    # Failure root-cause analysis: prefer Sonnet; fall back to Opus if
-    # the tenant's API key doesn't serve Sonnet.
+    # Failure root-cause analysis: Sonnet default, escalate to Opus.
     "failure_analysis": {
-        "default": [SONNET, OPUS, _OPUS_LEGACY],
+        "default": [SONNET, OPUS],
     },
 
     # Failure summary panel: cheap-tier Haiku for summarisation, with
     # Opus as fallback so "Summarise failures" always works even when
     # the cheaper tiers aren't available to this key.
     "failure_summary": {
-        "default": [HAIKU, OPUS, _OPUS_LEGACY],
+        "default": [HAIKU, OPUS],
     },
 
     # Lightweight classification (taxonomy fallback, AC extraction).
     "classification": {
-        "default": [HAIKU, OPUS, _OPUS_LEGACY],
+        "default": [HAIKU, OPUS],
     },
 
     # Connection ping \u2014 10 tokens. Fallback to Opus is almost free
     # in absolute terms and keeps the ping green on restricted keys.
     "connection_test": {
-        "default": [HAIKU, OPUS, _OPUS_LEGACY],
+        "default": [HAIKU, OPUS],
     },
 }
 
