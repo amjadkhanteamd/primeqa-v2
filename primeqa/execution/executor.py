@@ -96,6 +96,7 @@ class StepExecutor:
 
     def __init__(self, sf_client, run_id, capture_mode, step_result_repo,
                  entity_repo, idempotency_mgr, meta_vr_lookup=None,
+                 name_createable_lookup=None,
                  tenant_id=None):
         self.sf = sf_client
         self.run_id = run_id
@@ -105,6 +106,19 @@ class StepExecutor:
         self.entity_repo = entity_repo
         self.idempotency = idempotency_mgr
         self.meta_vr_lookup = meta_vr_lookup or (lambda obj: False)
+        # Metadata-backed lookup: does this SObject accept writes to its
+        # `Name` field? Needed because `_execute_create` auto-injects a
+        # PQA_ prefix into Name for run-tracking, which Salesforce rejects
+        # on objects where Name is a read-only formula (Lead, Contact) or
+        # auto-generated (Case uses CaseNumber). Return tri-state:
+        #   True  \u2014 metadata confirms Name is createable, inject safely
+        #   False \u2014 metadata confirms Name is NOT createable, skip inject
+        #   None  \u2014 metadata unknown / not synced for this object, skip
+        #           inject (err on the safe side; lose the PQA_ tag rather
+        #           than break the create with INVALID_FIELD_FOR_INSERT_UPDATE)
+        # Default callback returns None \u2014 safe skip \u2014 for tests that don't
+        # wire a lookup. Worker wires the real DB-backed one.
+        self.name_createable_lookup = name_createable_lookup or (lambda obj: None)
         self.state_vars = {}
 
     def execute_step(self, run_test_result_id, step_def, test_case_id=None,
@@ -355,10 +369,26 @@ class StepExecutor:
         except Exception:
             pass
         pqa_name = f"PQA_{self.run_id}{tc_suffix}_{logical_id} {timestamp}"
-        if "Name" not in field_values:
+        # Only inject / overwrite Name when we know it's a writable field
+        # on this object. Metadata lookup returns True / False / None and
+        # we only act on True. On Lead / Contact / Case etc. Name is a
+        # formula or auto-number \u2014 setting it used to produce
+        # INVALID_FIELD_FOR_INSERT_UPDATE on every create, which surfaced
+        # when the AI started generating Lead-conversion and Case TCs.
+        name_writable = self.name_createable_lookup(sobject)
+        if name_writable is True:
+            # AI's explicit Name value, if any, is overwritten to keep the
+            # PQA_ prefix for cleanup + SF-UI identification. The AI rarely
+            # picks Name values that its own assertions depend on on these
+            # objects (Account / Opportunity use Name cosmetically).
             field_values["Name"] = pqa_name
-        else:
-            field_values["Name"] = pqa_name
+        elif name_writable is False:
+            # AI accidentally provided Name on a non-createable-Name object;
+            # strip it so SF doesn't reject the whole create.
+            field_values.pop("Name", None)
+        # else (None / unknown): don't touch Name. Neither inject nor strip.
+        # On well-synced metadata this branch never fires; on partial
+        # metadata we lose the PQA_ tag for that object but creates succeed.
 
         # Idempotency key also gains the test_case_id so two TCs creating
         # the same logical Account don't reuse each other's record.

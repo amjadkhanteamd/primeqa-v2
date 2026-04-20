@@ -174,6 +174,35 @@ def _run_execute_stage(stage, ctx):
     # when to snapshot state. Always True keeps us cautious on first wiring.
     def _has_vr(_obj_name): return True
 
+    # Metadata-backed Name-createability lookup. Built once here with a
+    # per-object cache so every `create` step reuses the same DB probe.
+    # Returns True / False / None (unknown). See StepExecutor.__init__
+    # docstring for why tri-state matters.
+    from primeqa.metadata.repository import MetadataRepository as _MR
+    _meta_repo = _MR(db)
+    _meta_version_id = env.current_meta_version_id
+    _name_cache = {}
+    def _name_createable(sobject):
+        if sobject in _name_cache:
+            return _name_cache[sobject]
+        result = None
+        try:
+            obj = _meta_repo.get_object_by_api_name(_meta_version_id, sobject)
+            if obj:
+                fields = _meta_repo.get_fields(_meta_version_id, obj.id)
+                name_field = next((f for f in fields if f.api_name == "Name"), None)
+                if name_field is not None:
+                    result = bool(name_field.is_createable)
+                else:
+                    # Object has field rows but no Name \u2014 it's not a Name-bearing
+                    # object (rare; most SObjects have Name as formula at minimum).
+                    result = False
+                # else: no field rows synced for this object \u2014 leave as None
+        except Exception:
+            pass
+        _name_cache[sobject] = result
+        return result
+
     total = passed = failed = skipped = 0
 
     for tc_id in tc_ids:
@@ -278,6 +307,7 @@ def _run_execute_stage(stage, ctx):
                 entity_repo=entity_repo,
                 idempotency_mgr=idem,
                 meta_vr_lookup=_has_vr,
+                name_createable_lookup=_name_createable,
                 tenant_id=tenant_id,
             )
             for step_def in version.steps:
