@@ -124,9 +124,15 @@ class TestCaseGenerator:
                     "max_tests": max_tests,
                 },
                 requirement_id=requirement_id or getattr(requirement, "id", None),
-                # complexity auto-detected by the prompt module; model override
-                # only used when a caller explicitly wants to pin behaviour.
-                model_override=model if model and model != "claude-sonnet-4-20250514" else None,
+                # Intentionally NOT passing model_override here. The
+                # connection's config.model is a create-time dropdown
+                # choice (e.g. "claude-opus-4-20250514") that was
+                # accidentally overriding the whole router chain \u2014
+                # meaning complexity detection, Sonnet-first routing, and
+                # upgrades to the OPUS / SONNET constants were all
+                # silently bypassed. Per-tenant pins now go through
+                # tenant_agent_settings.force_model (TenantPolicy path),
+                # which is the intentional mechanism.
             )
         except LLMError:
             log.error(f"Test plan generation failed (gateway)")
