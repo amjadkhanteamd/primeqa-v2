@@ -264,6 +264,66 @@ def detect_complexity(context: Dict[str, Any]) -> str:
 
 # ---- Builder --------------------------------------------------------------
 
+# Lazy-initialised so the module imports cleanly even if the knowledge
+# package isn't present (e.g. in stripped-down test environments).
+_knowledge_assembler = None
+
+
+def _get_knowledge_assembler():
+    """Singleton KnowledgeAssembler for the system-rules provider.
+
+    System rules only \u2014 LearnedRulesProvider stays out of this cached
+    block because the learned content changes daily per tenant and would
+    thrash the prompt cache. Learned rules continue to flow via
+    recent_misses on the dynamic path.
+    """
+    global _knowledge_assembler
+    if _knowledge_assembler is None:
+        try:
+            from primeqa.intelligence.knowledge import (
+                KnowledgeAssembler, SystemPromptRulesProvider,
+            )
+            _knowledge_assembler = KnowledgeAssembler([SystemPromptRulesProvider()])
+        except Exception:
+            _knowledge_assembler = False  # disable; build will skip the block
+    return _knowledge_assembler
+
+
+def _build_knowledge_block(meta):
+    """Return a cached content block for the system-rules, or None if
+    no rules apply / knowledge package is missing.
+
+    Object filter: use the api-names from metadata_context so rules
+    tagged to a specific SObject only fire when that object is in scope
+    for this env. Rules with object_name=None pass through.
+    """
+    assembler = _get_knowledge_assembler()
+    if not assembler:
+        return None
+    try:
+        from primeqa.intelligence.knowledge import QueryContext
+        # metadata_context.objects entries look like
+        # "Account [required: Name] [custom: Foo__c]" \u2014 first token is
+        # the api name.
+        referenced = []
+        for line in meta.get("objects", [])[:50] or []:
+            if not line:
+                continue
+            head = line.split()[0] if line.split() else ""
+            if head:
+                referenced.append(head.rstrip(":"))
+        text = assembler.assemble(QueryContext(objects=tuple(referenced)))
+    except Exception:
+        return None
+    if not text:
+        return None
+    return {
+        "type": "text",
+        "text": text,
+        "cache_control": {"type": "ephemeral"},
+    }
+
+
 def _format_recent_misses(recent_misses) -> str:
     """Accept either:
       (a) a pre-rendered string from feedback_rules.build_rules_block()
@@ -365,6 +425,13 @@ def build(
         "cache_control": {"type": "ephemeral"},
     }
 
+    # ---- KNOWLEDGE BLOCK (cached; static per object-set) -----------------
+    # System rules baked into salesforce_knowledge/system_rules.json, filtered
+    # to the objects this env actually exposes. The assembler is deterministic
+    # so this block is cache-stable; learned rules stay in the dynamic block
+    # below because they change per tenant per day.
+    knowledge_block = _build_knowledge_block(meta)
+
     # ---- DYNAMIC BLOCK (not cached) --------------------------------------
     jira_part = ""
     if getattr(req, "jira_key", None):
@@ -397,7 +464,14 @@ def build(
         + json.dumps(OUTPUT_SCHEMA, indent=2)
     )
 
-    user_blocks = [metadata_block, {"type": "text", "text": dynamic_text}]
+    # user_blocks composition: metadata [cached] -> knowledge [cached when
+    # non-empty] -> dynamic [not cached]. Cache breakpoints are preserved
+    # in that order so the prefix hash is stable across tenants that share
+    # the same metadata shape.
+    user_blocks = [metadata_block]
+    if knowledge_block is not None:
+        user_blocks.append(knowledge_block)
+    user_blocks.append({"type": "text", "text": dynamic_text})
 
     def _parse(resp):
         """Tool-use path: the structured plan arrives pre-parsed as
