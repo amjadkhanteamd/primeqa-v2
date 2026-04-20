@@ -33,13 +33,20 @@ COMPLEXITY_HIGH = "high"
 
 
 # ---- Canonical model ids --------------------------------------------------
-# Note: Anthropic has not published a Claude-4 Haiku at time of writing.
-# Stay on 3.5 Haiku for the "cheap-and-fast" tier; the Gateway was calling
-# an invented id (claude-haiku-4-20250514) and returning 404s for every
-# classification / failure-summary / connection-test.
+# Verified against /v1/models + live 5-token probes on 2026-04-20 using
+# the tenant's actual API key (scripts/probe_llm_models.py). Picks:
+#   OPUS   \u2014 Opus 4 works; deprecated 6/15/2026 but has runway. Opus
+#            4.5 / 4.6 / 4.7 are available in the catalog and are the
+#            migration target before the EOL.
+#   SONNET \u2014 UPGRADED from Sonnet 4 to Sonnet 4.5: newer, same price
+#            tier, better reasoning. Sonnet 4 also works but is
+#            deprecated on the same schedule as Opus 4.
+#   HAIKU  \u2014 FIXED from dead claude-3-5-haiku-20241022 (EOL 2/19/2026,
+#            past) to Haiku 4.5. Was 404'ing every failure_summary /
+#            classification / connection_test call.
 OPUS = "claude-opus-4-20250514"
-SONNET = "claude-sonnet-4-20250514"
-HAIKU = "claude-3-5-haiku-20241022"
+SONNET = "claude-sonnet-4-5-20250929"
+HAIKU = "claude-haiku-4-5-20251001"
 
 
 @dataclass(frozen=True)

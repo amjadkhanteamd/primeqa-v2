@@ -29,8 +29,10 @@ class ModelPrice:
 # Keep one canonical key per model id. Routers and UI refer to these
 # by the VARCHAR values; never decompose the string.
 MODEL_PRICING: Dict[str, ModelPrice] = {
-    # Claude 4 family (Opus + Sonnet only; Anthropic has not shipped a
-    # Claude-4 Haiku \u2014 see router.HAIKU which points at 3.5 Haiku).
+    # Claude 4.5 family (current default tier \u2014 see router.py)
+    "claude-sonnet-4-5-20250929": ModelPrice(input=3.00,  output=15.00),
+    "claude-haiku-4-5-20251001":  ModelPrice(input=1.00,  output=5.00),
+    # Claude 4 family (Opus still current; Sonnet deprecated 6/15/2026)
     "claude-opus-4-20250514":     ModelPrice(input=15.00, output=75.00),
     "claude-sonnet-4-20250514":   ModelPrice(input=3.00,  output=15.00),
     # Older families supported for tenants still on them
