@@ -107,9 +107,17 @@ class MetadataRepository:
         return created
 
     def get_objects(self, meta_version_id):
+        # Stable ordering is a hard requirement: the list feeds the LLM
+        # gateway's prompt cache (prompts/test_plan_generation.py builds
+        # "metadata_text" from this). PostgreSQL returns rows in
+        # undefined order without ORDER BY, so two consecutive calls
+        # for the same tenant could produce different metadata text, and
+        # Anthropic's prefix-hash cache would miss every time. We saw
+        # cache_write_tokens=1953 on every call and cached_input_tokens=0
+        # even for calls 5 seconds apart \u2014 same root cause.
         return self.db.query(MetaObject).filter(
             MetaObject.meta_version_id == meta_version_id,
-        ).all()
+        ).order_by(MetaObject.api_name.asc()).all()
 
     def get_object_by_api_name(self, meta_version_id, api_name):
         return self.db.query(MetaObject).filter(
@@ -148,7 +156,8 @@ class MetadataRepository:
         q = self.db.query(MetaField).filter(MetaField.meta_version_id == meta_version_id)
         if object_id:
             q = q.filter(MetaField.meta_object_id == object_id)
-        return q.all()
+        # Stable ordering for prompt-cache stability (see get_objects).
+        return q.order_by(MetaField.api_name.asc()).all()
 
     # --- Validation Rules ---
 
@@ -171,7 +180,11 @@ class MetadataRepository:
         )
         if object_id:
             q = q.filter(MetaValidationRule.meta_object_id == object_id)
-        return q.all()
+        # Stable ordering for prompt-cache stability (see get_objects).
+        return q.order_by(
+            MetaValidationRule.meta_object_id.asc(),
+            MetaValidationRule.rule_name.asc(),
+        ).all()
 
     # --- Flows ---
 

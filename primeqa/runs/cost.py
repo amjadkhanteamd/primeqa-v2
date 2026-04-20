@@ -14,9 +14,16 @@ from typing import Any, Dict, Optional
 # a config file for v1; Super Admin override lives in tenant_agent_settings
 # (room to grow).
 MODEL_PRICING: Dict[str, Dict[str, float]] = {
-    # Claude 4.5 family (current default tier \u2014 see llm/router.py)
+    # Claude 4.7 / 4.6 (newest)
+    "claude-opus-4-7":            {"in": 15.00, "out": 75.00},
+    "claude-opus-4-6":            {"in": 15.00, "out": 75.00},
+    "claude-sonnet-4-6":          {"in":  3.00, "out": 15.00},
+    # Claude 4.5 family (current defaults \u2014 see llm/router.py)
+    "claude-opus-4-5-20251101":   {"in": 15.00, "out": 75.00},
     "claude-sonnet-4-5-20250929": {"in":  3.00, "out": 15.00},
     "claude-haiku-4-5-20251001":  {"in":  1.00, "out":  5.00},
+    # Claude 4.1
+    "claude-opus-4-1-20250805":   {"in": 15.00, "out": 75.00},
     # Claude 4 family (Opus still current; Sonnet deprecated 6/15/2026)
     "claude-opus-4-20250514":     {"in": 15.00, "out": 75.00},
     "claude-sonnet-4-20250514":   {"in":  3.00, "out": 15.00},
