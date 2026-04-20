@@ -76,41 +76,60 @@ class SalesforceExecutionClient:
     def convert_lead(self, lead_id, converted_status=None,
                       do_not_create_opportunity=False,
                       opportunity_name=None):
-        """Convert a Lead via the standard REST endpoint.
+        """Convert a Lead via the Invocable Standard Actions REST endpoint.
 
-        POST /sobjects/LeadConvert  (API v55.0+, GA today).
+        POST /actions/standard/convertLead
+        Body: {"inputs": [{leadId, convertedStatus, doNotCreateOpportunity, opportunityName}]}
+        Response (list, one entry per input):
+          [{ isSuccess, errors, outputValues: {accountId, contactId, opportunityId} }]
 
-        Prior wiring posted to /sobjects/Lead/<id>/convert which does not
-        exist in the SF REST API and always returned 404 NOT_FOUND \u2014
-        that's why every convert step in TCs 128/129/130 was failing
-        even after the Name-injection fix let the Lead create itself go
-        through.
+        First attempt pointed at /sobjects/LeadConvert which Salesforce
+        does not expose in the standard REST namespace (returned 404 on
+        every call). The /actions/standard/convertLead path is GA since
+        API v32.0 and is the documented way to trigger Lead conversion
+        over REST without Apex.
 
-        `converted_status` defaults to the org's default MasterLabel for
-        the converted Lead status; most orgs use "Qualified" or
-        "Closed - Converted". The caller can override it via the step's
-        field_values.
-
-        Returns the same response envelope as create_record.
+        Returns a normalised envelope (same shape create_record uses) so
+        the caller doesn't care that the upstream shape differs.
         """
-        url = f"{self.base_url}/sobjects/LeadConvert"
-        body = {
+        url = f"{self.base_url}/actions/standard/convertLead"
+        single_input = {
             "leadId": lead_id,
             "doNotCreateOpportunity": bool(do_not_create_opportunity),
         }
         if converted_status:
-            body["convertedStatus"] = converted_status
+            single_input["convertedStatus"] = converted_status
         if opportunity_name:
-            body["opportunityName"] = opportunity_name
+            single_input["opportunityName"] = opportunity_name
+        body = {"inputs": [single_input]}
+
         resp = self.session.post(url, json=body, timeout=30)
         envelope = self._build_response(resp, "POST", url, body)
-        # Normalise: convert response body contains accountId/contactId/
-        # opportunityId but NOT a top-level "id", so _build_response
-        # wouldn't set record_id. Use the converted Account as the
-        # returned record_id for continuity with other actions.
-        body = envelope.get("api_response", {}).get("body") or {}
-        if envelope.get("success") and isinstance(body, dict):
-            envelope["record_id"] = body.get("accountId") or body.get("AccountId") or envelope.get("record_id")
+
+        # Invocable-action response: list of {isSuccess, errors, outputValues}
+        raw = envelope.get("api_response", {}).get("body")
+        if isinstance(raw, list) and raw:
+            first = raw[0] or {}
+            is_ok = bool(first.get("isSuccess"))
+            envelope["success"] = envelope.get("success") and is_ok
+            out = first.get("outputValues") or {}
+            # Flatten outputValues alongside the raw list so downstream
+            # (executor._execute_convert) can read them as the "body".
+            flat = {
+                "accountId":     out.get("accountId"),
+                "contactId":     out.get("contactId"),
+                "opportunityId": out.get("opportunityId"),
+                "isSuccess":     is_ok,
+                "errors":        first.get("errors") or [],
+            }
+            envelope["api_response"]["body"] = flat
+            if is_ok:
+                envelope["record_id"] = flat["accountId"] or envelope.get("record_id")
+            else:
+                # Surface error text so the step log is actionable.
+                errs = flat["errors"]
+                if errs and isinstance(errs, list):
+                    envelope["success"] = False
         return envelope
 
     @staticmethod
@@ -428,11 +447,13 @@ class StepExecutor:
         # when the AI started generating Lead-conversion and Case TCs.
         name_writable = self.name_createable_lookup(sobject)
         if name_writable is True:
-            # AI's explicit Name value, if any, is overwritten to keep the
-            # PQA_ prefix for cleanup + SF-UI identification. The AI rarely
-            # picks Name values that its own assertions depend on on these
-            # objects (Account / Opportunity use Name cosmetically).
-            field_values["Name"] = pqa_name
+            # Respect AI intent: if the AI supplied a Name, the next verify
+            # step probably asserts against that exact value (TC 146 broke
+            # on this: AI asserted Name="SQ-205 Regression Acct" but we
+            # overwrote with PQA_117_146_... so assertion failed). Only
+            # inject the PQA tag if AI didn't choose a Name itself.
+            if "Name" not in field_values or not field_values.get("Name"):
+                field_values["Name"] = pqa_name
         elif name_writable is False:
             # AI accidentally provided Name on a non-createable-Name object;
             # strip it so SF doesn't reject the whole create.
