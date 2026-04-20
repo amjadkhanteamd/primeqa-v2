@@ -106,30 +106,38 @@ class SalesforceExecutionClient:
         resp = self.session.post(url, json=body, timeout=30)
         envelope = self._build_response(resp, "POST", url, body)
 
-        # Invocable-action response: list of {isSuccess, errors, outputValues}
+        # SF returns TWO shapes depending on whether the endpoint exists:
+        #   - Endpoint exists + action succeeded  : list [{ isSuccess, outputValues, errors }]
+        #   - Endpoint 404 / auth error           : list [{ errorCode, message }]
+        # Flatten either into a predictable shape; preserve original error
+        # info so the step log stays actionable (prior flattening mapped
+        # missing keys to None/[], hiding the real 404 message).
         raw = envelope.get("api_response", {}).get("body")
         if isinstance(raw, list) and raw:
             first = raw[0] or {}
-            is_ok = bool(first.get("isSuccess"))
-            envelope["success"] = envelope.get("success") and is_ok
-            out = first.get("outputValues") or {}
-            # Flatten outputValues alongside the raw list so downstream
-            # (executor._execute_convert) can read them as the "body".
-            flat = {
-                "accountId":     out.get("accountId"),
-                "contactId":     out.get("contactId"),
-                "opportunityId": out.get("opportunityId"),
-                "isSuccess":     is_ok,
-                "errors":        first.get("errors") or [],
-            }
-            envelope["api_response"]["body"] = flat
-            if is_ok:
-                envelope["record_id"] = flat["accountId"] or envelope.get("record_id")
+            if "isSuccess" in first:
+                # Normal invocable-action response shape.
+                is_ok = bool(first.get("isSuccess"))
+                out = first.get("outputValues") or {}
+                flat = {
+                    "accountId":     out.get("accountId"),
+                    "contactId":     out.get("contactId"),
+                    "opportunityId": out.get("opportunityId"),
+                    "isSuccess":     is_ok,
+                    "errors":        first.get("errors") or [],
+                }
+                envelope["api_response"]["body"] = flat
+                envelope["success"] = bool(envelope.get("success")) and is_ok
+                if is_ok:
+                    envelope["record_id"] = flat["accountId"] or envelope.get("record_id")
             else:
-                # Surface error text so the step log is actionable.
-                errs = flat["errors"]
-                if errs and isinstance(errs, list):
-                    envelope["success"] = False
+                # Error shape \u2014 e.g. [{errorCode:"NOT_FOUND", message:"The
+                # requested resource does not exist"}]. Preserve the real
+                # SF message so the step log shows something useful
+                # instead of "isSuccess: false, errors: []".
+                envelope["success"] = False
+                # Leave api_response.body as-is (the list with the
+                # original errorCode/message) so operators can read it.
         return envelope
 
     @staticmethod
