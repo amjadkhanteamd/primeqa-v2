@@ -9,6 +9,9 @@ a Salesforce API burst:
   - $var referenced but no prior step set state_ref
   - record_ref points to a state var that was never set
   - SOQL strings that SELECT columns missing on the FROM object
+  - (new) Date field value not ISO 8601
+  - (new) Picklist value not in the metadata's allowed list
+  - (new) Verify-assertion on a field no prior step set (and not a safe formula)
 
 Each issue carries a severity (critical | warning | info) and, for
 "field/object not found" kinds, fuzzy suggestions from the actual
@@ -40,6 +43,60 @@ SEVERITY_INFO = "info"
 # and case variants while rejecting truly wrong names. Tune after usage.
 FUZZY_CUTOFF = 0.6
 MAX_SUGGESTIONS = 3
+
+
+# ---- Date format rules ----------------------------------------------------
+
+# ISO 8601 date (YYYY-MM-DD) and datetime (YYYY-MM-DDTHH:MM:SS[Z|\u00b1HH:MM]).
+# We accept a date-only value for both Date and DateTime field types \u2014 SF
+# tolerates the short form.
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_ISO_DATETIME_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$"
+)
+
+# Field types that must be ISO 8601.
+_DATE_FIELD_TYPES = {"date", "datetime"}
+
+
+# ---- "Safe formula" whitelist ---------------------------------------------
+# Fields a verify step may assert on even without a prior step that
+# explicitly set them. These are computed / auto-managed in SF, so the
+# assertion is meaningful (the test is validating SF's computation).
+# Keep intentionally small \u2014 the knowledge provider teaches the AI about
+# more over time; adding to this list loosens enforcement globally.
+_SAFE_FORMULA_FIELDS = {
+    "IsClosed", "IsWon", "IsConverted", "IsDeleted",
+    "CreatedDate", "CreatedById",
+    "LastModifiedDate", "LastModifiedById",
+    "SystemModstamp",
+    "Id", "Name",  # Id auto-assigned; Name is the user-supplied create arg
+}
+
+
+def _picklist_values(field) -> Optional[set]:
+    """Normalise a MetaField.picklist_values JSON into a set of strings,
+    or return None when the metadata didn't capture values (we can't
+    validate and shouldn't false-positive). Handles both shapes the
+    sync engine emits:
+
+        list of strings:            ["New", "In Progress", "Closed"]
+        list of value-objects:      [{"value": "New", ...}, ...]
+    """
+    pv = getattr(field, "picklist_values", None)
+    if not pv:
+        return None
+    if not isinstance(pv, list) or not pv:
+        return None
+    out = set()
+    for entry in pv:
+        if isinstance(entry, str):
+            out.add(entry)
+        elif isinstance(entry, dict):
+            v = entry.get("value") or entry.get("Value")
+            if isinstance(v, str):
+                out.add(v)
+    return out or None
 
 
 def _suggest(target: str, candidates: Iterable[str],
@@ -87,15 +144,38 @@ class TestCaseValidator:
         issues: List[Dict[str, Any]] = []
         # Track state vars set by prior steps so we can flag unresolved $vars.
         seen_state_refs: set = set()
+        # Track which fields each $var has had explicitly set by prior
+        # create/update steps. Used by assertion_not_traced.
+        traced_fields_by_var: Dict[str, set] = {}
 
         for step in steps or []:
-            issues.extend(self._validate_step(step, seen_state_refs))
+            issues.extend(self._validate_step(step, seen_state_refs, traced_fields_by_var))
+
+            # After validating the current step, record its field writes
+            # so later verify steps can check against them.
+            action = step.get("action")
+            fv = step.get("field_values") or {}
+            # For create: the var being declared is state_ref.
+            # For update: the var being written is record_ref.
+            target_var = None
+            if action == "create":
+                sr = step.get("state_ref")
+                if isinstance(sr, str) and sr.startswith("$"):
+                    target_var = sr[1:]
+            elif action == "update":
+                rr = step.get("record_ref")
+                if isinstance(rr, str) and rr.startswith("$"):
+                    # Strip .Id suffix so $foo.Id writes are attributed to $foo
+                    target_var = rr[1:]
+                    if target_var.endswith(".Id"):
+                        target_var = target_var[:-3]
+            if target_var is not None and isinstance(fv, dict):
+                traced_fields_by_var.setdefault(target_var, set()).update(fv.keys())
 
             # A create step with state_ref registers its var as "available"
             # for all subsequent steps. We do this AFTER validating the
             # current step so "this step refs a var this step also sets"
             # still fails (tight ordering enforced).
-            action = step.get("action")
             state_ref = step.get("state_ref")
             if action == "create" and isinstance(state_ref, str) and state_ref.startswith("$"):
                 seen_state_refs.add(state_ref[1:])
@@ -197,7 +277,9 @@ class TestCaseValidator:
     # ---- Rules ---------------------------------------------------------
 
     def _validate_step(self, step: Dict[str, Any],
-                       seen_state_refs: set) -> List[Dict[str, Any]]:
+                       seen_state_refs: set,
+                       traced_fields_by_var: Optional[Dict[str, set]] = None,
+                       ) -> List[Dict[str, Any]]:
         issues: List[Dict[str, Any]] = []
         order = step.get("step_order", 0)
         action = step.get("action", "")
@@ -296,6 +378,74 @@ class TestCaseValidator:
             soql = step.get("soql") or ""
             if soql.strip():
                 issues.extend(self._validate_soql(order, soql))
+
+        # ---- Rule (new): date-field values are ISO 8601 ----
+        if obj and has_field_data and action in ("create", "update"):
+            for fname, value in (fv.items() if isinstance(fv, dict) else []):
+                if not isinstance(value, str) or not value:
+                    continue
+                # Skip $ref values \u2014 they resolve at runtime.
+                if value.startswith("$"):
+                    continue
+                f = obj_fields.get(fname)
+                if not f or (f.field_type or "").lower() not in _DATE_FIELD_TYPES:
+                    continue
+                ftype = (f.field_type or "").lower()
+                ok = (_ISO_DATE_RE.match(value) is not None) or \
+                     (ftype == "datetime" and _ISO_DATETIME_RE.match(value) is not None)
+                if not ok:
+                    issues.append(self._issue(order, SEVERITY_WARNING,
+                        "date_format_invalid",
+                        f"'{value}' on {obj_name}.{fname} is not ISO 8601. "
+                        "Use YYYY-MM-DD (Date) or YYYY-MM-DDTHH:MM:SSZ (DateTime).",
+                        object_name=obj_name, field=fname,
+                        value=value))
+
+        # ---- Rule (new): picklist value in allowed list ----
+        if obj and has_field_data and action in ("create", "update"):
+            for fname, value in (fv.items() if isinstance(fv, dict) else []):
+                if not isinstance(value, str) or not value or value.startswith("$"):
+                    continue
+                f = obj_fields.get(fname)
+                if not f:
+                    continue
+                ftype = (f.field_type or "").lower()
+                if ftype not in ("picklist", "multipicklist"):
+                    continue
+                allowed = _picklist_values(f)
+                if allowed is None:
+                    continue  # metadata didn't capture the values
+                if value not in allowed:
+                    issues.append(self._issue(order, SEVERITY_WARNING,
+                        "picklist_value_not_allowed",
+                        f"'{value}' is not in the metadata's allowed "
+                        f"picklist values for {obj_name}.{fname}. "
+                        f"Allowed: {', '.join(sorted(allowed)[:8])}"
+                        + ("\u2026" if len(allowed) > 8 else ""),
+                        object_name=obj_name, field=fname, value=value,
+                        suggestions=_suggest(value, allowed)))
+
+        # ---- Rule (new): verify assertions were set by a prior step ----
+        if action == "verify" and isinstance(asserts, dict) and traced_fields_by_var is not None:
+            rr = step.get("record_ref")
+            var_name = None
+            if isinstance(rr, str) and rr.startswith("$"):
+                var_name = rr[1:]
+                if var_name.endswith(".Id"):
+                    var_name = var_name[:-3]
+            traced = traced_fields_by_var.get(var_name, set()) if var_name else set()
+            for fname in asserts.keys():
+                if fname in _SAFE_FORMULA_FIELDS:
+                    continue
+                if fname in traced:
+                    continue
+                issues.append(self._issue(order, SEVERITY_WARNING,
+                    "assertion_not_traced",
+                    f"Assertion on {obj_name}.{fname} \u2014 no prior step "
+                    f"set this field on {rr or '?'} and it's not a known "
+                    "auto-computed field. The assertion may be unfounded.",
+                    object_name=obj_name, field=fname,
+                    state_ref=var_name))
 
         return issues
 
