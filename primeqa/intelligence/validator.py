@@ -100,6 +100,25 @@ class TestCaseValidator:
             if action == "create" and isinstance(state_ref, str) and state_ref.startswith("$"):
                 seen_state_refs.add(state_ref[1:])
 
+            # A convert step produces three implicit record ids that later
+            # steps reference as $<lead>.ConvertedAccountId /
+            # .ConvertedContactId / .ConvertedOpportunityId. Register them
+            # here so those references don\u2019t trip unresolved_state_ref.
+            # Runtime counterpart: executor stores the same keys in
+            # state_vars from the convert response body.
+            if action == "convert":
+                lead_var = None
+                rr = step.get("record_ref")
+                if isinstance(rr, str) and rr.startswith("$"):
+                    lead_var = rr[1:]
+                if isinstance(state_ref, str) and state_ref.startswith("$"):
+                    lead_var = state_ref[1:]
+                if lead_var:
+                    for suffix in ("ConvertedAccountId",
+                                   "ConvertedContactId",
+                                   "ConvertedOpportunityId"):
+                        seen_state_refs.add(f"{lead_var}.{suffix}")
+
         summary = {SEVERITY_CRITICAL: 0, SEVERITY_WARNING: 0, SEVERITY_INFO: 0}
         for i in issues:
             summary[i["severity"]] = summary.get(i["severity"], 0) + 1

@@ -221,6 +221,32 @@ class StepExecutor:
                     self.state_vars[state_ref[1:]] = result["record_id"]
                 target_record_id = result["record_id"]
 
+            # Lead convert produces THREE record ids (Account, Contact,
+            # Opportunity) in the response body. Later steps reference them
+            # as $lead.ConvertedAccountId / .ConvertedContactId /
+            # .ConvertedOpportunityId. Stash each dotted key in state_vars
+            # so _resolve_ref finds them without any special casing.
+            if action == "convert" and result.get("success"):
+                body = (result.get("api_response") or {}).get("body") or {}
+                ref_name = None
+                if isinstance(record_ref, str) and record_ref.startswith("$"):
+                    ref_name = record_ref[1:]
+                # Also honor state_ref on the convert step itself, if set.
+                sr = step_def.get("state_ref")
+                if sr and sr.startswith("$"):
+                    ref_name = sr[1:]
+                if ref_name:
+                    # Anthropic / simple-salesforce-style response may use
+                    # lowerCamel or PascalCase; cover both without parsing.
+                    out_map = {
+                        "ConvertedAccountId":      body.get("accountId")      or body.get("AccountId"),
+                        "ConvertedContactId":      body.get("contactId")      or body.get("ContactId"),
+                        "ConvertedOpportunityId":  body.get("opportunityId")  or body.get("OpportunityId"),
+                    }
+                    for suffix, val in out_map.items():
+                        if val:
+                            self.state_vars[f"{ref_name}.{suffix}"] = val
+
             should_capture = self._should_capture(
                 action, target_object, status, step_def.get("field_values", {}),
             )

@@ -129,6 +129,14 @@ Each step must be one of these structured actions:
 
 6. convert \u2014 Lead conversion
    Fields: target_object ("Lead"), record_ref (string), convert_to (list of "Account"/"Contact"/"Opportunity")
+   After a successful convert on $lead, THREE implicit references become
+   available to later steps (created by Salesforce during conversion):
+     $lead.ConvertedAccountId      \u2014 the Account the Lead converted into
+     $lead.ConvertedContactId      \u2014 the Contact the Lead converted into
+     $lead.ConvertedOpportunityId  \u2014 the Opportunity (if convert_to includes it)
+   Use these in `record_ref` for subsequent verify/update/delete steps on
+   those objects. Do NOT emit a state_ref on the convert step to "capture"
+   these \u2014 the executor materialises them automatically.
 
 7. wait \u2014 pause execution
    Fields: duration_sec (integer), reason (string)
