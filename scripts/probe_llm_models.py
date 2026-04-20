@@ -30,27 +30,22 @@ from primeqa.core.repository import ConnectionRepository
 # so we can see which of each is still served. The script doesn't care
 # about deprecation — only about whether a call succeeds today.
 CANDIDATES = [
-    # Claude 4 family (dated + alias)
-    "claude-opus-4-20250514",
-    "claude-opus-4-latest",
-    "claude-sonnet-4-20250514",
-    "claude-sonnet-4-latest",
-    "claude-haiku-4-20250514",        # invented, expect 404
-    # Potential 4.5 family (if Anthropic shipped one)
-    "claude-opus-4-5-20251022",
+    # Claude 4.7 (newest as of 2026-04-20)
+    "claude-opus-4-7",
+    "claude-opus-4-7-latest",
+    # Claude 4.6
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    # Claude 4.5 (dated + alias, correct date this time)
+    "claude-opus-4-5-20251101",
     "claude-opus-4-5-latest",
     "claude-sonnet-4-5-20250929",
-    "claude-sonnet-4-5-latest",
     "claude-haiku-4-5-20251001",
-    "claude-haiku-4-5-latest",
-    # Legacy 3.5 (many already past EOL)
-    "claude-3-5-sonnet-20241022",
-    "claude-3-5-sonnet-latest",
-    "claude-3-5-haiku-20241022",
-    "claude-3-5-haiku-latest",
-    # 3.7 sonnet (newer 3.x)
-    "claude-3-7-sonnet-20250219",
-    "claude-3-7-sonnet-latest",
+    # Claude 4.1 (midway 4.x upgrade path)
+    "claude-opus-4-1-20250805",
+    # Claude 4 (current default, deprecated 6/15/2026)
+    "claude-opus-4-20250514",
+    "claude-sonnet-4-20250514",
 ]
 
 
