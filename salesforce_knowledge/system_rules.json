@@ -1,0 +1,207 @@
+{
+  "version": 1,
+  "updated": "2026-04-20",
+  "description": "Static SF-wide rules fed to every test_plan_generation prompt. Start small (20 rules), add as specific AI failure patterns surface in generation_quality_signals.",
+  "rules": [
+    {
+      "id": "NO_ID_IN_CREATE",
+      "object_name": null,
+      "field_name": "Id",
+      "category": "operation",
+      "rule_text": "Never include 'Id' in a create step's field_values. Salesforce assigns the Id.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "FORMULA_FIELDS_READ_ONLY",
+      "object_name": null,
+      "field_name": null,
+      "category": "field_behaviour",
+      "rule_text": "Formula fields (IsClosed, IsWon, IsConverted, IsDeleted) are read-only. Never set them in create or update payloads.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "AUDIT_FIELDS_NOT_SETTABLE",
+      "object_name": null,
+      "field_name": null,
+      "category": "field_behaviour",
+      "rule_text": "System audit fields (CreatedDate, CreatedById, LastModifiedDate, LastModifiedById, SystemModstamp) are auto-managed. Do not include them in any payload.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "CASE_NAME_NOT_WRITABLE",
+      "object_name": "Case",
+      "field_name": "Name",
+      "category": "field_behaviour",
+      "rule_text": "Case has no writable Name field; it uses CaseNumber (auto-assigned). Never set Name on Case; use Subject as the human identifier.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "LEAD_NAME_NOT_WRITABLE",
+      "object_name": "Lead",
+      "field_name": "Name",
+      "category": "field_behaviour",
+      "rule_text": "Lead.Name is a formula (FirstName + LastName). Set FirstName + LastName separately; do not include Name in create/update.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "CONTACT_NAME_NOT_WRITABLE",
+      "object_name": "Contact",
+      "field_name": "Name",
+      "category": "field_behaviour",
+      "rule_text": "Contact.Name is a formula (FirstName + LastName). Set FirstName + LastName separately; do not include Name in create/update.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "FORECAST_CATEGORY_DERIVED",
+      "object_name": "Opportunity",
+      "field_name": "ForecastCategory",
+      "category": "field_behaviour",
+      "rule_text": "ForecastCategory is derived from StageName via the org's stage->forecast mapping. Do not set it directly; assert on it only when the stage change is explicit.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "OPPORTUNITY_NAME_REQUIRED",
+      "object_name": "Opportunity",
+      "field_name": "Name",
+      "category": "operation",
+      "rule_text": "Opportunity.Name is required on create and writable. Always supply a meaningful Name; the executor will not inject one.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "CONVERTED_LEAD_READ_ONLY",
+      "object_name": "Lead",
+      "field_name": null,
+      "category": "field_behaviour",
+      "rule_text": "A Lead with IsConverted=true is read-only; no further updates succeed. After a convert step, do NOT update the original Lead.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "LEAD_CONVERT_OUTPUTS",
+      "object_name": "Lead",
+      "field_name": null,
+      "category": "operation",
+      "rule_text": "A successful convert on $lead exposes $lead.ConvertedAccountId, $lead.ConvertedContactId, and $lead.ConvertedOpportunityId. Use these in later record_ref / field_values; do not try to capture them via state_ref on the convert step.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "REFERENCE_FIELD_USES_DOLLAR_ID",
+      "object_name": null,
+      "field_name": null,
+      "category": "operation",
+      "rule_text": "For foreign-key fields (AccountId, OwnerId, *__c lookups), reference prior steps with $var or $var.Id; both resolve to the created record's 18-char Id.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "ISO_8601_DATES",
+      "object_name": null,
+      "field_name": null,
+      "category": "operation",
+      "rule_text": "Date fields use ISO 8601 (YYYY-MM-DD for Date; YYYY-MM-DDTHH:MM:SSZ for DateTime). Never 'MM/DD/YYYY' or locale-dependent formats.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "PICKLIST_API_VALUES",
+      "object_name": null,
+      "field_name": null,
+      "category": "operation",
+      "rule_text": "Picklist values are the API name, not the label. Check metadata's picklist_values list; prefer canonical values like 'Closed Won' over UI labels.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "ISESCALATED_NO_AUTO_CLEAR",
+      "object_name": "Case",
+      "field_name": "IsEscalated",
+      "category": "field_behaviour",
+      "rule_text": "Case.IsEscalated does NOT auto-reset when Status changes. Only escalation rules / manual updates flip it. Do not assume closing a case clears it.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "POLYMORPHIC_WHO_WHAT",
+      "object_name": null,
+      "field_name": null,
+      "category": "operation",
+      "rule_text": "Polymorphic fields (Task.WhoId, Task.WhatId, Event.WhoId) accept ids for multiple SObject types. Match the id to the allowed target types; do not assume a single type.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "RECORD_TYPE_BY_DEVELOPER_NAME",
+      "object_name": null,
+      "field_name": "RecordTypeId",
+      "category": "operation",
+      "rule_text": "When a RecordTypeId is needed, look it up by DeveloperName via SOQL, not by the user-facing Name. DeveloperName is API-stable.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "ASSERT_ONLY_SET_FIELDS",
+      "object_name": null,
+      "field_name": null,
+      "category": "assertion",
+      "rule_text": "Verify steps may only assert fields that an earlier step explicitly set, or that are safe formulas (e.g. IsClosed after StageName change). Do not invent values.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "ASSERT_PICKLIST_API_VALUE",
+      "object_name": null,
+      "field_name": null,
+      "category": "assertion",
+      "rule_text": "Verify assertions on picklist fields compare against the API value, not the label. Use the same value your create/update step set.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "NEGATIVE_VALIDATION_NEEDS_EXPECT_FAIL",
+      "object_name": null,
+      "field_name": null,
+      "category": "operation",
+      "rule_text": "For negative_validation / boundary TCs that probe a validation rule firing, set expect_fail=true on the single step you expect Salesforce to block. Without it, the framework reports the whole test as failed.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "NULL_VS_ZERO_NOT_EQUIVALENT",
+      "object_name": null,
+      "field_name": null,
+      "category": "field_behaviour",
+      "rule_text": "In Salesforce validation formulas, a null numeric field does NOT equal 0. Rules like 'Amount > 0' fire when Amount = 0 but NOT when Amount is null. Set fields explicitly when exercising a rule.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    }
+  ]
+}
