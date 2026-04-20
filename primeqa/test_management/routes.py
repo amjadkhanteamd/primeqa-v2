@@ -218,6 +218,26 @@ def create_requirement():
         db.close()
 
 
+@test_management_bp.route("/api/requirements/<int:req_id>", methods=["GET"])
+@require_auth
+def get_requirement(req_id):
+    """Fetch a single requirement by id.
+
+    Added post-QA-sweep (finding 11.1.7) \u2014 the list endpoint existed
+    but no individual-detail GET, so programmatic integrations couldn't
+    read one record without pulling the full paginated list. Mirrors
+    the pattern used for /api/test-cases/:id and /api/runs/:id.
+    """
+    svc, db = _get_service()
+    try:
+        def run():
+            req = svc.get_requirement(req_id, request.user["tenant_id"])
+            return jsonify(req), 200
+        return _handle(run)
+    finally:
+        db.close()
+
+
 @test_management_bp.route("/api/requirements/<int:req_id>", methods=["PATCH"])
 @require_role("admin", "tester")
 def update_requirement(req_id):
@@ -680,6 +700,20 @@ def create_suite():
                 description=data.get("description"),
             )
             return jsonify(suite), 201
+        return _handle(run)
+    finally:
+        db.close()
+
+
+@test_management_bp.route("/api/suites/<int:suite_id>", methods=["GET"])
+@require_auth
+def get_suite(suite_id):
+    """Fetch a single suite by id (added post-QA-sweep, finding 11.1.8)."""
+    svc, db = _get_service()
+    try:
+        def run():
+            suite = svc.get_suite(suite_id, request.user["tenant_id"])
+            return jsonify(suite), 200
         return _handle(run)
     finally:
         db.close()

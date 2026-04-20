@@ -72,6 +72,31 @@ def create_app():
     import logging
     _err_log = logging.getLogger("primeqa.errors")
 
+    # QA finding 11.1.9: the Flask default 404/405 handler returns an
+    # HTML page, which is inconsistent with the rest of /api/* that
+    # uses the {error:{code,message}} envelope. Register a 404 + 405
+    # handler that produces the envelope on /api/* routes and leaves
+    # HTML routes to Flask's default.
+    @application.errorhandler(404)
+    def _handle_404(err):
+        from flask import request as _req, jsonify as _jsonify
+        if (_req.path or "").startswith("/api/"):
+            return _jsonify({"error": {
+                "code": "NOT_FOUND",
+                "message": "Endpoint not found.",
+            }}), 404
+        return err  # let Flask render the default HTML 404
+
+    @application.errorhandler(405)
+    def _handle_405(err):
+        from flask import request as _req, jsonify as _jsonify
+        if (_req.path or "").startswith("/api/"):
+            return _jsonify({"error": {
+                "code": "METHOD_NOT_ALLOWED",
+                "message": "HTTP method not allowed on this endpoint.",
+            }}), 405
+        return err
+
     @application.errorhandler(Exception)
     def _handle_unhandled_exception(err):
         # Let Flask's HTTPException subclasses flow through (404, 403,

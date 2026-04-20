@@ -736,6 +736,13 @@ class TestManagementService:
         req, _result = self.requirement_repo.update_requirement(requirement_id, tenant_id, updates)
         return self._req_dict(req), changed
 
+    def get_requirement(self, requirement_id, tenant_id):
+        """Return the serialised requirement or raise NotFoundError."""
+        req = self.requirement_repo.get_requirement(requirement_id, tenant_id)
+        if not req:
+            raise NotFoundError("Requirement not found")
+        return self._req_dict(req)
+
     def list_requirements(self, tenant_id, section_id=None):
         reqs = self.requirement_repo.list_requirements(tenant_id, section_id)
         return [self._req_dict(r) for r in reqs]
@@ -1075,6 +1082,13 @@ class TestManagementService:
             tenant_id, name, suite_type, created_by, kwargs.get("description"),
         )
         self._log(tenant_id, created_by, "create", "test_suite", suite.id, {"name": name})
+        return self._suite_dict(suite)
+
+    def get_suite(self, suite_id, tenant_id):
+        """Return the serialised suite or raise NotFoundError."""
+        suite = self.suite_repo.get_suite(suite_id, tenant_id)
+        if not suite:
+            raise NotFoundError("Suite not found")
         return self._suite_dict(suite)
 
     def list_suites(self, tenant_id):
