@@ -183,13 +183,35 @@ OUTPUT_SCHEMA = {
 
 # ---- Complexity detection -------------------------------------------------
 
+# Compiled once at import time; avoids recompiling on every call.
+# Word-boundary match with optional common inflections so "flows" / "flowed"
+# count but "workflow" does NOT contribute to "flow".
+_KW_INFLECT = r"(?:s|es|ed|ing)?"
+
+def _kw_count(text: str, keywords) -> int:
+    """Return count of distinct keywords that appear in text as whole
+    words (with common -s/-es/-ed/-ing suffixes). Avoids the old
+    bug where 'flow' matched 'workflow' (both were in the same kw list
+    and 'workflow' forced the tenant to Opus).
+    """
+    import re
+    found = 0
+    for kw in keywords:
+        pattern = r"\b" + re.escape(kw) + _KW_INFLECT + r"\b"
+        if re.search(pattern, text, re.IGNORECASE):
+            found += 1
+    return found
+
+
 def detect_complexity(context: Dict[str, Any]) -> str:
     """Semantic bucket, not a numeric score. Signals:
-      - explicit object count (referenced_entities in AC)
-      - cross-object keywords ("flow", "trigger", "workflow")
-      - state transition keywords ("when", "until", "after")
-      - validation density (mentions of "required", "cannot be", "must")
-      - acceptance-criteria line count
+      - cross-object keywords (flow, trigger, workflow, approval, process builder)
+      - state transition keywords (when, until, after, before, threshold, escalate, convert)
+      - validation density (required, cannot, must, not allowed, rejected, blank, mandatory)
+      - acceptance-criteria line count (real bullets, not markdown-bold headers)
+
+    Err toward simpler on ambiguity \u2014 this feeds the Sonnet/Opus split
+    and Opus is 5\u00d7 more expensive, so a spurious "high" is a real cost.
     """
     req = context.get("requirement")
     if not req:
@@ -199,23 +221,28 @@ def detect_complexity(context: Dict[str, Any]) -> str:
         getattr(req, "jira_summary", ""),
         getattr(req, "jira_description", ""),
         getattr(req, "acceptance_criteria", ""),
-    ])).lower()
+    ]))
 
-    # Signal counts
-    multi_object_kw = sum(1 for kw in [
+    # Signal counts (word-boundary matched \u2014 "flow" no longer eats
+    # "workflow" and "required" no longer eats "requirements").
+    multi_object_kw = _kw_count(text, [
         "flow", "trigger", "workflow", "approval", "process builder",
-    ] if kw in text)
-    state_transition_kw = sum(1 for kw in [
-        "when ", "until ", "after ", "before ", "threshold",
-        "escalat", "convert",
-    ] if kw in text)
-    validation_kw = sum(1 for kw in [
-        "required", "cannot be", "must be", "not allowed",
-        "rejected", "blank", "mandatory",
-    ] if kw in text)
+    ])
+    state_transition_kw = _kw_count(text, [
+        "when", "until", "after", "before", "threshold",
+        "escalate", "convert",
+    ])
+    validation_kw = _kw_count(text, [
+        "required", "cannot", "must", "rejected", "blank", "mandatory",
+        "not allowed",
+    ])
 
+    # Real AC bullets: require a space after the marker so markdown-bold
+    # section headers like "*Summary:*" or "*Objects Involved:*" don't
+    # inflate the count. That was the #1 reason simple Opportunity
+    # workflows scored 6+ AC lines and routed to Opus.
     ac_lines = [l for l in (getattr(req, "acceptance_criteria", "") or "").split("\n")
-                if l.strip().startswith(("*", "-", "#", "Given", "When", "Then"))]
+                if l.strip().startswith(("* ", "- ", "# ", "Given ", "When ", "Then "))]
 
     # Bucketing (tunable; err toward simpler on ambiguity)
     if multi_object_kw >= 1 and state_transition_kw >= 2:
