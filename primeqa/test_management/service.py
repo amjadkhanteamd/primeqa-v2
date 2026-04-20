@@ -107,33 +107,6 @@ class TestManagementService:
     # negative / boundary / edge / regression. Each becomes a TC row in
     # one generation batch so the user can see "why 5 TCs?" and audit cost.
 
-    # Rough Anthropic pricing (USD / MTok), Apr 2026. Used for the
-    # superadmin cost column on generation_batches. Keyed by substring
-    # match on the model string.
-    _MODEL_PRICING = [
-        ("opus-4",   {"input": 15.00, "output": 75.00}),
-        ("sonnet-4", {"input":  3.00, "output": 15.00}),
-        ("haiku-4",  {"input":  0.80, "output":  4.00}),
-        ("sonnet-3", {"input":  3.00, "output": 15.00}),
-        ("haiku-3",  {"input":  0.25, "output":  1.25}),
-    ]
-
-    @classmethod
-    def _estimate_cost(cls, model, input_tokens, output_tokens):
-        if not model or input_tokens is None or output_tokens is None:
-            return None
-        ml = (model or "").lower()
-        pricing = None
-        for key, p in cls._MODEL_PRICING:
-            if key in ml:
-                pricing = p
-                break
-        if not pricing:
-            return None
-        cost = (input_tokens / 1_000_000) * pricing["input"] + \
-               (output_tokens / 1_000_000) * pricing["output"]
-        return round(cost, 4)
-
     def generate_test_plan(self, tenant_id, requirement_id, environment_id,
                            created_by, env_repo, conn_repo, metadata_repo,
                            min_tests=3, max_tests=6):
@@ -243,10 +216,13 @@ class TestManagementService:
                 pass
 
         # Create the batch row first so each TC can reference its id.
-        cost = self._estimate_cost(
-            plan.get("model_used"),
-            plan.get("prompt_tokens"), plan.get("completion_tokens"),
-        )
+        # Cost comes from the gateway's pricing.compute_cost_usd() via
+        # plan["cost_usd"], which is the authoritative number (includes
+        # cache-read discount and cache-write overhead). Replaces the
+        # old _estimate_cost classmethod whose simplified input+output
+        # formula differed from llm_usage_log.cost_usd by ~20% on calls
+        # that hit or wrote the prompt cache.
+        cost = plan.get("cost_usd")
         coverage_types = sorted({tc.get("coverage_type", "positive") for tc in tcs_in_plan})
         batch = GenerationBatch(
             tenant_id=tenant_id, requirement_id=requirement_id,
