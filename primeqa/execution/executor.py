@@ -438,6 +438,39 @@ class StepExecutor:
         return value
 
     def _resolve_soql_refs(self, soql):
+        """Expand $foo and $foo.Id tokens inside a SOQL template.
+
+        The naive `soql.replace(f"${var_name}", f"'{var_value}'")` that
+        shipped previously produced malformed queries when the AI wrote
+        the dotted-accessor form in a SOQL string:
+
+            template:  SELECT CloseDate FROM Opportunity WHERE Id = '$opp.Id'
+            state:     {"opp": "006Ip000003Kc95IAC"}
+            resolved:  ...WHERE Id = ''006Ip000003Kc95IAC'.Id'   <-- MALFORMED_QUERY
+
+        `.replace` substituted `$opp` inside `'$opp.Id'` and left the
+        trailing `.Id'` as garbage. TC 136 failed on exactly this bug.
+
+        Fix: regex-match either the quoted `'$foo.Id'` form OR the bare
+        `$foo` token (with a word-boundary lookahead so `$opp` doesn't
+        swallow `$opportunity`). Replace both with `'<resolved_id>'`.
+        """
+        import re
         for var_name, var_value in self.state_vars.items():
-            soql = soql.replace(f"${var_name}", f"'{var_value}'")
+            # Dotted accessor first (the bug we\u2019re fixing). Tolerates
+            # optional surrounding single-quotes in the template so
+            # either `'$foo.Id'` or bare `$foo.Id` normalize to the same
+            # quoted id literal.
+            soql = re.sub(
+                rf"'?\${re.escape(var_name)}\.Id'?",
+                f"'{var_value}'",
+                soql,
+            )
+            # Then bare $foo, with a negative lookahead to keep $opp
+            # from clobbering $opportunity / $oppLine / $foo.Name.
+            soql = re.sub(
+                rf"'?\${re.escape(var_name)}'?(?![.A-Za-z0-9_])",
+                f"'{var_value}'",
+                soql,
+            )
         return soql
