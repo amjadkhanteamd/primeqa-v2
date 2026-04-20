@@ -462,6 +462,22 @@ class TestCaseRepository:
             return None
         tc.deleted_at = _now()
         tc.deleted_by = user_id
+        # Cascade to release test plans: any release that pinned this
+        # TC would otherwise keep a dead reference that surfaces as
+        # "Release test plan is empty" the next time the user tries to
+        # run it. Releases can be re-populated via
+        # POST /api/releases/:id/test-plan/refresh-from-requirements,
+        # but proactively pruning here means we don't accumulate dead
+        # rows during the regeneration storms that supersession drives.
+        try:
+            from primeqa.release.models import ReleaseTestPlanItem
+            self.db.query(ReleaseTestPlanItem).filter(
+                ReleaseTestPlanItem.test_case_id == test_case_id,
+            ).delete(synchronize_session=False)
+        except Exception:
+            # Release module absent in narrow tests \u2014 TC delete still
+            # succeeds regardless.
+            pass
         self.db.commit()
         return tc
 

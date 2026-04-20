@@ -182,6 +182,102 @@ class ReleaseService:
             db.commit()
         return {"added": added, "already_in": sorted(existing), "skipped": skipped}
 
+    def refresh_test_plan_from_requirements(self, release_id, tenant_id):
+        """Rebuild the release's test plan from its linked requirements.
+
+        Use case: each regeneration on a requirement soft-deletes prior
+        own-drafts, but any release that had those draft ids pinned to
+        its plan keeps pointing at the dead rows. Running the plan then
+        reports "Release test plan is empty" because the filter strips
+        deleted TCs.
+
+        This method:
+          1. Removes plan items whose TCs are now soft-deleted.
+          2. For every requirement linked to the release, adds every
+             currently-active (non-deleted) TC that isn't already
+             represented in the plan.
+
+        Idempotent: safe to call repeatedly; second call is a no-op.
+        Does not touch manually-added TCs that don't belong to any
+        linked requirement \u2014 those stay in the plan.
+
+        Returns {"removed_dead": int, "added_live": int} so the UI can
+        show a useful confirmation toast.
+        """
+        from primeqa.release.models import ReleaseTestPlanItem
+        from primeqa.test_management.models import TestCase
+        from sqlalchemy import func as _sfunc
+
+        r = self.release_repo.get_release(release_id, tenant_id)
+        if not r:
+            raise ValueError("Release not found")
+
+        db = self.release_repo.db
+
+        # 1) Drop plan items whose TC has been soft-deleted.
+        dead_items = (
+            db.query(ReleaseTestPlanItem)
+            .join(TestCase, TestCase.id == ReleaseTestPlanItem.test_case_id)
+            .filter(
+                ReleaseTestPlanItem.release_id == release_id,
+                TestCase.deleted_at.isnot(None),
+            )
+            .all()
+        )
+        removed = 0
+        for item in dead_items:
+            db.delete(item)
+            removed += 1
+
+        # 2) Collect the set of tc_ids already in the plan AFTER deletes,
+        #    so we don't try to re-add any live ones already pinned.
+        existing = {
+            row[0]
+            for row in db.query(ReleaseTestPlanItem.test_case_id)
+            .filter(ReleaseTestPlanItem.release_id == release_id)
+            .all()
+        }
+
+        # 3) For each linked requirement, pull its active TCs.
+        linked_reqs = self.release_repo.list_requirements(release_id)
+        req_ids = [x.id for x in linked_reqs]
+        if not req_ids:
+            if removed:
+                db.commit()
+            return {"removed_dead": removed, "added_live": 0}
+
+        live_tcs = (
+            db.query(TestCase.id)
+            .filter(
+                TestCase.requirement_id.in_(req_ids),
+                TestCase.tenant_id == tenant_id,
+                TestCase.deleted_at.is_(None),
+                TestCase.status.in_(("active", "approved", "draft")),
+            )
+            .all()
+        )
+        candidate_ids = [row[0] for row in live_tcs if row[0] not in existing]
+
+        max_pos = db.query(_sfunc.max(ReleaseTestPlanItem.position)).filter(
+            ReleaseTestPlanItem.release_id == release_id,
+        ).scalar()
+        next_pos = (max_pos or 0) + 1
+        added = 0
+        for tc_id in candidate_ids:
+            db.add(ReleaseTestPlanItem(
+                release_id=release_id,
+                test_case_id=tc_id,
+                priority="medium",
+                position=next_pos,
+                inclusion_reason="refreshed from linked requirements",
+            ))
+            next_pos += 1
+            added += 1
+
+        if removed or added:
+            db.commit()
+        return {"removed_dead": removed, "added_live": added}
+
     def add_test_plan_items_bulk(self, release_id, tenant_id, test_case_ids,
                                  added_by, priority="medium", inclusion_reason=None):
         from primeqa.test_management.models import TestCase

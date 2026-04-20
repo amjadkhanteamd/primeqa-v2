@@ -188,6 +188,28 @@ def add_test_plan_items_bulk(release_id):
         db.close()
 
 
+@release_bp.route("/api/releases/<int:release_id>/test-plan/refresh-from-requirements",
+                  methods=["POST"])
+@require_role("admin", "tester")
+def refresh_test_plan_from_requirements(release_id):
+    """Resync the release's test plan against the current TCs of its
+    linked requirements. Removes plan entries pointing at soft-deleted
+    TCs (usually produced by regenerate supersession) and adds any
+    active TCs of the linked requirements that aren't already pinned.
+    Idempotent.
+    """
+    svc, db = _get_service()
+    try:
+        result = svc.refresh_test_plan_from_requirements(
+            release_id, request.user["tenant_id"],
+        )
+        return jsonify(result), 200
+    except ValueError as e:
+        return json_error("VALIDATION_ERROR", str(e), http=400)
+    finally:
+        db.close()
+
+
 @release_bp.route("/api/releases/<int:release_id>/test-plan", methods=["POST"])
 @require_role("admin", "tester")
 def add_test_plan_item(release_id):

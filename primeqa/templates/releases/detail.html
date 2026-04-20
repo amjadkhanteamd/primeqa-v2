@@ -121,6 +121,13 @@
                 ▶ Run test plan
               </button>
               {% endif %}
+              {% if release.requirements %}
+              <button id="refresh-tp-btn"
+                      title="Resync the plan against the current test cases of the linked requirements. Removes deleted items, adds any new ones."
+                      class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">
+                ↻ Refresh from requirements
+              </button>
+              {% endif %}
               <button id="add-tp-btn" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">+ Add test cases</button>
             </div>
             {% endif %}
@@ -162,12 +169,24 @@
             {% endfor %}
         </ul>
         {% else %}
-        <p class="text-sm text-gray-500 text-center py-8">
-            No tests in the plan yet.
+        <div class="text-sm text-gray-500 text-center py-8 space-y-2">
+            <p>No tests in the plan yet.</p>
             {% if user.role in ['admin', 'tester', 'superadmin'] %}
-            Click <strong>+ Add test cases</strong> to pick from the library.
+              {% if release.requirements %}
+              <p>
+                You have <strong>{{ release.requirements | length }}</strong>
+                requirement{{ 's' if release.requirements|length != 1 else '' }} linked.
+                Click <strong>↻ Refresh from requirements</strong> above to pull in every
+                active test case, or <strong>+ Add test cases</strong> to pick manually.
+              </p>
+              {% else %}
+              <p>
+                Link requirements to this release first, or click
+                <strong>+ Add test cases</strong> to pick from the library.
+              </p>
+              {% endif %}
             {% endif %}
-        </p>
+        </div>
         {% endif %}
     </div>
     {% elif tab == 'runs' %}
@@ -387,6 +406,36 @@
   // ---- Open Run Test Plan modal
   document.getElementById('run-release-plan-btn')?.addEventListener('click', () => {
     document.getElementById('run-plan-modal')?.classList.remove('hidden');
+  });
+
+  // ---- Refresh test plan from linked requirements
+  // Heals a common failure mode: every regeneration of a requirement
+  // soft-deletes prior own-drafts, but the release's plan still points
+  // at those dead ids \u2014 running then reports "Release test plan is
+  // empty". This action prunes dead items + adds any active TCs of the
+  // linked requirements that aren't already pinned. Idempotent.
+  document.getElementById('refresh-tp-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('refresh-tp-btn');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Refreshing\u2026';
+    try {
+      // api() returns parsed JSON already (line ~387).
+      const data = await api('POST',
+        '/api/releases/' + releaseId + '/test-plan/refresh-from-requirements');
+      const parts = [];
+      if (data.added_live) parts.push(`added ${data.added_live}`);
+      if (data.removed_dead) parts.push(`removed ${data.removed_dead} stale`);
+      const msg = parts.length ? parts.join(', ') : 'already in sync';
+      window.PrimeQA.toast('Test plan refreshed: ' + msg, 'success');
+      // Reload to show the fresh list (keeps the tab anchor).
+      setTimeout(() => { window.location.reload(); }, 600);
+    } catch (err) {
+      window.PrimeQA.toast('Refresh failed: ' + (err.message || err), 'error');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
   });
 
   // ---- Remove a test plan item
