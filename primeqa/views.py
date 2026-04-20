@@ -2224,10 +2224,13 @@ def connections_detail(conn_id):
         conn = svc.get_connection(conn_id, request.user["tenant_id"])
         if not conn:
             return redirect("/connections")
+        # `conn` is a dict (ConnectionService.get_connection returns
+        # get_connection_decrypted which returns a dict, not an ORM
+        # object). Prior use of `conn.name` AttributeError'd.
         return render_template("connections/detail.html", **ctx(
             active_page="settings_connections", settings_page="connections", conn=conn,
             breadcrumb_section="Connections", breadcrumb_section_url="/connections",
-            breadcrumb_item=conn.name,
+            breadcrumb_item=conn.get("name") if isinstance(conn, dict) else getattr(conn, "name", ""),
             message=request.args.get("message"),
         ))
     finally:

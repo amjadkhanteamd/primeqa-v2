@@ -79,10 +79,14 @@ def create_app():
         from werkzeug.exceptions import HTTPException
         if isinstance(err, HTTPException):
             return err
-        # Log the full stack once so ops can diagnose.
-        _err_log.exception("Unhandled %s on %s %s", type(err).__name__,
-                           request.method, request.path)
+        # Import inside the handler so the app-top doesn't pull `request`
+        # at module-load time (avoids circular imports in tests).
         from flask import request as _req
+        # Log the full stack once so ops can diagnose. Previously used
+        # bare `request` which NameError'd \u2014 cascading into a double
+        # 500 that masked the original traceback.
+        _err_log.exception("Unhandled %s on %s %s", type(err).__name__,
+                           _req.method, _req.path)
         if _req.path.startswith("/api/"):
             return jsonify({"error": {
                 "code": "SERVER_ERROR",
