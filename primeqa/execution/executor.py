@@ -73,6 +73,46 @@ class SalesforceExecutionClient:
         resp = self.session.get(url, timeout=15)
         return resp.status_code == 200
 
+    def convert_lead(self, lead_id, converted_status=None,
+                      do_not_create_opportunity=False,
+                      opportunity_name=None):
+        """Convert a Lead via the standard REST endpoint.
+
+        POST /sobjects/LeadConvert  (API v55.0+, GA today).
+
+        Prior wiring posted to /sobjects/Lead/<id>/convert which does not
+        exist in the SF REST API and always returned 404 NOT_FOUND \u2014
+        that's why every convert step in TCs 128/129/130 was failing
+        even after the Name-injection fix let the Lead create itself go
+        through.
+
+        `converted_status` defaults to the org's default MasterLabel for
+        the converted Lead status; most orgs use "Qualified" or
+        "Closed - Converted". The caller can override it via the step's
+        field_values.
+
+        Returns the same response envelope as create_record.
+        """
+        url = f"{self.base_url}/sobjects/LeadConvert"
+        body = {
+            "leadId": lead_id,
+            "doNotCreateOpportunity": bool(do_not_create_opportunity),
+        }
+        if converted_status:
+            body["convertedStatus"] = converted_status
+        if opportunity_name:
+            body["opportunityName"] = opportunity_name
+        resp = self.session.post(url, json=body, timeout=30)
+        envelope = self._build_response(resp, "POST", url, body)
+        # Normalise: convert response body contains accountId/contactId/
+        # opportunityId but NOT a top-level "id", so _build_response
+        # wouldn't set record_id. Use the converted Account as the
+        # returned record_id for continuity with other actions.
+        body = envelope.get("api_response", {}).get("body") or {}
+        if envelope.get("success") and isinstance(body, dict):
+            envelope["record_id"] = body.get("accountId") or body.get("AccountId") or envelope.get("record_id")
+        return envelope
+
     @staticmethod
     def _build_response(resp, method, url, body):
         try:
@@ -173,6 +213,12 @@ class StepExecutor:
         try:
             resolved = self._resolve_refs(step_def.get("field_values", {}))
             record_ref = self._resolve_ref(step_def.get("record_ref"))
+            # Resolve assertion refs up-front too so the verify branch
+            # can use them AND so the unresolved-fail-fast catches
+            # assertion-side mistakes (previously verify silently
+            # compared literal "$foo" strings against real record
+            # values, producing baffling assertion_failures).
+            resolved_assertions = self._resolve_refs(step_def.get("assertions", {}))
 
             # Fail-fast on unresolved $vars \u2014 sending a literal "$foo" to
             # Salesforce produces a cryptic MALFORMED_ID response; catch it
@@ -180,7 +226,9 @@ class StepExecutor:
             # definition. This usually means the AI generator emitted a
             # reference without giving the prior create step a matching
             # state_ref.
-            unresolved = [v for v in list(resolved.values()) + [record_ref]
+            unresolved = [v for v in list(resolved.values())
+                                    + list(resolved_assertions.values())
+                                    + [record_ref]
                           if isinstance(v, str) and v.startswith("$")]
             if unresolved:
                 raise ValueError(
@@ -207,7 +255,10 @@ class StepExecutor:
                 soql_queries = [soql]
                 result = self.sf.query(soql)
             elif action == "verify":
-                result = self._execute_verify(target_object, record_ref, step_def.get("assertions", {}))
+                # Assertions already resolved above (same pass as
+                # field_values) so the unresolved-ref fail-fast catches
+                # assertion-side typos consistently with create/update.
+                result = self._execute_verify(target_object, record_ref, resolved_assertions)
             elif action == "delete":
                 result = self.sf.delete_record(target_object, record_ref)
             elif action == "wait":
@@ -437,7 +488,22 @@ class StepExecutor:
         return result
 
     def _execute_convert(self, sobject, record_id, field_values):
-        return self.sf.create_record(f"Lead/{record_id}/convert", field_values or {})
+        # Lead convert \u2014 uses the standalone sobjects/LeadConvert endpoint.
+        # field_values can override converted_status / opportunity_name /
+        # do_not_create_opportunity. convert_to (the step's
+        # array of "Account"/"Contact"/"Opportunity") is advisory here:
+        # Account + Contact are always produced; Opportunity presence is
+        # controlled by do_not_create_opportunity. If the step's
+        # convert_to omits "Opportunity", flip the flag.
+        fv = field_values or {}
+        do_not_create_opp = bool(fv.get("doNotCreateOpportunity",
+                                        fv.get("do_not_create_opportunity", False)))
+        return self.sf.convert_lead(
+            lead_id=record_id,
+            converted_status=fv.get("convertedStatus") or fv.get("converted_status"),
+            do_not_create_opportunity=do_not_create_opp,
+            opportunity_name=fv.get("opportunityName") or fv.get("opportunity_name"),
+        )
 
     def _should_capture(self, action, target_object, status, field_values):
         if self.capture_mode == "full":

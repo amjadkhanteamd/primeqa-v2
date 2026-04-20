@@ -190,14 +190,23 @@ def _run_execute_stage(stage, ctx):
             obj = _meta_repo.get_object_by_api_name(_meta_version_id, sobject)
             if obj:
                 fields = _meta_repo.get_fields(_meta_version_id, obj.id)
-                name_field = next((f for f in fields if f.api_name == "Name"), None)
-                if name_field is not None:
-                    result = bool(name_field.is_createable)
+                if not fields:
+                    # Object known but ITS FIELDS aren't synced yet. We
+                    # can't tell whether Name is createable; return None
+                    # so the executor's unknown-branch preserves
+                    # whatever the AI produced. (Previously this branch
+                    # wrongly returned False and stripped legitimate
+                    # AI-supplied Name on Opportunity, breaking creates
+                    # with REQUIRED_FIELD_MISSING.)
+                    result = None
                 else:
-                    # Object has field rows but no Name \u2014 it's not a Name-bearing
-                    # object (rare; most SObjects have Name as formula at minimum).
-                    result = False
-                # else: no field rows synced for this object \u2014 leave as None
+                    name_field = next((f for f in fields if f.api_name == "Name"), None)
+                    if name_field is not None:
+                        result = bool(name_field.is_createable)
+                    else:
+                        # Fields synced, no Name column at all \u2014 confirmed
+                        # not a Name-bearing object.
+                        result = False
         except Exception:
             pass
         _name_cache[sobject] = result
