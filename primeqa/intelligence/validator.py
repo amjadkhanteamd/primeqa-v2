@@ -424,12 +424,21 @@ class TestCaseValidator:
 
     @staticmethod
     def _collect_refs(step: Dict[str, Any]) -> List[str]:
-        """Return every $var name referenced by this step (without the $)."""
+        """Return every $var name referenced by this step (without the $).
+
+        Tolerates the dotted .Id accessor (e.g. "$account.Id") which the
+        AI generator naturally produces when writing foreign keys. The
+        executor also collapses .Id to the bare var on resolve; keeping
+        both in sync means the validator matches real runtime behavior.
+        """
         refs = []
+
+        def _strip_id_suffix(name: str) -> str:
+            return name[:-3] if name.endswith(".Id") else name
 
         def visit(value):
             if isinstance(value, str) and value.startswith("$"):
-                refs.append(value[1:])
+                refs.append(_strip_id_suffix(value[1:]))
             elif isinstance(value, dict):
                 for v in value.values():
                     visit(v)

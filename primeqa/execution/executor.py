@@ -427,6 +427,13 @@ class StepExecutor:
     def _resolve_ref(self, value):
         if isinstance(value, str) and value.startswith("$"):
             var_name = value[1:]
+            # Tolerate dotted accessors on the record Id: $foo.Id is
+            # semantically the same as $foo (both resolve to the record
+            # ID stored by the earlier create step). The AI generator
+            # naturally writes "AccountId": "$account.Id" because that
+            # reads well in English; we accept it.
+            if var_name.endswith(".Id"):
+                var_name = var_name[:-3]
             return self.state_vars.get(var_name, value)
         return value
 
