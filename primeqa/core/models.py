@@ -53,6 +53,10 @@ class User(Base):
     # means the landing page is computed from the permission-set union by
     # primeqa.core.navigation.get_landing_page.
     preferred_landing_page = Column(String(50))
+    # Migration 041: user's "active org" — what the Active Org switcher
+    # on /tickets last pinned. Resolved via
+    # primeqa.runs.my_tickets.resolve_active_environment when NULL.
+    preferred_environment_id = Column(Integer, ForeignKey("environments.id", ondelete="SET NULL"))
 
     tenant = relationship("Tenant", back_populates="users")
 

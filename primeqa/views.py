@@ -210,6 +210,140 @@ def dashboard():
         db.close()
 
 
+# --- Developer /tickets page ---------------------------------------------
+
+@views_bp.route("/tickets")
+@login_required
+def my_tickets():
+    """Developer primary UI: Jira tickets assigned to me, with inline results.
+
+    This is the Developer Base's entire interface — the sidebar renders
+    empty for them (only `my_tickets` passes the gate), so this page has
+    to carry the whole workflow: see my tickets, click Run, see results.
+    """
+    # Permission gate: `run_single_ticket` (held by developer_base +
+    # tester_base + admin_base + the API-access set). Import here to
+    # avoid tripping any circular import at module load.
+    from primeqa.core.permissions import require_page_permission
+
+    @require_page_permission("run_single_ticket")
+    def _render():
+        from primeqa.core.models import User
+        from primeqa.runs.my_tickets import (
+            attach_latest_runs,
+            fetch_my_tickets,
+            list_switchable_environments,
+            resolve_active_environment,
+            sort_for_triage,
+        )
+
+        db = next(get_db())
+        try:
+            user_row = db.query(User).filter_by(id=request.user["id"]).first()
+            env = resolve_active_environment(user_row, db)
+
+            if env is None:
+                return render_template("tickets/list.html", **ctx(
+                    active_page="tickets",
+                    tickets=[],
+                    env=None,
+                    envs=[],
+                    empty_reason="no_environment",
+                ))
+
+            tickets = fetch_my_tickets(user_row, env, db)
+            if not tickets:
+                empty_reason = "no_tickets"
+            else:
+                empty_reason = None
+                tickets = attach_latest_runs(tickets, env, db)
+                tickets = sort_for_triage(tickets)
+
+            envs = list_switchable_environments(user_row, db)
+            return render_template("tickets/list.html", **ctx(
+                active_page="tickets",
+                tickets=tickets,
+                env=env,
+                envs=envs,
+                empty_reason=empty_reason,
+            ))
+        finally:
+            db.close()
+
+    return _render()
+
+
+@views_bp.route("/runs/<int:run_id>/tickets-summary")
+@login_required
+def run_tickets_summary(run_id):
+    """Compact inline step-summary partial for the /tickets page accordion.
+
+    Much thinner than the full /runs/:id detail — one line per step
+    with status icon, step name, duration, and error code on failure.
+    Loaded via HTMX when the developer expands a ticket.
+    """
+    from primeqa.execution.models import PipelineRun, RunTestResult, RunStepResult
+    from primeqa.test_management.models import TestCase
+
+    db = next(get_db())
+    try:
+        run = db.query(PipelineRun).filter_by(id=run_id).first()
+        if run is None or run.tenant_id != request.user["tenant_id"]:
+            return ("Not found", 404)
+        results = (db.query(RunTestResult)
+                   .filter_by(run_id=run_id)
+                   .order_by(RunTestResult.executed_at.asc())
+                   .all())
+        steps = []
+        for r in results:
+            rsteps = (db.query(RunStepResult)
+                      .filter_by(run_test_result_id=r.id)
+                      .order_by(RunStepResult.step_order.asc())
+                      .all())
+            tc = db.query(TestCase).filter_by(id=r.test_case_id).first()
+            steps.append({"result": r, "steps": rsteps,
+                          "tc_title": tc.title if tc else ""})
+        return render_template("tickets/_run_summary.html", run=run, blocks=steps)
+    finally:
+        db.close()
+
+
+@views_bp.route("/api/users/me/active-env", methods=["POST"])
+@login_required
+def set_active_environment():
+    """Update the caller's preferred_environment_id.
+
+    Accepts either form-encoded or JSON body with `environment_id`.
+    HTMX-friendly: on success returns a 204 and sets `HX-Redirect` so
+    the client picks up the new default everywhere.
+    """
+    from primeqa.core.models import Environment, User
+    db = next(get_db())
+    try:
+        env_id = request.form.get("environment_id") or (
+            request.get_json(silent=True) or {}).get("environment_id")
+        try:
+            env_id = int(env_id)
+        except (TypeError, ValueError):
+            return make_response(("environment_id required", 400))
+        env = db.query(Environment).filter_by(id=env_id).first()
+        if env is None or env.tenant_id != request.user["tenant_id"]:
+            return make_response(("not found", 404))
+        # Permission: only owner can pick a personal env (or any admin/superadmin).
+        if env.environment_type == "personal" and env.owner_user_id != request.user["id"]:
+            is_super = request.user.get("role") == "superadmin"
+            if not is_super:
+                return make_response(("forbidden", 403))
+        user_row = db.query(User).filter_by(id=request.user["id"]).first()
+        user_row.preferred_environment_id = env.id
+        db.commit()
+        resp = make_response("", 204)
+        resp.headers["HX-Redirect"] = "/tickets"
+        return resp
+    finally:
+        db.close()
+
+
 # --- Runs ---
 
 @views_bp.route("/runs")

@@ -1,0 +1,47 @@
+{# Inline step summary rendered inside the /tickets accordion body.
+   HTMX-loaded via /runs/:id/tickets-summary. Kept ASCII-only so no
+   backend unicode escape issues. #}
+
+{% if not blocks %}
+  <div class="text-gray-400 italic text-xs">No step results recorded yet.</div>
+{% else %}
+  <div class="space-y-3">
+  {% for b in blocks %}
+    <div>
+      {% if b.tc_title %}
+        <div class="text-xs text-gray-600 mb-1">
+          <span class="font-mono text-gray-400">[TC]</span> {{ b.tc_title }}
+          <span class="text-gray-400">·</span>
+          <span class="font-mono">{{ b.result.status }}</span>
+        </div>
+      {% endif %}
+      <ol class="space-y-0.5">
+      {% for s in b.steps %}
+        <li class="flex items-start gap-2 font-mono text-xs">
+          {% if s.status == 'passed' %}
+            <span class="text-green-600">[✓]</span>
+          {% elif s.status == 'failed' %}
+            <span class="text-red-600">[✗]</span>
+          {% elif s.status == 'error' %}
+            <span class="text-red-600">[!]</span>
+          {% elif s.status == 'skipped' %}
+            <span class="text-gray-400">[-]</span>
+          {% else %}
+            <span class="text-gray-400">[?]</span>
+          {% endif %}
+          <span class="text-gray-500">Step {{ s.step_order }}:</span>
+          <span class="text-gray-800">{{ s.step_action }}{% if s.target_object %} {{ s.target_object }}{% endif %}</span>
+          {% if s.duration_ms %}<span class="text-gray-400 ml-auto">{{ s.duration_ms }}ms</span>{% endif %}
+        </li>
+        {% if s.status in ['failed', 'error'] and s.error_message %}
+          <li class="pl-6 text-xs text-red-700 break-words">
+            {% if s.failure_class %}<span class="font-mono mr-1">[{{ s.failure_class }}]</span>{% endif %}
+            {{ s.error_message[:240] }}{% if s.error_message|length > 240 %}…{% endif %}
+          </li>
+        {% endif %}
+      {% endfor %}
+      </ol>
+    </div>
+  {% endfor %}
+  </div>
+{% endif %}
