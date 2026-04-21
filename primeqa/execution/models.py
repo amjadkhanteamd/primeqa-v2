@@ -51,6 +51,16 @@ class PipelineRun(Base):
     failure_summary_at = Column(DateTime(timezone=True))
     failure_summary_model = Column(String(100))
 
+    # Migration 039: release state (PENDING / APPROVED / OVERRIDDEN) lets a
+    # run participate in the release gate documented in CLAUDE.md. NULL
+    # means the run isn't part of a release-approval flow. Approval flips
+    # PENDING -> APPROVED; shipping despite NO-GO flips to OVERRIDDEN with
+    # an audit-visible `override_reason`.
+    release_status = Column(String(20))
+    approved_by = Column(Integer, ForeignKey("users.id"))
+    approved_at = Column(DateTime(timezone=True))
+    override_reason = Column(Text)
+
     stages = relationship("PipelineStage", back_populates="run")
     test_results = relationship("RunTestResult", back_populates="run")
 
@@ -59,6 +69,10 @@ class PipelineRun(Base):
         CheckConstraint("source_type IN ('jira_tickets', 'suite', 'requirements', 'rerun', 'test_cases', 'release')"),
         CheckConstraint("status IN ('queued', 'running', 'completed', 'failed', 'cancelled')"),
         CheckConstraint("priority IN ('normal', 'high', 'critical')"),
+        CheckConstraint(
+            "release_status IS NULL OR release_status IN ('PENDING', 'APPROVED', 'OVERRIDDEN')",
+            name="pipeline_runs_release_status_check",
+        ),
     )
 
 

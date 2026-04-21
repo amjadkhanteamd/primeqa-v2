@@ -18,6 +18,7 @@ load_dotenv()
 from primeqa.db import init_db, SessionLocal
 
 import primeqa.core.models  # noqa: F401
+import primeqa.core.permissions  # noqa: F401  # migration 039: PermissionSet et al.
 import primeqa.metadata.models  # noqa: F401
 import primeqa.test_management.models  # noqa: F401
 import primeqa.execution.models  # noqa: F401

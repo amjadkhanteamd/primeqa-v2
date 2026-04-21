@@ -174,6 +174,10 @@ class TestSuite(Base):
     version = Column(Integer, nullable=False, server_default="1")
     deleted_at = Column(DateTime(timezone=True))
     deleted_by = Column(Integer, ForeignKey("users.id"))
+    # Migration 039: owner_user_id is the permission-set ownership axis
+    # (see CLAUDE.md ## Permission Model). Backfilled from created_by on
+    # migration. New code should write both columns on insert.
+    owner_user_id = Column(Integer, ForeignKey("users.id"))
 
     __table_args__ = (
         CheckConstraint("suite_type IN ('regression', 'smoke', 'sprint', 'custom')"),

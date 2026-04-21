@@ -41,6 +41,9 @@ class User(Base):
     email = Column(String(255), nullable=False)
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=False)
+    # Migration 039: DEPRECATED — use permission_sets instead.
+    # Kept as a fallback for code paths still reading legacy role checks.
+    # Remove once every caller has been migrated to permission-set checks.
     role = Column(String(20), nullable=False)
     is_active = Column(Boolean, nullable=False, server_default="true")
     last_login_at = Column(DateTime(timezone=True))
@@ -48,6 +51,17 @@ class User(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     tenant = relationship("Tenant", back_populates="users")
+
+    # Migration 039: assigned permission sets (many-to-many via UserPermissionSet).
+    # Resolving the effective permission set for this user is the job of
+    # primeqa.core.permissions.get_effective_permissions(user_id, db) —
+    # the SQLAlchemy relationship is here for eager loading / cascade only.
+    permission_set_assignments = relationship(
+        "UserPermissionSet",
+        primaryjoin="User.id == UserPermissionSet.user_id",
+        foreign_keys="UserPermissionSet.user_id",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "email", name="users_tenant_email_unique"),
@@ -89,6 +103,26 @@ class Environment(Base):
     connection_id = Column(Integer, ForeignKey("connections.id"))
     jira_connection_id = Column(Integer, ForeignKey("connections.id"))
     llm_connection_id = Column(Integer, ForeignKey("connections.id"))
+
+    # Migration 039: run policies + ownership.
+    # These flags are the environment half of the two-layer access check
+    # (see CLAUDE.md ## Permission Model). Even a user with `run_suite` in
+    # their permission-set union can't trigger a bulk run against an env
+    # where allow_bulk_run=false. `is_production` + `require_approval`
+    # gate the release state machine.
+    allow_single_run = Column(Boolean, nullable=False, server_default="true")
+    allow_bulk_run = Column(Boolean, nullable=False, server_default="true")
+    allow_scheduled_run = Column(Boolean, nullable=False, server_default="false")
+    is_production = Column(Boolean, nullable=False, server_default="false")
+    require_approval = Column(Boolean, nullable=False, server_default="false")
+    max_api_calls_per_run = Column(Integer)
+
+    # Environment types: 'team' (default, shared) or 'personal' (owned by
+    # a single user, visible only to owner + admins). parent_team_env_id
+    # lets a personal env reference the team env it clones.
+    environment_type = Column(String(20), nullable=False, server_default="team")
+    owner_user_id = Column(Integer, ForeignKey("users.id"))
+    parent_team_env_id = Column(Integer, ForeignKey("environments.id"))
 
     tenant = relationship("Tenant", back_populates="environments")
     credentials = relationship("EnvironmentCredential", back_populates="environment", uselist=False)

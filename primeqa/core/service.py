@@ -101,6 +101,22 @@ class AuthService:
 
         password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
         user = self.user_repo.create_user(tenant_id, email, password_hash, full_name, role)
+
+        # Migration 039: auto-assign the default base Permission Set so the
+        # user has a permission-set union from day one. If seeding the
+        # tenant's sets hasn't happened yet (e.g. tests), assign_default_*
+        # seeds on demand. Non-fatal — if the import/assignment fails the
+        # user is still created; they just won't have a permission-set
+        # union until an admin grants one.
+        try:
+            from primeqa.core.permissions import assign_default_permission_set
+            assign_default_permission_set(user.id, tenant_id, role, self.user_repo.db)
+        except Exception:
+            import logging
+            logging.getLogger("primeqa.permissions").exception(
+                "Failed to assign default permission set to user %s", user.id,
+            )
+
         return self._user_dict(user)
 
     def update_user(self, user_id, **kwargs):
