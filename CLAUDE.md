@@ -70,6 +70,51 @@ tests/                         # Integration test files
 - Settings pages live under `/settings/*` with a sidebar layout
 - **Superadmin is god-mode**: always passes `require_role` / `role_required`, sees cost + raw LLM prompts + agent settings
 
+## Permission Model
+
+Canonical authorization model for the platform. Every new feature — API
+endpoint, UI action, scheduled job, agent decision — must resolve against
+this model. When in doubt, default to denial + log a rationale.
+
+- **Additive Permission Sets, no deny rules.** Authorization resolves as
+  the **union** of every set granted to the caller. No set can subtract
+  from another set's grants. Forbid a capability by not granting it, not
+  by layering a deny.
+- **Two-layer access**: every authorization check composes **user
+  permissions** (who the caller is) AND **environment run policies**
+  (what the target env will accept — e.g. production blocks agent
+  auto-apply per Q2). Both must allow the action; either can veto.
+- **Five Base Permission Sets** (all other custom sets derive from
+  these):
+  - **Developer** — author / edit test cases, run sandbox pipelines,
+    view own runs
+  - **Tester** — run pipelines against assigned envs, triage failures,
+    accept/revert agent fixes on sandbox
+  - **Release Owner** — create/manage releases, approve agent fixes on
+    production candidates, finalize GO/NO-GO decisions
+  - **Admin** — tenant admin: users, groups, connections, envs;
+    cannot override production agent auto-apply
+  - **API Access** — programmatic token holder; equivalent to Developer
+    scope unless explicitly extended. Token-scoped, never interactive.
+- **Ownership on all resources**: every row carries
+  `owner_user_id` (who owns the resource) and — on execution rows —
+  `triggered_by_user_id` (who kicked off the run). Ownership is a
+  separate axis from role. "Own" views always scope by the caller's
+  user id.
+- **Release state on pipeline runs**: runs inherit a
+  release-lifecycle state independent of their execution status —
+  `PENDING` / `APPROVED` / `OVERRIDDEN`. Agent auto-apply + production
+  deploys gate on this state; a Release Owner's approval flips
+  PENDING→APPROVED, and Admin OVERRIDDEN is audited separately.
+- **Superadmin stays god-mode** for cross-tenant ops (cost, raw LLM
+  prompts, agent settings override, pre-flight override). Superadmin
+  bypass is intentionally simple and outside the permission-set union;
+  its use is always logged to `activity_log`.
+- **Every new endpoint / action** must map to (a) the union of Base
+  Permission Sets that grant it and (b) the env run-policy flags it
+  needs. If either mapping is unclear, surface the question in the PR
+  before shipping.
+
 ## Security posture (post-audit 2026-04-19)
 
 - **Login never takes client-supplied `tenant_id`.** `AuthService.login(email, password)` derives tenant from the `users` row (same email can exist in >1 tenant; first active match with correct bcrypt wins). If a caller has legitimate reason to scope to a specific tenant (SSO), pass `tenant_id=` explicitly in the service call — never from user input.

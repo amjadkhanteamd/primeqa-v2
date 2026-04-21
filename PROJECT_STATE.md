@@ -357,6 +357,55 @@ release, CI/CD).
 | `admin` | baseline | + connections, environments, groups, users, purge |
 | **`superadmin`** | R2 | god-mode: cost visibility, agent autonomy config, raw LLM prompts, pre-flight override, excluded from 20-user cap. Seeded per tenant (`admin@primeqa.io` promoted on migration 017). |
 
+## Permission Model
+
+The target authorization architecture (superseding the flat-role table above as the
+canonical model for new features — the 5 legacy roles still exist at the DB level
+and are gradually re-expressed as permission-set bundles).
+
+- **Additive Permission Sets (no deny rules).** A user can hold any number of
+  permission sets; effective permissions = **union** of every set granted. No
+  deny-overrides-allow logic anywhere — if any set grants a capability, the user
+  has it. Keeps the mental model flat and auditable.
+
+- **Two-layer access**: every protected action checks **both**
+  1. *User permissions* (does the caller's permission-set union grant this capability?)
+  2. *Environment run policies* (is this environment configured to allow runs by
+     this user / this role / at this time?)
+
+  Either layer can block. Typical failure mode is a user with `run_tests`
+  capability being denied on a production environment whose policy restricts
+  runs to Release Owners during a freeze window.
+
+- **Five Base Permission Sets** (shipped as presets; tenants can clone + edit):
+
+  | Set | Purpose |
+  |---|---|
+  | **Developer** | Author / edit test cases + requirements; trigger runs in dev + sandbox envs; no release decisions. |
+  | **Tester** | Full test-management (library, suites, sections); trigger runs anywhere runnable; cannot approve releases. |
+  | **Release Owner** | Tester + approve / override release decisions (PENDING → APPROVED / OVERRIDDEN); can schedule runs. |
+  | **Admin** | Tenant config: connections, environments, groups, users, purge; does **not** imply test authorship. |
+  | **API Access** | Programmatic-only set for CI/webhook callers; narrow run + read scope, no UI. |
+
+- **Ownership on all resources**: every test-management + execution row carries
+  `owner_user_id` (authoring user) and pipeline runs additionally carry
+  `triggered_by_user_id` (executing user). Visibility scopes off ownership where
+  privacy applies (drafts, own-user supersession).
+
+- **Release state on pipeline runs**: `release_state ∈ { PENDING, APPROVED, OVERRIDDEN }`
+  on every run that targets a release-gated environment.
+  - `PENDING` — run executed, decision not yet made
+  - `APPROVED` — Release Owner accepted the GO recommendation
+  - `OVERRIDDEN` — Release Owner / superadmin shipped against a NO-GO (logged + audit-flagged)
+
+- **Superadmin** stays a god-mode escape hatch *outside* the permission-set
+  union — it always passes `require_role` and is excluded from the 20-user cap.
+  New code should prefer permission-set checks; superadmin passes those too.
+
+- **Every new protected endpoint must declare its capability** (e.g.
+  `run_tests.trigger`, `release.approve`, `environment.edit`) so the set ↔ action
+  mapping stays in one registry and sets can be re-bundled without code edits.
+
 ## Tests (~170 passing across 17 suites)
 - test_auth (15), test_environments (14), test_metadata (10)
 - test_management (23), test_hardening (17)
