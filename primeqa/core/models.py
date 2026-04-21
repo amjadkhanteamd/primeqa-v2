@@ -275,3 +275,17 @@ class Connection(Base):
         CheckConstraint("status IN ('active', 'inactive', 'error')"),
         UniqueConstraint("tenant_id", "name", name="connections_tenant_name_unique"),
     )
+
+
+# Migration 039: ensure the permission-set model classes are registered
+# with SQLAlchemy's declarative base whenever primeqa.core.models is
+# imported, so the User.permission_set_assignments relationship can
+# resolve its string target ("UserPermissionSet") during mapper
+# configuration. Without this, worker + scheduler processes — which
+# don't go through app.py's explicit permissions import — crash at
+# first query with `NameError: name 'UserPermissionSet' is not defined`
+# inside the relationship resolver.
+#
+# Kept at the BOTTOM of the file so User/Tenant/Environment are fully
+# defined before permissions.py is parsed.
+from primeqa.core import permissions as _permissions_models  # noqa: F401, E402
