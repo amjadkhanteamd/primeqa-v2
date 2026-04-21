@@ -6,6 +6,7 @@ Endpoints: /api/releases/*
 from flask import Blueprint, jsonify, request
 
 from primeqa.core.auth import require_auth, require_role
+from primeqa.core.permissions import require_permission
 from primeqa.db import get_db
 from primeqa.release.repository import ReleaseRepository
 from primeqa.release.service import ReleaseService
@@ -270,11 +271,27 @@ def evaluate_decision(release_id):
 
 @release_bp.route("/api/releases/<int:release_id>/decisions/<int:decision_id>/finalize", methods=["POST"])
 @require_role("admin")
+@require_permission("approve_release", "override_quality_gate", require_all=False)
 def finalize_decision(release_id, decision_id):
+    # Overriding a NO-GO requires `override_quality_gate`; plain GO / conditional
+    # approval only needs `approve_release`. The require_any wrapper lets either
+    # permission through; the body-level check below enforces the stricter gate
+    # for overrides so a user with only `approve_release` can't flip NO-GO -> GO.
     data = request.get_json(silent=True) or {}
     final = data.get("final_decision")
     if final not in ("go", "conditional_go", "no_go"):
         return json_error("VALIDATION_ERROR", "Invalid final_decision", http=400)
+    if data.get("override_reason"):
+        # Overrides require the stricter permission.
+        from flask import g
+        perms = getattr(g, "effective_permissions", set()) or set()
+        if request.user.get("role") != "superadmin" and "override_quality_gate" not in perms:
+            return json_error(
+                "INSUFFICIENT_PERMISSIONS",
+                "Overriding the quality gate requires override_quality_gate.",
+                http=403,
+                details={"required": ["override_quality_gate"]},
+            )
     svc, db = _get_service()
     try:
         d = svc.release_repo.finalize_decision(decision_id, final, request.user["id"], data.get("override_reason"))

@@ -66,6 +66,12 @@ def create_app():
     # state-changing request.
     csrf.install(application)
 
+    # Migration 039: make `user_permissions` + `has_permission()` available
+    # in every Jinja template so server-rendered pages can conditionally
+    # show/hide UI chrome based on the caller's permission-set union.
+    from primeqa.core.permissions import register_template_context
+    register_template_context(application)
+
     # Audit fix C-3 (2026-04-19): global 500 handler so uncaught
     # exceptions return a clean envelope for /api/* and a friendly HTML
     # page for web routes. Never leak stack traces to the response body.

@@ -15,6 +15,7 @@ Soft-delete / restore / purge convention:
 from flask import Blueprint, jsonify, request
 
 from primeqa.core.auth import require_auth, require_role
+from primeqa.core.permissions import require_permission
 from primeqa.core.repository import (
     ActivityLogRepository, ConnectionRepository, EnvironmentRepository,
 )
@@ -687,6 +688,7 @@ def list_suites():
 
 @test_management_bp.route("/api/suites", methods=["POST"])
 @require_role("admin", "tester")
+@require_permission("manage_test_suites")
 def create_suite():
     data = request.get_json(silent=True) or {}
     if not data.get("name") or not data.get("suite_type"):
@@ -721,6 +723,7 @@ def get_suite(suite_id):
 
 @test_management_bp.route("/api/suites/<int:suite_id>", methods=["PATCH"])
 @require_role("admin", "tester")
+@require_permission("manage_test_suites")
 def update_suite(suite_id):
     data = request.get_json(silent=True) or {}
     expected_version = data.pop("expected_version", None)
@@ -739,6 +742,7 @@ def update_suite(suite_id):
 
 @test_management_bp.route("/api/suites/<int:suite_id>", methods=["DELETE"])
 @require_role("admin", "tester")
+@require_permission("manage_test_suites")
 def delete_suite(suite_id):
     svc, db = _get_service()
     try:
@@ -991,6 +995,7 @@ def assign_review():
 
 @test_management_bp.route("/api/reviews/<int:review_id>", methods=["PATCH"])
 @require_role("admin", "ba")
+@require_permission("review_test_cases")
 def submit_review(review_id):
     data = request.get_json(silent=True) or {}
     if not data.get("status"):

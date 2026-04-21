@@ -6,6 +6,7 @@ Endpoints: /api/auth/*, /api/users/*, /api/environments/*, /api/connections/*, /
 from flask import Blueprint, jsonify, request
 
 from primeqa.core.auth import require_auth, require_role
+from primeqa.core.permissions import require_permission
 from primeqa.db import get_db
 from primeqa.core.repository import (
     UserRepository, RefreshTokenRepository, EnvironmentRepository,
@@ -104,6 +105,7 @@ def me():
 
 @core_bp.route("/api/auth/users", methods=["GET"])
 @require_role("admin")
+@require_permission("manage_users")
 def list_users():
     svc, db = _get_auth_service()
     try:
@@ -115,6 +117,7 @@ def list_users():
 
 @core_bp.route("/api/auth/users", methods=["POST"])
 @require_role("admin")
+@require_permission("manage_users")
 def create_user():
     data = request.get_json(silent=True) or {}
     required = ["email", "password", "full_name", "role"]
@@ -152,6 +155,7 @@ def create_user():
 
 @core_bp.route("/api/auth/users/<int:user_id>", methods=["PATCH"])
 @require_role("admin")
+@require_permission("manage_users")
 def update_user(user_id):
     data = request.get_json(silent=True) or {}
     svc, db = _get_auth_service()
@@ -181,6 +185,7 @@ def list_environments():
 
 @core_bp.route("/api/environments", methods=["POST"])
 @require_role("admin")
+@require_permission("manage_environments")
 def create_environment():
     data = request.get_json(silent=True) or {}
     required = ["name", "env_type", "sf_instance_url", "sf_api_version"]
@@ -224,6 +229,7 @@ def get_environment(env_id):
 
 @core_bp.route("/api/environments/<int:env_id>", methods=["PATCH"])
 @require_role("admin")
+@require_permission("manage_environments")
 def update_environment(env_id):
     data = request.get_json(silent=True) or {}
     svc, db = _get_env_service()
@@ -251,6 +257,7 @@ def test_connection(env_id):
 
 @core_bp.route("/api/environments/<int:env_id>/credentials", methods=["POST"])
 @require_role("admin")
+@require_permission("manage_environments")
 def store_credentials(env_id):
     data = request.get_json(silent=True) or {}
     required = ["client_id", "client_secret"]
@@ -294,6 +301,7 @@ def list_connections():
 
 @core_bp.route("/api/connections", methods=["POST"])
 @require_role("admin")
+@require_permission("manage_sf_connections", "manage_jira_connections", require_all=False)
 def create_connection():
     data = request.get_json(silent=True) or {}
     for f in ["connection_type", "name", "config"]:
@@ -325,6 +333,7 @@ def get_connection(conn_id):
 
 @core_bp.route("/api/connections/<int:conn_id>", methods=["DELETE"])
 @require_role("admin")
+@require_permission("manage_sf_connections", "manage_jira_connections", require_all=False)
 def delete_connection(conn_id):
     svc, db = _get_conn_service()
     try:

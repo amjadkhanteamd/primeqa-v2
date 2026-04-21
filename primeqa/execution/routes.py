@@ -6,6 +6,7 @@ Endpoints: /api/runs/*, /api/environments/<id>/slots
 from flask import Blueprint, jsonify, request
 
 from primeqa.core.auth import require_auth, require_role
+from primeqa.core.permissions import require_run_permission
 from primeqa.db import get_db
 from primeqa.execution.repository import (
     PipelineRunRepository, PipelineStageRepository,
@@ -32,7 +33,12 @@ def _get_service():
 
 @execution_bp.route("/api/runs", methods=["POST"])
 @require_role("admin", "tester")
+@require_run_permission("single_run")
 def create_run():
+    # require_run_permission has already enforced:
+    #   - layer 1: user holds `run_single_ticket` (or is superadmin)
+    #   - layer 2: env.allow_single_run is true + prod confirmation if needed
+    # It also extracted environment_id so we know it's a valid int here.
     data = request.get_json(silent=True) or {}
     required = ["environment_id", "run_type", "source_type", "source_ids"]
     missing = [f for f in required if f not in data]
