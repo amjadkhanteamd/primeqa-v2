@@ -880,28 +880,116 @@ def should_redact_step_detail(user: dict) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Page-level permission gating with redirect (vs. API-level 403).
+# --------------------------------------------------------------------------
+
+def require_page_permission(*required_permissions: str, require_all: bool = True):
+    """Same semantics as `require_permission`, but for Jinja-rendered page
+    routes: on denial, flash a message + redirect to the caller's
+    landing page instead of returning JSON 403.
+
+    Must be applied AFTER `primeqa.views.login_required` in the decorator
+    chain so `request.user` is populated.
+
+    Usage:
+        @views_bp.route('/settings')
+        @login_required
+        @require_page_permission('manage_environments', 'manage_users',
+                                  require_all=False)
+        def settings_page(): ...
+    """
+    if not required_permissions:
+        raise ValueError("require_page_permission expects at least one permission string")
+
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            from flask import flash, redirect, request
+            user = getattr(request, "user", None) or {}
+            # Superadmin god-mode.
+            if user.get("role") == "superadmin":
+                return f(*args, **kwargs)
+            effective = _resolve_effective_permissions()
+            required = set(required_permissions)
+            ok = (required.issubset(effective) if require_all
+                  else bool(required & effective))
+            if ok:
+                return f(*args, **kwargs)
+
+            # Denied — flash + redirect to the user's landing page rather
+            # than leave them on a 403 dead end.
+            try:
+                flash("You don't have permission to view that page.", "warning")
+            except Exception:
+                pass
+
+            # Resolve landing page now that we already know effective perms.
+            from primeqa.core.navigation import get_landing_page
+            preferred = None
+            try:
+                from primeqa.db import SessionLocal
+                from primeqa.core.models import User
+                db = SessionLocal()
+                try:
+                    u = db.query(User).filter_by(id=int(user["id"])).first()
+                    preferred = getattr(u, "preferred_landing_page", None)
+                finally:
+                    db.close()
+            except Exception:
+                pass
+
+            target = get_landing_page(
+                effective, preferred=preferred,
+                is_superadmin=(user.get("role") == "superadmin"),
+            )
+            # Avoid a redirect loop: if the landing page IS the route we
+            # just denied, fall back to "/" as the last-resort safety net.
+            if target == request.path:
+                target = "/"
+            return redirect(target)
+
+        return wrapper
+
+    return decorator
+
+
+# --------------------------------------------------------------------------
 # Jinja context processor registration helper.
 # --------------------------------------------------------------------------
 
 def register_template_context(app) -> None:
-    """Wire `user_permissions` + `has_permission()` into every template.
+    """Wire `user_permissions`, `has_permission()`, and `sidebar_items`
+    into every template.
 
     Call from app.create_app() after blueprints are registered so
-    templates can do `{% if has_permission('manage_users') %}…{% endif %}`.
+    templates can do `{% if has_permission('manage_users') %}…{% endif %}`
+    and `{% for item in sidebar_items %}…{% endfor %}`.
     """
     @app.context_processor
     def inject_permissions():  # noqa: F811
         from flask import request
+        from primeqa.core.navigation import build_sidebar
+
         user = getattr(request, "user", None)
         if not user:
             return {
                 "user_permissions": set(),
                 "has_permission": (lambda _p: False),
+                "sidebar_items": [],
             }
         perms = _resolve_effective_permissions()
+        is_superadmin = user.get("role") == "superadmin"
+        can_see_settings = is_superadmin or any(p.startswith("manage_") for p in perms)
         return {
             "user_permissions": perms,
-            "has_permission": (lambda p: p in perms or user.get("role") == "superadmin"),
+            "has_permission": (lambda p: p in perms or is_superadmin),
+            "has_any_permission": (
+                lambda *ps: is_superadmin or any(p in perms for p in ps)
+            ),
+            "can_see_settings": can_see_settings,
+            "sidebar_items": build_sidebar(
+                perms, request.path, is_superadmin=is_superadmin,
+            ),
         }
 
 
@@ -922,6 +1010,7 @@ __all__ = [
     "list_user_permission_sets",
     # Enforcement
     "require_permission",
+    "require_page_permission",
     "check_environment_policy",
     "require_run_permission",
     "get_scoped_results_query",

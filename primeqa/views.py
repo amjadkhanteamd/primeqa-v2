@@ -95,7 +95,24 @@ def login_submit():
         result = svc.login(email, password)
         if not result:
             return render_template("auth/login.html", user=None, error="Invalid email or password")
-        resp = make_response(redirect("/"))
+
+        # Migration 040: route the user to the landing page their permission-set
+        # union unlocks (or their saved preference, if still reachable). This
+        # replaces the old hardcoded `/` redirect so developers don't land on a
+        # dashboard they can't read, and admins don't always bounce through the
+        # dashboard before reaching settings.
+        from primeqa.core.permissions import get_effective_permissions
+        from primeqa.core.navigation import get_landing_page
+        from primeqa.core.models import User
+
+        user_row = db.query(User).filter_by(id=result["user"]["id"]).first()
+        is_superadmin = (user_row.role == "superadmin") if user_row else False
+        perms = get_effective_permissions(result["user"]["id"], db)
+        preferred = user_row.preferred_landing_page if user_row else None
+        landing = get_landing_page(perms, preferred=preferred,
+                                   is_superadmin=is_superadmin)
+
+        resp = make_response(redirect(landing))
         resp.set_cookie("access_token", result["access_token"], httponly=True, samesite="Lax", max_age=1800)
         return resp
     finally:
@@ -202,6 +219,7 @@ def runs_list():
     try:
         from primeqa.execution.repository import PipelineRunRepository
         from primeqa.execution.models import PipelineRun
+        from primeqa.core.permissions import get_effective_permissions
         from sqlalchemy import or_
         repo = PipelineRunRepository(db)
         status_filter = request.args.get("status")
@@ -217,6 +235,30 @@ def runs_list():
         if label_filter:
             # Substring match (ILIKE) so partial tag text finds matches
             base = base.filter(PipelineRun.label.ilike(f"%{label_filter}%"))
+
+        # Migration 039/040: My Runs / All Runs toggle.
+        # Scope the list based on the caller's permissions:
+        #   - `view_all_results` in perms → default OFF (show all runs)
+        #   - `view_own_results` only     → default ON (show own runs only)
+        # The `mine` query param explicitly overrides. `mine=1` forces own;
+        # `mine=0` forces all BUT only if the user has view_all_results
+        # (otherwise we fall back to own so they don't see empty results by
+        # accident on a missing permission).
+        user_perms = get_effective_permissions(request.user["id"], db)
+        has_all = ("view_all_results" in user_perms
+                   or request.user.get("role") == "superadmin")
+        has_own = "view_own_results" in user_perms or has_all
+        mine_param = request.args.get("mine")
+        if mine_param in ("1", "true", "on"):
+            show_mine = True
+        elif mine_param in ("0", "false", "off") and has_all:
+            show_mine = False
+        else:
+            # Default: own-only if the user only has view_own_results.
+            show_mine = (not has_all) and has_own
+        if show_mine:
+            base = base.filter(PipelineRun.triggered_by == request.user["id"])
+
         total = base.order_by(None).count()
         runs = base.order_by(PipelineRun.queued_at.desc()) \
                    .offset((page - 1) * per_page).limit(per_page).all()
@@ -237,6 +279,7 @@ def runs_list():
         return render_template("runs/list.html", **ctx(
             active_page="runs", runs=runs_data,
             status_filter=status_filter, label_filter=label_filter, meta=meta,
+            show_mine=show_mine, scope_choice_available=has_all and has_own,
         ))
     finally:
         db.close()

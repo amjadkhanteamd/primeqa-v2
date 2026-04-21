@@ -52,11 +52,15 @@
         <div class="bg-white shadow rounded-lg p-6 space-y-4">
             <div><label class="block text-sm font-medium text-gray-700">Overall Feedback</label>
                 <textarea name="feedback" rows="3" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm" placeholder="Overall feedback (optional)..."></textarea></div>
+            {% if has_permission('review_test_cases') %}
             <div class="flex space-x-3">
                 <button type="submit" name="status" value="approved" class="rounded-md bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500" title="Keyboard: A">Approve</button>
                 <button type="submit" name="status" value="rejected" class="rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-500" title="Keyboard: R">Reject</button>
                 <button type="submit" name="status" value="needs_edit" class="rounded-md bg-yellow-600 px-4 py-2 text-sm font-semibold text-white hover:bg-yellow-500" title="Keyboard: E">Request Edit</button>
             </div>
+            {% else %}
+            <p class="text-sm text-gray-500">You don't have permission to review this test case.</p>
+            {% endif %}
         </div>
     </form>
     <script>

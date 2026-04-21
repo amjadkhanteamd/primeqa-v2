@@ -73,14 +73,16 @@
         {% if run.status in ['completed', 'failed'] %}
         <a href="/runs/{{ run.id }}/compare" class="btn sm">Compare to last green</a>
         {% endif %}
-        {% if run.status in ['completed', 'failed'] and user.role in ['admin','tester','superadmin'] %}
+        {% set can_rerun = (user.role in ['admin','tester','superadmin'])
+                           and (has_permission('run_single_ticket') or has_permission('run_sprint') or has_permission('run_suite')) %}
+        {% if run.status in ['completed', 'failed'] and can_rerun %}
         <form method="POST" action="/runs/{{ run.id }}/rerun-verbatim" style="display:inline"
               title="Replay this run with the same test-case versions pinned.">
           {{ csrf_input | safe }}
           <button type="submit" class="btn sm">↻ Rerun verbatim</button>
         </form>
         {% endif %}
-        {% if run.status in ['completed', 'failed'] and run.failed and user.role in ['admin','tester','superadmin'] %}
+        {% if run.status in ['completed', 'failed'] and run.failed and can_rerun %}
         <form method="POST" action="/runs/{{ run.id }}/rerun-failed" style="display:inline">
           {{ csrf_input | safe }}
           <button type="submit" class="btn primary sm">↻ Rerun failed ({{ run.failed }})</button>

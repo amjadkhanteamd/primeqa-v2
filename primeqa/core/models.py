@@ -49,6 +49,10 @@ class User(Base):
     last_login_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    # Migration 040: optional override for post-login redirect. NULL (default)
+    # means the landing page is computed from the permission-set union by
+    # primeqa.core.navigation.get_landing_page.
+    preferred_landing_page = Column(String(50))
 
     tenant = relationship("Tenant", back_populates="users")
 
