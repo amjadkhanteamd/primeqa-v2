@@ -487,7 +487,8 @@
 .run-detail .test-row.is-failed .test-body {
     background: color-mix(in oklab, var(--nogo-bg) 20%, transparent);
 }
-.run-detail .test-body.is-hidden { display: none; }
+.run-detail .test-body.is-hidden,
+.run-detail .card-body.is-hidden { display: none; }
 
 .run-detail .step-full {
     display: grid;
