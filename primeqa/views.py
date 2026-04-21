@@ -600,16 +600,32 @@ def runs_detail(run_id):
             "decided_at": f.decided_at.isoformat() if f.decided_at else None,
         } for f in agent_fixes]
         stages_data = [{"stage_name": s.stage_name, "status": s.status} for s in stages]
+        # Batch-hydrate test-case titles so the redesigned run detail
+        # page can show human-readable names instead of "Test #N".
+        # Single query scoped to this tenant, no N+1.
+        from primeqa.test_management.models import TestCase as _TCModel
+        _tc_ids = [r.test_case_id for r in results if r.test_case_id]
+        _titles = {}
+        if _tc_ids:
+            _tc_rows = db.query(_TCModel.id, _TCModel.title).filter(
+                _TCModel.id.in_(_tc_ids),
+                _TCModel.tenant_id == request.user["tenant_id"],
+            ).all()
+            _titles = {row.id: row.title for row in _tc_rows}
+
         results_data = []
         for r in results:
             steps = step_repo.list_step_results(r.id)
             results_data.append({
                 "test_case_id": r.test_case_id, "status": r.status,
+                "title": _titles.get(r.test_case_id),
                 "failure_summary": r.failure_summary,
+                "duration_ms": r.duration_ms,
                 "steps": [{"step_order": s.step_order, "step_action": s.step_action,
                            "target_object": s.target_object, "status": s.status,
                            "error_message": s.error_message,
-                           "failure_class": s.failure_class} for s in steps],
+                           "failure_class": s.failure_class,
+                           "duration_ms": s.duration_ms} for s in steps],
             })
         # ---- Cost + LLM breakdown (superadmin only) --------------------
         # Phase 3 switch: pull from llm_usage_log for accurate per-task

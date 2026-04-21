@@ -3,247 +3,322 @@
 {% block title %}Run #{{ run.id }} - PrimeQA{% endblock %}
 {% block content %}
 
+{# Fonts the redesigned Run Detail page uses. Light load; requested only
+   once, browser cache takes over. Loaded via block so other pages stay
+   Tailwind-default. #}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/run_detail.css">
+
 {{ breadcrumbs([('Runs', '/runs'), ('Run #' ~ run.id, None)]) }}
 
-<div class="space-y-6" data-run-summary>
-  <div class="flex justify-between items-start">
-    <div class="flex-1 min-w-0">
-      <h1 class="text-2xl font-bold text-gray-900">Run #{{ run.id }}</h1>
-      <p class="text-sm text-gray-500">{{ run.run_type }} · priority {{ run.priority }}</p>
-      {# Inline label editor: free-form tag for filtering run history #}
-      {% if user.role in ['admin', 'tester', 'superadmin'] %}
-      <div class="mt-2 flex items-center gap-2">
-        <span class="text-xs text-gray-400">Label:</span>
-        <input id="run-label-input" value="{{ run.label or '' }}" maxlength="100"
-               placeholder="tag this run (e.g. release-smoke)"
-               class="text-xs rounded-md border border-gray-200 px-2 py-0.5 w-72 focus:border-indigo-500 focus:ring-indigo-500">
-        <span id="run-label-status" class="text-[10px] text-gray-400"></span>
-      </div>
-      {% elif run.label %}
-      <div class="mt-1 text-xs text-gray-500">Label: <span class="font-medium">{{ run.label }}</span></div>
-      {% endif %}
-    </div>
-    <div class="flex items-center space-x-2">
-      {% if run.status in ['queued', 'running'] and user.role in ['admin', 'tester', 'superadmin'] %}
-      <form method="POST" action="/runs/{{ run.id }}/cancel">
-            {{ csrf_input | safe }}
-        <button type="submit" class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500">Cancel</button>
-      </form>
-      {% endif %}
-      {% if run.status in ['completed', 'failed'] %}
-      <a href="/runs/{{ run.id }}/compare" class="rounded-md bg-white px-3 py-2 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Compare to last green</a>
-      {% endif %}
-      {% if run.status in ['completed', 'failed'] and user.role in ['admin','tester','superadmin'] %}
-      <form method="POST" action="/runs/{{ run.id }}/rerun-verbatim"
-            title="Replay this run with the same test-case versions pinned. Useful for reproducing a failure when the TC has moved on.">
-            {{ csrf_input | safe }}
-        <button type="submit" class="rounded-md bg-white px-3 py-2 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">↻ Rerun verbatim</button>
-      </form>
-      {% endif %}
-      {% if run.status in ['completed', 'failed'] and run.failed and user.role in ['admin','tester','superadmin'] %}
-      <form method="POST" action="/runs/{{ run.id }}/rerun-failed">
-            {{ csrf_input | safe }}
-        <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Rerun failed</button>
-      </form>
-      {% endif %}
-    </div>
-  </div>
+{# Every redesigned surface lives inside .run-detail so the scoped CSS
+   file (run_detail.css) applies here only. data-run-summary is a
+   preserved hook for the refresh-hint banner injected by the SSE JS. #}
+<div class="run-detail" data-run-summary>
 
-  <!-- Header card: status + pipeline stages + counts -->
-  <div id="run-header" class="bg-white shadow rounded-lg p-6">
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-      <div>
-        <p class="text-xs text-gray-500 uppercase">Status</p>
-        <p><span id="run-status-badge" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-          {% if run.status == 'completed' %}bg-green-100 text-green-800
-          {% elif run.status == 'failed' %}bg-red-100 text-red-800
-          {% elif run.status == 'running' %}bg-blue-100 text-blue-800 animate-pulse-blue
-          {% elif run.status == 'queued' %}bg-yellow-100 text-yellow-800
-          {% else %}bg-gray-100 text-gray-800{% endif %}">{{ run.status }}</span></p>
-      </div>
-      <div>
-        <p class="text-xs text-gray-500 uppercase">Tests</p>
-        <p class="font-medium">
-          <span id="run-passed" class="text-green-600">{{ run.passed }}</span>
-          /
-          <span id="run-failed" class="text-red-600">{{ run.failed }}</span>
-          /
-          <span id="run-total">{{ run.total_tests }}</span>
-        </p>
-      </div>
-      <div>
-        <p class="text-xs text-gray-500 uppercase">Environment</p>
-        <p class="font-medium text-gray-900">#{{ run.environment_id }}</p>
-      </div>
-      <div>
-        <p class="text-xs text-gray-500 uppercase">Queued</p>
-        <p class="text-xs text-gray-700">{{ run.queued_at[:19] if run.queued_at else '-' }}</p>
-      </div>
-    </div>
+  {# ───────────────────── STICKY SUMMARY BAR ───────────────────── #}
+  <div class="summary">
+    <div class="summary-row">
+      <div class="summary-left">
+        <h1 class="run-title">
+          <span class="hash">Run</span>
+          <span>#{{ run.id }}</span>
+          <span id="run-status-badge"
+                class="state-pill
+                       {% if run.status == 'completed' %}go
+                       {% elif run.status == 'failed' %}nogo
+                       {% elif run.status in ['running', 'queued'] %}warn
+                       {% else %}warn{% endif %}">
+            <span class="d"></span>
+            {{ run.status }}
+          </span>
+        </h1>
 
-    {% if stages %}
-    <div class="mt-5">
-      <p class="text-xs text-gray-500 uppercase mb-2">Pipeline stages</p>
-      <div id="stage-track" class="flex space-x-2">
-        {% for stage in stages %}
-        <div class="flex-1 text-center" data-stage="{{ stage.stage_name }}">
-          <div class="h-2 rounded-full stage-bar {% if stage.status == 'passed' %}bg-green-500{% elif stage.status == 'failed' %}bg-red-500{% elif stage.status == 'running' %}bg-blue-500 animate-pulse-blue{% elif stage.status == 'skipped' %}bg-gray-300{% else %}bg-gray-200{% endif %}"></div>
-          <p class="mt-1 text-xs text-gray-500">{{ stage.stage_name | replace('_', ' ') | title }}</p>
-          <p class="text-xs stage-status {% if stage.status == 'passed' %}text-green-600{% elif stage.status == 'failed' %}text-red-600{% elif stage.status == 'running' %}text-blue-600{% else %}text-gray-400{% endif %}">{{ stage.status }}</p>
+        <div class="counts" title="passed / failed / skipped">
+          <span id="run-passed" class="n go">{{ run.passed }}</span>
+          <span class="sep">/</span>
+          <span id="run-failed" class="n nogo">{{ run.failed }}</span>
+          <span class="sep">/</span>
+          <span class="n muted">{{ (run.total_tests or 0) - (run.passed or 0) - (run.failed or 0) }}</span>
+          <span id="run-total" style="display:none">{{ run.total_tests }}</span>
+          <span class="lbl">tests</span>
         </div>
-        {% endfor %}
+
+        {% set total = run.total_tests or 1 %}
+        {% set pct_pass = ((run.passed or 0) * 100 / total) | round(2) %}
+        {% set pct_fail = ((run.failed or 0) * 100 / total) | round(2) %}
+        {% set pct_skip = ((total - (run.passed or 0) - (run.failed or 0)) * 100 / total) | round(2) %}
+        <div class="pct-bar" title="{{ pct_pass }}% passed / {{ pct_fail }}% failed / {{ pct_skip }}% other">
+          <span class="seg-go" style="width: {{ pct_pass }}%"></span>
+          <span class="seg-nogo" style="width: {{ pct_fail }}%"></span>
+          <span class="seg-skip" style="width: {{ pct_skip }}%"></span>
+        </div>
+
+        <div class="meta-dots">
+          <span class="item"><span class="mono">env #{{ run.environment_id }}</span></span>
+          <span class="item mono">{{ run.queued_at[:19] if run.queued_at else '—' }}</span>
+          <span class="item">{{ run.run_type }} · priority {{ run.priority }}</span>
+        </div>
       </div>
+
+      <div class="summary-right">
+        {% if run.status in ['queued', 'running'] and user.role in ['admin', 'tester', 'superadmin'] %}
+        <form method="POST" action="/runs/{{ run.id }}/cancel" style="display:inline">
+          {{ csrf_input | safe }}
+          <button type="submit" class="btn danger sm">Cancel</button>
+        </form>
+        {% endif %}
+        {% if run.status in ['completed', 'failed'] %}
+        <a href="/runs/{{ run.id }}/compare" class="btn sm">Compare to last green</a>
+        {% endif %}
+        {% if run.status in ['completed', 'failed'] and user.role in ['admin','tester','superadmin'] %}
+        <form method="POST" action="/runs/{{ run.id }}/rerun-verbatim" style="display:inline"
+              title="Replay this run with the same test-case versions pinned.">
+          {{ csrf_input | safe }}
+          <button type="submit" class="btn sm">↻ Rerun verbatim</button>
+        </form>
+        {% endif %}
+        {% if run.status in ['completed', 'failed'] and run.failed and user.role in ['admin','tester','superadmin'] %}
+        <form method="POST" action="/runs/{{ run.id }}/rerun-failed" style="display:inline">
+          {{ csrf_input | safe }}
+          <button type="submit" class="btn primary sm">↻ Rerun failed ({{ run.failed }})</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if user.role in ['admin', 'tester', 'superadmin'] %}
+    <div style="margin-top:10px; display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--ink-dim);">
+      <span>Label:</span>
+      <input id="run-label-input" value="{{ run.label or '' }}" maxlength="100"
+             placeholder="tag this run (e.g. release-smoke)"
+             style="border:1px solid var(--border); background:var(--bg-elev);
+                    border-radius:5px; padding:3px 8px; font-size:11.5px;
+                    width:220px; color:var(--ink); outline:none;
+                    font-family:inherit;">
+      <span id="run-label-status" style="font-size:10px; color:var(--ink-faint)"></span>
+    </div>
+    {% elif run.label %}
+    <div style="margin-top:8px; font-size:11.5px; color:var(--ink-dim)">
+      Label: <span style="color:var(--ink); font-weight:500">{{ run.label }}</span>
+    </div>
+    {% endif %}
+
+    {# Pipeline stages as a compact strip. Keeps data-stage attrs so
+       existing SSE updateStageBar() keeps working (it targets
+       [data-stage="..."]). #}
+    {% if stages %}
+    <div id="stage-track" class="pipeline-strip" style="margin-top:12px">
+      {% for stage in stages %}
+      <span class="pipe-stage" data-stage="{{ stage.stage_name }}"
+            title="{{ stage.stage_name }} · {{ stage.status }}">
+        <span class="dot stage-bar {{ 'go' if stage.status == 'passed' else 'nogo' if stage.status == 'failed' else 'running' if stage.status == 'running' else 'skip' if stage.status == 'skipped' else 'pending' }}"></span>
+        {{ stage.stage_name }}
+        <span class="stage-status" style="display:none">{{ stage.status }}</span>
+      </span>
+      {% if not loop.last %}<span class="pipe-arrow">›</span>{% endif %}
+      {% endfor %}
     </div>
     {% endif %}
   </div>
 
-  {# ---- AI failure summary (superadmin only) ------------------------- #}
-  {% if user.role == 'superadmin' and run.status in ['completed', 'failed'] and run.failed %}
-  <div class="bg-amber-50 border border-amber-200 rounded-lg p-4">
-    <div class="flex items-start justify-between gap-4">
-      <div class="flex-1 min-w-0">
-        <h3 class="text-sm font-semibold text-amber-900">AI failure summary
-          <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-amber-100 text-amber-800 font-normal">Super Admin</span>
-        </h3>
-        {% if run.failure_summary_ai %}
-        <p class="mt-2 text-sm text-gray-800 whitespace-pre-wrap">{{ run.failure_summary_ai }}</p>
-        <p class="mt-2 text-xs text-gray-500">
-          Generated {{ run.failure_summary_at[:19] if run.failure_summary_at else '' }}
-          {% if run.failure_summary_model %}· model <span class="font-mono">{{ run.failure_summary_model }}</span>{% endif %}
-        </p>
-        {% else %}
-        <p class="mt-1 text-xs text-amber-800">Click <strong>Summarise failures</strong> to have the LLM group this run's failures by root cause. Uses your env's LLM connection; consumes tokens.</p>
-        {% endif %}
-      </div>
-      <form method="POST" action="/runs/{{ run.id }}/summarise-failures" class="flex-shrink-0">
-            {{ csrf_input | safe }}
-        <button type="submit" class="rounded-md bg-amber-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-amber-500">
-          {% if run.failure_summary_ai %}Regenerate{% else %}Summarise failures{% endif %}
+  {# ───────────────────── TESTS CARD (primary) ───────────────────── #}
+  {% set failed_count = results | selectattr('status', 'in', ['failed', 'error']) | list | length %}
+  {% set passed_count = results | selectattr('status', 'equalto', 'passed') | list | length %}
+  {% set other_count = (results | length) - failed_count - passed_count %}
+  <div class="card">
+    <div class="filter-bar">
+      <div class="tabs" role="tablist">
+        <button class="tab on" data-filter="all">
+          All <span class="n">{{ results | length }}</span>
         </button>
-      </form>
+        <button class="tab" data-filter="failed">
+          Failed <span class="n nogo">{{ failed_count }}</span>
+        </button>
+        <button class="tab" data-filter="passed">
+          Passed <span class="n go">{{ passed_count }}</span>
+        </button>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <div class="search">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L13.5 13.5"/>
+          </svg>
+          <input id="test-search" placeholder="Filter by test name or id…">
+        </div>
+      </div>
+    </div>
+
+    <div id="timeline" class="tests">
+      {% if not results %}
+      <div class="empty-state">
+        <div class="ghost">◌</div>
+        Waiting for steps to start…
+      </div>
+      {% endif %}
+      {% for r in results %}
+      {% set is_failed = r.status in ['failed', 'error'] %}
+      <div class="test-row {{ 'is-failed' if is_failed else '' }}"
+           data-test-id="{{ r.test_case_id }}"
+           data-status="{{ 'failed' if is_failed else r.status }}"
+           data-name="{{ (r.title or 'Test #' ~ r.test_case_id) | lower }}">
+        <div class="test-head">
+          <span class="disclose-arrow {{ 'open' if is_failed else '' }}">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 4l4 4-4 4"/>
+            </svg>
+          </span>
+          <a href="/test-cases/{{ r.test_case_id }}" class="test-id"
+             onclick="event.stopPropagation()">#{{ r.test_case_id }}</a>
+          <div style="min-width:0; display:flex; flex-direction:column; gap:3px;">
+            <div class="test-name">{{ r.title or ('Test #' ~ r.test_case_id) }}</div>
+            <div class="steps-inline">
+              {% for s in (r.steps or [])[:8] %}
+                {% if not loop.first %}<span class="step-sep">›</span>{% endif %}
+                {% set chip_cls = 'nogo' if s.status in ['failed', 'error'] else 'skip' if s.status == 'skipped' else 'expected-fail' if s.failure_class == 'expected_fail_verified' else 'go' if s.status == 'passed' else '' %}
+                <span class="step-chip mono {{ chip_cls }}" title="{{ s.step_action }} {{ s.target_object or '' }} · {{ s.status }}">
+                  {% if s.status in ['failed', 'error'] %}
+                  <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <path d="M4 4l8 8M12 4l-8 8"/>
+                  </svg>
+                  {% endif %}
+                  <span class="verb">{{ s.step_action }}</span>
+                  {% if s.target_object %}<span class="obj">{{ s.target_object }}</span>{% endif %}
+                </span>
+              {% endfor %}
+              {% if (r.steps or []) | length > 8 %}
+                <span class="step-sep" style="margin-left:4px">+{{ (r.steps | length) - 8 }} more</span>
+              {% endif %}
+            </div>
+          </div>
+          <div class="test-meta">
+            {% if r.duration_ms %}<span class="dur">{{ (r.duration_ms / 1000) | round(1) }}s</span>{% endif %}
+          </div>
+          <div style="display:flex; gap:6px; align-items:center" onclick="event.stopPropagation()">
+            <span class="state-pill {{ 'go' if r.status == 'passed' else 'nogo' if is_failed else 'warn' }}">
+              <span class="d"></span>{{ r.status }}
+            </span>
+            {% if is_failed and run.status in ['completed', 'failed'] and user.role in ['admin','tester','superadmin'] %}
+            <form method="POST" action="/runs/{{ run.id }}/rerun-one" style="display:inline"
+                  title="Rerun just this test case in a new run.">
+              {{ csrf_input | safe }}
+              <input type="hidden" name="test_case_id" value="{{ r.test_case_id }}">
+              <button type="submit" class="btn sm">↻ Rerun</button>
+            </form>
+            {% endif %}
+          </div>
+        </div>
+
+        {% if is_failed and r.failure_summary %}
+        <div class="fail-msg-inline">
+          <span class="mi">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M8 2L1.5 13.5h13L8 2z"/><path d="M8 6.5v3.5M8 12v.01"/>
+            </svg>
+          </span>
+          <span>{{ r.failure_summary }}</span>
+        </div>
+        {% endif %}
+
+        {# Expanded body — failed tests start expanded, passed collapse. #}
+        <div class="test-body {{ 'is-hidden' if not is_failed }}">
+          {% if r.steps %}
+          {% for s in r.steps %}
+          {% set step_cls = 'nogo' if s.status in ['failed', 'error'] else 'skip' if s.status == 'skipped' else 'expected-fail' if s.failure_class == 'expected_fail_verified' else 'go' if s.status == 'passed' else '' %}
+          <div class="step-full {{ step_cls }}">
+            <span class="idx">{{ loop.index }}.</span>
+            <span class="step-name">
+              <span class="verb">{{ s.step_action }}</span>
+              {% if s.target_object %}<span class="obj">{{ s.target_object }}</span>{% endif %}
+            </span>
+            <span class="step-note">
+              {% if s.failure_class == 'expected_fail_verified' %}
+                <span class="expected-tag ok" title="Expected fail verified (Salesforce blocked as designed)">expected fail ✓</span>
+              {% elif s.failure_class == 'expected_fail_unverified' %}
+                <span class="expected-tag fail" title="Expected fail but Salesforce accepted it — rule may not be in effect">expected fail ✗</span>
+              {% endif %}
+              {% if s.error_message %}{{ s.error_message[:120] }}{% endif %}
+            </span>
+            <span class="step-status">{{ s.status }}</span>
+            <span class="mono" style="font-size:11px; color:var(--ink-faint); min-width:50px; text-align:right;">
+              {{ (s.duration_ms / 1000) | round(2) if s.duration_ms else '—' }}{% if s.duration_ms %}s{% endif %}
+            </span>
+          </div>
+          {% endfor %}
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div id="tests-empty-filter" class="empty-state" style="display:none">
+      <div class="ghost">◌</div>
+      No tests match this filter.
     </div>
   </div>
-  {% endif %}
 
-  {# ---- Cost + LLM panel (superadmin only) --------------------------- #}
-  {% if cost_panel %}
-  <details class="bg-white shadow rounded-lg" open>
-    <summary class="cursor-pointer px-6 py-3 text-sm font-medium text-gray-700 flex items-center justify-between hover:bg-gray-50">
-      <span class="flex items-center gap-2">
-        AI spend for this run
-        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] bg-purple-100 text-purple-800 font-normal">Super Admin</span>
-      </span>
-      <span class="text-sm font-semibold text-gray-900">${{ '%.6f' | format(cost_panel.total_usd) }}</span>
-    </summary>
-    <div class="px-6 pb-4 border-t border-gray-100">
-      {% if cost_panel.by_task %}
-      <table class="min-w-full text-xs mt-3">
-        <thead>
-          <tr class="text-left text-gray-500">
-            <th class="py-1 pr-4">Task</th>
-            <th class="py-1 pr-4">Calls</th>
-            <th class="py-1 pr-4">Tokens in / out</th>
-            <th class="py-1 pr-4">Cached</th>
-            <th class="py-1 pr-4">Model(s)</th>
-            <th class="py-1 text-right">Spend</th>
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-gray-100">
-          {% for task_name, t in cost_panel.by_task.items() %}
-          <tr>
-            <td class="py-1.5 pr-4 font-mono">{{ task_name }}</td>
-            <td class="py-1.5 pr-4">{{ t.calls }}</td>
-            <td class="py-1.5 pr-4 text-gray-600">{{ t.tokens_in }} / {{ t.tokens_out }}</td>
-            <td class="py-1.5 pr-4 text-gray-500">
-              {% if t.cached_tokens %}{{ t.cached_tokens }}{% else %}—{% endif %}
-            </td>
-            <td class="py-1.5 pr-4">
-              {% for m in t.models %}<div class="font-mono text-[10px] text-gray-700">{{ m }}</div>{% endfor %}
-            </td>
-            <td class="py-1.5 text-right font-medium text-gray-900">${{ '%.6f' | format(t.cost_usd) }}</td>
-          </tr>
-          {% endfor %}
-          <tr class="font-semibold border-t-2 border-gray-200">
-            <td class="py-1.5 pr-4">Total</td>
-            <td colspan="4"></td>
-            <td class="py-1.5 text-right">${{ '%.6f' | format(cost_panel.total_usd) }}</td>
-          </tr>
-        </tbody>
-      </table>
-      {% else %}
-      <p class="text-xs text-gray-500 italic mt-3">No LLM calls attributed to this run yet.</p>
-      {% endif %}
-      <p class="mt-3 text-[10px] text-gray-400">
-        Aggregated from llm_usage_log (migration 031) via run_id and
-        generation_batch_id cross-references.
-      </p>
-    </div>
-  </details>
-  {% endif %}
-
-  <!-- Agent fixes (R5) ------------------------------------------------- -->
+  {# ───────────────────── AGENT FIXES (R5) ───────────────────── #}
   {% if agent_fixes %}
-  <div class="bg-white shadow rounded-lg">
-    <div class="px-4 py-4 border-b flex items-center justify-between">
-      <h3 class="text-lg font-medium">Agent fixes <span class="ml-2 text-xs text-gray-500">({{ agent_fixes | length }})</span></h3>
-      <span class="text-xs text-gray-500">Per Q12 trust bands: auto-apply only on sandbox at high confidence</span>
+  <div class="card agent-fixes">
+    <div class="card-head collapsible" data-card-toggle>
+      <h3>
+        <span class="disclose-arrow"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg></span>
+        Agent fixes
+        <span class="sub">{{ agent_fixes | length }} attempt{{ 's' if agent_fixes | length != 1 else '' }} · auto-apply only on sandbox at high confidence</span>
+      </h3>
     </div>
-    <div class="divide-y divide-gray-200">
+    <div class="card-body is-hidden">
       {% for f in agent_fixes %}
-      <div class="px-6 py-4">
-        <div class="flex items-start justify-between">
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center space-x-2">
-              <span class="text-sm font-medium">Test #{{ f.test_case_id }}</span>
-              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
-                {% if f.trust_band == 'high' %}bg-green-100 text-green-800
-                {% elif f.trust_band == 'medium' %}bg-yellow-100 text-yellow-800
-                {% else %}bg-gray-100 text-gray-700{% endif %}">
-                {{ f.trust_band or 'n/a' }} &middot; {{ (f.confidence or 0) | round(2) }}
-              </span>
-              <span class="text-xs text-gray-500 font-mono">{{ f.failure_class or 'unknown' }}</span>
-              {% if f.proposed_fix_type %}<span class="text-xs text-gray-500">{{ f.proposed_fix_type }}</span>{% endif %}
-              {% if f.auto_applied %}<span class="text-xs text-indigo-600 font-medium">auto-applied</span>{% endif %}
-              {% if f.rerun_run_id %}<span class="text-xs"><a href="/runs/{{ f.rerun_run_id }}" class="text-indigo-600 hover:underline">rerun #{{ f.rerun_run_id }}</a></span>{% endif %}
-              {% if f.rerun_outcome %}<span class="text-xs {% if f.rerun_outcome == 'passed' %}text-green-600{% elif f.rerun_outcome == 'failed' %}text-red-600{% else %}text-gray-500{% endif %}">{{ f.rerun_outcome }}</span>{% endif %}
+      <div class="fix-row">
+        <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px;">
+          <div style="flex:1; min-width:0;">
+            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+              <span style="font-size:13px; font-weight:500;">Test #{{ f.test_case_id }}</span>
+              <span class="trust-pill {{ f.trust_band or 'low' }}">{{ f.trust_band or 'n/a' }} · {{ (f.confidence or 0) | round(2) }}</span>
+              <span class="mono" style="font-size:11px; color:var(--ink-dim);">{{ f.failure_class or 'unknown' }}</span>
+              {% if f.proposed_fix_type %}<span style="font-size:11px; color:var(--ink-dim);">{{ f.proposed_fix_type }}</span>{% endif %}
+              {% if f.auto_applied %}<span style="font-size:11px; color:var(--primary); font-weight:500;">auto-applied</span>{% endif %}
+              {% if f.rerun_run_id %}<a href="/runs/{{ f.rerun_run_id }}" style="font-size:11px; color:var(--primary);">rerun #{{ f.rerun_run_id }}</a>{% endif %}
+              {% if f.rerun_outcome %}<span style="font-size:11px; color:{% if f.rerun_outcome == 'passed' %}var(--go){% elif f.rerun_outcome == 'failed' %}var(--nogo){% else %}var(--ink-dim){% endif %};">{{ f.rerun_outcome }}</span>{% endif %}
             </div>
             {% if f.root_cause_summary %}
-            <p class="mt-1 text-sm text-gray-700">{{ f.root_cause_summary }}</p>
+            <p style="margin:6px 0 0; font-size:12.5px; color:var(--ink-mid);">{{ f.root_cause_summary }}</p>
             {% endif %}
             {% if f.user_decision %}
-            <p class="mt-1 text-xs text-gray-500">User decision: <span class="font-medium">{{ f.user_decision }}</span>{% if f.decided_at %} at {{ f.decided_at[:19] }}{% endif %}</p>
+            <p style="margin:4px 0 0; font-size:11px; color:var(--ink-dim);">User decision: <span style="font-weight:500; color:var(--ink-mid);">{{ f.user_decision }}</span>{% if f.decided_at %} at {{ f.decided_at[:19] }}{% endif %}</p>
             {% endif %}
           </div>
           {% if not f.user_decision and f.auto_applied %}
-          <div class="flex space-x-2 ml-4">
-            <form method="POST" action="/runs/agent-fixes/{{ f.id }}/accept" class="inline">
-            {{ csrf_input | safe }}
-              <button type="submit" class="rounded-md bg-green-600 px-3 py-1 text-xs font-medium text-white hover:bg-green-500">Accept</button>
+          <div style="display:flex; gap:6px; flex-shrink:0;">
+            <form method="POST" action="/runs/agent-fixes/{{ f.id }}/accept" style="display:inline">
+              {{ csrf_input | safe }}
+              <button type="submit" class="btn primary xs" style="background:var(--go); border-color:var(--go);">Accept</button>
             </form>
-            <form id="revert-fix-{{ f.id }}" method="POST" action="/runs/agent-fixes/{{ f.id }}/revert" class="inline">{{ csrf_input | safe }}</form>
-            <button type="button"
-                    class="rounded-md bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-500"
+            <form id="revert-fix-{{ f.id }}" method="POST" action="/runs/agent-fixes/{{ f.id }}/revert" style="display:inline">{{ csrf_input | safe }}</form>
+            <button type="button" class="btn danger xs"
                     data-confirm
                     data-confirm-title="Revert this fix?"
                     data-confirm-message="The before-state snapshot will be restored. This cannot be undone once further runs execute."
                     data-confirm-variant="danger"
                     data-confirm-submit="Revert"
                     data-confirm-form="#revert-fix-{{ f.id }}">Revert</button>
-            <a href="/test-cases/{{ f.test_case_id }}/edit" class="rounded-md bg-white px-3 py-1 text-xs font-medium text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Edit</a>
+            <a href="/test-cases/{{ f.test_case_id }}/edit" class="btn xs">Edit</a>
           </div>
           {% endif %}
         </div>
         {% if user.role == 'superadmin' and f.before_state %}
-        <details class="mt-2 text-xs">
-          <summary class="cursor-pointer text-gray-500">Before / after snapshot (super admin)</summary>
-          <div class="mt-2 grid grid-cols-2 gap-3">
+        <details style="margin-top:8px; font-size:11.5px;">
+          <summary style="cursor:pointer; color:var(--ink-dim);">Before / after snapshot (super admin)</summary>
+          <div style="margin-top:6px; display:grid; grid-template-columns:1fr 1fr; gap:10px;">
             <div>
-              <p class="text-xs text-gray-500">Before</p>
-              <pre class="text-xs bg-gray-50 border border-gray-200 rounded p-2 overflow-x-auto max-h-60">{{ f.before_state | tojson(indent=2) }}</pre>
+              <p style="margin:0 0 2px; color:var(--ink-dim);">Before</p>
+              <pre style="font-size:11px; background:var(--bg-inset); border:1px solid var(--border); border-radius:5px; padding:8px; overflow-x:auto; max-height:220px;">{{ f.before_state | tojson(indent=2) }}</pre>
             </div>
             <div>
-              <p class="text-xs text-gray-500">After</p>
-              <pre class="text-xs bg-gray-50 border border-gray-200 rounded p-2 overflow-x-auto max-h-60">{{ f.after_state | tojson(indent=2) }}</pre>
+              <p style="margin:0 0 2px; color:var(--ink-dim);">After</p>
+              <pre style="font-size:11px; background:var(--bg-inset); border:1px solid var(--border); border-radius:5px; padding:8px; overflow-x:auto; max-height:220px;">{{ f.after_state | tojson(indent=2) }}</pre>
             </div>
           </div>
         </details>
@@ -254,108 +329,233 @@
   </div>
   {% endif %}
 
-  <!-- Source provenance (what was requested) -->
-  {% if run.source_refs %}
-  <details class="bg-white shadow rounded-lg">
-    <summary class="cursor-pointer px-6 py-3 text-sm font-medium text-gray-700">What was requested (source refs)</summary>
-    <pre class="mx-6 mb-4 text-xs font-mono bg-gray-50 border border-gray-200 rounded p-3 overflow-x-auto">{{ run.source_refs | tojson(indent=2) }}</pre>
-  </details>
+  {# ───────────────────── AI META (superadmin) ───────────────────── #}
+  {% if user.role == 'superadmin' %}
+  <div class="card">
+    <div class="card-head collapsible" data-card-toggle>
+      <h3>
+        <span class="disclose-arrow"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg></span>
+        AI meta
+        <span class="role-tag">super admin</span>
+        <span class="sub">
+          {% if cost_panel %}spend <span class="mono" style="color:var(--ink); font-weight:600;">${{ '%.6f' | format(cost_panel.total_usd) }}</span>{% else %}no LLM calls attributed yet{% endif %}
+          {% if run.status in ['completed', 'failed'] and run.failed %}
+          <span style="margin:0 8px; color:var(--ink-faint)">·</span>
+          <span style="color:var(--warn)">{{ run.failed }} failure{{ 's' if run.failed != 1 else '' }} · summary {{ 'available' if run.failure_summary_ai else 'on demand' }}</span>
+          {% endif %}
+        </span>
+      </h3>
+    </div>
+    <div class="card-body is-hidden">
+      {% if run.status in ['completed', 'failed'] and run.failed %}
+      <div class="ai-strip" style="border-bottom:1px solid var(--border)">
+        <div class="label">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 2L1.5 13.5h13L8 2z"/><path d="M8 6.5v3.5M8 12v.01"/>
+          </svg>
+          {% if run.failure_summary_ai %}
+          <span style="color:var(--ink);">{{ run.failure_summary_ai }}</span>
+          <span style="margin-left:8px; color:var(--ink-faint); font-size:11px;">
+            Generated {{ run.failure_summary_at[:19] if run.failure_summary_at else '' }}{% if run.failure_summary_model %} · <span class="mono">{{ run.failure_summary_model }}</span>{% endif %}
+          </span>
+          {% else %}
+          Have the LLM group this run's failures by root cause. Uses your env's LLM connection; consumes tokens.
+          {% endif %}
+        </div>
+        <form method="POST" action="/runs/{{ run.id }}/summarise-failures" style="display:inline">
+          {{ csrf_input | safe }}
+          <button type="submit" class="btn primary sm">{% if run.failure_summary_ai %}Regenerate{% else %}Summarise failures{% endif %}</button>
+        </form>
+      </div>
+      {% endif %}
+
+      {% if cost_panel and cost_panel.by_task %}
+      <table class="ai-table">
+        <thead>
+          <tr>
+            <th>Task</th>
+            <th style="text-align:right">Calls</th>
+            <th style="text-align:right">Tokens in / out</th>
+            <th>Cached</th>
+            <th>Model(s)</th>
+            <th style="text-align:right">Spend</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for task_name, t in cost_panel.by_task.items() %}
+          <tr>
+            <td class="name">{{ task_name }}</td>
+            <td class="num">{{ t.calls }}</td>
+            <td class="num">{{ t.tokens_in }} / {{ t.tokens_out }}</td>
+            <td>{% if t.cached_tokens %}{{ t.cached_tokens }}{% else %}—{% endif %}</td>
+            <td>{% for m in t.models %}<div class="mono" style="font-size:10.5px">{{ m }}</div>{% endfor %}</td>
+            <td class="num">${{ '%.6f' | format(t.cost_usd) }}</td>
+          </tr>
+          {% endfor %}
+          <tr>
+            <td class="name">Total</td>
+            <td class="num">—</td>
+            <td class="num">—</td>
+            <td>—</td>
+            <td>—</td>
+            <td class="num">${{ '%.6f' | format(cost_panel.total_usd) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p style="margin:8px 16px 10px; font-size:10px; color:var(--ink-faint)">
+        Aggregated from llm_usage_log (migration 031) via run_id and generation_batch_id cross-references.
+      </p>
+      {% elif cost_panel %}
+      <p style="padding:14px 16px; font-size:12px; color:var(--ink-dim); font-style:italic;">No LLM calls attributed to this run yet.</p>
+      {% endif %}
+    </div>
+  </div>
   {% endif %}
 
-  <!-- Pipeline log (durable, hierarchical, populated from run_events) -->
-  <div class="bg-white shadow rounded-lg">
-    <div class="px-4 py-3 border-b flex items-center justify-between">
-      <div class="flex items-center space-x-3">
-        <h3 class="text-sm font-medium">Pipeline log</h3>
-        <span id="log-live" class="hidden text-xs text-blue-600 font-medium"
+  {# Source provenance — what was requested. Kept as a plain details
+     element so super admins can inspect the original run payload. #}
+  {% if run.source_refs %}
+  <div class="card">
+    <div class="card-head collapsible" data-card-toggle>
+      <h3>
+        <span class="disclose-arrow"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg></span>
+        What was requested
+        <span class="sub">source_refs payload</span>
+      </h3>
+    </div>
+    <div class="card-body is-hidden">
+      <pre style="margin:0; padding:12px 16px; font-size:11px; font-family:'JetBrains Mono',monospace; background:var(--bg-inset); overflow-x:auto;">{{ run.source_refs | tojson(indent=2) }}</pre>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ───────────────────── PIPELINE LOG ───────────────────── #}
+  <div class="card log-card">
+    <div class="card-head collapsible" data-card-toggle>
+      <h3>
+        <span class="disclose-arrow"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg></span>
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><path d="M4.5 6l2 2-2 2M8 10.5h3.5"/>
+        </svg>
+        Pipeline log
+        <span id="log-live" class="hidden" style="display:none; color:var(--primary); font-size:11px; font-weight:500;"
               title="Streaming pipeline events from the server. New log lines appear as the worker emits them.">● live</span>
-        <span id="log-count" class="text-xs text-gray-500"></span>
-      </div>
-      <div class="flex items-center space-x-2">
-        <label class="text-xs text-gray-600 flex items-center space-x-1">
-          <input id="log-autoscroll" type="checkbox" class="rounded" checked>
-          <span>Auto-scroll</span>
-        </label>
-        <button type="button" id="log-copy"
-                class="text-xs rounded-md bg-white px-2 py-1 text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50"
+        <span id="log-count" class="sub"></span>
+        <span id="live-indicator" class="hidden" style="display:none"></span>
+      </h3>
+      <div class="card-head-actions" onclick="event.stopPropagation()">
+        <label class="checkbox-label"><input id="log-autoscroll" type="checkbox" checked> Auto-scroll</label>
+        <button type="button" id="log-copy" class="btn sm"
                 title="Copy the visible log lines as plain text (paste into Jira, Slack, etc.)">Copy</button>
-        <a href="/api/runs/{{ run.id }}/events/download?format=txt"
-           class="text-xs rounded-md bg-white px-2 py-1 text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Download .txt</a>
-        <a href="/api/runs/{{ run.id }}/events/download?format=json"
-           class="text-xs rounded-md bg-white px-2 py-1 text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">Download .json</a>
+        <a href="/api/runs/{{ run.id }}/events/download?format=txt" class="btn sm">.txt</a>
+        <a href="/api/runs/{{ run.id }}/events/download?format=json" class="btn sm">.json</a>
       </div>
     </div>
-    <div id="pipeline-log" class="px-4 py-3 max-h-96 overflow-y-auto font-mono text-xs space-y-0.5 bg-gray-50">
-      <div id="log-empty" class="text-gray-500 italic">Waiting for events&hellip;</div>
+    <div class="card-body is-hidden">
+      <div id="pipeline-log" class="log-body">
+        <div id="log-empty" style="color:var(--ink-faint); font-style:italic;">Waiting for events…</div>
+      </div>
     </div>
   </div>
 
-  <!-- Live timeline (populated via SSE) -->
-  <div class="bg-white shadow rounded-lg">
-    <div class="px-4 py-4 border-b flex items-center justify-between">
-      <h3 class="text-lg font-medium">Timeline</h3>
-      <span id="live-indicator" class="hidden text-xs text-blue-600 font-medium"
-            title="Streaming test + step events from the server. Rows appear here as each TC + step completes.">● live</span>
-    </div>
-    <div id="timeline" class="divide-y divide-gray-200">
-      {% if not results %}
-      <div class="px-6 py-6 text-sm text-gray-500">Waiting for steps to start&hellip;</div>
-      {% endif %}
-      {% for r in results %}
-      <div class="px-6 py-4" data-test-id="{{ r.test_case_id }}">
-        <div class="flex justify-between items-center gap-3">
-          <span class="font-medium"><a href="/test-cases/{{ r.test_case_id }}" class="text-indigo-600 hover:underline">Test #{{ r.test_case_id }}</a></span>
-          <div class="flex items-center gap-2">
-            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium test-status
-              {% if r.status == 'passed' %}bg-green-100 text-green-800
-              {% elif r.status == 'failed' %}bg-red-100 text-red-800
-              {% else %}bg-gray-100 text-gray-800{% endif %}">{{ r.status }}</span>
-            {% if run.status in ['completed', 'failed'] and r.status in ['failed', 'error'] and user.role in ['admin','tester','superadmin'] %}
-            <form method="POST" action="/runs/{{ run.id }}/rerun-one" class="inline"
-                  title="Rerun just this test case in a new run (isolates confirmation without the whole suite).">
-            {{ csrf_input | safe }}
-              <input type="hidden" name="test_case_id" value="{{ r.test_case_id }}">
-              <button type="submit" class="text-xs rounded-md bg-white px-2 py-0.5 text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-50">
-                ↻ Rerun
-              </button>
-            </form>
-            {% endif %}
-          </div>
-        </div>
-        {% if r.failure_summary %}<p class="text-sm text-red-600 mt-1 break-words">{{ r.failure_summary }}</p>{% endif %}
-        {% if r.steps %}
-        <ol class="mt-2 space-y-1 step-list">
-          {% for s in r.steps %}
-          <li class="text-xs flex items-center space-x-2 step-row"
-              data-step-order="{{ s.step_order }}" data-test-case-id="{{ r.test_case_id }}">
-            <span class="w-4">{{ s.step_order }}.</span>
-            <span class="font-mono">{{ s.step_action }}</span>
-            <span>{{ s.target_object }}</span>
-            {% if s.failure_class == 'expected_fail_verified' %}
-              <span class="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20"
-                    title="This step was expected to be blocked by a Salesforce rule. The rule fired, so this counts as test PASS.">Expected fail &#x2713;</span>
-            {% elif s.failure_class == 'expected_fail_unverified' %}
-              <span class="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-medium text-red-700 ring-1 ring-inset ring-red-600/20"
-                    title="Step was flagged expect_fail=true but Salesforce accepted it. Validation rule may not be in effect.">Expected fail &#x2717;</span>
-            {% endif %}
-            <span class="ml-auto step-status {% if s.status == 'passed' %}text-green-500{% elif s.status == 'failed' %}text-red-500{% else %}text-gray-400{% endif %}">{{ s.status }}</span>
-            {% if s.error_message %}
-              {% if s.failure_class == 'expected_fail_verified' %}
-                <span class="text-amber-600 truncate max-w-xs">{{ s.error_message[:80] }}</span>
-              {% else %}
-                <span class="text-red-400 truncate max-w-xs">{{ s.error_message[:80] }}</span>
-              {% endif %}
-            {% endif %}
-          </li>
-          {% endfor %}
-        </ol>
-        {% endif %}
-      </div>
-      {% endfor %}
-    </div>
-  </div>
 </div>
 
+{# Accordion-toggle (native <details> would steal the summary element
+   used elsewhere; a tiny helper keeps the UI consistent across cards). #}
+<script>
+(function () {
+  document.querySelectorAll('.run-detail [data-card-toggle]').forEach(head => {
+    head.addEventListener('click', (e) => {
+      // Don't toggle if the click was inside an action button
+      if (e.target.closest('.card-head-actions')) return;
+      const card = head.closest('.card');
+      if (!card) return;
+      const body = card.querySelector('.card-body');
+      const arrow = head.querySelector('.disclose-arrow');
+      if (!body) return;
+      body.classList.toggle('is-hidden');
+      if (arrow) arrow.classList.toggle('open');
+      head.classList.toggle('collapsed', body.classList.contains('is-hidden'));
+    });
+  });
+})();
+</script>
+
+{# Test-row expand + filter tabs + search + failure-first sort. #}
+<script>
+(function () {
+  const tabBar = document.querySelector('.run-detail .tabs');
+  const searchInput = document.getElementById('test-search');
+  const timeline = document.getElementById('timeline');
+  const emptyFilter = document.getElementById('tests-empty-filter');
+  if (!tabBar || !timeline) return;
+
+  let activeFilter = 'all';
+  let query = '';
+
+  // Failure-first ordering on initial render: move failed rows to the
+  // top. SSE-added rows append to the end; that's acceptable since they
+  // only appear during live runs (not the triage case).
+  const rows = Array.from(timeline.querySelectorAll('.test-row'));
+  rows.sort((a, b) => {
+    const rank = s => (s === 'failed' ? 0 : s === 'skipped' || s === 'error' ? 1 : 2);
+    const ra = rank(a.dataset.status);
+    const rb = rank(b.dataset.status);
+    if (ra !== rb) return ra - rb;
+    return (parseInt(a.dataset.testId, 10) || 0) - (parseInt(b.dataset.testId, 10) || 0);
+  }).forEach(r => timeline.appendChild(r));
+
+  function applyFilters() {
+    let shown = 0;
+    timeline.querySelectorAll('.test-row').forEach(row => {
+      const status = row.dataset.status || '';
+      const name = row.dataset.name || '';
+      const id = row.dataset.testId || '';
+      let show = true;
+      if (activeFilter === 'failed' && status !== 'failed') show = false;
+      if (activeFilter === 'passed' && status !== 'passed') show = false;
+      if (show && query) {
+        const q = query.toLowerCase();
+        if (!name.includes(q) && !String(id).includes(q)) show = false;
+      }
+      row.classList.toggle('hidden-by-filter', !show);
+      if (show) shown += 1;
+    });
+    if (emptyFilter) emptyFilter.style.display = shown === 0 ? '' : 'none';
+  }
+
+  tabBar.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabBar.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
+      tab.classList.add('on');
+      activeFilter = tab.dataset.filter || 'all';
+      applyFilters();
+    });
+  });
+  if (searchInput) {
+    searchInput.addEventListener('input', (e) => {
+      query = (e.target.value || '').trim();
+      applyFilters();
+    });
+  }
+
+  // Expand/collapse test body on head click
+  timeline.addEventListener('click', (e) => {
+    const head = e.target.closest('.test-head');
+    if (!head) return;
+    // Ignore clicks on the test id link + action buttons
+    if (e.target.closest('a, button, form')) return;
+    const row = head.closest('.test-row');
+    if (!row) return;
+    const body = row.querySelector('.test-body');
+    const arrow = head.querySelector('.disclose-arrow');
+    if (body) body.classList.toggle('is-hidden');
+    if (arrow) arrow.classList.toggle('open');
+  });
+})();
+</script>
+
+{# ──────── EXISTING SSE + LABEL JS BELOW (PRESERVED VERBATIM) ──────── #}
 <script>
 // SSE subscriber — only for active runs
 (function(){
@@ -364,8 +564,8 @@
     status: {{ run.status | tojson }}
   };
   const terminal = new Set(['completed', 'failed', 'cancelled']);
-  // Whether the run was still active when the page was loaded \u2014 drives
-  // whether to reload on terminal transition vs. just close the stream.
+  // Whether the run was still active when the page was loaded — drives
+  // whether to show the refresh hint on terminal transition vs. just close the stream.
   const wasActive = !terminal.has(run.status);
 
   const live = document.getElementById('live-indicator');
@@ -375,101 +575,105 @@
   const totalEl = document.getElementById('run-total');
   const timeline = document.getElementById('timeline');
 
-  // Update the stage track (the colored bar across the top of the page)
-  // live as stage_started / stage_finished events arrive.
+  // Update the stage track live as stage_started / stage_finished events arrive.
+  // Target shape after the redesign: each stage is a .pipe-stage with
+  // data-stage="<name>" containing a .dot.stage-bar and .stage-status.
   function updateStageBar(stageName, status) {
     const cell = document.querySelector(`[data-stage="${stageName}"]`);
     if (!cell) return;
-    const bar = cell.querySelector('.stage-bar');
+    const bar = cell.querySelector('.stage-bar, .dot');
     const label = cell.querySelector('.stage-status');
-    if (!bar || !label) return;
-    bar.classList.remove('bg-green-500', 'bg-red-500', 'bg-blue-500',
-                         'bg-gray-300', 'bg-gray-200', 'animate-pulse-blue');
-    label.classList.remove('text-green-600', 'text-red-600',
-                           'text-blue-600', 'text-gray-400');
-    const barMap = {
-      passed: ['bg-green-500'],
-      failed: ['bg-red-500'],
-      running: ['bg-blue-500', 'animate-pulse-blue'],
-      skipped: ['bg-gray-300'],
-      pending: ['bg-gray-200'],
+    if (!bar) return;
+    // Remove our redesigned dot-status classes (not Tailwind ones)
+    bar.classList.remove('go', 'nogo', 'running', 'skip', 'pending');
+    const map = {
+      passed: 'go',
+      failed: 'nogo',
+      running: 'running',
+      skipped: 'skip',
+      pending: 'pending',
     };
-    const textMap = {
-      passed: ['text-green-600'],
-      failed: ['text-red-600'],
-      running: ['text-blue-600'],
-      skipped: ['text-gray-400'],
-      pending: ['text-gray-400'],
-    };
-    (barMap[status] || barMap.pending).forEach(c => bar.classList.add(c));
-    (textMap[status] || textMap.pending).forEach(c => label.classList.add(c));
-    label.textContent = status;
+    bar.classList.add(map[status] || 'pending');
+    if (label) label.textContent = status;
   }
 
   function setStatusBadge(status) {
-    const classes = ['bg-green-100','text-green-800','bg-red-100','text-red-800',
-                     'bg-blue-100','text-blue-800','bg-yellow-100','text-yellow-800',
-                     'bg-gray-100','text-gray-800','animate-pulse-blue'];
-    statusBadge.classList.remove(...classes);
+    if (!statusBadge) return;
+    statusBadge.classList.remove('go', 'nogo', 'warn');
     const map = {
-      completed: ['bg-green-100','text-green-800'],
-      failed: ['bg-red-100','text-red-800'],
-      running: ['bg-blue-100','text-blue-800','animate-pulse-blue'],
-      queued: ['bg-yellow-100','text-yellow-800'],
+      completed: 'go',
+      failed: 'nogo',
+      running: 'warn',
+      queued: 'warn',
+      cancelled: 'warn',
     };
-    (map[status] || ['bg-gray-100','text-gray-800']).forEach(c => statusBadge.classList.add(c));
-    statusBadge.textContent = status;
+    statusBadge.classList.add(map[status] || 'warn');
+    // Preserve the inner dot + text
+    const existingDot = statusBadge.querySelector('.d');
+    statusBadge.textContent = ' ' + status;
+    statusBadge.insertBefore(existingDot || Object.assign(document.createElement('span'), { className: 'd' }), statusBadge.firstChild);
   }
 
+  // SSE-injected per-step rendering. Only fires for LIVE runs; for
+  // post-run page loads, server-rendered .test-row chip markup is used.
+  // The injected markup is intentionally simpler; a reload brings the
+  // full chip layout on run termination.
   function upsertStep(evt) {
     const { test_case_id, step_order, action, target_object, status, error_summary, duration_ms } = evt;
     let testBlock = timeline.querySelector(`[data-test-id="${test_case_id}"]`);
     if (!testBlock) {
+      // Remove empty-state placeholder if present
+      const placeholder = timeline.querySelector('.empty-state');
+      if (placeholder) placeholder.remove();
       testBlock = document.createElement('div');
-      testBlock.className = 'px-6 py-4';
+      testBlock.className = 'test-row';
       testBlock.dataset.testId = test_case_id;
+      testBlock.dataset.status = 'running';
+      testBlock.dataset.name = String(test_case_id);
       testBlock.innerHTML = `
-        <div class="flex justify-between items-center">
-          <span class="font-medium">Test #${test_case_id}</span>
-          <span class="test-status inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">running</span>
-        </div>
-        <ol class="mt-2 space-y-1 step-list"></ol>`;
-      const waitingMsg = timeline.querySelector('.text-gray-500');
-      if (waitingMsg) waitingMsg.remove();
+        <div class="test-head">
+          <span></span>
+          <span class="test-id">#${test_case_id}</span>
+          <div><div class="test-name">Test #${test_case_id}</div><div class="steps-inline step-list"></div></div>
+          <div class="test-meta"></div>
+          <div><span class="state-pill warn test-status"><span class="d"></span>running</span></div>
+        </div>`;
       timeline.appendChild(testBlock);
     }
     const list = testBlock.querySelector('.step-list');
     let row = list.querySelector(`[data-step-order="${step_order}"]`);
     if (!row) {
-      row = document.createElement('li');
-      row.className = 'text-xs flex items-center space-x-2 step-row';
+      row = document.createElement('span');
+      row.className = 'step-chip mono';
       row.dataset.stepOrder = step_order;
       row.dataset.testCaseId = test_case_id;
-      row.innerHTML = `<span class="w-4">${step_order}.</span>
-        <span class="font-mono">${action || '?'}</span>
-        <span>${target_object || ''}</span>
-        <span class="ml-auto step-status text-gray-400">running</span>`;
+      if (list.children.length > 0) {
+        const sep = document.createElement('span');
+        sep.className = 'step-sep';
+        sep.textContent = '›';
+        list.appendChild(sep);
+      }
+      row.innerHTML = `<span class="verb">${action || '?'}</span>${target_object ? '<span class="obj">' + target_object + '</span>' : ''}`;
       list.appendChild(row);
     }
-    const statusSpan = row.querySelector('.step-status');
     if (status) {
-      statusSpan.textContent = status + (duration_ms ? ` (${duration_ms}ms)` : '');
-      statusSpan.className = 'step-status ml-auto ' +
-        (status === 'passed' ? 'text-green-500' :
-         status === 'failed' || status === 'error' ? 'text-red-500' : 'text-gray-400');
+      row.classList.remove('go', 'nogo', 'skip', 'expected-fail');
+      if (status === 'passed') row.classList.add('go');
+      else if (status === 'failed' || status === 'error') row.classList.add('nogo');
+      else if (status === 'skipped') row.classList.add('skip');
     }
-    if (error_summary) {
-      let errSpan = row.querySelector('.step-error');
-      if (!errSpan) {
-        errSpan = document.createElement('span');
-        errSpan.className = 'step-error text-red-400 truncate max-w-xs';
-        row.appendChild(errSpan);
-      }
-      errSpan.textContent = error_summary;
+    // Update test status pill
+    const pill = testBlock.querySelector('.test-status');
+    if (pill && status) {
+      pill.classList.remove('go', 'nogo', 'warn');
+      const pillCls = status === 'passed' ? 'go' : (status === 'failed' || status === 'error') ? 'nogo' : 'warn';
+      pill.classList.add(pillCls);
+      testBlock.dataset.status = status;
+      if (status === 'failed' || status === 'error') testBlock.classList.add('is-failed');
     }
   }
 
-  // Pipeline log panel \u2014 structured, hierarchical, last-200 soft cap
+  // Pipeline log panel — structured, hierarchical, last-200 soft cap
   const logEl = document.getElementById('pipeline-log');
   const logEmpty = document.getElementById('log-empty');
   const logLive = document.getElementById('log-live');
@@ -480,18 +684,12 @@
   const seenEventIds = new Set();
   let logRowCount = 0;
 
-  // Copy-to-clipboard for the pipeline log. Builds a plain-text
-  // representation of the currently-rendered rows (timestamp + indented
-  // message) \u2014 good for pasting into Jira tickets, Slack threads, or
-  // emails. Uses navigator.clipboard with an execCommand fallback for
-  // older browsers. Success/failure is shown by briefly swapping the
-  // button label so the user doesn't wonder whether it worked.
+  // Copy-to-clipboard for the pipeline log (same behaviour as before the redesign).
   if (logCopyBtn) {
     logCopyBtn.addEventListener('click', async () => {
       const lines = [];
       for (const row of logEl.children) {
         if (row.id === 'log-empty') continue;
-        // Each row has: [timestamp span][icon/indent span][message span]
         const spans = row.querySelectorAll('span');
         const ts = (spans[0] && spans[0].textContent || '').trim();
         const msg = (spans[2] && spans[2].textContent || '').replace(/\s+$/, '');
@@ -510,7 +708,6 @@
         if (navigator.clipboard && window.isSecureContext) {
           await navigator.clipboard.writeText(text);
         } else {
-          // Fallback for non-HTTPS / older browsers
           const ta = document.createElement('textarea');
           ta.value = text;
           ta.style.position = 'fixed';
@@ -527,7 +724,6 @@
     });
   }
 
-  // Map each event kind to indent level for the hierarchical look
   const INDENT = {
     run_status: 0, log: 0,
     stage_started: 1, stage_finished: 1,
@@ -536,86 +732,83 @@
   };
 
   const ICON = {
-    stage_started: '\u25B6',
-    stage_finished_passed: '\u2713',
-    stage_finished_failed: '\u2717',
-    stage_finished_skipped: '\u26A0',
-    test_started: '\u25B6',
-    test_finished_passed: '\u2713',
-    test_finished_failed: '\u2717',
-    test_finished_error: '\u2717',
-    step_started: '\u2192',
-    step_finished_passed: '\u2192',
-    step_finished_failed: '\u2192',
-    step_finished_error: '\u2192',
-    log_info: '\u00b7',
-    log_warn: '\u26A0',
-    log_error: '\u2717',
-    run_status_completed: '\u2713',
-    run_status_failed: '\u2717',
-    run_status_running: '\u25B6',
-    run_status_queued: '\u00b7',
-    run_status_cancelled: '\u26A0',
+    stage_started: '▶',
+    stage_finished_passed: '✓',
+    stage_finished_failed: '✗',
+    stage_finished_skipped: '⚠',
+    test_started: '▶',
+    test_finished_passed: '✓',
+    test_finished_failed: '✗',
+    test_finished_error: '✗',
+    step_started: '→',
+    step_finished_passed: '→',
+    step_finished_failed: '→',
+    step_finished_error: '→',
+    log_info: '·',
+    log_warn: '⚠',
+    log_error: '✗',
+    run_status_completed: '✓',
+    run_status_failed: '✗',
+    run_status_running: '▶',
+    run_status_queued: '·',
+    run_status_cancelled: '⚠',
   };
 
   function logIconFor(kind, level, ctx) {
-    if (kind === 'stage_finished') return ICON['stage_finished_' + (ctx.status || 'passed')] || '\u2713';
-    if (kind === 'test_finished') return ICON['test_finished_' + (ctx.status || 'passed')] || '\u2713';
-    if (kind === 'step_finished') return ICON['step_finished_' + (ctx.status || 'passed')] || '\u2192';
-    if (kind === 'run_status') return ICON['run_status_' + (ctx.status || 'info')] || '\u00b7';
-    if (kind === 'log') return ICON['log_' + (level || 'info')] || '\u00b7';
-    return ICON[kind] || '\u00b7';
+    if (kind === 'stage_finished') return ICON['stage_finished_' + (ctx.status || 'passed')] || '✓';
+    if (kind === 'test_finished') return ICON['test_finished_' + (ctx.status || 'passed')] || '✓';
+    if (kind === 'step_finished') return ICON['step_finished_' + (ctx.status || 'passed')] || '→';
+    if (kind === 'run_status') return ICON['run_status_' + (ctx.status || 'info')] || '·';
+    if (kind === 'log') return ICON['log_' + (level || 'info')] || '·';
+    return ICON[kind] || '·';
   }
 
   function logColorFor(kind, level, ctx) {
-    if (level === 'error' || ctx.status === 'failed' || ctx.status === 'error') return 'text-red-600';
-    if (level === 'warn' || ctx.status === 'skipped') return 'text-yellow-700';
-    if (kind === 'stage_finished' && ctx.status === 'passed') return 'text-green-600';
-    if (kind === 'test_finished' && ctx.status === 'passed') return 'text-green-600';
-    if (kind === 'step_finished' && ctx.status === 'passed') return 'text-green-600';
-    if (kind === 'run_status' && ctx.status === 'completed') return 'text-green-600';
-    return 'text-gray-700';
+    if (level === 'error' || ctx.status === 'failed' || ctx.status === 'error') return 'var(--nogo)';
+    if (level === 'warn' || ctx.status === 'skipped') return 'var(--warn)';
+    if (kind === 'stage_finished' && ctx.status === 'passed') return 'var(--go)';
+    if (kind === 'test_finished' && ctx.status === 'passed') return 'var(--go)';
+    if (kind === 'step_finished' && ctx.status === 'passed') return 'var(--go)';
+    if (kind === 'run_status' && ctx.status === 'completed') return 'var(--go)';
+    return 'var(--ink-mid)';
   }
 
   function appendLog(ev) {
-    // `ev` may come from DB tail (has `id`, `ts`, `kind`, `level`, `message`, `context`)
-    // or from in-process bus (has event-type-named top-level fields in `data`).
-    // We normalise by always passing DB-shaped objects \u2014 see normaliseEvent()
     if (ev.id && seenEventIds.has(ev.id)) return;
     if (ev.id) seenEventIds.add(ev.id);
 
-    if (logEmpty) logEmpty.remove();
+    if (logEmpty && logEmpty.parentNode) logEmpty.remove();
 
     const kind = ev.kind;
     const level = ev.level || 'info';
     const ctx = ev.context || {};
     const indent = INDENT[kind] ?? 0;
     const icon = logIconFor(kind, level, ctx);
-    const colorClass = logColorFor(kind, level, ctx);
+    const color = logColorFor(kind, level, ctx);
     const ts = ev.ts ? new Date(ev.ts).toLocaleTimeString([], {hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'}) : '';
 
     const row = document.createElement('div');
-    row.className = 'flex items-start space-x-2 ' + colorClass;
-    row.innerHTML = `<span class="text-gray-400 tabular-nums">${ts}</span>
-      <span class="tabular-nums" style="padding-left: ${indent * 12}px">${icon}</span>
-      <span class="flex-1 whitespace-pre-wrap break-words">${escapeHtml(ev.message || '')}</span>`;
+    row.style.cssText = `display:flex; align-items:flex-start; gap:8px; color:${color};`;
+    row.innerHTML = `<span style="color:var(--ink-faint); font-variant-numeric:tabular-nums;">${ts}</span>
+      <span style="font-variant-numeric:tabular-nums; padding-left:${indent * 12}px">${icon}</span>
+      <span style="flex:1; white-space:pre-wrap; word-break:break-word;">${escapeHtml(ev.message || '')}</span>`;
     logEl.appendChild(row);
     logRowCount += 1;
 
-    // Soft-cap: trim oldest so the DOM doesn't grow unbounded during
-    // long runs. Full history is always available via the Download button.
     while (logRowCount > LOG_SOFT_CAP) {
       const first = logEl.children[0];
       if (!first || first === logEmpty) break;
       first.remove();
       logRowCount -= 1;
     }
-    if (autoscrollEl.checked) {
+    if (autoscrollEl && autoscrollEl.checked) {
       logEl.scrollTop = logEl.scrollHeight;
     }
-    logCount.textContent = logRowCount === LOG_SOFT_CAP
-      ? `showing last ${LOG_SOFT_CAP}`
-      : `${logRowCount} event${logRowCount === 1 ? '' : 's'}`;
+    if (logCount) {
+      logCount.textContent = logRowCount === LOG_SOFT_CAP
+        ? `showing last ${LOG_SOFT_CAP}`
+        : `${logRowCount} event${logRowCount === 1 ? '' : 's'}`;
+    }
   }
 
   function escapeHtml(s) {
@@ -624,8 +817,6 @@
     }[c]));
   }
 
-  // Normalise in-process BUS events (flat payload, no id) so appendLog
-  // can treat them like DB-shaped events.
   function normaliseBusEvent(type, data) {
     return {
       kind: type,
@@ -642,29 +833,26 @@
     if (type === 'stage_started') return `Stage ${d.stage_name || '?'} started`;
     if (type === 'stage_finished') return `Stage ${d.stage_name || '?'} ${d.status || '?'}` + (d.duration_ms ? ` (${d.duration_ms}ms)` : '');
     if (type === 'test_started') return `Test #${d.test_case_id || '?'} started` + (d.total_steps ? ` (${d.total_steps} steps)` : '');
-    if (type === 'test_finished') return `Test #${d.test_case_id || '?'} ${d.status || '?'}` + (d.duration_ms ? ` in ${(d.duration_ms / 1000).toFixed(1)}s` : '') + (d.error_summary ? ` \u2014 ${d.error_summary}` : '');
+    if (type === 'test_finished') return `Test #${d.test_case_id || '?'} ${d.status || '?'}` + (d.duration_ms ? ` in ${(d.duration_ms / 1000).toFixed(1)}s` : '') + (d.error_summary ? ` — ${d.error_summary}` : '');
     if (type === 'step_started') return `Step ${d.step_order || '?'} ${d.action || ''} ${d.target_object || ''}`.trim();
-    if (type === 'step_finished') return `Step ${d.step_order || '?'} ${d.status || ''}` + (d.duration_ms ? ` (${d.duration_ms}ms)` : '') + (d.error_summary ? ` \u2014 ${d.error_summary}` : '');
+    if (type === 'step_finished') return `Step ${d.step_order || '?'} ${d.status || ''}` + (d.duration_ms ? ` (${d.duration_ms}ms)` : '') + (d.error_summary ? ` — ${d.error_summary}` : '');
     if (type === 'run_status') return `Run ${d.status || ''}`;
     return type + ' ' + JSON.stringify(d || {});
   }
 
   const es = new EventSource('/api/runs/' + run.id + '/events');
   es.addEventListener('open', () => {
-    live.classList.remove('hidden');
-    logLive.classList.remove('hidden');
+    if (live) { live.classList.remove('hidden'); live.style.display = ''; }
+    if (logLive) { logLive.classList.remove('hidden'); logLive.style.display = ''; }
   });
   es.addEventListener('error', () => { /* browser auto-reconnects */ });
 
-  // DB-shape events (from the tail endpoint): these are the durable
-  // run_events rows. Each has an `id` so we can dedupe on reconnect.
   ['stage_started', 'stage_finished', 'test_started', 'test_finished',
    'log', 'run_started', 'run_finished'].forEach(kind => {
     es.addEventListener(kind, e => {
       try {
         const payload = JSON.parse(e.data);
         appendLog(payload);
-        // Keep the stage bar in sync as stages transition
         const ctx = payload.context || payload;
         if (kind === 'stage_started' && ctx.stage_name) {
           updateStageBar(ctx.stage_name, 'running');
@@ -679,22 +867,16 @@
     try {
       const snap = JSON.parse(e.data);
       if (snap.status) setStatusBadge(snap.status);
-      if (snap.passed != null) passedEl.textContent = snap.passed;
-      if (snap.failed != null) failedEl.textContent = snap.failed;
-      if (snap.total_tests != null) totalEl.textContent = snap.total_tests;
+      if (snap.passed != null && passedEl) passedEl.textContent = snap.passed;
+      if (snap.failed != null && failedEl) failedEl.textContent = snap.failed;
+      if (snap.total_tests != null && totalEl) totalEl.textContent = snap.total_tests;
       if (Array.isArray(snap.stages)) {
         snap.stages.forEach(s => updateStageBar(s.stage_name, s.status));
       }
       if (terminal.has(snap.status)) {
-        live.classList.add('hidden');
-        logLive.classList.add('hidden');
+        if (live) live.style.display = 'none';
+        if (logLive) logLive.style.display = 'none';
         es.close();
-        // No auto-reload: the pipeline log is the main thing users
-        // are reading when a run ends, and a reload flashes it to
-        // blank before backfill re-renders it. Status badge, stage
-        // bar, counts, and test timeline are already live-updated
-        // by SSE; server-rendered panels (cost, failure-summary)
-        // stay until the user manually refreshes.
         if (wasActive) showRefreshHint();
       }
     } catch (err) { console.warn('bad snapshot', err); }
@@ -703,7 +885,6 @@
   es.addEventListener('step_started', e => {
     try {
       const payload = JSON.parse(e.data);
-      // DB-tail events have `id` + `context`; bus events are flat
       if (payload.id && payload.context) {
         upsertStep(payload.context);
         appendLog(payload);
@@ -738,8 +919,8 @@
         appendLog(normaliseBusEvent('run_status', d));
       }
       if (d.terminal) {
-        live.classList.add('hidden');
-        logLive.classList.add('hidden');
+        if (live) live.style.display = 'none';
+        if (logLive) logLive.style.display = 'none';
         es.close();
         if (wasActive) showRefreshHint();
       }
@@ -747,25 +928,21 @@
   });
 
   es.addEventListener('stream_ending', () => {
-    live.classList.add('hidden');
-    logLive.classList.add('hidden');
+    if (live) live.style.display = 'none';
+    if (logLive) logLive.style.display = 'none';
     es.close();
   });
 
-  // Small, dismissible hint shown after a live-watched run ends: nudges
-  // the user to manually refresh if they want to see server-rendered
-  // panels (cost, failure summary, cleanup) that don't stream over SSE.
-  // Preserves the pipeline log in place \u2014 no auto-reload flash.
   function showRefreshHint() {
     if (document.getElementById('refresh-hint')) return;
     const banner = document.createElement('div');
     banner.id = 'refresh-hint';
-    banner.className = 'mt-3 flex items-center justify-between rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800';
+    banner.className = 'refresh-hint';
     banner.innerHTML = `
       <span>Run finished. Refresh to load cost + failure summary.</span>
-      <span class="space-x-3">
-        <a href="#" onclick="event.preventDefault(); window.location.reload();" class="font-medium underline hover:no-underline">Refresh</a>
-        <a href="#" onclick="event.preventDefault(); this.closest('#refresh-hint').remove();" class="text-blue-600 hover:text-blue-900">Dismiss</a>
+      <span style="display:flex; gap:12px;">
+        <a href="#" onclick="event.preventDefault(); window.location.reload();" style="font-weight:500; text-decoration:underline;">Refresh</a>
+        <a href="#" onclick="event.preventDefault(); this.closest('#refresh-hint').remove();" style="color:#1e40af;">Dismiss</a>
       </span>`;
     const host = document.querySelector('[data-run-summary]') || document.body;
     host.insertAdjacentElement('afterbegin', banner);
@@ -774,10 +951,7 @@
 </script>
 
 <script>
-// ---- Inline run-label editor -------------------------------------------
-// Debounced save \u2014 user types, we wait 500 ms, then PATCH
-// /runs/:id/label. "Saving\u2026" \u2192 "Saved" microcopy in the status
-// span so the user sees state without a toast spam.
+// Inline run-label editor (preserved verbatim from pre-redesign)
 (function(){
   const input = document.getElementById('run-label-input');
   const status = document.getElementById('run-label-status');
@@ -788,7 +962,7 @@
   async function save() {
     const val = input.value.trim();
     if (val === lastSaved) return;
-    status.textContent = 'Saving\u2026';
+    status.textContent = 'Saving…';
     try {
       const r = await fetch('/runs/' + runId + '/label', {
         method: 'POST', credentials: 'same-origin',
