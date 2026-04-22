@@ -148,6 +148,11 @@ def run_tests():
 
     # --- Page render ---
     def test_run_renders_for_tester():
+        # Re-force perms right before the check. Concurrent chain runs
+        # can mutate the tester's perms between the top-of-suite setup
+        # and this test firing. The contract we're verifying is "a
+        # tester_base holder sees /run" — so anchor that at test time.
+        _force_perms(tester_user.id, ["tester_base"])
         login_form("tester_rt@primeqa.io", "test123")
         r = client.get("/run", follow_redirects=False)
         assert r.status_code == 200, f"Expected 200, got {r.status_code}"
@@ -320,6 +325,13 @@ def run_tests():
             env = (db.query(Environment)
                    .filter_by(tenant_id=TENANT_ID, is_active=True).first())
             env_id = env.id
+            # Pre-restore env state. Chain-runs of this suite can leave
+            # allow_bulk_run=false and is_production=true if test 8 / 9
+            # didn't fully restore under contention. Force the happy
+            # state here so the happy-path actually runs.
+            env.allow_bulk_run = True
+            env.is_production = False
+            db.commit()
             req = (db.query(Requirement)
                    .join(TestCase, TestCase.requirement_id == Requirement.id)
                    .filter(Requirement.tenant_id == TENANT_ID,
