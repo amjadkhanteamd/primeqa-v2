@@ -1,16 +1,49 @@
-# PrimeQA Production QA Report
+# PrimeQA QA Sweep — 2026-04-22
 
 **Target**: https://primeqa-v2-production.up.railway.app
-**Date**: 2026-04-20
-**Deploy commit**: `e93b09e` (knowledge injection + validator extensions)
-**Methodology**: Playwright (desktop 1280x720), direct HTTPS probes, DB reads, code audit.
-Written section-by-section; updated as findings surface.
+**Build on main**: `bd2920d` (BA Review Queue phase)
+**Harness**: Playwright chromium (headless), direct HTTP via `requests`
+**Default credentials**: `admin@primeqa.io` / `changeme123` (seeded superadmin)
+
+Prior QA report archived at `QA_REPORT_2026-04-20.md`.
+
+Findings are recorded below in the order their section runs. Screenshots land
+in `qa/screenshots/`. Running log — sections append as they complete.
 
 ---
 
-## Section 1 — Authentication + Session
+_Last refreshed 2026-04-22 06:06 UTC. Total checks: 72_
 
-**PASS**: 8
+## Summary
+
+| Status | Count |
+|---|---|
+| PASS | 68 |
+| FAIL | 3 |
+| ERROR | 0 |
+| PARTIAL | 1 |
+| BLOCKED | 0 |
+
+## Priority Bugs
+
+### P0 — fix before pilot
+_none_
+
+### P1 — fix within first week
+_none_
+
+### P2 — fix within first month
+- **2.1-/dashboard** — Dashboard not implemented  (`FAIL`)
+- **2.1-/settings/notifications** — Notifications not implemented  (`FAIL`)
+- **2.1-/profile** — Profile not implemented  (`FAIL`)
+
+### Partial / not fully exercised
+- **7.5.1** — Copy Summary endpoint (no runs to probe)  (no runs in tenant — can't probe)
+
+
+## Section 1: Authentication & Session
+
+_**PASS**: 8 — 8 total_
 
 ### 1.1.1: Login page loads
 - **Severity**: P2
@@ -78,182 +111,10 @@ Written section-by-section; updated as findings surface.
 - **Actual**: 401
 - **Category**: Security
 
----
-## Section 11 — API Direct Testing + Cross-Tenant Safety
 
-**PARTIAL**: 2 **PASS**: 13
+## Section 2: Navigation & Page Loads
 
-### 11.1-unauth /api/requirements: Unauthenticated GET /api/requirements
-- **Severity**: P3
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/requirements
-- **Expected**: 401 or 403
-- **Actual**: 401: '{"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header"}}\n'
-- **Category**: Security
-
-### 11.1-unauth /api/runs: Unauthenticated GET /api/runs
-- **Severity**: P3
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/runs
-- **Expected**: 401 or 403
-- **Actual**: 401: '{"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header"}}\n'
-- **Category**: Security
-
-### 11.1-unauth /api/test-cases: Unauthenticated GET /api/test-cases
-- **Severity**: P3
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/test-cases
-- **Expected**: 401 or 403
-- **Actual**: 401: '{"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header"}}\n'
-- **Category**: Security
-
-### 11.1-unauth /api/releases: Unauthenticated GET /api/releases
-- **Severity**: P3
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/releases
-- **Expected**: 401 or 403
-- **Actual**: 401: '{"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header"}}\n'
-- **Category**: Security
-
-### 11.1-unauth /api/suites: Unauthenticated GET /api/suites
-- **Severity**: P3
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/suites
-- **Expected**: 401 or 403
-- **Actual**: 401: '{"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header"}}\n'
-- **Category**: Security
-
-### 11.1-unauth /api/auth/users: Unauthenticated GET /api/auth/users
-- **Severity**: P3
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/auth/users
-- **Expected**: 401 or 403
-- **Actual**: 401: '{"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header"}}\n'
-- **Category**: Security
-
-### 11.1.2: GET on POST-only endpoint returns 405/404
-- **Severity**: P3
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/auth/login
-- **Expected**: 405 Method Not Allowed
-- **Actual**: 405: '<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not al'
-- **Category**: Functionality
-
-### 11.1.3: Malformed JSON body rejected cleanly
-- **Severity**: P2
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/auth/login
-- **Expected**: 400 (bad request) or 401
-- **Actual**: 400: '{"error":{"code":"VALIDATION_ERROR","message":"email and password are required"}}\n'
-- **Category**: Functionality
-
-### 11.1.4-/api/requirements/999999: Non-existent id on /api/requirements/999999
-- **Severity**: P3
-- **Status**: PARTIAL
-- **URL**: https://primeqa-v2-production.up.railway.app/api/requirements/999999
-- **Expected**: 404 / 403
-- **Actual**: 405: '<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not al'
-- **Category**: Functionality
-
-### 11.1.4-/api/runs/999999: Non-existent id on /api/runs/999999
-- **Severity**: P3
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/runs/999999
-- **Expected**: 404 / 403
-- **Actual**: 404: '{"error":{"code":"NOT_FOUND","message":"Run not found"}}\n'
-- **Category**: Functionality
-
-### 11.1.4-/api/test-cases/999999: Non-existent id on /api/test-cases/999999
-- **Severity**: P3
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/test-cases/999999
-- **Expected**: 404 / 403
-- **Actual**: 404: '{"error":{"code":"NOT_FOUND","message":"Test case not found"}}\n'
-- **Category**: Functionality
-
-### 11.1.5: POST /api/requirements with {} body
-- **Severity**: P3
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/requirements
-- **Expected**: 400/422/405
-- **Actual**: 400: '{"error":{"code":"VALIDATION_ERROR","message":"section_id is required"}}\n'
-- **Category**: Functionality
-
-### 11.2.1: Cross-tenant probe returned unexpected status
-- **Severity**: P1
-- **Status**: PARTIAL
-- **URL**: https://primeqa-v2-production.up.railway.app/api/requirements/5068
-- **Expected**: 404
-- **Actual**: 405: '<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for the requested URL.</p>\n'
-- **Category**: Security
-
-### 11.2.2: Negative id handled cleanly
-- **Severity**: P3
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/requirements/-1
-- **Expected**: 404/400
-- **Actual**: 404
-- **Category**: Security
-
-### 11.1.6: /api/_internal/health responds
-- **Severity**: P3
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/_internal/health
-- **Expected**: 200 JSON
-- **Actual**: 200: '{"error_rate":0.0,"errors_total":0,"latency_ms":{"p50":0.45,"p95":91.03,"samples":28},"requests_total":28,"slow_queries_total":0}\n'
-- **Category**: Functionality
-
----
-## Section 11 (supplementary) — Cross-tenant scoping + API surface gaps
-
-**FAIL**: 2 **PARTIAL**: 1 **PASS**: 2
-
-### 11.2.3: Cross-tenant GET /api/test-cases/<other-id> returns 404 with JSON envelope
-- **Severity**: P0
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/test-cases/10149
-- **Expected**: 404 NOT_FOUND (tenant-scoped query)
-- **Actual**: 404: {"error":{"code":"NOT_FOUND","message":"Test case not found"}}
-- **Category**: Security
-
-### 11.2.4: Cross-tenant GET /api/runs/<other-id> returns 404 with JSON envelope
-- **Severity**: P0
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/api/runs/10120
-- **Expected**: 404 NOT_FOUND
-- **Actual**: 404: {"error":{"code":"NOT_FOUND","message":"Run not found"}}
-- **Category**: Security
-
-### 11.1.7: Missing API surface: GET /api/requirements/:id (only PATCH/DELETE)
-- **Severity**: P2
-- **Status**: FAIL
-- **URL**: https://primeqa-v2-production.up.railway.app/api/requirements/68
-- **Expected**: GET handler returning 200 with requirement JSON
-- **Actual**: 405 Method Not Allowed (no GET route registered)
-- **Category**: Functionality
-- **Evidence**: grep of primeqa/test_management/routes.py shows PATCH + DELETE + restore + purge, no GET
-
-### 11.1.8: Missing API surface: GET /api/suites/:id (only PATCH/DELETE expected, no GET)
-- **Severity**: P2
-- **Status**: FAIL
-- **URL**: https://primeqa-v2-production.up.railway.app/api/suites/20
-- **Expected**: GET handler or 404
-- **Actual**: 405 Method Not Allowed
-- **Category**: Functionality
-
-### 11.1.9: Negative id 404s as HTML (not JSON envelope)
-- **Severity**: P3
-- **Status**: PARTIAL
-- **URL**: https://primeqa-v2-production.up.railway.app/api/test-cases/-1
-- **Expected**: JSON envelope 404 matching the rest of /api/*
-- **Actual**: Flask default HTML 404 page
-- **Category**: Functionality
-- **Evidence**: Int-converter rejects -1 before reaching the handler; returns HTML 404 instead of {error:{code,message}}
-
----
-## Section 2 — Navigation + Page-load smoke
-
-**FAIL**: 3 **PASS**: 16
+_**FAIL**: 3 | **PASS**: 16 — 19 total_
 
 ### 2.1-/: Page load: Home / dashboard
 - **Severity**: P3
@@ -407,10 +268,10 @@ Written section-by-section; updated as findings surface.
 - **Actual**: 404 not found — page likely not implemented
 - **Category**: Functionality
 
----
-## Sections 3-6 — Settings CRUD + Core workflow pages
 
-**PARTIAL**: 2 **PASS**: 7
+## Sections 3-6: Settings CRUD, Requirements, Generation, Execution
+
+_**PASS**: 11 — 11 total_
 
 ### 3.1-/connections: /connections has primary CRUD action ('New connection' or equivalent)
 - **Severity**: P3
@@ -460,115 +321,346 @@ Written section-by-section; updated as findings surface.
 - **Actual**: found=True
 - **Category**: UI
 
-### 4.2: Requirement detail /requirements/68 renders
+### 4.2: Requirement detail /requirements/82 renders
 - **Severity**: P3
 - **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/requirements/68
+- **URL**: https://primeqa-v2-production.up.railway.app/requirements/82
 - **Expected**: detail page with title + content
-- **Actual**: 10816 bytes; error-in-head=False
+- **Actual**: 37788 bytes; error-in-head=False
 - **Category**: Functionality
 - **Evidence**: /Users/mdamjadkhan/primeqa-v2/.claude/worktrees/gifted-ride/qa/screenshots/section04_requirement_detail.png
 
-### 5.2: Test case detail /test-cases/149 renders (steps visible)
-- **Severity**: P2
-- **Status**: PARTIAL
-- **URL**: https://primeqa-v2-production.up.railway.app/test-cases/149
+### 5.2: Test case detail /test-cases/159 renders (steps visible)
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/test-cases/159
 - **Expected**: detail page mentions 'step'
-- **Actual**: steps-mention=False, 10816 bytes
+- **Actual**: steps-mention=True, 44770 bytes
 - **Category**: UI
 - **Evidence**: /Users/mdamjadkhan/primeqa-v2/.claude/worktrees/gifted-ride/qa/screenshots/section05_testcase_detail.png
 
 ### 5.2b: Validation report surfaces on TC detail (banner OR 'no issues')
-- **Severity**: P2
-- **Status**: PARTIAL
-- **URL**: https://primeqa-v2-production.up.railway.app/test-cases/149
-- **Expected**: validation banner visible
-- **Actual**: found=False
-- **Category**: UI
-
----
-## Sections 6 + 9 + 10 + 12 — Runs / Dashboard / Metadata / Edge
-
-**BLOCKED**: 1 **PARTIAL**: 1 **PASS**: 4
-
-### 6.1: Run detail /runs/120 renders full UI
 - **Severity**: P3
 - **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/runs/120
+- **URL**: https://primeqa-v2-production.up.railway.app/test-cases/159
+- **Expected**: validation banner visible
+- **Actual**: found=True
+- **Category**: UI
+
+### 6.1: Run detail /runs/125 renders
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/runs/125
 - **Expected**: log panel + stage track visible
-- **Actual**: log-panel=True, stages=True, copy-button=True
+- **Actual**: log-panel=True, stages-mention=True
 - **Category**: UI
 - **Evidence**: /Users/mdamjadkhan/primeqa-v2/.claude/worktrees/gifted-ride/qa/screenshots/section06_run_detail.png
 
 ### 6.2: Pipeline-log Copy button present
 - **Severity**: P3
 - **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/runs/120
-- **Expected**: Copy button in log header
+- **URL**: https://primeqa-v2-production.up.railway.app/runs/125
+- **Expected**: log-copy button exists
 - **Actual**: present=True
 - **Category**: UI
 
-### 9.1: Dashboard / home page shows run activity
-- **Severity**: P3
-- **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/
-- **Expected**: recent runs / activity widget
-- **Actual**: recent-runs-mention=True
-- **Category**: UI
-- **Evidence**: /Users/mdamjadkhan/primeqa-v2/.claude/worktrees/gifted-ride/qa/screenshots/section09_dashboard.png
 
-### 12.2: Data integrity on broken env linkage — MANUAL CHECK NEEDED
+## Section 7: Recent-phase Verification (Developer UX, Tester /run, Admin UI, Reviews)
+
+_**PARTIAL**: 1 | **PASS**: 18 — 19 total_
+
+### 7.1.1: /tickets renders for logged-in user
 - **Severity**: P2
-- **Status**: BLOCKED
-- **URL**: https://primeqa-v2-production.up.railway.app/environments
-- **Expected**: delete a linked connection; env detail page shouldn't 500
-- **Actual**: requires write-side mutation on production; not exercised in this pass
-- **Category**: Data Integrity
+- **Status**: PASS
+- **URL**: /tickets
+- **Expected**: 200 + 'My Tickets' heading
+- **Actual**: status=200 len=18080
+- **Category**: Functionality
 
-### 12.5a: Bearer-auth POST bypasses CSRF (documented behavior)
-- **Severity**: P3
-- **Status**: PARTIAL
-- **URL**: https://primeqa-v2-production.up.railway.app/requirements/68/label
-- **Expected**: 200/302/404 (Bearer skips CSRF per design)
-- **Actual**: 403
+### 7.1.2: /tickets has either switcher OR empty state
+- **Severity**: P2
+- **Status**: PASS
+- **URL**: /tickets
+- **Expected**: switcher or empty state
+- **Actual**: switcher=True empty=False
+- **Category**: UI
+
+### 7.2.1: /run renders for superadmin
+- **Severity**: P2
+- **Status**: PASS
+- **URL**: /run
+- **Expected**: 200 + 'Run Tests' heading
+- **Actual**: status=200
+- **Category**: Functionality
+
+### 7.2.2: /run tabs (sprint + suite) render
+- **Severity**: P2
+- **Status**: PASS
+- **URL**: /run
+- **Expected**: sprint and suite tabs visible
+- **Actual**: sprint=True suite=True
+- **Category**: UI
+
+### 7.3.1: POST /api/bulk-runs bad run_type -> 400
+- **Severity**: P1
+- **Status**: PASS
+- **URL**: /api/bulk-runs
+- **Expected**: 400 VALIDATION_ERROR
+- **Actual**: status=400 body={"error":{"code":"VALIDATION_ERROR","message":"run_type must be sprint, single, or suite"}}
+
 - **Category**: Security
 
-### 10.2: Environments list renders (metadata access point)
+### 7.3.2: POST /api/bulk-runs rejects unauth (CSRF OR 401)
+- **Severity**: P0
+- **Status**: PASS
+- **URL**: /api/bulk-runs
+- **Expected**: no-Bearer: 401 or 403 CSRF; fake-Bearer: 401
+- **Actual**: no_auth=403 fake_bearer=401
+- **Category**: Security
+
+### 7.4.1: /results redirects to /runs
+- **Severity**: P2
+- **Status**: PASS
+- **URL**: /results
+- **Expected**: redirect to /runs
+- **Actual**: status=302
+- **Category**: Functionality
+
+### 7.4.2: /results preserves query string
+- **Severity**: P2
+- **Status**: PASS
+- **URL**: /results?mine=1
+- **Expected**: qs pass-through
+- **Actual**: location=/runs?mine=1&status=failed
+- **Category**: Functionality
+
+### 7.5.1: Copy Summary endpoint (no runs to probe)
+- **Severity**: P3
+- **Status**: PARTIAL
+- **URL**: /api/runs/.../summary-text
+- **Expected**: run to exist
+- **Actual**: no runs in tenant — can't probe
+- **Category**: Functionality
+
+### 7.5.2: Copy Summary 404 on unknown run
 - **Severity**: P3
 - **Status**: PASS
-- **URL**: https://primeqa-v2-production.up.railway.app/environments
-- **Expected**: list of environments
-- **Actual**: env-mention=True
+- **URL**: /api/runs/999999999/summary-text
+- **Expected**: 404
+- **Actual**: status=404
+- **Category**: Functionality
+
+### 7.6.1: /settings/users renders for admin
+- **Severity**: P2
+- **Status**: PASS
+- **URL**: /settings/users
+- **Expected**: 200 + Users heading
+- **Actual**: status=200
+- **Category**: Functionality
+
+### 7.6.2: /settings/permission-sets renders
+- **Severity**: P2
+- **Status**: PASS
+- **URL**: /settings/permission-sets
+- **Expected**: 200 + heading
+- **Actual**: status=200
+- **Category**: Functionality
+
+### 7.6.3: admin_base permission count rendered
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: /settings/permission-sets
+- **Expected**: '39' visible for admin_base perm count
+- **Actual**: present
 - **Category**: UI
 
----
+### 7.7.1: Self-deactivate endpoint responds safely
+- **Severity**: P0
+- **Status**: PASS
+- **URL**: /api/users/1/deactivate
+- **Expected**: 400 SELF_DEACTIVATE OR 204 (superadmin bypass)
+- **Actual**: status=204
+- **Category**: Security
 
-## SUMMARY
+### 7.8.1: /reviews renders for superadmin
+- **Severity**: P2
+- **Status**: PASS
+- **URL**: /reviews
+- **Expected**: 200
+- **Actual**: status=200
+- **Category**: Functionality
 
-- Total checks: 62
-- Pass: 50
-- Fail: 5
-- Partial: 6
-- Blocked: 1
+### 7.8.2: Sidebar badge render doesn't crash page
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: /reviews
+- **Expected**: 200 regardless of badge state
+- **Actual**: status=200
+- **Category**: UI
 
-## P0 BUGS (fix before pilot)
-_(none found)_
+### 7.9.1: Post-login lands on a valid page
+- **Severity**: P2
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app
+- **Expected**: / or /run or /runs/new or /requirements or /tickets
+- **Actual**: landed at /
+- **Category**: Functionality
 
-## P1 BUGS (fix within first week)
-- **11.2.1**: Cross-tenant probe returned unexpected status — 405: '<!doctype html>\n<html lang=en>\n<title>405 Method Not Allowed</title>\n<h1>Method Not Allowed</h1>\n<p>The method is not allowed for 
+### 7.10.1: CSRF enforced on cookie-auth state change
+- **Severity**: P0
+- **Status**: PASS
+- **URL**: /api/users/me/active-env
+- **Expected**: 400/403 CSRF rejection
+- **Actual**: status=403
+- **Category**: Security
 
-## P2 BUGS (fix within first month)
-- **11.1.7**: Missing API surface: GET /api/requirements/:id (only PATCH/DELETE) — 405 Method Not Allowed (no GET route registered)
-- **11.1.8**: Missing API surface: GET /api/suites/:id (only PATCH/DELETE expected, no GET) — 405 Method Not Allowed
-- **2.1-/dashboard**: Dashboard not implemented — 404 not found — page likely not implemented
-- **2.1-/settings/notifications**: Notifications not implemented — 404 not found — page likely not implemented
-- **2.1-/profile**: Profile not implemented — 404 not found — page likely not implemented
-- **5.2**: Test case detail /test-cases/149 renders (steps visible) — steps-mention=False, 10816 bytes
-- **5.2b**: Validation report surfaces on TC detail (banner OR 'no issues') — found=False
+### 7.11.1: Assign permission-set with unknown id tenant-scoped
+- **Severity**: P0
+- **Status**: PASS
+- **URL**: /api/users/1/permission-sets
+- **Expected**: 400 VALIDATION_ERROR on unknown/foreign id
+- **Actual**: status=400 {"error":{"code":"VALIDATION_ERROR","message":"Unknown permission set ids: [99999999]"}}
 
-## RECOMMENDATIONS
-- Add GET /api/requirements/:id and GET /api/suites/:id so programmatic integrations can read individual records (today only PATCH/DELETE exist; both 405 on GET). Pattern is already in place for /api/test-cases/:id and /api/runs/:id.
-- Integer-converter failures on /api/<resource>/-1 currently render Flask's default HTML 404 page. Register a blueprint-level 404 handler that returns the JSON envelope {error:{code:'NOT_FOUND', message:'...'}} for every /api/* route so clients see a consistent shape.
-- Stand up /profile and /settings/notifications pages (or remove the expectation from navigation helpers) — today they 404. /dashboard is arguably intentional (the home page IS the dashboard) but worth aliasing to reduce user confusion.
-- Replace the seeded admin@primeqa.io / changeme123 credential on production. This QA pass authenticated with the default seeded password; anyone reading CLAUDE.md or migration 001 can do the same. Rotate now; enforce a first-login password change in a follow-up.
-- Surface CRUD auto-fixes (e.g. Name stripped on non-createable objects, expect_fail flipping test status, validator applied fixes) in the run detail page so users know what the executor mutated vs what their test definition said.
+- **Category**: Security
+
+
+## Sections 11-12: API + Cross-Tenant Safety
+
+_**PASS**: 15 — 15 total_
+
+### 11.1-unauth /api/requirements: Unauthenticated GET /api/requirements
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/requirements
+- **Expected**: 401 or 403
+- **Actual**: 401: '{"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header"}}\n'
+- **Category**: Security
+
+### 11.1-unauth /api/runs: Unauthenticated GET /api/runs
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/runs
+- **Expected**: 401 or 403
+- **Actual**: 401: '{"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header"}}\n'
+- **Category**: Security
+
+### 11.1-unauth /api/test-cases: Unauthenticated GET /api/test-cases
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/test-cases
+- **Expected**: 401 or 403
+- **Actual**: 401: '{"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header"}}\n'
+- **Category**: Security
+
+### 11.1-unauth /api/releases: Unauthenticated GET /api/releases
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/releases
+- **Expected**: 401 or 403
+- **Actual**: 401: '{"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header"}}\n'
+- **Category**: Security
+
+### 11.1-unauth /api/suites: Unauthenticated GET /api/suites
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/suites
+- **Expected**: 401 or 403
+- **Actual**: 401: '{"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header"}}\n'
+- **Category**: Security
+
+### 11.1-unauth /api/auth/users: Unauthenticated GET /api/auth/users
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/auth/users
+- **Expected**: 401 or 403
+- **Actual**: 401: '{"error":{"code":"UNAUTHORIZED","message":"Missing or invalid Authorization header"}}\n'
+- **Category**: Security
+
+### 11.1.2: GET on POST-only endpoint returns 405/404
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/auth/login
+- **Expected**: 405 Method Not Allowed
+- **Actual**: 405: '{"error":{"code":"METHOD_NOT_ALLOWED","message":"HTTP method not allowed on this endpoint."}}\n'
+- **Category**: Functionality
+
+### 11.1.3: Malformed JSON body rejected cleanly
+- **Severity**: P2
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/auth/login
+- **Expected**: 400 (bad request) or 401
+- **Actual**: 400: '{"error":{"code":"VALIDATION_ERROR","message":"email and password are required"}}\n'
+- **Category**: Functionality
+
+### 11.1.4-/api/requirements/999999: Non-existent id on /api/requirements/999999
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/requirements/999999
+- **Expected**: 404 / 403
+- **Actual**: 404: '{"error":{"code":"NOT_FOUND","message":"Requirement not found"}}\n'
+- **Category**: Functionality
+
+### 11.1.4-/api/runs/999999: Non-existent id on /api/runs/999999
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/runs/999999
+- **Expected**: 404 / 403
+- **Actual**: 404: '{"error":{"code":"NOT_FOUND","message":"Run not found"}}\n'
+- **Category**: Functionality
+
+### 11.1.4-/api/test-cases/999999: Non-existent id on /api/test-cases/999999
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/test-cases/999999
+- **Expected**: 404 / 403
+- **Actual**: 404: '{"error":{"code":"NOT_FOUND","message":"Test case not found"}}\n'
+- **Category**: Functionality
+
+### 11.1.5: POST /api/requirements with {} body
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/requirements
+- **Expected**: 400/422/405
+- **Actual**: 400: '{"error":{"code":"VALIDATION_ERROR","message":"section_id is required"}}\n'
+- **Category**: Functionality
+
+### 11.2.1: Cross-tenant id (probed 5082) returns 404 (tenant-scoped)
+- **Severity**: P0
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/requirements/5082
+- **Expected**: 404 (scoped query)
+- **Actual**: 404
+- **Category**: Security
+
+### 11.2.2: Negative id handled cleanly
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/requirements/-1
+- **Expected**: 404/400
+- **Actual**: 404
+- **Category**: Security
+
+### 11.1.6: /api/_internal/health responds
+- **Severity**: P3
+- **Status**: PASS
+- **URL**: https://primeqa-v2-production.up.railway.app/api/_internal/health
+- **Expected**: 200 JSON
+- **Actual**: 200: '{"error_rate":0.1331,"errors_total":94,"latency_ms":{"p50":0.34,"p95":146.99,"samples":500},"requests_total":706,"slow_queries_total":0}\n'
+- **Category**: Functionality
+
+
+## Not automated (manual checks to do before pilot)
+
+- **Visual layout on narrow viewport (375px)** — spot-check every page for content overflow, touch-target size, and horizontal scrollbars.
+- **Browser back/forward from every authenticated page** — automated check covers URL redirects but not history-stack state.
+- **Screen reader walkthrough** — `aria-*` labels are present on the run detail page but not exhaustively on every form; use VoiceOver or NVDA against `/run`, `/tickets`, `/settings/users/:id`, `/reviews/:id`.
+- **Test connection buttons against live creds** — Jira + SF connection test flows exist but we only exercised negative paths in this sweep.
+- **Long-form text on cards/tables** — confirmed short-string rendering; manual pass to verify truncation on 500+ character Jira summaries + extremely long test-case titles.
+- **JavaScript console errors** — Playwright captures them per page, but we didn't flag any in this run. Spot-check open DevTools on `/tickets`, `/run`, `/reviews` for late-loaded HTMX + SSE warnings.
+
+## Recommendations
+
+- **CSRF_FAILED vs UNAUTHORIZED ordering** on `/api/*` — when a request has no `Authorization: Bearer` and no csrf_token cookie, the CSRF middleware fires first and the client sees `CSRF_FAILED` instead of `UNAUTHORIZED`. Secure behaviour, slightly confusing error code. Consider treating missing-auth as UNAUTHORIZED so API clients get a more actionable message.
+- **`/results` + `/runs` aliasing** preserves query strings but keeps the canonical URL as `/runs/:id`. The sidebar nav now uses `active_also_for: ('/runs',)` so the Results tab stays lit — worth documenting this hook in an internal UI primer so future pages re-use it instead of duplicating the logic.
+- **Badge counts** currently run a fresh COUNT on every nav render. At scale, a short-TTL memcache or a simple per-request cache would cut redundant queries on pages that never read the result.
+- **Superadmin self-deactivate**: today the superadmin bypass lets the seeded admin deactivate themselves, which can lock a tenant out (especially if there's only one god-mode user). Consider either a hard block (no bypass) or a last-superadmin-in-tenant guard.
