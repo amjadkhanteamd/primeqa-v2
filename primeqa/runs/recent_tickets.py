@@ -54,20 +54,20 @@ def record_view(db: Session, user_id: int, environment_id: Optional[int],
                         EXCLUDED.jira_summary, user_recent_tickets.jira_summary)
         """), {"uid": user_id, "eid": environment_id,
                "key": jira_key, "summary": jira_summary})
-        # Prune older rows beyond the retention cap. Subquery gets the
-        # cutoff viewed_at; anything older in this (user, env) scope
-        # gets deleted. Runs in the same transaction as the insert.
+        # Prune older rows beyond the retention cap. We compute the set
+        # of rows to KEEP (ordered by viewed_at DESC with a deterministic
+        # tiebreak on jira_key, so rapid-fire inserts that collide on
+        # microsecond timestamps don't produce an ambiguous "top 20").
+        # Then delete everything else in this (user, env) scope.
         db.execute(text("""
             DELETE FROM user_recent_tickets
             WHERE user_id = :uid AND environment_id = :eid
-              AND viewed_at < (
-                SELECT COALESCE(MIN(viewed_at), NOW())
-                FROM (
-                    SELECT viewed_at FROM user_recent_tickets
-                    WHERE user_id = :uid AND environment_id = :eid
-                    ORDER BY viewed_at DESC
-                    LIMIT :cap
-                ) AS keep
+              AND (viewed_at, jira_key) NOT IN (
+                SELECT viewed_at, jira_key
+                FROM user_recent_tickets
+                WHERE user_id = :uid AND environment_id = :eid
+                ORDER BY viewed_at DESC, jira_key DESC
+                LIMIT :cap
               )
         """), {"uid": user_id, "eid": environment_id,
                "cap": MAX_RECENT_PER_ENV})
