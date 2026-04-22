@@ -146,6 +146,17 @@ class TestCaseVersion(Base):
     # created or the user clicks Revalidate.
     validation_report = Column(JSONB)
     validated_at = Column(DateTime(timezone=True))
+    # Migration 045: GenerationLinter output for this version.
+    # lint_fixes  — count of auto-fixes the linter applied to the
+    #               generated steps before persisting (Id removed,
+    #               formula field dropped, date reformatted, etc.)
+    # lint_warnings — count of suspect values flagged but NOT
+    #               auto-corrected (e.g. picklist value not in the
+    #               synced metadata).
+    # lint_details — full summary_dict() JSON for the review panel.
+    lint_fixes = Column(Integer, nullable=False, server_default="0")
+    lint_warnings = Column(Integer, nullable=False, server_default="0")
+    lint_details = Column(JSONB)
     validated_against_meta_version_id = Column(
         Integer, ForeignKey("meta_versions.id", ondelete="SET NULL"),
     )

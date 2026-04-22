@@ -175,6 +175,33 @@ class TestManagementService:
         from primeqa.intelligence.validator import TestCaseValidator
         validator = TestCaseValidator(metadata_repo, env.current_meta_version_id)
 
+        # Prompt 13 wiring: structural linter runs after the LLM returns
+        # + before each TC version persists. Shares the validator's
+        # already-hydrated metadata indexes so it doesn't re-query the
+        # DB. The linter's _field_meta helper accepts this dict shape
+        # directly.
+        from primeqa.intelligence.linter import GenerationLinter
+        linter_metadata = {}
+        for obj_api_name, obj_row in validator._obj_by_name.items():
+            field_map = validator._fields_by_obj.get(obj_row.id, {})
+            linter_metadata[obj_api_name] = {
+                "fields": {
+                    fapi: {
+                        "type": (f.field_type or "").lower(),
+                        "createable": bool(f.is_createable),
+                        "updateable": bool(f.is_updateable),
+                        # MetaField has no `calculated` column; the
+                        # linter's _KNOWN_FORMULA_FIELDS set covers the
+                        # canonical IsClosed/IsWon/IsConverted/IsDeleted
+                        # cases explicitly.
+                        "calculated": False,
+                        "picklistValues": f.picklist_values or [],
+                    }
+                    for fapi, f in field_map.items()
+                }
+            }
+        linter = GenerationLinter(linter_metadata)
+
         # Supersession: soft-delete all own-draft TCs for this requirement
         # across all prior batches. Approved / active stay.
         own_drafts = self.test_case_repo.list_test_cases(
@@ -280,6 +307,31 @@ class TestManagementService:
                 }
                 title = prefix_map.get(ct, "") + title
 
+            # Prompt 13: lint the generated flow BEFORE we persist it.
+            # auto_fix mode mutates plan_tc["steps"] in place — if the
+            # LLM produced Id-in-create, a formula field in the payload,
+            # or an untraced verify assertion, those are silently
+            # corrected and we persist the fixed version. Unresolved
+            # $vars (e.g. $random_user) block — we refuse to create
+            # the TC rather than persist a known-broken flow.
+            raw_steps = plan_tc.get("steps", []) or []
+            lint_result = linter.lint(raw_steps, mode="auto_fix")
+            logger = __import__("logging").getLogger(__name__)
+            logger.info(
+                "Linter: %d fixes, %d warnings, %d blocks for TC pending "
+                "(requirement=%s, coverage=%s)",
+                len(lint_result.fixes_applied),
+                len(lint_result.warnings),
+                len(lint_result.blocked),
+                requirement_id, ct,
+            )
+            if lint_result.blocked:
+                first = lint_result.blocked[0]
+                raise ValidationError(
+                    f"Linter blocked generation on step "
+                    f"{first.step_id} ({first.step_name}): {first.reason}"
+                )
+
             tc = self.test_case_repo.create_test_case(
                 tenant_id=tenant_id, title=title[:500],
                 owner_id=created_by, created_by=created_by,
@@ -294,13 +346,32 @@ class TestManagementService:
                 test_case_id=tc.id,
                 metadata_version_id=env.current_meta_version_id,
                 created_by=created_by,
-                steps=plan_tc.get("steps", []),
+                # Use the (possibly auto-fixed) steps, not the raw LLM output.
+                steps=raw_steps,
                 expected_results=plan_tc.get("expected_results", []),
                 preconditions=plan_tc.get("preconditions", []),
                 generation_method="ai",
                 confidence_score=float(plan_tc.get("confidence_score", 0.7)),
                 referenced_entities=plan_tc.get("referenced_entities", []),
             )
+
+            # Persist lint outcome onto the version row so the review
+            # queue + detail page can surface it without re-linting.
+            version.lint_fixes = len(lint_result.fixes_applied)
+            version.lint_warnings = len(lint_result.warnings)
+            version.lint_details = (lint_result.summary_dict()
+                                    if (lint_result.fixes_applied
+                                        or lint_result.warnings)
+                                    else None)
+            self.test_case_repo.db.commit()
+            # Log per-TC now that we know its id.
+            if lint_result.fixes_applied or lint_result.warnings:
+                logger.info(
+                    "Linter: %d fixes, %d warnings, 0 blocks for TC-%d",
+                    len(lint_result.fixes_applied),
+                    len(lint_result.warnings),
+                    tc.id,
+                )
 
             # Validate the freshly-generated steps and persist a report so
             # the detail page shows issues inline, pre-flight can block on
@@ -337,7 +408,20 @@ class TestManagementService:
             except Exception:
                 pass  # feedback is best-effort
 
-            if float(plan_tc.get("confidence_score", 0.7)) < 0.7:
+            # Prompt 13: linter-modified TCs always go to the review queue
+            # so a human can spot-check the auto-fixes. Reason takes
+            # precedence over low_confidence because linter_modified is
+            # more specific + actionable. Fresh TCs that passed the
+            # linter clean still follow the confidence threshold below.
+            if lint_result.fixes_applied:
+                self.review_repo.create_review(
+                    tenant_id=tenant_id,
+                    test_case_version_id=version.id,
+                    assigned_to=created_by,
+                    review_reason="linter_modified",
+                )
+                auto_reviews += 1
+            elif float(plan_tc.get("confidence_score", 0.7)) < 0.7:
                 # Migration 042: flag with why it landed in review. This
                 # is the multi-TC plan path, always a fresh generation.
                 # Low-confidence is the reason the review fired, so we
