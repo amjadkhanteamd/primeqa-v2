@@ -52,12 +52,30 @@
       {% for r in reviews %}
       <div class="flex items-center px-6 py-4 hover:bg-gray-50" data-review-id="{{ r.id }}">
         <a href="/reviews/{{ r.id }}" class="flex-1 min-w-0">
-          <div class="flex justify-between items-center">
-            <div>
-              <p class="text-sm font-medium text-indigo-600 hover:underline">Review #{{ r.id }}</p>
-              <p class="text-sm text-gray-500">Version #{{ r.test_case_version_id }}</p>
+          <div class="flex justify-between items-start gap-4">
+            <div class="min-w-0">
+              {# Task 3: enriched card. Backend ships tc_id, tc_title,
+                 jira_key, step_count, generation_method,
+                 review_reason_label via the queue payload. Fall back
+                 gracefully for legacy reviews where the join didn't
+                 resolve (tc_title missing). #}
+              <p class="text-sm font-medium text-indigo-600 hover:underline">
+                {% if r.tc_id %}TC-{{ r.tc_id }}{% else %}Review #{{ r.id }}{% endif %}
+                {% if r.tc_title %}<span class="text-gray-800 font-normal"> — {{ r.tc_title }}</span>{% endif %}
+              </p>
+              <p class="mt-0.5 text-xs text-gray-500 flex flex-wrap gap-x-3">
+                {% if r.jira_key %}<span class="font-mono">{{ r.jira_key }}</span>{% endif %}
+                {% if r.version_number %}<span>v{{ r.version_number }}</span>{% endif %}
+                {% if r.step_count is not none %}<span>{{ r.step_count }} step{% if r.step_count != 1 %}s{% endif %}</span>{% endif %}
+                {% if r.generation_method %}<span class="text-gray-400">{{ r.generation_method }}</span>{% endif %}
+              </p>
+              {% if r.status == 'pending' %}
+                <p class="mt-1 text-xs text-indigo-700">
+                  {{ r.review_reason_label or 'Review required' }}
+                </p>
+              {% endif %}
             </div>
-            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium {% if r.status == 'pending' %}bg-orange-100 text-orange-800{% elif r.status == 'approved' %}bg-green-100 text-green-800{% elif r.status == 'rejected' %}bg-red-100 text-red-800{% else %}bg-yellow-100 text-yellow-800{% endif %}">{{ r.status }}</span>
+            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium shrink-0 {% if r.status == 'pending' %}bg-orange-100 text-orange-800{% elif r.status == 'approved' %}bg-green-100 text-green-800{% elif r.status == 'rejected' %}bg-red-100 text-red-800{% else %}bg-yellow-100 text-yellow-800{% endif %}">{{ r.status }}</span>
           </div>
         </a>
         {% if user.role in ['admin', 'ba', 'superadmin'] and not show_deleted %}
@@ -96,6 +114,45 @@
   </div>
 
   {{ render_meta_pagination(meta, '/reviews', qs) }}
+
+  {# Task 3: Recently Reviewed section. Shows the last 5 non-pending
+     reviews in the tenant so the queue worker has context on what's
+     been processed recently. Always renders, even when empty, so it's
+     a predictable anchor. #}
+  {% if recently_reviewed %}
+  <div class="mt-6">
+    <h2 class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
+      Recently Reviewed
+    </h2>
+    <div class="bg-white shadow rounded-lg divide-y divide-gray-100">
+      {% for r in recently_reviewed %}
+        <div class="flex items-center justify-between px-6 py-2 text-sm">
+          <div class="min-w-0 flex items-center gap-3">
+            {% if r.status == 'approved' %}
+              <span class="text-green-600" aria-hidden="true">✓</span>
+              <span class="text-green-700 font-medium">Approved</span>
+            {% elif r.status == 'rejected' %}
+              <span class="text-red-600" aria-hidden="true">✗</span>
+              <span class="text-red-700 font-medium">Rejected</span>
+            {% else %}
+              <span class="text-yellow-600" aria-hidden="true">○</span>
+              <span class="text-yellow-700 font-medium">{{ r.status|capitalize }}</span>
+            {% endif %}
+            <span class="text-gray-400">·</span>
+            <a href="/reviews/{{ r.id }}"
+               class="text-indigo-600 hover:underline truncate">
+              {% if r.tc_id %}TC-{{ r.tc_id }}{% else %}Review #{{ r.id }}{% endif %}
+              {% if r.tc_title %} — {{ r.tc_title }}{% endif %}
+            </a>
+          </div>
+          {% if r.reviewed_at %}
+            <span class="text-xs text-gray-400 font-mono">{{ r.reviewed_at[:10] }}</span>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 <script>

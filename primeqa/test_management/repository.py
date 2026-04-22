@@ -702,10 +702,15 @@ class BAReviewRepository:
     def __init__(self, db):
         self.db = db
 
-    def create_review(self, tenant_id, test_case_version_id, assigned_to):
+    def create_review(self, tenant_id, test_case_version_id, assigned_to,
+                      *, review_reason: str | None = None):
+        # Migration 042: review_reason describes why this version was
+        # flagged for review so the BA can triage the queue. Callers
+        # pass 'new_generation' | 'regenerated_after_fail' |
+        # 'regenerated_knowledge' | 'linter_modified' | 'low_confidence'.
         review = BAReview(
             tenant_id=tenant_id, test_case_version_id=test_case_version_id,
-            assigned_to=assigned_to,
+            assigned_to=assigned_to, review_reason=review_reason,
         )
         self.db.add(review)
         self.db.commit()

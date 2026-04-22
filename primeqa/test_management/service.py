@@ -338,10 +338,16 @@ class TestManagementService:
                 pass  # feedback is best-effort
 
             if float(plan_tc.get("confidence_score", 0.7)) < 0.7:
+                # Migration 042: flag with why it landed in review. This
+                # is the multi-TC plan path, always a fresh generation.
+                # Low-confidence is the reason the review fired, so we
+                # tag it as such rather than the more generic
+                # "new_generation".
                 self.review_repo.create_review(
                     tenant_id=tenant_id,
                     test_case_version_id=version.id,
                     assigned_to=created_by,
+                    review_reason="low_confidence",
                 )
                 auto_reviews += 1
 
@@ -583,11 +589,18 @@ class TestManagementService:
 
         auto_review_created = False
         if result["confidence_score"] < 0.7:
-            # review_repo is guaranteed-present thanks to constructor DI
+            # review_repo is guaranteed-present thanks to constructor DI.
+            # Migration 042: tag the review with why it fired. New TCs
+            # are 'new_generation'; regenerated ones are 'regenerated_*'.
+            if generation_mode == "new":
+                reason = "low_confidence"  # fresh TC below threshold
+            else:
+                reason = "regenerated_after_fail"  # regen path
             self.review_repo.create_review(
                 tenant_id=tenant_id,
                 test_case_version_id=version.id,
                 assigned_to=created_by,
+                review_reason=reason,
             )
             auto_review_created = True
 

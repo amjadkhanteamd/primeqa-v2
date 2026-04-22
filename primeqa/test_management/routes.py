@@ -756,6 +756,7 @@ def delete_suite(suite_id):
 
 @test_management_bp.route("/api/suites/<int:suite_id>/restore", methods=["POST"])
 @require_role("admin", "tester")
+@require_permission("manage_test_suites")
 def restore_suite(suite_id):
     svc, db = _get_service()
     try:
@@ -769,6 +770,7 @@ def restore_suite(suite_id):
 
 @test_management_bp.route("/api/suites/<int:suite_id>/purge", methods=["POST"])
 @require_role("admin")
+@require_permission("manage_test_suites")
 def purge_suite(suite_id):
     svc, db = _get_service()
     try:
@@ -795,6 +797,7 @@ def get_suite_test_cases(suite_id):
 
 @test_management_bp.route("/api/suites/<int:suite_id>/test-cases", methods=["POST"])
 @require_role("admin", "tester")
+@require_permission("manage_test_suites")
 def add_to_suite(suite_id):
     data = request.get_json(silent=True) or {}
     if not data.get("test_case_id"):
@@ -812,6 +815,7 @@ def add_to_suite(suite_id):
 
 @test_management_bp.route("/api/suites/<int:suite_id>/test-cases/bulk", methods=["POST"])
 @require_role("admin", "tester")
+@require_permission("manage_test_suites")
 def add_to_suite_bulk(suite_id):
     """Add many test cases to a suite in one call.
     Body: {test_case_ids: [int, ...]}
@@ -846,6 +850,7 @@ def add_to_suite_bulk(suite_id):
 
 @test_management_bp.route("/api/suites/<int:suite_id>/test-cases/<int:tc_id>", methods=["DELETE"])
 @require_role("admin", "tester")
+@require_permission("manage_test_suites")
 def remove_from_suite(suite_id, tc_id):
     svc, db = _get_service()
     try:
@@ -859,6 +864,7 @@ def remove_from_suite(suite_id, tc_id):
 
 @test_management_bp.route("/api/suites/<int:suite_id>/test-cases/<int:tc_id>/reorder", methods=["PATCH"])
 @require_role("admin", "tester")
+@require_permission("manage_test_suites")
 def reorder_in_suite(suite_id, tc_id):
     data = request.get_json(silent=True) or {}
     svc, db = _get_service()

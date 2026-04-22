@@ -244,6 +244,7 @@ def update_environment(env_id):
 
 @core_bp.route("/api/environments/<int:env_id>/test-connection", methods=["POST"])
 @require_role("admin")
+@require_permission("manage_environments")
 def test_connection(env_id):
     svc, db = _get_env_service()
     try:

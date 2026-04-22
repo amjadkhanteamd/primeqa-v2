@@ -87,13 +87,19 @@
                 </a>
                 <div class="flex items-center space-x-3 flex-shrink-0">
                   <span class="text-xs text-gray-400">{{ s.updated_at[:10] if s.updated_at else (s.created_at[:10] if s.created_at else '') }}</span>
-                  {% if user.role in ['admin', 'tester', 'superadmin'] and not show_deleted %}
+                  {# Task 2: gate destructive suite actions on the
+                     granular permission. Role check stays as the
+                     legacy fallback (admin/tester holds it via
+                     admin_base / tester_base). #}
+                  {% if has_permission('manage_test_suites') and not show_deleted %}
                   <button class="text-xs text-red-600 hover:text-red-800" data-delete-suite="{{ s.id }}" data-suite-name="{{ s.name }}">Delete</button>
                   {% elif show_deleted %}
-                  <button class="text-xs text-indigo-600 hover:text-indigo-900" data-restore-suite="{{ s.id }}">Restore</button>
-                  {% if user.role in ['admin', 'superadmin'] %}
-                  <button class="text-xs text-red-600 hover:text-red-900" data-purge-suite="{{ s.id }}" data-suite-name="{{ s.name }}">Purge</button>
-                  {% endif %}
+                    {% if has_permission('manage_test_suites') %}
+                    <button class="text-xs text-indigo-600 hover:text-indigo-900" data-restore-suite="{{ s.id }}">Restore</button>
+                    {% endif %}
+                    {% if has_permission('manage_test_suites') and user.role in ['admin', 'superadmin'] %}
+                    <button class="text-xs text-red-600 hover:text-red-900" data-purge-suite="{{ s.id }}" data-suite-name="{{ s.name }}">Purge</button>
+                    {% endif %}
                   {% endif %}
                 </div>
             </li>

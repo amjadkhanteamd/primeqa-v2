@@ -45,8 +45,12 @@
     <button class="text-red-600 hover:text-red-900" data-purge-id="{{ tc.id }}" data-tc-title="{{ tc.title }}">Purge</button>
     {% endif %}
     {% else %}
+    {# Task 2: gate Edit/Delete on the library permission rather
+       than the legacy role check. #}
+    {% if has_permission('view_test_library') %}
     <a href="/test-cases/{{ tc.id }}/edit" class="text-gray-600 hover:text-indigo-600">Edit</a>
     <button class="text-red-600 hover:text-red-900" data-delete-id="{{ tc.id }}" data-tc-title="{{ tc.title }}">Delete</button>
+    {% endif %}
     {% endif %}
   </td>
 </tr>
@@ -190,7 +194,16 @@
         {% elif search or status_filter or coverage_filter %}
           No test cases match your filters. <a href="/test-cases?group_by=requirement" class="text-indigo-600 hover:underline">Clear</a>
         {% else %}
-          No test cases yet. <a href="/requirements" class="text-indigo-600 hover:underline">Generate some from a requirement</a>.
+          {# Task 5: guide the user to the correct first step. The
+             generation flow starts on /requirements (pick a ticket,
+             click Generate). A user without run permissions sees
+             a softer prompt. #}
+          No test cases yet.
+          {% if has_permission('run_single_ticket') or has_permission('run_sprint') %}
+            <a href="/requirements" class="text-indigo-600 hover:underline">Import a Jira ticket and generate tests</a>.
+          {% else %}
+            Ask a Tester to generate test cases from Requirements.
+          {% endif %}
         {% endif %}
       </div>
       {% endif %}

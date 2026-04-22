@@ -2340,6 +2340,16 @@ def environments_test_connection(env_id):
 @views_bp.route("/environments/<int:env_id>/refresh-metadata", methods=["POST"])
 @role_required("admin", "superadmin")
 def environments_refresh_metadata(env_id):
+    # Task 1: layered permission check alongside the legacy role gate.
+    # trigger_metadata_sync is granted by admin_base + tester_base, so
+    # testers can now kick off a sync without an admin-only role check.
+    from primeqa.core.permissions import require_permission, _resolve_effective_permissions  # noqa
+    effective = _resolve_effective_permissions()
+    if (request.user.get("role") != "superadmin"
+            and "trigger_metadata_sync" not in effective):
+        from flask import flash
+        flash("You don't have permission to refresh metadata.", "warning")
+        return redirect(f"/environments/{env_id}")
     """Queue a metadata-sync job and redirect to the progress page.
 
     This used to run the sync inline on the web worker; now we just INSERT
@@ -3151,6 +3161,25 @@ def api_revoke_permission_set(user_id, pset_id):
                     "code": "SELF_ADMIN_REVOKE",
                     "message": "Cannot remove your own admin permissions.",
                 }}, 400)
+            # Task 7: last-superadmin guard on permission-set removal.
+            # If the target is a superadmin AND this set contains
+            # manage_users AND they're the only active superadmin in the
+            # tenant, refuse — otherwise the tenant loses god-mode
+            # access entirely.
+            if (u.role == "superadmin"
+                    and "manage_users" in (ps.permissions or [])):
+                other_supers = (db.query(User)
+                                .filter(User.tenant_id == u.tenant_id,
+                                        User.role == "superadmin",
+                                        User.is_active == True,
+                                        User.id != u.id)
+                                .count())
+                if other_supers == 0:
+                    return ({"error": {
+                        "code": "LAST_SUPERADMIN",
+                        "message": ("Cannot strip admin permissions from the "
+                                    "last active superadmin in this tenant."),
+                    }}, 400)
             removed = revoke_permission_set(u.id, ps.id, db)
             db.commit()
             if not removed:
@@ -3166,7 +3195,7 @@ def api_revoke_permission_set(user_id, pset_id):
 @views_bp.route("/api/users/<int:user_id>/deactivate", methods=["POST"])
 @_require_auth_api
 def api_deactivate_user(user_id):
-    """Deactivate a user. Blocks self-deactivation."""
+    """Deactivate a user. Blocks self-deactivation + last-superadmin lockout."""
     from primeqa.core.models import User
     from primeqa.core.permissions import require_permission
 
@@ -3180,6 +3209,23 @@ def api_deactivate_user(user_id):
             u = db.query(User).filter_by(id=user_id).first()
             if u is None or u.tenant_id != request.user["tenant_id"]:
                 return ({"error": {"code": "NOT_FOUND", "message": "User not found"}}, 404)
+            # Task 7: last-superadmin guard. Even superadmins (who
+            # bypass the SELF_DEACTIVATE check) can't deactivate the
+            # last active superadmin in a tenant — that would lock
+            # admin-only routes behind a user who can no longer log in.
+            if u.role == "superadmin" and u.is_active:
+                other_supers = (db.query(User)
+                                .filter(User.tenant_id == u.tenant_id,
+                                        User.role == "superadmin",
+                                        User.is_active == True,
+                                        User.id != u.id)
+                                .count())
+                if other_supers == 0:
+                    return ({"error": {
+                        "code": "LAST_SUPERADMIN",
+                        "message": ("Cannot deactivate the last active "
+                                    "superadmin in this tenant."),
+                    }}, 400)
             u.is_active = False
             db.commit()
             return ("", 204)
@@ -4125,6 +4171,10 @@ def agent_fix_revert(fix_id):
 @views_bp.route("/runs/scheduled")
 @role_required("admin", "tester")
 def scheduled_runs_list():
+    # Task 1: permission overlay. configure_scheduled_runs is in
+    # admin_base only; listing is open to anyone with the role (the
+    # legacy gate already allows admin + tester), but a warning
+    # hint could be added later if a non-admin ever lands here.
     db = next(get_db())
     try:
         from primeqa.runs.schedule import ScheduledRunRepository
@@ -4198,6 +4248,13 @@ def scheduled_runs_new_form():
 @views_bp.route("/runs/scheduled/new", methods=["POST"])
 @role_required("admin", "tester")
 def scheduled_runs_create():
+    # Task 1: configure_scheduled_runs is the granular permission.
+    from primeqa.core.permissions import _resolve_effective_permissions
+    from flask import flash
+    if (request.user.get("role") != "superadmin"
+            and "configure_scheduled_runs" not in _resolve_effective_permissions()):
+        flash("You don't have permission to configure scheduled runs.", "warning")
+        return redirect("/runs/scheduled")
     from flask import flash
     from primeqa.runs.schedule import ScheduledRunRepository
     db = next(get_db())
@@ -4247,6 +4304,11 @@ def scheduled_runs_edit_form(sid):
 @role_required("admin", "tester")
 def scheduled_runs_edit(sid):
     from flask import flash
+    from primeqa.core.permissions import _resolve_effective_permissions
+    if (request.user.get("role") != "superadmin"
+            and "configure_scheduled_runs" not in _resolve_effective_permissions()):
+        flash("You don't have permission to configure scheduled runs.", "warning")
+        return redirect("/runs/scheduled")
     from primeqa.runs.schedule import ScheduledRunRepository
     db = next(get_db())
     try:
@@ -4299,6 +4361,12 @@ def scheduled_runs_disable(sid):
 @views_bp.route("/runs/scheduled/<int:sid>/delete", methods=["POST"])
 @role_required("admin", "tester")
 def scheduled_runs_delete(sid):
+    from primeqa.core.permissions import _resolve_effective_permissions
+    from flask import flash
+    if (request.user.get("role") != "superadmin"
+            and "configure_scheduled_runs" not in _resolve_effective_permissions()):
+        flash("You don't have permission to delete scheduled runs.", "warning")
+        return redirect("/runs/scheduled")
     from primeqa.runs.schedule import ScheduledRunRepository
     db = next(get_db())
     try:
