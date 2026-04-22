@@ -109,6 +109,31 @@ class PipelineService:
         self.run_repo.update_run_status(run.id, "completed")
         self.slot_repo.release_slot(run.environment_id, run.id)
         self._start_next_queued(run.environment_id)
+        # New pipeline_run => previous APPROVED / OVERRIDDEN sign-offs
+        # are now stale. The Release Owner approved a specific data
+        # snapshot; a fresh run invalidates that snapshot. Reset them
+        # to null so /dashboard shows PENDING on the latest run.
+        try:
+            from primeqa.execution.models import PipelineRun
+            db = self.run_repo.db
+            db.query(PipelineRun).filter(
+                PipelineRun.environment_id == run.environment_id,
+                PipelineRun.id != run.id,
+                PipelineRun.release_status.isnot(None),
+            ).update({
+                "release_status": None,
+                "approved_by": None,
+                "approved_at": None,
+                "override_reason": None,
+            }, synchronize_session=False)
+            db.commit()
+        except Exception:
+            # Never fail the run-complete path because of a stale-reset
+            # housekeeping step.
+            try:
+                self.run_repo.db.rollback()
+            except Exception:
+                pass
         try:
             from primeqa.runs.streams import emit_run_status
             emit_run_status(run_id, status="completed", terminal=True,

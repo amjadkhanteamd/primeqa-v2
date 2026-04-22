@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated": "2026-04-20",
-  "description": "Static SF-wide rules fed to every test_plan_generation prompt. Start small (20 rules), add as specific AI failure patterns surface in generation_quality_signals.",
+  "updated": "2026-04-22",
+  "description": "Static SF-wide rules fed to every test_plan_generation prompt. Extended 2026-04-22 to cover Prompt 13 categories.",
   "rules": [
     {
       "id": "NO_ID_IN_CREATE",
@@ -199,6 +199,136 @@
       "field_name": null,
       "category": "field_behaviour",
       "rule_text": "In Salesforce validation formulas, a null numeric field does NOT equal 0. Rules like 'Amount > 0' fire when Amount = 0 but NOT when Amount is null. Set fields explicitly when exercising a rule.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "OWNERID_DEFAULT",
+      "object_name": null,
+      "field_name": "OwnerId",
+      "category": "field_behaviour",
+      "rule_text": "Defaults to current user if not specified. If setting explicitly, must be a valid active User or Queue Id.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "BOOLEAN_NO_AUTORESET",
+      "object_name": null,
+      "field_name": null,
+      "category": "field_behaviour",
+      "rule_text": "Boolean fields (IsActive, DoNotCall, HasOptedOutOfEmail, etc.) do NOT auto-reset on status changes. Set them explicitly when needed.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "CURRENCY_ISO_CODE",
+      "object_name": null,
+      "field_name": null,
+      "category": "field_behaviour",
+      "rule_text": "In multi-currency orgs, monetary fields use CurrencyIsoCode. Set CurrencyIsoCode explicitly if not using org default.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "CASE_STATUS_TRANSITIONS",
+      "object_name": "Case",
+      "field_name": "Status",
+      "category": "operation",
+      "rule_text": "Standard transitions: New -> Working -> Escalated -> Closed. Reverse transitions (Closed -> New) often blocked by validation rules.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "OPPORTUNITY_STAGE_TRANSITIONS",
+      "object_name": "Opportunity",
+      "field_name": "StageName",
+      "category": "operation",
+      "rule_text": "Stages follow the orgs Sales Process. Terminal stages (Closed Won / Closed Lost) set IsClosed=true via formula. Validate StageName against metadata picklistValues.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "SOQL_API_NAMES",
+      "object_name": null,
+      "field_name": null,
+      "category": "operation",
+      "rule_text": "SOQL must use API names, not labels. FROM clause is case-sensitive.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "DATETIME_PRECISION",
+      "object_name": null,
+      "field_name": null,
+      "category": "assertion",
+      "rule_text": "Do not assert exact DateTime values \u2014 milliseconds vary between runs. Assert date ranges, day equality, or null/not-null instead.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "STATUS_CHANGE_MINIMAL_ASSERT",
+      "object_name": null,
+      "field_name": null,
+      "category": "assertion",
+      "rule_text": "After a status change, only assert the status field itself and fields explicitly set in the same step. Other fields may be mutated by automations.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "VERIFY_AFTER_CREATE",
+      "object_name": null,
+      "field_name": null,
+      "category": "assertion",
+      "rule_text": "After create, verify the record exists and key fields match. Do not assert auto-populated or formula fields unless their value is deterministic.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "AUDIT_FIELDS_READONLY_DML",
+      "object_name": null,
+      "field_name": null,
+      "category": "operation",
+      "rule_text": "CreatedDate and CreatedById cannot be set via standard DML. Returns INVALID_FIELD_FOR_INSERT_UPDATE.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "PICKLIST_DEPENDENCIES",
+      "object_name": null,
+      "field_name": null,
+      "category": "field_behaviour",
+      "rule_text": "Dependent picklists may restrict values based on controlling field. Check metadata picklistValues + controllerName before choosing a value.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "NO_SIDE_EFFECT_ASSUMPTIONS",
+      "object_name": null,
+      "field_name": null,
+      "category": "assertion",
+      "rule_text": "Never assume a field changes as a side effect of setting a different field unless a knowledge rule documents it.",
+      "source": "system",
+      "confidence": 1.0,
+      "scope": "global"
+    },
+    {
+      "id": "NO_FORMULA_ASSERTIONS",
+      "object_name": null,
+      "field_name": null,
+      "category": "assertion",
+      "rule_text": "Do not assert formula field values unless you can deterministically compute them from the fields you set.",
       "source": "system",
       "confidence": 1.0,
       "scope": "global"
