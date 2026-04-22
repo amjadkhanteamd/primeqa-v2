@@ -356,7 +356,18 @@ def api_dashboard_share():
             )
             db.add(link); db.commit(); db.refresh(link)
 
-            base = request.url_root.rstrip("/")
+            # Build the public URL. Railway (and most PaaS) terminate
+            # TLS at the proxy and forward plain HTTP to gunicorn;
+            # request.url_root reflects the internal scheme (http),
+            # which produces an ugly URL. Honour X-Forwarded-Proto
+            # when present so PMs can paste the link into Slack
+            # without a cert warning hop.
+            proto = request.headers.get("X-Forwarded-Proto",
+                                        request.scheme or "https")
+            if proto not in ("http", "https"):
+                proto = "https"
+            host = request.host
+            base = f"{proto}://{host}"
             return ({
                 "link_id": link.id,
                 "environment_id": env_id,
