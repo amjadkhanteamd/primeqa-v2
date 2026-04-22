@@ -92,11 +92,18 @@ def test(name, fn):
 # =============================================================================
 
 def _pick_env_and_section(db):
-    """Grab any active env with a metadata version and any section."""
+    """Grab any active env with a metadata version AND an LLM connection.
+
+    The LLM requirement matters: generate_test_plan raises
+    ValidationError("Environment has no LLM connection configured")
+    if llm_connection_id is None. Chain runs can mutate the first
+    matching env, so we filter explicitly.
+    """
     env = (db.query(Environment)
            .filter(Environment.tenant_id == TENANT_ID,
                    Environment.is_active.is_(True),
-                   Environment.current_meta_version_id.isnot(None))
+                   Environment.current_meta_version_id.isnot(None),
+                   Environment.llm_connection_id.isnot(None))
            .first())
     section = (db.query(Section)
                .filter(Section.tenant_id == TENANT_ID,
