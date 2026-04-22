@@ -1926,11 +1926,28 @@ def test_cases_update_steps(tc_id):
 # --- Reviews ---
 
 @views_bp.route("/reviews")
-@role_required("admin", "ba")
+@login_required
 def reviews_queue():
+    # Permission-based gate (migration 039+). Keeps legacy role-based
+    # admin/ba access intact because admin_base + tester_base both
+    # contain review_test_cases, while adding the granular permission
+    # as the canonical gate so custom permission sets work too.
+    from primeqa.core.permissions import require_page_permission
+
+    @require_page_permission("review_test_cases")
+    def _do():
+        return _reviews_queue_impl()
+
+    return _do()
+
+
+def _reviews_queue_impl():
     db = next(get_db())
     try:
         from primeqa.test_management.repository import BAReviewRepository
+        from primeqa.test_management.models import (
+            BAReview, Requirement, TestCase, TestCaseVersion,
+        )
         repo = BAReviewRepository(db)
         page = request.args.get("page", 1, type=int)
         per_page = request.args.get("per_page", 20, type=int)
@@ -1958,23 +1975,85 @@ def reviews_queue():
         except Exception as e:
             reviews, meta, query_error = [], {"total": 0, "page": 1, "per_page": per_page, "total_pages": 0}, str(e)
 
+        # Prompt 9: enrich each review card with test-case + requirement
+        # info so the BA can triage the queue without opening every row.
+        # Single batched query (avoid N+1) joined through TCV -> TC -> Req.
+        version_ids = [r.test_case_version_id for r in reviews]
+        enrich_map: dict[int, dict] = {}
+        if version_ids:
+            rows = (db.query(TestCaseVersion, TestCase, Requirement)
+                    .join(TestCase, TestCase.id == TestCaseVersion.test_case_id)
+                    .outerjoin(Requirement, Requirement.id == TestCase.requirement_id)
+                    .filter(TestCaseVersion.id.in_(version_ids))
+                    .all())
+            for (tcv, tc, req) in rows:
+                enrich_map[tcv.id] = {
+                    "tc_id": tc.id,
+                    "tc_title": tc.title,
+                    "jira_key": (req.jira_key if req else None),
+                    "version_number": tcv.version_number,
+                    "generation_method": tcv.generation_method,
+                    "step_count": len(tcv.steps or []),
+                    "confidence": tcv.confidence_score,
+                }
+
+        # Human-readable labels for the stored review_reason values.
+        reason_label = {
+            "new_generation": "New generation (first run)",
+            "regenerated_after_fail": "Regenerated after execution failure",
+            "regenerated_knowledge": "Regenerated with updated knowledge",
+            "linter_modified": "Modified by linter",
+            "low_confidence": "Low confidence generation",
+        }
+
         reviews_data = [{
             "id": r.id, "test_case_version_id": r.test_case_version_id,
             "status": r.status,
             "created_at": r.created_at.isoformat() if r.created_at else "",
+            "review_reason": r.review_reason,
+            "review_reason_label": (
+                reason_label.get(r.review_reason, reason_label["new_generation"])
+                if r.status == "pending" else None
+            ),
+            **(enrich_map.get(r.test_case_version_id) or {}),
         } for r in reviews]
+
+        # Recently-reviewed panel: last 5 non-pending reviews in tenant.
+        recently_reviewed_rows = (db.query(BAReview)
+                                  .filter(BAReview.tenant_id == request.user["tenant_id"],
+                                          BAReview.status != "pending",
+                                          BAReview.deleted_at.is_(None))
+                                  .order_by(BAReview.reviewed_at.desc())
+                                  .limit(5).all())
+        recently_reviewed = [{
+            "id": r.id,
+            "status": r.status,
+            "reviewed_at": r.reviewed_at.isoformat() if r.reviewed_at else "",
+            **(enrich_map.get(r.test_case_version_id) or {}),
+        } for r in recently_reviewed_rows]
+
         return render_template("reviews/queue.html", **ctx(
             active_page="reviews", reviews=reviews_data,
             meta=meta, status_filter=status, only_mine=only_mine,
             show_deleted=show_deleted, query_error=query_error,
+            recently_reviewed=recently_reviewed,
         ))
     finally:
         db.close()
 
 
 @views_bp.route("/reviews/<int:review_id>")
-@role_required("admin", "ba")
+@login_required
 def reviews_detail(review_id):
+    from primeqa.core.permissions import require_page_permission
+
+    @require_page_permission("review_test_cases")
+    def _do():
+        return _reviews_detail_impl(review_id)
+    return _do()
+
+
+def _reviews_detail_impl(review_id):
     db = next(get_db())
     try:
         from primeqa.test_management.repository import BAReviewRepository, TestCaseRepository
@@ -2008,8 +2087,17 @@ def reviews_detail(review_id):
 
 
 @views_bp.route("/reviews/<int:review_id>", methods=["POST"])
-@role_required("admin", "ba")
+@login_required
 def reviews_submit(review_id):
+    from primeqa.core.permissions import require_page_permission
+
+    @require_page_permission("review_test_cases")
+    def _do():
+        return _reviews_submit_impl(review_id)
+    return _do()
+
+
+def _reviews_submit_impl(review_id):
     from flask import flash
     import json as _json
     db = next(get_db())

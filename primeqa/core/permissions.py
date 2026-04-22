@@ -980,6 +980,18 @@ def register_template_context(app) -> None:
         perms = _resolve_effective_permissions()
         is_superadmin = user.get("role") == "superadmin"
         can_see_settings = is_superadmin or any(p.startswith("manage_") for p in perms)
+        sidebar = build_sidebar(perms, request.path, is_superadmin=is_superadmin)
+
+        # Prompt 9: badge count for "My Reviews" nav item. Query is cheap
+        # (single COUNT on an indexed tenant_id + status filter) and runs
+        # only when the user actually sees the item.
+        if any(i["id"] == "my_reviews" for i in sidebar):
+            count = _count_pending_reviews_for(user)
+            if count:
+                for i in sidebar:
+                    if i["id"] == "my_reviews":
+                        i["badge"] = count
+
         return {
             "user_permissions": perms,
             "has_permission": (lambda p: p in perms or is_superadmin),
@@ -987,10 +999,33 @@ def register_template_context(app) -> None:
                 lambda *ps: is_superadmin or any(p in perms for p in ps)
             ),
             "can_see_settings": can_see_settings,
-            "sidebar_items": build_sidebar(
-                perms, request.path, is_superadmin=is_superadmin,
-            ),
+            "sidebar_items": sidebar,
         }
+
+
+def _count_pending_reviews_for(user: dict) -> int:
+    """Return the BA's pending-review count across the tenant.
+
+    Counts reviews with status='pending' and deleted_at IS NULL. Scoped
+    by tenant; does NOT filter by assigned_to since BAs often pick up
+    each other's queue. The queue page itself has the "assigned to me"
+    filter for per-user scoping.
+    """
+    try:
+        from primeqa.db import SessionLocal
+        from primeqa.test_management.models import BAReview
+        db = SessionLocal()
+        try:
+            return (db.query(BAReview)
+                    .filter(BAReview.tenant_id == user["tenant_id"],
+                            BAReview.status == "pending",
+                            BAReview.deleted_at.is_(None))
+                    .count())
+        finally:
+            db.close()
+    except Exception:
+        # Never let a badge query break the entire render.
+        return 0
 
 
 __all__ = [

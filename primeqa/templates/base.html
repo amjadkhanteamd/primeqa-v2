@@ -52,8 +52,14 @@
                             {% endif %}
                             {% if item.id != 'settings' %}
                             <a href="{{ item.url }}"
-                               class="{% if item.active %}bg-gray-100 text-gray-900{% else %}text-gray-500 hover:bg-gray-50 hover:text-gray-700{% endif %} rounded-md px-3 py-2 text-sm font-medium"
-                               data-nav-id="{{ item.id }}">{{ item.label }}</a>
+                               class="{% if item.active %}bg-gray-100 text-gray-900{% else %}text-gray-500 hover:bg-gray-50 hover:text-gray-700{% endif %} inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium"
+                               data-nav-id="{{ item.id }}">
+                               {{ item.label }}
+                               {% if item.badge %}
+                                 <span class="inline-flex items-center justify-center rounded-full bg-indigo-600 text-white text-[10px] font-semibold leading-none px-1.5 py-0.5 min-w-[1.25rem]"
+                                       data-nav-badge="{{ item.id }}">{{ item.badge }}</span>
+                               {% endif %}
+                            </a>
                             {% endif %}
                             {% set ns.last_section = item.section %}
                         {% endfor %}

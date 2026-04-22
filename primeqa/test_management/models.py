@@ -214,6 +214,11 @@ class BAReview(Base):
     version = Column(Integer, nullable=False, server_default="1")
     deleted_at = Column(DateTime(timezone=True))
     deleted_by = Column(Integer, ForeignKey("users.id"))
+    # Migration 042: why the associated TC version was flagged for review
+    # (e.g. 'new_generation' | 'regenerated_after_fail' |
+    # 'regenerated_knowledge' | 'linter_modified' | 'low_confidence').
+    # Nullable — pre-042 rows fall back to 'new_generation' in the UI.
+    review_reason = Column(String(40))
 
     __table_args__ = (
         CheckConstraint("status IN ('pending', 'approved', 'rejected', 'needs_edit')"),
