@@ -305,7 +305,20 @@ class StepExecutor:
 
             if not result.get("success"):
                 status = "failed"
-                error_message = str(api_response.get("body") if api_response else "Unknown error")
+                # Fix 3: verify-step mismatches get a clean summary line
+                # instead of str(body) which dumps the whole response.
+                body = api_response.get("body") if isinstance(api_response, dict) else None
+                if isinstance(body, dict) and body.get("assertion_summary"):
+                    error_message = body["assertion_summary"]
+                elif isinstance(body, dict):
+                    # Fall back to the response body's message / errorCode
+                    # when present, else the full repr.
+                    error_message = (
+                        body.get("message") or body.get("errorCode")
+                        or str(body)
+                    )
+                else:
+                    error_message = str(body) if body else "Unknown error"
 
             if action == "create" and result.get("record_id"):
                 state_ref = step_def.get("state_ref")
@@ -409,6 +422,13 @@ class StepExecutor:
         }
         if expect_fail_class:
             update_payload["failure_class"] = expect_fail_class
+        # Fix 3: surface structured verify mismatches onto the dedicated
+        # comparison_details column (migration 046) so the UI + copy-
+        # diagnosis can render per-field rows without parsing api_response.
+        if isinstance(api_response, dict):
+            body = api_response.get("body") if isinstance(api_response.get("body"), dict) else None
+            if body and body.get("comparison_details"):
+                update_payload["comparison_details"] = body["comparison_details"]
         self.step_result_repo.update_step_result(step_result.id, update_payload)
 
         # SSE event \u2014 step finished. Include enough for the UI timeline to
@@ -502,18 +522,39 @@ class StepExecutor:
         return result
 
     def _execute_verify(self, sobject, record_id, assertions):
+        """Fetch record + compare fields to expectations.
+
+        Prompt 15 Fix 3: in addition to the historical `assertion_failures`
+        list-of-strings, produce a structured `comparison_details` dict
+        so the UI can render per-field expected/actual rows and the
+        diagnosis engine can reason about specific field mismatches.
+        Also produce a clean `assertion_summary` string suitable for
+        the step_result.error_message field — previously we'd dump the
+        entire response body via str(), producing an unreadable wall
+        of text.
+        """
         result = self.sf.get_record(sobject, record_id, list(assertions.keys()))
         if not result["success"]:
             return result
         record_data = result["api_response"]["body"]
-        failures = []
+        failures_strs: list[str] = []
+        mismatches: list[dict] = []
         for field, expected in assertions.items():
             actual = record_data.get(field)
             if actual != expected:
-                failures.append(f"{field}: expected {expected}, got {actual}")
-        if failures:
+                failures_strs.append(f"{field}: expected {expected}, got {actual}")
+                mismatches.append({
+                    "field": field, "expected": expected, "actual": actual,
+                })
+        if failures_strs:
             result["success"] = False
-            result["api_response"]["body"]["assertion_failures"] = failures
+            body = result["api_response"]["body"]
+            body["assertion_failures"] = failures_strs
+            body["assertion_summary"] = (
+                f"{len(mismatches)} of {len(assertions)} fields mismatched: "
+                + ", ".join(m["field"] for m in mismatches)
+            )
+            body["comparison_details"] = {"mismatches": mismatches}
         return result
 
     def _execute_convert(self, sobject, record_id, field_values):

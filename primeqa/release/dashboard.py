@@ -229,6 +229,42 @@ def _determine_go_no_go(run: Optional[PipelineRun],
     return "GO", "All quality gates passing."
 
 
+def compute_negative_counts(db: Session, run_id: int) -> dict:
+    """Prompt 15 Fix 2: count expected-failure outcomes across a run.
+
+    The executor flips expect_fail_verified steps to status=passed (the
+    step achieved its goal of being rejected by SF). So run.passed +
+    run.failed already reflect the right totals — but the dashboard +
+    copy-summary need to ATTRIBUTE how many of those 'passes' were
+    verified negative cases so the reporting distinguishes
+    '9 positive passes' from '6 positive + 3 verified negatives'.
+
+    Returns {
+      'expected_failures': int,   # verified negatives (ran + SF rejected)
+      'unexpected_passes': int,   # negative tests SF did NOT reject
+    }
+    """
+    from primeqa.execution.models import RunStepResult, RunTestResult
+    try:
+        rows = (db.query(RunStepResult.failure_class, sf.count().label("n"))
+                .join(RunTestResult, RunTestResult.id == RunStepResult.run_test_result_id)
+                .filter(RunTestResult.run_id == run_id,
+                        RunStepResult.failure_class.in_(
+                            ("expected_fail_verified",
+                             "expected_fail_unverified")))
+                .group_by(RunStepResult.failure_class)
+                .all())
+    except Exception:
+        return {"expected_failures": 0, "unexpected_passes": 0}
+    out = {"expected_failures": 0, "unexpected_passes": 0}
+    for fc, n in rows:
+        if fc == "expected_fail_verified":
+            out["expected_failures"] = int(n or 0)
+        elif fc == "expected_fail_unverified":
+            out["unexpected_passes"] = int(n or 0)
+    return out
+
+
 def _risk_from_summary(run: Optional[PipelineRun]) -> str:
     """Coarse risk tier from the run's failure counts.
 
@@ -266,6 +302,13 @@ def get_dashboard_data(environment_id: int, tenant_id: int,
         u = db.query(User).filter_by(id=run.approved_by).first()
         approved_by_name = u.full_name if u else None
 
+    # Fix 2: attribute how many of the passes / failures were verified
+    # expected failures (a passing negative test) vs unexpected passes
+    # (a broken negative test — missing validation rule).
+    neg_counts = compute_negative_counts(db, run.id) if run else {
+        "expected_failures": 0, "unexpected_passes": 0,
+    }
+
     return {
         "environment": {
             "id": env.id, "name": env.name,
@@ -297,6 +340,9 @@ def get_dashboard_data(environment_id: int, tenant_id: int,
             "failed": sum(1 for t in grid if t["status"] == "failed"),
             "blocked": sum(1 for t in grid if t["status"] == "blocked"),
             "untested": sum(1 for t in grid if t["status"] == "untested"),
+            # Fix 2: negative-test attribution (step-level, not TC-level)
+            "expected_failures": neg_counts["expected_failures"],
+            "unexpected_passes": neg_counts["unexpected_passes"],
         },
         "trends": trends,
         "empty": run is None,

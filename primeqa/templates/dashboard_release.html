@@ -75,6 +75,17 @@
           {% if data.ticket_counts.untested %}
             · {{ data.ticket_counts.untested }} untested
           {% endif %}
+          {# Fix 2: distinguish verified expected failures (a negative test
+             that SF correctly rejected — that's a PASS) from positive
+             passes. Step-level counts from RunStepResult.failure_class. #}
+          {% if data.ticket_counts.expected_failures %}
+            · {{ data.ticket_counts.expected_failures }} expected failure{% if data.ticket_counts.expected_failures != 1 %}s{% endif %} ✓
+          {% endif %}
+          {% if data.ticket_counts.unexpected_passes %}
+            · <span class="font-medium text-red-700">
+              {{ data.ticket_counts.unexpected_passes }} unexpected pass{% if data.ticket_counts.unexpected_passes != 1 %}es{% endif %} ✗
+            </span>
+          {% endif %}
         </div>
         <p class="mt-2 text-sm opacity-80">{{ data.state_reason }}</p>
 

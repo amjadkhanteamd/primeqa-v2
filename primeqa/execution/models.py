@@ -156,6 +156,11 @@ class RunStepResult(Base):
     error_message = Column(Text)
     duration_ms = Column(Integer)
     executed_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    # Migration 046: structured verify-step mismatch payload.
+    # Shape: {"mismatches": [{"field": ..., "expected": ..., "actual": ...}, ...]}
+    # Only populated when a verify step has at least one mismatch; NULL
+    # for all other step actions + clean verifies.
+    comparison_details = Column(JSONB)
 
     test_result = relationship("RunTestResult", back_populates="step_results")
 

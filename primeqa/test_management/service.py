@@ -261,9 +261,18 @@ class TestManagementService:
             explanation=plan.get("explanation", ""),
             coverage_types=coverage_types,
         )
+        # Prompt 15 Fix 1: batch + TCs + versions + reviews must be
+        # atomic. A mid-loop exception (lint block, DB error, bad
+        # plan_tc shape) rolls the whole batch back instead of leaving
+        # orphaned half-generations in the DB. `db.flush()` through
+        # the create loop lets us read assigned ids; `db.commit()`
+        # fires once at the end if everything succeeded.
         self.test_case_repo.db.add(batch)
-        self.test_case_repo.db.commit()
-        self.test_case_repo.db.refresh(batch)
+        try:
+            self.test_case_repo.db.flush()
+        except Exception:
+            self.test_case_repo.db.rollback()
+            raise
 
         # Attribution: every LLM call that produced this plan was logged
         # BEFORE the batch row existed (we need the response to set the
@@ -285,7 +294,12 @@ class TestManagementService:
             except Exception:
                 pass  # observability-only; never block generation
 
-        # Build N TCs + N TestCaseVersions + optionally BA reviews
+        # Build N TCs + N TestCaseVersions + optionally BA reviews.
+        # The final commit below closes the transaction that spans every
+        # flush through this loop. An in-loop exception bubbles out with
+        # an implicit rollback-on-next-op; to be explicit, we catch it
+        # around the final commit and rollback the session so callers
+        # never see a poisoned session.
         created = []
         auto_reviews = 0
         for plan_tc in tcs_in_plan:
@@ -332,38 +346,49 @@ class TestManagementService:
                     f"{first.step_id} ({first.step_name}): {first.reason}"
                 )
 
-            tc = self.test_case_repo.create_test_case(
+            # Fix 1: build TC + version via ORM with flush()-only semantics
+            # so the entire batch commits atomically below. A mid-loop
+            # crash now rolls the whole batch back instead of leaving
+            # orphaned half-generations in the DB.
+            from primeqa.test_management.models import (
+                TestCase as _TC, TestCaseVersion as _TCV,
+            )
+            db = self.test_case_repo.db
+            tc = _TC(
                 tenant_id=tenant_id, title=title[:500],
                 owner_id=created_by, created_by=created_by,
                 requirement_id=requirement_id, section_id=requirement.section_id,
                 visibility="private", status="draft",
+                coverage_type=ct, generation_batch_id=batch.id,
             )
-            tc.coverage_type = ct
-            tc.generation_batch_id = batch.id
-            self.test_case_repo.db.commit()
+            db.add(tc); db.flush()
 
-            version = self.test_case_repo.create_version(
+            # Version numbering: SELECT MAX + 1 in the same transaction.
+            from sqlalchemy import func as _sf
+            latest = db.query(_sf.max(_TCV.version_number)).filter(
+                _TCV.test_case_id == tc.id,
+            ).scalar() or 0
+
+            version = _TCV(
                 test_case_id=tc.id,
+                version_number=latest + 1,
                 metadata_version_id=env.current_meta_version_id,
-                created_by=created_by,
-                # Use the (possibly auto-fixed) steps, not the raw LLM output.
                 steps=raw_steps,
                 expected_results=plan_tc.get("expected_results", []),
                 preconditions=plan_tc.get("preconditions", []),
                 generation_method="ai",
                 confidence_score=float(plan_tc.get("confidence_score", 0.7)),
                 referenced_entities=plan_tc.get("referenced_entities", []),
+                created_by=created_by,
+                lint_fixes=len(lint_result.fixes_applied),
+                lint_warnings=len(lint_result.warnings),
+                lint_details=(lint_result.summary_dict()
+                              if (lint_result.fixes_applied
+                                  or lint_result.warnings)
+                              else None),
             )
-
-            # Persist lint outcome onto the version row so the review
-            # queue + detail page can surface it without re-linting.
-            version.lint_fixes = len(lint_result.fixes_applied)
-            version.lint_warnings = len(lint_result.warnings)
-            version.lint_details = (lint_result.summary_dict()
-                                    if (lint_result.fixes_applied
-                                        or lint_result.warnings)
-                                    else None)
-            self.test_case_repo.db.commit()
+            db.add(version); db.flush()
+            tc.current_version_id = version.id
             # Log per-TC now that we know its id.
             if lint_result.fixes_applied or lint_result.warnings:
                 logger.info(
@@ -377,9 +402,13 @@ class TestManagementService:
             # the detail page shows issues inline, pre-flight can block on
             # critical, and lists can badge the TC. Validation is
             # idempotent and re-runnable via the Revalidate button.
+            # Fix 1: commit=False keeps this inside the batch transaction
+            # so a mid-batch failure rolls BOTH the TC + version AND its
+            # validation report back together.
             report = validator.validate(plan_tc.get("steps", []))
             self._store_validation_report(
                 version.id, report, env.current_meta_version_id,
+                commit=False,
             )
 
             # Feed critical validator findings back into the feedback
@@ -408,31 +437,23 @@ class TestManagementService:
             except Exception:
                 pass  # feedback is best-effort
 
-            # Prompt 13: linter-modified TCs always go to the review queue
-            # so a human can spot-check the auto-fixes. Reason takes
-            # precedence over low_confidence because linter_modified is
-            # more specific + actionable. Fresh TCs that passed the
-            # linter clean still follow the confidence threshold below.
+            # Review rows ride in the same transaction so a rollback
+            # doesn't leave reviews pointing at phantom versions.
+            from primeqa.test_management.models import BAReview as _BAReview
+            review_reason = None
             if lint_result.fixes_applied:
-                self.review_repo.create_review(
-                    tenant_id=tenant_id,
-                    test_case_version_id=version.id,
-                    assigned_to=created_by,
-                    review_reason="linter_modified",
-                )
-                auto_reviews += 1
+                review_reason = "linter_modified"
             elif float(plan_tc.get("confidence_score", 0.7)) < 0.7:
-                # Migration 042: flag with why it landed in review. This
-                # is the multi-TC plan path, always a fresh generation.
-                # Low-confidence is the reason the review fired, so we
-                # tag it as such rather than the more generic
-                # "new_generation".
-                self.review_repo.create_review(
+                review_reason = "low_confidence"
+            if review_reason is not None:
+                review_row = _BAReview(
                     tenant_id=tenant_id,
                     test_case_version_id=version.id,
                     assigned_to=created_by,
-                    review_reason="low_confidence",
+                    status="pending",
+                    review_reason=review_reason,
                 )
+                db.add(review_row); db.flush()
                 auto_reviews += 1
 
             created.append({
@@ -448,6 +469,16 @@ class TestManagementService:
                 "validation_critical_count": report["summary"][
                     "critical"] if "critical" in report["summary"] else 0,
             })
+
+        # Fix 1: single commit at the end of the batch. Any exception
+        # above bubbles out; callers (the async generation worker)
+        # handle rollback + mark the job failed. If we got here every
+        # TC + version + review created above lands atomically.
+        try:
+            self.test_case_repo.db.commit()
+        except Exception:
+            self.test_case_repo.db.rollback()
+            raise
 
         self._log(tenant_id, created_by,
                   "generate_test_plan", "requirement", requirement_id,
@@ -474,9 +505,16 @@ class TestManagementService:
 
     # ---- Validation plumbing ---------------------------------------------
 
-    def _store_validation_report(self, version_id, report, meta_version_id):
+    def _store_validation_report(self, version_id, report, meta_version_id,
+                                 commit=True):
         """Persist a validation_report JSONB onto a test_case_version.
-        Uses the repo's db session to keep this in the caller's transaction."""
+
+        Uses the repo's db session to keep this in the caller's transaction.
+        Pass `commit=False` when you're inside a batch-spanning transaction
+        (e.g. `generate_test_plan` — Prompt 15 Fix 1) so a mid-batch
+        failure rolls the whole batch back instead of partially committing
+        each TC's validation report.
+        """
         from datetime import datetime, timezone
         from primeqa.test_management.models import TestCaseVersion
         db = self.test_case_repo.db
@@ -488,7 +526,10 @@ class TestManagementService:
         tcv.validation_report = report
         tcv.validated_at = datetime.now(timezone.utc)
         tcv.validated_against_meta_version_id = meta_version_id
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
 
     def revalidate_test_case_version(self, tc_id, tenant_id, metadata_repo,
                                      env_repo=None, environment_id=None):
