@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Optional
 
-from sqlalchemy import func as sf, or_
+from sqlalchemy import case, func as sf, or_
 from sqlalchemy.orm import Session
 
 from primeqa.core.models import Environment, User
@@ -102,9 +102,13 @@ def _gate_statuses(db: Session, tenant_id: int, environment_id: int
             ))
             continue
         # Scope: only this suite's TCs inside that run.
+        # NOTE: `case` is imported from top-level sqlalchemy, NOT func —
+        # func.case() doesn't accept else_. This crashed /dashboard
+        # whenever both (a) a run existed and (b) a quality gate was
+        # configured on a suite; surfaced during demo-data seeding.
         rtr = (db.query(sf.count().label("total"),
-                        sf.sum(sf.case((RunTestResult.status == "passed", 1),
-                                       else_=0)).label("passed"))
+                        sf.sum(case((RunTestResult.status == "passed", 1),
+                                    else_=0)).label("passed"))
                .filter(RunTestResult.run_id == run.id,
                        RunTestResult.test_case_id.in_(subq))
                .one())
