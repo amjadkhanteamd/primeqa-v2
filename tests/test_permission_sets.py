@@ -258,27 +258,62 @@ def run_tests():
                         test_effective_permissions_empty))
 
     # ---------------------------------------------------------------
-    # 9. Existing users mapped to the correct default base set by role.
+    # 9. Role -> default base-set mapping is correct for every role
+    #    the system understands.
+    #
+    # (Historical note: this test used to check tenant-wide state, but
+    # the admin UI / enforcement / dynamic-UI suites now reassign
+    # permission sets for their fixture users — so tenant-wide
+    # snapshots drift across test runs. We now assert the resolver's
+    # role-mapping table directly, which is what migration 039 installed
+    # and what assign_default_permission_set honours.)
     # ---------------------------------------------------------------
-    def test_existing_users_default_assignment():
-        # Migration 039 row 10 assigns base sets via CASE role.
-        # Check a few representative users.
-        rows = db.execute(text("""
-            SELECT u.role, ps.api_name
-            FROM users u
-            JOIN user_permission_sets ups ON ups.user_id = u.id
-            JOIN permission_sets ps ON ps.id = ups.permission_set_id
-            WHERE u.tenant_id = :t AND ps.is_base = true
-        """), {"t": TENANT_ID}).fetchall()
-        assert rows, "No base-set assignments found for tenant users"
-        # Spec mapping: admin/superadmin -> admin_base; ba -> tester_base;
-        # viewer -> release_owner_base; everything else -> developer_base.
-        for role, api_name in rows:
-            expected = default_permission_set_for_role(role)
-            assert api_name == expected, \
-                f"User with role={role} should have {expected}, got {api_name}"
-    results.append(test("9. Existing users assigned correct default base set",
-                        test_existing_users_default_assignment))
+    def test_role_to_default_set_mapping():
+        cases = [
+            ("admin",      "admin_base"),
+            ("superadmin", "admin_base"),
+            ("ba",         "tester_base"),
+            ("viewer",     "release_owner_base"),
+            ("tester",     "developer_base"),
+            (None,         "developer_base"),      # no role -> safe default
+            ("unknown",    "developer_base"),      # unknown role -> same
+        ]
+        for role, expected in cases:
+            actual = default_permission_set_for_role(role)
+            assert actual == expected, \
+                f"default_permission_set_for_role({role!r}) = {actual!r}, expected {expected!r}"
+
+        # End-to-end: create a throwaway user with role=tester,
+        # assign_default_permission_set gives them developer_base.
+        db.execute(text("DELETE FROM users WHERE email = :e"),
+                   {"e": "perms_role_map@primeqa.io"})
+        db.commit()
+        u = User(
+            tenant_id=TENANT_ID,
+            email="perms_role_map@primeqa.io",
+            password_hash="x" * 60,
+            full_name="Role Map",
+            role="tester",
+            is_active=True,
+        )
+        db.add(u); db.flush()
+        try:
+            from primeqa.core.permissions import (
+                assign_default_permission_set, list_user_permission_sets,
+            )
+            assign_default_permission_set(u.id, TENANT_ID, u.role, db)
+            db.commit()
+            sets = list_user_permission_sets(u.id, db)
+            api_names = {p.api_name for p in sets}
+            assert "developer_base" in api_names, \
+                f"tester role should get developer_base, got {api_names}"
+        finally:
+            db.execute(text("DELETE FROM user_permission_sets WHERE user_id = :id"),
+                       {"id": u.id})
+            db.execute(text("DELETE FROM users WHERE id = :id"), {"id": u.id})
+            db.commit()
+    results.append(test("9. Role -> default base-set mapping is correct",
+                        test_role_to_default_set_mapping))
 
     # ---------------------------------------------------------------
     # 10. seed_permission_sets_for_tenant is itself idempotent — second
