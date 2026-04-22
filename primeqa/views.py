@@ -7,7 +7,7 @@ import os
 from functools import wraps
 
 import jwt
-from flask import Blueprint, render_template, request, redirect, url_for, make_response
+from flask import Blueprint, render_template, request, redirect, url_for, make_response, jsonify
 
 from primeqa.db import get_db
 from primeqa.core.repository import (
@@ -5043,10 +5043,32 @@ def requirements_detail(req_id):
             "section_name": section.name if section else None,
             "version": req.version,
         }
+        # Prompt 11: surface any in-flight generation job so the
+        # template can render the progress panel instead of the
+        # Generate form. One job per (requirement, environment) —
+        # pick the most recent active one across any env.
+        from primeqa.intelligence.generation_jobs import GenerationJob
+        active_job = (db.query(GenerationJob)
+                      .filter(GenerationJob.tenant_id == request.user["tenant_id"],
+                              GenerationJob.requirement_id == req_id,
+                              GenerationJob.status.in_(
+                                  ("queued", "claimed", "running")))
+                      .order_by(GenerationJob.created_at.desc())
+                      .first())
+        active_gen_job = None
+        if active_job is not None:
+            active_gen_job = {
+                "id": active_job.id,
+                "status": active_job.status,
+                "progress_pct": active_job.progress_pct or 0,
+                "progress_msg": active_job.progress_msg,
+            }
+
         return render_template("requirements/detail.html", **ctx(
             active_page="requirements", req=req_data,
             test_cases=tcs_data, environments=envs_data,
             generation_batch=batch_data,
+            active_gen_job=active_gen_job,
         ))
     finally:
         db.close()
@@ -5295,94 +5317,118 @@ def requirements_run(req_id):
 @views_bp.route("/requirements/<int:req_id>/generate", methods=["POST"])
 @role_required("admin", "tester")
 def requirements_generate(req_id):
+    """Prompt 11: flip sync -> async.
+
+    Enqueue a GenerationJob and return immediately. The worker picks up
+    the row, runs the LLM round-trip off the web tier, and the
+    requirement detail page polls /api/generation-jobs/:id/status to
+    show progress. See primeqa/intelligence/generation_jobs.py.
+    """
     from flask import flash
+    from primeqa.intelligence.generation_jobs import create_or_get_job
     db = next(get_db())
     try:
-        from primeqa.test_management.repository import (
-            SectionRepository, RequirementRepository, TestCaseRepository,
-            TestSuiteRepository, BAReviewRepository, MetadataImpactRepository,
-        )
-        from primeqa.test_management.service import TestManagementService
-        from primeqa.metadata.repository import MetadataRepository
-        svc = TestManagementService(
-            SectionRepository(db), RequirementRepository(db),
-            TestCaseRepository(db), TestSuiteRepository(db),
-            BAReviewRepository(db), MetadataImpactRepository(db),
-        )
-        svc.review_repo = BAReviewRepository(db)
         env_id = int(request.form["environment_id"])
-        try:
-            # Generate a multi-TC test plan instead of a single test. Click
-            # count stays the same; coverage breadth jumps (positive +
-            # negative + boundary + edge + regression). See migration 028
-            # and generate_test_plan in test_management/service.py.
-            plan = svc.generate_test_plan(
-                tenant_id=request.user["tenant_id"],
-                requirement_id=req_id,
-                environment_id=env_id,
-                created_by=request.user["id"],
-                env_repo=EnvironmentRepository(db),
-                conn_repo=ConnectionRepository(db),
-                metadata_repo=MetadataRepository(db),
-            )
-        except ValueError as e:
-            # Actionable flash for the common blocker: no metadata yet / no LLM
-            msg = str(e)
-            if "metadata version" in msg.lower() or "refresh metadata" in msg.lower():
-                flash(f"Generation blocked: {msg} Refresh the env's metadata from "
-                      f"Settings \u2192 Environments \u2192 this env.", "error")
-            elif "llm" in msg.lower():
-                flash(f"Generation blocked: {msg} Attach an LLM connection in "
-                      f"Settings \u2192 Environments \u2192 this env.", "error")
-            else:
-                flash(msg, "error")
-            return redirect(f"/requirements/{req_id}")
-
-        tcs = plan.get("test_cases", [])
-        n = len(tcs)
-        cov_counts = {}
-        for tc in tcs:
-            cov_counts[tc["coverage_type"]] = cov_counts.get(tc["coverage_type"], 0) + 1
-        cov_breakdown = ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in sorted(cov_counts.items()))
-        superseded = plan.get("superseded_count", 0)
-
-        if n == 0:
-            flash("Generator produced no test cases. Try regenerating.", "error")
+        job, already = create_or_get_job(
+            db,
+            tenant_id=request.user["tenant_id"],
+            environment_id=env_id,
+            requirement_id=req_id,
+            created_by=request.user["id"],
+        )
+        wants_json = (request.headers.get("Accept") == "application/json")
+        if wants_json:
+            return (jsonify({"job_id": job.id, "status": job.status,
+                             "already_running": already}),
+                    200 if already else 202)
+        # HTML form flow: redirect to the requirement detail page; the
+        # template polls the status endpoint for live progress.
+        if already:
+            flash("A generation for this requirement is already in progress. "
+                  "Live progress is shown on the requirement page.", "info")
         else:
-            parts = [f"Generated {n} test case{'s' if n != 1 else ''}"]
-            if cov_breakdown:
-                parts.append(f"({cov_breakdown})")
-            if superseded:
-                parts.append(f"\u2014 superseded {superseded} stale draft{'s' if superseded != 1 else ''}")
-            if plan.get("auto_reviews_created"):
-                parts.append(f"\u2014 {plan['auto_reviews_created']} auto-assigned for BA review")
-            flash(" ".join(parts) + ".", "success")
+            flash("Test case generation queued. You'll see results when it "
+                  "completes (~20-60 seconds).", "info")
         return redirect(f"/requirements/{req_id}")
-    except Exception as e:
-        # Turn common upstream errors into actionable UX instead of raw
-        # tracebacks. The noisiest is Anthropic returning 400 with
-        # "credit balance too low" buried inside a nested JSON body.
-        msg = str(e)
-        lower = msg.lower()
-        if "credit balance" in lower and "anthropic" in lower:
-            flash("Generation blocked: your Anthropic account is out of credits. "
-                  "Top up at https://console.anthropic.com/settings/billing "
-                  "and try again. No test cases were created.", "error")
-        elif "invalid x-api-key" in lower or "authentication_error" in lower:
-            flash("Generation blocked: the LLM connection's API key is invalid. "
-                  "Update it in Settings \u2192 Connections.", "error")
-        elif "tenant limit" in lower or "tenant daily spend" in lower:
-            # Hit by the per-tenant rate limiter in LLMGateway (Phase 2).
-            flash(f"Generation paused: {msg}. Contact your administrator "
-                  "to raise your tenant's LLM cap.", "error")
-        elif "rate_limit" in lower or "rate limit" in lower or "429" in msg:
-            flash("Generation blocked: Anthropic rate limit hit. Wait a minute "
-                  "and retry, or reduce bulk size.", "error")
-        else:
-            flash(f"Generation failed: {msg[:400]}", "error")
     finally:
         db.close()
-    return redirect(f"/requirements/{req_id}")
+
+
+# --- Async generation: status + cancel APIs (Prompt 11) -------------------
+
+@views_bp.route("/api/generation-jobs/<int:job_id>/status", methods=["GET"])
+@_require_auth_api
+def api_generation_job_status(job_id):
+    """Poll endpoint used by the requirement detail page + bulk-gen UI."""
+    from primeqa.intelligence.generation_jobs import (
+        GenerationJob, user_message_for,
+    )
+    db = next(get_db())
+    try:
+        job = db.query(GenerationJob).filter_by(id=job_id).first()
+        if job is None or job.tenant_id != request.user["tenant_id"]:
+            return ({"error": {"code": "NOT_FOUND", "message": "Job not found"}}, 404)
+        body = {
+            "job_id": job.id, "status": job.status,
+            "progress_pct": job.progress_pct or 0,
+            "progress_msg": job.progress_msg,
+            "requirement_id": job.requirement_id,
+            "environment_id": job.environment_id,
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+            "started_at": job.started_at.isoformat() if job.started_at else None,
+            "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        }
+        if job.status == "completed":
+            body.update({
+                "test_case_count": job.test_case_count,
+                "generation_batch_id": job.generation_batch_id,
+                "model_used": job.model_used,
+                "tokens_used": job.tokens_used,
+            })
+        if job.status in ("failed", "cancelled"):
+            body.update({
+                "error_code": job.error_code,
+                "error_message": job.error_message,
+                "user_message": user_message_for(job.error_code, job.error_message),
+            })
+        return (body, 200)
+    finally:
+        db.close()
+
+
+@views_bp.route("/api/generation-jobs/<int:job_id>/cancel", methods=["POST"])
+@_require_auth_api
+def api_generation_job_cancel(job_id):
+    """Cancel a queued or running generation job. Worker re-reads the
+    job row after the LLM call and skips committing when cancelled."""
+    from datetime import datetime, timezone
+    from primeqa.core.permissions import user_has_permission
+    from primeqa.intelligence.generation_jobs import GenerationJob
+    db = next(get_db())
+    try:
+        job = db.query(GenerationJob).filter_by(id=job_id).first()
+        if job is None or job.tenant_id != request.user["tenant_id"]:
+            return ({"error": {"code": "NOT_FOUND", "message": "Job not found"}}, 404)
+        if job.created_by != request.user["id"]:
+            if (request.user.get("role") != "superadmin"
+                    and not user_has_permission(request.user["id"],
+                                                "manage_environments", db)):
+                return ({"error": {"code": "FORBIDDEN",
+                                   "message": "Only the creator or an admin can cancel."}},
+                        403)
+        if job.status in ("completed", "failed", "cancelled"):
+            return ({"error": {"code": "JOB_TERMINAL",
+                               "message": f"Job already {job.status}."},
+                     "status": job.status}, 400)
+        job.status = "cancelled"
+        job.completed_at = datetime.now(timezone.utc)
+        job.error_message = "Cancelled by user"
+        job.error_code = "cancelled"
+        job.progress_msg = "Cancelled"
+        db.commit()
+        return ({"job_id": job.id, "status": "cancelled"}, 200)
+    finally:
+        db.close()
 
 
 # --- Suites ---

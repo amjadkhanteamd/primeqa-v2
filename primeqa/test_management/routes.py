@@ -342,20 +342,21 @@ def sync_jira(req_id):
 @test_management_bp.route("/api/requirements/bulk-generate", methods=["POST"])
 @require_role("admin", "tester")
 def bulk_generate_requirements():
-    """Generate test cases for multiple requirements in parallel.
+    """Prompt 11: flip sync -> async.
 
-    Body:  {environment_id, requirement_ids: [ids], confirm?: "GENERATE"}
-    Returns: {results: [{requirement_id, status: "ok"|"error",
-                         test_case_id?, version_number?, confidence?, error?}]}
+    Body:  {environment_id, requirement_ids: [ids]}
+    Returns 202 with {jobs: [{requirement_id, job_id, already_running}], total: N}.
 
-    Concurrency: up to 5 in parallel (ThreadPoolExecutor). Each generation
-    takes ~15s against Anthropic so a bulk of 10 is ~30s. Client shows a
-    modal with an indeterminate progress bar until the aggregated response
-    arrives. Each worker thread opens its own short-lived DB session and
-    its own TestManagementService because SQLAlchemy sessions are not
-    thread-safe.
+    Previously this ran up to 5 generations in parallel via
+    ThreadPoolExecutor on the web tier, blocking gunicorn workers for
+    ~30s on a bulk of 10. Now each requirement gets its own
+    GenerationJob row and the background worker processes them one at
+    a time through the normal poll loop. UI polls
+    /api/generation-jobs/:id/status per row.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from primeqa.intelligence.generation_jobs import create_or_get_job
+    from primeqa.db import SessionLocal
+
     data = request.get_json(silent=True) or {}
     env_id = data.get("environment_id")
     req_ids = data.get("requirement_ids") or []
@@ -364,7 +365,6 @@ def bulk_generate_requirements():
     if not isinstance(req_ids, list) or not req_ids:
         return json_error("VALIDATION_ERROR",
                           "requirement_ids must be a non-empty array")
-    # Bulk cap: 20 per call to stay under 30s max latency with 5 parallel.
     if len(req_ids) > 20:
         return json_error("BULK_LIMIT",
                           f"Bulk-generate is capped at 20 per call (got {len(req_ids)})")
@@ -372,65 +372,33 @@ def bulk_generate_requirements():
     tenant_id = request.user["tenant_id"]
     user_id = request.user["id"]
 
-    def generate_one(req_id):
-        # Fresh session + service per thread; SQLAlchemy sessions are
-        # NOT safe to share across threads.
-        from primeqa.db import engine
-        from sqlalchemy.orm import Session
-        s = Session(bind=engine)
-        try:
-            svc = TestManagementService(
-                SectionRepository(s), RequirementRepository(s),
-                TestCaseRepository(s), TestSuiteRepository(s),
-                BAReviewRepository(s), MetadataImpactRepository(s),
-            )
+    jobs_payload = []
+    db = SessionLocal()
+    try:
+        for req_id in req_ids:
             try:
-                plan = svc.generate_test_plan(
-                    tenant_id=tenant_id, requirement_id=req_id,
-                    environment_id=env_id, created_by=user_id,
-                    env_repo=EnvironmentRepository(s),
-                    conn_repo=ConnectionRepository(s),
-                    metadata_repo=MetadataRepository(s),
+                job, already = create_or_get_job(
+                    db, tenant_id=tenant_id,
+                    environment_id=int(env_id),
+                    requirement_id=int(req_id),
+                    created_by=user_id,
                 )
-                return {
-                    "requirement_id": req_id, "status": "ok",
-                    "generation_batch_id": plan["generation_batch_id"],
-                    "test_case_count": len(plan["test_cases"]),
-                    "coverage_types": plan.get("coverage_types", []),
-                    "superseded_count": plan.get("superseded_count", 0),
-                    # Keep first TC for convenience linking in the modal:
-                    "test_case_id": plan["test_cases"][0]["test_case_id"] if plan["test_cases"] else None,
-                }
-            except (ValueError, ValidationError, NotFoundError) as e:
-                return {"requirement_id": req_id, "status": "error",
-                        "error": str(e)[:200]}
+                jobs_payload.append({
+                    "requirement_id": int(req_id),
+                    "job_id": job.id,
+                    "status": job.status,
+                    "already_running": already,
+                })
             except Exception as e:
-                # Map common upstream errors to actionable per-row text
-                raw = str(e)
-                low = raw.lower()
-                if "credit balance" in low:
-                    friendly = "Anthropic credits exhausted \u2014 top up at console.anthropic.com"
-                elif "invalid x-api-key" in low or "authentication_error" in low:
-                    friendly = "LLM API key invalid \u2014 check Settings \u2192 Connections"
-                elif "rate_limit" in low or "rate limit" in low or "429" in raw:
-                    friendly = "Anthropic rate limit hit \u2014 retry in a minute"
-                else:
-                    friendly = f"{type(e).__name__}: {raw[:150]}"
-                return {"requirement_id": req_id, "status": "error",
-                        "error": friendly}
-        finally:
-            s.close()
+                jobs_payload.append({
+                    "requirement_id": int(req_id),
+                    "job_id": None, "status": "error",
+                    "error": str(e)[:200],
+                })
+    finally:
+        db.close()
 
-    results = []
-    with ThreadPoolExecutor(max_workers=5) as pool:
-        futures = {pool.submit(generate_one, r): r for r in req_ids}
-        for fut in as_completed(futures):
-            results.append(fut.result())
-
-    # Preserve submission order in response so client can match to rows
-    result_by_id = {r["requirement_id"]: r for r in results}
-    ordered = [result_by_id.get(rid) for rid in req_ids]
-    return jsonify({"results": ordered}), 200
+    return jsonify({"jobs": jobs_payload, "total": len(jobs_payload)}), 202
 
 
 # ---- Test cases -------------------------------------------------------------

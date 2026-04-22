@@ -284,7 +284,27 @@ def scheduler_tick(ctx):
     fire_scheduled_runs(ctx)
     dead_mans_switch_check(ctx)
     reap_stalled_metadata_jobs(ctx)
+    reap_stale_generation_jobs(ctx)   # migration 044 / Prompt 11
     trim_run_events(ctx)
+
+
+def reap_stale_generation_jobs(ctx):
+    """Mark stuck generation_jobs as failed=worker_timeout.
+
+    A worker processing a GenerationJob bumps heartbeat_at every ~10s.
+    If a job has been in 'claimed' or 'running' state for 2+ minutes
+    without a heartbeat, the worker has likely died mid-run (OOM,
+    Railway SIGTERM during deploy, exception we didn't catch). Mark
+    the job failed so the user can retry — and so the row doesn't
+    sit in the active-dedup index forever.
+    """
+    try:
+        from primeqa.intelligence.generation_jobs import reap_stale_jobs
+        n = reap_stale_jobs(ctx["db"])
+        if n:
+            log.warning("reaped %d stale generation job(s)", n)
+    except Exception as e:
+        log.warning("reap_stale_generation_jobs failed: %s", e)
 
 
 _last_trim = {"at": 0}

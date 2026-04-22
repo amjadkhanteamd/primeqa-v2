@@ -57,6 +57,29 @@
           </button>
         </form>
         {% endif %}
+        {# Prompt 11: async generation. If there's already a job in
+           flight for this requirement+env, we render the progress
+           panel instead of the Generate form. The view handler
+           passes `active_gen_job` when such a job exists. #}
+        {% if active_gen_job %}
+          <div id="gen-progress" class="flex items-center gap-3 text-sm"
+               data-job-id="{{ active_gen_job.id }}">
+            <div class="w-48 h-2 rounded-full bg-gray-200 overflow-hidden">
+              <div class="h-2 bg-indigo-500 transition-all"
+                   style="width: {{ active_gen_job.progress_pct or 5 }}%"
+                   id="gen-progress-bar"></div>
+            </div>
+            <span id="gen-progress-msg" class="text-gray-600 italic">
+              {{ active_gen_job.progress_msg or "Queued…" }}
+            </span>
+            <button type="button"
+                    class="text-xs text-red-600 hover:text-red-800"
+                    id="gen-progress-cancel"
+                    data-job-id="{{ active_gen_job.id }}">
+              Cancel
+            </button>
+          </div>
+        {% else %}
         <form method="POST" action="/requirements/{{ req.id }}/generate" class="flex items-center space-x-2">
             {{ csrf_input | safe }}
           <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
@@ -73,6 +96,7 @@
             {% if test_cases %}Regenerate{% else %}Generate test case{% endif %}
           </button>
         </form>
+        {% endif %}
         {% endif %}
         {% if user.role in ['admin', 'tester', 'superadmin'] %}
         <button class="rounded-md bg-white px-3 py-1.5 text-sm text-red-600 ring-1 ring-red-200 hover:bg-red-50" data-delete-req="{{ req.id }}">Delete</button>
@@ -216,6 +240,64 @@
 </div>
 
 {% include 'components/generate_overlay.html' %}
+
+{# Prompt 11: async generation progress polling. Only active when the
+   page rendered with an in-flight job (active_gen_job). Polls every
+   3s; on completion, reloads the page so the newly committed TCs
+   appear in the list. On failure/cancellation, swaps the UI to
+   show the error + a retry prompt. #}
+{% if active_gen_job %}
+<script>
+(function () {
+  const el = document.getElementById('gen-progress');
+  if (!el) return;
+  const jobId = el.dataset.jobId;
+  const bar = document.getElementById('gen-progress-bar');
+  const msg = document.getElementById('gen-progress-msg');
+  const cancelBtn = document.getElementById('gen-progress-cancel');
+
+  async function poll() {
+    try {
+      const r = await fetch('/api/generation-jobs/' + jobId + '/status',
+                            {credentials: 'same-origin'});
+      if (!r.ok) return setTimeout(poll, 5000);
+      const d = await r.json();
+      if (d.status === 'completed') {
+        msg.textContent = `Generated ${d.test_case_count || 0} test cases`;
+        bar.style.width = '100%';
+        setTimeout(() => window.location.reload(), 900);
+        return;
+      }
+      if (d.status === 'failed' || d.status === 'cancelled') {
+        el.innerHTML = '<span class="text-red-600">'
+          + (d.user_message || d.error_message || d.status)
+          + '</span> <button type="button" class="ml-3 text-xs text-indigo-600 hover:underline" onclick="window.location.reload()">Dismiss</button>';
+        return;
+      }
+      if (d.progress_pct) bar.style.width = d.progress_pct + '%';
+      if (d.progress_msg) msg.textContent = d.progress_msg;
+      setTimeout(poll, 3000);
+    } catch (e) {
+      setTimeout(poll, 5000);
+    }
+  }
+
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', async function () {
+      cancelBtn.disabled = true;
+      cancelBtn.textContent = 'Cancelling…';
+      try {
+        await fetch('/api/generation-jobs/' + jobId + '/cancel',
+                    {method: 'POST', credentials: 'same-origin'});
+      } catch (_) {}
+      setTimeout(() => window.location.reload(), 800);
+    });
+  }
+
+  poll();
+})();
+</script>
+{% endif %}
 
 <script>
 (function(){

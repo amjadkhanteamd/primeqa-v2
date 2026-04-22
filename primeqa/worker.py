@@ -554,6 +554,28 @@ def worker_tick(ctx):
     except Exception as e:
         log.warning("metadata worker tick failed: %s", e)
 
+    # 3) Generation jobs (migration 044). One per tick keeps cost under
+    # control — each job is a 15-60s LLM round-trip. The claim uses
+    # SELECT FOR UPDATE SKIP LOCKED so multiple workers never race the
+    # same row. Session used for claim is separate from the session
+    # process_job opens internally (process_job uses a short-lived
+    # Session per call to avoid stepping on the long-lived worker
+    # ctx session).
+    try:
+        from primeqa.db import SessionLocal
+        from primeqa.intelligence.generation_jobs import (
+            claim_next_queued_job, process_job,
+        )
+        claim_db = SessionLocal()
+        try:
+            gen_job = claim_next_queued_job(claim_db)
+        finally:
+            claim_db.close()
+        if gen_job is not None:
+            process_job(gen_job, db_factory=SessionLocal)
+    except Exception as e:
+        log.warning("generation worker tick failed: %s", e)
+
 
 def run_worker():
     """Main worker loop.
