@@ -224,6 +224,101 @@ APIs: `POST /api/test-cases/:id/revalidate` (optional `{environment_id}`), `POST
 
 UI on test case detail page: red banner for critical, yellow for warnings, green "No issues" on clean. Each issue lists its suggested replacements as Apply buttons that patch the step JSON and reload.
 
+## Reliability fixes (Prompt 15, migration 046)
+
+Three correctness fixes to generation + execution pathways:
+
+**Fix 1 — Transaction wrap around `generate_test_plan`**. The batch
+creation loop (`primeqa/test_management/service.py:generate_test_plan`)
+used to commit after each TC, so a mid-loop exception left half the
+batch persisted. Now:
+- `db.flush()` through the loop (no commits)
+- `_store_validation_report(commit=False)` joins the caller's tx
+- One final `db.commit()` after the last TC; any raise gets a
+  `rollback()` and re-raises so the async worker can mark the
+  `generation_jobs` row failed with a clean error
+
+**Fix 2 — Negative-test result interpretation**. Steps flagged
+`expect_fail` are flipped in the executor to `status=passed` with
+`failure_class=expected_fail_verified` (real) or
+`expected_fail_unverified` (validation rule missing — the negative
+test passed when it shouldn't). The Go/No-Go dashboard now surfaces
+both counts via `compute_negative_counts(db, run_id)` in
+`primeqa/release/dashboard.py`, and the hero subline reads
+"9 passed · 2 failed · 3 expected failures ✓ · 1 unexpected pass ✗"
+so reviewers distinguish "negative test SF rejected correctly" from
+"negative test SF did NOT reject".
+
+**Fix 3 — Verify-step comparison capture** (migration 046).
+`run_step_results.comparison_details` JSONB with shape
+`{"mismatches": [{"field", "expected", "actual"}, ...]}`. Populated
+only when a verify step has ≥1 mismatch (NULL otherwise). The
+executor produces three companion outputs in one pass:
+- `assertion_failures: [str]` (legacy list-of-strings, kept)
+- `assertion_summary: "N of M fields mismatched: f1, f2..."`
+- `comparison_details: {mismatches: [...]}`
+
+`StepExecutor.execute_step` surfaces `assertion_summary` to
+`run_step_results.error_message` (previously dumped `str(body)`, an
+unreadable wall of JSON) and writes `comparison_details` onto the
+dedicated column so the UI can render per-field rows without
+parsing `api_response`.
+
+## Tester's focused /run page — four-mode pickers (Prompt 16)
+
+`/run` is the lean, one-click path for the most common runs. The Run
+Wizard at `/runs/new` stays as the advanced mixed-source surface —
+"Advanced wizard →" link at the top points to it.
+
+Four mode tabs, each gated by permission:
+
+| Tab | Permission | Picker |
+|---|---|---|
+| Sprint  | `run_sprint` | Sprints aggregated across every scrum board the env's Jira can see; ticket checkboxes for per-ticket inclusion |
+| Tickets | `run_single_ticket` | Recent-tickets list + debounced search (`q` + filter chips `mine / current_sprint / open / recent`); multi-select selected list |
+| Suite   | `run_suite` | Dropdown with inline "N TCs · gate X%" metadata; per-TC exclusion checkboxes below |
+| Release | `run_sprint \|\| run_suite` | Release list with ticket/TC counts; contents panel with ticket + TC checkboxes + quick filters (Tickets Only / TCs Only / None) |
+
+The page itself requires `run_sprint || run_suite` (bulk perms). Users
+with only `run_single_ticket` are redirected to `/requirements` by the
+landing logic.
+
+**Dynamic production banner**: every `<option>` in the env dropdown
+carries `data-is-production="true|false"`. A `#prod-gate` wrapper
+(banner + "I confirm" checkbox) starts hidden; JS flips it visible
+only when the selected env is production, and clears the checkbox on
+switch-away. Server-side `/api/bulk-runs` ignores `confirm_production`
+on non-prod envs and blocks prod runs without it (including the
+Tickets tab).
+
+**Env-scoped picker endpoints** (`primeqa/execution/routes.py`):
+- `GET /api/jira/sprints?environment_id=` — aggregates sprints across
+  projects → scrum boards → sprints; active-first + newest-start sort
+- `GET /api/jira/sprints/<sprint_id>/tickets?environment_id=` — sprint's issues
+- `GET /api/jira/tickets/recent?environment_id=&limit=10` — last views
+- `GET /api/jira/tickets/search?environment_id=&q=&filter=mine,open,current_sprint,recent`
+- `GET /api/suites/<suite_id>/overview` — TC list + gate + last run
+- `GET /api/releases?environment_id=` — tenant releases (ticket/TC counts)
+- `GET /api/releases/<id>/contents` — tickets + test_cases for the picker
+
+**POST /api/bulk-runs** accepts `run_type` ∈ `{sprint, single,
+tickets, suite, release}`. Suite mode accepts
+`exclude_test_case_ids[]`; release mode accepts `test_case_ids[]` +
+`ticket_keys[]` overrides so the picker's unchecks flow through
+cleanly. Release mode is gated on `bulk_run` (same layer-1 as sprint).
+
+**Recent-ticket tracking** (migration 047, `user_recent_tickets`):
+keyed `(user_id, environment_id, jira_key)` with `viewed_at` timestamp.
+Capped at 20 rows per `(user, env)` — the write path (`record_view()`
+in `primeqa/runs/recent_tickets.py`) upserts + prunes in one
+transaction. Hooked from:
+- `GET /requirements/<id>` — every detail-page view records the key
+- `POST /api/bulk-runs` tickets/sprint modes — every submitted key
+  (best-effort; failures never block the request)
+
+The Tickets tab reads this list via `/api/jira/tickets/recent` when
+the search box is empty.
+
 ## Context-driven run triggers + rerun / labels / AI failure summary
 
 The Runs tab used to be both the history view AND the primary way to trigger runs (via the Run Wizard). Multi-TC generation made the wizard feel like the wrong starting point — most users want to run the tests that belong to a thing, not recompose the selection. Context-driven triggers live alongside the source.
@@ -345,13 +440,19 @@ python tests/test_r7_jira_picker.py      # 10 (R7 Jira chip picker)
 python tests/test_system_validation.py   # 4 runner + 13 canonical suite outcomes
 python tests/test_llm_architecture.py    # 25 (Phases 1-7 — gateway / tiers / limits / dashboards / feedback loop)
 python tests/test_eval_harness.py        # 15 (offline prompt regression harness)
-# ~210 total
+python tests/test_release_dashboard.py   # 27 (Prompt 10/Part 8 — dashboard + share links)
+python tests/test_generation_jobs.py     # 21 (Prompt 11 — async generation queue)
+python tests/test_generation_quality_gate.py # 23 (Prompt 13 — linter + knowledge rules)
+python tests/test_reliability_fixes.py   # 10 (Prompt 15 — tx wrap / neg counts / verify capture)
+python tests/test_run_tests_page.py      # 15 (/run + /api/bulk-runs)
+python tests/test_run_page_overhaul.py   # 25 (Prompt 16 — 4-mode pickers + dynamic prod banner)
+# ~280 total
 
 # Deploy
 git push origin main                     # Railway auto-deploys 3 services
 
 # Apply a migration (idempotent since 016)
-psql "$DATABASE_URL" -f migrations/030_run_labels_and_failure_summary.sql
+psql "$DATABASE_URL" -f migrations/047_user_recent_tickets.sql
 ```
 
 ## Environment variables
