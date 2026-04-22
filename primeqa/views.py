@@ -2177,6 +2177,13 @@ def users_toggle_active(user_id):
     from flask import flash
     db = next(get_db())
     try:
+        # Migration 039: self-deactivation prevention. An admin who
+        # deactivates their own account would be locked out on next page
+        # load; the superadmin escape hatch is tenant-wide, not
+        # user-specific. Block at the view layer.
+        if user_id == request.user["id"] and request.user.get("role") != "superadmin":
+            flash("You cannot deactivate your own account.", "error")
+            return redirect("/settings/users")
         user_repo = UserRepository(db)
         user = user_repo.get_user_by_id(user_id)
         if user and user.tenant_id == request.user["tenant_id"]:
@@ -2188,7 +2195,403 @@ def users_toggle_active(user_id):
         flash(str(e), "error")
     finally:
         db.close()
-    return redirect("/users")
+    return redirect("/settings/users")
+
+
+# --- Permission-set admin UI (migration 039+) -----------------------------
+
+# Permission category mapping used in the user detail page and the
+# assignment modal. Kept in one place so the UI groups consistently
+# wherever permissions are listed.
+PERMISSION_CATEGORIES = {
+    "Execution": [
+        "connect_personal_org", "run_single_ticket", "run_sprint",
+        "run_suite", "rerun_own_ticket", "trigger_metadata_sync",
+    ],
+    "Reporting": [
+        "view_own_results", "view_own_diagnosis", "view_all_results",
+        "view_all_diagnosis", "view_all_results_summary",
+        "view_intelligence_report", "view_intelligence_summary",
+        "view_trends", "view_dashboard", "view_knowledge_attribution",
+    ],
+    "Test Management": [
+        "review_test_cases", "manage_test_suites", "view_test_library",
+        "view_coverage_map", "view_suite_quality_gates",
+        "share_dashboard", "revoke_shared_links", "approve_release",
+    ],
+    "Administration": [
+        "manage_environments", "manage_jira_connections", "manage_sf_connections",
+        "manage_ai_models", "manage_users", "manage_permission_sets",
+        "manage_knowledge", "manage_skills", "view_audit_log", "view_api_usage",
+        "configure_scheduled_runs", "manage_rate_limits", "override_quality_gate",
+        "view_all_personal_environments", "delete_any_personal_environment",
+    ],
+    "API & Automation": [
+        "api_authenticate", "webhook_notifications",
+    ],
+}
+
+
+def _settings_users_payload(db, tenant_id, search: str = ""):
+    """Build the list-page payload: users + their assigned permission sets."""
+    from primeqa.core.models import User
+    from primeqa.core.permissions import PermissionSet, UserPermissionSet
+
+    users = (db.query(User)
+             .filter_by(tenant_id=tenant_id)
+             .order_by(User.is_active.desc(), User.full_name.asc())
+             .all())
+    if search:
+        s = search.lower()
+        users = [u for u in users
+                 if s in (u.full_name or "").lower() or s in (u.email or "").lower()]
+
+    # One query: all assignments for these users.
+    uids = [u.id for u in users]
+    ps_map: dict[int, list[PermissionSet]] = {}
+    if uids:
+        rows = (db.query(UserPermissionSet, PermissionSet)
+                .join(PermissionSet, PermissionSet.id == UserPermissionSet.permission_set_id)
+                .filter(UserPermissionSet.user_id.in_(uids))
+                .order_by(PermissionSet.is_base.desc(), PermissionSet.name.asc())
+                .all())
+        for ups, ps in rows:
+            ps_map.setdefault(ups.user_id, []).append(ps)
+    payload = []
+    for u in users:
+        sets = ps_map.get(u.id, [])
+        base = next((p for p in sets if p.is_base), None)
+        extras = [p for p in sets if not p.is_base]
+        payload.append({
+            "id": u.id,
+            "full_name": u.full_name,
+            "email": u.email,
+            "is_active": u.is_active,
+            "role": u.role,
+            "base_set": base,
+            "extra_sets": extras,
+        })
+    return payload
+
+
+@views_bp.route("/settings/users")
+@login_required
+def settings_users():
+    """List all users in the tenant with their assigned permission sets."""
+    from primeqa.core.permissions import require_page_permission
+
+    @require_page_permission("manage_users")
+    def _render():
+        db = next(get_db())
+        try:
+            search = (request.args.get("search") or "").strip()
+            users = _settings_users_payload(
+                db, request.user["tenant_id"], search=search,
+            )
+            return render_template("settings/users_list.html", **ctx(
+                active_page="settings_users", settings_page="users",
+                breadcrumb_section="Users",
+                users=users, search=search,
+            ))
+        finally:
+            db.close()
+
+    return _render()
+
+
+@views_bp.route("/settings/users/<int:user_id>")
+@login_required
+def settings_user_detail(user_id):
+    """User detail: info, assigned sets, effective permissions by category."""
+    from flask import abort, flash
+    from primeqa.core.models import User
+    from primeqa.core.permissions import (
+        PermissionSet, UserPermissionSet, get_effective_permissions,
+        require_page_permission,
+    )
+    from primeqa.core.navigation import get_landing_page
+
+    @require_page_permission("manage_users")
+    def _render():
+        db = next(get_db())
+        try:
+            u = db.query(User).filter_by(id=user_id).first()
+            if u is None or u.tenant_id != request.user["tenant_id"]:
+                flash("User not found.", "error")
+                return redirect("/settings/users")
+
+            # Assigned sets in display order (base first).
+            rows = (db.query(UserPermissionSet, PermissionSet)
+                    .join(PermissionSet,
+                          PermissionSet.id == UserPermissionSet.permission_set_id)
+                    .filter(UserPermissionSet.user_id == u.id)
+                    .order_by(PermissionSet.is_base.desc(),
+                              PermissionSet.name.asc())
+                    .all())
+            assigned = [{
+                "id": ps.id, "name": ps.name, "api_name": ps.api_name,
+                "is_base": ps.is_base, "is_system": ps.is_system,
+                "assigned_at": ups.assigned_at,
+                "contains_admin": "manage_users" in (ps.permissions or []),
+            } for (ups, ps) in rows]
+
+            # Available (unassigned) sets for the assignment modal.
+            assigned_ids = {a["id"] for a in assigned}
+            all_sets = (db.query(PermissionSet)
+                        .filter_by(tenant_id=u.tenant_id)
+                        .order_by(PermissionSet.is_base.desc(),
+                                  PermissionSet.is_system.desc(),
+                                  PermissionSet.name.asc())
+                        .all())
+
+            # Effective permissions grouped by category, with attribution
+            # (which assigned set introduced each one).
+            effective = get_effective_permissions(u.id, db)
+            attribution: dict[str, str] = {}
+            for (ups, ps) in rows:
+                for p in (ps.permissions or []):
+                    # Base sets win the attribution tie.
+                    if p not in attribution or ps.is_base:
+                        attribution[p] = ps.name
+            grouped: list[dict] = []
+            for cat, perms in PERMISSION_CATEGORIES.items():
+                entries = [{"perm": p, "source": attribution.get(p, "—")}
+                           for p in perms if p in effective]
+                if entries:
+                    grouped.append({"category": cat, "entries": entries})
+            # Fallback for any permissions not in our category map.
+            uncategorized = [p for p in effective
+                             if not any(p in v for v in PERMISSION_CATEGORIES.values())]
+            if uncategorized:
+                grouped.append({
+                    "category": "Other",
+                    "entries": [{"perm": p, "source": attribution.get(p, "—")}
+                                for p in sorted(uncategorized)],
+                })
+
+            preferred = u.preferred_landing_page
+            computed = get_landing_page(
+                effective, preferred=preferred,
+                is_superadmin=(u.role == "superadmin"),
+            )
+
+            is_self = (u.id == request.user["id"])
+
+            return render_template("settings/user_detail.html", **ctx(
+                active_page="settings_users", settings_page="users",
+                breadcrumb_section="Users",
+                breadcrumb_section_url="settings/users",
+                breadcrumb_item=u.full_name,
+                edit_user=u, assigned=assigned, all_sets=all_sets,
+                grouped=grouped, landing_preferred=preferred,
+                landing_computed=computed, is_self=is_self,
+            ))
+        finally:
+            db.close()
+
+    return _render()
+
+
+@views_bp.route("/settings/permission-sets")
+@login_required
+def settings_permission_sets():
+    """List all permission sets in the tenant: base, granular, custom."""
+    from primeqa.core.permissions import (
+        PermissionSet, UserPermissionSet, require_page_permission,
+    )
+    from sqlalchemy import func as sf
+
+    @require_page_permission("manage_permission_sets")
+    def _render():
+        db = next(get_db())
+        try:
+            sets = (db.query(PermissionSet)
+                    .filter_by(tenant_id=request.user["tenant_id"])
+                    .order_by(PermissionSet.is_base.desc(),
+                              PermissionSet.is_system.desc(),
+                              PermissionSet.name.asc())
+                    .all())
+            # User-count per set, in one query.
+            counts = dict((r[0], r[1]) for r in (
+                db.query(UserPermissionSet.permission_set_id,
+                         sf.count(UserPermissionSet.user_id))
+                .group_by(UserPermissionSet.permission_set_id)
+                .all()))
+            rows = [{
+                "id": ps.id, "name": ps.name, "api_name": ps.api_name,
+                "description": ps.description,
+                "is_base": ps.is_base, "is_system": ps.is_system,
+                "permissions_count": len(ps.permissions or []),
+                "users_count": counts.get(ps.id, 0),
+            } for ps in sets]
+            base = [r for r in rows if r["is_base"] and r["is_system"]]
+            granular = [r for r in rows if not r["is_base"] and r["is_system"]]
+            custom = [r for r in rows if not r["is_system"]]
+            return render_template("settings/permission_sets_list.html", **ctx(
+                active_page="settings_permission_sets",
+                settings_page="permission_sets",
+                breadcrumb_section="Permission Sets",
+                base_sets=base, granular_sets=granular, custom_sets=custom,
+            ))
+        finally:
+            db.close()
+
+    return _render()
+
+
+# --- Permission-set assignment APIs ---------------------------------------
+# NOTE: these use require_auth (not login_required) so Bearer tokens from
+# /api/auth/login work as the canonical auth path — matches the rest of
+# /api/* and avoids the test-client-cookie-leak behaviour on mixed auth.
+
+from primeqa.core.auth import require_auth as _require_auth_api
+
+
+@views_bp.route("/api/users/<int:user_id>/permission-sets", methods=["POST"])
+@_require_auth_api
+def api_assign_permission_sets(user_id):
+    """Assign one or more permission sets to a user.
+
+    Body: {"permission_set_ids": [1, 5, 12]}
+    Idempotent — already-assigned sets are skipped silently.
+    """
+    from primeqa.core.models import User
+    from primeqa.core.permissions import (
+        PermissionSet, assign_permission_set, require_permission,
+    )
+
+    @require_permission("manage_users")
+    def _do():
+        body = request.get_json(silent=True) or {}
+        raw_ids = body.get("permission_set_ids")
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return ({"error": {"code": "VALIDATION_ERROR",
+                               "message": "permission_set_ids must be a non-empty list"}}, 400)
+        try:
+            ids = [int(x) for x in raw_ids]
+        except (TypeError, ValueError):
+            return ({"error": {"code": "VALIDATION_ERROR",
+                               "message": "permission_set_ids must be integers"}}, 400)
+
+        db = next(get_db())
+        try:
+            u = db.query(User).filter_by(id=user_id).first()
+            if u is None or u.tenant_id != request.user["tenant_id"]:
+                return ({"error": {"code": "NOT_FOUND", "message": "User not found"}}, 404)
+            # Tenant-scope all requested sets.
+            sets = (db.query(PermissionSet)
+                    .filter(PermissionSet.id.in_(ids),
+                            PermissionSet.tenant_id == u.tenant_id)
+                    .all())
+            found_ids = {ps.id for ps in sets}
+            missing = [i for i in ids if i not in found_ids]
+            if missing:
+                return ({"error": {"code": "VALIDATION_ERROR",
+                                   "message": f"Unknown permission set ids: {missing}"}},
+                        400)
+            added = 0
+            for ps in sets:
+                if assign_permission_set(u.id, ps.id, db,
+                                         assigned_by=request.user["id"]):
+                    added += 1
+            db.commit()
+            return ({"assigned": added, "requested": len(ids)}, 200)
+        finally:
+            db.close()
+
+    return _do()
+
+
+@views_bp.route("/api/users/<int:user_id>/permission-sets/<int:pset_id>",
+                methods=["DELETE"])
+@_require_auth_api
+def api_revoke_permission_set(user_id, pset_id):
+    """Revoke a permission-set assignment from a user.
+
+    Self-protect: an admin can't remove their own manage_users grant.
+    """
+    from primeqa.core.models import User
+    from primeqa.core.permissions import (
+        PermissionSet, require_permission, revoke_permission_set,
+    )
+
+    @require_permission("manage_users")
+    def _do():
+        db = next(get_db())
+        try:
+            u = db.query(User).filter_by(id=user_id).first()
+            if u is None or u.tenant_id != request.user["tenant_id"]:
+                return ({"error": {"code": "NOT_FOUND", "message": "User not found"}}, 404)
+            ps = db.query(PermissionSet).filter_by(id=pset_id).first()
+            if ps is None or ps.tenant_id != u.tenant_id:
+                return ({"error": {"code": "NOT_FOUND", "message": "Permission set not found"}}, 404)
+            # Self-protect: prevent lock-out.
+            if (u.id == request.user["id"]
+                    and "manage_users" in (ps.permissions or [])
+                    and request.user.get("role") != "superadmin"):
+                return ({"error": {
+                    "code": "SELF_ADMIN_REVOKE",
+                    "message": "Cannot remove your own admin permissions.",
+                }}, 400)
+            removed = revoke_permission_set(u.id, ps.id, db)
+            db.commit()
+            if not removed:
+                return ({"error": {"code": "NOT_FOUND",
+                                   "message": "Assignment not found"}}, 404)
+            return ("", 204)
+        finally:
+            db.close()
+
+    return _do()
+
+
+@views_bp.route("/api/users/<int:user_id>/deactivate", methods=["POST"])
+@_require_auth_api
+def api_deactivate_user(user_id):
+    """Deactivate a user. Blocks self-deactivation."""
+    from primeqa.core.models import User
+    from primeqa.core.permissions import require_permission
+
+    @require_permission("manage_users")
+    def _do():
+        if user_id == request.user["id"] and request.user.get("role") != "superadmin":
+            return ({"error": {"code": "SELF_DEACTIVATE",
+                               "message": "Cannot deactivate your own account."}}, 400)
+        db = next(get_db())
+        try:
+            u = db.query(User).filter_by(id=user_id).first()
+            if u is None or u.tenant_id != request.user["tenant_id"]:
+                return ({"error": {"code": "NOT_FOUND", "message": "User not found"}}, 404)
+            u.is_active = False
+            db.commit()
+            return ("", 204)
+        finally:
+            db.close()
+
+    return _do()
+
+
+@views_bp.route("/api/users/<int:user_id>/activate", methods=["POST"])
+@_require_auth_api
+def api_activate_user(user_id):
+    """Re-activate a user."""
+    from primeqa.core.models import User
+    from primeqa.core.permissions import require_permission
+
+    @require_permission("manage_users")
+    def _do():
+        db = next(get_db())
+        try:
+            u = db.query(User).filter_by(id=user_id).first()
+            if u is None or u.tenant_id != request.user["tenant_id"]:
+                return ({"error": {"code": "NOT_FOUND", "message": "User not found"}}, 404)
+            u.is_active = True
+            db.commit()
+            return ("", 204)
+        finally:
+            db.close()
+
+    return _do()
 
 
 # --- Impacts ---
@@ -3544,9 +3947,8 @@ def settings_environments(): return redirect("/environments")
 @login_required
 def settings_groups(): return redirect("/groups")
 
-@views_bp.route("/settings/users")
-@role_required("admin")
-def settings_users(): return redirect("/users")
+# /settings/users is defined above (permission-set aware). The legacy
+# redirect shim is retired — Admin UI lives at /settings/users now.
 
 
 # --- Setup Wizard ---

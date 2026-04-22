@@ -1,0 +1,290 @@
+{% extends "settings/base.html" %}
+{% block title %}{{ edit_user.full_name }} - Users - PrimeQA{% endblock %}
+{% block settings_content %}
+
+<div class="space-y-6" data-user-id="{{ edit_user.id }}">
+
+  {# --- Section 1: User info ------------------------------------------ #}
+  <div class="bg-white shadow rounded-lg p-6">
+    <div class="flex items-start justify-between">
+      <div>
+        <h1 class="text-2xl font-bold text-gray-900">{{ edit_user.full_name }}</h1>
+        <p class="mt-1 text-sm text-gray-600">{{ edit_user.email }}</p>
+        <div class="mt-3 text-sm space-y-1 text-gray-600">
+          <div>
+            Status:
+            {% if edit_user.is_active %}
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Active</span>
+            {% else %}
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">Inactive</span>
+            {% endif %}
+          </div>
+          {% if edit_user.last_login_at %}
+            <div>Last Login: <span class="font-mono text-xs">{{ edit_user.last_login_at.isoformat()[:19] }}</span></div>
+          {% endif %}
+          {% if edit_user.created_at %}
+            <div>Joined: <span class="font-mono text-xs">{{ edit_user.created_at.isoformat()[:10] }}</span></div>
+          {% endif %}
+          <div>
+            Landing Page:
+            <span class="font-mono text-xs">{{ landing_computed }}</span>
+            {% if landing_preferred %}
+              <span class="text-gray-400">(preferred: {{ landing_preferred }})</span>
+            {% else %}
+              <span class="text-gray-400">(computed)</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="flex flex-col items-end gap-2">
+        {% if not is_self %}
+          {% if edit_user.is_active %}
+          <form method="POST" action="/users/{{ edit_user.id }}/toggle-active">
+            {{ csrf_input | safe }}
+            <button type="submit"
+                    class="rounded-md ring-1 ring-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+                    data-confirm data-confirm-title="Deactivate user?"
+                    data-confirm-message="{{ edit_user.full_name }} will no longer be able to sign in."
+                    data-confirm-variant="danger">
+              Deactivate
+            </button>
+          </form>
+          {% else %}
+          <form method="POST" action="/users/{{ edit_user.id }}/toggle-active">
+            {{ csrf_input | safe }}
+            <button type="submit"
+                    class="rounded-md bg-green-600 text-white px-3 py-1.5 text-sm font-semibold hover:bg-green-500">
+              Reactivate
+            </button>
+          </form>
+          {% endif %}
+        {% else %}
+          <span class="text-xs text-gray-400" title="You cannot deactivate your own account.">
+            (This is you)
+          </span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# --- Section 2: Assigned permission sets --------------------------- #}
+  <div class="bg-white shadow rounded-lg p-6">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-lg font-semibold text-gray-900">Assigned Permission Sets</h2>
+      <button type="button"
+              onclick="document.getElementById('assign-modal').classList.remove('hidden');"
+              class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">
+        + Assign Permission Set
+      </button>
+    </div>
+    <table class="min-w-full divide-y divide-gray-200">
+      <thead class="bg-gray-50">
+        <tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+          <th class="px-4 py-2">Permission Set</th>
+          <th class="px-4 py-2">Type</th>
+          <th class="px-4 py-2">Assigned</th>
+          <th class="px-4 py-2"></th>
+        </tr>
+      </thead>
+      <tbody class="bg-white divide-y divide-gray-100">
+        {% for a in assigned %}
+        <tr>
+          <td class="px-4 py-2 text-sm font-medium text-gray-900">
+            <a href="/settings/permission-sets/{{ a.id }}" class="hover:underline">{{ a.name }}</a>
+          </td>
+          <td class="px-4 py-2 text-xs">
+            {% if a.is_system and a.is_base %}
+              <span class="inline-flex items-center px-2 py-0.5 rounded bg-purple-100 text-purple-800">System (Base)</span>
+            {% elif a.is_system %}
+              <span class="inline-flex items-center px-2 py-0.5 rounded bg-blue-100 text-blue-800">System</span>
+            {% else %}
+              <span class="inline-flex items-center px-2 py-0.5 rounded bg-gray-100 text-gray-700">Custom</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-2 text-xs font-mono text-gray-600">{{ a.assigned_at.isoformat()[:10] if a.assigned_at else '' }}</td>
+          <td class="px-4 py-2 text-right">
+            {% set can_remove = not (is_self and a.contains_admin) %}
+            {% if can_remove %}
+              <button type="button"
+                      class="text-xs text-red-600 hover:text-red-800"
+                      data-user-id="{{ edit_user.id }}"
+                      data-pset-id="{{ a.id }}"
+                      data-pset-name="{{ a.name }}"
+                      data-is-last="{{ 'true' if assigned|length == 1 else 'false' }}"
+                      onclick="PrimeQA_revokeSet(this);">
+                Remove
+              </button>
+            {% else %}
+              <span class="text-xs text-gray-400" title="You can't remove your own admin permissions.">
+                (locked)
+              </span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        {% if not assigned %}
+        <tr><td colspan="4" class="px-4 py-6 text-center text-sm text-gray-500">
+          No permission sets assigned. This user has no access.
+        </td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  {# --- Section 3: Effective permissions ------------------------------ #}
+  <div class="bg-white shadow rounded-lg p-6">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-lg font-semibold text-gray-900">Effective Permissions</h2>
+      <button type="button" id="expand-toggle"
+              class="text-xs text-indigo-600 hover:text-indigo-800"
+              onclick="PrimeQA_toggleAllGroups(this);">Expand All</button>
+    </div>
+    {% if grouped %}
+      <div class="space-y-3">
+      {% for g in grouped %}
+        <details class="group border border-gray-200 rounded-md">
+          <summary class="px-4 py-2 cursor-pointer text-sm font-medium text-gray-800 hover:bg-gray-50">
+            {{ g.category }}
+            <span class="text-xs text-gray-500">({{ g.entries|length }} permission{% if g.entries|length != 1 %}s{% endif %})</span>
+          </summary>
+          <table class="min-w-full border-t border-gray-100">
+            <tbody>
+            {% for it in g.entries %}
+              <tr class="text-xs">
+                <td class="px-4 py-1.5 font-mono text-gray-800">{{ it.perm }}</td>
+                <td class="px-4 py-1.5 text-gray-500 text-right">← {{ it.source }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </details>
+      {% endfor %}
+      </div>
+    {% else %}
+      <p class="text-sm text-gray-500">No effective permissions. Assign a permission set above to grant access.</p>
+    {% endif %}
+  </div>
+</div>
+
+
+{# --- Assign Permission Set modal ----------------------------------- #}
+<div id="assign-modal" class="hidden fixed inset-0 z-50 overflow-y-auto" role="dialog" aria-modal="true">
+  <div class="flex min-h-full items-center justify-center p-4">
+    <div class="fixed inset-0 bg-black/40" onclick="document.getElementById('assign-modal').classList.add('hidden');"></div>
+    <div class="relative bg-white rounded-lg shadow-xl w-full max-w-2xl p-6">
+      <h3 class="text-lg font-semibold text-gray-900">Assign Permission Set to {{ edit_user.full_name }}</h3>
+      <form id="assign-form" class="mt-4 space-y-4" onsubmit="return PrimeQA_submitAssignments(event, {{ edit_user.id }});">
+        <input type="search" id="assign-search" placeholder="Search permission sets…"
+               class="w-full text-sm rounded-md border border-gray-300 px-3 py-2"
+               oninput="PrimeQA_filterAssignSets(this.value);">
+        <div class="max-h-96 overflow-y-auto space-y-4" id="assign-list">
+          {% set assigned_ids = assigned|map(attribute='id')|list %}
+          <div>
+            <h4 class="text-xs font-semibold text-gray-500 uppercase">Base Permission Sets</h4>
+            <div class="mt-2 space-y-2">
+              {% for ps in all_sets if ps.is_base %}
+                <label class="flex items-start gap-2 text-sm">
+                  <input type="checkbox" name="ps" value="{{ ps.id }}"
+                         data-label="{{ ps.name | lower }}"
+                         {% if ps.id in assigned_ids %}checked disabled{% endif %}>
+                  <span>
+                    <span class="font-medium text-gray-900">{{ ps.name }}</span>
+                    {% if ps.id in assigned_ids %}<span class="ml-1 text-xs text-gray-400">(already assigned)</span>{% endif %}
+                    {% if ps.description %}<div class="text-xs text-gray-500">{{ ps.description }}</div>{% endif %}
+                  </span>
+                </label>
+              {% endfor %}
+            </div>
+          </div>
+          <div>
+            <h4 class="text-xs font-semibold text-gray-500 uppercase">Granular / Custom</h4>
+            <div class="mt-2 space-y-1 max-h-60 overflow-y-auto border border-gray-100 rounded-md p-2">
+              {% for ps in all_sets if not ps.is_base %}
+                <label class="flex items-center gap-2 text-sm">
+                  <input type="checkbox" name="ps" value="{{ ps.id }}"
+                         data-label="{{ ps.name | lower }}"
+                         {% if ps.id in assigned_ids %}checked disabled{% endif %}>
+                  <span>
+                    {{ ps.name }}
+                    {% if not ps.is_system %}
+                      <span class="ml-1 text-xs text-gray-500">(custom)</span>
+                    {% endif %}
+                    {% if ps.id in assigned_ids %}<span class="ml-1 text-xs text-gray-400">(already assigned)</span>{% endif %}
+                  </span>
+                </label>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2">
+          <button type="button"
+                  onclick="document.getElementById('assign-modal').classList.add('hidden');"
+                  class="rounded-md ring-1 ring-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">
+            Cancel
+          </button>
+          <button type="submit"
+                  class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">
+            Assign
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+window.PrimeQA_filterAssignSets = function (q) {
+  q = (q || "").toLowerCase();
+  document.querySelectorAll('#assign-list label').forEach(lbl => {
+    const cb = lbl.querySelector('input[type=checkbox]');
+    const hay = (cb && cb.dataset.label) || '';
+    lbl.style.display = (!q || hay.indexOf(q) !== -1) ? '' : 'none';
+  });
+};
+
+window.PrimeQA_toggleAllGroups = function (btn) {
+  const details = document.querySelectorAll('details');
+  const anyClosed = Array.from(details).some(d => !d.open);
+  details.forEach(d => { d.open = anyClosed; });
+  btn.textContent = anyClosed ? 'Collapse All' : 'Expand All';
+};
+
+window.PrimeQA_revokeSet = function (btn) {
+  const userId = btn.dataset.userId;
+  const psetId = btn.dataset.psetId;
+  const name = btn.dataset.psetName;
+  const isLast = btn.dataset.isLast === 'true';
+  const msg = isLast
+    ? `Remove "${name}"? This user will have NO permission sets and very limited access. Continue?`
+    : `Remove "${name}" from this user?`;
+  if (!confirm(msg)) return;
+  fetch(`/api/users/${userId}/permission-sets/${psetId}`, {
+    method: 'DELETE', credentials: 'same-origin',
+  }).then(r => {
+    if (r.status === 204) window.location.reload();
+    else r.json().then(j => alert((j.error && j.error.message) || 'Could not remove.'));
+  });
+};
+
+window.PrimeQA_submitAssignments = function (ev, userId) {
+  ev.preventDefault();
+  const ids = Array.from(document.querySelectorAll('#assign-form input[name=ps]:checked:not([disabled])'))
+                   .map(cb => parseInt(cb.value, 10));
+  if (ids.length === 0) {
+    document.getElementById('assign-modal').classList.add('hidden');
+    return false;
+  }
+  fetch(`/api/users/${userId}/permission-sets`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({permission_set_ids: ids}),
+  }).then(r => {
+    if (r.ok) window.location.reload();
+    else r.json().then(j => alert((j.error && j.error.message) || 'Could not assign.'));
+  });
+  return false;
+};
+</script>
+
+{% endblock %}
