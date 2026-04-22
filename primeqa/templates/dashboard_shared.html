@@ -1,0 +1,215 @@
+{# Public read-only Release Owner Dashboard.
+   Rendered by /shared/<token>. No auth required, no sidebar nav,
+   strips every action button. Three terminal states:
+     ok        → show the dashboard in read-only form
+     revoked   → "This dashboard link has been revoked"
+     expired   → "This dashboard link has expired"
+     not_found → "This dashboard link is invalid"
+#}
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PrimeQA Dashboard — Shared View</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="h-full">
+
+{# -------- Banner always visible --------------------------------- #}
+<header class="bg-indigo-50 border-b border-indigo-100 text-indigo-900 text-sm">
+  <div class="max-w-6xl mx-auto px-4 py-2 flex flex-wrap items-center justify-between gap-2">
+    <span class="font-medium">PrimeQA · Shared dashboard (read-only)</span>
+    <span class="text-xs text-indigo-700 font-mono">
+      as of {{ now.strftime('%Y-%m-%d %H:%M UTC') }}
+    </span>
+  </div>
+</header>
+
+{% if state == 'revoked' %}
+  <main class="max-w-lg mx-auto mt-16 p-8 bg-white shadow rounded-lg text-center">
+    <h1 class="text-2xl font-bold text-gray-900">Link revoked</h1>
+    <p class="mt-3 text-sm text-gray-600">
+      This dashboard link has been revoked by the person who created it.
+      Ask them for a fresh link if you still need access.
+    </p>
+  </main>
+
+{% elif state == 'expired' %}
+  <main class="max-w-lg mx-auto mt-16 p-8 bg-white shadow rounded-lg text-center">
+    <h1 class="text-2xl font-bold text-gray-900">Link expired</h1>
+    <p class="mt-3 text-sm text-gray-600">
+      This dashboard link expired on
+      <span class="font-mono">{{ link.expires_at.strftime('%Y-%m-%d') }}</span>.
+      Ask the creator for a new one.
+    </p>
+  </main>
+
+{% elif state == 'not_found' %}
+  <main class="max-w-lg mx-auto mt-16 p-8 bg-white shadow rounded-lg text-center">
+    <h1 class="text-2xl font-bold text-gray-900">Invalid link</h1>
+    <p class="mt-3 text-sm text-gray-600">
+      The dashboard link you followed isn't recognised. It may have been
+      mistyped or revoked.
+    </p>
+  </main>
+
+{% else %}
+
+<main class="max-w-6xl mx-auto p-4 space-y-6" data-page="shared-dashboard">
+
+  {# -------- HERO ---- strip buttons entirely for public view ------- #}
+  {% set s = data.state %}
+  {% set hero_cls = {
+       'GO':         'bg-green-50  ring-green-200  text-green-900',
+       'APPROVED':   'bg-green-50  ring-green-200  text-green-900',
+       'NO-GO':      'bg-red-50    ring-red-200    text-red-900',
+       'OVERRIDDEN': 'bg-amber-50  ring-amber-200  text-amber-900',
+       'UNKNOWN':    'bg-gray-50   ring-gray-200   text-gray-900',
+     }[s] %}
+  {% set dot_cls = {
+       'GO':         'bg-green-500',
+       'APPROVED':   'bg-green-500',
+       'NO-GO':      'bg-red-500',
+       'OVERRIDDEN': 'bg-amber-500',
+       'UNKNOWN':    'bg-gray-400',
+     }[s] %}
+
+  <div class="rounded-xl ring-1 p-6 md:p-8 {{ hero_cls }}">
+    <div class="flex items-center gap-3">
+      <span class="inline-block h-4 w-4 rounded-full {{ dot_cls }}"></span>
+      <span class="text-4xl md:text-5xl font-bold tracking-tight">{{ s }}</span>
+    </div>
+    <div class="mt-3 text-sm md:text-base flex flex-wrap items-center gap-x-3 gap-y-1">
+      {% if data.latest_run %}
+        <span class="font-medium">
+          Run #{{ data.latest_run.id }}{% if data.latest_run.label %} · {{ data.latest_run.label }}{% endif %}
+        </span>
+        <span aria-hidden="true">·</span>
+        <span>Pass Rate:
+          <span class="font-semibold">
+            {{ data.latest_run.pass_rate|round|int if data.latest_run.pass_rate is not none else '—' }}%
+          </span>
+        </span>
+        <span aria-hidden="true">·</span>
+        <span>Risk: <span class="font-semibold">{{ data.risk }}</span></span>
+      {% endif %}
+    </div>
+    <div class="mt-1 text-sm">
+      Tested: {{ data.ticket_counts.total - data.ticket_counts.untested }}
+      of {{ data.ticket_counts.total }} tickets
+      {% if data.ticket_counts.failed %}
+        · <span class="font-medium">{{ data.ticket_counts.failed }} failed</span>
+      {% endif %}
+      {% if data.ticket_counts.blocked %}· {{ data.ticket_counts.blocked }} blocked{% endif %}
+      {% if data.ticket_counts.untested %}· {{ data.ticket_counts.untested }} untested{% endif %}
+    </div>
+    <p class="mt-2 text-sm opacity-80">{{ data.state_reason }}</p>
+  </div>
+
+  {# -------- TICKET GRID ------------------------------------------- #}
+  {% if data.ticket_grid %}
+  <div class="bg-white shadow rounded-lg p-5">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">
+      Tickets ({{ data.ticket_counts.total }})
+    </h2>
+    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
+      {% for t in data.ticket_grid %}
+        {% set cls = {
+            'passed':   'bg-green-50  ring-green-200  text-green-800',
+            'failed':   'bg-red-50    ring-red-200    text-red-800',
+            'blocked':  'bg-amber-50  ring-amber-200  text-amber-800',
+            'untested': 'bg-gray-50   ring-gray-200   text-gray-600',
+          }[t.status] %}
+        <div class="rounded-md ring-1 px-2 py-1.5 text-xs {{ cls }} flex flex-col items-center justify-center">
+          <span class="font-mono">{{ t.jira_key }}</span>
+          <span class="uppercase text-[10px] mt-0.5">{{ t.status }}</span>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# -------- QUALITY GATES ----------------------------------------- #}
+  <div class="bg-white shadow rounded-lg p-5">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">Quality Gates</h2>
+    {% if data.gates %}
+      <div class="space-y-3">
+        {% for g in data.gates %}
+          <div>
+            <div class="flex items-center justify-between text-sm">
+              <div class="font-medium text-gray-900">{{ g.name }}</div>
+              <div class="text-xs">
+                {% if g.pass_rate is not none %}
+                  <span class="font-semibold">{{ g.pass_rate|round|int }}%</span>
+                  pass · Gate: {{ g.threshold }}%
+                  {% if g.passing %}
+                    <span class="ml-2 text-green-700">● GO</span>
+                  {% else %}
+                    <span class="ml-2 text-red-700">● NO-GO</span>
+                  {% endif %}
+                {% else %}
+                  <span class="text-gray-400">No run yet</span> · Gate: {{ g.threshold }}%
+                {% endif %}
+              </div>
+            </div>
+            <div class="mt-1 h-2 rounded-full bg-gray-100 overflow-hidden">
+              {% if g.pass_rate is not none %}
+                <div class="h-2 {% if g.passing %}bg-green-500{% else %}bg-red-500{% endif %}"
+                     style="width: {{ g.pass_rate|round|int }}%;"></div>
+              {% endif %}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="text-sm text-gray-500">No quality gates configured.</p>
+    {% endif %}
+  </div>
+
+  {# -------- TREND sparkline --------------------------------------- #}
+  {% if data.trends and data.trends|length >= 2 %}
+  <div class="bg-white shadow rounded-lg p-5">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">Run Trends</h2>
+    {% set trends = data.trends %}
+    {% set n = trends|length %}
+    <svg viewBox="0 0 100 40" class="w-full h-24" preserveAspectRatio="none">
+      <line x1="0" y1="{{ (100 - 80) * 0.4 }}" x2="100" y2="{{ (100 - 80) * 0.4 }}"
+            stroke="#9ca3af" stroke-dasharray="2 2" stroke-width="0.3" />
+      {% set pts = [] %}
+      {% for t in trends %}
+        {% set pr = t.pass_rate if t.pass_rate is not none else 0 %}
+        {% set x = 100.0 * loop.index0 / (n - 1) %}
+        {% set y = (100 - pr) * 0.4 %}
+        {% set _ = pts.append(x|string ~ ',' ~ y|string) %}
+      {% endfor %}
+      <polyline fill="none" stroke="#4f46e5" stroke-width="0.8"
+                points="{{ pts|join(' ') }}" />
+      {% for t in trends %}
+        {% set pr = t.pass_rate if t.pass_rate is not none else 0 %}
+        {% set x = 100.0 * loop.index0 / (n - 1) %}
+        {% set y = (100 - pr) * 0.4 %}
+        <circle cx="{{ x }}" cy="{{ y }}" r="1.2"
+                fill="{% if pr >= 80 %}#10b981{% else %}#ef4444{% endif %}" />
+      {% endfor %}
+    </svg>
+    <div class="mt-2 flex justify-between text-[11px] text-gray-500 font-mono">
+      {% for t in trends %}
+        <span>{{ t.label }}<br/>
+          {{ t.pass_rate|round|int if t.pass_rate is not none else '—' }}%
+        </span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <p class="text-center text-xs text-gray-400">
+    Generated by PrimeQA · read-only link
+    · expires {{ link.expires_at.strftime('%Y-%m-%d') }}
+  </p>
+</main>
+
+{% endif %}
+
+</body>
+</html>

@@ -291,6 +291,179 @@ def api_release_approve(run_id):
     return _do()
 
 
+# --- Share Dashboard (Prompt 10 / Part 8) ---------------------------------
+
+def _hash_share_token(raw: str) -> str:
+    """SHA-256 of the raw token, hex-encoded. Stored in
+    shared_dashboard_links.token (UNIQUE VARCHAR(64)). Lookups compute
+    the hash from the incoming URL token and match by equality — the
+    raw token never lands in the DB so a dump doesn't leak active
+    links."""
+    import hashlib
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+@views_bp.route("/api/dashboard/share", methods=["POST"])
+@_require_auth_api
+def api_dashboard_share():
+    """Generate a shareable dashboard URL. Returns 201 with the
+    public URL + link_id + expires_at. The raw token is included
+    exactly once in the response — the server only stores the hash.
+
+    Body: {"environment_id": int, "expires_days": int (default 30, max 180)}
+    """
+    from datetime import datetime, timedelta, timezone
+    import secrets
+    from primeqa.core.models import Environment
+    from primeqa.core.permissions import SharedDashboardLink, require_permission
+
+    @require_permission("share_dashboard")
+    def _do():
+        body = request.get_json(silent=True) or {}
+        try:
+            env_id = int(body.get("environment_id"))
+        except (TypeError, ValueError):
+            return ({"error": {"code": "VALIDATION_ERROR",
+                               "message": "environment_id required"}}, 400)
+        try:
+            days = int(body.get("expires_days", 30))
+        except (TypeError, ValueError):
+            days = 30
+        days = max(1, min(days, 180))  # clamp 1..180
+
+        db = next(get_db())
+        try:
+            env = (db.query(Environment)
+                   .filter_by(id=env_id,
+                              tenant_id=request.user["tenant_id"])
+                   .first())
+            if env is None:
+                return ({"error": {"code": "NOT_FOUND",
+                                   "message": "Environment not found"}}, 404)
+
+            # 32 random bytes → 43-char URL-safe token. Well within the
+            # VARCHAR(64) column; hashed to 64 hex chars for storage.
+            raw = secrets.token_urlsafe(32)
+            token_hash = _hash_share_token(raw)
+            expires_at = datetime.now(timezone.utc) + timedelta(days=days)
+
+            link = SharedDashboardLink(
+                tenant_id=request.user["tenant_id"],
+                environment_id=env_id,
+                token=token_hash,
+                created_by=request.user["id"],
+                expires_at=expires_at,
+            )
+            db.add(link); db.commit(); db.refresh(link)
+
+            base = request.url_root.rstrip("/")
+            return ({
+                "link_id": link.id,
+                "environment_id": env_id,
+                "url": f"{base}/shared/{raw}",
+                "expires_at": expires_at.isoformat(),
+                "expires_days": days,
+            }, 201)
+        finally:
+            db.close()
+
+    return _do()
+
+
+@views_bp.route("/api/dashboard/share/<int:link_id>/revoke", methods=["POST"])
+@_require_auth_api
+def api_dashboard_share_revoke(link_id):
+    """Revoke a shared dashboard link so subsequent visits return a
+    'link revoked' page. Soft-only — row stays for audit."""
+    from datetime import datetime, timezone
+    from primeqa.core.permissions import SharedDashboardLink, require_permission
+
+    @require_permission("revoke_shared_links")
+    def _do():
+        db = next(get_db())
+        try:
+            link = db.query(SharedDashboardLink).filter_by(id=link_id).first()
+            if link is None or link.tenant_id != request.user["tenant_id"]:
+                return ({"error": {"code": "NOT_FOUND",
+                                   "message": "Link not found"}}, 404)
+            if link.revoked_at is not None:
+                return ({"link_id": link.id, "status": "already_revoked",
+                         "revoked_at": link.revoked_at.isoformat()}, 200)
+            link.revoked_at = datetime.now(timezone.utc)
+            db.commit()
+            return ({"link_id": link.id, "status": "revoked",
+                     "revoked_at": link.revoked_at.isoformat()}, 200)
+        finally:
+            db.close()
+
+    return _do()
+
+
+@views_bp.route("/api/dashboard/share", methods=["GET"])
+@_require_auth_api
+def api_dashboard_share_list():
+    """List active + recent shared links in the caller's tenant.
+    Used by the 'manage share links' UI on the dashboard."""
+    from primeqa.core.permissions import SharedDashboardLink, require_permission
+
+    @require_permission("share_dashboard")
+    def _do():
+        db = next(get_db())
+        try:
+            rows = (db.query(SharedDashboardLink)
+                    .filter_by(tenant_id=request.user["tenant_id"])
+                    .order_by(SharedDashboardLink.created_at.desc())
+                    .limit(50).all())
+            return ({"links": [{
+                "id": l.id, "environment_id": l.environment_id,
+                "created_at": l.created_at.isoformat() if l.created_at else None,
+                "expires_at": l.expires_at.isoformat() if l.expires_at else None,
+                "revoked_at": l.revoked_at.isoformat() if l.revoked_at else None,
+                "created_by": l.created_by,
+            } for l in rows]}, 200)
+        finally:
+            db.close()
+
+    return _do()
+
+
+@views_bp.route("/shared/<string:token>")
+def shared_dashboard_public(token):
+    """Public read-only dashboard view. No auth required — the token
+    itself is the capability. Shows the hero Go/No-Go, ticket grid,
+    quality gates, run trend. Action buttons (approve, override,
+    share, cancel) are stripped in the read-only template."""
+    from datetime import datetime, timezone
+    from primeqa.core.permissions import SharedDashboardLink
+    from primeqa.release.dashboard import get_dashboard_data
+
+    db = next(get_db())
+    try:
+        link = (db.query(SharedDashboardLink)
+                .filter_by(token=_hash_share_token(token))
+                .first())
+        if link is None:
+            return render_template("dashboard_shared.html",
+                                   state="not_found", data=None,
+                                   link=None, now=datetime.now(timezone.utc)), 404
+        now = datetime.now(timezone.utc)
+        if link.revoked_at is not None:
+            return render_template("dashboard_shared.html",
+                                   state="revoked", data=None,
+                                   link=link, now=now), 410
+        # `expires_at` is timezone-aware in Postgres; normalise for
+        # safety.
+        if link.expires_at and link.expires_at < now:
+            return render_template("dashboard_shared.html",
+                                   state="expired", data=None,
+                                   link=link, now=now), 410
+        data = get_dashboard_data(link.environment_id, link.tenant_id, db)
+        return render_template("dashboard_shared.html",
+                               state="ok", data=data, link=link, now=now)
+    finally:
+        db.close()
+
+
 @views_bp.route("/api/releases/<int:run_id>/override", methods=["POST"])
 @_require_auth_api
 def api_release_override(run_id):

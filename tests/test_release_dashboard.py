@@ -365,6 +365,155 @@ def run_tests():
     results.append(test("18. release_owner_base lands on /dashboard",
                         test_ro_landing_page))
 
+    # ----- Share Dashboard (Part 8) --------------------------------
+    from primeqa.core.permissions import SharedDashboardLink
+
+    # Pick any env in tenant 1 — share links are scoped to an env.
+    share_env_id = None
+    db = SessionLocal()
+    try:
+        e = (db.query(Environment)
+             .filter_by(tenant_id=TENANT_ID, is_active=True).first())
+        share_env_id = e.id if e else None
+    finally:
+        db.close()
+
+    created_share_url = {"url": None, "link_id": None, "token": None}
+
+    def test_share_create_returns_url():
+        if share_env_id is None:
+            return
+        r = client.post("/api/dashboard/share",
+                        headers={"Authorization": f"Bearer {admin_token}"},
+                        json={"environment_id": share_env_id,
+                              "expires_days": 7})
+        assert r.status_code == 201, f"{r.status_code} {r.data}"
+        body = r.get_json()
+        assert "url" in body and "/shared/" in body["url"]
+        assert body["expires_days"] == 7
+        created_share_url["url"] = body["url"]
+        created_share_url["link_id"] = body["link_id"]
+        # Extract the raw token from the URL for subsequent tests.
+        created_share_url["token"] = body["url"].rsplit("/shared/", 1)[-1]
+    results.append(test("19. POST /api/dashboard/share returns signed URL",
+                        test_share_create_returns_url))
+
+    def test_share_stores_hashed_token():
+        # DB should hold the sha256 of the raw token, not the token itself.
+        if not created_share_url["token"]:
+            return
+        import hashlib
+        expected = hashlib.sha256(created_share_url["token"].encode()).hexdigest()
+        db = SessionLocal()
+        try:
+            row = (db.query(SharedDashboardLink)
+                   .filter_by(id=created_share_url["link_id"]).first())
+            assert row.token == expected, "token stored should be hash not raw"
+            # Raw token should NOT appear anywhere in the DB value
+            assert row.token != created_share_url["token"]
+        finally:
+            db.close()
+    results.append(test("20. Token stored hashed, not raw",
+                        test_share_stores_hashed_token))
+
+    def test_share_requires_permission():
+        # Developer has no share_dashboard perm → 403.
+        dev_token = login_api("dev_rd@primeqa.io", "test123")
+        r = client.post("/api/dashboard/share",
+                        headers={"Authorization": f"Bearer {dev_token}"},
+                        json={"environment_id": share_env_id or 1,
+                              "expires_days": 7})
+        assert r.status_code == 403, f"{r.status_code} {r.data}"
+        assert r.get_json()["error"]["code"] == "INSUFFICIENT_PERMISSIONS"
+    results.append(test("21. Share without share_dashboard -> 403",
+                        test_share_requires_permission))
+
+    def test_shared_page_renders_unauthenticated():
+        if not created_share_url["url"]:
+            return
+        # Fresh client — no session, no Bearer token.
+        from primeqa.app import app as _a
+        c = _a.test_client()
+        r = c.get("/shared/" + created_share_url["token"])
+        assert r.status_code == 200, f"{r.status_code} {r.data[:200]}"
+        html = r.data.decode("utf-8", "replace")
+        assert 'data-page="shared-dashboard"' in html
+        # Read-only: no action button IDs present.
+        assert "data-approve-run" not in html
+        assert "data-override-run" not in html
+        assert "share-dashboard-btn" not in html
+    results.append(test("22. /shared/<token> renders without auth (read-only)",
+                        test_shared_page_renders_unauthenticated))
+
+    def test_shared_unknown_token_404():
+        from primeqa.app import app as _a
+        c = _a.test_client()
+        r = c.get("/shared/" + ("x" * 43))
+        assert r.status_code == 404
+        assert b"Invalid link" in r.data
+    results.append(test("23. /shared/<unknown-token> -> 404 'Invalid link'",
+                        test_shared_unknown_token_404))
+
+    def test_share_revoke():
+        if not created_share_url["link_id"]:
+            return
+        r = client.post(
+            f"/api/dashboard/share/{created_share_url['link_id']}/revoke",
+            headers={"Authorization": f"Bearer {admin_token}"})
+        assert r.status_code == 200, r.data
+        body = r.get_json()
+        assert body["status"] == "revoked"
+    results.append(test("24. Revoke sets revoked_at",
+                        test_share_revoke))
+
+    def test_revoked_link_returns_410():
+        if not created_share_url["url"]:
+            return
+        from primeqa.app import app as _a
+        c = _a.test_client()
+        r = c.get("/shared/" + created_share_url["token"])
+        assert r.status_code == 410, r.status_code
+        assert b"revoked" in r.data.lower() or b"Revoked" in r.data or b"Link revoked" in r.data
+    results.append(test("25. Revoked link returns 410 with revoked page",
+                        test_revoked_link_returns_410))
+
+    def test_expired_link_returns_410():
+        if share_env_id is None:
+            return
+        # Create a row that's already past its expires_at.
+        from datetime import datetime, timedelta, timezone
+        import secrets, hashlib
+        raw = secrets.token_urlsafe(32)
+        db = SessionLocal()
+        try:
+            link = SharedDashboardLink(
+                tenant_id=TENANT_ID, environment_id=share_env_id,
+                token=hashlib.sha256(raw.encode()).hexdigest(),
+                created_by=None,
+                expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+            )
+            db.add(link); db.commit()
+        finally:
+            db.close()
+        from primeqa.app import app as _a
+        c = _a.test_client()
+        r = c.get("/shared/" + raw)
+        assert r.status_code == 410, f"{r.status_code} {r.data[:200]}"
+        assert b"expired" in r.data.lower() or b"Link expired" in r.data
+    results.append(test("26. Expired link returns 410 with expired page",
+                        test_expired_link_returns_410))
+
+    def test_revoke_requires_permission():
+        if not created_share_url["link_id"]:
+            return
+        dev_token = login_api("dev_rd@primeqa.io", "test123")
+        r = client.post(
+            f"/api/dashboard/share/{created_share_url['link_id']}/revoke",
+            headers={"Authorization": f"Bearer {dev_token}"})
+        assert r.status_code == 403, r.status_code
+    results.append(test("27. Revoke without revoke_shared_links -> 403",
+                        test_revoke_requires_permission))
+
     # --- summary ---
     passed = sum(results)
     total = len(results)

@@ -114,8 +114,11 @@
           </button>
         {% endif %}
         {% if has_permission('share_dashboard') %}
-          <a href="/dashboard" class="text-xs text-gray-600 hover:text-gray-900"
-             title="Sharing coming soon">Share Dashboard</a>
+          <button type="button" id="share-dashboard-btn"
+                  data-env-id="{{ data.environment.id if data.environment else '' }}"
+                  class="text-xs text-indigo-700 hover:text-indigo-900 underline">
+            Share Dashboard
+          </button>
         {% endif %}
         {% if run_id %}
           <a href="/runs/{{ run_id }}" class="text-xs text-indigo-700 hover:text-indigo-900">
@@ -323,6 +326,46 @@
         } catch (e) { alert('Could not override: ' + e.message); }
       })
     );
+
+    /* Share Dashboard: ask for expiry days, POST, copy URL to clipboard. */
+    const shareBtn = document.getElementById('share-dashboard-btn');
+    if (shareBtn) {
+      shareBtn.addEventListener('click', async () => {
+        const envId = shareBtn.dataset.envId;
+        if (!envId) return alert('No environment resolved — cannot share.');
+        const daysRaw = prompt(
+          'Create a shareable read-only dashboard link.\n\n'
+          + 'Expires in how many days? (1–180)',
+          '30'
+        );
+        if (daysRaw === null) return;
+        const days = parseInt(daysRaw, 10);
+        if (!days || days < 1 || days > 180)
+          return alert('Expires must be a whole number from 1 to 180.');
+        try {
+          const body = await postJSON('/api/dashboard/share', {
+            environment_id: parseInt(envId, 10), expires_days: days,
+          });
+          const url = body.url;
+          /* Try the async clipboard API, fall back to prompt() copy. */
+          let copied = false;
+          try {
+            await navigator.clipboard.writeText(url);
+            copied = true;
+          } catch (_) {}
+          if (copied) {
+            alert('Shareable link copied to clipboard:\n\n' + url
+                  + '\n\nExpires ' + (body.expires_at || '').slice(0, 10));
+          } else {
+            /* Fallback — window.prompt shows the value so the user
+               can copy manually. */
+            window.prompt('Copy this shareable URL (Ctrl/Cmd-C, Enter):', url);
+          }
+        } catch (e) {
+          alert('Could not create share link: ' + e.message);
+        }
+      });
+    }
   })();
 </script>
 
