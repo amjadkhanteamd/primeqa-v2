@@ -419,6 +419,309 @@ def runs_list():
         db.close()
 
 
+# --- /run — Tester's focused run page (Prompt 7) --------------------------
+
+@views_bp.route("/run")
+@login_required
+def run_page():
+    """Tester's primary workflow page: pick Sprint / Single / Suite,
+    configure, and kick off a pipeline run.
+
+    Simpler than /runs/new (the Run Wizard) — one click to run one
+    source type. The underlying executor + pipeline_run row are
+    shared; `/runs/:id` continues to be the live progress surface.
+    """
+    from primeqa.core.models import Environment, User
+    from primeqa.core.permissions import require_page_permission
+    from primeqa.execution.models import PipelineRun
+    from primeqa.runs.my_tickets import resolve_active_environment
+    from primeqa.test_management.models import TestSuite
+
+    @require_page_permission("run_sprint", "run_suite", require_all=False)
+    def _render():
+        db = next(get_db())
+        try:
+            user_row = db.query(User).filter_by(id=request.user["id"]).first()
+            env = resolve_active_environment(user_row, db)
+            # List all envs in the tenant for the env selector (the Tester
+            # may run against any team env; personal envs are allowed too).
+            envs = (db.query(Environment)
+                    .filter_by(tenant_id=request.user["tenant_id"], is_active=True)
+                    .order_by(Environment.name.asc())
+                    .all())
+            # Suite picker data — tenant-scoped, not deleted.
+            suites = (db.query(TestSuite)
+                      .filter_by(tenant_id=request.user["tenant_id"])
+                      .filter(TestSuite.deleted_at.is_(None))
+                      .order_by(TestSuite.name.asc())
+                      .all())
+            # Run history for this env (last 5) — shown below the form.
+            history = []
+            if env is not None:
+                rows = (db.query(PipelineRun)
+                        .filter_by(tenant_id=request.user["tenant_id"],
+                                   environment_id=env.id)
+                        .order_by(PipelineRun.queued_at.desc())
+                        .limit(5)
+                        .all())
+                history = [{
+                    "id": r.id, "status": r.status, "run_type": r.run_type,
+                    "source_type": r.source_type,
+                    "total_tests": r.total_tests or 0,
+                    "passed": r.passed or 0, "failed": r.failed or 0,
+                    "queued_at": r.queued_at.isoformat() if r.queued_at else "",
+                    "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+                    "label": r.label,
+                } for r in rows]
+            return render_template("run/index.html", **ctx(
+                active_page="run_tests",
+                env=env, envs=envs, suites=suites, history=history,
+                is_production=(env.is_production if env else False),
+            ))
+        finally:
+            db.close()
+
+    return _render()
+
+
+@views_bp.route("/api/bulk-runs", methods=["POST"])
+def api_bulk_run_create():
+    """Create a pipeline_run from a sprint / suite / ticket-key selection.
+
+    Body (JSON):
+      {
+        "environment_id": int,
+        "run_type": "sprint" | "single" | "suite",
+        "ticket_keys": ["SQ-208", ...],      # required for sprint/single
+        "suite_id": int,                     # required for suite
+        "confirm_production": bool
+      }
+
+    Returns 201 with {"pipeline_run_id": N, "status": "queued"} — the
+    caller should poll /api/bulk-runs/:id/status or redirect to
+    /runs/:id for live progress.
+    """
+    from primeqa.core.auth import require_auth
+    from primeqa.core.models import Environment
+    from primeqa.core.permissions import require_run_permission
+    from primeqa.execution.repository import (
+        PipelineRunRepository, PipelineStageRepository,
+        ExecutionSlotRepository, WorkerHeartbeatRepository,
+    )
+    from primeqa.execution.service import PipelineService
+    from primeqa.runs.bulk import (
+        environment_can_bulk_run,
+        suite_to_test_case_ids,
+        ticket_keys_to_test_case_ids,
+    )
+
+    @require_auth
+    def _guarded():
+        body = request.get_json(silent=True) or {}
+        run_type = (body.get("run_type") or "").lower()
+        if run_type not in ("sprint", "single", "suite"):
+            return ({"error": {"code": "VALIDATION_ERROR",
+                               "message": "run_type must be sprint, single, or suite"}}, 400)
+        try:
+            environment_id = int(body.get("environment_id"))
+        except (TypeError, ValueError):
+            return ({"error": {"code": "VALIDATION_ERROR",
+                               "message": "environment_id required"}}, 400)
+
+        # Permission: require_run_permission wraps layer-1 (run_sprint for
+        # bulk, run_single_ticket for single). Apply inline per mode.
+        if run_type in ("sprint", "suite"):
+            gate = require_run_permission("bulk_run")
+        else:
+            gate = require_run_permission("single_run")
+
+        @gate
+        def _after_gate():
+            db = next(get_db())
+            try:
+                env = (db.query(Environment)
+                       .filter_by(id=environment_id,
+                                  tenant_id=request.user["tenant_id"])
+                       .first())
+                if env is None:
+                    return ({"error": {"code": "NOT_FOUND",
+                                       "message": "Environment not found"}}, 404)
+
+                # Layer-2 env policy check (the require_run_permission
+                # decorator already does this — duplicate here only to
+                # surface a precise message on bulk=false for a clearer
+                # UI experience).
+                confirm_prod = bool(body.get("confirm_production"))
+                ok, reason = environment_can_bulk_run(env, confirm_prod)
+                if run_type != "single" and not ok:
+                    return ({"error": {"code": "ENVIRONMENT_POLICY_DENIED",
+                                       "message": reason,
+                                       "details": {"environment_id": env.id}}},
+                            403)
+
+                if run_type == "suite":
+                    try:
+                        suite_id = int(body.get("suite_id"))
+                    except (TypeError, ValueError):
+                        return ({"error": {"code": "VALIDATION_ERROR",
+                                           "message": "suite_id required for suite run"}}, 400)
+                    tc_ids, suite = suite_to_test_case_ids(
+                        suite_id, request.user["tenant_id"], db,
+                    )
+                    if not suite:
+                        return ({"error": {"code": "NOT_FOUND",
+                                           "message": "Suite not found"}}, 404)
+                    if not tc_ids:
+                        return ({"error": {"code": "NO_TESTS",
+                                           "message": "Suite has no active test cases"}}, 400)
+                    source_type = "suite"
+                    source_refs = {"suite_id": suite_id, "suite_name": suite.name}
+                else:
+                    keys = body.get("ticket_keys") or []
+                    if not isinstance(keys, list) or not keys:
+                        return ({"error": {"code": "VALIDATION_ERROR",
+                                           "message": "ticket_keys must be a non-empty list"}}, 400)
+                    tc_ids, missing = ticket_keys_to_test_case_ids(
+                        keys, request.user["tenant_id"], db,
+                    )
+                    if not tc_ids:
+                        return ({"error": {"code": "NO_TESTS",
+                                           "message": (
+                                               "No test cases found for the selected tickets. "
+                                               "Import + generate tests in the Requirements page "
+                                               "first."),
+                                           "details": {"missing_keys": missing}}}, 400)
+                    source_type = "jira_tickets" if run_type == "sprint" else "requirements"
+                    source_refs = {
+                        "ticket_keys": keys,
+                        "missing_keys": missing,
+                        "mode": run_type,
+                    }
+
+                svc = PipelineService(
+                    PipelineRunRepository(db), PipelineStageRepository(db),
+                    ExecutionSlotRepository(db), WorkerHeartbeatRepository(db),
+                )
+                result = svc.create_run(
+                    tenant_id=request.user["tenant_id"],
+                    environment_id=environment_id,
+                    triggered_by=request.user["id"],
+                    run_type="execute_only",
+                    source_type=source_type,
+                    source_ids=tc_ids,
+                    priority=body.get("priority", "normal"),
+                    max_execution_time_sec=int(body.get("max_execution_time_sec", 3600)),
+                    config=body.get("config", {}),
+                    source_refs=source_refs,
+                )
+                return ({"pipeline_run_id": result["id"],
+                         "status": result.get("status", "queued"),
+                         "total_tests": len(tc_ids),
+                         "redirect": f"/runs/{result['id']}"}, 201)
+            finally:
+                db.close()
+
+        return _after_gate()
+
+    return _guarded()
+
+
+@views_bp.route("/api/bulk-runs/<int:run_id>/status", methods=["GET"])
+def api_bulk_run_status(run_id):
+    """Poll endpoint: returns the per-ticket status view the /run page
+    progress UI needs. Thin wrapper over the existing pipeline_run row.
+    """
+    from primeqa.core.auth import require_auth
+    from primeqa.execution.models import PipelineRun, RunTestResult
+    from primeqa.test_management.models import Requirement, TestCase
+
+    @require_auth
+    def _do():
+        db = next(get_db())
+        try:
+            r = db.query(PipelineRun).filter_by(id=run_id).first()
+            if r is None or r.tenant_id != request.user["tenant_id"]:
+                return ({"error": {"code": "NOT_FOUND", "message": "Run not found"}}, 404)
+
+            elapsed_ms = None
+            if r.started_at and r.completed_at:
+                elapsed_ms = int((r.completed_at - r.started_at).total_seconds() * 1000)
+            elif r.started_at:
+                from datetime import datetime, timezone
+                elapsed_ms = int((datetime.now(timezone.utc) - r.started_at).total_seconds() * 1000)
+
+            # Per-test result summary.
+            results = (db.query(RunTestResult, TestCase, Requirement)
+                       .join(TestCase, TestCase.id == RunTestResult.test_case_id)
+                       .outerjoin(Requirement, Requirement.id == TestCase.requirement_id)
+                       .filter(RunTestResult.run_id == r.id)
+                       .order_by(RunTestResult.executed_at.asc())
+                       .all())
+            tickets = []
+            for (rtr, tc, req) in results:
+                tickets.append({
+                    "test_case_id": tc.id,
+                    "key": (req.jira_key if req else None) or tc.title,
+                    "status": rtr.status,
+                    "duration_ms": rtr.duration_ms,
+                    "failure_type": rtr.failure_type,
+                })
+
+            return ({
+                "id": r.id,
+                "status": r.status,
+                "run_type": r.run_type,
+                "source_type": r.source_type,
+                "total_tickets": r.total_tests or 0,
+                "completed_tickets": (r.passed or 0) + (r.failed or 0) + (r.skipped or 0),
+                "passed_tickets": r.passed or 0,
+                "failed_tickets": r.failed or 0,
+                "elapsed_ms": elapsed_ms,
+                "tickets": tickets,
+            }, 200)
+        finally:
+            db.close()
+
+    return _do()
+
+
+@views_bp.route("/api/bulk-runs/<int:run_id>/cancel", methods=["POST"])
+def api_bulk_run_cancel(run_id):
+    """Cancel a queued/running bulk run. Queued tests are marked
+    cancelled; any actively-running test is left to complete so the
+    executor can clean up its SF scratch records.
+    """
+    from primeqa.core.auth import require_auth
+    from primeqa.execution.models import PipelineRun
+
+    @require_auth
+    def _do():
+        db = next(get_db())
+        try:
+            r = db.query(PipelineRun).filter_by(id=run_id).first()
+            if r is None or r.tenant_id != request.user["tenant_id"]:
+                return ({"error": {"code": "NOT_FOUND", "message": "Run not found"}}, 404)
+            # Permission: triggering user OR someone with manage_environments.
+            if r.triggered_by != request.user["id"]:
+                from primeqa.core.permissions import user_has_permission
+                if (request.user.get("role") != "superadmin"
+                        and not user_has_permission(request.user["id"],
+                                                    "manage_environments", db)):
+                    return ({"error": {"code": "FORBIDDEN",
+                                       "message": "Only the triggering user or an admin can cancel this run."}}, 403)
+            if r.status in ("completed", "failed", "cancelled"):
+                return ({"status": r.status, "already_terminal": True}, 200)
+            r.status = "cancelled"
+            from datetime import datetime, timezone
+            r.completed_at = datetime.now(timezone.utc)
+            db.commit()
+            return ({"id": r.id, "status": "cancelled"}, 200)
+        finally:
+            db.close()
+
+    return _do()
+
+
 @views_bp.route("/runs/new")
 @role_required("admin", "tester", "superadmin")
 def runs_new():

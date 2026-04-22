@@ -208,8 +208,10 @@ def run_tests():
 
     def test_landing_tester():
         perms = _base_perms("tester_base")
-        assert get_landing_page(perms) == "/runs/new"
-    results.append(test("9. tester perms -> /runs/new", test_landing_tester))
+        # Updated in Prompt 7 — testers now land on the focused /run
+        # page, not the advanced Run Wizard at /runs/new.
+        assert get_landing_page(perms) == "/run"
+    results.append(test("9. tester perms -> /run", test_landing_tester))
 
     def test_landing_release_owner():
         perms = _base_perms("release_owner_base")
@@ -219,11 +221,11 @@ def run_tests():
 
     def test_landing_admin():
         perms = _base_perms("admin_base")
-        # Admin has run_sprint (via bundle) -> /runs/new by priority.
+        # Admin has run_sprint (via bundle) -> /run by priority.
         # But dashboard is the practical default. Accept either — the
         # contract is "a valid page the user can see".
         target = get_landing_page(perms)
-        assert target in ("/runs/new", "/"), f"admin landing {target!r}"
+        assert target in ("/run", "/runs/new", "/"), f"admin landing {target!r}"
     results.append(test("11. admin perms -> valid destination",
                         test_landing_admin))
 

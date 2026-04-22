@@ -59,7 +59,7 @@ SIDEBAR_ITEMS: list[dict] = [
         "id": "run_tests",
         "label": "Run Tests",
         "icon": "play",
-        "url": "/runs/new",
+        "url": "/run",
         "permission_any": ["run_sprint", "run_suite"],
         "section": "primary",
     },
@@ -223,7 +223,8 @@ def build_sidebar(user_permissions: set, current_path: str = "/",
 _LANDING_PAGE_PERMISSION: dict[str, Iterable[str]] = {
     "/":              ("view_dashboard",),
     "/requirements":  ("run_single_ticket",),
-    "/runs/new":      ("run_sprint", "run_suite"),
+    "/run":           ("run_sprint", "run_suite"),
+    "/runs/new":      ("run_sprint", "run_suite"),  # legacy — wizard
     "/runs":          ("view_own_results", "view_all_results"),
     "/reviews":       ("review_test_cases",),
     "/test-cases":    ("view_test_library",),
@@ -282,7 +283,7 @@ def get_landing_page(user_permissions: set,
 
     # 3. Tester / Release Owner with bulk capability.
     if has_bulk:
-        return "/runs/new"
+        return "/run"
 
     # 4. Release Owner read-only view.
     if has_dashboard and not has_any_run:

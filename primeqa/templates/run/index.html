@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+{% block title %}Run Tests - PrimeQA{% endblock %}
+{% block content %}
+
+<div class="max-w-5xl mx-auto space-y-6" data-page="run">
+
+  <div class="flex items-start justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Run Tests</h1>
+      <p class="mt-1 text-sm text-gray-500">
+        Trigger a run against a sprint, a suite, or a single Jira ticket.
+        Live progress shows on the run detail page after you submit.
+      </p>
+    </div>
+    <div>
+      <a href="/runs/new"
+         class="text-xs text-gray-500 hover:text-gray-700"
+         title="The full wizard for mixed-source runs (Jira + suites + hand-picked TCs).">
+        Advanced wizard →
+      </a>
+    </div>
+  </div>
+
+  {% if not env %}
+    <div class="bg-white shadow rounded-lg p-8 text-center">
+      <h2 class="text-base font-semibold text-gray-900">No environment available.</h2>
+      <p class="mt-2 text-sm text-gray-500">
+        Ask your admin to set up a team environment, or connect a scratch org
+        from the <a href="/tickets" class="text-indigo-600 hover:underline">tickets</a> page.
+      </p>
+    </div>
+  {% else %}
+
+  {# ---- Environment / prod-warning banner ------------------------- #}
+  {% if is_production %}
+  <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-900 flex items-start gap-2">
+    <svg class="h-5 w-5 flex-shrink-0 text-amber-600" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" /></svg>
+    <div>
+      <span class="font-semibold">Production org.</span>
+      This environment is marked production. Tests will create and delete
+      real records in Salesforce.
+    </div>
+  </div>
+  {% endif %}
+
+  {# ---- Mode tabs ------------------------------------------------- #}
+  {% set show_single = has_permission('run_single_ticket') %}
+  {% set show_sprint = has_permission('run_sprint') %}
+  {% set show_suite  = has_permission('run_suite') %}
+  {% set default_mode = 'sprint' if show_sprint else ('suite' if show_suite else 'single') %}
+
+  <div class="bg-white shadow rounded-lg overflow-hidden" data-runner>
+    <div role="tablist" class="flex border-b border-gray-200 text-sm">
+      {% if show_sprint %}
+        <button role="tab" data-mode="sprint"
+                class="px-4 py-3 font-medium border-b-2 {% if default_mode == 'sprint' %}border-indigo-600 text-indigo-700{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %}"
+                onclick="PrimeQA_setRunMode('sprint');">Sprint</button>
+      {% endif %}
+      {% if show_single %}
+        <button role="tab" data-mode="single"
+                class="px-4 py-3 font-medium border-b-2 {% if default_mode == 'single' %}border-indigo-600 text-indigo-700{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %}"
+                onclick="PrimeQA_setRunMode('single');">Single Ticket</button>
+      {% endif %}
+      {% if show_suite %}
+        <button role="tab" data-mode="suite"
+                class="px-4 py-3 font-medium border-b-2 {% if default_mode == 'suite' %}border-indigo-600 text-indigo-700{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %}"
+                onclick="PrimeQA_setRunMode('suite');">Suite</button>
+      {% endif %}
+    </div>
+
+    <div class="p-6">
+      {# Environment picker — shared across modes. #}
+      <label class="block text-xs font-medium text-gray-700 mb-1">Environment</label>
+      <select id="run-env-id"
+              class="w-full text-sm rounded-md border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-indigo-500 mb-4">
+        {% for e in envs %}
+          <option value="{{ e.id }}" {% if env and e.id == env.id %}selected{% endif %}>
+            {{ e.name }}{% if e.is_production %} (prod){% endif %}
+          </option>
+        {% endfor %}
+      </select>
+
+      {# ---- Sprint mode ---- #}
+      {% if show_sprint %}
+      <div data-pane="sprint" class="{% if default_mode != 'sprint' %}hidden{% endif %}">
+        <label class="block text-xs font-medium text-gray-700 mb-1">
+          Jira ticket keys
+          <span class="text-gray-400">(comma- or space-separated)</span>
+        </label>
+        <textarea id="sprint-keys" rows="4"
+                  placeholder="SQ-208, SQ-209, SQ-210"
+                  class="w-full text-sm font-mono rounded-md border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-indigo-500"></textarea>
+        <p class="mt-2 text-xs text-gray-500">
+          For richer sprint / board selection use the
+          <a href="/runs/new" class="text-indigo-600 hover:underline">advanced wizard</a>.
+        </p>
+      </div>
+      {% endif %}
+
+      {# ---- Single ticket mode ---- #}
+      {% if show_single %}
+      <div data-pane="single" class="{% if default_mode != 'single' %}hidden{% endif %}">
+        <label class="block text-xs font-medium text-gray-700 mb-1">Jira ticket key</label>
+        <input id="single-key" type="text" placeholder="SQ-208"
+               class="w-full text-sm font-mono rounded-md border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-indigo-500">
+      </div>
+      {% endif %}
+
+      {# ---- Suite mode ---- #}
+      {% if show_suite %}
+      <div data-pane="suite" class="{% if default_mode != 'suite' %}hidden{% endif %}">
+        <label class="block text-xs font-medium text-gray-700 mb-1">Suite</label>
+        <select id="suite-id"
+                class="w-full text-sm rounded-md border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-indigo-500">
+          <option value="">— pick a suite —</option>
+          {% for s in suites %}
+            <option value="{{ s.id }}">{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
+
+      {% if is_production %}
+        <label class="mt-3 flex items-center gap-2 text-sm text-amber-900">
+          <input type="checkbox" id="confirm-prod"> I confirm this runs against production.
+        </label>
+      {% endif %}
+
+      <div class="mt-5 flex items-center gap-3">
+        <button type="button" id="run-submit"
+                onclick="PrimeQA_submitRun();"
+                class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500">
+          Run Tests
+        </button>
+        <span id="run-error" class="text-sm text-red-600"></span>
+      </div>
+    </div>
+  </div>
+
+  {# ---- Recent history ------------------------------------------ #}
+  <div class="bg-white shadow rounded-lg overflow-hidden">
+    <div class="flex items-center justify-between px-6 py-3 border-b border-gray-100">
+      <h2 class="text-sm font-semibold text-gray-900">Recent Runs</h2>
+      <a href="/runs" class="text-xs text-indigo-600 hover:underline">View all results →</a>
+    </div>
+    {% if history %}
+      <table class="min-w-full divide-y divide-gray-100">
+        <thead class="bg-gray-50 text-xs font-medium text-gray-500 uppercase tracking-wider">
+          <tr><th class="px-6 py-2 text-left">Run</th>
+              <th class="px-6 py-2 text-right">Pass</th>
+              <th class="px-6 py-2 text-right">Fail</th>
+              <th class="px-6 py-2 text-right">Total</th>
+              <th class="px-6 py-2 text-right">When</th></tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-100">
+          {% for r in history %}
+          <tr class="text-sm hover:bg-gray-50 cursor-pointer"
+              onclick="window.location='/runs/{{ r.id }}'">
+            <td class="px-6 py-2 text-gray-800">
+              <span class="font-medium">Run #{{ r.id }}</span>
+              <span class="text-xs text-gray-400 ml-2">{{ r.source_type }}</span>
+              {% if r.label %}<span class="text-xs text-indigo-700 ml-2">{{ r.label }}</span>{% endif %}
+            </td>
+            <td class="px-6 py-2 text-right text-green-700 font-mono">{{ r.passed }}</td>
+            <td class="px-6 py-2 text-right text-red-700 font-mono">{{ r.failed }}</td>
+            <td class="px-6 py-2 text-right font-mono">{{ r.total_tests }}</td>
+            <td class="px-6 py-2 text-right text-xs font-mono text-gray-500">{{ r.queued_at[:19] if r.queued_at else '' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="px-6 py-8 text-center text-sm text-gray-500">
+        No runs yet for this environment.
+      </div>
+    {% endif %}
+  </div>
+
+  {% endif %}
+</div>
+
+<script>
+  window.PrimeQA_setRunMode = function (mode) {
+    document.querySelectorAll('[data-runner] [role=tab]').forEach(b => {
+      const active = b.dataset.mode === mode;
+      b.classList.toggle('border-indigo-600', active);
+      b.classList.toggle('text-indigo-700', active);
+      b.classList.toggle('border-transparent', !active);
+      b.classList.toggle('text-gray-500', !active);
+    });
+    document.querySelectorAll('[data-runner] [data-pane]').forEach(p => {
+      p.classList.toggle('hidden', p.dataset.pane !== mode);
+    });
+    document.querySelector('[data-runner]').dataset.currentMode = mode;
+    document.getElementById('run-error').textContent = '';
+  };
+  (function () {
+    // Initialize the runner's currentMode from whichever tab starts active.
+    const active = document.querySelector('[data-runner] [role=tab].border-indigo-600');
+    if (active) document.querySelector('[data-runner]').dataset.currentMode = active.dataset.mode;
+  })();
+
+  window.PrimeQA_submitRun = function () {
+    const errEl = document.getElementById('run-error');
+    errEl.textContent = '';
+    const mode = document.querySelector('[data-runner]').dataset.currentMode;
+    const envId = parseInt(document.getElementById('run-env-id').value, 10);
+    const confirmProd = !!(document.getElementById('confirm-prod') && document.getElementById('confirm-prod').checked);
+    let body = {environment_id: envId, confirm_production: confirmProd};
+
+    if (mode === 'sprint') {
+      const raw = (document.getElementById('sprint-keys').value || '').trim();
+      const keys = raw.split(/[\s,]+/).filter(Boolean);
+      if (!keys.length) { errEl.textContent = 'Enter at least one ticket key.'; return; }
+      body.run_type = 'sprint'; body.ticket_keys = keys;
+    } else if (mode === 'single') {
+      const key = (document.getElementById('single-key').value || '').trim();
+      if (!key) { errEl.textContent = 'Enter a ticket key.'; return; }
+      body.run_type = 'single'; body.ticket_keys = [key];
+    } else if (mode === 'suite') {
+      const suiteId = parseInt(document.getElementById('suite-id').value, 10);
+      if (!suiteId) { errEl.textContent = 'Pick a suite.'; return; }
+      body.run_type = 'suite'; body.suite_id = suiteId;
+    } else {
+      errEl.textContent = 'Pick a run mode.'; return;
+    }
+
+    const btn = document.getElementById('run-submit');
+    btn.disabled = true; btn.textContent = 'Queuing…';
+
+    fetch('/api/bulk-runs', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    }).then(async r => {
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j.redirect) { window.location = j.redirect; return; }
+      errEl.textContent = (j.error && j.error.message) || `Run failed (${r.status})`;
+      btn.disabled = false; btn.textContent = 'Run Tests';
+    }).catch(e => {
+      errEl.textContent = 'Network error. Try again.';
+      btn.disabled = false; btn.textContent = 'Run Tests';
+    });
+  };
+</script>
+
+{% endblock %}
