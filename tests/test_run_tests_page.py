@@ -91,25 +91,44 @@ def _force_perms(user_id: int, api_names: list[str]):
 
 
 def _ensure_user(admin_token, email, password, role):
+    """Return a user row with a known password + role.
+
+    Reset-in-place rather than delete-and-recreate — the user may be
+    referenced by pipeline_runs.triggered_by FK from earlier happy-path
+    test runs, and those rows aren't ours to purge.
+    """
+    import bcrypt
     db = SessionLocal()
     try:
         existing = db.query(User).filter_by(email=email, tenant_id=TENANT_ID).first()
         if existing is not None:
-            existing_id = existing.id
-            db.execute(text("DELETE FROM refresh_tokens WHERE user_id = :id"),
-                       {"id": existing_id})
+            existing.password_hash = bcrypt.hashpw(
+                password.encode("utf-8"), bcrypt.gensalt(rounds=4)
+            ).decode("utf-8")
+            existing.role = role
+            existing.is_active = True
+            existing.full_name = email.split("@")[0].replace(".", " ").title()
             db.execute(text("DELETE FROM user_permission_sets WHERE user_id = :id"),
-                       {"id": existing_id})
-            db.execute(text("DELETE FROM users WHERE id = :id"), {"id": existing_id})
+                       {"id": existing.id})
             db.commit()
     finally:
         db.close()
-    r = client.post("/api/auth/users",
-                    headers={"Authorization": f"Bearer {admin_token}"},
-                    json={"email": email, "password": password,
-                          "full_name": email.split("@")[0].replace(".", " ").title(),
-                          "role": role})
-    assert r.status_code in (200, 201), f"create user failed: {r.status_code} {r.data[:200]}"
+    # Create path for genuinely-new users.
+    db = SessionLocal()
+    try:
+        exists_after = db.query(User).filter_by(
+            email=email, tenant_id=TENANT_ID).first() is not None
+    finally:
+        db.close()
+    if not exists_after:
+        r = client.post("/api/auth/users",
+                        headers={"Authorization": f"Bearer {admin_token}"},
+                        json={"email": email, "password": password,
+                              "full_name": email.split("@")[0].replace(".", " ").title(),
+                              "role": role})
+        assert r.status_code in (200, 201), f"create user failed: {r.status_code} {r.data[:200]}"
+    # Fresh session-bound instance. Caller should read .id immediately
+    # (session closes here); all callers in this test do exactly that.
     db = SessionLocal()
     try:
         return db.query(User).filter_by(email=email, tenant_id=TENANT_ID).first()
