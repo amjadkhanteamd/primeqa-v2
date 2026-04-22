@@ -336,6 +336,397 @@ def jira_sprints(connection_id, board_id):
         db.close()
 
 
+# ---- /run page pickers: env-scoped sprint / tickets / release --------------
+# These endpoints power the four-mode /run page introduced in Prompt 16.
+# They're env-scoped (resolve Jira / release context from the
+# environment the user has selected in the dropdown) so the client
+# doesn't have to re-plumb project / board / connection choices.
+
+@execution_bp.route("/api/jira/sprints", methods=["GET"])
+@require_auth
+def list_jira_sprints_for_env():
+    """List sprints accessible via the environment's Jira connection.
+
+    Query:
+      environment_id (required)
+      state (optional, default 'active,closed'):
+        any comma-separated subset of {active, closed, future}
+
+    Returns:
+      {"sprints": [{id, name, state, startDate, endDate, board_id,
+                    board_name, project_key, project_name}]}
+      or {"error": ..., "sprints": []} on provider failure.
+    """
+    from primeqa.core.permissions import require_permission
+    env_id = request.args.get("environment_id", type=int)
+    state = request.args.get("state") or "active,closed"
+
+    @require_permission("run_sprint")
+    def _do():
+        if not env_id:
+            return json_error("VALIDATION_ERROR",
+                              "environment_id required", http=400)
+        db = next(get_db())
+        try:
+            client, env = _jira_client_for_env(
+                db, env_id, request.user["tenant_id"])
+            if env is None:
+                return json_error("NOT_FOUND", "Environment not found",
+                                  http=404)
+            if client is None:
+                return jsonify({"sprints": [],
+                                "hint": "This environment has no Jira connection."}), 200
+            try:
+                sprints = client.list_sprints_for_tenant(states=state)
+            except Exception as e:
+                return jsonify({"sprints": [], "error": f"Jira fetch failed: {e}"}), 200
+            return jsonify({"sprints": sprints}), 200
+        finally:
+            db.close()
+
+    return _do()
+
+
+@execution_bp.route("/api/jira/sprints/<int:sprint_id>/tickets", methods=["GET"])
+@require_auth
+def list_jira_sprint_tickets_for_env(sprint_id):
+    """Tickets in a specific sprint (env's Jira). The sprint id must
+    belong to the same Jira connection as the environment — we don't
+    verify that cross-Jira (the agile endpoint errors if the id is
+    invalid for this auth).
+    """
+    from primeqa.core.permissions import require_permission
+    env_id = request.args.get("environment_id", type=int)
+
+    @require_permission("run_sprint")
+    def _do():
+        if not env_id:
+            return json_error("VALIDATION_ERROR",
+                              "environment_id required", http=400)
+        db = next(get_db())
+        try:
+            client, env = _jira_client_for_env(
+                db, env_id, request.user["tenant_id"])
+            if env is None:
+                return json_error("NOT_FOUND", "Environment not found",
+                                  http=404)
+            if client is None:
+                return jsonify({"tickets": []}), 200
+            try:
+                issues = client.sprint_issues(sprint_id)
+            except Exception as e:
+                return jsonify({"tickets": [],
+                                "error": f"Jira fetch failed: {e}"}), 200
+            tickets = [{
+                "key": i.get("key"),
+                "summary": (i.get("summary") or i.get("fields", {}).get(
+                    "summary") or "")[:240],
+                "status": i.get("status") or (
+                    i.get("fields", {}).get("status") or {}).get("name") or "",
+            } for i in issues if i.get("key")]
+            return jsonify({"tickets": tickets}), 200
+        finally:
+            db.close()
+
+    return _do()
+
+
+@execution_bp.route("/api/jira/tickets/recent", methods=["GET"])
+@require_auth
+def list_recent_tickets_for_user():
+    """Last 10 tickets the current user has interacted with in PrimeQA
+    (viewed a requirement detail page, ran a single ticket, selected in
+    a picker). Scoped to (user, environment) so switching envs gives a
+    clean slate. Requires `run_single_ticket` — the Tickets tab depends
+    on it.
+    """
+    from primeqa.core.permissions import require_permission
+    from primeqa.runs.recent_tickets import list_recent
+    env_id = request.args.get("environment_id", type=int)
+    limit = request.args.get("limit", default=10, type=int)
+
+    @require_permission("run_single_ticket")
+    def _do():
+        if not env_id:
+            return jsonify({"tickets": []}), 200
+        db = next(get_db())
+        try:
+            rows = list_recent(db, request.user["id"], env_id, limit=limit)
+            return jsonify({"tickets": rows}), 200
+        finally:
+            db.close()
+
+    return _do()
+
+
+@execution_bp.route("/api/jira/tickets/search", methods=["GET"])
+@require_auth
+def search_jira_tickets_with_filters():
+    """Filtered Jira search for the /run Tickets picker.
+
+    Query:
+      environment_id (required)
+      q              (required; min 1 char)
+      filter         (optional, CSV): any subset of
+                     {mine, current_sprint, open, recent}
+
+    Results are mapped onto the same shape as /api/jira/search but
+    filtered by the additional JQL clauses.
+    """
+    from primeqa.core.permissions import require_permission
+    env_id = request.args.get("environment_id", type=int)
+    q = (request.args.get("q") or "").strip()
+    filters_raw = (request.args.get("filter") or "")
+    filters = {f.strip() for f in filters_raw.split(",") if f.strip()}
+    limit = request.args.get("limit", default=25, type=int)
+
+    @require_permission("run_single_ticket")
+    def _do():
+        if not env_id:
+            return json_error("VALIDATION_ERROR",
+                              "environment_id required", http=400)
+        if len(q) < 1:
+            return jsonify({"tickets": []}), 200
+        db = next(get_db())
+        try:
+            client, env = _jira_client_for_env(
+                db, env_id, request.user["tenant_id"])
+            if client is None:
+                return jsonify({"tickets": [],
+                                "hint": "This environment has no Jira connection."}), 200
+
+            # Build JQL: core match on key or summary, plus filter clauses
+            from primeqa.runs.wizard import _ISSUE_KEY_RE
+            escaped = q.replace('"', '\\"')
+            if _ISSUE_KEY_RE.match(q):
+                core = f'key = "{q}"'
+            elif q.upper().startswith(tuple([ch for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"])) and "-" not in q:
+                # Key prefix without full number — match project+startswith
+                core = f'(issuekey ~ "{escaped}" OR summary ~ "{escaped}")'
+            else:
+                core = f'(summary ~ "{escaped}" OR issuekey = "{escaped}")'
+
+            clauses = [core]
+            if "mine" in filters:
+                clauses.append("assignee = currentUser()")
+            if "current_sprint" in filters:
+                clauses.append("sprint in openSprints()")
+            if "open" in filters:
+                clauses.append("resolution = Unresolved")
+            if "recent" in filters:
+                clauses.append("updated >= -30d")
+
+            jql = " AND ".join(clauses) + " ORDER BY updated DESC"
+
+            try:
+                from urllib.parse import urlencode
+                params = {"jql": jql, "maxResults": max(1, min(limit, 50)),
+                          "fields": "summary,status,issuetype,assignee"}
+                url = f"{client.base_url}/rest/api/3/search/jql?{urlencode(params)}"
+                import requests as _r
+                resp = _r.get(url, headers=client.headers, timeout=10)
+                resp.raise_for_status()
+                body = resp.json()
+            except Exception as e:
+                return jsonify({"tickets": [],
+                                "error": f"Jira search failed: {e}"}), 200
+
+            tickets = []
+            for i in body.get("issues", []):
+                f = i.get("fields") or {}
+                assignee = f.get("assignee") or {}
+                tickets.append({
+                    "key": i.get("key"),
+                    "summary": (f.get("summary") or "")[:240],
+                    "status": ((f.get("status") or {}).get("name") or ""),
+                    "issue_type": ((f.get("issuetype") or {}).get("name") or ""),
+                    "assignee": assignee.get("displayName")
+                                or assignee.get("emailAddress") or "",
+                    "assignee_email": assignee.get("emailAddress") or "",
+                })
+            return jsonify({"tickets": tickets}), 200
+        finally:
+            db.close()
+
+    return _do()
+
+
+@execution_bp.route("/api/releases", methods=["GET"])
+@require_auth
+def list_releases_for_run():
+    """Releases the current tenant owns. Surfaced on the /run Release
+    tab. Environment filter is accepted but today we don't scope
+    releases by environment (releases are tenant-global); we carry it
+    for forward compatibility.
+    """
+    from primeqa.core.permissions import require_permission
+    env_id = request.args.get("environment_id", type=int)  # noqa: F841
+
+    @require_permission("run_sprint", "run_suite", require_all=False)
+    def _do():
+        from primeqa.release.models import (
+            Release, ReleaseRequirement, ReleaseTestPlanItem,
+        )
+        from sqlalchemy import func as _f
+        db = next(get_db())
+        try:
+            rows = (db.query(Release)
+                    .filter(Release.tenant_id == request.user["tenant_id"])
+                    .filter(Release.status != "cancelled")
+                    .order_by(Release.target_date.asc().nullslast(),
+                              Release.created_at.desc())
+                    .limit(50).all())
+            ids = [r.id for r in rows]
+            ticket_counts = {}
+            tc_counts = {}
+            if ids:
+                rq = (db.query(ReleaseRequirement.release_id,
+                               _f.count().label("n"))
+                      .filter(ReleaseRequirement.release_id.in_(ids))
+                      .group_by(ReleaseRequirement.release_id).all())
+                ticket_counts = {rid: n for rid, n in rq}
+                tq = (db.query(ReleaseTestPlanItem.release_id,
+                               _f.count().label("n"))
+                      .filter(ReleaseTestPlanItem.release_id.in_(ids))
+                      .group_by(ReleaseTestPlanItem.release_id).all())
+                tc_counts = {rid: n for rid, n in tq}
+            out = [{
+                "id": r.id, "name": r.name,
+                "version_tag": r.version_tag,
+                "status": r.status,
+                "target_date": r.target_date.isoformat() if r.target_date else None,
+                "ticket_count": int(ticket_counts.get(r.id, 0)),
+                "test_case_count": int(tc_counts.get(r.id, 0)),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            } for r in rows]
+            return jsonify({"releases": out}), 200
+        finally:
+            db.close()
+
+    return _do()
+
+
+@execution_bp.route("/api/releases/<int:release_id>/contents", methods=["GET"])
+@require_auth
+def release_contents_for_run(release_id):
+    """Tickets (Jira keys) + Test Cases attached to a release. Used by
+    the /run Release picker to populate the per-item checkbox list.
+    """
+    from primeqa.core.permissions import require_permission
+
+    @require_permission("run_sprint", "run_suite", require_all=False)
+    def _do():
+        from primeqa.release.models import (
+            Release, ReleaseRequirement, ReleaseTestPlanItem,
+        )
+        from primeqa.test_management.models import Requirement, TestCase
+        db = next(get_db())
+        try:
+            rel = (db.query(Release)
+                   .filter(Release.id == release_id,
+                           Release.tenant_id == request.user["tenant_id"])
+                   .first())
+            if rel is None:
+                return json_error("NOT_FOUND", "Release not found", http=404)
+
+            req_rows = (db.query(Requirement)
+                        .join(ReleaseRequirement,
+                              ReleaseRequirement.requirement_id == Requirement.id)
+                        .filter(ReleaseRequirement.release_id == release_id,
+                                Requirement.deleted_at.is_(None))
+                        .all())
+            tickets = [{
+                "requirement_id": r.id,
+                "jira_key": r.jira_key,
+                "summary": (r.jira_summary or "")[:240],
+            } for r in req_rows if r.jira_key]
+
+            tc_rows = (db.query(TestCase)
+                       .join(ReleaseTestPlanItem,
+                             ReleaseTestPlanItem.test_case_id == TestCase.id)
+                       .filter(ReleaseTestPlanItem.release_id == release_id,
+                               TestCase.deleted_at.is_(None))
+                       .all())
+            test_cases = [{
+                "id": t.id, "title": t.title[:240],
+                "status": t.status,
+            } for t in tc_rows]
+
+            return jsonify({
+                "release": {
+                    "id": rel.id, "name": rel.name,
+                    "version_tag": rel.version_tag,
+                    "status": rel.status,
+                },
+                "tickets": tickets,
+                "test_cases": test_cases,
+            }), 200
+        finally:
+            db.close()
+
+    return _do()
+
+
+@execution_bp.route("/api/suites/<int:suite_id>/overview", methods=["GET"])
+@require_auth
+def suite_overview_for_run(suite_id):
+    """Suite summary for the /run Suite picker: test-case count, gate
+    threshold, last run, and the current set of TCs with checkboxes.
+    """
+    from primeqa.core.permissions import require_permission
+
+    @require_permission("run_suite")
+    def _do():
+        from primeqa.test_management.models import (
+            SuiteTestCase, TestCase, TestSuite,
+        )
+        from primeqa.execution.models import PipelineRun
+        db = next(get_db())
+        try:
+            s = (db.query(TestSuite)
+                 .filter_by(id=suite_id, tenant_id=request.user["tenant_id"])
+                 .first())
+            if s is None or s.deleted_at is not None:
+                return json_error("NOT_FOUND", "Suite not found", http=404)
+            tcs_q = (db.query(TestCase, SuiteTestCase.position)
+                     .join(SuiteTestCase,
+                           SuiteTestCase.test_case_id == TestCase.id)
+                     .filter(SuiteTestCase.suite_id == suite_id,
+                             TestCase.deleted_at.is_(None))
+                     .order_by(SuiteTestCase.position.asc()))
+            tcs = [{
+                "id": t.id, "title": t.title[:240],
+                "status": t.status, "position": pos or 0,
+            } for t, pos in tcs_q.all()]
+            # Last run that referenced this suite (source_refs.suite_id)
+            last_run = (db.query(PipelineRun)
+                        .filter(PipelineRun.tenant_id == request.user["tenant_id"],
+                                PipelineRun.source_type == "suite")
+                        .order_by(PipelineRun.queued_at.desc())
+                        .limit(25).all())
+            last = None
+            for r in last_run:
+                refs = r.source_refs or {}
+                if refs.get("suite_id") == suite_id:
+                    last = {"id": r.id, "status": r.status,
+                            "queued_at": r.queued_at.isoformat() if r.queued_at else None}
+                    break
+            return jsonify({
+                "suite": {
+                    "id": s.id, "name": s.name,
+                    "suite_type": s.suite_type,
+                    "quality_gate_threshold": s.quality_gate_threshold,
+                    "test_case_count": len(tcs),
+                },
+                "test_cases": tcs,
+                "last_run": last,
+            }), 200
+        finally:
+            db.close()
+
+    return _do()
+
+
 @execution_bp.route("/api/runs/<int:run_id>/events", methods=["GET"])
 @require_auth
 def stream_run_events(run_id):

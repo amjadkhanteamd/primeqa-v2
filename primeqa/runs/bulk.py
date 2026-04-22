@@ -76,6 +76,74 @@ def ticket_keys_to_test_case_ids(keys: Iterable[str], tenant_id: int,
     return [tc.id for tc in tcs], sorted(set(missing))
 
 
+def release_to_test_case_ids(release_id: int, tenant_id: int, db: Session,
+                             *, explicit_tc_ids: Optional[list[int]] = None,
+                             explicit_jira_keys: Optional[list[str]] = None,
+                             ) -> tuple[list[int], Optional[dict]]:
+    """Resolve a release to TCs.
+
+    By default: take everything in the release (requirements' TCs +
+    test-plan TCs). If `explicit_tc_ids` or `explicit_jira_keys` is
+    passed, use exactly those — the /run UI lets the user toggle
+    individual items off before submitting.
+
+    Returns (test_case_ids, release_summary_dict or None).
+    """
+    from primeqa.release.models import (
+        Release, ReleaseRequirement, ReleaseTestPlanItem,
+    )
+    rel = (db.query(Release)
+           .filter(Release.id == release_id,
+                   Release.tenant_id == tenant_id)
+           .first())
+    if rel is None:
+        return [], None
+
+    # If the caller passed explicit ids/keys, use them (the user
+    # unchecked some items in the picker). Otherwise take the whole
+    # release.
+    if explicit_tc_ids or explicit_jira_keys:
+        tc_id_set: set[int] = set()
+        if explicit_tc_ids:
+            # Bound to tenant + alive
+            rows = (db.query(TestCase.id)
+                    .filter(TestCase.tenant_id == tenant_id,
+                            TestCase.id.in_(explicit_tc_ids),
+                            TestCase.deleted_at.is_(None))
+                    .all())
+            tc_id_set.update(r[0] for r in rows)
+        if explicit_jira_keys:
+            keyed_ids, _missing = ticket_keys_to_test_case_ids(
+                explicit_jira_keys, tenant_id, db)
+            tc_id_set.update(keyed_ids)
+    else:
+        # Whole-release default: union of release_test_plan_items + the
+        # TCs attached to each release_requirement.
+        plan_rows = (db.query(ReleaseTestPlanItem.test_case_id)
+                     .join(TestCase,
+                           TestCase.id == ReleaseTestPlanItem.test_case_id)
+                     .filter(ReleaseTestPlanItem.release_id == release_id,
+                             TestCase.tenant_id == tenant_id,
+                             TestCase.deleted_at.is_(None))
+                     .all())
+        req_ids_in_release = (db.query(ReleaseRequirement.requirement_id)
+                              .filter(ReleaseRequirement.release_id == release_id)
+                              .all())
+        req_ids_list = [r[0] for r in req_ids_in_release]
+        req_tc_rows: list = []
+        if req_ids_list:
+            req_tc_rows = (db.query(TestCase.id)
+                           .filter(TestCase.tenant_id == tenant_id,
+                                   TestCase.requirement_id.in_(req_ids_list),
+                                   TestCase.deleted_at.is_(None),
+                                   TestCase.status.in_(("approved", "active")))
+                           .all())
+        tc_id_set = {r[0] for r in plan_rows} | {r[0] for r in req_tc_rows}
+
+    summary = {"id": rel.id, "name": rel.name, "version_tag": rel.version_tag}
+    return sorted(tc_id_set), summary
+
+
 def suite_to_test_case_ids(suite_id: int, tenant_id: int,
                            db: Session) -> tuple[list[int], Optional[TestSuite]]:
     """Resolve a suite to its active test-case ids."""
@@ -117,6 +185,7 @@ def environment_can_bulk_run(env: Environment, confirm_production: bool
 
 __all__ = [
     "ticket_keys_to_test_case_ids",
+    "release_to_test_case_ids",
     "suite_to_test_case_ids",
     "environment_can_bulk_run",
 ]

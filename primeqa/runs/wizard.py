@@ -350,6 +350,19 @@ def _jira_cache_set(key, value):
 _ISSUE_KEY_RE = __import__("re").compile(r"^[A-Z][A-Z0-9_]+-\d+$")
 
 
+def _sprint_sort_ts(date_str: Optional[str]) -> int:
+    """Best-effort epoch-seconds parse for sprint sort. Returns 0 if
+    the input can't be parsed (missing / closed sprint with null date
+    / unfamiliar format). Negated by the caller to get newest-first."""
+    if not date_str:
+        return 0
+    try:
+        from datetime import datetime as _dt
+        return int(_dt.fromisoformat(date_str.replace("Z", "+00:00")).timestamp())
+    except Exception:
+        return 0
+
+
 class JiraClient:
     """Minimal Jira Cloud REST wrapper. Session-less, on-demand (Q: fetch on demand)."""
 
@@ -397,6 +410,69 @@ class JiraClient:
                 for s in body.get("values", [])]
 
     # ---- Resolution: sprint / JQL / epic \u2192 issues --------------------------
+
+    def list_sprints_for_tenant(self, states: str = "active,closed",
+                                 max_boards: int = 20,
+                                 max_sprints_per_board: int = 30
+                                 ) -> list[dict]:
+        """Aggregate sprints across every scrum board the connection can
+        see, used by the /run Sprint picker.
+
+        Walks projects -> boards -> sprints. Boards that don't support
+        sprints (kanban, next-gen without a board) just contribute zero
+        rows. Returns a de-duplicated, newest-first list of
+        {id, name, state, startDate, endDate, board_id, board_name,
+         project_key, project_name, issue_count (None — lazy-loaded on
+         selection)} dicts.
+
+        The result is bounded by max_boards * max_sprints_per_board so
+        a huge Jira doesn't blow out the page. In practice a project
+        has a handful of boards and a board has dozens of sprints
+        total; the cap rarely matters.
+        """
+        out: list[dict] = []
+        seen: set[int] = set()
+        try:
+            projects = self.list_projects(max_results=50)
+        except Exception:
+            return []
+        for p in projects:
+            if len(out) >= max_boards * max_sprints_per_board:
+                break
+            pkey = p.get("key")
+            if not pkey:
+                continue
+            try:
+                boards = self.list_boards_for_project(pkey)
+            except Exception:
+                continue
+            for b in boards[:max_boards]:
+                bid = b.get("id")
+                if not bid:
+                    continue
+                try:
+                    sprints = self.list_sprints(bid, states=states)
+                except Exception:
+                    continue
+                for s in sprints[:max_sprints_per_board]:
+                    sid = s.get("id")
+                    if sid is None or sid in seen:
+                        continue
+                    seen.add(sid)
+                    out.append({
+                        "id": sid, "name": s.get("name"),
+                        "state": s.get("state"),
+                        "startDate": s.get("startDate"),
+                        "endDate": s.get("endDate"),
+                        "board_id": bid, "board_name": b.get("name"),
+                        "project_key": pkey, "project_name": p.get("name"),
+                    })
+        # Active first, then by most recent start date
+        out.sort(key=lambda s: (
+            0 if s["state"] == "active" else 1,
+            -(_sprint_sort_ts(s.get("startDate"))),
+        ))
+        return out
 
     # ---- Free-text + key search used by the wizard's Jira picker ---------
 

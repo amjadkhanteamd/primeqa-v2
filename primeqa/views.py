@@ -745,12 +745,18 @@ def runs_list():
 @views_bp.route("/run")
 @login_required
 def run_page():
-    """Tester's primary workflow page: pick Sprint / Single / Suite,
-    configure, and kick off a pipeline run.
+    """Tester's primary workflow page: pick Sprint / Tickets / Suite /
+    Release, configure, and kick off a pipeline run.
 
     Simpler than /runs/new (the Run Wizard) — one click to run one
     source type. The underlying executor + pipeline_run row are
     shared; `/runs/:id` continues to be the live progress surface.
+
+    Prompt 16: four modes (Sprint / Tickets / Suite / Release) with
+    queryable pickers driven by dedicated API endpoints. The prod
+    banner + confirmation checkbox are now JS-gated on the selected
+    env's `is_production` flag — switching to a non-prod env hides
+    both and clears the checkbox.
     """
     from primeqa.core.models import Environment, User
     from primeqa.core.permissions import require_page_permission
@@ -770,12 +776,32 @@ def run_page():
                     .filter_by(tenant_id=request.user["tenant_id"], is_active=True)
                     .order_by(Environment.name.asc())
                     .all())
-            # Suite picker data — tenant-scoped, not deleted.
-            suites = (db.query(TestSuite)
-                      .filter_by(tenant_id=request.user["tenant_id"])
-                      .filter(TestSuite.deleted_at.is_(None))
-                      .order_by(TestSuite.name.asc())
-                      .all())
+            # Suite picker: inline TC counts + gate threshold so the
+            # dropdown shows "(20 TCs · gate 90%)" without a follow-up
+            # /api/suites/:id/overview call on first render.
+            from sqlalchemy import func as _sf
+            from primeqa.test_management.models import SuiteTestCase, TestCase
+            suite_rows = (db.query(TestSuite)
+                          .filter_by(tenant_id=request.user["tenant_id"])
+                          .filter(TestSuite.deleted_at.is_(None))
+                          .order_by(TestSuite.name.asc())
+                          .all())
+            counts: dict = {}
+            if suite_rows:
+                sids = [s.id for s in suite_rows]
+                rows = (db.query(SuiteTestCase.suite_id, _sf.count().label("n"))
+                        .join(TestCase,
+                              TestCase.id == SuiteTestCase.test_case_id)
+                        .filter(SuiteTestCase.suite_id.in_(sids),
+                                TestCase.deleted_at.is_(None))
+                        .group_by(SuiteTestCase.suite_id).all())
+                counts = {sid: n for sid, n in rows}
+            suites = [{
+                "id": s.id, "name": s.name,
+                "suite_type": s.suite_type,
+                "quality_gate_threshold": s.quality_gate_threshold,
+                "test_case_count": int(counts.get(s.id, 0)),
+            } for s in suite_rows]
             # Run history for this env (last 5) — shown below the form.
             history = []
             if env is not None:
@@ -794,10 +820,19 @@ def run_page():
                     "completed_at": r.completed_at.isoformat() if r.completed_at else None,
                     "label": r.label,
                 } for r in rows]
+            # Envs data enriched with is_production so the JS prod-gate
+            # can flip on dropdown change without a round-trip.
+            envs_data = [{
+                "id": e.id, "name": e.name,
+                "is_production": bool(e.is_production),
+                "has_jira": bool(e.jira_connection_id),
+            } for e in envs]
             return render_template("run/index.html", **ctx(
                 active_page="run_tests",
-                env=env, envs=envs, suites=suites, history=history,
+                env=env, envs=envs, envs_data=envs_data,
+                suites=suites, history=history,
                 is_production=(env.is_production if env else False),
+                active_env_id=(env.id if env else None),
             ))
         finally:
             db.close()
@@ -832,17 +867,25 @@ def api_bulk_run_create():
     from primeqa.execution.service import PipelineService
     from primeqa.runs.bulk import (
         environment_can_bulk_run,
+        release_to_test_case_ids,
         suite_to_test_case_ids,
         ticket_keys_to_test_case_ids,
     )
+    from primeqa.runs.recent_tickets import record_view
 
     @require_auth
     def _guarded():
         body = request.get_json(silent=True) or {}
         run_type = (body.get("run_type") or "").lower()
-        if run_type not in ("sprint", "single", "suite"):
+        # Prompt 16: 'release' run mode joins the family. Keep 'single'
+        # (legacy single-ticket shortcut) for back-compat with any
+        # caller that hasn't updated to 'tickets' yet; the /run UI
+        # now uses 'tickets' (alias for 'single' with N keys) and
+        # 'release'.
+        valid_modes = ("sprint", "single", "tickets", "suite", "release")
+        if run_type not in valid_modes:
             return ({"error": {"code": "VALIDATION_ERROR",
-                               "message": "run_type must be sprint, single, or suite"}}, 400)
+                               "message": f"run_type must be one of {list(valid_modes)}"}}, 400)
         try:
             environment_id = int(body.get("environment_id"))
         except (TypeError, ValueError):
@@ -850,8 +893,9 @@ def api_bulk_run_create():
                                "message": "environment_id required"}}, 400)
 
         # Permission: require_run_permission wraps layer-1 (run_sprint for
-        # bulk, run_single_ticket for single). Apply inline per mode.
-        if run_type in ("sprint", "suite"):
+        # bulk, run_single_ticket for single/tickets). Release runs
+        # require either run_sprint or run_suite (they are bulk).
+        if run_type in ("sprint", "suite", "release"):
             gate = require_run_permission("bulk_run")
         else:
             gate = require_run_permission("single_run")
@@ -868,13 +912,26 @@ def api_bulk_run_create():
                     return ({"error": {"code": "NOT_FOUND",
                                        "message": "Environment not found"}}, 404)
 
-                # Layer-2 env policy check (the require_run_permission
-                # decorator already does this — duplicate here only to
-                # surface a precise message on bulk=false for a clearer
-                # UI experience).
+                # Prompt 16 Fix 1: confirm_production is only meaningful
+                # for production envs. For non-prod envs we don't require
+                # it — bulk-run permission + env.allow_bulk_run is enough.
                 confirm_prod = bool(body.get("confirm_production"))
+                if not getattr(env, "is_production", False):
+                    confirm_prod = False  # ignore the flag for non-prod
                 ok, reason = environment_can_bulk_run(env, confirm_prod)
-                if run_type != "single" and not ok:
+                # Single-ticket run skips the layer-2 bulk-only check but
+                # still has to honour the production-confirm gate since
+                # it's still SF writes against production.
+                if run_type == "single" or run_type == "tickets":
+                    if getattr(env, "is_production", False) and not confirm_prod:
+                        return ({"error": {"code": "ENVIRONMENT_POLICY_DENIED",
+                                           "message": (
+                                               "Production org confirmation "
+                                               "required. Tick the confirmation "
+                                               "box to proceed."),
+                                           "details": {"environment_id": env.id}}},
+                                403)
+                elif not ok:
                     return ({"error": {"code": "ENVIRONMENT_POLICY_DENIED",
                                        "message": reason,
                                        "details": {"environment_id": env.id}}},
@@ -892,11 +949,46 @@ def api_bulk_run_create():
                     if not suite:
                         return ({"error": {"code": "NOT_FOUND",
                                            "message": "Suite not found"}}, 404)
+                    # Support per-TC exclusion when the picker lets the user
+                    # uncheck individual TCs before submitting.
+                    exclude_ids = set(
+                        int(x) for x in (body.get("exclude_test_case_ids") or [])
+                        if str(x).lstrip("-").isdigit()
+                    )
+                    if exclude_ids:
+                        tc_ids = [i for i in tc_ids if i not in exclude_ids]
                     if not tc_ids:
                         return ({"error": {"code": "NO_TESTS",
                                            "message": "Suite has no active test cases"}}, 400)
                     source_type = "suite"
                     source_refs = {"suite_id": suite_id, "suite_name": suite.name}
+                elif run_type == "release":
+                    try:
+                        release_id = int(body.get("release_id"))
+                    except (TypeError, ValueError):
+                        return ({"error": {"code": "VALIDATION_ERROR",
+                                           "message": "release_id required for release run"}}, 400)
+                    explicit_tcs = body.get("test_case_ids") or None
+                    explicit_keys = body.get("ticket_keys") or None
+                    tc_ids, rel_summary = release_to_test_case_ids(
+                        release_id, request.user["tenant_id"], db,
+                        explicit_tc_ids=(explicit_tcs if isinstance(explicit_tcs, list) else None),
+                        explicit_jira_keys=(explicit_keys if isinstance(explicit_keys, list) else None),
+                    )
+                    if rel_summary is None:
+                        return ({"error": {"code": "NOT_FOUND",
+                                           "message": "Release not found"}}, 404)
+                    if not tc_ids:
+                        return ({"error": {"code": "NO_TESTS",
+                                           "message": (
+                                               "Release has no test cases to run. "
+                                               "Add tickets or test cases to the "
+                                               "release's test plan first.")}}, 400)
+                    source_type = "release"
+                    source_refs = {"release_id": release_id,
+                                   "release_name": rel_summary["name"],
+                                   "version_tag": rel_summary.get("version_tag"),
+                                   "test_case_ids": tc_ids}
                 else:
                     keys = body.get("ticket_keys") or []
                     if not isinstance(keys, list) or not keys:
@@ -918,6 +1010,14 @@ def api_bulk_run_create():
                         "missing_keys": missing,
                         "mode": run_type,
                     }
+                    # Recent-ticket tracking: ticket runs are a strong
+                    # signal the user wants to see these tickets again.
+                    for k in keys:
+                        try:
+                            record_view(db, request.user["id"],
+                                        environment_id, k)
+                        except Exception:
+                            pass  # best-effort
 
                 svc = PipelineService(
                     PipelineRunRepository(db), PipelineStageRepository(db),
@@ -5160,6 +5260,24 @@ def requirements_detail(req_id):
         req = req_repo.get_requirement(req_id, tid, include_deleted=True)
         if not req:
             return redirect("/requirements")
+
+        # Prompt 16: track this view for the /run Tickets picker's
+        # "Recent tickets" list. Best-effort — failures never break
+        # the requirement detail page. Scoped to the user's active
+        # env so switching envs gives a clean slate.
+        try:
+            from primeqa.core.models import User
+            from primeqa.runs.my_tickets import resolve_active_environment
+            from primeqa.runs.recent_tickets import record_view
+            if req.jira_key:
+                active_user = db.query(User).filter_by(
+                    id=request.user["id"]).first()
+                active_env = resolve_active_environment(active_user, db) if active_user else None
+                if active_env is not None:
+                    record_view(db, request.user["id"], active_env.id,
+                                req.jira_key, req.jira_summary)
+        except Exception:
+            pass  # tracking is best-effort
 
         section = None
         if req.section_id:

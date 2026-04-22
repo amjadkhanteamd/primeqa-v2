@@ -2,21 +2,33 @@
 {% block title %}Run Tests - PrimeQA{% endblock %}
 {% block content %}
 
+{#
+  Prompt 16: four-mode /run page — Sprint / Tickets / Suite / Release.
+  Each mode has a queryable picker. Production banner + confirm
+  checkbox are JS-gated on the selected environment's is_production
+  flag (via data-is-production on each <option>). Permission tabs:
+    Sprint   → run_sprint
+    Tickets  → run_single_ticket
+    Suite    → run_suite
+    Release  → run_sprint OR run_suite (releases are bulk)
+#}
+
 <div class="max-w-5xl mx-auto space-y-6" data-page="run">
 
   <div class="flex items-start justify-between gap-4">
     <div>
       <h1 class="text-2xl font-bold text-gray-900">Run Tests</h1>
       <p class="mt-1 text-sm text-gray-500">
-        Trigger a run against a sprint, a suite, or a single Jira ticket.
-        Live progress shows on the run detail page after you submit.
+        Trigger a run against a sprint, a suite, hand-picked tickets, or
+        a release. Live progress shows on the run detail page after you
+        submit.
       </p>
     </div>
     <div>
       <a href="/runs/new"
          class="text-xs text-gray-500 hover:text-gray-700"
          title="The full wizard for mixed-source runs (Jira + suites + hand-picked TCs).">
-        Advanced wizard →
+        Advanced wizard &rarr;
       </a>
     </div>
   </div>
@@ -31,99 +43,229 @@
     </div>
   {% else %}
 
-  {# ---- Environment / prod-warning banner ------------------------- #}
-  {% if is_production %}
-  <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-900 flex items-start gap-2">
-    <svg class="h-5 w-5 flex-shrink-0 text-amber-600" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" /></svg>
-    <div>
-      <span class="font-semibold">Production org.</span>
-      This environment is marked production. Tests will create and delete
-      real records in Salesforce.
-    </div>
-  </div>
-  {% endif %}
+  {# ---- Permission gates ------------------------------------------ #}
+  {% set show_sprint  = has_permission('run_sprint') %}
+  {% set show_tickets = has_permission('run_single_ticket') %}
+  {% set show_suite   = has_permission('run_suite') %}
+  {% set show_release = show_sprint or show_suite %}
+  {% set default_mode = 'sprint' if show_sprint
+                        else ('tickets' if show_tickets
+                        else ('suite' if show_suite else 'release')) %}
 
-  {# ---- Mode tabs ------------------------------------------------- #}
-  {% set show_single = has_permission('run_single_ticket') %}
-  {% set show_sprint = has_permission('run_sprint') %}
-  {% set show_suite  = has_permission('run_suite') %}
-  {% set default_mode = 'sprint' if show_sprint else ('suite' if show_suite else 'single') %}
+  {# ---- Dynamic prod-gate wrapper ---------------------------------
+     Starts hidden. JS on env change re-evaluates based on the
+     selected option's data-is-production attribute. Rendered once
+     at the top of the form so it's visible before the user picks a
+     mode. #}
+  <div id="prod-gate" class="hidden space-y-2">
+    <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-900 flex items-start gap-2">
+      <svg class="h-5 w-5 flex-shrink-0 text-amber-600" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round"
+              d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+      </svg>
+      <div>
+        <span class="font-semibold">Production org.</span>
+        This environment is marked production. Tests will create and
+        delete real records in Salesforce.
+      </div>
+    </div>
+    <label class="flex items-center gap-2 text-sm text-amber-900 px-3">
+      <input type="checkbox" id="confirm-prod" class="rounded border-amber-400">
+      I confirm this runs against production.
+    </label>
+  </div>
 
   <div class="bg-white shadow rounded-lg overflow-hidden" data-runner>
+    {# ---- Mode tabs ---- #}
     <div role="tablist" class="flex border-b border-gray-200 text-sm">
       {% if show_sprint %}
         <button role="tab" data-mode="sprint"
                 class="px-4 py-3 font-medium border-b-2 {% if default_mode == 'sprint' %}border-indigo-600 text-indigo-700{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %}"
                 onclick="PrimeQA_setRunMode('sprint');">Sprint</button>
       {% endif %}
-      {% if show_single %}
-        <button role="tab" data-mode="single"
-                class="px-4 py-3 font-medium border-b-2 {% if default_mode == 'single' %}border-indigo-600 text-indigo-700{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %}"
-                onclick="PrimeQA_setRunMode('single');">Single Ticket</button>
+      {% if show_tickets %}
+        <button role="tab" data-mode="tickets"
+                class="px-4 py-3 font-medium border-b-2 {% if default_mode == 'tickets' %}border-indigo-600 text-indigo-700{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %}"
+                onclick="PrimeQA_setRunMode('tickets');">Tickets</button>
       {% endif %}
       {% if show_suite %}
         <button role="tab" data-mode="suite"
                 class="px-4 py-3 font-medium border-b-2 {% if default_mode == 'suite' %}border-indigo-600 text-indigo-700{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %}"
                 onclick="PrimeQA_setRunMode('suite');">Suite</button>
       {% endif %}
+      {% if show_release %}
+        <button role="tab" data-mode="release"
+                class="px-4 py-3 font-medium border-b-2 {% if default_mode == 'release' %}border-indigo-600 text-indigo-700{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %}"
+                onclick="PrimeQA_setRunMode('release');">Release</button>
+      {% endif %}
     </div>
 
     <div class="p-6">
-      {# Environment picker — shared across modes. #}
+      {# ---- Environment selector (shared) ---- #}
       <label class="block text-xs font-medium text-gray-700 mb-1">Environment</label>
       <select id="run-env-id"
-              class="w-full text-sm rounded-md border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-indigo-500 mb-4">
+              class="w-full text-sm rounded-md border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-indigo-500 mb-4"
+              onchange="PrimeQA_onEnvChange();">
         {% for e in envs %}
-          <option value="{{ e.id }}" {% if env and e.id == env.id %}selected{% endif %}>
+          <option value="{{ e.id }}"
+                  data-is-production="{{ 'true' if e.is_production else 'false' }}"
+                  data-has-jira="{{ 'true' if e.jira_connection_id else 'false' }}"
+                  {% if env and e.id == env.id %}selected{% endif %}>
             {{ e.name }}{% if e.is_production %} (prod){% endif %}
           </option>
         {% endfor %}
       </select>
 
-      {# ---- Sprint mode ---- #}
+      {# ============================================================
+         MODE A — SPRINT
+         ============================================================ #}
       {% if show_sprint %}
       <div data-pane="sprint" class="{% if default_mode != 'sprint' %}hidden{% endif %}">
-        <label class="block text-xs font-medium text-gray-700 mb-1">
-          Jira ticket keys
-          <span class="text-gray-400">(comma- or space-separated)</span>
-        </label>
-        <textarea id="sprint-keys" rows="4"
-                  placeholder="SQ-208, SQ-209, SQ-210"
-                  class="w-full text-sm font-mono rounded-md border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-indigo-500"></textarea>
-        <p class="mt-2 text-xs text-gray-500">
-          For richer sprint / board selection use the
-          <a href="/runs/new" class="text-indigo-600 hover:underline">advanced wizard</a>.
-        </p>
+        <div class="flex items-center justify-between mb-2">
+          <label class="block text-xs font-medium text-gray-700">Select sprint</label>
+          <button type="button" onclick="PrimeQA_refreshSprints();"
+                  class="text-xs text-gray-500 hover:text-indigo-700">&#8635; refresh</button>
+        </div>
+        <div id="sprint-list"
+             class="rounded-md border border-gray-200 divide-y divide-gray-100 max-h-56 overflow-y-auto">
+          <div class="p-3 text-sm text-gray-500">Loading sprints&hellip;</div>
+        </div>
+
+        <div id="sprint-tickets-wrap" class="mt-4 hidden">
+          <div class="flex items-center justify-between">
+            <label class="block text-xs font-medium text-gray-700">
+              Tickets in <span id="sprint-current-name">sprint</span>
+              <span id="sprint-ticket-count" class="text-gray-400"></span>
+            </label>
+            <div class="text-xs space-x-2">
+              <button type="button" onclick="PrimeQA_sprintTicketFilter('all');"
+                      class="text-indigo-600 hover:underline">Select all</button>
+              <button type="button" onclick="PrimeQA_sprintTicketFilter('none');"
+                      class="text-indigo-600 hover:underline">None</button>
+            </div>
+          </div>
+          <div id="sprint-ticket-list"
+               class="mt-2 rounded-md border border-gray-200 divide-y divide-gray-100 max-h-64 overflow-y-auto">
+          </div>
+        </div>
       </div>
       {% endif %}
 
-      {# ---- Single ticket mode ---- #}
-      {% if show_single %}
-      <div data-pane="single" class="{% if default_mode != 'single' %}hidden{% endif %}">
-        <label class="block text-xs font-medium text-gray-700 mb-1">Jira ticket key</label>
-        <input id="single-key" type="text" placeholder="SQ-208"
-               class="w-full text-sm font-mono rounded-md border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-indigo-500">
+      {# ============================================================
+         MODE B — TICKETS (search + recent + filters)
+         ============================================================ #}
+      {% if show_tickets %}
+      <div data-pane="tickets" class="{% if default_mode != 'tickets' %}hidden{% endif %}">
+        <div class="flex flex-wrap gap-2 mb-3 text-xs" id="ticket-filters">
+          <button type="button" data-filter="mine" onclick="PrimeQA_toggleTicketFilter(this);"
+                  class="filter-chip px-2 py-1 rounded-full border border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100"
+                  data-active="true">Assigned to me</button>
+          <button type="button" data-filter="current_sprint" onclick="PrimeQA_toggleTicketFilter(this);"
+                  class="filter-chip px-2 py-1 rounded-full border border-gray-200 bg-white text-gray-700 hover:bg-gray-50">Current sprint</button>
+          <button type="button" data-filter="open" onclick="PrimeQA_toggleTicketFilter(this);"
+                  class="filter-chip px-2 py-1 rounded-full border border-indigo-200 bg-indigo-50 text-indigo-800 hover:bg-indigo-100"
+                  data-active="true">Open</button>
+          <button type="button" data-filter="recent" onclick="PrimeQA_toggleTicketFilter(this);"
+                  class="filter-chip px-2 py-1 rounded-full border border-gray-200 bg-white text-gray-700 hover:bg-gray-50">Recent (30d)</button>
+        </div>
+
+        <div class="relative">
+          <input id="ticket-search" type="search" autocomplete="off"
+                 placeholder="Search by key or summary&hellip;"
+                 oninput="PrimeQA_onTicketSearchInput();"
+                 class="w-full text-sm rounded-md border border-gray-300 pl-8 pr-3 py-2 focus:border-indigo-500 focus:ring-indigo-500">
+          <svg class="h-4 w-4 absolute left-2 top-2.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round"
+                  d="m21 21-4.3-4.3m0 0A7.25 7.25 0 1 0 6.4 6.4a7.25 7.25 0 0 0 10.3 10.3Z" />
+          </svg>
+        </div>
+
+        <div id="ticket-results-wrap" class="mt-3">
+          <div id="ticket-results-label"
+               class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Recent tickets</div>
+          <div id="ticket-results"
+               class="rounded-md border border-gray-200 divide-y divide-gray-100 max-h-60 overflow-y-auto">
+            <div class="p-3 text-sm text-gray-500">Loading recent&hellip;</div>
+          </div>
+        </div>
+
+        <div id="ticket-selected-wrap" class="mt-4 hidden">
+          <div class="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">
+            Selected (<span id="ticket-selected-count">0</span>)
+          </div>
+          <div id="ticket-selected"
+               class="rounded-md border border-gray-200 divide-y divide-gray-100 max-h-48 overflow-y-auto"></div>
+        </div>
       </div>
       {% endif %}
 
-      {# ---- Suite mode ---- #}
+      {# ============================================================
+         MODE C — SUITE (dropdown + TC list with checkboxes)
+         ============================================================ #}
       {% if show_suite %}
       <div data-pane="suite" class="{% if default_mode != 'suite' %}hidden{% endif %}">
         <label class="block text-xs font-medium text-gray-700 mb-1">Suite</label>
-        <select id="suite-id"
+        <select id="suite-id" onchange="PrimeQA_onSuiteChange();"
                 class="w-full text-sm rounded-md border border-gray-300 px-3 py-2 focus:border-indigo-500 focus:ring-indigo-500">
-          <option value="">— pick a suite —</option>
+          <option value="">&mdash; pick a suite &mdash;</option>
           {% for s in suites %}
-            <option value="{{ s.id }}">{{ s.name }}</option>
+            <option value="{{ s.id }}">
+              {{ s.name }} &middot; {{ s.test_case_count }} TCs{% if s.quality_gate_threshold %} &middot; gate {{ s.quality_gate_threshold }}%{% endif %}
+            </option>
           {% endfor %}
         </select>
+        <div id="suite-overview" class="mt-4 hidden">
+          <div id="suite-meta" class="text-xs text-gray-500 mb-2"></div>
+          <div class="flex items-center justify-between mb-1">
+            <div class="text-xs font-medium text-gray-700">Test cases</div>
+            <div class="text-xs space-x-2">
+              <button type="button" onclick="PrimeQA_suiteTcFilter('all');"
+                      class="text-indigo-600 hover:underline">Select all</button>
+              <button type="button" onclick="PrimeQA_suiteTcFilter('none');"
+                      class="text-indigo-600 hover:underline">None</button>
+            </div>
+          </div>
+          <div id="suite-tc-list"
+               class="rounded-md border border-gray-200 divide-y divide-gray-100 max-h-60 overflow-y-auto"></div>
+        </div>
       </div>
       {% endif %}
 
-      {% if is_production %}
-        <label class="mt-3 flex items-center gap-2 text-sm text-amber-900">
-          <input type="checkbox" id="confirm-prod"> I confirm this runs against production.
-        </label>
+      {# ============================================================
+         MODE D — RELEASE (release list + per-item toggles)
+         ============================================================ #}
+      {% if show_release %}
+      <div data-pane="release" class="{% if default_mode != 'release' %}hidden{% endif %}">
+        <label class="block text-xs font-medium text-gray-700 mb-1">Select release</label>
+        <div id="release-list"
+             class="rounded-md border border-gray-200 divide-y divide-gray-100 max-h-56 overflow-y-auto">
+          <div class="p-3 text-sm text-gray-500">Loading releases&hellip;</div>
+        </div>
+
+        <div id="release-contents-wrap" class="mt-4 hidden">
+          <div class="flex items-center justify-between mb-1">
+            <div class="text-xs font-medium text-gray-700">
+              Contents of <span id="release-current-name">release</span>
+            </div>
+            <div class="text-xs space-x-2">
+              <button type="button" onclick="PrimeQA_releaseFilter('all');"
+                      class="text-indigo-600 hover:underline">Select all</button>
+              <button type="button" onclick="PrimeQA_releaseFilter('tickets');"
+                      class="text-indigo-600 hover:underline">Tickets only</button>
+              <button type="button" onclick="PrimeQA_releaseFilter('tcs');"
+                      class="text-indigo-600 hover:underline">Test Cases only</button>
+              <button type="button" onclick="PrimeQA_releaseFilter('none');"
+                      class="text-indigo-600 hover:underline">None</button>
+            </div>
+          </div>
+          <div class="text-xs text-gray-500 mt-2 mb-1">Tickets (<span id="release-ticket-count">0</span>)</div>
+          <div id="release-ticket-list"
+               class="rounded-md border border-gray-200 divide-y divide-gray-100 max-h-40 overflow-y-auto"></div>
+          <div class="text-xs text-gray-500 mt-3 mb-1">Test cases (<span id="release-tc-count">0</span>)</div>
+          <div id="release-tc-list"
+               class="rounded-md border border-gray-200 divide-y divide-gray-100 max-h-40 overflow-y-auto"></div>
+        </div>
+      </div>
       {% endif %}
 
       <div class="mt-5 flex items-center gap-3">
@@ -137,11 +279,11 @@
     </div>
   </div>
 
-  {# ---- Recent history ------------------------------------------ #}
+  {# ---- Recent history (unchanged) -------------------------------- #}
   <div class="bg-white shadow rounded-lg overflow-hidden">
     <div class="flex items-center justify-between px-6 py-3 border-b border-gray-100">
       <h2 class="text-sm font-semibold text-gray-900">Recent Runs</h2>
-      <a href="/runs" class="text-xs text-indigo-600 hover:underline">View all results →</a>
+      <a href="/runs" class="text-xs text-indigo-600 hover:underline">View all results &rarr;</a>
     </div>
     {% if history %}
       <table class="min-w-full divide-y divide-gray-100">
@@ -180,7 +322,24 @@
 </div>
 
 <script>
-  window.PrimeQA_setRunMode = function (mode) {
+(function () {
+  // ------------------------------------------------------------------
+  // State buckets — one per mode so switching tabs doesn't nuke work
+  // in progress. Picked data lives here; the Run Tests button reads it.
+  // ------------------------------------------------------------------
+  const state = {
+    mode: '{{ default_mode }}',
+    envId: {{ (env.id or 0) if env else 0 }},
+    sprint: { sprintId: null, sprintName: '', tickets: [] /* [{key,summary,selected}] */ },
+    tickets: { selected: [] /* [{key, summary}] */, filters: new Set(['mine','open']) },
+    suite:  { suiteId: null, tcs: [] /* [{id,title,selected}] */, meta: null },
+    release:{ releaseId: null, releaseName: '', tickets: [], tcs: [] },
+    _ticketSearchTimer: null,
+  };
+  window.PrimeQA_runState = state;  // test hook / debugging
+
+  function setRunMode(mode) {
+    state.mode = mode;
     document.querySelectorAll('[data-runner] [role=tab]').forEach(b => {
       const active = b.dataset.mode === mode;
       b.classList.toggle('border-indigo-600', active);
@@ -193,40 +352,427 @@
     });
     document.querySelector('[data-runner]').dataset.currentMode = mode;
     document.getElementById('run-error').textContent = '';
-  };
-  (function () {
-    // Initialize the runner's currentMode from whichever tab starts active.
-    const active = document.querySelector('[data-runner] [role=tab].border-indigo-600');
-    if (active) document.querySelector('[data-runner]').dataset.currentMode = active.dataset.mode;
-  })();
 
+    // Lazy-load per mode on first visit.
+    if (mode === 'sprint' && !state.sprint.sprintId) loadSprints();
+    if (mode === 'tickets') loadRecentTickets();
+    if (mode === 'release' && !state.release.releaseId) loadReleases();
+  }
+  window.PrimeQA_setRunMode = setRunMode;
+
+  // ------------------------------------------------------------------
+  // Environment change — re-evaluate the prod gate + invalidate mode
+  // state tied to the old env's Jira connection.
+  // ------------------------------------------------------------------
+  function onEnvChange() {
+    const sel = document.getElementById('run-env-id');
+    state.envId = parseInt(sel.value, 10);
+    updateProdGate();
+    // Reset mode-specific state that depends on the env's Jira
+    state.sprint = { sprintId: null, sprintName: '', tickets: [] };
+    state.tickets.selected = [];
+    state.release = { releaseId: null, releaseName: '', tickets: [], tcs: [] };
+    document.getElementById('sprint-tickets-wrap')?.classList.add('hidden');
+    document.getElementById('ticket-selected-wrap')?.classList.add('hidden');
+    document.getElementById('ticket-selected-count') && (document.getElementById('ticket-selected-count').textContent = '0');
+    document.getElementById('release-contents-wrap')?.classList.add('hidden');
+    // Re-fire current mode's loader
+    if (state.mode === 'sprint') loadSprints();
+    if (state.mode === 'tickets') loadRecentTickets();
+    if (state.mode === 'release') loadReleases();
+  }
+  window.PrimeQA_onEnvChange = onEnvChange;
+
+  function updateProdGate() {
+    const sel = document.getElementById('run-env-id');
+    if (!sel || !sel.options.length) return;
+    const opt = sel.options[sel.selectedIndex];
+    const isProd = opt && opt.dataset.isProduction === 'true';
+    const gate = document.getElementById('prod-gate');
+    const cb = document.getElementById('confirm-prod');
+    gate.classList.toggle('hidden', !isProd);
+    if (!isProd && cb) cb.checked = false;
+  }
+  window.PrimeQA_updateProdGate = updateProdGate;
+
+  // ==================================================================
+  // MODE A — SPRINT
+  // ==================================================================
+  function loadSprints() {
+    const box = document.getElementById('sprint-list');
+    if (!box) return;
+    box.innerHTML = '<div class="p-3 text-sm text-gray-500">Loading sprints&hellip;</div>';
+    fetch(`/api/jira/sprints?environment_id=${state.envId}&state=active,closed`, {
+      credentials: 'same-origin',
+    }).then(r => r.json()).then(j => {
+      if (!j.sprints || !j.sprints.length) {
+        box.innerHTML = `<div class="p-3 text-sm text-gray-500">${j.hint || j.error || 'No sprints found.'}</div>`;
+        return;
+      }
+      box.innerHTML = j.sprints.map(s => {
+        const dates = [s.startDate, s.endDate].filter(Boolean).map(d => d.slice(0,10)).join(' &ndash; ');
+        const activeBadge = s.state === 'active'
+          ? ' <span class="ml-2 rounded px-1.5 py-0.5 text-[10px] font-medium bg-green-100 text-green-800">active</span>'
+          : '';
+        return `<label class="flex items-center gap-3 p-3 text-sm hover:bg-gray-50 cursor-pointer" data-sprint-row data-id="${s.id}" data-name="${(s.name||'').replace(/"/g,'&quot;')}">
+          <input type="radio" name="sprint-pick" class="text-indigo-600" data-id="${s.id}">
+          <div class="flex-1">
+            <div class="font-medium text-gray-800">${s.name || ''}${activeBadge}</div>
+            <div class="text-xs text-gray-500">${dates || ''} ${s.project_key ? '&middot; ' + s.project_key : ''}</div>
+          </div>
+        </label>`;
+      }).join('');
+      // Auto-select active if present
+      const active = j.sprints.find(s => s.state === 'active');
+      if (active) selectSprint(active.id, active.name);
+    }).catch(() => {
+      box.innerHTML = '<div class="p-3 text-sm text-red-600">Could not load sprints.</div>';
+    });
+  }
+  window.PrimeQA_refreshSprints = loadSprints;
+
+  function selectSprint(sprintId, sprintName) {
+    state.sprint.sprintId = sprintId;
+    state.sprint.sprintName = sprintName;
+    document.querySelectorAll('[data-sprint-row] input[type=radio]').forEach(r => {
+      r.checked = (parseInt(r.dataset.id, 10) === sprintId);
+    });
+    const wrap = document.getElementById('sprint-tickets-wrap');
+    wrap.classList.remove('hidden');
+    document.getElementById('sprint-current-name').textContent = sprintName;
+    const list = document.getElementById('sprint-ticket-list');
+    list.innerHTML = '<div class="p-3 text-sm text-gray-500">Loading tickets&hellip;</div>';
+    fetch(`/api/jira/sprints/${sprintId}/tickets?environment_id=${state.envId}`, {
+      credentials: 'same-origin',
+    }).then(r => r.json()).then(j => {
+      state.sprint.tickets = (j.tickets || []).map(t => ({ ...t, selected: true }));
+      renderSprintTickets();
+    });
+  }
+  // delegate clicks on sprint list
+  document.addEventListener('click', e => {
+    const row = e.target.closest('[data-sprint-row]');
+    if (!row) return;
+    selectSprint(parseInt(row.dataset.id, 10), row.dataset.name);
+  });
+
+  function renderSprintTickets() {
+    const list = document.getElementById('sprint-ticket-list');
+    document.getElementById('sprint-ticket-count').textContent =
+      ' (' + state.sprint.tickets.length + ')';
+    if (!state.sprint.tickets.length) {
+      list.innerHTML = '<div class="p-3 text-sm text-gray-500">No tickets in this sprint.</div>';
+      return;
+    }
+    list.innerHTML = state.sprint.tickets.map((t, i) => `
+      <label class="flex items-center gap-3 p-2 text-sm hover:bg-gray-50">
+        <input type="checkbox" ${t.selected ? 'checked' : ''}
+               onchange="PrimeQA_runState.sprint.tickets[${i}].selected = this.checked;">
+        <span class="font-mono text-xs text-gray-600">${t.key}</span>
+        <span class="text-gray-800 flex-1 truncate">${t.summary || ''}</span>
+        <span class="text-[10px] text-gray-400">${t.status || ''}</span>
+      </label>`).join('');
+  }
+  window.PrimeQA_sprintTicketFilter = function (which) {
+    state.sprint.tickets = state.sprint.tickets.map(t => ({
+      ...t, selected: which === 'all',
+    }));
+    renderSprintTickets();
+  };
+
+  // ==================================================================
+  // MODE B — TICKETS (search + recent + filters)
+  // ==================================================================
+  function renderTicketResults(rows, label) {
+    document.getElementById('ticket-results-label').textContent = label;
+    const box = document.getElementById('ticket-results');
+    if (!rows.length) {
+      box.innerHTML = '<div class="p-3 text-sm text-gray-500">No matching tickets.</div>';
+      return;
+    }
+    const selectedKeys = new Set(state.tickets.selected.map(t => t.key));
+    box.innerHTML = rows.map(t => `
+      <label class="flex items-center gap-3 p-2 text-sm hover:bg-gray-50 cursor-pointer">
+        <input type="checkbox" ${selectedKeys.has(t.key) ? 'checked' : ''}
+               data-key="${t.key}" data-summary="${(t.summary||'').replace(/"/g,'&quot;')}"
+               onchange="PrimeQA_toggleSelectedTicket(this);">
+        <span class="font-mono text-xs text-gray-600">${t.key}</span>
+        <span class="text-gray-800 flex-1 truncate">${t.summary || ''}</span>
+        <span class="text-[10px] text-gray-400">${t.status || ''}</span>
+      </label>`).join('');
+  }
+  window.PrimeQA_toggleSelectedTicket = function (cb) {
+    const key = cb.dataset.key;
+    const sum = cb.dataset.summary;
+    if (cb.checked) {
+      if (!state.tickets.selected.some(t => t.key === key)) {
+        state.tickets.selected.push({ key, summary: sum });
+      }
+    } else {
+      state.tickets.selected = state.tickets.selected.filter(t => t.key !== key);
+    }
+    renderSelectedTickets();
+  };
+  function renderSelectedTickets() {
+    const wrap = document.getElementById('ticket-selected-wrap');
+    const cnt = document.getElementById('ticket-selected-count');
+    const list = document.getElementById('ticket-selected');
+    cnt.textContent = String(state.tickets.selected.length);
+    wrap.classList.toggle('hidden', !state.tickets.selected.length);
+    list.innerHTML = state.tickets.selected.map((t, i) => `
+      <div class="flex items-center gap-3 p-2 text-sm">
+        <span class="font-mono text-xs text-gray-600">${t.key}</span>
+        <span class="text-gray-800 flex-1 truncate">${t.summary || ''}</span>
+        <button type="button" class="text-gray-400 hover:text-red-600"
+                onclick="PrimeQA_removeSelectedTicket(${i});">&times;</button>
+      </div>`).join('');
+  }
+  window.PrimeQA_removeSelectedTicket = function (idx) {
+    state.tickets.selected.splice(idx, 1);
+    renderSelectedTickets();
+    // Also uncheck in results pane if visible
+    document.querySelectorAll('#ticket-results input[type=checkbox]').forEach(cb => {
+      if (!state.tickets.selected.some(t => t.key === cb.dataset.key)) cb.checked = false;
+    });
+  };
+  function loadRecentTickets() {
+    const box = document.getElementById('ticket-results');
+    if (!box) return;
+    box.innerHTML = '<div class="p-3 text-sm text-gray-500">Loading recent&hellip;</div>';
+    fetch(`/api/jira/tickets/recent?environment_id=${state.envId}&limit=10`, {
+      credentials: 'same-origin',
+    }).then(r => r.json()).then(j => {
+      const rows = (j.tickets || []).map(t => ({
+        key: t.jira_key, summary: t.jira_summary, status: '',
+      }));
+      renderTicketResults(rows, 'Recent tickets');
+    }).catch(() => {
+      box.innerHTML = '<div class="p-3 text-sm text-red-600">Could not load recent tickets.</div>';
+    });
+    renderSelectedTickets();
+  }
+  window.PrimeQA_loadRecentTickets = loadRecentTickets;
+
+  window.PrimeQA_toggleTicketFilter = function (btn) {
+    const f = btn.dataset.filter;
+    const active = btn.dataset.active === 'true';
+    btn.dataset.active = active ? 'false' : 'true';
+    btn.classList.toggle('bg-indigo-50', !active);
+    btn.classList.toggle('border-indigo-200', !active);
+    btn.classList.toggle('text-indigo-800', !active);
+    btn.classList.toggle('bg-white', active);
+    btn.classList.toggle('border-gray-200', active);
+    btn.classList.toggle('text-gray-700', active);
+    if (active) state.tickets.filters.delete(f); else state.tickets.filters.add(f);
+    // Refire search with new filter set
+    const q = document.getElementById('ticket-search').value.trim();
+    if (q) doTicketSearch(q); else loadRecentTickets();
+  };
+
+  function onTicketSearchInput() {
+    clearTimeout(state._ticketSearchTimer);
+    state._ticketSearchTimer = setTimeout(() => {
+      const q = document.getElementById('ticket-search').value.trim();
+      if (!q) { loadRecentTickets(); return; }
+      doTicketSearch(q);
+    }, 250);
+  }
+  window.PrimeQA_onTicketSearchInput = onTicketSearchInput;
+
+  function doTicketSearch(q) {
+    const filters = Array.from(state.tickets.filters).join(',');
+    const url = `/api/jira/tickets/search?environment_id=${state.envId}&q=${encodeURIComponent(q)}&filter=${encodeURIComponent(filters)}`;
+    const box = document.getElementById('ticket-results');
+    box.innerHTML = '<div class="p-3 text-sm text-gray-500">Searching&hellip;</div>';
+    fetch(url, { credentials: 'same-origin' })
+      .then(r => r.json()).then(j => {
+        renderTicketResults(j.tickets || [], `Results for "${q}"`);
+      }).catch(() => {
+        box.innerHTML = '<div class="p-3 text-sm text-red-600">Search failed.</div>';
+      });
+  }
+
+  // ==================================================================
+  // MODE C — SUITE
+  // ==================================================================
+  function onSuiteChange() {
+    const id = parseInt(document.getElementById('suite-id').value, 10);
+    state.suite.suiteId = isFinite(id) ? id : null;
+    const wrap = document.getElementById('suite-overview');
+    if (!state.suite.suiteId) { wrap.classList.add('hidden'); return; }
+    wrap.classList.remove('hidden');
+    const list = document.getElementById('suite-tc-list');
+    list.innerHTML = '<div class="p-3 text-sm text-gray-500">Loading suite&hellip;</div>';
+    fetch(`/api/suites/${state.suite.suiteId}/overview`, {
+      credentials: 'same-origin',
+    }).then(r => r.json()).then(j => {
+      if (j.error) { list.innerHTML = '<div class="p-3 text-sm text-red-600">' + (j.error.message || 'Error') + '</div>'; return; }
+      state.suite.meta = j.suite; state.suite.tcs = (j.test_cases || []).map(t => ({...t, selected: true}));
+      const meta = document.getElementById('suite-meta');
+      const parts = [`${j.suite.test_case_count} test cases`];
+      if (j.suite.quality_gate_threshold) parts.push(`gate ${j.suite.quality_gate_threshold}%`);
+      if (j.last_run) parts.push(`last run #${j.last_run.id} ${j.last_run.status}`);
+      meta.textContent = parts.join(' · ');
+      renderSuiteTcs();
+    });
+  }
+  window.PrimeQA_onSuiteChange = onSuiteChange;
+  function renderSuiteTcs() {
+    const list = document.getElementById('suite-tc-list');
+    if (!state.suite.tcs.length) {
+      list.innerHTML = '<div class="p-3 text-sm text-gray-500">No test cases in this suite.</div>';
+      return;
+    }
+    list.innerHTML = state.suite.tcs.map((t, i) => `
+      <label class="flex items-center gap-3 p-2 text-sm hover:bg-gray-50">
+        <input type="checkbox" ${t.selected ? 'checked' : ''}
+               onchange="PrimeQA_runState.suite.tcs[${i}].selected = this.checked;">
+        <span class="font-mono text-xs text-gray-600">TC-${t.id}</span>
+        <span class="text-gray-800 flex-1 truncate">${t.title || ''}</span>
+        <span class="text-[10px] text-gray-400">${t.status || ''}</span>
+      </label>`).join('');
+  }
+  window.PrimeQA_suiteTcFilter = function (which) {
+    state.suite.tcs = state.suite.tcs.map(t => ({...t, selected: which === 'all'}));
+    renderSuiteTcs();
+  };
+
+  // ==================================================================
+  // MODE D — RELEASE
+  // ==================================================================
+  function loadReleases() {
+    const box = document.getElementById('release-list');
+    if (!box) return;
+    box.innerHTML = '<div class="p-3 text-sm text-gray-500">Loading releases&hellip;</div>';
+    fetch(`/api/releases?environment_id=${state.envId}`, {
+      credentials: 'same-origin',
+    }).then(r => r.json()).then(j => {
+      if (!j.releases || !j.releases.length) {
+        box.innerHTML = '<div class="p-3 text-sm text-gray-500">No releases. Create one under <a href="/releases" class="text-indigo-600 hover:underline">Releases</a>.</div>';
+        return;
+      }
+      box.innerHTML = j.releases.map(r => `
+        <label class="flex items-center gap-3 p-3 text-sm hover:bg-gray-50 cursor-pointer"
+               data-release-row data-id="${r.id}" data-name="${(r.name||'').replace(/"/g,'&quot;')}">
+          <input type="radio" name="release-pick" class="text-indigo-600" data-id="${r.id}">
+          <div class="flex-1">
+            <div class="font-medium text-gray-800">${r.name}${r.version_tag ? ' <span class="text-xs text-gray-400">('+r.version_tag+')</span>' : ''}</div>
+            <div class="text-xs text-gray-500">${r.status} &middot; ${r.ticket_count} tickets &middot; ${r.test_case_count} TCs</div>
+          </div>
+        </label>`).join('');
+    });
+  }
+  document.addEventListener('click', e => {
+    const row = e.target.closest('[data-release-row]');
+    if (!row) return;
+    selectRelease(parseInt(row.dataset.id, 10), row.dataset.name);
+  });
+  function selectRelease(id, name) {
+    state.release.releaseId = id;
+    state.release.releaseName = name;
+    document.querySelectorAll('[data-release-row] input[type=radio]').forEach(r => {
+      r.checked = (parseInt(r.dataset.id, 10) === id);
+    });
+    document.getElementById('release-contents-wrap').classList.remove('hidden');
+    document.getElementById('release-current-name').textContent = name;
+    fetch(`/api/releases/${id}/contents`, { credentials: 'same-origin' })
+      .then(r => r.json()).then(j => {
+        state.release.tickets = (j.tickets || []).map(t => ({...t, selected: true}));
+        state.release.tcs = (j.test_cases || []).map(t => ({...t, selected: true}));
+        renderReleaseContents();
+      });
+  }
+  function renderReleaseContents() {
+    document.getElementById('release-ticket-count').textContent = state.release.tickets.length;
+    document.getElementById('release-tc-count').textContent = state.release.tcs.length;
+    const tlist = document.getElementById('release-ticket-list');
+    tlist.innerHTML = state.release.tickets.length
+      ? state.release.tickets.map((t, i) => `
+          <label class="flex items-center gap-3 p-2 text-sm hover:bg-gray-50">
+            <input type="checkbox" ${t.selected ? 'checked' : ''}
+                   onchange="PrimeQA_runState.release.tickets[${i}].selected = this.checked;">
+            <span class="font-mono text-xs text-gray-600">${t.jira_key}</span>
+            <span class="text-gray-800 flex-1 truncate">${t.summary || ''}</span>
+          </label>`).join('')
+      : '<div class="p-2 text-xs text-gray-500">No tickets attached.</div>';
+    const clist = document.getElementById('release-tc-list');
+    clist.innerHTML = state.release.tcs.length
+      ? state.release.tcs.map((t, i) => `
+          <label class="flex items-center gap-3 p-2 text-sm hover:bg-gray-50">
+            <input type="checkbox" ${t.selected ? 'checked' : ''}
+                   onchange="PrimeQA_runState.release.tcs[${i}].selected = this.checked;">
+            <span class="font-mono text-xs text-gray-600">TC-${t.id}</span>
+            <span class="text-gray-800 flex-1 truncate">${t.title || ''}</span>
+          </label>`).join('')
+      : '<div class="p-2 text-xs text-gray-500">No test cases attached.</div>';
+  }
+  window.PrimeQA_releaseFilter = function (mode) {
+    if (mode === 'all') {
+      state.release.tickets = state.release.tickets.map(t => ({...t, selected: true}));
+      state.release.tcs = state.release.tcs.map(t => ({...t, selected: true}));
+    } else if (mode === 'tickets') {
+      state.release.tickets = state.release.tickets.map(t => ({...t, selected: true}));
+      state.release.tcs = state.release.tcs.map(t => ({...t, selected: false}));
+    } else if (mode === 'tcs') {
+      state.release.tickets = state.release.tickets.map(t => ({...t, selected: false}));
+      state.release.tcs = state.release.tcs.map(t => ({...t, selected: true}));
+    } else {
+      state.release.tickets = state.release.tickets.map(t => ({...t, selected: false}));
+      state.release.tcs = state.release.tcs.map(t => ({...t, selected: false}));
+    }
+    renderReleaseContents();
+  };
+
+  // ==================================================================
+  // SUBMIT
+  // ==================================================================
   window.PrimeQA_submitRun = function () {
     const errEl = document.getElementById('run-error');
     errEl.textContent = '';
-    const mode = document.querySelector('[data-runner]').dataset.currentMode;
-    const envId = parseInt(document.getElementById('run-env-id').value, 10);
-    const confirmProd = !!(document.getElementById('confirm-prod') && document.getElementById('confirm-prod').checked);
-    let body = {environment_id: envId, confirm_production: confirmProd};
+    const mode = state.mode;
+    const envId = state.envId;
+    const prodGate = document.getElementById('prod-gate');
+    const prodShown = prodGate && !prodGate.classList.contains('hidden');
+    const confirmProd = prodShown
+      ? !!document.getElementById('confirm-prod').checked
+      : false;
+    if (prodShown && !confirmProd) {
+      errEl.textContent = 'Tick the "I confirm this runs against production" checkbox.';
+      return;
+    }
+    let body = { environment_id: envId, confirm_production: confirmProd };
 
     if (mode === 'sprint') {
-      const raw = (document.getElementById('sprint-keys').value || '').trim();
-      const keys = raw.split(/[\s,]+/).filter(Boolean);
-      if (!keys.length) { errEl.textContent = 'Enter at least one ticket key.'; return; }
+      if (!state.sprint.sprintId) { errEl.textContent = 'Pick a sprint.'; return; }
+      const keys = state.sprint.tickets.filter(t => t.selected).map(t => t.key);
+      if (!keys.length) { errEl.textContent = 'Pick at least one ticket.'; return; }
       body.run_type = 'sprint'; body.ticket_keys = keys;
-    } else if (mode === 'single') {
-      const key = (document.getElementById('single-key').value || '').trim();
-      if (!key) { errEl.textContent = 'Enter a ticket key.'; return; }
-      body.run_type = 'single'; body.ticket_keys = [key];
+    } else if (mode === 'tickets') {
+      const keys = state.tickets.selected.map(t => t.key);
+      if (!keys.length) { errEl.textContent = 'Pick at least one ticket.'; return; }
+      body.run_type = (keys.length === 1) ? 'single' : 'tickets';
+      body.ticket_keys = keys;
     } else if (mode === 'suite') {
-      const suiteId = parseInt(document.getElementById('suite-id').value, 10);
-      if (!suiteId) { errEl.textContent = 'Pick a suite.'; return; }
-      body.run_type = 'suite'; body.suite_id = suiteId;
+      if (!state.suite.suiteId) { errEl.textContent = 'Pick a suite.'; return; }
+      body.run_type = 'suite';
+      body.suite_id = state.suite.suiteId;
+      body.exclude_test_case_ids = state.suite.tcs
+        .filter(t => !t.selected).map(t => t.id);
+    } else if (mode === 'release') {
+      if (!state.release.releaseId) { errEl.textContent = 'Pick a release.'; return; }
+      const tcIds = state.release.tcs.filter(t => t.selected).map(t => t.id);
+      const keys  = state.release.tickets.filter(t => t.selected).map(t => t.jira_key);
+      if (!tcIds.length && !keys.length) { errEl.textContent = 'Select at least one ticket or test case.'; return; }
+      body.run_type = 'release';
+      body.release_id = state.release.releaseId;
+      body.test_case_ids = tcIds;
+      body.ticket_keys = keys;
     } else {
       errEl.textContent = 'Pick a run mode.'; return;
     }
 
     const btn = document.getElementById('run-submit');
-    btn.disabled = true; btn.textContent = 'Queuing…';
+    btn.disabled = true; btn.textContent = 'Queuing\u2026';
 
     fetch('/api/bulk-runs', {
       method: 'POST',
@@ -238,11 +784,18 @@
       if (r.ok && j.redirect) { window.location = j.redirect; return; }
       errEl.textContent = (j.error && j.error.message) || `Run failed (${r.status})`;
       btn.disabled = false; btn.textContent = 'Run Tests';
-    }).catch(e => {
+    }).catch(() => {
       errEl.textContent = 'Network error. Try again.';
       btn.disabled = false; btn.textContent = 'Run Tests';
     });
   };
+
+  // Page-load initialisation
+  updateProdGate();
+  if (state.mode === 'sprint' && document.querySelector('[data-pane="sprint"]')) loadSprints();
+  if (state.mode === 'tickets' && document.querySelector('[data-pane="tickets"]')) loadRecentTickets();
+  if (state.mode === 'release' && document.querySelector('[data-pane="release"]')) loadReleases();
+})();
 </script>
 
 {% endblock %}

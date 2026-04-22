@@ -285,6 +285,30 @@ class Connection(Base):
     )
 
 
+# Migration 047: per-user recent ticket tracking. Powers the /run
+# "Tickets" picker's "Recent tickets" list. A write fires whenever a
+# user views a requirement detail, runs a single ticket, or selects
+# one in a picker. Last 20 per (user, environment) are kept; older
+# rows are pruned in the write path.
+class UserRecentTicket(Base):
+    __tablename__ = "user_recent_tickets"
+
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"),
+                     primary_key=True, nullable=False)
+    environment_id = Column(Integer,
+                            ForeignKey("environments.id", ondelete="CASCADE"),
+                            primary_key=True, nullable=False)
+    jira_key = Column(String(50), primary_key=True, nullable=False)
+    jira_summary = Column(Text)
+    viewed_at = Column(DateTime(timezone=True), nullable=False,
+                       server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_recent_tickets_viewed",
+              "user_id", "environment_id", "viewed_at"),
+    )
+
+
 # Migration 039: ensure the permission-set model classes are registered
 # with SQLAlchemy's declarative base whenever primeqa.core.models is
 # imported, so the User.permission_set_assignments relationship can
