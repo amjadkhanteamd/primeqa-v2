@@ -227,8 +227,11 @@ def run_tests():
 
     def test_landing_release_owner():
         perms = _base_perms("release_owner_base")
-        assert get_landing_page(perms) == "/"
-    results.append(test("10. release-owner perms -> / (dashboard)",
+        # Prompt 10 introduced /dashboard as the Release Owner's
+        # landing; the legacy / remains available for admins but
+        # view_dashboard-only callers now route to /dashboard.
+        assert get_landing_page(perms) == "/dashboard"
+    results.append(test("10. release-owner perms -> /dashboard",
                         test_landing_release_owner))
 
     def test_landing_admin():

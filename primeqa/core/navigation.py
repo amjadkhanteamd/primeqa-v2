@@ -86,7 +86,10 @@ SIDEBAR_ITEMS: list[dict] = [
         "id": "dashboard",
         "label": "Dashboard",
         "icon": "dashboard",
-        "url": "/",
+        "url": "/dashboard",
+        # The legacy dashboard at / stays available (admins land there);
+        # treat both paths as "active" for nav highlighting.
+        "active_also_for": ("/",),
         "permission": "view_dashboard",
         "section": "primary",
     },
@@ -255,6 +258,7 @@ def build_sidebar(user_permissions: set, current_path: str = "/",
 # 403s and redirects.
 _LANDING_PAGE_PERMISSION: dict[str, Iterable[str]] = {
     "/":              ("view_dashboard",),
+    "/dashboard":     ("view_dashboard",),
     "/requirements":  ("run_single_ticket",),
     "/run":           ("run_sprint", "run_suite"),
     "/runs/new":      ("run_sprint", "run_suite"),  # legacy — wizard
@@ -319,9 +323,9 @@ def get_landing_page(user_permissions: set,
     if has_bulk:
         return "/run"
 
-    # 4. Release Owner read-only view.
+    # 4. Release Owner read-only view — new dashboard at /dashboard.
     if has_dashboard and not has_any_run:
-        return "/"
+        return "/dashboard"
 
     # 5. Admin without explicit dashboard perm still lands there.
     if has_any_manage:
@@ -329,7 +333,7 @@ def get_landing_page(user_permissions: set,
 
     # 6. Fallback.
     if has_dashboard:
-        return "/"
+        return "/dashboard"
     if "run_single_ticket" in perms:
         return "/requirements"
     # Utterly unprivileged — send them to / so the page can render an

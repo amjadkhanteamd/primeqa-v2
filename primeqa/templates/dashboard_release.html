@@ -1,0 +1,329 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - PrimeQA{% endblock %}
+{% block content %}
+
+<div class="max-w-6xl mx-auto space-y-6" data-page="release-dashboard">
+
+  {# -------- empty / no-env state ----------------------------------- #}
+  {% if empty_reason == 'no_environment' or not env %}
+    <div class="bg-white shadow rounded-lg p-10 text-center">
+      <h2 class="text-lg font-semibold text-gray-900">
+        No environment available.
+      </h2>
+      <p class="mt-2 text-sm text-gray-500">
+        Ask an admin to connect an environment. Dashboard data appears once
+        your team runs tests.
+      </p>
+    </div>
+  {% elif data.empty %}
+    <div class="bg-white shadow rounded-lg p-10 text-center">
+      <h2 class="text-lg font-semibold text-gray-900">
+        No test data available yet.
+      </h2>
+      <p class="mt-2 text-sm text-gray-500">
+        Once your team runs tests against
+        <span class="font-medium">{{ env.name }}</span>, results will appear here.
+      </p>
+      <a href="/run" class="mt-4 inline-flex rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">
+        Run Tests
+      </a>
+    </div>
+  {% else %}
+
+  {# -------- ROW 1: HERO go/no-go ------------------------------------ #}
+  {% set s = data.state %}
+  {% set hero_cls = {
+       'GO':         'bg-green-50  ring-green-200  text-green-900',
+       'APPROVED':   'bg-green-50  ring-green-200  text-green-900',
+       'NO-GO':      'bg-red-50    ring-red-200    text-red-900',
+       'OVERRIDDEN': 'bg-amber-50  ring-amber-200  text-amber-900',
+       'UNKNOWN':    'bg-gray-50   ring-gray-200   text-gray-900',
+     }[s] %}
+  {% set dot_cls = {
+       'GO':         'bg-green-500',
+       'APPROVED':   'bg-green-500',
+       'NO-GO':      'bg-red-500',
+       'OVERRIDDEN': 'bg-amber-500',
+       'UNKNOWN':    'bg-gray-400',
+     }[s] %}
+
+  <div class="rounded-xl ring-1 p-6 md:p-8 {{ hero_cls }}">
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <div>
+        <div class="flex items-center gap-3">
+          <span class="inline-block h-4 w-4 rounded-full {{ dot_cls }}"></span>
+          <span class="text-4xl md:text-5xl font-bold tracking-tight">{{ s }}</span>
+        </div>
+        <div class="mt-3 text-sm md:text-base flex flex-wrap items-center gap-x-3 gap-y-1">
+          {% if data.latest_run %}
+            <span class="font-medium">Run #{{ data.latest_run.id }}{% if data.latest_run.label %} · {{ data.latest_run.label }}{% endif %}</span>
+            <span aria-hidden="true">·</span>
+            <span>Pass Rate: <span class="font-semibold">{{ data.latest_run.pass_rate|round|int if data.latest_run.pass_rate is not none else '—' }}%</span></span>
+            <span aria-hidden="true">·</span>
+            <span>Risk: <span class="font-semibold">{{ data.risk }}</span></span>
+          {% endif %}
+        </div>
+        <div class="mt-1 text-sm">
+          Tested: {{ data.ticket_counts.total - data.ticket_counts.untested }}
+          of {{ data.ticket_counts.total }} tickets
+          {% if data.ticket_counts.failed %}
+            · <span class="font-medium">{{ data.ticket_counts.failed }} failed</span>
+          {% endif %}
+          {% if data.ticket_counts.blocked %}
+            · {{ data.ticket_counts.blocked }} blocked
+          {% endif %}
+          {% if data.ticket_counts.untested %}
+            · {{ data.ticket_counts.untested }} untested
+          {% endif %}
+        </div>
+        <p class="mt-2 text-sm opacity-80">{{ data.state_reason }}</p>
+
+        {% if s == 'APPROVED' and data.latest_run.approved_by_name %}
+          <p class="mt-2 text-xs">
+            Approved by <span class="font-medium">{{ data.latest_run.approved_by_name }}</span>
+            {% if data.latest_run.approved_at %}
+              at <span class="font-mono">{{ data.latest_run.approved_at[:16] }}</span>
+            {% endif %}.
+          </p>
+        {% elif s == 'OVERRIDDEN' and data.latest_run.approved_by_name %}
+          <p class="mt-2 text-xs">
+            Overridden by <span class="font-medium">{{ data.latest_run.approved_by_name }}</span>
+            {% if data.latest_run.approved_at %}
+              at <span class="font-mono">{{ data.latest_run.approved_at[:16] }}</span>
+            {% endif %}.
+          </p>
+        {% endif %}
+      </div>
+
+      <div class="flex flex-col gap-2 md:items-end">
+        {% set run_id = data.latest_run.id if data.latest_run else None %}
+        {% if run_id and s == 'GO' and has_permission('approve_release') %}
+          <button type="button" data-approve-run="{{ run_id }}"
+                  class="rounded-md bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500">
+            Approve Release
+          </button>
+        {% elif run_id and s in ('NO-GO',) and has_permission('override_quality_gate') %}
+          <button type="button" data-override-run="{{ run_id }}"
+                  class="rounded-md bg-amber-600 px-4 py-2 text-sm font-semibold text-white hover:bg-amber-500">
+            Override with Reason
+          </button>
+        {% elif run_id and s == 'OVERRIDDEN' and has_permission('approve_release') %}
+          <button type="button" data-approve-run="{{ run_id }}"
+                  class="rounded-md bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500">
+            Approve Release
+          </button>
+        {% endif %}
+        {% if has_permission('share_dashboard') %}
+          <a href="/dashboard" class="text-xs text-gray-600 hover:text-gray-900"
+             title="Sharing coming soon">Share Dashboard</a>
+        {% endif %}
+        {% if run_id %}
+          <a href="/runs/{{ run_id }}" class="text-xs text-indigo-700 hover:text-indigo-900">
+            Open run detail →
+          </a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# -------- ROW 2: TICKET GRID ------------------------------------- #}
+  {% if data.ticket_grid %}
+  <div class="bg-white shadow rounded-lg p-5">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-sm font-semibold text-gray-900">
+        Tickets ({{ data.ticket_counts.total }})
+      </h2>
+      <div class="flex items-center gap-2 text-xs" id="grid-filter">
+        <button data-filter="all" class="px-2 py-1 rounded-md bg-indigo-100 text-indigo-700">All</button>
+        <button data-filter="failed" class="px-2 py-1 rounded-md text-gray-500 hover:bg-gray-50">Failed</button>
+        <button data-filter="untested" class="px-2 py-1 rounded-md text-gray-500 hover:bg-gray-50">Untested</button>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2" id="ticket-grid">
+      {% for t in data.ticket_grid %}
+        {% set cls = {
+            'passed':   'bg-green-50  ring-green-200  text-green-800',
+            'failed':   'bg-red-50    ring-red-200    text-red-800',
+            'blocked':  'bg-amber-50  ring-amber-200  text-amber-800',
+            'untested': 'bg-gray-50   ring-gray-200   text-gray-600',
+          }[t.status] %}
+        <a href="/requirements/{{ t.requirement_id }}"
+           data-ticket-status="{{ t.status }}"
+           class="rounded-md ring-1 px-2 py-1.5 text-xs {{ cls }} flex flex-col items-center justify-center">
+          <span class="font-mono">{{ t.jira_key }}</span>
+          <span class="uppercase text-[10px] mt-0.5">{{ t.status }}</span>
+        </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# -------- ROW 3: QUALITY GATES ---------------------------------- #}
+  <div class="bg-white shadow rounded-lg p-5">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">Quality Gates</h2>
+    {% if data.gates %}
+      <div class="space-y-3">
+      {% for g in data.gates %}
+        <div>
+          <div class="flex items-center justify-between text-sm">
+            <div class="font-medium text-gray-900">{{ g.name }}</div>
+            <div class="text-xs">
+              {% if g.pass_rate is not none %}
+                <span class="font-semibold">{{ g.pass_rate|round|int }}%</span>
+                pass · Gate: {{ g.threshold }}%
+              {% else %}
+                <span class="text-gray-400">No run yet</span> · Gate: {{ g.threshold }}%
+              {% endif %}
+              {% if g.pass_rate is not none %}
+                {% if g.passing %}
+                  <span class="ml-2 inline-flex items-center gap-1 text-green-700">● GO</span>
+                {% else %}
+                  <span class="ml-2 inline-flex items-center gap-1 text-red-700">● NO-GO</span>
+                {% endif %}
+              {% endif %}
+            </div>
+          </div>
+          <div class="mt-1 h-2 rounded-full bg-gray-100 overflow-hidden">
+            {% if g.pass_rate is not none %}
+              <div class="h-2 {% if g.passing %}bg-green-500{% else %}bg-red-500{% endif %}"
+                   style="width: {{ g.pass_rate|round|int }}%;"></div>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+      </div>
+    {% else %}
+      <p class="text-sm text-gray-500">
+        No quality gates configured. Set thresholds on suites in
+        <a href="/suites" class="text-indigo-600 hover:underline">Test Suites</a>.
+      </p>
+    {% endif %}
+  </div>
+
+  {# -------- ROW 4: SPRINT TRENDS ---------------------------------- #}
+  <div class="bg-white shadow rounded-lg p-5">
+    <h2 class="text-sm font-semibold text-gray-900 mb-3">Run Trends</h2>
+    {% if data.trends and data.trends|length >= 2 %}
+      {# Simple inline SVG sparkline — no chart library dep. Viewbox is
+         100x40; we plot pass rates (0-100%) normalised to the height. #}
+      {% set trends = data.trends %}
+      {% set n = trends|length %}
+      <svg viewBox="0 0 100 40" class="w-full h-24" preserveAspectRatio="none"
+           aria-label="Run pass rate trend">
+        {# Baseline at 80% (fallback threshold) #}
+        <line x1="0" y1="{{ (100 - 80) * 0.4 }}" x2="100" y2="{{ (100 - 80) * 0.4 }}"
+              stroke="#9ca3af" stroke-dasharray="2 2" stroke-width="0.3" />
+        {% set pts = [] %}
+        {% for t in trends %}
+          {% set pr = t.pass_rate if t.pass_rate is not none else 0 %}
+          {% set x = 100.0 * loop.index0 / (n - 1) %}
+          {% set y = (100 - pr) * 0.4 %}
+          {% set _ = pts.append(x|string ~ ',' ~ y|string) %}
+        {% endfor %}
+        <polyline fill="none" stroke="#4f46e5" stroke-width="0.8"
+                  points="{{ pts|join(' ') }}" />
+        {% for t in trends %}
+          {% set pr = t.pass_rate if t.pass_rate is not none else 0 %}
+          {% set x = 100.0 * loop.index0 / (n - 1) %}
+          {% set y = (100 - pr) * 0.4 %}
+          <circle cx="{{ x }}" cy="{{ y }}" r="1.2"
+                  fill="{% if pr >= 80 %}#10b981{% else %}#ef4444{% endif %}" />
+        {% endfor %}
+      </svg>
+      <div class="mt-2 flex justify-between text-[11px] text-gray-500 font-mono">
+        {% for t in trends %}
+          <span>{{ t.label }}<br/>{{ t.pass_rate|round|int if t.pass_rate is not none else '—' }}%</span>
+        {% endfor %}
+      </div>
+    {% elif data.trends %}
+      <p class="text-sm text-gray-500">
+        {% set t = data.trends[0] %}
+        Only one run so far — pass rate
+        <span class="font-semibold">{{ t.pass_rate|round|int if t.pass_rate is not none else '—' }}%</span>.
+        Trend data appears after multiple runs.
+      </p>
+    {% else %}
+      <p class="text-sm text-gray-500">
+        Trend data will appear after multiple sprint runs.
+      </p>
+    {% endif %}
+  </div>
+
+  {# -------- ROW 5: INTELLIGENCE SUMMARY --------------------------- #}
+  <div class="bg-white shadow rounded-lg p-5">
+    <div class="flex items-center justify-between">
+      <h2 class="text-sm font-semibold text-gray-900">Intelligence Summary</h2>
+      <span class="text-xs font-medium">Risk: {{ data.risk }}</span>
+    </div>
+    {% if data.latest_run and data.latest_run.failure_summary_ai %}
+      <p class="mt-3 text-sm text-gray-700 whitespace-pre-line">{{ data.latest_run.failure_summary_ai }}</p>
+      <a href="/runs/{{ data.latest_run.id }}"
+         class="mt-3 inline-block text-xs text-indigo-600 hover:underline">
+        View full run →
+      </a>
+    {% else %}
+      <p class="mt-3 text-sm text-gray-500">
+        Intelligence report not available for the latest run. Run a sprint to generate insights.
+      </p>
+    {% endif %}
+  </div>
+
+  {% endif %}
+</div>
+
+<script>
+  /* Ticket-grid filter pills. */
+  (function () {
+    const buttons = document.querySelectorAll('#grid-filter [data-filter]');
+    if (!buttons.length) return;
+    const cards = document.querySelectorAll('#ticket-grid [data-ticket-status]');
+    buttons.forEach(b => b.addEventListener('click', () => {
+      const f = b.dataset.filter;
+      buttons.forEach(x => x.classList.remove('bg-indigo-100', 'text-indigo-700'));
+      b.classList.add('bg-indigo-100', 'text-indigo-700');
+      cards.forEach(c => {
+        c.style.display = (f === 'all' || c.dataset.ticketStatus === f) ? '' : 'none';
+      });
+    }));
+  })();
+
+  /* Approve + Override handlers. */
+  (function () {
+    async function postJSON(url, body) {
+      const r = await fetch(url, {
+        method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body || {}),
+      });
+      if (r.ok) return r.json();
+      const j = await r.json().catch(() => ({}));
+      throw new Error((j.error && j.error.message) || ('HTTP ' + r.status));
+    }
+
+    document.querySelectorAll('[data-approve-run]').forEach(btn =>
+      btn.addEventListener('click', async () => {
+        if (!confirm('Approve this release?')) return;
+        try {
+          await postJSON('/api/releases/' + btn.dataset.approveRun + '/approve');
+          window.location.reload();
+        } catch (e) { alert('Could not approve: ' + e.message); }
+      })
+    );
+
+    document.querySelectorAll('[data-override-run]').forEach(btn =>
+      btn.addEventListener('click', async () => {
+        const reason = prompt(
+          'This release is currently NO-GO. Enter a reason for overriding the quality gate:'
+        );
+        if (!reason) return;
+        try {
+          await postJSON('/api/releases/' + btn.dataset.overrideRun + '/override',
+                         {reason: reason});
+          window.location.reload();
+        } catch (e) { alert('Could not override: ' + e.message); }
+      })
+    );
+  })();
+</script>
+
+{% endblock %}

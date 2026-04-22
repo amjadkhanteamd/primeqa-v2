@@ -178,6 +178,9 @@ class TestSuite(Base):
     # (see CLAUDE.md ## Permission Model). Backfilled from created_by on
     # migration. New code should write both columns on insert.
     owner_user_id = Column(Integer, ForeignKey("users.id"))
+    # Migration 043: 0-100 percent. Release Owner Dashboard uses this
+    # threshold for its Go/No-Go gate. NULL = no gate.
+    quality_gate_threshold = Column(Integer)
 
     __table_args__ = (
         CheckConstraint("suite_type IN ('regression', 'smoke', 'sprint', 'custom')"),

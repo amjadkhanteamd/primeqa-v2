@@ -210,6 +210,121 @@ def dashboard():
         db.close()
 
 
+# --- Release Owner Dashboard (Prompt 10) ----------------------------------
+# Import here (not at module top) so the symbol is defined before the
+# decorators below try to use it. The admin-UI block defines the same
+# alias later; Python is fine with the re-import.
+from primeqa.core.auth import require_auth as _require_auth_api  # noqa: E402
+
+
+@views_bp.route("/dashboard")
+@login_required
+def release_dashboard():
+    """Release Owner's executive view. Answers 'is it safe to release?'
+    in 5 seconds: hero Go/No-Go, ticket grid, quality gates, sprint
+    trend, intelligence summary."""
+    from primeqa.core.models import User
+    from primeqa.core.permissions import require_page_permission
+    from primeqa.release.dashboard import get_dashboard_data
+    from primeqa.runs.my_tickets import (
+        resolve_active_environment, list_switchable_environments,
+    )
+
+    @require_page_permission("view_dashboard")
+    def _render():
+        db = next(get_db())
+        try:
+            user_row = db.query(User).filter_by(id=request.user["id"]).first()
+            env = resolve_active_environment(user_row, db)
+            if env is None:
+                return render_template("dashboard_release.html", **ctx(
+                    active_page="dashboard",
+                    data={"environment": None, "empty": True},
+                    envs=[],
+                    empty_reason="no_environment",
+                ))
+            data = get_dashboard_data(env.id, request.user["tenant_id"], db)
+            envs = list_switchable_environments(user_row, db)
+            return render_template("dashboard_release.html", **ctx(
+                active_page="dashboard",
+                data=data, envs=envs, env=env,
+                empty_reason=None,
+            ))
+        finally:
+            db.close()
+
+    return _render()
+
+
+@views_bp.route("/api/releases/<int:run_id>/approve", methods=["POST"])
+@_require_auth_api
+def api_release_approve(run_id):
+    """Approve the given pipeline_run for release (release_status=APPROVED).
+
+    Idempotent: approving an already-approved run returns 200 with
+    already_approved=true.
+    """
+    from datetime import datetime, timezone
+    from primeqa.execution.models import PipelineRun
+    from primeqa.core.permissions import require_permission
+
+    @require_permission("approve_release")
+    def _do():
+        db = next(get_db())
+        try:
+            r = db.query(PipelineRun).filter_by(id=run_id).first()
+            if r is None or r.tenant_id != request.user["tenant_id"]:
+                return ({"error": {"code": "NOT_FOUND", "message": "Run not found"}}, 404)
+            if r.release_status == "APPROVED":
+                return ({"status": "APPROVED", "already_approved": True,
+                         "run_id": r.id}, 200)
+            r.release_status = "APPROVED"
+            r.approved_by = request.user["id"]
+            r.approved_at = datetime.now(timezone.utc)
+            r.override_reason = None
+            db.commit()
+            return ({"status": "APPROVED", "run_id": r.id,
+                     "approved_at": r.approved_at.isoformat()}, 200)
+        finally:
+            db.close()
+
+    return _do()
+
+
+@views_bp.route("/api/releases/<int:run_id>/override", methods=["POST"])
+@_require_auth_api
+def api_release_override(run_id):
+    """Override a failing quality gate. Requires a non-empty reason."""
+    from datetime import datetime, timezone
+    from primeqa.execution.models import PipelineRun
+    from primeqa.core.permissions import require_permission
+
+    @require_permission("override_quality_gate")
+    def _do():
+        body = request.get_json(silent=True) or {}
+        reason = (body.get("reason") or "").strip()
+        if not reason:
+            return ({"error": {"code": "VALIDATION_ERROR",
+                               "message": "reason is required for override"}}, 400)
+        db = next(get_db())
+        try:
+            r = db.query(PipelineRun).filter_by(id=run_id).first()
+            if r is None or r.tenant_id != request.user["tenant_id"]:
+                return ({"error": {"code": "NOT_FOUND", "message": "Run not found"}}, 404)
+            r.release_status = "OVERRIDDEN"
+            r.approved_by = request.user["id"]
+            r.approved_at = datetime.now(timezone.utc)
+            r.override_reason = reason[:500]
+            db.commit()
+            return ({"status": "OVERRIDDEN", "run_id": r.id,
+                     "override_reason": r.override_reason,
+                     "approved_at": r.approved_at.isoformat()}, 200)
+        finally:
+            db.close()
+
+    return _do()
+
+
 # --- Developer /tickets page ---------------------------------------------
 
 @views_bp.route("/tickets")
