@@ -123,8 +123,11 @@ def run_tests():
         assert "results" in ids
         assert "test_library" in ids
         assert "test_suites" in ids
-        # Tester also has view_coverage_map.
-        assert "coverage" in ids
+        # Tester has view_coverage_map, BUT the Coverage Map page is
+        # disabled in the nav today (enabled: False) because the page
+        # isn't built yet. When it ships we flip the flag and this
+        # assertion can move back to "coverage" in ids.
+        assert "coverage" not in ids
         # Tester has no view_dashboard.
         assert "dashboard" not in ids, ids
         # Tester HAS review_test_cases (tester_base bundle) -> my_reviews visible.
@@ -154,14 +157,23 @@ def run_tests():
     def test_admin_sidebar():
         nav = build_sidebar(_base_perms("admin_base"), "/settings")
         ids = [i["id"] for i in nav]
-        # Every named section populated
+        # Every named section populated — admin holds perms that reach
+        # items in primary, testing, and admin sections.
         sections = {i["section"] for i in nav}
         assert "primary" in sections
         assert "testing" in sections
         assert "admin" in sections, sections
         assert "settings" in ids
-        assert "audit_log" in ids, ids
-    results.append(test("4. admin_base sidebar = every section populated",
+        # Releases item is restored — admin_base has view_dashboard +
+        # approve_release so it appears in the testing section.
+        assert "releases" in ids, ids
+        # audit_log + knowledge + coverage are disabled today (pages
+        # aren't built); they stay in SIDEBAR_ITEMS but enabled=False
+        # hides them. Re-enable and this test should flip back.
+        assert "audit_log" not in ids
+        assert "knowledge" not in ids
+        assert "coverage" not in ids
+    results.append(test("4. admin_base sidebar = every section populated + releases",
                         test_admin_sidebar))
 
     def test_developer_plus_review():

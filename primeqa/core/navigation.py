@@ -108,13 +108,28 @@ SIDEBAR_ITEMS: list[dict] = [
         "permission_any": ["manage_test_suites", "view_suite_quality_gates"],
         "section": "testing",
     },
+    # Releases — the release gate / test plan. Restored here so Release
+    # Owners (view_dashboard) and Admins (approve_release) can navigate
+    # back into their existing surface without typing the URL manually.
     {
+        "id": "releases",
+        "label": "Releases",
+        "icon": "package",
+        "url": "/releases",
+        "permission_any": ["approve_release", "view_dashboard"],
+        "section": "testing",
+    },
+    {
+        # Coverage Map page isn't built yet. Item stays so when the page
+        # ships we just flip `enabled: True` and it reappears in nav for
+        # anyone holding view_coverage_map.
         "id": "coverage",
         "label": "Coverage Map",
         "icon": "map",
         "url": "/coverage",
         "permission": "view_coverage_map",
         "section": "testing",
+        "enabled": False,
     },
 
     # Admin — tenant-wide config
@@ -125,6 +140,7 @@ SIDEBAR_ITEMS: list[dict] = [
         "url": "/knowledge",
         "permission": "manage_knowledge",
         "section": "admin",
+        "enabled": False,
     },
     {
         "id": "audit_log",
@@ -133,6 +149,7 @@ SIDEBAR_ITEMS: list[dict] = [
         "url": "/audit-log",
         "permission": "view_audit_log",
         "section": "admin",
+        "enabled": False,
     },
     {
         "id": "settings",
@@ -179,8 +196,11 @@ def build_sidebar(user_permissions: set, current_path: str = "/",
       - Active match is longest-prefix: e.g. on /runs/42 the Results
         item (url=/runs) is marked active.
     """
+    # `enabled: False` hides an item from the sidebar entirely until the
+    # backing page ships. Missing the key defaults to enabled (True).
     visible = [dict(item) for item in SIDEBAR_ITEMS
-               if _item_allowed(item, user_permissions, is_superadmin=is_superadmin)]
+               if item.get("enabled", True)
+               and _item_allowed(item, user_permissions, is_superadmin=is_superadmin)]
 
     # Sort by section then original order (stable).
     visible.sort(key=lambda it: (_SECTION_ORDER.get(it["section"], 99),
