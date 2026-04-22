@@ -68,6 +68,9 @@ SIDEBAR_ITEMS: list[dict] = [
         "label": "Results",
         "icon": "chart",
         "url": "/results",
+        # Keep the Results tab highlighted when the user follows a
+        # link or redirect into /runs/* (the aliased canonical path).
+        "active_also_for": ("/runs",),
         "permission_any": ["view_own_results", "view_all_results"],
         "section": "primary",
     },
@@ -186,20 +189,30 @@ def build_sidebar(user_permissions: set, current_path: str = "/",
 
     # Active marking — longest url match wins so /runs/42 highlights Results
     # (url=/runs) rather than Dashboard (url=/).
+    #
+    # Items can additionally declare `active_also_for`: a tuple of URL
+    # prefixes that should count for highlight even though the nav item
+    # points elsewhere. Used for /results → /runs/* so the Results tab
+    # stays lit when the user opens a run detail page.
     best_match_len = -1
     best_match_id = None
     for it in visible:
         url = it["url"]
-        if current_path == url:
-            match_len = len(url) + 1000  # exact match trumps prefix match
-        elif url != "/" and current_path.startswith(url + "/"):
-            match_len = len(url)
-        elif url == "/" and current_path == "/":
-            match_len = 1
-        else:
-            match_len = -1
-        if match_len > best_match_len:
-            best_match_len = match_len
+        candidates: list[str] = [url, *list(it.get("active_also_for", ()))]
+        best = -1
+        for u in candidates:
+            if current_path == u:
+                ml = len(u) + 1000  # exact match trumps prefix match
+            elif u != "/" and current_path.startswith(u + "/"):
+                ml = len(u)
+            elif u == "/" and current_path == "/":
+                ml = 1
+            else:
+                ml = -1
+            if ml > best:
+                best = ml
+        if best > best_match_len:
+            best_match_len = best
             best_match_id = it["id"]
 
     # Section-first markers — useful for rendering section dividers.
