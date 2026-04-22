@@ -346,6 +346,28 @@ def set_active_environment():
 
 # --- Runs ---
 
+# --- /results — alias for /runs. Keeps the existing run-history UI as
+# the Results surface per Prompt 8, without duplicating templates. ----
+
+@views_bp.route("/results")
+@login_required
+def results_list_alias():
+    """Tester-facing Results URL. Delegates to the existing runs list
+    template so we keep a single source of truth for scoping, the My
+    Runs/All Runs toggle, and the run-history rendering. The sidebar
+    entry points here (per Prompt 8 navigation)."""
+    # Preserve any filter query-string the caller passed.
+    qs = request.query_string.decode() if request.query_string else ""
+    return redirect("/runs" + (f"?{qs}" if qs else ""))
+
+
+@views_bp.route("/results/<int:run_id>")
+@login_required
+def result_detail_alias(run_id):
+    """Alias for /runs/:id — same reasoning as /results."""
+    return redirect(f"/runs/{run_id}")
+
+
 @views_bp.route("/runs")
 @login_required
 def runs_list():
@@ -716,6 +738,211 @@ def api_bulk_run_cancel(run_id):
             r.completed_at = datetime.now(timezone.utc)
             db.commit()
             return ({"id": r.id, "status": "cancelled"}, 200)
+        finally:
+            db.close()
+
+    return _do()
+
+
+@views_bp.route("/api/runs/<int:run_id>/summary-text", methods=["GET"])
+def api_run_summary_text(run_id):
+    """Paste-ready plain-text summary of a run, for Slack / Jira reports.
+
+    Style is intentionally narrow: the same block every team ends up
+    hand-typing on Monday morning — timestamp, headline counts, list of
+    failed/blocked/unexpected-pass tickets with a one-line cause each.
+    """
+    from primeqa.core.auth import require_auth
+    from primeqa.execution.models import PipelineRun, RunTestResult, RunStepResult
+    from primeqa.test_management.models import Requirement, TestCase
+
+    @require_auth
+    def _do():
+        db = next(get_db())
+        try:
+            run = db.query(PipelineRun).filter_by(id=run_id).first()
+            if run is None or run.tenant_id != request.user["tenant_id"]:
+                return ({"error": {"code": "NOT_FOUND", "message": "Run not found"}}, 404)
+
+            # Own-scope check: a view_own_results-only caller sees only
+            # their runs. We can't easily import get_scoped_results_query
+            # here without a circular import, so duplicate the check.
+            from primeqa.core.permissions import get_effective_permissions
+            perms = get_effective_permissions(request.user["id"], db)
+            if (request.user.get("role") != "superadmin"
+                    and "view_all_results" not in perms
+                    and run.triggered_by != request.user["id"]):
+                return ({"error": {"code": "FORBIDDEN",
+                                   "message": "You can only view your own runs."}}, 403)
+
+            rows = (db.query(RunTestResult, TestCase, Requirement)
+                    .join(TestCase, TestCase.id == RunTestResult.test_case_id)
+                    .outerjoin(Requirement, Requirement.id == TestCase.requirement_id)
+                    .filter(RunTestResult.run_id == run.id)
+                    .order_by(RunTestResult.executed_at.asc())
+                    .all())
+
+            # Count expected-failure outcomes separately (negative tests
+            # that SF correctly rejected). Detect via failure_class on
+            # the test's step rows — expected_fail_verified = correctly
+            # rejected; expected_fail_unverified = unexpected pass.
+            def _neg_class(rtr):
+                sr = (db.query(RunStepResult)
+                      .filter_by(run_test_result_id=rtr.id)
+                      .order_by(RunStepResult.step_order.asc())
+                      .all())
+                classes = [s.failure_class for s in sr]
+                if "expected_fail_unverified" in classes:
+                    return "unexpected_pass"
+                if "expected_fail_verified" in classes:
+                    return "expected_failure"
+                return None
+
+            passed: list[str] = []
+            failed: list[tuple[str, str, str]] = []      # (key, title, cause)
+            blocked: list[tuple[str, str, str]] = []
+            expected_failures: list[tuple[str, str]] = []
+            unexpected_passes: list[tuple[str, str, str]] = []
+
+            for (rtr, tc, req) in rows:
+                key = (req.jira_key if req else None) or f"TC-{tc.id}"
+                title = tc.title or ""
+                neg = _neg_class(rtr)
+                if rtr.status in ("failed", "error"):
+                    cause = rtr.failure_summary or rtr.failure_type or "failure"
+                    if neg == "unexpected_pass":
+                        unexpected_passes.append((key, title, cause))
+                    else:
+                        failed.append((key, title, cause))
+                elif rtr.status == "skipped":
+                    cause = rtr.failure_summary or "blocked"
+                    blocked.append((key, title, cause))
+                elif rtr.status == "passed":
+                    if neg == "expected_failure":
+                        expected_failures.append((key, title))
+                    else:
+                        passed.append(key)
+
+            # Compose the text.
+            lines: list[str] = []
+            ts = run.queued_at.strftime("%d %b %Y, %H:%M UTC") if run.queued_at else ""
+            title = (run.source_refs or {}).get("suite_name") or run.source_type
+            lines.append(f"PrimeQA Run #{run.id} — {title} — {ts}")
+            summary_parts = [f"{len(passed)} passed"]
+            if failed: summary_parts.append(f"{len(failed)} failed")
+            if blocked: summary_parts.append(f"{len(blocked)} blocked")
+            if expected_failures:
+                summary_parts.append(f"{len(expected_failures)} expected failures")
+            if unexpected_passes:
+                summary_parts.append(f"{len(unexpected_passes)} unexpected pass")
+            lines.append(" \u00b7 ".join(summary_parts))
+
+            if failed:
+                lines.append("")
+                lines.append("Failed:")
+                for (k, t, c) in failed:
+                    lines.append(f"  {k}: {t} \u2014 {c}")
+            if blocked:
+                lines.append("")
+                lines.append("Blocked:")
+                for (k, t, c) in blocked:
+                    lines.append(f"  {k}: {t} \u2014 {c}")
+            if unexpected_passes:
+                lines.append("")
+                lines.append("Unexpected pass (negative tests that should have been rejected):")
+                for (k, t, c) in unexpected_passes:
+                    lines.append(f"  {k}: {t}")
+            if expected_failures:
+                lines.append("")
+                lines.append("Expected failures (correctly rejected):")
+                for (k, t) in expected_failures:
+                    lines.append(f"  {k}: {t}")
+
+            return ({"text": "\n".join(lines)}, 200)
+        finally:
+            db.close()
+
+    return _do()
+
+
+@views_bp.route("/api/run-step-results/<int:step_id>/diagnosis-text", methods=["GET"])
+def api_step_diagnosis_text(step_id):
+    """Paste-ready diagnosis for a single failed step.
+
+    Same use-case as summary-text but at step granularity. Format:
+
+        FAIL: Step N — <action> <object> (<failure_class>)
+        Summary: <failure_summary or error_message[:200]>
+        Details:
+          Object: <target_object>
+          Record: <target_record_id>
+        Suggestion: (pulled from step payload if diagnosis json present)
+    """
+    from primeqa.core.auth import require_auth
+    from primeqa.execution.models import PipelineRun, RunTestResult, RunStepResult
+
+    @require_auth
+    def _do():
+        db = next(get_db())
+        try:
+            step = db.query(RunStepResult).filter_by(id=step_id).first()
+            if step is None:
+                return ({"error": {"code": "NOT_FOUND", "message": "Step not found"}}, 404)
+            # Verify tenant + own-scope via the owning run.
+            rtr = db.query(RunTestResult).filter_by(id=step.run_test_result_id).first()
+            run = db.query(PipelineRun).filter_by(id=rtr.run_id).first() if rtr else None
+            if run is None or run.tenant_id != request.user["tenant_id"]:
+                return ({"error": {"code": "NOT_FOUND", "message": "Step not found"}}, 404)
+            from primeqa.core.permissions import get_effective_permissions
+            perms = get_effective_permissions(request.user["id"], db)
+            if (request.user.get("role") != "superadmin"
+                    and "view_all_diagnosis" not in perms
+                    and "view_all_results" not in perms
+                    and run.triggered_by != request.user["id"]):
+                return ({"error": {"code": "FORBIDDEN",
+                                   "message": "You can only view your own diagnosis."}}, 403)
+
+            status_word = "FAIL" if step.status in ("failed", "error") else step.status.upper()
+            header = f"{status_word}: Step {step.step_order} \u2014 {step.step_action}"
+            if step.target_object:
+                header += f" ({step.target_object})"
+            if step.failure_class:
+                header += f" [{step.failure_class}]"
+
+            lines = [header]
+            summary = step.error_message or ""
+            if summary:
+                lines.append(f"Summary: {summary[:400]}")
+            details = []
+            if step.target_object:
+                details.append(f"  Object: {step.target_object}")
+            if step.target_record_id:
+                details.append(f"  Record: {step.target_record_id}")
+            if step.http_status:
+                details.append(f"  HTTP: {step.http_status}")
+            if step.duration_ms is not None:
+                details.append(f"  Duration: {step.duration_ms}ms")
+            if details:
+                lines.append("Details:")
+                lines.extend(details)
+
+            # Pull a suggestion from the llm_payload or api_response if
+            # the diagnosis engine has written one.
+            payload = step.llm_payload or {}
+            suggestion = None
+            if isinstance(payload, dict):
+                diagnosis = (payload.get("diagnosis") or payload.get("output")
+                             or {})
+                if isinstance(diagnosis, dict):
+                    suggestion = (diagnosis.get("suggestion")
+                                  or diagnosis.get("fix_suggestion"))
+            if suggestion:
+                lines.append("")
+                lines.append(f"Suggestion: {suggestion}")
+            if step.correlation_id:
+                lines.append(f"Correlation: {step.correlation_id}")
+
+            return ({"text": "\n".join(lines)}, 200)
         finally:
             db.close()
 

@@ -67,7 +67,7 @@ SIDEBAR_ITEMS: list[dict] = [
         "id": "results",
         "label": "Results",
         "icon": "chart",
-        "url": "/runs",
+        "url": "/results",
         "permission_any": ["view_own_results", "view_all_results"],
         "section": "primary",
     },
@@ -226,6 +226,7 @@ _LANDING_PAGE_PERMISSION: dict[str, Iterable[str]] = {
     "/run":           ("run_sprint", "run_suite"),
     "/runs/new":      ("run_sprint", "run_suite"),  # legacy — wizard
     "/runs":          ("view_own_results", "view_all_results"),
+    "/results":       ("view_own_results", "view_all_results"),
     "/reviews":       ("review_test_cases",),
     "/test-cases":    ("view_test_library",),
     "/suites":        ("manage_test_suites", "view_suite_quality_gates"),

@@ -88,6 +88,11 @@
           <button type="submit" class="btn primary sm">↻ Rerun failed ({{ run.failed }})</button>
         </form>
         {% endif %}
+        {# Prompt 8: paste-ready plain-text summary for Slack / Jira. #}
+        <button type="button" class="btn sm" data-copy-summary="{{ run.id }}"
+                title="Copy a plain-text summary suitable for pasting into Slack or a Jira comment.">
+          📋 Copy Summary
+        </button>
       </div>
     </div>
 
@@ -985,6 +990,44 @@
     debounce = setTimeout(save, 500);
   });
   input.addEventListener('blur', save);
+})();
+
+/* -------------------------------------------------------------------
+   Prompt 8: Copy Summary + Copy Diagnosis clipboard helpers.
+   Any button with [data-copy-summary=runId] or
+   [data-copy-diagnosis=stepId] becomes a one-click paste-to-clipboard.
+   ------------------------------------------------------------------- */
+(function () {
+  async function copyFromEndpoint(url, btn) {
+    const original = btn.textContent;
+    try {
+      const r = await fetch(url, {credentials: 'same-origin'});
+      if (!r.ok) throw new Error('fetch ' + r.status);
+      const body = await r.json();
+      const text = body && body.text;
+      if (!text) throw new Error('no text in response');
+      await navigator.clipboard.writeText(text);
+      btn.textContent = '✓ Copied';
+    } catch (e) {
+      btn.textContent = '× Copy failed';
+    }
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  }
+
+  document.addEventListener('click', function (ev) {
+    const runBtn = ev.target.closest('[data-copy-summary]');
+    if (runBtn) {
+      ev.preventDefault();
+      copyFromEndpoint('/api/runs/' + runBtn.dataset.copySummary + '/summary-text', runBtn);
+      return;
+    }
+    const stepBtn = ev.target.closest('[data-copy-diagnosis]');
+    if (stepBtn) {
+      ev.preventDefault();
+      copyFromEndpoint('/api/run-step-results/' + stepBtn.dataset.copyDiagnosis
+                       + '/diagnosis-text', stepBtn);
+    }
+  });
 })();
 </script>
 {% endblock %}
