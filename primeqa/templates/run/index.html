@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from 'components/_modal.html' import modal_shell %}
 {% block title %}Run Tests - PrimeQA{% endblock %}
 {% block content %}
 
@@ -11,6 +12,17 @@
     Tickets  → run_single_ticket
     Suite    → run_suite
     Release  → run_sprint OR run_suite (releases are bulk)
+
+  Readiness (four-state): every ticket returned by the Sprint /
+  Tickets / Release pickers carries a `readiness` field:
+    APPROVED          green "Approved"
+    DRAFT             amber "Draft"   (runnable; review queue notice)
+    GENERATING        blue-animated "Generating..." (informational)
+    NEEDS_GENERATION  grey "No tests yet" (blocks run)
+  APPROVED + DRAFT are runnable; GENERATING + NEEDS_GENERATION are
+  blocked. The "Review your run" modal fires when submit-time selection
+  includes any non-runnable tickets (Sprint + Tickets modes only —
+  Suite and Release preserve today's behaviour).
 #}
 
 <div class="max-w-5xl mx-auto space-y-6" data-page="run">
@@ -321,6 +333,73 @@
   {% endif %}
 </div>
 
+{# --------------------------------------------------------------------
+   Readiness modal ("Review your run"). Rendered once on the page;
+   body is populated by PrimeQA_openReadinessModal() at submit time.
+   Uses modal_shell for a11y (focus trap + escape + return-focus).
+-------------------------------------------------------------------- #}
+{% call modal_shell(id='run-readiness-modal', title='Review your run', size='lg') %}
+  <p class="text-sm text-gray-600 mb-4" id="readiness-modal-summary">
+    <!-- filled at open time -->
+  </p>
+
+  <div class="space-y-4">
+    <section id="readiness-group-ready" class="hidden">
+      <h4 class="text-sm font-medium text-gray-900">
+        <span class="text-green-600">&#10003;</span> Ready to run
+        (<span data-count>0</span>)
+      </h4>
+      <ul class="mt-1 text-sm text-gray-700 space-y-0.5"
+          data-list></ul>
+    </section>
+
+    <section id="readiness-group-generating" class="hidden">
+      <h4 class="text-sm font-medium text-gray-900">
+        <span class="text-blue-600">&#8635;</span> Already generating
+        (<span data-count>0</span>)
+      </h4>
+      <p class="mt-1 text-xs text-gray-500">
+        A generation job is already in flight for these tickets.
+        They'll appear in the review queue when done.
+      </p>
+      <ul class="mt-1 text-sm text-gray-700 space-y-0.5"
+          data-list></ul>
+    </section>
+
+    <section id="readiness-group-needsgen" class="hidden">
+      <h4 class="text-sm font-medium text-gray-900">
+        <span class="text-gray-500">&#9997;</span> No tests yet
+        (<span data-count>0</span>)
+      </h4>
+      <ul class="mt-1 text-sm text-gray-700 space-y-0.5"
+          data-list></ul>
+    </section>
+  </div>
+
+  <div class="mt-6 flex items-center justify-end gap-2 pt-4 border-t border-gray-100">
+    <button type="button" data-modal-close
+            class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
+      Cancel
+    </button>
+    <button type="button" id="readiness-btn-run"
+            onclick="PrimeQA_confirmReadinessRun();"
+            class="hidden rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50">
+      Run <span data-count>0</span> ready ticket<span data-plural>s</span>
+    </button>
+    <button type="button" id="readiness-btn-run-and-gen"
+            onclick="PrimeQA_confirmReadinessRunAndGenerate();"
+            class="hidden rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
+            title="Starts the run for the runnable tickets and queues generation for the rest. The new generations appear in the review queue when done.">
+      Generate missing + run <span data-count>0</span> ready
+    </button>
+    <button type="button" id="readiness-btn-gen-only"
+            onclick="PrimeQA_confirmReadinessGenerateOnly();"
+            class="hidden rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50">
+      Generate missing (<span data-count>0</span>)
+    </button>
+  </div>
+{% endcall %}
+
 <script>
 (function () {
   // ------------------------------------------------------------------
@@ -330,13 +409,33 @@
   const state = {
     mode: '{{ default_mode }}',
     envId: {{ (env.id or 0) if env else 0 }},
-    sprint: { sprintId: null, sprintName: '', tickets: [] /* [{key,summary,selected}] */ },
-    tickets: { selected: [] /* [{key, summary}] */, filters: new Set(['mine','open']) },
+    sprint: { sprintId: null, sprintName: '', tickets: [] /* [{key,summary,readiness,selected}] */ },
+    tickets: { selected: [] /* [{key, summary, readiness}] */, filters: new Set(['mine','open']) },
     suite:  { suiteId: null, tcs: [] /* [{id,title,selected}] */, meta: null },
     release:{ releaseId: null, releaseName: '', tickets: [], tcs: [] },
     _ticketSearchTimer: null,
+    _pendingReadiness: null, /* payload for the open modal */
   };
   window.PrimeQA_runState = state;  // test hook / debugging
+
+  // ------------------------------------------------------------------
+  // Readiness badge HTML. Four states — see backend bulk.py for the
+  // canonical predicate. APPROVED + DRAFT are runnable; GENERATING +
+  // NEEDS_GENERATION are blocked.
+  // ------------------------------------------------------------------
+  function readinessBadge(readiness) {
+    if (!readiness) return '';
+    const spec = {
+      APPROVED:         {bg: 'bg-green-100',  txt: 'text-green-800',  label: 'Approved'},
+      DRAFT:            {bg: 'bg-amber-100',  txt: 'text-amber-800',  label: 'Draft'},
+      GENERATING:       {bg: 'bg-blue-100',   txt: 'text-blue-800',   label: 'Generating\u2026', anim: true},
+      NEEDS_GENERATION: {bg: 'bg-gray-100',   txt: 'text-gray-700',   label: 'No tests yet'},
+    }[readiness];
+    if (!spec) return '';
+    const pulse = spec.anim ? ' animate-pulse' : '';
+    return `<span class="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ${spec.bg} ${spec.txt}${pulse}">${spec.label}</span>`;
+  }
+  window.PrimeQA_readinessBadge = readinessBadge;
 
   function setRunMode(mode) {
     state.mode = mode;
@@ -470,6 +569,7 @@
                onchange="PrimeQA_runState.sprint.tickets[${i}].selected = this.checked;">
         <span class="font-mono text-xs text-gray-600">${t.key}</span>
         <span class="text-gray-800 flex-1 truncate">${t.summary || ''}</span>
+        ${readinessBadge(t.readiness)}
         <span class="text-[10px] text-gray-400">${t.status || ''}</span>
       </label>`).join('');
   }
@@ -494,19 +594,23 @@
     box.innerHTML = rows.map(t => `
       <label class="flex items-center gap-3 p-2 text-sm hover:bg-gray-50 cursor-pointer">
         <input type="checkbox" ${selectedKeys.has(t.key) ? 'checked' : ''}
-               data-key="${t.key}" data-summary="${(t.summary||'').replace(/"/g,'&quot;')}"
+               data-key="${t.key}"
+               data-summary="${(t.summary||'').replace(/"/g,'&quot;')}"
+               data-readiness="${t.readiness || ''}"
                onchange="PrimeQA_toggleSelectedTicket(this);">
         <span class="font-mono text-xs text-gray-600">${t.key}</span>
         <span class="text-gray-800 flex-1 truncate">${t.summary || ''}</span>
+        ${readinessBadge(t.readiness)}
         <span class="text-[10px] text-gray-400">${t.status || ''}</span>
       </label>`).join('');
   }
   window.PrimeQA_toggleSelectedTicket = function (cb) {
     const key = cb.dataset.key;
     const sum = cb.dataset.summary;
+    const readiness = cb.dataset.readiness || null;
     if (cb.checked) {
       if (!state.tickets.selected.some(t => t.key === key)) {
-        state.tickets.selected.push({ key, summary: sum });
+        state.tickets.selected.push({ key, summary: sum, readiness });
       }
     } else {
       state.tickets.selected = state.tickets.selected.filter(t => t.key !== key);
@@ -523,6 +627,7 @@
       <div class="flex items-center gap-3 p-2 text-sm">
         <span class="font-mono text-xs text-gray-600">${t.key}</span>
         <span class="text-gray-800 flex-1 truncate">${t.summary || ''}</span>
+        ${readinessBadge(t.readiness)}
         <button type="button" class="text-gray-400 hover:text-red-600"
                 onclick="PrimeQA_removeSelectedTicket(${i});">&times;</button>
       </div>`).join('');
@@ -544,6 +649,7 @@
     }).then(r => r.json()).then(j => {
       const rows = (j.tickets || []).map(t => ({
         key: t.jira_key, summary: t.jira_summary, status: '',
+        readiness: t.readiness,
       }));
       renderTicketResults(rows, 'Recent tickets');
     }).catch(() => {
@@ -693,6 +799,7 @@
                    onchange="PrimeQA_runState.release.tickets[${i}].selected = this.checked;">
             <span class="font-mono text-xs text-gray-600">${t.jira_key}</span>
             <span class="text-gray-800 flex-1 truncate">${t.summary || ''}</span>
+            ${readinessBadge(t.readiness)}
           </label>`).join('')
       : '<div class="p-2 text-xs text-gray-500">No tickets attached.</div>';
     const clist = document.getElementById('release-tc-list');
@@ -726,6 +833,213 @@
   // ==================================================================
   // SUBMIT
   // ==================================================================
+  //
+  // For sprint + tickets modes, every selected ticket carries a
+  // `readiness` field set by the picker endpoints. If any selection
+  // is non-runnable (GENERATING or NEEDS_GENERATION), we open the
+  // readiness modal instead of submitting. Suite + Release modes
+  // bypass the modal (spec: release is a curated artifact, suite
+  // is an explicit curatorial act).
+  // ==================================================================
+
+  function selectedTicketsForMode(mode) {
+    if (mode === 'sprint') {
+      return state.sprint.tickets.filter(t => t.selected).map(t => ({
+        key: t.key, summary: t.summary || '', readiness: t.readiness,
+      }));
+    }
+    if (mode === 'tickets') {
+      return state.tickets.selected.map(t => ({
+        key: t.key, summary: t.summary || '', readiness: t.readiness,
+      }));
+    }
+    return [];
+  }
+
+  function groupByReadiness(tickets) {
+    const groups = {
+      runnable: [], /* APPROVED + DRAFT */
+      generating: [], /* GENERATING */
+      needsgen: [], /* NEEDS_GENERATION */
+    };
+    for (const t of tickets) {
+      if (t.readiness === 'APPROVED' || t.readiness === 'DRAFT') {
+        groups.runnable.push(t);
+      } else if (t.readiness === 'GENERATING') {
+        groups.generating.push(t);
+      } else {
+        groups.needsgen.push(t);
+      }
+    }
+    return groups;
+  }
+
+  function fillModalList(sectionId, items, includeBadge) {
+    const section = document.getElementById(sectionId);
+    const list = section.querySelector('[data-list]');
+    const counts = section.querySelectorAll('[data-count]');
+    section.classList.toggle('hidden', items.length === 0);
+    counts.forEach(c => { c.textContent = String(items.length); });
+    list.innerHTML = items.map(t =>
+      `<li class="flex items-center gap-2">
+        <span class="font-mono text-xs text-gray-600">${t.key}</span>
+        <span class="flex-1 truncate">${t.summary || ''}</span>
+        ${includeBadge ? readinessBadge(t.readiness) : ''}
+      </li>`
+    ).join('');
+  }
+
+  function openReadinessModal(body, tickets) {
+    const g = groupByReadiness(tickets);
+    // Stash in state so the confirm handlers can use it
+    state._pendingReadiness = { body, tickets, groups: g };
+
+    const summaryEl = document.getElementById('readiness-modal-summary');
+    const runnableCount = g.runnable.length;
+    const generatingCount = g.generating.length;
+    const needsGenCount = g.needsgen.length;
+    const total = tickets.length;
+    summaryEl.textContent =
+      `You selected ${total} ticket${total===1?'':'s'}.` +
+      (runnableCount === 0 ? ' None are ready to run yet.' : '');
+
+    fillModalList('readiness-group-ready', g.runnable, true);
+    fillModalList('readiness-group-generating', g.generating, false);
+    fillModalList('readiness-group-needsgen', g.needsgen, false);
+
+    // Button visibility based on the mix:
+    //   runnable > 0 && needsgen > 0 -> Run + Run-and-generate
+    //   runnable > 0 && needsgen == 0 -> Run only (shouldn't get here — modal
+    //      only opens when needsgen+generating > 0; but if it's all
+    //      generating, you still get Run for the runnable)
+    //   runnable == 0 && needsgen > 0 -> Generate-only
+    //   runnable == 0 && needsgen == 0 -> Cancel only (all generating)
+    const runBtn = document.getElementById('readiness-btn-run');
+    const runGenBtn = document.getElementById('readiness-btn-run-and-gen');
+    const genOnlyBtn = document.getElementById('readiness-btn-gen-only');
+
+    runBtn.classList.toggle('hidden', runnableCount === 0);
+    runGenBtn.classList.toggle('hidden',
+                                runnableCount === 0 || needsGenCount === 0);
+    genOnlyBtn.classList.toggle('hidden',
+                                 runnableCount > 0 || needsGenCount === 0);
+
+    // Pluralise + refresh counts in button labels
+    runBtn.querySelectorAll('[data-count]').forEach(c => { c.textContent = runnableCount; });
+    runBtn.querySelectorAll('[data-plural]').forEach(s => { s.textContent = runnableCount === 1 ? '' : 's'; });
+    runGenBtn.querySelectorAll('[data-count]').forEach(c => { c.textContent = runnableCount; });
+    genOnlyBtn.querySelectorAll('[data-count]').forEach(c => { c.textContent = needsGenCount; });
+
+    window.PrimeQA.openModal('run-readiness-modal');
+  }
+
+  // ---- confirm handlers (wired via onclick on modal buttons) ----
+  function postBulkRun(body, runnableKeys) {
+    const submitBody = Object.assign({}, body, { ticket_keys: runnableKeys });
+    // Preserve the single vs. tickets distinction the backend uses
+    if (body.run_type === 'tickets' && runnableKeys.length === 1) {
+      submitBody.run_type = 'single';
+    }
+    return fetch('/api/bulk-runs', {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(submitBody),
+    });
+  }
+
+  function postBulkGenerate(jiraKeys) {
+    return fetch('/api/requirements/bulk-generate', {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        environment_id: state.envId,
+        jira_keys: jiraKeys,
+      }),
+    });
+  }
+
+  function setErr(msg) {
+    document.getElementById('run-error').textContent = msg || '';
+  }
+
+  function closeReadinessModal() {
+    // modal.js closes on [data-modal-close]; simulate by triggering a close-click
+    const btn = document.querySelector('#run-readiness-modal [data-modal-close]');
+    if (btn) btn.click();
+  }
+
+  function notifyGenerate(count) {
+    const msg = `Generating test cases for ${count} ticket${count===1?'':'s'}. View in review queue.`;
+    if (window.PrimeQA && window.PrimeQA.toast) {
+      window.PrimeQA.toast(msg, 'info');
+    } else {
+      // Fallback: temporarily show in the error span (not an error, just
+      // an inline notice if toast infra isn't loaded).
+      setErr(msg);
+    }
+  }
+  function notifyRunAndGenerate(runCount, genCount) {
+    const msg = `Run started for ${runCount} ticket${runCount===1?'':'s'}. Generating test cases for ${genCount} more — they'll appear in the review queue when ready.`;
+    if (window.PrimeQA && window.PrimeQA.toast) {
+      window.PrimeQA.toast(msg, 'info');
+    }
+  }
+
+  window.PrimeQA_confirmReadinessRun = function () {
+    const p = state._pendingReadiness;
+    if (!p) return;
+    const runnable = p.groups.runnable.map(t => t.key);
+    if (!runnable.length) return;
+    closeReadinessModal();
+    postBulkRun(p.body, runnable).then(async r => {
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j.redirect) { window.location = j.redirect; return; }
+      setErr((j.error && j.error.message) || `Run failed (${r.status})`);
+    }).catch(() => setErr('Network error. Try again.'));
+  };
+
+  window.PrimeQA_confirmReadinessRunAndGenerate = function () {
+    const p = state._pendingReadiness;
+    if (!p) return;
+    const runnable = p.groups.runnable.map(t => t.key);
+    const needsGen = p.groups.needsgen.map(t => t.key);
+    if (!runnable.length) return;
+    closeReadinessModal();
+
+    // Fire both in parallel; surface run outcome, fire-and-forget on generate
+    const pRun = postBulkRun(p.body, runnable);
+    const pGen = needsGen.length ? postBulkGenerate(needsGen) : Promise.resolve(null);
+
+    Promise.all([pRun, pGen]).then(async ([runResp, genResp]) => {
+      const runJson = await runResp.json().catch(() => ({}));
+      if (runResp.ok && runJson.redirect) {
+        if (genResp && genResp.ok && needsGen.length) {
+          notifyRunAndGenerate(runnable.length, needsGen.length);
+        }
+        window.location = runJson.redirect;
+        return;
+      }
+      setErr((runJson.error && runJson.error.message) || `Run failed (${runResp.status})`);
+    }).catch(() => setErr('Network error. Try again.'));
+  };
+
+  window.PrimeQA_confirmReadinessGenerateOnly = function () {
+    const p = state._pendingReadiness;
+    if (!p) return;
+    const needsGen = p.groups.needsgen.map(t => t.key);
+    if (!needsGen.length) return;
+    closeReadinessModal();
+    postBulkGenerate(needsGen).then(async r => {
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        notifyGenerate(needsGen.length);
+      } else {
+        setErr((j.error && j.error.message) || `Generate failed (${r.status})`);
+      }
+    }).catch(() => setErr('Network error. Try again.'));
+  };
+
+  // ---- the button the user actually clicks ----
   window.PrimeQA_submitRun = function () {
     const errEl = document.getElementById('run-error');
     errEl.textContent = '';
@@ -741,17 +1055,19 @@
       return;
     }
     let body = { environment_id: envId, confirm_production: confirmProd };
+    let tickets = null; /* set for sprint + tickets modes */
 
     if (mode === 'sprint') {
       if (!state.sprint.sprintId) { errEl.textContent = 'Pick a sprint.'; return; }
-      const keys = state.sprint.tickets.filter(t => t.selected).map(t => t.key);
-      if (!keys.length) { errEl.textContent = 'Pick at least one ticket.'; return; }
-      body.run_type = 'sprint'; body.ticket_keys = keys;
+      tickets = selectedTicketsForMode('sprint');
+      if (!tickets.length) { errEl.textContent = 'Pick at least one ticket.'; return; }
+      body.run_type = 'sprint';
+      body.ticket_keys = tickets.map(t => t.key);
     } else if (mode === 'tickets') {
-      const keys = state.tickets.selected.map(t => t.key);
-      if (!keys.length) { errEl.textContent = 'Pick at least one ticket.'; return; }
-      body.run_type = (keys.length === 1) ? 'single' : 'tickets';
-      body.ticket_keys = keys;
+      tickets = selectedTicketsForMode('tickets');
+      if (!tickets.length) { errEl.textContent = 'Pick at least one ticket.'; return; }
+      body.run_type = (tickets.length === 1) ? 'single' : 'tickets';
+      body.ticket_keys = tickets.map(t => t.key);
     } else if (mode === 'suite') {
       if (!state.suite.suiteId) { errEl.textContent = 'Pick a suite.'; return; }
       body.run_type = 'suite';
@@ -771,6 +1087,17 @@
       errEl.textContent = 'Pick a run mode.'; return;
     }
 
+    // Sprint + Tickets modes: if any selection is non-runnable, open modal
+    if (tickets) {
+      const hasNonRunnable = tickets.some(t =>
+        t.readiness !== 'APPROVED' && t.readiness !== 'DRAFT');
+      if (hasNonRunnable) {
+        openReadinessModal(body, tickets);
+        return;
+      }
+    }
+
+    // Direct submit — all APPROVED/DRAFT (or suite/release mode)
     const btn = document.getElementById('run-submit');
     btn.disabled = true; btn.textContent = 'Queuing\u2026';
 

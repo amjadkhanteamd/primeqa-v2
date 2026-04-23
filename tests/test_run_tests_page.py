@@ -297,6 +297,9 @@ def run_tests():
                         test_api_production_requires_confirmation))
 
     def test_api_no_tests_error():
+        # Updated for the four-state readiness model: an unresolvable
+        # key is NEEDS_GENERATION, so the safety filter rejects with
+        # NO_READY_TICKETS instead of the legacy NO_TESTS code.
         db = SessionLocal()
         try:
             env = (db.query(Environment)
@@ -309,9 +312,10 @@ def run_tests():
                         json={"run_type": "sprint", "environment_id": env_id,
                               "ticket_keys": ["DOES-NOT-EXIST-99999"]})
         assert r.status_code == 400
-        assert r.get_json()["error"]["code"] == "NO_TESTS"
-    results.append(test("10. POST /api/bulk-runs NO_TESTS on unresolvable keys",
-                        test_api_no_tests_error))
+        assert r.get_json()["error"]["code"] == "NO_READY_TICKETS"
+    results.append(test(
+        "10. POST /api/bulk-runs NO_READY_TICKETS on unresolvable keys",
+        test_api_no_tests_error))
 
     # --- Happy path + status/cancel ---
     created_run_id = None

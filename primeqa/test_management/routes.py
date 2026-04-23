@@ -342,32 +342,75 @@ def sync_jira(req_id):
 @test_management_bp.route("/api/requirements/bulk-generate", methods=["POST"])
 @require_role("admin", "tester")
 def bulk_generate_requirements():
-    """Prompt 11: flip sync -> async.
+    """Prompt 11: flip sync -> async. Extended for /run readiness
+    modal: accepts either `requirement_ids` (legacy) or `jira_keys`
+    (new — auto-imports missing requirements first).
 
-    Body:  {environment_id, requirement_ids: [ids]}
-    Returns 202 with {jobs: [{requirement_id, job_id, already_running}], total: N}.
+    Body: {
+      environment_id: int (required),
+      requirement_ids: [int] | jira_keys: [str]   (at least one, non-empty)
+    }
+    Returns 202 with {jobs: [{requirement_id, jira_key?, job_id,
+    already_running, ...}], total: N}.
 
-    Previously this ran up to 5 generations in parallel via
-    ThreadPoolExecutor on the web tier, blocking gunicorn workers for
-    ~30s on a bulk of 10. Now each requirement gets its own
-    GenerationJob row and the background worker processes them one at
-    a time through the normal poll loop. UI polls
-    /api/generation-jobs/:id/status per row.
+    Jira-keys path: if a key's requirement doesn't exist yet, import
+    it on the fly using the env's Jira connection + the tenant's
+    default section (oldest non-deleted section). Then queue a
+    generation job like the legacy path.
+
+    Cap: combined 20 per call. Rejects with BATCH_TOO_LARGE on
+    overflow — do NOT chunk client-side (silent partial failure is
+    worse than an explicit ceiling).
     """
     from primeqa.intelligence.generation_jobs import create_or_get_job
+    from primeqa.core.repository import ConnectionRepository
+    from primeqa.core.models import Environment
+    from primeqa.test_management.repository import (
+        RequirementRepository, SectionRepository, TestCaseRepository,
+        TestSuiteRepository, BAReviewRepository, MetadataImpactRepository,
+    )
+    from primeqa.test_management.service import TestManagementService
     from primeqa.db import SessionLocal
 
     data = request.get_json(silent=True) or {}
     env_id = data.get("environment_id")
-    req_ids = data.get("requirement_ids") or []
+    req_ids_raw = data.get("requirement_ids") or []
+    jira_keys_raw = data.get("jira_keys") or []
+
     if not env_id:
         return json_error("VALIDATION_ERROR", "environment_id is required")
-    if not isinstance(req_ids, list) or not req_ids:
-        return json_error("VALIDATION_ERROR",
-                          "requirement_ids must be a non-empty array")
-    if len(req_ids) > 20:
-        return json_error("BULK_LIMIT",
-                          f"Bulk-generate is capped at 20 per call (got {len(req_ids)})")
+
+    # Coerce + dedupe the two input lists
+    req_ids = []
+    if isinstance(req_ids_raw, list):
+        for x in req_ids_raw:
+            try:
+                req_ids.append(int(x))
+            except (TypeError, ValueError):
+                continue
+    req_ids = list(dict.fromkeys(req_ids))  # dedupe, preserve order
+
+    jira_keys = []
+    if isinstance(jira_keys_raw, list):
+        for k in jira_keys_raw:
+            if isinstance(k, str) and k.strip():
+                jira_keys.append(k.strip())
+    jira_keys = list(dict.fromkeys(jira_keys))
+
+    if not req_ids and not jira_keys:
+        return json_error(
+            "VALIDATION_ERROR",
+            "At least one of requirement_ids or jira_keys is required "
+            "(both may be passed together).")
+
+    combined = len(req_ids) + len(jira_keys)
+    if combined > 20:
+        return json_error(
+            "BATCH_TOO_LARGE",
+            f"Select 20 or fewer tickets per batch, or use bulk import "
+            f"on the Requirements page. Got {combined}.",
+            http=400,
+        )
 
     tenant_id = request.user["tenant_id"]
     user_id = request.user["id"]
@@ -375,6 +418,97 @@ def bulk_generate_requirements():
     jobs_payload = []
     db = SessionLocal()
     try:
+        # Jira-keys path: import missing requirements first, fold them
+        # into req_ids. A key whose requirement already exists resolves
+        # to the existing requirement_id (no duplicate row).
+        if jira_keys:
+            env = db.query(Environment).filter_by(
+                id=int(env_id), tenant_id=tenant_id).first()
+            if env is None:
+                return json_error("NOT_FOUND", "Environment not found", http=404)
+            if not env.jira_connection_id:
+                return json_error(
+                    "VALIDATION_ERROR",
+                    "Environment has no Jira connection; cannot import "
+                    "by jira_keys.", http=400)
+            conn_row = ConnectionRepository(db).get_connection_decrypted(
+                env.jira_connection_id, tenant_id)
+            if not conn_row:
+                return json_error("NOT_FOUND",
+                                  "Jira connection not found", http=404)
+            cfg = conn_row["config"]
+            jira_base = cfg.get("base_url", "").rstrip("/")
+            jira_auth = None
+            if (cfg.get("auth_type") == "basic"
+                    and cfg.get("username") and cfg.get("api_token")):
+                import base64
+                jira_auth = base64.b64encode(
+                    f"{cfg['username']}:{cfg['api_token']}".encode()
+                ).decode()
+
+            svc = TestManagementService(
+                SectionRepository(db), RequirementRepository(db),
+                TestCaseRepository(db), TestSuiteRepository(db),
+                BAReviewRepository(db), MetadataImpactRepository(db),
+            )
+
+            # Default section: oldest non-deleted section in the tenant.
+            # If none exist, create an "Inbox" section so imports have
+            # a home. Keeps the flow from failing just because the
+            # tenant hasn't set up sections yet.
+            from primeqa.test_management.models import Section
+            default_section = (db.query(Section)
+                               .filter(Section.tenant_id == tenant_id,
+                                       Section.deleted_at.is_(None))
+                               .order_by(Section.id.asc())
+                               .first())
+            if default_section is None:
+                default_section = Section(
+                    tenant_id=tenant_id, name="Inbox", created_by=user_id)
+                db.add(default_section); db.commit(); db.refresh(default_section)
+
+            # Resolve each Jira key → requirement_id (import if missing)
+            for key in jira_keys:
+                try:
+                    existing = svc.requirement_repo.find_by_jira_key(
+                        tenant_id, key)
+                    if existing:
+                        req_id = existing.id
+                        jira_key_result = key
+                    else:
+                        imported = svc.import_jira_requirement(
+                            tenant_id=tenant_id,
+                            section_id=default_section.id,
+                            jira_base_url=jira_base,
+                            jira_key=key,
+                            created_by=user_id,
+                            jira_auth=jira_auth,
+                        )
+                        req_id = imported["id"]
+                        jira_key_result = key
+                    # Now queue a generation job for this requirement
+                    job, already = create_or_get_job(
+                        db, tenant_id=tenant_id,
+                        environment_id=int(env_id),
+                        requirement_id=req_id,
+                        created_by=user_id,
+                    )
+                    jobs_payload.append({
+                        "requirement_id": req_id,
+                        "jira_key": jira_key_result,
+                        "job_id": job.id,
+                        "status": job.status,
+                        "already_running": already,
+                    })
+                except Exception as e:
+                    jobs_payload.append({
+                        "requirement_id": None,
+                        "jira_key": key,
+                        "job_id": None, "status": "error",
+                        "error": str(e)[:200],
+                    })
+
+        # Legacy path: requirement_ids directly
         for req_id in req_ids:
             try:
                 job, already = create_or_get_job(

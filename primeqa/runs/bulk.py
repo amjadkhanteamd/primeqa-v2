@@ -20,12 +20,104 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from primeqa.core.models import Environment
 from primeqa.test_management.models import (
     Requirement, SuiteTestCase, TestCase, TestSuite,
 )
+
+
+# ---- Readiness model (four-state) ------------------------------------------
+# Drives the /run page badges + the "Review your run" modal. Buckets a
+# Jira ticket into exactly one of:
+#
+#   APPROVED          TC(s) with status IN ('approved', 'active')
+#                     — BA-reviewed, first-class runnable
+#   DRAFT             only has status='draft' TCs. Still runnable (the
+#                     existing ticket_keys_to_test_case_ids fallback
+#                     honours drafts). Badged so the user knows the
+#                     review queue hasn't seen them.
+#   GENERATING        no TCs yet, but a generation_jobs row is
+#                     queued/claimed/running. Informational only —
+#                     the worker is already on it; no user action.
+#   NEEDS_GENERATION  no TCs, no active job. Blocks the run; the
+#                     modal offers Generate as the remediation.
+#
+# APPROVED + DRAFT are "runnable". GENERATING + NEEDS_GENERATION block.
+READY_APPROVED        = "APPROVED"
+READY_DRAFT           = "DRAFT"
+READY_GENERATING      = "GENERATING"
+READY_NEEDS_GEN       = "NEEDS_GENERATION"
+
+RUNNABLE_STATES: frozenset = frozenset({READY_APPROVED, READY_DRAFT})
+
+
+def get_batch_readiness(jira_keys: list[str], tenant_id: int,
+                        db: Session) -> dict[str, str]:
+    """Batch-compute readiness for a list of Jira keys in ONE query.
+
+    Returns {jira_key: READY_*} for every input key. Keys that aren't
+    imported as requirements at all map to READY_NEEDS_GEN — the
+    generate path will import them on demand.
+
+    Single round-trip: LEFT JOIN requirements → test_cases +
+    generation_jobs, with COUNT FILTER clauses bucketing per state.
+    """
+    # Normalise + dedupe so duplicate input keys don't inflate any metric
+    clean = sorted({(k or "").strip() for k in (jira_keys or []) if (k or "").strip()})
+    if not clean:
+        return {}
+
+    rows = db.execute(text("""
+        SELECT r.jira_key,
+               COUNT(tc.id) FILTER (
+                   WHERE tc.deleted_at IS NULL
+                     AND tc.status IN ('approved', 'active')
+               ) AS approved_count,
+               COUNT(tc.id) FILTER (
+                   WHERE tc.deleted_at IS NULL
+                     AND tc.status = 'draft'
+               ) AS draft_count,
+               COUNT(DISTINCT gj.id) FILTER (
+                   WHERE gj.status IN ('queued', 'claimed', 'running')
+               ) AS active_job_count
+          FROM requirements r
+          LEFT JOIN test_cases tc
+            ON tc.requirement_id = r.id
+          LEFT JOIN generation_jobs gj
+            ON gj.requirement_id = r.id
+         WHERE r.tenant_id = :tenant_id
+           AND r.deleted_at IS NULL
+           AND r.jira_key = ANY(:keys)
+         GROUP BY r.jira_key
+    """), {"tenant_id": tenant_id, "keys": clean}).fetchall()
+
+    out: dict[str, str] = {}
+    seen: set[str] = set()
+    for row in rows:
+        seen.add(row.jira_key)
+        if (row.approved_count or 0) > 0:
+            out[row.jira_key] = READY_APPROVED
+        elif (row.draft_count or 0) > 0:
+            out[row.jira_key] = READY_DRAFT
+        elif (row.active_job_count or 0) > 0:
+            out[row.jira_key] = READY_GENERATING
+        else:
+            # Requirement exists but has no TCs + no active job
+            out[row.jira_key] = READY_NEEDS_GEN
+
+    # Keys with no matching requirement row at all → never imported →
+    # the generate path will import-then-queue for them.
+    for k in clean:
+        out.setdefault(k, READY_NEEDS_GEN)
+    # Also return the original keys as input — useful when callers
+    # pass mixed-case duplicates and want to look up by the raw key.
+    for raw in (jira_keys or []):
+        if raw and raw.strip() and raw.strip() not in out:
+            out[raw.strip()] = out.get(raw.strip().strip(), READY_NEEDS_GEN)
+    return out
 
 
 def ticket_keys_to_test_case_ids(keys: Iterable[str], tenant_id: int,
@@ -187,5 +279,9 @@ __all__ = [
     "ticket_keys_to_test_case_ids",
     "release_to_test_case_ids",
     "suite_to_test_case_ids",
+    "get_batch_readiness",
+    "READY_APPROVED", "READY_DRAFT",
+    "READY_GENERATING", "READY_NEEDS_GEN",
+    "RUNNABLE_STATES",
     "environment_can_bulk_run",
 ]

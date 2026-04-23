@@ -273,9 +273,14 @@ def run_tests():
                               "ticket_keys": ["NO-SUCH-KEY-XY"],
                               "confirm_production": True})
         _set_env(env_id, is_production=False)  # restore
-        # Gate passes → now NO_TESTS, not ENVIRONMENT_POLICY_DENIED
+        # The prod-confirm gate passes. The downstream safety filter
+        # then rejects the unresolvable key as NEEDS_GENERATION, so the
+        # expected error is NO_READY_TICKETS (was NO_TESTS before the
+        # four-state readiness work). 201 is valid if the test env
+        # happens to have matching TCs.
         if r.status_code == 400:
-            assert r.get_json()["error"]["code"] == "NO_TESTS", r.get_json()
+            code = r.get_json()["error"]["code"]
+            assert code == "NO_READY_TICKETS", r.get_json()
         else:
             assert r.status_code == 201, r.status_code
     results.append(test(

@@ -387,6 +387,23 @@ def list_jira_sprints_for_env():
     return _do()
 
 
+def _decorate_with_readiness(db, tenant_id: int, tickets: list[dict],
+                              key_field: str = "key") -> list[dict]:
+    """Shared decorator: attach `readiness` to every ticket dict.
+
+    Picker endpoints return tickets in different shapes (key vs.
+    jira_key), so take the key field as a param. Batch-fetches
+    readiness once for the whole list — no N+1.
+    """
+    from primeqa.runs.bulk import get_batch_readiness, READY_NEEDS_GEN
+    keys = [t.get(key_field) for t in tickets if t.get(key_field)]
+    readiness_map = get_batch_readiness(keys, tenant_id, db)
+    for t in tickets:
+        k = t.get(key_field)
+        t["readiness"] = readiness_map.get(k, READY_NEEDS_GEN) if k else READY_NEEDS_GEN
+    return tickets
+
+
 @execution_bp.route("/api/jira/sprints/<int:sprint_id>/tickets", methods=["GET"])
 @require_auth
 def list_jira_sprint_tickets_for_env(sprint_id):
@@ -394,6 +411,10 @@ def list_jira_sprint_tickets_for_env(sprint_id):
     belong to the same Jira connection as the environment — we don't
     verify that cross-Jira (the agile endpoint errors if the id is
     invalid for this auth).
+
+    Each ticket carries `readiness` ∈ APPROVED / DRAFT / GENERATING /
+    NEEDS_GENERATION so the picker can badge it and the "Run" gate
+    can decide whether to open the readiness modal.
     """
     from primeqa.core.permissions import require_permission
     env_id = request.args.get("environment_id", type=int)
@@ -424,6 +445,8 @@ def list_jira_sprint_tickets_for_env(sprint_id):
                 "status": i.get("status") or (
                     i.get("fields", {}).get("status") or {}).get("name") or "",
             } for i in issues if i.get("key")]
+            tickets = _decorate_with_readiness(
+                db, request.user["tenant_id"], tickets, key_field="key")
             return jsonify({"tickets": tickets}), 200
         finally:
             db.close()
@@ -452,6 +475,9 @@ def list_recent_tickets_for_user():
         db = next(get_db())
         try:
             rows = list_recent(db, request.user["id"], env_id, limit=limit)
+            # Readiness decorator uses `jira_key` for this list shape
+            rows = _decorate_with_readiness(
+                db, request.user["tenant_id"], rows, key_field="jira_key")
             return jsonify({"tickets": rows}), 200
         finally:
             db.close()
@@ -544,6 +570,8 @@ def search_jira_tickets_with_filters():
                                 or assignee.get("emailAddress") or "",
                     "assignee_email": assignee.get("emailAddress") or "",
                 })
+            tickets = _decorate_with_readiness(
+                db, request.user["tenant_id"], tickets, key_field="key")
             return jsonify({"tickets": tickets}), 200
         finally:
             db.close()
@@ -640,6 +668,10 @@ def release_contents_for_run(release_id):
                 "jira_key": r.jira_key,
                 "summary": (r.jira_summary or "")[:240],
             } for r in req_rows if r.jira_key]
+            # Release mode badges are informational only — the readiness
+            # modal does NOT fire here (release test plans are curated).
+            tickets = _decorate_with_readiness(
+                db, request.user["tenant_id"], tickets, key_field="jira_key")
 
             tc_rows = (db.query(TestCase)
                        .join(ReleaseTestPlanItem,

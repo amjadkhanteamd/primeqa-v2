@@ -994,25 +994,62 @@ def api_bulk_run_create():
                     if not isinstance(keys, list) or not keys:
                         return ({"error": {"code": "VALIDATION_ERROR",
                                            "message": "ticket_keys must be a non-empty list"}}, 400)
+                    # Readiness safety filter. The client-side modal
+                    # should prevent non-runnable keys from landing
+                    # here, but a malformed request (or a caller not
+                    # going through /run) mustn't get past this layer.
+                    # Runnable = APPROVED or DRAFT. GENERATING and
+                    # NEEDS_GENERATION are rejected.
+                    from primeqa.runs.bulk import (
+                        get_batch_readiness, RUNNABLE_STATES,
+                    )
+                    readiness = get_batch_readiness(
+                        keys, request.user["tenant_id"], db)
+                    runnable_keys = [
+                        k for k in keys
+                        if readiness.get(k) in RUNNABLE_STATES
+                    ]
+                    dropped = [k for k in keys if k not in runnable_keys]
+                    if not runnable_keys:
+                        from primeqa.shared.api import json_error
+                        return json_error(
+                            "NO_READY_TICKETS",
+                            "No selected tickets have test cases ready to run.",
+                            http=400,
+                            details={"ticket_states": readiness},
+                        )
+                    if dropped:
+                        import logging as _lg
+                        _lg.getLogger(__name__).info(
+                            "bulk-runs: dropped %d non-runnable ticket(s): %s",
+                            len(dropped), dropped,
+                        )
                     tc_ids, missing = ticket_keys_to_test_case_ids(
-                        keys, request.user["tenant_id"], db,
+                        runnable_keys, request.user["tenant_id"], db,
                     )
                     if not tc_ids:
-                        return ({"error": {"code": "NO_TESTS",
-                                           "message": (
-                                               "No test cases found for the selected tickets. "
-                                               "Import + generate tests in the Requirements page "
-                                               "first."),
-                                           "details": {"missing_keys": missing}}}, 400)
+                        # Edge case: readiness said runnable but
+                        # resolver found no visible TCs (rare race or
+                        # visibility filter). Return the new error
+                        # code for shape consistency.
+                        from primeqa.shared.api import json_error
+                        return json_error(
+                            "NO_READY_TICKETS",
+                            "Selected tickets resolved to zero test "
+                            "cases. Try again or check visibility.",
+                            http=400,
+                            details={"missing_keys": missing},
+                        )
                     source_type = "jira_tickets" if run_type == "sprint" else "requirements"
                     source_refs = {
-                        "ticket_keys": keys,
+                        "ticket_keys": runnable_keys,
+                        "dropped_keys": dropped,
                         "missing_keys": missing,
                         "mode": run_type,
                     }
                     # Recent-ticket tracking: ticket runs are a strong
                     # signal the user wants to see these tickets again.
-                    for k in keys:
+                    for k in runnable_keys:
                         try:
                             record_view(db, request.user["id"],
                                         environment_id, k)
