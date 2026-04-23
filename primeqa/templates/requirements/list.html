@@ -286,11 +286,11 @@ Multiple AC separated by blank lines"></textarea>
 
                 <!-- Search -->
                 <div class="relative">
-                  <input id="import-jira-search" type="text" autocomplete="off"
+                  <input id="import-jira-search" name="q" type="text" autocomplete="off"
                          placeholder="Search tickets by key or summary…"
                          class="block w-full rounded-md border border-gray-300 pl-9 pr-3 py-2 text-sm focus:border-indigo-500 focus:ring-indigo-500"
                          hx-get="/api/jira/search"
-                         hx-trigger="load, keyup changed delay:300ms, focus"
+                         hx-trigger="keyup changed delay:300ms, focus"
                          hx-target="#import-jira-results"
                          hx-swap="innerHTML"
                          hx-indicator="#import-jira-indicator"
