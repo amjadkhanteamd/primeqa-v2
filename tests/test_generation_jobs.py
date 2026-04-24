@@ -427,6 +427,162 @@ def run_tests():
     results.append(test("20. user_message_for handles known + unknown codes",
                         test_error_message_mapping))
 
+    # ----- 20b: generation_error prefers specific fallback over canned string
+    def test_generation_error_surfaces_specific_message():
+        """The 'generation_error' code is the catch-all for errors we
+        couldn't classify. Its canned message is 'An unexpected error
+        occurred during generation' — useless to the user. When the
+        caller has a specific fallback (typically
+        ``GenerationJob.error_message``, e.g. a linter-block reason),
+        it should be returned instead.
+        """
+        specific = ("Linter blocked generation on step 1 (create Case): "
+                    "$account referenced but not resolvable at lint time. "
+                    "Replace with a real value or use a known var "
+                    "(now, profile_id, queue_id, ...).")
+        result = user_message_for("generation_error", fallback=specific)
+        assert result == specific, result
+        # Canned classified codes still win over fallback (they include
+        # actionable retry guidance the raw fallback doesn't).
+        result2 = user_message_for("rate_limited", fallback="terse raw text")
+        assert "rate limit" in result2.lower() and "terse raw text" not in result2
+        # generation_error WITHOUT a fallback → canned (current default).
+        result3 = user_message_for("generation_error", fallback=None)
+        assert result3 == ERROR_MESSAGES["generation_error"]
+        # generation_error with empty/whitespace fallback → canned.
+        result4 = user_message_for("generation_error", fallback="   ")
+        assert result4 == ERROR_MESSAGES["generation_error"]
+    results.append(test(
+        "20b. generation_error surfaces specific fallback; classified codes stay canned",
+        test_generation_error_surfaces_specific_message,
+    ))
+
+    # ----- 20c: /api/generation-jobs/:id/status JSON carries specific message
+    def test_status_endpoint_returns_specific_user_message():
+        """Integration: insert a failed job with code=generation_error +
+        a specific linter-blocked error_message, poll the status API,
+        assert the response's ``user_message`` is the specific message
+        (NOT the generic 'An unexpected error occurred').
+        """
+        from primeqa.db import SessionLocal
+        login_form("admin@primeqa.io", "changeme123")
+        db = SessionLocal()
+        specific_msg = (
+            "Linter blocked generation on step 1 (create Case): "
+            "$account referenced but not resolvable at lint time."
+        )
+        try:
+            j = GenerationJob(
+                tenant_id=TENANT_ID, environment_id=env_id,
+                requirement_id=req_id, created_by=1,
+                status="failed",
+                error_code="generation_error",
+                error_message=specific_msg,
+                created_at=datetime.now(timezone.utc),
+                started_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(timezone.utc),
+            )
+            db.add(j)
+            db.commit()
+            jid = j.id
+        finally:
+            db.close()
+
+        try:
+            r = client.get(f"/api/generation-jobs/{jid}/status",
+                           headers={"Accept": "application/json"})
+            assert r.status_code == 200, r.status_code
+            body = r.get_json()
+            assert body["status"] == "failed"
+            assert body["error_code"] == "generation_error"
+            assert body["error_message"] == specific_msg
+            # The decisive assertion — user_message must NOT be the
+            # canned generic string; it must be the specific one.
+            assert body["user_message"] == specific_msg, body["user_message"]
+            assert body["user_message"] != ERROR_MESSAGES["generation_error"]
+        finally:
+            # Cleanup the synthetic job
+            db = SessionLocal()
+            try:
+                db.query(GenerationJob).filter_by(id=jid).delete()
+                db.commit()
+            finally:
+                db.close()
+    results.append(test(
+        "20c. /api/generation-jobs/:id/status returns specific error_message as user_message",
+        test_status_endpoint_returns_specific_user_message,
+    ))
+
+    # ----- 20d: attach_batch swallows FK violation silently --------------
+    def test_attach_batch_fk_violation_is_silent():
+        """When the outer batch transaction hasn't committed (or rolled
+        back), attach_batch's fresh session can't see the batch row and
+        the UPDATE fails with ForeignKeyViolation. This is expected;
+        the call should swallow it at DEBUG level without raising and
+        without log-WARN noise.
+
+        Simulates this with a guaranteed-missing batch id (max int).
+        """
+        import logging as _logging
+        from primeqa.intelligence.llm import usage as _usage
+
+        # Find a real 'ok' usage_log row to target. If none exist in the
+        # test DB, skip rather than fail.
+        db = SessionLocal()
+        try:
+            row = db.execute(text(
+                "SELECT id FROM llm_usage_log "
+                "WHERE status = 'ok' "
+                "ORDER BY ts DESC LIMIT 1"
+            )).first()
+        finally:
+            db.close()
+        if row is None:
+            print("    SKIP: no 'ok' llm_usage_log rows to target")
+            return
+        usage_log_id = row[0]
+        # 2^31-1 is guaranteed not to exist as a batch id in any real DB.
+        nonexistent_batch_id = 2147483647
+
+        # Capture log records to assert we logged DEBUG (not WARNING).
+        captured = []
+
+        class _Handler(_logging.Handler):
+            def emit(self, record):
+                captured.append((record.levelname, record.getMessage()))
+
+        h = _Handler(level=_logging.DEBUG)
+        target = _logging.getLogger("primeqa.intelligence.llm.usage")
+        prev_level = target.level
+        target.setLevel(_logging.DEBUG)
+        target.addHandler(h)
+        try:
+            # The call under test: must NOT raise.
+            _usage.attach_batch(usage_log_id, nonexistent_batch_id)
+        finally:
+            target.removeHandler(h)
+            target.setLevel(prev_level)
+
+        # Must not have log-WARN'd about the FK case.
+        warn_msgs = [m for lvl, m in captured if lvl == "WARNING"
+                     and "attach_batch" in m]
+        assert not warn_msgs, (
+            f"attach_batch logged WARNING for expected FK rollback "
+            f"(should be DEBUG): {warn_msgs}"
+        )
+        # Must have either DEBUG'd the expected message OR been a no-op.
+        # The expected-path logs: "attach_batch: batch ... not present".
+        debug_msgs = [m for lvl, m in captured if lvl == "DEBUG"
+                      and "not present" in m]
+        assert debug_msgs, (
+            f"expected attach_batch to DEBUG-log the FK rollback; "
+            f"captured: {captured!r}"
+        )
+    results.append(test(
+        "20d. attach_batch swallows FK violation at DEBUG (no log-WARN spam)",
+        test_attach_batch_fk_violation_is_silent,
+    ))
+
     # ----- 21: HTML form still redirects -----
     def test_form_submit_redirects():
         login_form("admin@primeqa.io", "changeme123")

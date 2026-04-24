@@ -96,11 +96,25 @@ def attach_batch(usage_log_id: int, generation_batch_id: int) -> None:
     cost_usd), so we attach the batch id back to the usage log once the
     batch has been created. Keeps the cost dashboard's per-run
     attribution accurate.
+
+    **Expected-rollback handling (2026-04-24)**: when the outer batch
+    transaction rolls back (e.g. the GenerationLinter blocks mid-loop),
+    the target ``generation_batches`` row never makes it to COMMITTED
+    state, and the FK check on this UPDATE fails with a
+    ForeignKeyViolation on ``llm_usage_log_generation_batch_id_fkey``.
+    That's not a bug — there's nothing to attach to. Swallow it at
+    DEBUG level so the worker logs aren't polluted with a "failure" on
+    every linter-blocked generation.
+
+    Any OTHER integrity error (row missing, unrelated FK, check
+    constraint) is still surfaced at WARNING — those are real
+    regressions worth investigating.
     """
     if not usage_log_id or not generation_batch_id:
         return
     try:
         from sqlalchemy.orm import Session
+        from sqlalchemy.exc import IntegrityError
         from primeqa.db import engine
         from primeqa.intelligence.models import LLMUsageLog
 
@@ -111,7 +125,26 @@ def attach_batch(usage_log_id: int, generation_batch_id: int) -> None:
             ).first()
             if row and row.generation_batch_id is None:
                 row.generation_batch_id = generation_batch_id
-                sess.commit()
+                try:
+                    sess.commit()
+                except IntegrityError as ie:
+                    # The specific case: batch row doesn't exist (either
+                    # rolled back, or never visible because the outer
+                    # session hasn't committed yet). Harmless; log DEBUG
+                    # and move on. Any other integrity error (e.g. check
+                    # constraint failure) falls through to the outer
+                    # WARNING block where an operator can see it.
+                    sess.rollback()
+                    msg = str(ie.orig) if ie.orig is not None else str(ie)
+                    if "generation_batch_id_fkey" in msg:
+                        log.debug(
+                            "attach_batch: batch %s not present "
+                            "(rolled back or uncommitted); skipping "
+                            "attach for usage_log=%s",
+                            generation_batch_id, usage_log_id,
+                        )
+                        return
+                    raise
         finally:
             sess.close()
     except Exception as e:
