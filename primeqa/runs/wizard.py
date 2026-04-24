@@ -346,8 +346,113 @@ def _jira_cache_set(key, value):
     _JIRA_SEARCH_CACHE[key] = (time.time() + JIRA_SEARCH_TTL_SEC, value)
 
 
-# Match a standard Jira key like "PROJ-123"
+# Match a standard Jira key like "PROJ-123". Kept broad for back-compat
+# with earlier code that only checked "is this a full key".
 _ISSUE_KEY_RE = __import__("re").compile(r"^[A-Z][A-Z0-9_]+-\d+$")
+
+# Branch-1 variant: treat as EXACT only when the digit suffix is
+# ≥3 chars. 1–2 digit suffixes are ambiguous (SQ-2 could be ticket 2,
+# or a prefix the user is still typing) — route those through the
+# prefix branch instead, per product spec 2026-04-24:
+#   "SQ-205" → exact
+#   "SQ-20"  → prefix (returns SQ-20, SQ-20x, ...)
+_EXACT_KEY_RE = __import__("re").compile(r"^[A-Z][A-Z0-9_]+-\d{3,}$")
+
+# Letters only OR letters + "-" + optional digits (0–2).
+#   "SQ"      → prefix=SQ, digits=None
+#   "SQ-"     → prefix=SQ, digits=""
+#   "SQ-20"   → prefix=SQ, digits="20"
+#   "abc-20"  → prefix=abc (caller uppercases), digits="20"
+# Anchored — doesn't accept trailing garbage or internal whitespace.
+_KEY_PREFIX_RE = __import__("re").compile(
+    r"^([A-Za-z][A-Za-z0-9_]+)(?:-(\d{0,2}))?$"
+)
+
+
+def build_search_core_jql(q: str):
+    """Build the CORE JQL clause for the Jira picker's search.
+
+    Returns (core_jql, client_filter) where:
+      - core_jql is a parenthesised, standalone JQL boolean — suitable
+        to drop into a `... AND {core} AND ... ORDER BY ...` chain.
+        Callers append ORDER BY and any extra filter clauses.
+      - client_filter is None, or a callable `(rows) -> rows` to be
+        applied after fetching. Used for "letters + dash + digits"
+        inputs where Jira doesn't natively support issuekey prefix
+        globs, so we narrow on the client.
+
+    Four branches, in priority order:
+
+      1. Full issue key (e.g. "SQ-205", case-insensitive)
+         → key = "SQ-205"                                (no client filter)
+
+      2+3. Letters only OR letters + dash + partial digits
+         ("SQ", "sq", "SQ-", "SQ-20", "PROJ-5")
+         → (project = "SQ" OR summary ~ "SQ-20*")
+         If a dash is present we also return a client filter keeping
+         rows where key.upper().startswith(q.upper()) OR the raw q
+         appears (case-insensitively) in the summary — because Jira's
+         project-key fetch returns the full project while the user
+         wants a narrower prefix match.
+
+      4. Everything else (free text: "lead", "account merge", "1234")
+         → summary ~ "lead*"                             (no client filter)
+
+    Decisions locked with the product lead (2026-04-24):
+      - Branches 2 + 3 merged. One JQL template; client-side narrowing
+        only when a dash signals specific-key intent.
+      - `summary ~ "{q}*"` only; no description / text / comment.
+        Predictability > recall. Revisit only on explicit pilot ask.
+      - Helper lives here in primeqa/runs/wizard.py so both
+        JiraClient.search_issues and the /api/jira/tickets/search
+        endpoint can share it — two paths, one builder.
+
+    JQL rules we're relying on:
+      - `~` is Lucene under the hood, tokenised, case-insensitive.
+        Append `*` to get prefix-within-token matching.
+      - `project = "X"` is exact on project key. If "X" isn't a real
+        project it returns zero rows — no error, no harm when ORed
+        with the summary clause.
+      - `issuekey ~ "X"` is NOT reliable in Cloud (sometimes 400s,
+        sometimes 0 rows). We avoid it.
+    """
+    q = (q or "").strip()
+    if not q:
+        # Shouldn't reach here — caller gates on len >= 2 — but stay safe.
+        return 'summary ~ "*"', None
+
+    # Branch 1 — "specific enough" issue key (≥3-digit suffix).
+    # "SQ-205" is exact; "SQ-20" is treated as a prefix (Branch 2+3).
+    # Normalized to uppercase so "sq-205" still hits the exact path.
+    if _EXACT_KEY_RE.match(q.upper()):
+        return f'key = "{q.upper()}"', None
+
+    # Branches 2 + 3 — letters or letters + dash + optional digits
+    m = _KEY_PREFIX_RE.match(q)
+    if m:
+        prefix = m.group(1).upper()
+        escaped = q.replace('"', '\\"')
+        jql = f'(project = "{prefix}" OR summary ~ "{escaped}*")'
+        # Client-side narrowing when a dash is present — user is
+        # drilling into a specific key prefix (e.g. SQ-20 wants
+        # SQ-20 + SQ-20x). Jira can't express this server-side.
+        if "-" in q:
+            q_upper = q.upper()
+            q_lower = q.lower()
+            def _filter(rows):
+                out = []
+                for r in rows:
+                    key = (r.get("key") or "").upper()
+                    summary = (r.get("summary") or "").lower()
+                    if key.startswith(q_upper) or q_lower in summary:
+                        out.append(r)
+                return out
+            return jql, _filter
+        return jql, None
+
+    # Branch 4 — free text
+    escaped = q.replace('"', '\\"')
+    return f'summary ~ "{escaped}*"', None
 
 
 def _sprint_sort_ts(date_str: Optional[str]) -> int:
@@ -481,13 +586,16 @@ class JiraClient:
                       ) -> List[Dict[str, Any]]:
         """Fast ticket search for the wizard's chip picker.
 
-        JQL rules:
-          - If `query` matches an issue key pattern (PROJ-123) \u2192 `key = "X"`
-          - Otherwise \u2192 `(summary ~ "q" OR issuekey = "q")` (both tried)
-          - Ordered by most recently updated
+        JQL branching lives in the shared `build_search_core_jql()`
+        helper (see module top) so the /api/jira/tickets/search
+        endpoint can use the exact same logic. Always ORDER BY
+        updated DESC so the most-relevant rows land at the top.
 
-        Results are cached in-process for a few seconds so keystroke-based UI
-        doesn't thrash the upstream API.
+        Results are cached in-process for a few seconds so keystroke
+        UI doesn't thrash upstream. Client-side filtering (for
+        letters+dash+digits inputs) runs BEFORE cache-store so
+        subsequent hits with the same query return the same filtered
+        list.
         """
         q = (query or "").strip()
         if not q:
@@ -498,12 +606,8 @@ class JiraClient:
         if cached is not None:
             return cached
 
-        if _ISSUE_KEY_RE.match(q):
-            # Exact key lookup \u2014 single canonical result if it exists
-            jql = f'key = "{q}"'
-        else:
-            escaped = q.replace('"', '\\"')
-            jql = f'(summary ~ "{escaped}" OR issuekey = "{escaped}") ORDER BY updated DESC'
+        core, client_filter = build_search_core_jql(q)
+        jql = f"{core} ORDER BY updated DESC"
 
         # Atlassian deprecated /rest/api/3/search (May 2024) \u2014 returns 410 Gone.
         # Replacement is /rest/api/3/search/jql with token-based pagination
@@ -526,6 +630,10 @@ class JiraClient:
                 "project_key": ((f.get("project") or {}).get("key") or ""),
                 "project_name": ((f.get("project") or {}).get("name") or ""),
             })
+        # Client-side narrowing for letters+dash+digits inputs (Jira
+        # can't express issuekey-prefix globs natively).
+        if client_filter is not None:
+            results = client_filter(results)
         _jira_cache_set(cache_key, results)
         return results
 

@@ -521,16 +521,14 @@ def search_jira_tickets_with_filters():
                 return jsonify({"tickets": [],
                                 "hint": "This environment has no Jira connection."}), 200
 
-            # Build JQL: core match on key or summary, plus filter clauses
-            from primeqa.runs.wizard import _ISSUE_KEY_RE
-            escaped = q.replace('"', '\\"')
-            if _ISSUE_KEY_RE.match(q):
-                core = f'key = "{q}"'
-            elif q.upper().startswith(tuple([ch for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"])) and "-" not in q:
-                # Key prefix without full number — match project+startswith
-                core = f'(issuekey ~ "{escaped}" OR summary ~ "{escaped}")'
-            else:
-                core = f'(summary ~ "{escaped}" OR issuekey = "{escaped}")'
+            # Build JQL via the shared helper — same branching as
+            # /api/jira/search so both surfaces behave identically.
+            # We only append the Tickets-tab-specific filter clauses
+            # (mine / current_sprint / open / recent) on top of the
+            # core match, then apply any client-side filter the
+            # helper returned (letters+dash+digits narrowing).
+            from primeqa.runs.wizard import build_search_core_jql
+            core, client_filter = build_search_core_jql(q)
 
             clauses = [core]
             if "mine" in filters:
@@ -570,6 +568,11 @@ def search_jira_tickets_with_filters():
                                 or assignee.get("emailAddress") or "",
                     "assignee_email": assignee.get("emailAddress") or "",
                 })
+            # Client-side narrowing runs BEFORE readiness decoration so
+            # we don't waste a readiness batch-fetch on rows that are
+            # about to be filtered out.
+            if client_filter is not None:
+                tickets = client_filter(tickets)
             tickets = _decorate_with_readiness(
                 db, request.user["tenant_id"], tickets, key_field="key")
             return jsonify({"tickets": tickets}), 200

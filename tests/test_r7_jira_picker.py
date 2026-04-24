@@ -58,7 +58,11 @@ def run_tests():
         with patch("primeqa.runs.wizard.http_requests.get", side_effect=fake_get):
             out = c.search_issues("PROJ-123", connection_id=1)
         assert len(out) == 1 and out[0]["key"] == "PROJ-123"
-        assert captured["params"]["jql"] == 'key = "PROJ-123"'
+        # Exact-key branch: JQL starts with `key = "PROJ-123"`. The
+        # builder now always appends `ORDER BY updated DESC` so the
+        # assertion uses startswith rather than equality.
+        assert captured["params"]["jql"].startswith('key = "PROJ-123"'), \
+            captured["params"]["jql"]
         # Regression: must hit the new endpoint, not the deprecated one
         assert captured["url"].endswith("/rest/api/3/search/jql"), captured["url"]
     results.append(test("R7-1. Key-pattern query uses exact JQL on /search/jql",
