@@ -2165,6 +2165,9 @@ def test_cases_detail(tc_id):
                 "steps": current_version.steps or [],
                 "referenced_entities": current_version.referenced_entities or [],
                 "confidence_score": current_version.confidence_score,
+                # Migration 048 — nullable; macro treats NULL as "no story"
+                # and renders the mechanical view directly.
+                "story_view": current_version.story_view,
             }
             # Static validation report from migration 029. Drives the
             # banner on the detail page and the per-issue Apply button.
@@ -2513,8 +2516,15 @@ def _reviews_detail_impl(review_id):
                 "confidence_score": tcv.confidence_score,
                 "steps": tcv.steps or [],
                 "referenced_entities": tcv.referenced_entities or [],
+                # Migration 048 — nullable; NULL means "no story generated"
+                "story_view": tcv.story_view,
             }
-        tc_data = {"id": tc.id, "title": tc.title} if tc else None
+        tc_data = {
+            "id": tc.id,
+            "title": tc.title,
+            # Powers the coverage-type badge in the story view
+            "coverage_type": getattr(tc, "coverage_type", None),
+        } if tc else None
         return render_template("reviews/detail.html", **ctx(
             active_page="reviews", review=review_data, version=version_data, tc=tc_data,
         ))
@@ -4849,8 +4859,10 @@ def settings_llm_usage():
             tier_rows = db.query(
                 TenantAgentSettings.tenant_id,
                 TenantAgentSettings.llm_tier,
+                TenantAgentSettings.llm_enable_story_enrichment,
             ).filter(TenantAgentSettings.tenant_id.in_(tids)).all()
             tier_by_id = {r[0]: r[1] for r in tier_rows}
+            story_by_id = {r[0]: bool(r[2]) for r in tier_rows}
 
             # Correction rate across ALL visible tenants in ONE query.
             # Audit U3 (2026-04-19): previously called feedback_rules.
@@ -4891,6 +4903,7 @@ def settings_llm_usage():
             for row in cost["by_tenant"]:
                 row["tenant_name"] = name_by_id.get(row["key"], f"Tenant #{row['key']}")
                 row["tier"] = tier_by_id.get(row["key"], _tiers.TIER_STARTER)
+                row["llm_enable_story_enrichment"] = story_by_id.get(row["key"], False)
                 corrected, total = rate_by_id.get(row["key"], (0, 0))
                 row["correction_total"] = int(total)
                 row["correction_rate"] = (float(corrected) / float(total)) if total else 0.0
@@ -4969,12 +4982,15 @@ def settings_my_llm_usage():
 @views_bp.route("/settings/tenant-tier/<int:tenant_id>", methods=["POST"])
 @role_required("superadmin")
 def settings_change_tenant_tier(tenant_id):
-    """Superadmin-only: change a tenant's LLM tier.
+    """Superadmin-only: change a tenant's LLM tier and feature flags.
 
-    Accepts form field `llm_tier` ∈ {starter, pro, enterprise, custom}.
-    Logs to activity_log so the change is audit-trail visible. Redirects
-    back to /settings/llm-usage (the superadmin view where the tier
-    picker lives).
+    Accepts form fields:
+      - ``llm_tier`` ∈ {starter, pro, enterprise, custom}
+      - ``llm_enable_story_enrichment`` (checkbox; absent = false)
+
+    Logs both changes to activity_log so the change is audit-trail
+    visible. Redirects back to /settings/llm-usage (the superadmin view
+    where the tier picker lives).
     """
     from flask import flash
     from primeqa.intelligence.llm import tiers
@@ -4985,28 +5001,62 @@ def settings_change_tenant_tier(tenant_id):
         flash(f"Unknown tier: {new_tier!r}", "error")
         return redirect("/settings/llm-usage")
 
+    # Checkbox semantics: HTML only submits the field when checked.
+    new_story_flag = bool(request.form.get("llm_enable_story_enrichment"))
+
     db = next(get_db())
     try:
         row = db.query(TenantAgentSettings).filter(
             TenantAgentSettings.tenant_id == tenant_id,
         ).first()
         if not row:
-            row = TenantAgentSettings(tenant_id=tenant_id, llm_tier=new_tier)
+            row = TenantAgentSettings(
+                tenant_id=tenant_id,
+                llm_tier=new_tier,
+                llm_enable_story_enrichment=new_story_flag,
+            )
             db.add(row)
-        else:
-            old_tier = row.llm_tier
-            row.llm_tier = new_tier
             db.flush()
             db.add(ActivityLog(
                 tenant_id=tenant_id,
                 user_id=request.user["id"],
-                action="update",
-                entity_type="tenant_llm_tier",
+                action="create",
+                entity_type="tenant_agent_settings",
                 entity_id=tenant_id,
-                details={"old": old_tier, "new": new_tier},
+                details={
+                    "llm_tier": new_tier,
+                    "llm_enable_story_enrichment": new_story_flag,
+                },
             ))
+        else:
+            old_tier = row.llm_tier
+            old_story = bool(row.llm_enable_story_enrichment)
+            row.llm_tier = new_tier
+            row.llm_enable_story_enrichment = new_story_flag
+            db.flush()
+            if old_tier != new_tier:
+                db.add(ActivityLog(
+                    tenant_id=tenant_id,
+                    user_id=request.user["id"],
+                    action="update",
+                    entity_type="tenant_llm_tier",
+                    entity_id=tenant_id,
+                    details={"old": old_tier, "new": new_tier},
+                ))
+            if old_story != new_story_flag:
+                db.add(ActivityLog(
+                    tenant_id=tenant_id,
+                    user_id=request.user["id"],
+                    action="update",
+                    entity_type="tenant_story_enrichment",
+                    entity_id=tenant_id,
+                    details={"old": old_story, "new": new_story_flag},
+                ))
         db.commit()
-        flash(f"Tenant #{tenant_id} moved to {new_tier}", "success")
+        flash(
+            f"Tenant #{tenant_id}: tier={new_tier}, story={'on' if new_story_flag else 'off'}",
+            "success",
+        )
     except Exception as e:
         db.rollback()
         flash(f"Failed to change tier: {e}", "error")

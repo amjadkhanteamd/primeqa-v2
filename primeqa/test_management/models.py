@@ -160,6 +160,14 @@ class TestCaseVersion(Base):
     validated_against_meta_version_id = Column(
         Integer, ForeignKey("meta_versions.id", ondelete="SET NULL"),
     )
+    # Migration 048: human-readable "story view" of this version. Populated
+    # by the StoryViewEnricher (Haiku) when the tenant flag
+    # `llm_enable_story_enrichment` is on. Shape:
+    #   {title, description, preconditions_narrative, expected_outcome,
+    #    model, prompt_version, generated_at}
+    # NULL means the enrichment never ran (flag off, or it failed — the
+    # renderer falls back to the mechanical step view in both cases).
+    story_view = Column(JSONB)
 
     test_case = relationship("TestCase", back_populates="versions",
                              foreign_keys=[test_case_id])

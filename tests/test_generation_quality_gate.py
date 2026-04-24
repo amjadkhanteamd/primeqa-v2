@@ -431,7 +431,7 @@ def run_tests():
     results.append(test("21. complete_run() clears release_status on earlier runs",
                         test_release_status_reset_on_complete))
 
-    # ---------------- Migration 045 columns ----------------
+    # ---------------- Migration 045 + 048 columns ----------------
 
     def test_lint_columns_exist():
         from sqlalchemy import text
@@ -440,13 +440,14 @@ def run_tests():
             rows = db.execute(text("""
                 SELECT column_name FROM information_schema.columns
                 WHERE table_name = 'test_case_versions'
-                  AND column_name IN ('lint_fixes', 'lint_warnings', 'lint_details')
+                  AND column_name IN ('lint_fixes', 'lint_warnings', 'lint_details', 'story_view')
             """)).fetchall()
         finally:
             db.close()
         cols = {r[0] for r in rows}
-        assert cols == {"lint_fixes", "lint_warnings", "lint_details"}, cols
-    results.append(test("22. Migration 045: lint columns on test_case_versions",
+        # Migration 045 added lint_*; migration 048 added story_view.
+        assert cols == {"lint_fixes", "lint_warnings", "lint_details", "story_view"}, cols
+    results.append(test("22. Migrations 045+048: lint + story_view columns on test_case_versions",
                         test_lint_columns_exist))
 
     # ---------------- System rules count ----------------

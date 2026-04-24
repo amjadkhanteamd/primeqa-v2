@@ -437,6 +437,45 @@ class TestManagementService:
             except Exception:
                 pass  # feedback is best-effort
 
+            # Story-view enrichment (migration 048). Best-effort,
+            # feature-gated per tenant via
+            # tenant_agent_settings.llm_enable_story_enrichment. A
+            # failure leaves version.story_view NULL and the renderer
+            # falls back to the mechanical view. Runs INSIDE the batch
+            # transaction (Prompt 15 Fix 1) — flush() only, no commit.
+            if self._story_enrichment_enabled(tenant_id, db):
+                try:
+                    from primeqa.intelligence.enrichment import StoryViewEnricher
+                    enricher = StoryViewEnricher(
+                        tenant_id=tenant_id, api_key=api_key,
+                        user_id=created_by,
+                    )
+                    requirement_ctx = None
+                    if requirement is not None:
+                        requirement_ctx = {
+                            "jira_key": requirement.jira_key,
+                            "summary": requirement.jira_summary or "",
+                            "description": requirement.jira_description or "",
+                        }
+                    story = enricher.enrich(
+                        plan_tc=plan_tc,
+                        tc_title=tc.title,
+                        requirement_context=requirement_ctx,
+                        test_case_id=tc.id,
+                        test_case_version_id=version.id,
+                        generation_batch_id=batch.id,
+                        requirement_id=requirement_id,
+                    )
+                    if story:
+                        version.story_view = story
+                        db.flush()
+                except Exception as exc:
+                    logger.warning(
+                        "story_view enrichment skipped for tc=%s: %s",
+                        tc.id, exc,
+                    )
+                    # Swallow — batch must still commit
+
             # Review rows ride in the same transaction so a rollback
             # doesn't leave reviews pointing at phantom versions.
             from primeqa.test_management.models import BAReview as _BAReview
@@ -504,6 +543,23 @@ class TestManagementService:
         }
 
     # ---- Validation plumbing ---------------------------------------------
+
+    def _story_enrichment_enabled(self, tenant_id: int, db) -> bool:
+        """Return True when the tenant has opted into story-view
+        enrichment (migration 048).
+
+        Reads `tenant_agent_settings.llm_enable_story_enrichment`.
+        Absent row → default False (feature off). Tolerates any error
+        by returning False so a transient settings-lookup failure
+        can't break generation.
+        """
+        try:
+            from primeqa.core.models import TenantAgentSettings
+            row = db.query(TenantAgentSettings).filter_by(
+                tenant_id=tenant_id).first()
+            return bool(row and row.llm_enable_story_enrichment)
+        except Exception:
+            return False
 
     def _store_validation_report(self, version_id, report, meta_version_id,
                                  commit=True):

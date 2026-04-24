@@ -193,31 +193,10 @@
     {% endif %}
 
     {% if current_version %}
+    {% from 'components/_tc_body.html' import tc_body %}
     <div class="bg-white shadow rounded-lg p-6">
         <h3 class="text-sm font-medium text-gray-500 mb-4">Current Version (v{{ current_version.version_number }}) - {{ current_version.generation_method }}</h3>
-        {% if current_version.referenced_entities %}
-        <div class="mb-4 flex flex-wrap gap-1">
-            {% for entity in current_version.referenced_entities %}
-            <span class="inline-flex items-center px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 text-xs">{{ entity }}</span>
-            {% endfor %}
-        </div>
-        {% endif %}
-        {% if current_version.steps %}
-        <ol class="space-y-3">
-            {% for step in current_version.steps %}
-            <li class="flex items-start space-x-3 p-3 rounded bg-gray-50">
-                <span class="flex-shrink-0 w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 text-xs flex items-center justify-center font-medium">{{ step.step_order }}</span>
-                <div>
-                    <p class="text-sm font-medium text-gray-900"><span class="font-mono text-indigo-600">{{ step.action }}</span> {{ step.target_object }}</p>
-                    {% if step.field_values %}<p class="text-xs text-gray-500 mt-0.5">{{ step.field_values }}</p>{% endif %}
-                    {% if step.expected_result %}<p class="text-xs text-green-600 mt-0.5">Expected: {{ step.expected_result }}</p>{% endif %}
-                </div>
-            </li>
-            {% endfor %}
-        </ol>
-        {% else %}
-        <p class="text-sm text-gray-500">No steps defined</p>
-        {% endif %}
+        {{ tc_body(current_version, tc, mode='full') }}
     </div>
     {% endif %}
 

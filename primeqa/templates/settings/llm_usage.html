@@ -142,13 +142,19 @@
         <tr>
           <td class="py-1.5">{{ t.tenant_name or ('Tenant #' ~ t.key) }}</td>
           <td class="py-1.5">
-            <form method="POST" action="/settings/tenant-tier/{{ t.key }}" class="flex items-center gap-1">
+            <form method="POST" action="/settings/tenant-tier/{{ t.key }}" class="flex items-center gap-2">
             {{ csrf_input | safe }}
               <select name="llm_tier" class="rounded border-gray-300 text-xs py-0.5 pl-2 pr-7">
                 {% for tname, p in all_tiers.items() %}
                 <option value="{{ tname }}" {% if t.tier == tname %}selected{% endif %}>{{ p.label }}</option>
                 {% endfor %}
               </select>
+              <label class="inline-flex items-center gap-1 text-[10px] text-gray-600" title="Generate a human-readable 'story view' for each AI test case (Claude Haiku 4.5; adds ~800 tokens per TC)">
+                <input type="checkbox" name="llm_enable_story_enrichment" value="1"
+                       class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 h-3 w-3"
+                       {% if t.llm_enable_story_enrichment %}checked{% endif %}>
+                Story
+              </label>
               <button type="submit" class="text-[10px] uppercase tracking-wider text-indigo-600 hover:text-indigo-800 px-2 py-0.5 rounded border border-indigo-200">Save</button>
             </form>
           </td>

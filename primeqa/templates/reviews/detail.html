@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'components/_tc_body.html' import tc_body %}
 {% block title %}Review #{{ review.id }} - PrimeQA{% endblock %}
 {% block content %}
 {{ breadcrumbs([('Reviews', '/reviews'), ('Review #' ~ review.id, None)]) }}
@@ -29,23 +30,7 @@
         {% if version and version.steps %}
         <div class="bg-white shadow rounded-lg p-6">
             <h3 class="text-lg font-medium text-gray-900 mb-4">Review Steps</h3>
-            <div class="space-y-4">
-                {% for step in version.steps %}
-                {% set existing_comment = '' %}
-                {% for c in review.step_comments %}{% if c.step_order == step.step_order %}{% set existing_comment = c.comment %}{% endif %}{% endfor %}
-                <div class="border border-gray-200 rounded-lg p-4">
-                    <div class="flex items-start space-x-3">
-                        <span class="flex-shrink-0 w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 text-xs flex items-center justify-center font-medium">{{ step.step_order }}</span>
-                        <div class="flex-1 min-w-0">
-                            <p class="text-sm font-medium"><span class="font-mono text-indigo-600">{{ step.action }}</span> {{ step.target_object }}{% if step.record_ref %} ({{ step.record_ref }}){% endif %}</p>
-                            {% if step.field_values %}<div class="mt-1 text-xs text-gray-600 font-mono">{{ step.field_values }}</div>{% endif %}
-                            {% if step.expected_result %}<p class="mt-1 text-xs text-green-600">Expected: {{ step.expected_result }}</p>{% endif %}
-                            <textarea name="step_comment_{{ step.step_order }}" rows="2" placeholder="Add a comment on this step..." class="mt-2 block w-full rounded border border-gray-300 px-2 py-1 text-xs">{{ existing_comment }}</textarea>
-                        </div>
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
+            {{ tc_body(version, tc, mode='review_form', step_comments=review.step_comments) }}
         </div>
         {% endif %}
 
@@ -79,19 +64,7 @@
     {% elif version and version.steps %}
     <div class="bg-white shadow rounded-lg p-6">
         <h3 class="text-lg font-medium text-gray-900 mb-4">Steps</h3>
-        <div class="space-y-3">
-            {% for step in version.steps %}
-            {% set cmt = '' %}
-            {% for c in review.step_comments %}{% if c.step_order == step.step_order %}{% set cmt = c.comment %}{% endif %}{% endfor %}
-            <div class="border border-gray-200 rounded-lg p-3 flex items-start space-x-3">
-                <span class="flex-shrink-0 w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 text-xs flex items-center justify-center font-medium">{{ step.step_order }}</span>
-                <div class="flex-1 min-w-0">
-                    <p class="text-sm font-medium"><span class="font-mono text-indigo-600">{{ step.action }}</span> {{ step.target_object }}</p>
-                    {% if cmt %}<div class="mt-1 rounded bg-yellow-50 border border-yellow-200 text-xs text-yellow-900 px-2 py-1">💬 {{ cmt }}</div>{% endif %}
-                </div>
-            </div>
-            {% endfor %}
-        </div>
+        {{ tc_body(version, tc, mode='review_view', step_comments=review.step_comments) }}
     </div>
     {% endif %}
 </div>

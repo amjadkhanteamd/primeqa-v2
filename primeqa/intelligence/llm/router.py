@@ -106,6 +106,17 @@ _CHAINS: Dict[str, Dict[str, List[str]]] = {
     "connection_test": {
         "default": [HAIKU, OPUS],
     },
+
+    # Story-view enrichment (migration 048) — summarises a mechanical
+    # test case into BA-readable title/description/preconditions/outcome.
+    # Haiku is plenty for summarisation. NO fallback: if Haiku fails or
+    # returns malformed JSON, the renderer transparently falls back to
+    # the mechanical step view — not worth escalating to Opus for a
+    # cosmetic feature.
+    "story_view_generation": {
+        COMPLEXITY_LOW: [HAIKU],
+        "default":      [HAIKU],
+    },
 }
 
 

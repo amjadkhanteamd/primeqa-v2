@@ -14,15 +14,18 @@ from primeqa.intelligence.llm.prompts import (
     failure_analysis,
     agent_fix,
     connection_test,
+    story_view,
 )
 
 
 _REGISTRY: Dict[str, object] = {
-    "test_plan_generation": test_plan_generation,
-    "failure_summary":      failure_summary,
-    "failure_analysis":     failure_analysis,
-    "agent_fix":            agent_fix,
-    "connection_test":      connection_test,
+    "test_plan_generation":   test_plan_generation,
+    "failure_summary":        failure_summary,
+    "failure_analysis":       failure_analysis,
+    "agent_fix":              agent_fix,
+    "connection_test":        connection_test,
+    # Migration 048 — BA-facing story-view summarisation, Haiku, best-effort
+    "story_view_generation":  story_view,
 }
 
 

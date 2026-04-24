@@ -192,6 +192,14 @@ class TenantAgentSettings(Base):
     # | custom. `custom` bypasses the preset entirely (raw columns only).
     llm_tier = Column(String(20), nullable=False, server_default="starter")
 
+    # Migration 048: per-tenant feature flag for the story-view enricher.
+    # When off, generate_test_plan skips the Haiku enrichment call — no
+    # LLM cost, no story_view populated. Default off so existing tenants
+    # don't silently start spending on the feature.
+    llm_enable_story_enrichment = Column(
+        Boolean, nullable=False, server_default="false",
+    )
+
 
 class ActivityLog(Base):
     __tablename__ = "activity_log"
