@@ -4860,9 +4860,11 @@ def settings_llm_usage():
                 TenantAgentSettings.tenant_id,
                 TenantAgentSettings.llm_tier,
                 TenantAgentSettings.llm_enable_story_enrichment,
+                TenantAgentSettings.llm_enable_domain_packs,
             ).filter(TenantAgentSettings.tenant_id.in_(tids)).all()
             tier_by_id = {r[0]: r[1] for r in tier_rows}
             story_by_id = {r[0]: bool(r[2]) for r in tier_rows}
+            packs_by_id = {r[0]: bool(r[3]) for r in tier_rows}
 
             # Correction rate across ALL visible tenants in ONE query.
             # Audit U3 (2026-04-19): previously called feedback_rules.
@@ -4904,6 +4906,7 @@ def settings_llm_usage():
                 row["tenant_name"] = name_by_id.get(row["key"], f"Tenant #{row['key']}")
                 row["tier"] = tier_by_id.get(row["key"], _tiers.TIER_STARTER)
                 row["llm_enable_story_enrichment"] = story_by_id.get(row["key"], False)
+                row["llm_enable_domain_packs"] = packs_by_id.get(row["key"], False)
                 corrected, total = rate_by_id.get(row["key"], (0, 0))
                 row["correction_total"] = int(total)
                 row["correction_rate"] = (float(corrected) / float(total)) if total else 0.0
@@ -4987,10 +4990,11 @@ def settings_change_tenant_tier(tenant_id):
     Accepts form fields:
       - ``llm_tier`` ∈ {starter, pro, enterprise, custom}
       - ``llm_enable_story_enrichment`` (checkbox; absent = false)
+      - ``llm_enable_domain_packs`` (checkbox; absent = false)
 
-    Logs both changes to activity_log so the change is audit-trail
-    visible. Redirects back to /settings/llm-usage (the superadmin view
-    where the tier picker lives).
+    Logs each change to activity_log so the audit trail distinguishes
+    tier changes from feature-flag toggles. Redirects back to
+    /settings/llm-usage.
     """
     from flask import flash
     from primeqa.intelligence.llm import tiers
@@ -5003,6 +5007,7 @@ def settings_change_tenant_tier(tenant_id):
 
     # Checkbox semantics: HTML only submits the field when checked.
     new_story_flag = bool(request.form.get("llm_enable_story_enrichment"))
+    new_packs_flag = bool(request.form.get("llm_enable_domain_packs"))
 
     db = next(get_db())
     try:
@@ -5014,6 +5019,7 @@ def settings_change_tenant_tier(tenant_id):
                 tenant_id=tenant_id,
                 llm_tier=new_tier,
                 llm_enable_story_enrichment=new_story_flag,
+                llm_enable_domain_packs=new_packs_flag,
             )
             db.add(row)
             db.flush()
@@ -5026,13 +5032,16 @@ def settings_change_tenant_tier(tenant_id):
                 details={
                     "llm_tier": new_tier,
                     "llm_enable_story_enrichment": new_story_flag,
+                    "llm_enable_domain_packs": new_packs_flag,
                 },
             ))
         else:
             old_tier = row.llm_tier
             old_story = bool(row.llm_enable_story_enrichment)
+            old_packs = bool(row.llm_enable_domain_packs)
             row.llm_tier = new_tier
             row.llm_enable_story_enrichment = new_story_flag
+            row.llm_enable_domain_packs = new_packs_flag
             db.flush()
             if old_tier != new_tier:
                 db.add(ActivityLog(
@@ -5052,9 +5061,20 @@ def settings_change_tenant_tier(tenant_id):
                     entity_id=tenant_id,
                     details={"old": old_story, "new": new_story_flag},
                 ))
+            if old_packs != new_packs_flag:
+                db.add(ActivityLog(
+                    tenant_id=tenant_id,
+                    user_id=request.user["id"],
+                    action="update",
+                    entity_type="tenant_domain_packs",
+                    entity_id=tenant_id,
+                    details={"old": old_packs, "new": new_packs_flag},
+                ))
         db.commit()
         flash(
-            f"Tenant #{tenant_id}: tier={new_tier}, story={'on' if new_story_flag else 'off'}",
+            f"Tenant #{tenant_id}: tier={new_tier}, "
+            f"story={'on' if new_story_flag else 'off'}, "
+            f"packs={'on' if new_packs_flag else 'off'}",
             "success",
         )
     except Exception as e:
