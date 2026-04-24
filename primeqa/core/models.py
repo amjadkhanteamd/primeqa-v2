@@ -200,6 +200,16 @@ class TenantAgentSettings(Base):
         Boolean, nullable=False, server_default="false",
     )
 
+    # Migration 049: per-tenant feature flag for Domain Packs — long-form
+    # prescriptive Salesforce knowledge injected into test_plan_generation
+    # when the requirement text matches a pack's keywords. When off,
+    # generation.py skips the DomainPackProvider call entirely (no
+    # filesystem IO, no prompt overhead). Default off; superadmin opts
+    # tenants in via /settings/llm-usage.
+    llm_enable_domain_packs = Column(
+        Boolean, nullable=False, server_default="false",
+    )
+
 
 class ActivityLog(Base):
     __tablename__ = "activity_log"
