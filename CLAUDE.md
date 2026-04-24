@@ -173,6 +173,7 @@ sites that drifted on retry policy, caching, and usage accounting.
   - **Superadmin** `/settings/llm-usage` — cost (total / by-task / by-model / by-tenant / by-day), efficiency (cache hit rate, avg cost per generation, escalation rate, error rate + top errors), quality proxy (regeneration-within-15min, validation-critical rate, post-gen failure rate), top spenders, **per-tenant tier picker + Story-enrichment checkbox** (migration 048 — `llm_enable_story_enrichment` flag; POST handler persists both `llm_tier` and the flag and logs each change to `activity_log` separately so tier vs. feature-flag changes are auditable).
   - **Tenant admin** `/settings/my-llm-usage` — current plan + description, **soft-cap progress bars** (warn at 80%, block at 100%), blocked-calls counter, KPIs (spend / calls / input / output tokens), daily-spend bars, spend-by-feature table, plan comparison table.
 - **Story-view enrichment** (migration 048): new task `story_view_generation` → Haiku 4.5, no escalation. Task routes LLM output to `test_case_versions.story_view JSONB`; the render path falls back to the mechanical step view when NULL. Tenant opt-in via the superadmin checkbox above. See "Story view — BA-readable test cases" section below for the full pipeline.
+- **Domain Packs** (migration 049): per-tenant opt-in parallel knowledge channel for `test_plan_generation`. Markdown files with YAML frontmatter in `salesforce_domain_packs/` describe specific Salesforce domains (Case escalation, Lead conversion, etc.). When a requirement's text matches a pack's keywords, the pack content is injected as an **uncached** user-message block after the existing dynamic block — gives Sonnet concrete patterns to follow for domains where it would otherwise need Opus. Attribution (`[{id, version}, ...]`) rides `llm_usage_log.context->'domain_packs_applied'` — same JSONB-key pattern as story_view, no dedicated column. Tenant flag `llm_enable_domain_packs` (default off); superadmin toggles via the "Packs" checkbox next to "Story" in `/settings/llm-usage`. v1 is keyword-only (word-boundary regex via `knowledge._text`); object-match scoring path exists but stays dormant until `referenced_objects` plumbing lands. See "Domain Packs — prescriptive domain knowledge" section below.
 - **Providers** (`providers/registry.py`): routes by model-id prefix. `claude-*` → Anthropic, `gpt-*` / `o1-*` → OpenAI stub (raises NotImplementedError today). Cross-vendor fallback chains are architecturally supported — the router just needs both sides present in the registry.
 - **PII redaction** (`redact.py`): compiled regexes scrub emails, IPs, SSN-shaped, long digit runs from outbound prompts. Structure-preserving.
 - **Migration**: never bypass the gateway. New callers always go through `llm_call()`. Legacy direct-Anthropic paths (`IntelligenceService._call_llm_legacy`) remain only as fallback when no `tenant_id` + `api_key` is available (i.e. system-level calls) and are scheduled for removal once every call site has a tenant context.
@@ -327,6 +328,93 @@ trail distinguishes tier changes from feature-flag toggles.
 Cost envelope: ~800 tokens per TC on Haiku 4.5 ≈ $0.0004/TC. No cache
 blocks (the prompt is already small). No fallback chain (a failed
 enrichment is silent and harmless).
+
+## Domain Packs — prescriptive domain knowledge (migration 049)
+
+AI test-plan generation uses the router's tier chain
+(Sonnet→Opus) to decide which model handles a requirement. Opus is
+5× the cost of Sonnet; routing a requirement HIGH because it
+mentions "Case escalation" is money spent on breadth-of-training
+that Opus already has. What Sonnet needs to match Opus on these
+requirements isn't more parameters — it's **your team's domain
+knowledge** about how that Salesforce area actually behaves.
+
+Domain Packs is a parallel knowledge channel that injects
+tenant-curated domain knowledge into the generation prompt when
+the requirement matches. A single pack of ~1200 tokens routinely
+lifts Sonnet output quality on a covered domain to Opus parity.
+
+Lives in:
+  - `migrations/049_llm_enable_domain_packs.sql` — per-tenant flag
+    `tenant_agent_settings.llm_enable_domain_packs BOOLEAN DEFAULT false`.
+    **No migration for attribution** — it rides the existing
+    `llm_usage_log.context` JSONB column under the key
+    `domain_packs_applied` (same pattern as story_view).
+  - `salesforce_domain_packs/<id>.md` — markdown files with YAML
+    frontmatter (`id`, `title`, `keywords`, `objects`,
+    `token_budget`, `version`). See
+    `salesforce_domain_packs/README.md` for the author + security
+    guide. Pack files are **trusted git-controlled content** — they
+    MUST NOT be populated from user uploads, Jira fetches, or any
+    untrusted source.
+  - `primeqa/intelligence/knowledge/_text.py` — shared word-boundary
+    + inflection-aware `kw_count` / `matched_keywords` helpers.
+    Reused by `detect_complexity` in `test_plan_generation.py` so
+    both sites use identical matching semantics (no "workflow
+    silently matching flow" regressions).
+  - `primeqa/intelligence/knowledge/domain_packs.py` —
+    `DomainPack` dataclass, `DomainPackLibrary` (loads `*.md`,
+    reloads on mtime, skips README), `DomainPackSelector`
+    (keyword + object scoring with measured-token budget cap).
+    **Parallel knowledge channel; NOT a `KnowledgeProvider`
+    implementation** — rules are short proscriptive statements,
+    packs are long prescriptive patterns.
+  - `primeqa/intelligence/knowledge/domain_pack_provider.py` — thin
+    facade exposing `get_packs(requirement_text, referenced_objects,
+    max_tokens) → (packs, attribution)`.
+  - `primeqa/intelligence/generation.py` — feature flag gate
+    (`_domain_packs_enabled`) + resolver (`_resolve_domain_packs`)
+    called immediately before `llm_call`. When the flag is off, the
+    provider is never constructed (no filesystem IO, no overhead).
+    Packs are passed through `context["domain_packs"]`.
+  - `primeqa/intelligence/llm/prompts/test_plan_generation.py`:
+    `build()` appends a **fourth uncached** user-message block
+    (`# DOMAIN PACKS`) after the existing dynamic block when packs
+    are present, and writes `domain_packs_applied: [{id, version}]`
+    into `context_for_log`. The existing gateway→usage.record
+    plumbing writes this into `llm_usage_log.context` automatically.
+
+Selector rules:
+  - Keywords matched word-boundary + inflection-aware against
+    `jira_summary + jira_description + acceptance_criteria`.
+  - Score = `len(matched_keywords) + 2 × len(matched_objects)`. v1
+    keeps `referenced_objects=None` from the caller so the
+    object-score contribution is dormant — the code path exists and
+    is tested, but activates only once the requirements pipeline
+    extracts objects up front (v1.1).
+  - Token budget: enforced via measured `len(content) // 4`, not
+    the author-declared `token_budget` frontmatter key. Higher-scored
+    packs fit first; smaller packs still considered when the
+    current pack blows the cap.
+  - Ties broken by `pack.id` ascending for deterministic ordering.
+
+**Applied on ALL routed tiers (Sonnet AND Opus).** Opus benefits
+from tenant-specific domain knowledge too; ~1200 extra input
+tokens at Opus rates is noise (~$0.018/call).
+
+Superadmin toggle: `/settings/llm-usage` → Top tenants by spend
+table → per-tenant Plan cell now has **both** the "Story"
+checkbox (migration 048) and "Packs" checkbox (migration 049)
+alongside the tier picker. `POST /settings/tenant-tier/<id>`
+persists all three fields (tier + story + packs) and writes
+separate `ActivityLog` rows for each change so the audit trail
+distinguishes tier changes from feature-flag toggles.
+
+First pack: `salesforce_domain_packs/case_escalation.md` targets
+Service Cloud escalation patterns (IsEscalated semantics,
+Case_SLA__c / Escalation__c lookups, Flow-triggered vs manual
+escalation, common pitfalls). Matches SQ-205 in the current
+production corpus — the canonical HIGH-tier requirement.
 
 ## Tester's focused /run page — four-mode pickers (Prompt 16)
 
@@ -511,13 +599,14 @@ python tests/test_reliability_fixes.py   # 10 (Prompt 15 — tx wrap / neg count
 python tests/test_run_tests_page.py      # 15 (/run + /api/bulk-runs)
 python tests/test_run_page_overhaul.py   # 25 (Prompt 16 — 4-mode pickers + dynamic prod banner)
 python tests/test_story_view.py          # 7  (Migration 048 — story-view enrichment + macro render + fallback)
-# ~287 total
+python tests/test_domain_packs.py        # 14 (Migration 049 — domain-pack library + selector + integration + flag gate)
+# ~301 total
 
 # Deploy
 git push origin main                     # Railway auto-deploys 3 services
 
 # Apply a migration (idempotent since 016)
-psql "$DATABASE_URL" -f migrations/048_story_view.sql
+psql "$DATABASE_URL" -f migrations/049_llm_enable_domain_packs.sql
 ```
 
 ## Environment variables
