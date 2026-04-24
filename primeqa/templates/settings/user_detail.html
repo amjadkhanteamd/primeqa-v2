@@ -38,26 +38,22 @@
       </div>
       <div class="flex flex-col items-end gap-2">
         {% if not is_self %}
-          {% if edit_user.is_active %}
-          <form method="POST" action="/users/{{ edit_user.id }}/toggle-active">
-            {{ csrf_input | safe }}
-            <button type="submit"
-                    class="rounded-md ring-1 ring-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
-                    data-confirm data-confirm-title="Deactivate user?"
-                    data-confirm-message="{{ edit_user.full_name }} will no longer be able to sign in."
-                    data-confirm-variant="danger">
-              Deactivate
-            </button>
-          </form>
-          {% else %}
-          <form method="POST" action="/users/{{ edit_user.id }}/toggle-active">
-            {{ csrf_input | safe }}
-            <button type="submit"
-                    class="rounded-md bg-green-600 text-white px-3 py-1.5 text-sm font-semibold hover:bg-green-500">
-              Reactivate
-            </button>
-          </form>
-          {% endif %}
+          {# Deactivate / Reactivate — single button, JS-driven. Calls the
+             POST /api/users/<id>/{deactivate|activate} endpoint via
+             PrimeQA_toggleUserActive(btn). Confirmation via the shared
+             PrimeQA.confirm modal; errors (SELF_DEACTIVATE /
+             LAST_SUPERADMIN / NOT_FOUND) surface as toasts; 204 reloads
+             the page. The old <form>-wrapped button submitted to a web
+             route but was missing the data-confirm-form attribute, so
+             the confirm modal's Confirm button did nothing. #}
+          <button type="button"
+                  data-user-id="{{ edit_user.id }}"
+                  data-user-label="{{ edit_user.full_name or edit_user.email }}"
+                  data-active="{{ 'true' if edit_user.is_active else 'false' }}"
+                  onclick="PrimeQA_toggleUserActive(this);"
+                  class="rounded-md {% if edit_user.is_active %}ring-1 ring-gray-300 text-gray-700 hover:bg-gray-50{% else %}bg-green-600 text-white font-semibold hover:bg-green-500{% endif %} px-3 py-1.5 text-sm">
+            {% if edit_user.is_active %}Deactivate{% else %}Reactivate{% endif %}
+          </button>
         {% else %}
           <span class="text-xs text-gray-400" title="You cannot deactivate your own account.">
             (This is you)
@@ -249,20 +245,74 @@ window.PrimeQA_toggleAllGroups = function (btn) {
   btn.textContent = anyClosed ? 'Collapse All' : 'Expand All';
 };
 
+// Shared handler for API calls backing the destructive buttons. 204
+// reloads the page; 4xx surfaces the envelope's error.message in a
+// toast. Never throws.
+function _primeqaUserMutate(url, method, fallbackMsg) {
+  return fetch(url, {
+    method: method, credentials: 'same-origin',
+  }).then(async (r) => {
+    if (r.status === 204 || r.ok) {
+      window.location.reload();
+      return;
+    }
+    let msg = fallbackMsg || `Request failed (${r.status})`;
+    try {
+      const body = await r.json();
+      if (body && body.error && body.error.message) msg = body.error.message;
+    } catch (e) { /* non-JSON — keep fallback */ }
+    if (window.PrimeQA && window.PrimeQA.toast) {
+      window.PrimeQA.toast(msg, 'error');
+    } else {
+      alert(msg);
+    }
+  }).catch(() => {
+    if (window.PrimeQA && window.PrimeQA.toast) {
+      window.PrimeQA.toast('Network error. Try again.', 'error');
+    }
+  });
+}
+
+window.PrimeQA_toggleUserActive = function (btn) {
+  const userId = btn.dataset.userId;
+  const label  = btn.dataset.userLabel;
+  const isActive = btn.dataset.active === 'true';
+  const verb   = isActive ? 'Deactivate' : 'Reactivate';
+  const path   = isActive ? 'deactivate' : 'activate';
+  const message = isActive
+    ? `${label} will not be able to log in.`
+    : `${label} will regain their assigned permissions and be able to log in again.`;
+  window.PrimeQA.confirm({
+    title: `${verb} ${label}?`,
+    message: message,
+    submitLabel: verb,
+    variant: isActive ? 'danger' : 'default',
+    onConfirm: function () {
+      _primeqaUserMutate(
+        `/api/users/${userId}/${path}`, 'POST',
+        `Could not ${verb.toLowerCase()} user.`);
+    },
+  });
+};
+
 window.PrimeQA_revokeSet = function (btn) {
   const userId = btn.dataset.userId;
   const psetId = btn.dataset.psetId;
-  const name = btn.dataset.psetName;
+  const name   = btn.dataset.psetName;
   const isLast = btn.dataset.isLast === 'true';
-  const msg = isLast
-    ? `Remove "${name}"? This user will have NO permission sets and very limited access. Continue?`
+  const message = isLast
+    ? `Remove "${name}"? This user will have NO permission sets and very limited access.`
     : `Remove "${name}" from this user?`;
-  if (!confirm(msg)) return;
-  fetch(`/api/users/${userId}/permission-sets/${psetId}`, {
-    method: 'DELETE', credentials: 'same-origin',
-  }).then(r => {
-    if (r.status === 204) window.location.reload();
-    else r.json().then(j => alert((j.error && j.error.message) || 'Could not remove.'));
+  window.PrimeQA.confirm({
+    title: 'Remove permission set?',
+    message: message,
+    submitLabel: 'Remove',
+    variant: 'danger',
+    onConfirm: function () {
+      _primeqaUserMutate(
+        `/api/users/${userId}/permission-sets/${psetId}`, 'DELETE',
+        'Could not remove permission set.');
+    },
   });
 };
 

@@ -8,20 +8,24 @@ Covers:
   User detail:
     4. /settings/users/<id> renders with assigned sets + effective perms
     5. Effective permissions grouped by category with attribution
+    6. Deactivate button wired to PrimeQA_toggleUserActive → API
+    7. Button label flips to Reactivate when user.is_active = False
+    8. Remove button routes through PrimeQA.confirm modal
+    9. Self-view hides Deactivate + locks own admin-bearing sets
   Permission Sets list:
-    6. /settings/permission-sets renders with base + granular + custom sections
-    7. Counts (permissions + users) render correctly
+   10. /settings/permission-sets renders with base + granular + custom sections
+   11. Counts (permissions + users) render correctly
   Assignment API:
-    8. POST /api/users/<id>/permission-sets adds new set(s)
-    9. POST is idempotent (adding same set twice returns 2 requested, 0 added)
-   10. POST with non-existent set_id -> 400
-   11. POST without manage_users -> 403
-   12. DELETE /api/users/<id>/permission-sets/<pset_id> removes the set
-   13. DELETE returns 404 for non-assigned set
+   12. POST /api/users/<id>/permission-sets adds new set(s)
+   13. POST is idempotent (adding same set twice returns 2 requested, 0 added)
+   14. POST with non-existent set_id -> 400
+   15. POST without manage_users -> 403
+   16. DELETE /api/users/<id>/permission-sets/<pset_id> removes the set
+   17. DELETE returns 404 for non-assigned set
   Self-protection:
-   14. Admin cannot revoke their own admin_base (SELF_ADMIN_REVOKE 400)
-   15. POST /api/users/<id>/deactivate blocks self-deactivation (SELF_DEACTIVATE 400)
-   16. Admin can deactivate OTHER users via API
+   18. Admin cannot revoke their own admin_base (SELF_ADMIN_REVOKE 400)
+   19. POST /api/users/<id>/deactivate blocks self-deactivation (SELF_DEACTIVATE 400)
+   20. Admin can deactivate OTHER users via API
 """
 
 import os
@@ -218,6 +222,125 @@ def run_tests():
                 db.close()
     results.append(test("5. User detail groups by category + shows attribution",
                         test_detail_groups_and_attributes))
+
+    # ---- /settings/users/<id> button wiring (UI bug fix) ----
+    # Regression: the Deactivate button used to be wrapped in a <form>
+    # with data-confirm but no data-confirm-form attribute, so clicking
+    # Confirm in the modal was a no-op. It's now a JS-driven button
+    # that calls PrimeQA_toggleUserActive → fetches the API endpoint →
+    # toast on error, reload on success.
+
+    def test_detail_deactivate_button_wired():
+        login_form("admin@primeqa.io", "changeme123")
+        r = client.get(f"/settings/users/{dev_u.id}")
+        html = r.data.decode("utf-8", "replace")
+        # The active-user branch renders a Deactivate button wired to
+        # the JS helper. Must carry the data-* attrs the helper reads
+        # + the onclick that invokes it.
+        assert 'onclick="PrimeQA_toggleUserActive(this);"' in html, \
+            "Deactivate button missing onclick handler"
+        assert 'data-user-id="' + str(dev_u.id) + '"' in html, \
+            "Deactivate button missing data-user-id"
+        assert 'data-active="true"' in html, \
+            "Deactivate button must mark active=true for an active user"
+        # Label text wraps on its own line in the template — match it
+        # in a whitespace-tolerant way.
+        import re as _re
+        assert _re.search(r">\s*Deactivate\s*<", html), \
+            "button label should read Deactivate for active user"
+        # Helper itself must be defined on the page
+        assert "window.PrimeQA_toggleUserActive" in html, \
+            "PrimeQA_toggleUserActive helper missing from page script"
+        # Must call the API endpoint (not the old /users/:id/toggle-active
+        # web route which was the root-cause path).
+        assert "/api/users/${userId}/${path}" in html, \
+            "helper should fetch the API deactivate/activate endpoint"
+    results.append(test(
+        "6. Deactivate button wired to API via PrimeQA_toggleUserActive",
+        test_detail_deactivate_button_wired))
+
+    def test_detail_reactivate_when_inactive():
+        # Flip dev_u inactive, render, assert the button flips label +
+        # data-active="false". Flip back in finally so the rest of the
+        # suite sees the user active.
+        db = SessionLocal()
+        try:
+            u = db.query(User).filter_by(id=dev_u.id).first()
+            prior = u.is_active
+            u.is_active = False
+            db.commit()
+        finally:
+            db.close()
+        try:
+            login_form("admin@primeqa.io", "changeme123")
+            r = client.get(f"/settings/users/{dev_u.id}")
+            html = r.data.decode("utf-8", "replace")
+            import re as _re
+            assert 'data-active="false"' in html, \
+                "inactive user must render data-active=false"
+            assert _re.search(r">\s*Reactivate\s*<", html), \
+                "button label should flip to Reactivate for an inactive user"
+            assert 'onclick="PrimeQA_toggleUserActive(this);"' in html
+        finally:
+            db = SessionLocal()
+            try:
+                u = db.query(User).filter_by(id=dev_u.id).first()
+                u.is_active = prior
+                db.commit()
+            finally:
+                db.close()
+    results.append(test(
+        "7. Button label flips to Reactivate when user is inactive",
+        test_detail_reactivate_when_inactive))
+
+    def test_detail_remove_button_uses_custom_confirm():
+        # The Remove button on permission-set rows was previously using
+        # native confirm(); it's now on PrimeQA_revokeSet which routes
+        # through window.PrimeQA.confirm for the custom modal.
+        login_form("admin@primeqa.io", "changeme123")
+        r = client.get(f"/settings/users/{dev_u.id}")
+        html = r.data.decode("utf-8", "replace")
+        assert 'onclick="PrimeQA_revokeSet(this);"' in html, \
+            "Remove button missing onclick handler"
+        # Helper must invoke the custom modal (no bare `confirm(` call)
+        assert "window.PrimeQA.confirm(" in html, \
+            "PrimeQA_revokeSet should use the custom confirm modal"
+        assert "/api/users/${userId}/permission-sets/${psetId}" in html, \
+            "Remove should fetch the permission-sets DELETE endpoint"
+    results.append(test(
+        "8. Remove button routes through PrimeQA.confirm modal",
+        test_detail_remove_button_uses_custom_confirm))
+
+    def test_detail_self_view_hides_destructive():
+        # Admin viewing their own detail page: no Deactivate button
+        # (you can't deactivate yourself) and no Remove on the base set
+        # that contains manage_users.
+        login_form("admin@primeqa.io", "changeme123")
+        # admin's own id — pull via the /api/auth/me endpoint
+        me = client.get(
+            "/api/auth/me",
+            headers={"Authorization": f"Bearer {login_api('admin@primeqa.io', 'changeme123')}"},
+        ).get_json()
+        my_id = me["id"]
+        r = client.get(f"/settings/users/{my_id}")
+        assert r.status_code == 200, r.status_code
+        html = r.data.decode("utf-8", "replace")
+        # Self-view marker
+        assert "(This is you)" in html, \
+            "self-view should render the '(This is you)' marker"
+        # Deactivate button absent. The onclick attribute is the unique
+        # marker; if the template accidentally rendered the button
+        # anyway the assertion below would catch it.
+        assert 'onclick="PrimeQA_toggleUserActive(this);"' not in html, \
+            "self-view should not render a Deactivate/Reactivate button"
+        # Admin-holding set's Remove should be swapped for the
+        # "(locked)" marker. (Relies on admin having admin_base which
+        # contains_admin → can_remove=False for self.)
+        assert "(locked)" in html, \
+            "self-view should mark admin-bearing sets as locked"
+    results.append(test(
+        "9. Self-view hides Deactivate + locks own admin-bearing sets",
+        test_detail_self_view_hides_destructive))
 
     # ---- /settings/permission-sets ----
     def test_permission_sets_page():
