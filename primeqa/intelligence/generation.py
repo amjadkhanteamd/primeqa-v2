@@ -130,9 +130,9 @@ class TestCaseGenerator:
                 # accidentally overriding the whole router chain \u2014
                 # meaning complexity detection, Sonnet-first routing, and
                 # upgrades to the OPUS / SONNET constants were all
-                # silently bypassed. Per-tenant pins now go through
-                # tenant_agent_settings.force_model (TenantPolicy path),
-                # which is the intentional mechanism.
+                # silently bypassed. Per-tenant pinning now flows
+                # through tenant_agent_settings.llm_always_use_opus
+                # (TenantPolicy path).
             )
         except LLMError:
             log.error(f"Test plan generation failed (gateway)")

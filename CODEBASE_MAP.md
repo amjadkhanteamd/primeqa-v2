@@ -74,7 +74,7 @@ Generated 2026-04-20. One line per file: path / what it does / what it depends o
 
 - `__init__.py` — re-exports `llm_call`, `LLMError`, `LLMResponse` — deps: gateway
 - `gateway.py` — `llm_call(task, tenant_id, api_key, ...)` entry point: rate limits → complexity detect → chain select → PII redact → provider.invoke with chain traversal → usage.record per attempt → LLMResponse(usage_log_id, usage_log_ids) — deps: router, provider, usage, limits, redact, prompts.registry, feedback_rules
-- `router.py` — `_CHAINS` table per task × complexity → [models]; `select_chain` with TenantPolicy overrides (force_model, always_use_opus, allow_haiku); OPUS/SONNET/HAIKU constants — deps: none
+- `router.py` — `_CHAINS` table per task × complexity → [models]; `select_chain` with TenantPolicy overrides (always_use_opus, allow_haiku); OPUS/SONNET/HAIKU constants — deps: none
 - `provider.py` — thin wrapper over anthropic SDK; backoff for 429/529, timeout retry, status classification; emits ProviderResponse — deps: anthropic
 - `pricing.py` — MODEL_PRICING dict; `compute_cost_usd(model, in, out, cached_in, cache_write)` with cache read/write multipliers — deps: decimal
 - `usage.py` — `record(...)` inserts llm_usage_log row (own Session, fire-and-forget, returns id); `attach_batch(log_id, batch_id)` back-links post-call — deps: intelligence.models, primeqa.db.engine

@@ -52,7 +52,6 @@ class TenantPolicy:
     """Per-tenant overrides, loaded from tenant_agent_settings."""
     always_use_opus: bool = False       # premium tier: best model everywhere
     allow_haiku: bool = True            # some tenants disable cheapest tier
-    force_model: Optional[str] = None   # hard override, e.g. "opus-4"
 
 
 # ---- Routing table --------------------------------------------------------
@@ -131,10 +130,6 @@ def select_chain(
     default; index 1 is used for the single-hop escalation on retry.
     """
     policy = tenant_policy or TenantPolicy()
-
-    # Hard override wins over everything (superadmin / testing).
-    if policy.force_model:
-        return [policy.force_model]
 
     # "Always Opus" premium tier: take whatever the chain would have been
     # and replace with Opus-only, no escalation needed (already at top).
