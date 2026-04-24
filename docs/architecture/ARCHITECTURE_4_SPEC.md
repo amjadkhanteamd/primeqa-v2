@@ -1,568 +1,362 @@
 # PrimeQA Architecture 4 — Tool-Use Test Plan Generation
 
-**Status:** DRAFT — pending review by Amjad, then Claude Code sanity check  
-**Supersedes:** the one-shot JSON generation path in `primeqa/intelligence/llm/prompts/test_plan_generation.py`  
-**Scope:** Test plan generation for Salesforce requirements. Execution, review, and dashboard layers are unchanged.  
+**Status:** v2 — revised after Claude Code sanity check, ready for implementation
+**Supersedes:** the one-shot JSON generation path in `primeqa/intelligence/llm/prompts/test_plan_generation.py`
+**Scope:** Test plan generation for Salesforce requirements. Execution, review, and dashboard layers are unchanged.
 **Goal:** Make whole classes of bugs (unresolved `$vars`, invalid fields, out-of-order steps) impossible by construction.
+
+**Changes from v1 (post-sanity-check):**
+- Section 5: cleanup uses new `generation_created_entities` table, not `run_created_entities`
+- Section 9: dropped dual-format persistence — v4 persists `tool_invocations` only, executor branches by architecture column
+- Section 10.3: feature flag is enum (`'v3'` / `'v4'`), not bool — read path clarified
+- Section 11.2: shadow mode runs bypass tier caps
+- Section 15 (new): implementation gotchas — per-turn cost attribution, feedback auto-load, cache invalidation, sync-route prohibition
 
 ---
 
 ## 1. Design Principles — Locked
 
-These are the constitution. Every downstream decision answers to them.
+1. **LLM owns intent. System owns structure.** The LLM decides *what* to test and *what to verify*. The system decides *how* to execute, *how* to track state, and *how* to validate.
 
-1. **LLM owns intent. System owns structure.**  
-   The LLM decides *what* to test and *what to verify*. The system decides *how* to execute, *how* to track state, and *how* to validate. If these ever blur, the blur side loses.
+2. **State is handed out, never invented.** State refs are returned by tools, not guessed by the LLM. Referencing an undeclared state_ref is a tool error.
 
-2. **State is handed out, never invented.**  
-   State refs (`case_1`, `acc_1`, etc.) are returned by tools, not guessed by the LLM. Referencing an undeclared state_ref is a tool error, not a runtime failure.
+3. **Scenario binds execution.** When a test case declares `actors = ["Case", "Account"]`, the system enforces that declaration.
 
-3. **Scenario binds execution.**  
-   When a test case declares `actors = ["Case", "Account"]`, the system enforces that declaration. Attempts to operate on undeclared objects are tool errors.
+4. **Strict > convenient.** Duplicate state_refs error. Invalid field names error. Retries happen with narrowed context, not resubmitted plans.
 
-4. **Strict > convenient.**  
-   Duplicate state_refs error. Invalid field names error. Retries happen with narrowed context, not resubmitted plans. No silent recovery.
+5. **11 tools. No more.** Expansion requires real-customer evidence.
 
-5. **11 tools. No more.**  
-   The tool vocabulary is locked. Expansion requires real-customer evidence, not speculative capability.
-
-6. **Domain Packs influence, they don't enforce.**  
-   Packs remain prompt-layer text. They shape LLM behavior. They do not gate tool validation. Enforcement-via-knowledge is a v2 topic.
+6. **Domain Packs influence, they don't enforce.** Packs remain prompt-layer text.
 
 ---
 
-## 2. Tool Vocabulary — 11 Tools, Locked
+## 2. Tool Vocabulary — 11 Tools
 
 ### 2.1 Scenario control (3)
 
-**`start_test_case`**
-
-Begins a test case. Must be called before any given/when/then tools. The declared `actors` list binds execution — subsequent tool calls referencing objects outside this list are errors.
+**`start_test_case`** — begins a test case. Must be called before any given/when/then tools. The `actors` list binds execution.
 
 ```json
 {
-  "name": "start_test_case",
-  "input_schema": {
-    "title": "string, max 200",
-    "intent": "string, one sentence: what is being tested",
-    "actors": ["string"],  // Salesforce object API names the test touches
-    "relationships": ["string"],  // optional, e.g. "Escalation__c.CaseId -> Case.Id"
-    "conditions": ["string"],  // preconditions in natural language
-    "expected_outcome": "string, one sentence: what should be true at the end",
-    "coverage_type": "positive_flow | negative_validation | boundary | edge_case | regression"
-  }
+  "title": "string, max 200",
+  "intent": "string, one sentence",
+  "actors": ["string"],
+  "relationships": ["string, optional"],
+  "conditions": ["string"],
+  "expected_outcome": "string, one sentence",
+  "coverage_type": "positive_flow | negative_validation | boundary | edge_case | regression"
 }
 ```
 
-Returns: `{"status": "ok", "test_case_id": "tc_1"}`. The system assigns `tc_1` / `tc_2` / etc. sequentially within a plan.
+Returns: `{"status": "ok", "test_case_id": "tc_1"}`.
 
----
+**`end_test_case`** — finalizes the current test case. State refs cleared. Errors if zero `when_*` calls.
 
-**`end_test_case`**
-
-Finalizes the current test case. State refs declared during this test case are dropped from scope. The next `start_test_case` begins a fresh scope.
-
-```json
-{
-  "name": "end_test_case",
-  "input_schema": {}
-}
-```
-
-Returns: `{"status": "ok", "test_case_id": "tc_1", "steps_recorded": 8}`.
-
-Error if called without an open test case, or if the test case has zero `when_*` tool calls (a test case must exercise something).
-
----
-
-**`end_test_plan`**
-
-Signals no more test cases. The system emits the accumulated plan for persistence. The LLM's job is done.
-
-```json
-{
-  "name": "end_test_plan",
-  "input_schema": {}
-}
-```
-
-Returns: `{"status": "ok", "test_case_count": 5, "plan_id": "pending"}`. The system then persists the plan via existing test-case-version pipeline and returns the persisted ids out-of-band (to the caller of the generation pipeline, not back to the LLM).
-
----
+**`end_test_plan`** — signals no more test cases. System emits the accumulated plan for persistence.
 
 ### 2.2 Given — preconditions (1)
 
-**`given_record`**
-
-Declares a record that must exist before the action under test. The system creates it as a real Salesforce record (respecting the namespace for cleanup). Returns a state_ref the LLM can use.
+**`given_record`** — declares a precondition record. System creates it in Salesforce (namespace-stamped). Returns state_ref.
 
 ```json
 {
-  "name": "given_record",
-  "input_schema": {
-    "object": "string, Salesforce API name",
-    "state_ref": "string, must be unique within test case, snake_case",
-    "field_values": "object, field API names as keys",
-    "notes": "string, optional natural-language explanation of why this record is needed"
-  }
+  "object": "string (SF API name)",
+  "state_ref": "string (unique within test case, snake_case)",
+  "field_values": "object",
+  "notes": "string, optional"
 }
 ```
 
-Returns on success: `{"status": "ok", "state_ref": "acc_1", "salesforce_id": "001xx00000AAAAA"}`.
+Success returns `{"status": "ok", "state_ref": "acc_1", "salesforce_id": "001xx..."}`.
 
-Returns on failure:
-```json
-{
-  "status": "error",
-  "error_code": "OBJECT_NOT_IN_ACTORS" | "INVALID_FIELD" | "DUPLICATE_STATE_REF" | "SALESFORCE_CREATE_FAILED",
-  "error_message": "Account is not in declared actors [Case, Contact]. Add it via start_test_case or use an in-scope object.",
-  "details": {...}
-}
-```
-
-Field references: values may reference earlier state_refs via `$<state_ref>.<field>` syntax. E.g. `{"AccountId": "$acc_1.Id"}`. The system resolves these at execution time.
-
----
+Field values may reference prior state_refs via `$<state_ref>.<field>`. Resolved at tool-execution time.
 
 ### 2.3 When — actions under test (3)
 
-**`when_create_record`**
+**`when_create_record`** — same schema as `given_record` plus optional `expect_failure: {error_code, message_pattern}`. Semantically distinct from `given_record`: this IS the action being tested.
 
-The action being tested is record creation. This differs from `given_record` semantically — `given_record` is "setup," `when_create_record` is "the thing we're verifying Salesforce handles correctly."
-
-Same schema as `given_record` plus:
+**`when_update_record`**:
 ```json
 {
-  "expect_failure": "object, optional — { error_code: string, message_pattern: string }"
+  "target_ref": "string",
+  "field_values": "object",
+  "expect_failure": "object, optional",
+  "notes": "string, optional"
 }
 ```
 
-If `expect_failure` is provided, the tool validates that the create attempt failed with a matching error. If the create succeeds instead, the tool returns `UNEXPECTED_SUCCESS`.
-
----
-
-**`when_update_record`**
-
+**`when_delete_record`**:
 ```json
 {
-  "name": "when_update_record",
-  "input_schema": {
-    "target_ref": "string, state_ref of a previously-declared record",
-    "field_values": "object",
-    "expect_failure": "object, optional",
-    "notes": "string, optional"
-  }
+  "target_ref": "string",
+  "expect_failure": "object, optional",
+  "notes": "string, optional"
 }
 ```
-
-Target must be in scope (declared via `given_record` or `when_create_record` in the current test case). Referencing an out-of-scope ref returns `STATE_REF_NOT_FOUND`.
-
----
-
-**`when_delete_record`**
-
-```json
-{
-  "name": "when_delete_record",
-  "input_schema": {
-    "target_ref": "string",
-    "expect_failure": "object, optional",
-    "notes": "string, optional"
-  }
-}
-```
-
-Same validation as `when_update_record`.
-
----
 
 ### 2.4 Then — assertions (3)
 
-**`then_verify`**
-
-Verifies fields on a specific record.
-
+**`then_verify`** — verifies fields on a specific record.
 ```json
 {
-  "name": "then_verify",
-  "input_schema": {
-    "state_ref": "string",
-    "assertions": "object, field API name → expected value",
-    "notes": "string, optional"
-  }
+  "state_ref": "string",
+  "assertions": "object (field → expected value)",
+  "notes": "string, optional"
 }
 ```
 
-The system re-queries the record (fresh fetch, not cached from the create/update response) and asserts each field matches. Mismatches return `ASSERTION_FAILED` with `comparison_details` (same structure as current `verify_comparison_details`).
+Special assertion values: `"$NOT_NULL"`, `"$NULL"`, `"$GREATER_THAN:<v>"`, `"$LESS_THAN:<v>"`, plain values for exact match.
 
-Special values in assertions:
-- `"$NOT_NULL"` — field must be populated
-- `"$NULL"` — field must be empty
-- `"$GREATER_THAN:<value>"` / `"$LESS_THAN:<value>"` — comparison
-- regular values — exact match
-
----
-
-**`then_verify_related`**
-
-Verifies that a related record exists in response to a prior action (Flow output, trigger-created record, etc.).
-
+**`then_verify_related`** — verifies a related record exists with specific fields.
 ```json
 {
-  "name": "then_verify_related",
-  "input_schema": {
-    "parent_ref": "string, state_ref of the parent",
-    "related_object": "string, object API name",
-    "filters": "object, field → value (in addition to the parent relationship)",
-    "assertions": "object, fields the related record must satisfy",
-    "notes": "string, optional"
-  }
+  "parent_ref": "string",
+  "related_object": "string",
+  "filters": "object",
+  "assertions": "object",
+  "notes": "string, optional"
 }
 ```
 
-The system resolves the parent-child relationship from the `relationships` declared in `start_test_case` if present, otherwise attempts to infer from standard Salesforce relationship naming (`<Parent>Id` on the child). If relationship can't be resolved, returns `RELATIONSHIP_NOT_DECLARED` — the LLM should call `start_test_case` again with explicit relationships, or restructure the test.
+If `start_test_case.relationships` declared, strict enforcement. Else fall back to standard `<Parent>Id` naming inference.
 
----
-
-**`then_verify_absence`**
-
-Verifies that NO related record exists. Used for "the Flow should NOT fire under these conditions" tests.
-
-```json
-{
-  "name": "then_verify_absence",
-  "input_schema": {
-    "parent_ref": "string",
-    "related_object": "string",
-    "filters": "object",
-    "notes": "string, optional"
-  }
-}
-```
-
-Returns success if the query returns zero matches, error otherwise.
-
----
+**`then_verify_absence`** — verifies NO related record exists. Same args as `then_verify_related` minus assertions.
 
 ### 2.5 Query (1)
 
-**`then_query_and_assert`**
-
-Arbitrary record-set assertions. For when you need to verify count, or verify properties of records the test didn't create directly.
-
+**`then_query_and_assert`**:
 ```json
 {
-  "name": "then_query_and_assert",
-  "input_schema": {
-    "object": "string",
-    "filters": "object",
-    "expected_count": "integer, optional — if provided, asserts exact count",
-    "assertions": "object, optional — if provided, asserts all matching records satisfy these fields",
-    "notes": "string, optional"
-  }
+  "object": "string",
+  "filters": "object",
+  "expected_count": "integer, optional",
+  "assertions": "object, optional",
+  "notes": "string, optional"
 }
 ```
 
-At least one of `expected_count` or `assertions` must be provided. Both can be provided.
-
----
+At least one of `expected_count` or `assertions` required.
 
 ### 2.6 Async (1)
 
-**`wait_until`**
-
-Polls a condition tool until it succeeds or times out. Replaces fixed sleeps for async-triggered assertions (Flow creating a record, batch job completing, etc.).
-
+**`wait_until`** — polls a condition tool until success or timeout.
 ```json
 {
-  "name": "wait_until",
-  "input_schema": {
-    "condition_tool": "string, one of: then_verify | then_verify_related | then_query_and_assert",
-    "condition_args": "object, arguments to pass to the condition tool",
-    "timeout_seconds": "integer, default 10, max 60",
-    "poll_interval_seconds": "integer, default 1, min 1",
-    "notes": "string, optional"
-  }
+  "condition_tool": "then_verify | then_verify_related | then_query_and_assert",
+  "condition_args": "object",
+  "timeout_seconds": "integer, default 10, max 60",
+  "poll_interval_seconds": "integer, default 1, min 1",
+  "notes": "string, optional"
 }
 ```
 
-Returns success when the condition tool returns success. Returns `TIMEOUT` if the condition never satisfies within `timeout_seconds`. The error message includes the last condition-tool error to aid debugging.
-
-`wait_until` is a meta-tool: it doesn't validate Salesforce state directly, it invokes another tool repeatedly. The invoked tool's usual validations apply.
+Returns `TIMEOUT` on exhaustion with last condition-tool error in details.
 
 ---
 
 ## 3. State Registry
 
 ### 3.1 Scope
-
-State refs live at **test case scope**. When `start_test_case` is called, a fresh state registry is created. When `end_test_case` is called, the registry is cleared. State refs do NOT persist across test cases within a plan.
-
-This is intentional. It prevents test cases from coupling via shared state. Each test case is independent.
+State refs live at **test case scope**. Fresh registry on `start_test_case`, cleared on `end_test_case`. Refs do NOT persist across test cases.
 
 ### 3.2 Registry contents
+Per state_ref: `object`, `salesforce_id`, `created_by_tool`, `created_at_step`, `field_values_set`, `namespace`.
 
-For each state_ref:
-```
-{
-  "state_ref": "acc_1",
-  "object": "Account",
-  "salesforce_id": "001xx00000AAAAA",
-  "created_by_tool": "given_record",
-  "created_at_step": 1,
-  "field_values_set": {"Name": "Test Account", ...},
-  "namespace": "pqa_r847_tc1_ab3f"
-}
-```
+### 3.3 Lifecycle ownership
+`GenerationState` is created inside `generation_jobs.process_job` when a job is claimed and torn down in the `finally` block alongside the heartbeat loop. **NOT tied to Flask request context** — A4 runs on the worker service only.
 
-The registry is in-memory per generation call, not persisted. Once `end_test_case` is called, the tools that created real Salesforce records add entries to the cleanup queue (Section 5).
+### 3.4 Reference resolution
+- `{"AccountId": "$acc_1.Id"}` → resolved to real ID
+- `{"Description": "See $acc_1"}` → literal text (no `.field` = no resolution)
+- Undeclared ref → `STATE_REF_NOT_FOUND`
+- Invalid field on ref → `INVALID_REFERENCED_FIELD`
 
-### 3.3 Reference resolution
-
-State ref references in `field_values` use `$<state_ref>.<field>` syntax. Resolution happens at tool-execution time, not at LLM-emission time.
-
-- `{"AccountId": "$acc_1.Id"}` → resolved to `{"AccountId": "001xx00000AAAAA"}`
-- `{"Name": "Child of $acc_1.Name"}` → resolved to `{"Name": "Child of Test Account"}`
-- `{"Description": "This references $acc_1"}` → resolved to literal "This references $acc_1" (no `.field` suffix = no resolution, treated as literal text)
-
-If a `$ref.field` references a state_ref not in the current scope, `given_record` / `when_*_record` returns `STATE_REF_NOT_FOUND`. If the field doesn't exist on the referenced record, returns `INVALID_REFERENCED_FIELD`.
-
-### 3.4 Standard env references
-
-Some references resolve to system values, not state:
-- `$CURRENT_USER.Id` → the executing user's Salesforce Id
-- `$TODAY` → today's date in ISO format
-- `$NOW` → current datetime in ISO format
-
-These work everywhere `$<state_ref>.<field>` works and don't require declaration.
+### 3.5 Standard env references
+`$CURRENT_USER.Id`, `$TODAY`, `$NOW` — resolved without declaration.
 
 ---
 
 ## 4. Scenario Enforcement
 
-When `start_test_case` declares `actors`, subsequent tool calls are validated against that list:
-
+When `start_test_case` declares `actors`:
 - `given_record(object=X)` — X must be in actors
 - `when_create_record(object=X)` — X must be in actors
-- `when_update_record(target_ref=R)` — R's object (looked up in registry) must be in actors
+- `when_update_record(target_ref=R)` — R's object must be in actors
 - `when_delete_record(target_ref=R)` — same
 - `then_verify_related(related_object=X)` — X must be in actors
 - `then_verify_absence(related_object=X)` — X must be in actors
 - `then_query_and_assert(object=X)` — X must be in actors
 
-When `relationships` is declared, `then_verify_related` / `then_verify_absence` validate the parent-child relationship is declared. If relationships is empty, these tools fall back to Salesforce standard-naming inference (`<Parent>Id` field on child). If that inference fails, they error and the LLM must either restructure or update `actors`/`relationships`.
+`relationships` is optional. If declared, strict enforcement; if empty, fall back to standard-naming inference.
 
-If the LLM needs to broaden scope mid-test-case, it can call `start_test_case` again — this is treated as updating the current scope, not starting a new test case, PROVIDED `end_test_case` hasn't been called. Post-`end_test_case`, `start_test_case` begins a new test case.
+Mid-test-case scope update: `start_test_case` called again BEFORE `end_test_case` updates current scope. After `end_test_case`, it begins a new test case.
 
 ---
 
 ## 5. Cleanup — Dual Layer
 
-### 5.1 Namespace
+### 5.1 Namespace stamping
+Every record created via `given_record` / `when_create_record` gets a namespace stamp. LLM doesn't see it.
 
-Every record created via `given_record` or `when_create_record` gets a namespace stamp. The system applies this automatically — the LLM doesn't see it.
+Default strategy (per-object via metadata):
+1. `External_Id__c` field available → `pqa_<run_id>_<tc_index>_<random>`
+2. Name writable without format validation → prefix `[PQA-<run_id>-<tc_index>] `
+3. Description/Notes field available → namespace suffix
+4. None of the above → log warning, rely on cleanup queue only
 
-**Implementation:** the system prefixes or appends a namespace marker to a standard identifier field. Default strategy:
+### 5.2 Cleanup queue — new table
 
-1. If the object has an `External_Id__c` field (convention), set it to `pqa_<run_id>_<tc_index>_<random>`.
-2. Else if the object's Name field is writable and not subject to validation rules about format, prefix the Name with `[PQA-<run_id>-<tc_index>] `.
-3. Else add the namespace as a Description or Notes field suffix if available.
-4. If no stamping surface exists, log a warning and skip stamping for that record — this record relies on cleanup-queue only.
+**New table `generation_created_entities`** (not extension of `run_created_entities`):
 
-**Decision to flag:** the "which field to stamp" decision is implementation detail. The spec requires that SOME stamping happens per record. Claude Code will decide the exact per-object strategy during implementation, ideally via metadata inspection.
+```sql
+CREATE TABLE generation_created_entities (
+    id SERIAL PRIMARY KEY,
+    tenant_id INTEGER NOT NULL,
+    generation_batch_id INTEGER REFERENCES generation_batches(id) ON DELETE CASCADE,
+    generation_job_id INTEGER REFERENCES generation_jobs(id) ON DELETE SET NULL,
+    environment_id INTEGER NOT NULL,
+    salesforce_id VARCHAR(20) NOT NULL,
+    object_name VARCHAR(80) NOT NULL,
+    state_ref VARCHAR(100),
+    namespace VARCHAR(100),
+    created_at TIMESTAMP DEFAULT NOW(),
+    cleanup_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    cleanup_attempted_at TIMESTAMP,
+    cleanup_error TEXT
+);
 
-### 5.2 Cleanup queue
+CREATE INDEX idx_gce_pending ON generation_created_entities(cleanup_status, created_at)
+  WHERE cleanup_status = 'pending';
+CREATE INDEX idx_gce_batch ON generation_created_entities(generation_batch_id);
+```
 
-The state registry tracks everything created. When `end_test_case` fires (success or failure), the system adds all created records to a cleanup queue in LIFO order (newest first — handles dependencies naturally, since children are typically created after parents).
+**Decision rationale:** Reusing `run_created_entities` would require making `run_id` nullable and adding `generation_batch_id`. New table is cleaner: clearer semantics, independent lifecycle, no cascade ambiguity. `CleanupEngine._delete_entity` body is reusable.
 
-Cleanup runs post-generation, after the full plan is persisted. It runs async in a worker job, not blocking the generation response. The cleanup job:
+### 5.3 Cleanup worker job
+New job type in existing worker (`worker.py:566-575`). Third polling loop for `generation_cleanup`.
 
-1. Reads cleanup queue for this generation run
-2. Attempts to delete records in order
-3. On delete failure (cascading constraint, managed-package block, etc.), logs the failure and continues
-4. Records surviving cleanup remain in Salesforce but are namespace-stamped — a separate periodic sweep can purge them later
+Flow:
+1. Query pending entities where parent batch is complete
+2. Delete in reverse-creation order (LIFO)
+3. On success: `cleanup_status = 'cleaned'`
+4. On failure: `cleanup_status = 'failed'` with error, don't retry immediately
 
-### 5.3 Periodic namespace purge
+### 5.4 Periodic purge
+Scheduler job (daily) queries Salesforce for PQA-namespaced records older than 48 hours and deletes them. Backstop for partial cleanup failures.
 
-A scheduled job (daily) queries each relevant object for records with PQA namespace stamps older than 48 hours and deletes them. This is the backstop for the cleanup-queue's partial-failure mode.
-
-**Decision to flag:** the 48-hour window is arbitrary. Claude Code can tune during implementation.
-
-### 5.4 Execution-phase records are separate
-
-Architecture 4 covers test plan GENERATION. When the plan is later EXECUTED (a separate pipeline stage), it creates its own records with its own namespace. Those records follow the existing execution-phase cleanup rules, which are out of scope for this spec.
+### 5.5 Execution-phase records are separate
+A4 covers GENERATION. Execution creates its own records under existing `run_created_entities`. That pipeline is untouched.
 
 ---
 
 ## 6. Retry Protocol
 
-### 6.1 When retries happen
+### 6.1 Retryable errors
+`INVALID_FIELD`, `OBJECT_NOT_IN_ACTORS`, `STATE_REF_NOT_FOUND`, `DUPLICATE_STATE_REF`, `UNEXPECTED_SUCCESS`, `RELATIONSHIP_NOT_DECLARED`
 
-Retries happen when a tool call returns an error that the LLM could plausibly fix. Specifically:
+### 6.2 Non-retryable errors
+`SALESFORCE_*_FAILED` (real SF errors), `TIMEOUT`, infrastructure errors → fail the generation job.
 
-- `INVALID_FIELD` — LLM referenced a field that doesn't exist → retry with corrected field
-- `OBJECT_NOT_IN_ACTORS` — LLM called a tool on an undeclared object → retry after updating actors or using a different object
-- `STATE_REF_NOT_FOUND` — LLM referenced a state_ref that wasn't created → retry after creating the record or using a different ref
-- `DUPLICATE_STATE_REF` — LLM chose a name that's already taken → retry with a new name
-- `UNEXPECTED_SUCCESS` — an `expect_failure` test succeeded unexpectedly → retry may adjust the test or remove `expect_failure`
+### 6.3 Budget
+- Per-tool-call: 3 attempts
+- Per-plan cumulative: 15 retries
+- On exhaustion: abort current test case, LLM proceeds with next or `end_test_plan`
 
-Retries do NOT happen for:
-- `SALESFORCE_CREATE_FAILED` (real-world Salesforce error) — the test plan proceeds as generated; execution phase will surface this as a real test failure
-- `TIMEOUT` from wait_until — likely a real async-timing issue, not a plan-construction issue
-- Infrastructure errors (DB unavailable, etc.) — these propagate up and fail the generation job
-
-### 6.2 Retry budget
-
-Per-tool-call retry budget: **3 attempts**.
-
-Across the whole plan, cumulative retry budget: **15 retries**. If this is exceeded, the current test case is aborted (marked failed in the plan's metadata, no persistence for it) and the LLM is told "test case aborted due to retry budget" and may proceed to the next test case.
-
-### 6.3 Retry context
-
-On retry, the LLM receives ONLY:
-
-- The failed tool call (verbatim)
-- The error code and error_message
-- Any relevant state: current test case's actors, currently-declared state_refs, recently-declared field_values
-
-The LLM does NOT receive the full prompt history on retry. It receives a targeted correction request:
+### 6.4 Retry context
+LLM receives the failed call, error code, error message, and relevant state (actors, declared refs, recent fields). NOT full prompt history.
 
 ```
 Your previous tool call failed:
-
   Tool: when_update_record
   Args: { "target_ref": "case_1", "field_values": { "FakeField": "x" } }
-  
-Error: INVALID_FIELD — "FakeField" does not exist on Case. 
-Available fields on Case that accept updates include: Status, Priority, Subject, IsEscalated, AccountId, ContactId, OwnerId, Description...
 
-Correct the tool call. Emit exactly one corrected tool call. Do not repeat earlier steps or change the test case structure.
+Error: INVALID_FIELD — "FakeField" does not exist on Case.
+Available fields on Case that accept updates: Status, Priority, Subject,
+IsEscalated, AccountId, ContactId, OwnerId, Description, Origin, Type...
+
+Correct the tool call. Emit exactly one corrected tool call.
+Do not repeat earlier steps or change the test case structure.
 ```
 
-The LLM responds with one corrected tool call. If that also errors, the retry counter increments and the process repeats.
-
-### 6.4 Abort behavior
-
-When retry budget is exhausted, the system:
-
-1. Marks the current test case as ABORTED in the plan
-2. Runs cleanup for any state in that test case
-3. Prompts the LLM: "Test case TC-N aborted. Proceed with the next test case or call end_test_plan."
-4. LLM either calls `start_test_case` to begin a new one, or `end_test_plan` to finish
-
-Aborted test cases are NOT persisted as test case versions. They show up in the generation job's metadata as "attempted but failed to construct" with the final error that caused the abort.
+### 6.5 Abort behavior
+- Mark test case ABORTED in plan metadata
+- Run cleanup for its state
+- Prompt LLM: proceed with next or `end_test_plan`
+- Aborted test cases NOT persisted as versions
 
 ---
 
 ## 7. Error Model
 
-### 7.1 Error codes (complete list)
+### 7.1 Error codes
 
-**Scope / declaration:**
-- `NO_OPEN_TEST_CASE` — tool called before start_test_case
-- `TEST_CASE_ALREADY_OPEN` — start_test_case called without end_test_case
-- `OBJECT_NOT_IN_ACTORS` — operation on undeclared object
-- `RELATIONSHIP_NOT_DECLARED` — related-record tool can't infer relationship
-
-**State refs:**
-- `DUPLICATE_STATE_REF` — reused a name already in scope
-- `STATE_REF_NOT_FOUND` — referenced a name not in scope
-- `INVALID_REFERENCED_FIELD` — `$ref.FakeField` where FakeField doesn't exist
-
-**Metadata:**
-- `INVALID_OBJECT` — object doesn't exist in org metadata
-- `INVALID_FIELD` — field doesn't exist on object
-- `FIELD_NOT_CREATABLE` — field is read-only, can't be in create payload
-- `FIELD_NOT_UPDATEABLE` — field is read-only, can't be in update payload
-
-**Assertion:**
-- `ASSERTION_FAILED` — expected value didn't match actual
-- `UNEXPECTED_SUCCESS` — expect_failure was declared but action succeeded
-- `UNEXPECTED_FAILURE` — expect_failure was NOT declared but action failed (generation-time error, not execution-time)
-
-**Execution:**
-- `SALESFORCE_CREATE_FAILED` — real error from Salesforce during given_record / when_create_record
-- `SALESFORCE_UPDATE_FAILED` — real error from Salesforce during when_update_record
-- `SALESFORCE_DELETE_FAILED` — real error from Salesforce during when_delete_record
-- `SALESFORCE_QUERY_FAILED` — real error from Salesforce during verify / query tools
-
-**Control:**
-- `TIMEOUT` — wait_until exhausted timeout
-- `END_WITHOUT_WHEN` — end_test_case called without any when_* tools
-- `RETRY_BUDGET_EXHAUSTED` — per-tool or per-plan retries depleted
+**Scope / declaration:** `NO_OPEN_TEST_CASE`, `TEST_CASE_ALREADY_OPEN`, `OBJECT_NOT_IN_ACTORS`, `RELATIONSHIP_NOT_DECLARED`
+**State refs:** `DUPLICATE_STATE_REF`, `STATE_REF_NOT_FOUND`, `INVALID_REFERENCED_FIELD`
+**Metadata:** `INVALID_OBJECT`, `INVALID_FIELD`, `FIELD_NOT_CREATABLE`, `FIELD_NOT_UPDATEABLE`
+**Assertion:** `ASSERTION_FAILED`, `UNEXPECTED_SUCCESS`, `UNEXPECTED_FAILURE`
+**Execution:** `SALESFORCE_CREATE_FAILED`, `SALESFORCE_UPDATE_FAILED`, `SALESFORCE_DELETE_FAILED`, `SALESFORCE_QUERY_FAILED`
+**Control:** `TIMEOUT`, `END_WITHOUT_WHEN`, `RETRY_BUDGET_EXHAUSTED`
 
 ### 7.2 Error shape
-
-Every tool error returns:
-
 ```json
 {
   "status": "error",
   "error_code": "INVALID_FIELD",
-  "error_message": "Human-readable message for LLM to parse",
-  "details": {
-    "tool_name": "when_update_record",
-    "failed_field": "FakeField",
-    "available_fields": [...],  // where applicable
-    "state_ref": "case_1"  // where applicable
-  }
+  "error_message": "Human-readable for LLM to parse",
+  "details": { "tool_name": "...", "failed_field": "...", "available_fields": [...], "state_ref": "..." }
 }
 ```
-
-Error messages are authored to be maximally useful to the LLM retry layer. They name the specific problem and often suggest a resolution.
 
 ---
 
 ## 8. Prompt Architecture
 
-The prompt sent to the LLM has four sections:
+Four sections in order:
 
-1. **System preamble** — unchanged from current architecture in spirit, but rewritten for tool-use paradigm. Explains the LLM's role: generate Salesforce test cases by calling tools. Emphasizes: scenario-first thinking, state discipline, Given/When/Then structure.
-2. **Tool descriptions** — full JSON schemas for the 11 tools, with 1-2 example usages per tool.
-3. **Domain Packs** — existing pack injection, unchanged. Packs are text that describes domain patterns and pitfalls. Positioned after tool descriptions, before examples.
-4. **Requirement context** — the Jira requirement, metadata context, coverage expectations. Unchanged in content from current architecture.
+1. **System preamble** — tool-use paradigm, scenario-first thinking, state discipline, Given/When/Then structure. Cached.
+2. **Tool descriptions** — full schemas for 11 tools with 1-2 examples each. Cached.
+3. **Domain Packs** — existing pack injection, unchanged. Appended after tool descriptions. Uncached (pack content varies per requirement).
+4. **Requirement context** — Jira requirement + metadata + coverage expectations. Uncached.
 
-**Examples in the preamble:** at least 2 full worked examples of test-case authoring via tools, covering:
-- A simple positive test (given → when_update → then_verify)
-- A complex test with async (given → when_update → wait_until → then_verify_related)
-
-These examples are the LLM's clearest guide to desired output shape. They should be high-quality, hand-authored, and cover the patterns the LLM will most commonly hit.
+At least 2 worked examples in preamble:
+- Simple positive test (given → when_update → then_verify)
+- Complex with async (given → when_update → wait_until → then_verify_related)
 
 ---
 
-## 9. Persistence — What Gets Stored
+## 9. Persistence — v4 Native
 
-The output of `end_test_plan` is the same shape as today's `generation_batches` + `test_case_versions` records, but derived from tool calls rather than one-shot JSON.
+**Revision from v1:** Dropped dual-format persistence. v4 stores `tool_invocations` only. Executor branches by `generation_architecture` column.
 
-**Mapping:**
+### 9.1 New columns on `test_case_versions`
+- `tool_invocations` JSONB — full tool history (v4 only)
+- `generation_architecture` VARCHAR(10) NOT NULL DEFAULT 'v3'
 
-Current `test_case_version.steps` becomes a JSONB array of tool invocations:
-
+### 9.2 Tool invocations format
 ```json
 [
-  {"step": 1, "tool": "given_record", "args": {...}, "result": {"state_ref": "acc_1", "salesforce_id": "..."}},
-  {"step": 2, "tool": "when_update_record", "args": {...}, "result": {"status": "ok"}},
-  {"step": 3, "tool": "then_verify", "args": {...}, "result": {"status": "ok"}},
-  ...
+  {"step": 1, "tool": "given_record", "args": {...}, "result": {"state_ref": "acc_1", "salesforce_id": "..."}, "retry_count": 0},
+  {"step": 2, "tool": "when_update_record", "args": {...}, "result": {"status": "ok"}, "retry_count": 0},
+  {"step": 3, "tool": "then_verify", "args": {...}, "result": {"status": "ok"}, "retry_count": 1}
 ]
 ```
 
-This preserves full execution fidelity. The legacy "steps" array format (action/target/field_values/expected_result) is also derived from this tool history for backward compatibility with the execution engine — the execution engine can continue consuming the legacy format while new generations carry both formats on the version record.
+### 9.3 Execution engine branching
+`StepExecutor` checks `version.generation_architecture`:
+- `'v3'` → reads `version.steps` (existing behavior)
+- `'v4'` → reads `version.tool_invocations` (new reader)
 
-**New columns on `test_case_versions`:**
-- `tool_invocations` JSONB — the full tool history
-- `generation_architecture` VARCHAR — `"v3_oneshot"` for legacy, `"v4_tooluse"` for A4
+`wait_until`, `then_verify_absence`, `then_query_and_assert` have no legacy equivalent — they execute natively under v4. No attempt to back-translate to v3 format.
 
-Existing `test_case_versions` rows get `generation_architecture = "v3_oneshot"` via migration default. New rows carry `"v4_tooluse"`. This makes it trivial to query "which architecture produced this test case?"
+**Rationale for dropping dual-format:** Claude Code audit identified lossy derivation for three tools. Cleaner to branch at execution time than fake backward compat.
 
-**Scenario metadata** from `start_test_case` is also persisted:
-- `test_case.intent` — already have similar
-- `test_case.actors` JSONB
-- `test_case.relationships` JSONB  
-- `test_case.conditions` JSONB
-- `test_case.expected_outcome` — similar to story_view's `expected_outcome`
-
-These reuse/extend the story_view columns shipped previously.
+### 9.4 Scenario metadata
+Scenario metadata from `start_test_case` persists on `test_cases`:
+- `test_case.intent` — existing/extended
+- `test_case.actors` JSONB — new
+- `test_case.relationships` JSONB — new, nullable
+- `test_case.conditions` JSONB — new
+- `test_case.expected_outcome` — reuses existing `story_view.expected_outcome` or new column
 
 ---
 
@@ -570,131 +364,165 @@ These reuse/extend the story_view columns shipped previously.
 
 ### 10.1 Router chain
 
-Architecture 4 has its own task name: `test_plan_generation_v4`. Separate from the existing `test_plan_generation`. They route independently:
+New task: `test_plan_generation_v4`.
 
 ```python
 "test_plan_generation_v4": {
     COMPLEXITY_LOW:    [SONNET],
-    COMPLEXITY_MEDIUM: [SONNET],  # no escalation — tool-use architecture should reduce need
-    COMPLEXITY_HIGH:   [SONNET],  # tentative — we expect Sonnet+packs to cover HIGH with tools
+    COMPLEXITY_MEDIUM: [SONNET, OPUS],   # escalation preserved as safety valve
+    COMPLEXITY_HIGH:   [SONNET, OPUS],   # conservative — tune after shadow data
 },
 ```
 
-**Decision to flag:** the HIGH tier on `test_plan_generation_v4` being Sonnet-only is aggressive. The TA's principle "LLM owns intent, System owns structure" predicts that intent-level tasks don't need Opus. But we should confirm via eval before locking. Initial implementation: leave HIGH on `[SONNET, OPUS]` with escalation allowed; tune down based on real data.
+**Revision from v1:** Initial implementation keeps `[SONNET, OPUS]` chains. "Sonnet-only even for HIGH" hypothesis needs shadow data before committing.
 
 ### 10.2 Gateway / usage log
-
-`test_plan_generation_v4` flows through the same `llm_call` / `usage.record` path. Attribution keys in `context_for_log`:
+`test_plan_generation_v4` flows through `llm_call_loop()` (new — see Section 15.1). Attribution keys in `context_for_log`:
 - `domain_packs_applied` — unchanged
-- `architecture` — `"v4"` 
-- `tool_invocation_count` — total tool calls in the session (useful for cost analysis)
-- `retry_count` — total retries consumed
-- `aborted_test_cases` — count of test cases that hit retry budget
+- `architecture` — `"v4"`
+- `tool_invocation_count`
+- `retry_count`
+- `aborted_test_cases`
+- `turn_index` — per-turn row distinguisher
 
 ### 10.3 Feature flag
 
-`tenant_agent_settings.llm_generation_architecture` — enum, default `"v3"`, can be set to `"v4"` per-tenant. When `"v4"`, `test_plan_generation` routes to the A4 pipeline; when `"v3"`, existing behavior.
+`tenant_agent_settings.llm_generation_architecture` — VARCHAR, default `'v3'`, values `'v3'` or `'v4'`.
 
-This lets us roll out Architecture 4 per-tenant, compare side-by-side, and roll back without code deploys if needed.
+**Read path (enum, NOT bool):**
+```python
+def _v4_enabled(tenant_id: int, db) -> bool:
+    try:
+        row = db.query(TenantAgentSettings).filter_by(tenant_id=tenant_id).first()
+        return getattr(row, 'llm_generation_architecture', 'v3') == 'v4'
+    except Exception:
+        return False
+```
+
+**Revision from v1:** Existing precedents (`llm_enable_story_enrichment`, `llm_enable_domain_packs`) are BOOL. This is enum. Read-path must check equality, not truthiness.
 
 ### 10.4 Domain Packs
-
-Unchanged. Packs load from `salesforce_domain_packs/`, selector picks matches, provider formats as prompt text. In A4, the packs text is appended after the tool descriptions section of the prompt (Section 8 item 3).
+Unchanged. Packs load from `salesforce_domain_packs/`, selector picks matches, provider formats as prompt text. In A4, packs appended after tool descriptions section.
 
 ### 10.5 Linter
+Current 7 checks invoked together from `service.py:312`. Under A4, checks 1-3 (unresolved vars, Id-in-create, readonly fields) are impossible by construction.
 
-The current GenerationLinter has 7 checks. Under A4, several become unnecessary (unresolved `$vars`, formula fields in payload, Id in create — these can't happen by construction). Others remain useful as belt-and-braces (date format, picklist values).
+**Implementation:** add `skip_checks_for_architecture: str | None = None` param to `GenerationLinter.lint()`. When `"v4"`, checks 1-3 early-return as passes. Checks 4-7 (date, picklist, formula, untraced) still run.
 
-**Plan:** keep the linter, mark the obsolete-under-A4 checks as "skipped if generation_architecture=v4". The checks that remain useful still run. Later, the obsolete checks can be removed entirely once v4 is the default everywhere.
+Existing linter tests use v3 fixtures explicitly; new tests verify v4-mode skip behavior.
+
+### 10.6 Task name reference cleanup
+`"test_plan_generation"` literal appears in 9 places per audit: `generation.py:199`, `prompts/registry.py:22`, `dashboard.py:149,155`, `eval/runner.py:109`, `eval/scorer.py:165`, `gateway.py:171`, `views.py:1837`.
+
+Extend each to `task in ("test_plan_generation", "test_plan_generation_v4")` where logic applies to both. `gateway.py:171` auto-load-feedback — see Section 15.2.
 
 ---
 
 ## 11. Rollout & Validation
 
-### 11.1 Phase 1: Implementation
+### 11.1 Phase 1 — Implementation (3-4 weeks)
+- `llm_call_loop` multi-turn gateway
+- Tool executor + state registry
+- 11 tools implemented
+- Retry loop
+- Cleanup queue + worker job
+- Prompt module with tool descriptions
+- Persistence (new columns, branching executor)
+- Feature flag + router chain
+- Test suite
 
-Build the Architecture 4 pipeline end-to-end. Tool executor, state registry, retry loop, cleanup queue, prompt module. No tenant flag flipped yet. Tests.
+**Exit criteria:** all 11 tools implemented + tested, end-to-end generation works for a known-good ticket, retry loop verified, cleanup queue verified against real Salesforce.
 
-**Exit criteria:**
-- All 11 tools have schema + executor + tests
-- Full generation pipeline works end-to-end for a known-good Jira ticket
-- Retry loop verified with synthetic errors
-- Cleanup queue verified with real Salesforce records
+### 11.2 Phase 2 — Shadow mode (3-4 days build + 2 weeks data)
 
-### 11.2 Phase 2: Shadow mode
+Pilot tenants with `llm_generation_architecture = 'v4'` run v3 AND v4 in parallel. v3 output persisted and used. v4 persisted as shadow.
 
-For pilot tenants, every generation runs v3 AND v4 in parallel. v3's output is persisted and used. v4's output is persisted as a "shadow" record, not shown to users.
+**Revision from v1 — shadow runs bypass tier caps:**
+- `limits.py` daily-spend checker exempts rows where `llm_usage_log.context->>'shadow' = 'true'`
+- Shadow restricted to Pro+ tenants for first 7 days even with cap exemption
 
-**Exit criteria:**
-- Run 50+ real generations in shadow mode
-- Compare v3 vs v4 on: test case count, coverage breadth, validator issues, confidence scores, LLM cost, wall-clock time
-- Ensure v4 doesn't have systematic quality regressions
+Rationale: Starter tier ($5/day) can't absorb 2× LLM spend.
 
-### 11.3 Phase 3: Per-tenant flip
+**Exit criteria:** 50+ real generations, v3 vs v4 comparison (TC count, coverage, validator issues, confidence, cost, time), no systematic quality regressions.
 
-Flip pilot tenants to `llm_generation_architecture = "v4"`. Monitor for issues. Keep v3 ready as rollback.
+### 11.3 Phase 3 — Per-tenant flip (ongoing)
+Flip pilots one at a time. v3 stays as rollback.
 
-### 11.4 Phase 4: Default v4
+### 11.4 Phase 4 — Default v4 (2-4 weeks after pilot success)
+Default flipped. Non-pilot tenants stay on v3 until explicitly migrated.
 
-After 2-4 weeks of pilot-tenant v4 usage with no systematic issues, flip the default. Existing non-pilot tenants stay on v3 until explicitly migrated.
-
-### 11.5 Phase 5: v3 sunset
-
-When no active tenant is on v3 and no recent generations use v3, remove v3 code. This is a months-later operation, not part of initial shipping.
+### 11.5 Phase 5 — v3 sunset (months later)
+Remove v3 code when no active v3 tenants.
 
 ---
 
 ## 12. Known Limitations & v2 Topics
 
-Flagged explicitly so they don't get forgotten:
-
-1. **Knowledge → validation bridge.** Domain Packs are prompt-layer only in v1. Enforcement via knowledge (making pack rules machine-checked) is a v2 topic.
-2. **`when_call_method` / Apex direct invocation.** Cut from v1. Add only if real customer demand surfaces.
-3. **Cross-test-case dependencies.** State is scoped to a single test case. Tests that depend on other tests' state are not supported. If this surfaces as a real need, a follow-up design is required.
-4. **Scratch org isolation.** v1 runs against the connected Salesforce env with namespace-based cleanup. Scratch-org-per-run is a v2 topic.
-5. **Multi-user tests.** Tests that require multiple Salesforce user contexts (approval flows, etc.) are not first-class in v1. Workaround: `given_record` can set `OwnerId` but running actions AS different users isn't supported.
-6. **Bulk assertions.** `then_query_and_assert` handles "verify N records exist." More complex bulk patterns (aggregate sums, cross-object joins) may need a richer tool in v2.
+1. Knowledge → validation bridge (Domain Packs enforce-by-validation)
+2. `when_call_method` for Apex direct invocation
+3. Cross-test-case state dependencies
+4. Scratch-org-per-run isolation
+5. Multi-user test context
+6. Bulk assertions beyond count (aggregates, joins)
 
 ---
 
-## 13. Spec Decisions Requiring Your Override
+## 13. Spec Decisions
 
-Items I decided and flag explicitly in case you want to change them:
-
-1. **Namespace stamping strategy** (Section 5.1) — I made "External_Id__c if available, else Name prefix, else Description suffix" the default. You may want a different strategy.
-
-2. **Namespace purge window** (Section 5.3) — 48 hours is arbitrary. Could be 24h or 7d.
-
-3. **Retry budgets** (Section 6.2) — 3 per tool, 15 per plan. These are guesses. Real data may show 2/10 is sufficient or 5/25 is needed.
-
-4. **HIGH tier on v4 router** (Section 10.1) — I proposed Sonnet-only for HIGH under v4 but flagged as tentative. Safe default: keep `[SONNET, OPUS]` with escalation.
-
-5. **Shadow mode duration** (Section 11.2) — 50+ generations is arbitrary. Could be more or fewer based on your risk appetite.
-
-6. **Persistence format** (Section 9) — I proposed storing both `tool_invocations` (new) AND the legacy `steps` format (derived) on new versions. Alternative: store only tool_invocations and have execution engine consume the new format directly. My choice preserves execution-engine compatibility during rollout.
+1. Namespace stamping: metadata-driven per-object (External_Id__c → Name prefix → Description suffix → warn)
+2. Namespace purge window: 48 hours
+3. Retry budgets: 3 per tool, 15 per plan
+4. Router chain HIGH: `[SONNET, OPUS]` initially, tune after data
+5. Shadow mode: 50+ generations minimum
+6. Persistence: v4-only `tool_invocations`, executor branches by architecture column
+7. Cleanup table: new `generation_created_entities`
+8. Feature flag: enum (`'v3'` / `'v4'`), not bool
 
 ---
 
-## 14. Non-Decisions (Deferred to Implementation)
+## 14. Non-Decisions (Implementation-level)
 
-Items Claude Code will decide during implementation:
-
-- Exact Python module structure for tool executor
-- State registry data structure (dict, class, Redis-backed, etc.)
-- JSON schema validation library (pydantic vs jsonschema vs custom)
-- How tool schemas are described to Anthropic API (native tool_use vs prompt-based)
-- Error-code-to-retry-trigger mapping (which errors trigger retry vs fail fast — implementation detail within the framework above)
-- Cleanup worker scheduling (existing worker.py vs new job type)
-- Specific SQL migrations required for `test_case_versions.tool_invocations` etc.
-
-These are deliberately left open. They're decisions that depend on codebase context Claude Code has and I don't.
+- Python module structure for tool executor
+- State registry data structure (dict vs class vs Redis)
+- JSON schema validation library
+- Tool schema format (native Anthropic `tool_use`, already in use)
+- Error-code-to-retry-trigger mapping details
+- Cleanup worker polling interval
 
 ---
 
-## End of Spec
+## 15. Implementation Gotchas
 
-Review criteria before handoff to Claude Code:
-- Architecture principles (Section 1) still feel right
-- Tool vocabulary (Section 2) is complete and minimal
-- No "we forgot to cover..." gaps
-- Decisions flagged in Section 13 are acceptable or overridden
+### 15.1 Per-turn cost attribution in `llm_usage_log`
+
+Today: one generation = one row with `generation_batch_id`. Under v4: N tool-call turns = N rows.
+
+**Required:** every per-turn row must carry the same `generation_batch_id`. The gateway's batch-linking path (related to commit `06b582b` fix) fires on every turn, not just the final one.
+
+**Cost dashboard impact:** GROUP BY `generation_batch_id` queries continue to work. Per-call counts go up N× for v4 traffic. Dashboard may want a `turn_index` dimension.
+
+### 15.2 Gateway auto-load-feedback decision
+
+`gateway.py:171` checks `task == "test_plan_generation"` for auto-loading feedback rules.
+
+**Decision: Option 1 (inherit) for v1.** Extend condition to `task in ("test_plan_generation", "test_plan_generation_v4")`. Feedback rules apply to both architectures. If shadow data shows redundancy under v4, revisit.
+
+### 15.3 Anthropic cache invalidation on cutover
+
+When v4 ships, cached prefix content changes. Every cache entry becomes stale. First v4 call per tenant pays 1.25× cache-write cost instead of 0.1× cache-read cost. One-time spike per tenant; document in rollout.
+
+### 15.4 Sync-route compatibility (prohibited)
+
+**A4 generation runs only on the worker service.**
+
+Multi-turn LLM + N Salesforce calls = 30-90 seconds. Gunicorn web default timeout is 30s. The `service.generate_test_plan` v4 branch MUST enqueue a `generation_job` and return 202 Accepted. No inline execution from a web route.
+
+### 15.5 Eval harness branching
+
+`intelligence/llm/eval/runner.py` constructs prompts independently. When v4 ships, eval harness needs its own branch. Defer to Phase 2 (shadow mode). Eval regression tests run against v3 until then.
+
+---
+
+## End of Spec v2
+
+Ready for handoff to implementation prompt authoring.
