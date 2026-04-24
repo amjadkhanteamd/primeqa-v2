@@ -274,26 +274,6 @@ class TestManagementService:
             self.test_case_repo.db.rollback()
             raise
 
-        # Attribution: every LLM call that produced this plan was logged
-        # BEFORE the batch row existed (we need the response to set the
-        # batch's tokens + cost). Back-link ALL attempt rows here so the
-        # superadmin "Spend for this run" panel credits the right batch.
-        # Chain escalation fires multiple billable calls: the primary
-        # (thrown away) + the escalation (used) both cost money; prior
-        # implementation only attached the final one so the panel
-        # under-reported by ~50% when escalation fired.
-        usage_log_ids = plan.get("usage_log_ids") or (
-            [plan.get("usage_log_id")] if plan.get("usage_log_id") else []
-        )
-        if usage_log_ids:
-            try:
-                from primeqa.intelligence.llm import usage as _usage
-                for uid in usage_log_ids:
-                    if uid:
-                        _usage.attach_batch(uid, batch.id)
-            except Exception:
-                pass  # observability-only; never block generation
-
         # Build N TCs + N TestCaseVersions + optionally BA reviews.
         # The final commit below closes the transaction that spans every
         # flush through this loop. An in-loop exception bubbles out with
@@ -518,6 +498,34 @@ class TestManagementService:
         except Exception:
             self.test_case_repo.db.rollback()
             raise
+
+        # Attribution: every LLM call that produced this plan was logged
+        # BEFORE the batch row existed (we need the response to set the
+        # batch's tokens + cost). Back-link ALL attempt rows here so the
+        # superadmin "Spend for this run" panel credits the right batch.
+        # Chain escalation fires multiple billable calls: the primary
+        # (thrown away) + the escalation (used) both cost money; prior
+        # implementation only attached the final one so the panel
+        # under-reported by ~50% when escalation fired.
+        #
+        # Runs AFTER the final commit: attach_batch opens its own
+        # Session, so the batch row must be COMMITTED to pass the FK
+        # check. Prompt 15's atomic-batch refactor made the commit
+        # happen at end-of-function rather than per-TC; calling from
+        # the old pre-loop position meant the batch was only flushed
+        # (invisible to other sessions) when attach_batch tried to
+        # attach, so every attach silently failed with a FK violation.
+        usage_log_ids = plan.get("usage_log_ids") or (
+            [plan.get("usage_log_id")] if plan.get("usage_log_id") else []
+        )
+        if usage_log_ids:
+            try:
+                from primeqa.intelligence.llm import usage as _usage
+                for uid in usage_log_ids:
+                    if uid:
+                        _usage.attach_batch(uid, batch.id)
+            except Exception:
+                pass  # observability-only; never block generation
 
         self._log(tenant_id, created_by,
                   "generate_test_plan", "requirement", requirement_id,

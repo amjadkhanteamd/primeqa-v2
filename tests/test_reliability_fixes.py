@@ -56,6 +56,7 @@ from primeqa.execution.repository import (
     RunCreatedEntityRepository, RunStepResultRepository,
     RunTestResultRepository,
 )
+from primeqa.intelligence.models import LLMUsageLog
 from primeqa.release.dashboard import compute_negative_counts, get_dashboard_data
 from primeqa.test_management.models import (
     BAReview, GenerationBatch, Requirement, Section, TestCase,
@@ -261,9 +262,29 @@ def _run_fix1_tests(results):
             return
         req = _mk_requirement(db, section.id, "f1success")
         req_id = req.id
+        # Pre-create a pair of llm_usage_log rows the generator can
+        # claim authorship of (simulates gateway's primary + escalation
+        # pattern). Injected into plan["usage_log_ids"] so the service's
+        # post-commit attach_batch back-links both rows to the new
+        # generation_batch. Regression guard: pre-2026-04-24 the attach
+        # ran between flush() and commit() and silently failed FK for
+        # every call post Prompt 15.
+        usage_log_ids = []
+        for _ in range(2):
+            ulog = LLMUsageLog(
+                tenant_id=TENANT_ID, task="test_plan_generation",
+                model="claude-sonnet-4-20250514",
+                prompt_version="test_plan@v1",
+                input_tokens=10, output_tokens=5, cost_usd=0.001,
+                status="ok",
+            )
+            db.add(ulog)
+            db.commit(); db.refresh(ulog)
+            usage_log_ids.append(ulog.id)
         try:
             svc = _mk_service(db)
             plan = _plan_payload()
+            plan["usage_log_ids"] = list(usage_log_ids)
             with patch("primeqa.intelligence.generation.TestCaseGenerator") as gen_cls:
                 gen_inst = MagicMock()
                 gen_inst.generate_plan.return_value = plan
@@ -322,10 +343,32 @@ def _run_fix1_tests(results):
                     assert tcv is not None, "version missing"
                     assert tcv.test_case_id == tc.id, \
                         "version not linked back to TC"
+                # Attribution regression guard (2026-04-24). attach_batch
+                # now runs post-commit; every pre-created usage_log must
+                # carry the new batch_id.
+                for uid in usage_log_ids:
+                    row = db2.query(LLMUsageLog).filter_by(id=uid).first()
+                    assert row is not None, f"usage_log {uid} vanished"
+                    assert row.generation_batch_id == batch_id, (
+                        f"usage_log {uid} not attached to batch "
+                        f"{batch_id} (got {row.generation_batch_id!r})"
+                    )
             finally:
                 db2.close()
         finally:
             _cleanup_batch(db, req_id)
+            # Delete the pre-created usage_log rows. The batch FK is
+            # ON DELETE SET NULL, so cleanup_batch dropping the batch
+            # already NULLed the generation_batch_id column — we just
+            # remove the rows.
+            teardown = SessionLocal()
+            try:
+                teardown.query(LLMUsageLog).filter(
+                    LLMUsageLog.id.in_(usage_log_ids)).delete(
+                    synchronize_session=False)
+                teardown.commit()
+            finally:
+                teardown.close()
             db.close()
     results.append(test("1. Successful batch: 2 TCs + 2 versions committed atomically",
                         test_success_atomic))
