@@ -9,8 +9,74 @@ and returns the first item).
 
 import json
 import logging
+import os
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Domain Packs (migration 049) — per-tenant feature flag + resolver.
+# Kept module-private because the only caller is TestCaseGenerator.generate_plan
+# below. When the flag is off, _domain_packs_enabled short-circuits without
+# touching the filesystem.
+# ---------------------------------------------------------------------------
+
+def _domain_packs_enabled(tenant_id) -> bool:
+    """Read tenant_agent_settings.llm_enable_domain_packs.
+
+    Tolerant: any DB / import failure returns False so a transient
+    settings-table blip can't break generation. Opens its own Session
+    so it doesn't interfere with the caller's transaction (mirrors the
+    pattern in primeqa/test_management/service.py::_story_enrichment_enabled).
+    """
+    try:
+        from sqlalchemy.orm import Session
+        from primeqa.db import engine
+        from primeqa.core.models import TenantAgentSettings
+        sess = Session(bind=engine)
+        try:
+            row = sess.query(TenantAgentSettings).filter_by(
+                tenant_id=tenant_id,
+            ).first()
+            return bool(row and row.llm_enable_domain_packs)
+        finally:
+            sess.close()
+    except Exception as exc:
+        log.debug("domain_packs flag lookup failed tenant=%s: %s", tenant_id, exc)
+        return False
+
+
+def _resolve_domain_packs(requirement):
+    """Select matching packs for a requirement. Returns list[DomainPack].
+
+    Caller is responsible for checking the feature flag first.
+    v1 is keyword-only — `referenced_objects` stays None until v1.1
+    wires object extraction on the requirements pipeline.
+    """
+    try:
+        from primeqa.intelligence.knowledge.domain_pack_provider import (
+            DomainPackProvider,
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        log.warning("domain_packs: provider import failed: %s", exc)
+        return []
+
+    packs_dir = os.getenv("PRIMEQA_DOMAIN_PACKS_DIR", "salesforce_domain_packs")
+    provider = DomainPackProvider(packs_dir=packs_dir)
+
+    req_text = " ".join(filter(None, [
+        getattr(requirement, "jira_summary", "") or "",
+        getattr(requirement, "jira_description", "") or "",
+        getattr(requirement, "acceptance_criteria", "") or "",
+    ]))
+    if not req_text.strip():
+        return []
+    packs, _attr = provider.get_packs(
+        requirement_text=req_text,
+        referenced_objects=None,   # v1: dormant object-match path
+        max_tokens=4000,
+    )
+    return packs
 
 
 STEP_GRAMMAR_SPEC = """
@@ -110,6 +176,24 @@ class TestCaseGenerator:
 
         metadata_context = self._build_metadata_context(meta_version_id)
 
+        # Domain Packs (migration 049) — per-tenant opt-in feature that
+        # injects long-form prescriptive Salesforce knowledge into the
+        # prompt when the requirement text matches a pack's keywords.
+        # Gated here (not in the prompt module / library) so when the
+        # flag is off we don't even construct the provider: no
+        # filesystem IO, no overhead. Apply to ALL tiers (Sonnet AND
+        # Opus); Opus benefits from tenant-specific domain knowledge
+        # too, and ~1200 extra input tokens is noise at Opus rates.
+        domain_packs = []
+        if self.tenant_id and _domain_packs_enabled(self.tenant_id):
+            domain_packs = _resolve_domain_packs(requirement)
+            if domain_packs:
+                log.info(
+                    "generation: domain packs applied for req=%s: %s",
+                    getattr(requirement, "id", None),
+                    [f"{p.id}@{p.version}" for p in domain_packs],
+                )
+
         try:
             resp = llm_call(
                 task="test_plan_generation",
@@ -122,6 +206,12 @@ class TestCaseGenerator:
                     "meta_version_id": meta_version_id,
                     "min_tests": min_tests,
                     "max_tests": max_tests,
+                    # Migration 049: empty list when flag off or no
+                    # match. Attribution is recorded by the prompt
+                    # module via context_for_log["domain_packs_applied"],
+                    # which rides the existing llm_usage_log.context
+                    # JSONB column (same path as story_view).
+                    "domain_packs": domain_packs,
                 },
                 requirement_id=requirement_id or getattr(requirement, "id", None),
                 # Intentionally NOT passing model_override here. The
