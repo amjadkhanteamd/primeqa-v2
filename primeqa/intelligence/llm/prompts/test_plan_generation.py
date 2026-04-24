@@ -191,24 +191,12 @@ OUTPUT_SCHEMA = {
 
 # ---- Complexity detection -------------------------------------------------
 
-# Compiled once at import time; avoids recompiling on every call.
-# Word-boundary match with optional common inflections so "flows" / "flowed"
-# count but "workflow" does NOT contribute to "flow".
-_KW_INFLECT = r"(?:s|es|ed|ing)?"
-
-def _kw_count(text: str, keywords) -> int:
-    """Return count of distinct keywords that appear in text as whole
-    words (with common -s/-es/-ed/-ing suffixes). Avoids the old
-    bug where 'flow' matched 'workflow' (both were in the same kw list
-    and 'workflow' forced the tenant to Opus).
-    """
-    import re
-    found = 0
-    for kw in keywords:
-        pattern = r"\b" + re.escape(kw) + _KW_INFLECT + r"\b"
-        if re.search(pattern, text, re.IGNORECASE):
-            found += 1
-    return found
+# Word-boundary match with optional common inflections so "flows" /
+# "flowed" count but "workflow" does NOT contribute to "flow". The actual
+# implementation lives in primeqa.intelligence.knowledge._text so the
+# domain-pack selector uses the same semantics — nothing worse than two
+# "same thing" matchers drifting apart.
+from primeqa.intelligence.knowledge._text import kw_count as _kw_count  # noqa: E402,F401
 
 
 def detect_complexity(context: Dict[str, Any]) -> str:
@@ -367,6 +355,41 @@ def _format_recent_misses(recent_misses) -> str:
             + "\nWhen in doubt, prefer fields that exist in the metadata above.\n")
 
 
+def _format_domain_packs(packs) -> str:
+    """Render a list of DomainPack objects into a single prompt block.
+
+    Uncached in v1 — the caller appends this as the final user_block
+    with no `cache_control`. Each pack gets a `## PACK: <title>` header
+    carrying id + version so the model has a clear signal of where one
+    pack ends and the next begins.
+
+    See primeqa/intelligence/knowledge/domain_packs.py for the data
+    shape. `packs` is expected to be list[DomainPack]; the function is
+    defensive against dicts too (tests sometimes pass serialised forms).
+    """
+    if not packs:
+        return ""
+    sections = []
+    for p in packs:
+        pid = getattr(p, "id", None) or (p.get("id") if isinstance(p, dict) else "?")
+        title = getattr(p, "title", None) or (p.get("title") if isinstance(p, dict) else pid)
+        version = getattr(p, "version", None) or (p.get("version") if isinstance(p, dict) else "v?")
+        body = getattr(p, "content", None) or (p.get("content") if isinstance(p, dict) else "")
+        sections.append(
+            f"## PACK: {title} (id={pid}, version={version})\n\n{body.strip()}"
+        )
+    return (
+        "# DOMAIN PACKS\n\n"
+        "The following pack(s) document Salesforce domain behaviour that is\n"
+        "directly relevant to this requirement. Treat them as ground truth\n"
+        "for object semantics, field behaviours, async timing, and common\n"
+        "pitfalls — they override inferences from the general grammar when\n"
+        "they conflict.\n\n"
+        + "\n\n".join(sections)
+        + "\n"
+    )
+
+
 def build(
     context: Dict[str, Any],
     *,
@@ -465,13 +488,27 @@ def build(
     )
 
     # user_blocks composition: metadata [cached] -> knowledge [cached when
-    # non-empty] -> dynamic [not cached]. Cache breakpoints are preserved
-    # in that order so the prefix hash is stable across tenants that share
-    # the same metadata shape.
+    # non-empty] -> dynamic [not cached] -> domain packs [not cached].
+    # Cache breakpoints are preserved in that order so the prefix hash is
+    # stable across tenants that share the same metadata shape. Packs
+    # intentionally live OUTSIDE the cached prefix in v1 — they vary per
+    # requirement, so caching them would force a per-requirement cache
+    # key and defeat the point. Multi-block caching is deferred until we
+    # have hit-rate data.
     user_blocks = [metadata_block]
     if knowledge_block is not None:
         user_blocks.append(knowledge_block)
     user_blocks.append({"type": "text", "text": dynamic_text})
+
+    # Domain Packs (migration 049) — uncached. Appended after the
+    # dynamic block so the model sees: metadata → rules → requirement →
+    # domain knowledge → task. When no packs match, this block is
+    # omitted entirely and the prompt shape is byte-identical to the
+    # pre-feature path.
+    packs = context.get("domain_packs") or []
+    if packs:
+        packs_text = _format_domain_packs(packs)
+        user_blocks.append({"type": "text", "text": packs_text})
 
     def _parse(resp):
         """Tool-use path: the structured plan arrives pre-parsed as
@@ -496,6 +533,22 @@ def build(
         except json.JSONDecodeError:
             return {"_parse_error": True, "_raw": text[:500]}
 
+    # Attribution for domain packs rides the existing llm_usage_log.context
+    # JSONB column via the gateway's `usage.record(context=spec.context_for_log)`
+    # plumbing (gateway.py:278 / usage.py:78). Same pattern as story_view.
+    # Key is present only when packs fired — absence of the key distinguishes
+    # "feature off" from "feature on but no match".
+    context_for_log = {
+        "requirement_id": getattr(req, "id", None),
+        "meta_version_id": context.get("meta_version_id"),
+        "min_tests": min_tests,
+        "max_tests": max_tests,
+    }
+    if packs:
+        context_for_log["domain_packs_applied"] = [
+            {"id": p.id, "version": p.version} for p in packs
+        ]
+
     return PromptSpec(
         messages=[{"role": "user", "content": user_blocks}],
         system=system_blocks,
@@ -504,12 +557,7 @@ def build(
         has_cache_blocks=True,
         tools=[_TOOL_SCHEMA],
         force_tool_name="submit_test_plan",
-        context_for_log={
-            "requirement_id": getattr(req, "id", None),
-            "meta_version_id": context.get("meta_version_id"),
-            "min_tests": min_tests,
-            "max_tests": max_tests,
-        },
+        context_for_log=context_for_log,
     )
 
 
