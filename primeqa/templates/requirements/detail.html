@@ -269,9 +269,39 @@
         return;
       }
       if (d.status === 'failed' || d.status === 'cancelled') {
-        el.innerHTML = '<span class="text-red-600">'
-          + (d.user_message || d.error_message || d.status)
-          + '</span> <button type="button" class="ml-3 text-xs text-indigo-600 hover:underline" onclick="window.location.reload()">Dismiss</button>';
+        // Prefer user_message (already resolved by user_message_for on
+        // the server — see generation_jobs.user_message_for). Falls
+        // back to error_message / status for compat. Always rendered
+        // via textContent so requirement/jira text in the error string
+        // can't break out into HTML.
+        const rawMsg = d.user_message || d.error_message || d.status || '';
+        const TRUNC = 500;
+        const needsTrunc = rawMsg.length > TRUNC;
+
+        el.innerHTML = '';
+        const span = document.createElement('span');
+        span.className = 'text-red-600';
+        span.textContent = needsTrunc ? rawMsg.slice(0, TRUNC) + '…' : rawMsg;
+        el.appendChild(span);
+
+        if (needsTrunc) {
+          const showMore = document.createElement('button');
+          showMore.type = 'button';
+          showMore.className = 'ml-2 text-xs text-indigo-600 hover:underline';
+          showMore.textContent = 'show more';
+          showMore.addEventListener('click', () => {
+            span.textContent = rawMsg;
+            showMore.remove();
+          });
+          el.appendChild(showMore);
+        }
+
+        const dismiss = document.createElement('button');
+        dismiss.type = 'button';
+        dismiss.className = 'ml-3 text-xs text-indigo-600 hover:underline';
+        dismiss.textContent = 'Dismiss';
+        dismiss.addEventListener('click', () => window.location.reload());
+        el.appendChild(dismiss);
         return;
       }
       if (d.progress_pct) bar.style.width = d.progress_pct + '%';

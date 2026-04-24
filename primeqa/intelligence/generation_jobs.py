@@ -105,7 +105,26 @@ ERROR_MESSAGES: dict[str, str] = {
 
 def user_message_for(error_code: Optional[str],
                      fallback: Optional[str] = None) -> str:
-    """Return the user-friendly string for a stored error_code."""
+    """Return the user-friendly string for a stored error_code.
+
+    For classified error codes (``rate_limited``, ``auth_error``,
+    ``content_error`` etc.) the canned ``ERROR_MESSAGES`` entries
+    include actionable retry guidance ("Please try again in a few
+    minutes") that the raw ``fallback`` text from exceptions doesn't,
+    so those canned strings win.
+
+    For the ``generation_error`` catch-all, the canned message is a
+    no-information string ("An unexpected error occurred during
+    generation."). Whenever the caller has a specific ``fallback`` —
+    typically ``GenerationJob.error_message`` for failed jobs — that
+    message is strictly more useful: a `ValidationError` from the
+    linter ("$account referenced but not resolvable…") tells the user
+    what to fix, while the generic string tells them nothing. So for
+    this code we prefer ``fallback`` when present.
+    """
+    if (error_code == "generation_error"
+            and fallback and fallback.strip()):
+        return fallback.strip()
     if error_code and error_code in ERROR_MESSAGES:
         return ERROR_MESSAGES[error_code]
     return fallback or ERROR_MESSAGES["generation_error"]
