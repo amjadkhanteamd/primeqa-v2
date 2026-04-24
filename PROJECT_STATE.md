@@ -78,6 +78,7 @@ Continuous UX + infra improvements on top of R1–R7. Each commit is below.
 | `38e3b46` | **Ship 1 — context-driven Run triggers.** Runs tab stops being the primary entry point; triggers move to the thing you want to run. Per-row `▶ Run` + TC count + coverage chips on the Requirements list (with per-user state-aware `Generate` / `Regenerate` / `Generate again` label). `▶ Run N test cases` on Requirement detail. `▶ Run test plan` on Release detail → Test Plan tab. New routes `POST /requirements/:id/run` + `POST /releases/:id/run`. Wizard demoted to "Advanced: build run" with a tip banner pointing to Requirements / Suites / Releases. |
 | `78113a0` | **Ship 2 — AI spend panel on run detail.** Superadmin-only collapsible panel aggregating LLM cost per run: test generation total (from `generation_batches.cost_usd` joined via the run's TCs) + model list + tokens in/out + batch count; agent fix-and-rerun attempt count with a note that per-attempt token tracking is a future migration. Grand total in the summary line. |
 | `dad9612` | **Ship 3 + HPV (migration 030).** Four upgrades: (1) per-failed-row `↻ Rerun` button queues a new run for a single TC; (2) `↻ Rerun verbatim` pins each TC to its prior `test_case_version_id` via `run.config.version_pin`, worker honors it ahead of `current_version_id`; (3) inline-edit `label` on run detail (debounced auto-save) + substring label filter on the run history page; (4) `Summarise failures` superadmin-only AI panel — prompts the env's LLM with every failed step's error text, caches result in `pipeline_runs.failure_summary_ai / _at / _model`. All gated behind role + terminal state. |
+| `a1d07fe` | **Story view — BA-readable test cases (migration 048).** Adds a human-readable layer over AI-generated TCs: LLM-generated `title` / `description` / `preconditions_narrative` / `expected_outcome` rendered above the mechanical step list. Claude Haiku 4.5, ~800 tokens/TC (~$0.0004). Feature-flagged per tenant via `tenant_agent_settings.llm_enable_story_enrichment` (default off), toggled from superadmin `/settings/llm-usage`. New prompt module `prompts/story_view.py` with task `story_view_generation` routing to Haiku. Enrichment runs inside Prompt 15's atomic transaction via `StoryViewEnricher` — best-effort: LLM failures leave `story_view=NULL` and the render path falls back to the mechanical view (zero-backfill rollout). Shared Jinja macro `components/_tc_body.html` replaces duplicated step rendering across `test_cases/detail.html` and `reviews/detail.html` (three modes: `full`, `review_form`, `review_view`). Superadmin POST `/settings/tenant-tier/<id>` now persists both `llm_tier` and the story flag, logging each change to `activity_log` separately. 7 new tests in `tests/test_story_view.py`. |
 
 ### LLM Architecture (Phases 1–6) — shipped
 
@@ -141,7 +142,7 @@ its own HTTP surface. Motto: **"run PrimeQA on PrimeQA"** before every deploy.
 
 **Core domain** (11): tenants, users, refresh_tokens, environments,
 environment_credentials, activity_log, groups, group_members,
-group_environments, connections, **tenant_agent_settings** *(+ llm_max_calls_per_minute/hour, llm_max_spend_per_day_usd, llm_always_use_opus, llm_allow_haiku, llm_tier)*
+group_environments, connections, **tenant_agent_settings** *(+ llm_max_calls_per_minute/hour, llm_max_spend_per_day_usd, llm_always_use_opus, llm_allow_haiku, llm_tier, llm_enable_story_enrichment)*
 
 **Metadata** (8): meta_versions *(+ `delta_since_ts`, background-job
 columns)*, meta_objects, meta_fields, meta_validation_rules, meta_flows,
@@ -149,7 +150,7 @@ meta_triggers, meta_record_types, **meta_sync_status**
 
 **Test Management** (17): sections, requirements, test_cases *(+
 `coverage_type`, `generation_batch_id`)*, test_case_versions *(+
-`validation_report`, `validated_at`, `validated_against_meta_version_id`)*,
+`validation_report`, `validated_at`, `validated_against_meta_version_id`, `story_view`)*,
 test_suites, suite_test_cases, ba_reviews, metadata_impacts, tags,
 test_case_tags, milestones, milestone_suites, custom_fields,
 custom_field_values, step_templates, test_case_parameter_sets,
@@ -273,7 +274,7 @@ Fixes:
   healed 9 historic ghost rtrs that predated the online healer's
   6-hour window. Ghost count went 9 → 0.
 
-## Migrations (001–038)
+## Migrations (001–048)
 - 001–015: platform, test management, execution, intelligence, release, data engine, risk, step comments, tags/milestones, custom fields
 - **016**: Test management soft delete + pg_trgm + composite/partial indexes
 - **017**: Super Admin role, `pipeline_runs.source_refs` + `parent_run_id`
@@ -298,6 +299,7 @@ Fixes:
 - **036**: `pipeline_runs_status_ck` CHECK (status enum) + `pipeline_runs_terminal_completed_at_ck` CHECK (terminal → completed_at NOT NULL) + `environments_tenant_name_uk` UNIQUE (tenant_id, lower(name)). Paired with `scripts/audit_cleanup_ghost_runs_2026_04_19.sql` (pre-flight data cleanup).
 - **037**: `run_test_results.failure_type` CHECK expanded to include `step_error`, `unexpected_error`, `validation_blocked`. The worker had been writing these values since forever, but the original CHECK only allowed 5 legacy values — every write CHECK-violated silently, rolling back `update_result` and leaving rtrs in ghost `passed` state. Paired with the worker-death recovery fix in `primeqa/worker.py` (in-loop rtr + feedback signal persistence) and the new `reap_orphan_rtrs` scheduler task.
 - **038**: `worker_heartbeats.died_reason VARCHAR(255)` + `died_at TIMESTAMPTZ` + partial index. Lets ops distinguish graceful SIGTERM (Railway redeploy) from OOM-kill from uncaught exception. Populated by `worker.py` shutdown hooks (SIGTERM / KeyboardInterrupt / crash) and by `scheduler.reap_stale_workers` (generic `heartbeat_timeout`). Paired with `scripts/backfill_heal_ghost_rtrs_2026_04_19.sql` (9 historic ghost rtrs reconciled).
+- **048**: `test_case_versions.story_view JSONB` (nullable) + `tenant_agent_settings.llm_enable_story_enrichment BOOLEAN NOT NULL DEFAULT false`. Backs the BA-readable "story view" layer over AI-generated test cases. NULL `story_view` falls back to the mechanical step view at render time — zero-backfill rollout. The feature flag defaults off per tenant; superadmin toggles it in `/settings/llm-usage`. Enrichment runs inside the Prompt 15 atomic transaction and is best-effort (LLM failures leave `story_view=NULL` without rolling the batch back).
 
 ## API Endpoints (~140)
 

@@ -1,5 +1,13 @@
 # CLAUDE.md — PrimeQA v2
 
+## Working agreement
+
+**Always commit directly to `main`. Do not create feature branches for this codebase.**
+
+Why: Railway auto-deploys on push-to-main. Feature branches on this repo create a disconnect where the branch ships green locally but production keeps running the old code because the merge never happens. Commit-then-push-main is the canonical workflow — every commit goes through the same continuous-deploy path, so what you verified locally is what ships. No exceptions: even when the work is big enough that a branch feels safer, the right answer is a clean commit on `main` (or a series of small commits) so deploy state stays synchronised with source state.
+
+If you find yourself on a worktree pointing at a non-`main` branch, the correct next step is to switch to the `main` worktree (or create one) and commit there directly.
+
 ## What is this project?
 PrimeQA is a **Release Intelligence System** for Salesforce. It connects to
 Salesforce orgs, captures versioned metadata, AI-generates test cases from
@@ -162,8 +170,9 @@ sites that drifted on retry policy, caching, and usage accounting.
 - **Rules aggregation** (`feedback_rules.py`, Phase 7): signals are transformed into a prompt-ready `### Common mistakes to avoid:` block — natural-language imperatives with concrete recent examples, ranked by severity × frequency, top-5. Gateway's auto-load path now calls `feedback_rules.build_rules_block(tenant_id)` instead of passing raw signal dicts. Same aggregator powers the "Top recurring issues" list on the tenant dashboard.
 - **Correction rate** (Phase 7): the north-star quality metric. `(user_edited + ba_rejected + user_thumbs_down) / AI-generated TCs in window`. Shown as a hero number on `/settings/my-llm-usage` (with window-over-window delta) and as a column on the superadmin by-tenant table.
 - **Dashboards**:
-  - **Superadmin** `/settings/llm-usage` — cost (total / by-task / by-model / by-tenant / by-day), efficiency (cache hit rate, avg cost per generation, escalation rate, error rate + top errors), quality proxy (regeneration-within-15min, validation-critical rate, post-gen failure rate), top spenders, **per-tenant tier picker**.
+  - **Superadmin** `/settings/llm-usage` — cost (total / by-task / by-model / by-tenant / by-day), efficiency (cache hit rate, avg cost per generation, escalation rate, error rate + top errors), quality proxy (regeneration-within-15min, validation-critical rate, post-gen failure rate), top spenders, **per-tenant tier picker + Story-enrichment checkbox** (migration 048 — `llm_enable_story_enrichment` flag; POST handler persists both `llm_tier` and the flag and logs each change to `activity_log` separately so tier vs. feature-flag changes are auditable).
   - **Tenant admin** `/settings/my-llm-usage` — current plan + description, **soft-cap progress bars** (warn at 80%, block at 100%), blocked-calls counter, KPIs (spend / calls / input / output tokens), daily-spend bars, spend-by-feature table, plan comparison table.
+- **Story-view enrichment** (migration 048): new task `story_view_generation` → Haiku 4.5, no escalation. Task routes LLM output to `test_case_versions.story_view JSONB`; the render path falls back to the mechanical step view when NULL. Tenant opt-in via the superadmin checkbox above. See "Story view — BA-readable test cases" section below for the full pipeline.
 - **Providers** (`providers/registry.py`): routes by model-id prefix. `claude-*` → Anthropic, `gpt-*` / `o1-*` → OpenAI stub (raises NotImplementedError today). Cross-vendor fallback chains are architecturally supported — the router just needs both sides present in the registry.
 - **PII redaction** (`redact.py`): compiled regexes scrub emails, IPs, SSN-shaped, long digit runs from outbound prompts. Structure-preserving.
 - **Migration**: never bypass the gateway. New callers always go through `llm_call()`. Legacy direct-Anthropic paths (`IntelligenceService._call_llm_legacy`) remain only as fallback when no `tenant_id` + `api_key` is available (i.e. system-level calls) and are scheduled for removal once every call site has a tenant context.
@@ -263,6 +272,61 @@ executor produces three companion outputs in one pass:
 unreadable wall of JSON) and writes `comparison_details` onto the
 dedicated column so the UI can render per-field rows without
 parsing `api_response`.
+
+## Story view — BA-readable test cases (migration 048)
+
+Generated test cases default to the mechanical view (step 1 create
+Opportunity {StageName:"Prospecting"}, step 2 verify…). BAs and
+stakeholders who approve release plans can't scan that quickly. The
+**story view** is an LLM-generated human-readable layer over the same
+version: one-paragraph description / preconditions / expected outcome
+plus a sharpened title. Feature-gated per tenant (default off).
+
+Lives in:
+  - `migrations/048_story_view.sql` — `test_case_versions.story_view JSONB`
+    (nullable) + `tenant_agent_settings.llm_enable_story_enrichment BOOLEAN`
+  - `primeqa/intelligence/llm/prompts/story_view.py` — prompt module,
+    `VERSION="story_view@v1"`, `MAX_TOKENS=800`, `SUPPORTS_CACHE=False`,
+    `SUPPORTS_ESCALATION=False`. One Haiku 4.5 shot, no fallback.
+  - `primeqa/intelligence/enrichment.py` — `StoryViewEnricher` wraps
+    `llm_call(task="story_view_generation", …)`, validates that the four
+    required keys (`title` / `description` / `preconditions_narrative` /
+    `expected_outcome`) are present and non-empty, hard-caps text length
+    (200 / 2000 / 2000 / 2000 chars) so a runaway model can't blow out
+    the JSONB row or the UI. Never raises; any failure returns `None`.
+  - `primeqa/templates/components/_tc_body.html` — shared Jinja macro
+    `tc_body(version, tc, mode, step_comments)`. Three render modes:
+    `full` (detail page), `review_form` (pending review with per-step
+    textareas), `review_view` (completed review with comment pills).
+    When `version.story_view` is NULL, falls through to the mechanical
+    `_mechanical_steps()` rendering — backward-compatible with every
+    pre-migration version.
+  - Route wiring: `primeqa/views.py` `test_cases_detail` and
+    `_reviews_detail_impl` plumb `story_view` through their context
+    dicts; templates call the macro.
+
+Enrichment runs **inside** the Prompt 15 atomic transaction in
+`TestManagementService.generate_test_plan`:
+  - `_story_enrichment_enabled(tenant_id, db)` checks the per-tenant
+    flag with a tolerant try/except (settings-lookup failures default
+    to False so a transient DB blip can't break generation)
+  - `db.flush()` only — no intermediate commits; a failure in the
+    enricher logs a warning and leaves `version.story_view=NULL`, the
+    batch still commits cleanly
+  - LLM usage log rows are written by the gateway under
+    `task='story_view_generation'`; superadmin `/settings/llm-usage`
+    per-task cost breakdown surfaces them automatically.
+
+Superadmin toggle: `/settings/llm-usage` → "Top tenants by spend"
+table → per-tenant Plan cell has a checkbox ("Story") alongside the
+tier picker. `POST /settings/tenant-tier/<id>` handler persists both
+`llm_tier` and `llm_enable_story_enrichment` in one roundtrip,
+writing separate `ActivityLog` rows for each change so the audit
+trail distinguishes tier changes from feature-flag toggles.
+
+Cost envelope: ~800 tokens per TC on Haiku 4.5 ≈ $0.0004/TC. No cache
+blocks (the prompt is already small). No fallback chain (a failed
+enrichment is silent and harmless).
 
 ## Tester's focused /run page — four-mode pickers (Prompt 16)
 
@@ -446,13 +510,14 @@ python tests/test_generation_quality_gate.py # 23 (Prompt 13 — linter + knowle
 python tests/test_reliability_fixes.py   # 10 (Prompt 15 — tx wrap / neg counts / verify capture)
 python tests/test_run_tests_page.py      # 15 (/run + /api/bulk-runs)
 python tests/test_run_page_overhaul.py   # 25 (Prompt 16 — 4-mode pickers + dynamic prod banner)
-# ~280 total
+python tests/test_story_view.py          # 7  (Migration 048 — story-view enrichment + macro render + fallback)
+# ~287 total
 
 # Deploy
 git push origin main                     # Railway auto-deploys 3 services
 
 # Apply a migration (idempotent since 016)
-psql "$DATABASE_URL" -f migrations/047_user_recent_tickets.sql
+psql "$DATABASE_URL" -f migrations/048_story_view.sql
 ```
 
 ## Environment variables
