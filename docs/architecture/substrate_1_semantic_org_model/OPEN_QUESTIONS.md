@@ -2,112 +2,112 @@
 
 Questions specific to this substrate's design. Cross-cutting questions live in the top-level OPEN_QUESTIONS.md.
 
-When a question is answered, move it into DECISIONS_LOG.md as a formal decision and remove it here.
-
 ---
 
 ## Resolved in Phase 1 (2026-04-24)
 
-- ~~S1-Q-008 — Storage-layer decision~~ → still open (Phase 2 work), tracked at top-level Q-002
-- Cross-tenant policy question → resolved by D-011
+- Cross-tenant policy → resolved by D-011
+
+## Resolved in Phase 2 (2026-04-25)
+
+- ~~S1-Q-005 — RecordType + Profile + Layout three-way assignment~~ → resolved by D-019 (`ASSIGNED_TO_PROFILE_RECORDTYPE` edge with `record_type_entity_id` in properties)
+- ~~S1-Q-007 — Initial Tier 1 entity coverage~~ → resolved by D-018 (10 entity types defined)
+- Storage backend (top-level Q-002) → resolved by D-014 (Postgres with graph-friendly design)
 
 ---
 
-## Open
+## Open — to be addressed during Tier 2 / Tier 3 design
 
 ### S1-Q-001 — Flow logic interpretation depth
 
 Tier 2 commits to interpreting flow XML. The depth question remains:
+- Minimum (Tier 2 starter): Extract entry conditions and record updates only
+- Medium (Tier 2 mature): Interpret decision branches, loops, assignments
+- Full (Tier 3): Simulate flow execution
 
-- **Minimum (Tier 2 starter):** Extract entry conditions and record updates only. Don't simulate decision branches.
-- **Medium (Tier 2 mature):** Interpret decision branches, loops, and assignments to track which records get created/updated under which conditions.
-- **Full (Tier 3):** Simulate flow execution to predict outcomes given input conditions.
-
-Decide when Phase 2 design begins for flow modeling. The minimum-Tier-2 starter is likely the right ambition.
+Decide when Phase 2 design begins for flow modeling. Likely answer: minimum-Tier-2 starter.
 
 ### S1-Q-002 — Validation rule formula parser scope
 
-We've committed validation rule formula parsing to Tier 1. The parser must handle:
+Validation rule formula parsing is committed to Tier 1 (D-013). The parser must handle:
 - Field references (always)
-- Comparison operators (always)
-- Logical operators AND/OR/NOT (always)
-- Functions (ISBLANK, ISCHANGED, ISNEW, PRIORVALUE, TEXT, VALUE, etc. — finite set)
-- Cross-object references via relationship traversal (e.g., Account.Owner.Profile.Name)
+- Comparison and logical operators (always)
+- Standard functions (ISBLANK, ISCHANGED, ISNEW, PRIORVALUE, TEXT, VALUE, etc.)
+- Cross-object references via relationship traversal
 - CASE statements
 - Custom labels and custom metadata references
 
-Unknown: do we attempt to interpret SaaS-specific functions like `RegEx()` or do we mark formulas containing them as "partially parsed"? Worth deciding before implementation.
+Unknown: how do we handle SaaS-specific functions (RegEx, etc.) that may not parse cleanly? Likely: mark formulas as `formula_parse_status='partial'` and store best-effort parse plus raw text. Address during Tier 1 implementation.
 
-### S1-Q-003 — Apex modeling approach
+### S1-Q-003 — Apex modeling approach (Tier 3)
 
-Apex behavior is opaque from metadata. Options for Tier 3:
+Options for Tier 3:
+- Reference only: model knows apex classes/triggers exist, what objects they touch
+- LLM-assisted interpretation: feed apex code to LLM at sync time, extract structured summaries
+- Static analysis: build an actual analyzer
 
-- **Reference only:** Model knows apex classes/triggers exist, what objects they touch (from describe), but doesn't reason about behavior.
-- **LLM-assisted interpretation:** Feed apex code to an LLM at sync time, extract structured summaries.
-- **Static analysis:** Build an actual analyzer (high cost, uncertain return).
-
-Likely answer: reference-only at Tier 3 entry, LLM-assisted summaries when value is shown to be high. Static analysis probably not worth it.
+Likely answer: reference-only at Tier 3 entry, LLM-assisted summaries when value is shown to be high.
 
 ### S1-Q-004 — Granularity of change history events
 
-When sync detects changes, what level of granularity do we record?
+Decided in Phase 2 (D-021): granular change_type values plus changed_field_names array. Field-level granularity for entity attribute changes; entity-level for create/delete; edge-level for edge changes.
 
-- Field-level: every field change is its own event
-- Entity-level: "Object O was modified" with a diff payload
-- Hybrid: entity-level by default, field-level for entity types where field-level matters (validation rules, formulas)
-
-Affects storage cost and query performance of "what changed" queries. Decide in Phase 2.
-
-### S1-Q-005 — RecordType + Profile + Layout three-way assignment representation
-
-Salesforce's RecordType + Profile → PageLayout mapping is fundamental for Archetype B testing. The model must represent this correctly. Specifically:
-
-- A Profile + RecordType combination maps to one PageLayout
-- A PageLayout includes specific fields in specific sections
-- A Profile can also override which fields are visible/required regardless of layout (FLS)
-
-The data model must let us answer "for user U with profile P, on a record of type RT, can they see field F?" cleanly. This requires careful representation. Decide in Phase 2.
+(Effectively resolved by D-016 and D-021. Removing from open questions.)
 
 ### S1-Q-006 — Managed package handling
 
 Managed packages introduce namespaced entities with opaque internals. Options:
-
-- First-class entities with namespace labels (treat them like any other entity, just namespaced)
-- Opaque blobs (the package is "a thing" but its internals aren't represented)
+- First-class entities with namespace labels
+- Opaque blobs
 - Hybrid: public API exposed, internals opaque
 
-Affects testability of orgs relying on managed packages. Decide in Phase 2.
+Affects testability of orgs relying on managed packages. Decide during Tier 1 implementation when first managed-package-heavy tenant onboards.
 
-### S1-Q-007 — Initial Tier 1 entity coverage
+---
 
-The metadata API exposes hundreds of entity types. Tier 1 doesn't need them all. Starting list (subject to Phase 2 review):
-
-**In Tier 1:**
-- Object (sObject)
-- Field
-- Relationship
-- RecordType
-- Layout, Layout assignment
-- ValidationRule (with formula parsing)
-- Flow (existence + trigger object only)
-- Profile, PermissionSet, PermissionSetAssignment
-- User
-- ChangeEvent (the change log itself)
-
-**Deferred to later tiers:**
-- ApprovalProcess
-- SharingRule (Tier 2 — modeling enters at T2)
-- ApexTrigger, ApexClass (Tier 3)
-- CustomSetting, CustomMetadataType (TBD)
-- OutboundMessage, PlatformEvent (Archetype E — Tier 3)
+## Open — Phase 3 deferred (operational details)
 
 ### S1-Q-008 — Default background sync schedule
 
-The decision in D-009 commits to background + on-demand sync. The actual schedule defaults remain open:
-
-- Hourly sync for active tenants?
+D-009 commits to background + on-demand sync. Schedule defaults remain open:
+- Hourly for active tenants?
 - Nightly for inactive?
 - Tenant-configurable?
-- Different schedules per entity type (faster for flow changes, slower for layouts)?
+- Different schedules per entity type (D-020 establishes entity-scoped sync — operational data more frequent than structural)
 
-Decide in Phase 3 (operational details).
+Decide in Phase 3.
+
+### S1-Q-009 — change_log retention policy
+
+`change_log` grows linearly with org activity. At what point do we purge?
+- Never (keeps full audit history)
+- After N years (compliance-friendly default)
+- Tenant-configurable
+- Based on storage pressure
+
+Affects diff engine's "purged version" failure mode. Decide in Phase 3.
+
+### S1-Q-010 — Materialized view refresh strategy
+
+`effective_field_permissions` materialized view (D-020). Refresh approaches:
+- After every sync run (simple, may over-refresh)
+- After permission-related sync (specific, requires sync-event awareness)
+- Triggered by edge changes (most precise, complex)
+
+Decide in Phase 3 based on observed sync patterns.
+
+### S1-Q-011 — Tenant onboarding sequence
+
+When a tenant connects an org, what's the orchestration?
+- How long does initial sync take?
+- Is the model available for queries during initial sync?
+- What's the failure-recovery path?
+- How do we communicate progress to the user?
+
+Decide in Phase 3 when implementation begins.
+
+### S1-Q-012 — Schema migration parallelism
+
+D-015 mentions sequential vs parallel migration. At what scale do we need parallel? What's the failure handling for partial migrations?
+
+Decide in Phase 3 when migration tooling is built.

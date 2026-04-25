@@ -35,7 +35,7 @@ Append-only record of architectural decisions. Each decision has a monotonic ID.
 **Rationale:** Building toward a "Claude Code for QA" vision requires general capabilities (substrates) rather than a tool built around a specific feature. Substrates change slowly; features accumulate on top. This decomposition lets us build layer by layer without rewrites. The 8 substrates are documented in PLATFORM_VISION.md.
 
 **Alternatives considered:**
-- Feature-driven architecture (generator, executor, dashboard as top-level components) — rejected because it couples substrate-level capabilities to specific feature surfaces and forces rewrites when features expand.
+- Feature-driven architecture — rejected because it couples substrate-level capabilities to specific feature surfaces.
 - Monolithic design — rejected because a 5-year vision of this scope cannot be built without clean separation of concerns.
 
 **References:** PLATFORM_VISION.md
@@ -53,8 +53,8 @@ Append-only record of architectural decisions. Each decision has a monotonic ID.
 **Rationale:** The Semantic Org Model is the foundation for everything else: generation reasons against it, execution interprets tests through it, evolution detects changes in it, interpretation explains failures via it. Designing any other substrate first would force assumptions about the org model that would either constrain S1 or require rework downstream.
 
 **Alternatives considered:**
-- Design Substrate 3 (Generation Engine) first — the team had momentum here. Rejected because S3 decisions would pre-constrain S1 in ways we can't predict.
-- Design multiple substrates in parallel — rejected because they share S1 as a dependency. Until S1 is stable, parallel design creates conflicting assumptions.
+- Design Substrate 3 first — rejected because S3 decisions would pre-constrain S1 in ways we can't predict.
+- Design multiple substrates in parallel — rejected because they share S1 as a dependency.
 
 **References:** PLATFORM_VISION.md §"Design Order"
 
@@ -72,7 +72,7 @@ Append-only record of architectural decisions. Each decision has a monotonic ID.
 
 **Alternatives considered:**
 - Ship A4 as planned — rejected because it optimizes a narrow slice and doesn't serve the platform vision.
-- Ship A4-lite (no Salesforce execution at generation time) — rejected because this still precedes Substrate 1 design and makes commitments we may regret.
+- Ship A4-lite — rejected because this still precedes Substrate 1 design.
 
 **References:** archive/ARCHITECTURE_4_NOTE.md
 
@@ -86,12 +86,11 @@ Append-only record of architectural decisions. Each decision has a monotonic ID.
 
 **Decision:** Architecture documentation lives in the primeqa-v2 repository under `docs/architecture/`. Markdown only, with Mermaid diagrams embedded where useful. Every substrate design session ends with a git commit updating the relevant doc files.
 
-**Rationale:** Without a persistent documentation system, multi-week design work loses context across sessions. The approach mirrors how high-quality architecture work is done in mature engineering orgs: docs are the source of truth, updated continuously, committed with the design work itself.
+**Rationale:** Without a persistent documentation system, multi-week design work loses context across sessions.
 
 **Alternatives considered:**
-- Documentation in Confluence or external wiki — rejected because it separates docs from code and creates a drift problem.
+- Documentation in Confluence or external wiki — rejected because it separates docs from code.
 - Documentation produced once at end of design — rejected because multi-week work without continuous documentation loses context.
-- Rich document formats (Notion, docs with embeds) — rejected as unnecessary overhead; markdown is sufficient and grep-friendly.
 
 **References:** README.md
 
@@ -103,13 +102,9 @@ Append-only record of architectural decisions. Each decision has a monotonic ID.
 **Substrates affected:** [all]
 **Status:** active
 
-**Decision:** Design documents (SPEC, BACKGROUND, PLATFORM_VISION, EVOLUTION, GLOSSARY) are authored by Claude in design sessions with the user. Implementation documents (how the code actually works, deployment runbooks, code-level architecture docs) are authored by Claude Code after implementation. They coexist but do not overlap in authority.
+**Decision:** Design documents are authored by Claude in design sessions with the user. Implementation documents are authored by Claude Code after implementation.
 
-**Rationale:** The two have complementary strengths. Claude engages in architectural reasoning and external perspective. Claude Code has codebase context and implementation realism. Having both author the same doc type creates authority confusion; having them author different doc types creates a triangulated system where design intent (Claude) meets code reality (Claude Code).
-
-**Alternatives considered:**
-- Single author for all docs — rejected because neither Claude nor Claude Code is equally strong at both design and implementation reality.
-- User as sole author — rejected because it creates a bottleneck and doesn't leverage either AI's strengths.
+**Rationale:** Claude engages in architectural reasoning. Claude Code has codebase context and implementation realism. Hybrid authorship triangulates the two.
 
 **References:** README.md §"Who produces what"
 
@@ -121,13 +116,13 @@ Append-only record of architectural decisions. Each decision has a monotonic ID.
 **Substrates affected:** [S1, S5]
 **Status:** active
 
-**Decision:** Each tenant has its own authoritative semantic org model. No tenant data crosses tenant boundaries within Substrate 1. Cross-tenant learning is a structurally separate layer (relevant to Substrate 5, Knowledge System) that consumes from many tenants but stores only abstractions, never tenant data.
+**Decision:** Each tenant has its own authoritative semantic org model. No tenant data crosses tenant boundaries within Substrate 1. Cross-tenant learning is a structurally separate layer that consumes from many tenants but stores only abstractions, never tenant data.
 
-**Rationale:** Per-tenant authoritative models are simpler to design, simpler to reason about for compliance, and aligned with how customers expect their org data to be handled. The trade-off — no "free" cross-tenant insights at startup for new tenants — is acceptable, mitigated by Domain Packs (Substrate 5) providing prescriptive knowledge that applies broadly. Cross-tenant pattern aggregation can be added later as a separate, opt-in system without disturbing the foundational design.
+**Rationale:** Per-tenant authoritative models are simpler to design, simpler for compliance, and aligned with how customers expect their org data to be handled. The trade-off — no "free" cross-tenant insights at startup — is acceptable, mitigated by Domain Packs (Substrate 5) providing prescriptive knowledge that applies broadly.
 
 **Alternatives considered:**
-- Shared model with tenant_id filtering — rejected because it makes tenant deletion fragile, complicates compliance, and tempts code paths that might cross boundaries.
-- Cross-tenant learning baked into Substrate 1 — rejected because it conflates two distinct capabilities (authoritative org representation vs. learned patterns) and prevents either from being designed cleanly.
+- Shared model with tenant_id filtering — rejected because it makes tenant deletion fragile and complicates compliance.
+- Cross-tenant learning baked into Substrate 1 — rejected because it conflates two distinct capabilities.
 
 **References:** PLATFORM_VISION.md §"Substrate 1", substrate_1_semantic_org_model/SPEC.md
 
@@ -139,14 +134,15 @@ Append-only record of architectural decisions. Each decision has a monotonic ID.
 **Substrates affected:** [S1, S3, S4, S6, S8]
 **Status:** active
 
-**Decision:** Substrate 1 is versioned as an event-sourced model — an append-only change log captures every meaningful change. Logical version markers are placed at coarse-grained boundaries (deploys, sandbox refreshes, sync milestones, manual checkpoints). Test runs, generated test cases, and execution results all bind to a specific logical version. The model can reconstruct any historical version from the change log.
+**Decision:** Substrate 1 is versioned as an event-sourced model. Logical version markers are placed at coarse-grained boundaries (deploys, sandbox refreshes, sync milestones, manual checkpoints). Test runs, generated test cases, and execution results all bind to a specific logical version.
 
-**Rationale:** "Snapshot every change" doesn't scale; "current mutable state only" destroys explainability. Event sourcing with logical checkpoints gives both: low storage cost (we store changes, not snapshots) and stable read views (a logical version is a fixed point everything can reference). Every consuming substrate that produces output (S3 generated tests, S4 run results, S6 explanations, S8 evolution proposals) needs to record which logical version it was produced against, so future analysis can ask "what did the org look like when this was generated?"
+**Refinement (Phase 2, D-016):** Versions are identified by both `version_name` (human-readable) and `version_seq` (BIGINT, monotonic per tenant). Queries use seq for performance; humans see the name.
+
+**Rationale:** Snapshot-every-change doesn't scale; current-mutable-state-only destroys explainability. Event sourcing with logical checkpoints gives both — low storage cost and stable read views.
 
 **Alternatives considered:**
-- Snapshot-based versioning (full copy at each version) — rejected; storage cost prohibitive for large orgs over time.
-- Single mutable model with "current state" only — rejected; loses ability to explain why something failed when org has since changed.
-- Hybrid (snapshots at major events, deltas otherwise) — viable, treated as an implementation detail of event sourcing rather than a separate strategy.
+- Snapshot-based versioning — rejected; storage cost prohibitive.
+- Single mutable model — rejected; loses explainability.
 
 **References:** substrate_1_semantic_org_model/SPEC.md §"Versioning"
 
@@ -158,34 +154,25 @@ Append-only record of architectural decisions. Each decision has a monotonic ID.
 **Substrates affected:** [S1]
 **Status:** active
 
-**Decision:** The semantic org model is a behavior graph, not a metadata cache. It stores derived edges (computed relationships like `flow_modifies_field`, `validation_applies_under_condition`, `permission_set_grants_field_access`) alongside raw entities. Derived edges are computed at sync time, not on-demand by consumers.
+**Decision:** The semantic org model is a behavior graph, not a metadata cache. It stores derived edges computed at sync time. Edges represent invariants the system must reason about, not features the system supports.
 
-**Mindset:** Edges represent invariants the system must reason about, not features the system supports. This framing prevents archetype bias — we don't enumerate edges based on what one consumer wants; we enumerate edges based on what relationships must always be true in this graph for any consumer.
-
-**Rationale:** Storing only raw Salesforce metadata forces every consumer to recompute derived relationships, the cost amortizes badly, and edges drift from the data they describe. Computing edges at sync time means the model is "thicker" but the queries that matter (impact analysis, behavior reasoning, explainability) become first-class. The "edges are invariants" framing was the difference between an archetype-A-only graph and a multi-archetype graph in our design discussion.
-
-**Alternatives considered:**
-- Raw-metadata-only model with consumers computing derived facts — rejected; performance and consistency problems.
-- Edges enumerated based on Substrate 3's needs — rejected; this is what produced the archetype-A bias we caught and corrected.
+**Rationale:** Storing only raw metadata forces every consumer to recompute derived relationships. Computing edges at sync time means impact analysis, behavior reasoning, and explainability become first-class.
 
 **References:** substrate_1_semantic_org_model/SPEC.md §"Derived Edges"
 
 ---
 
-## D-009 — Sync strategy: background + on-demand; event-driven deferred
+## D-009 — Sync strategy: background + on-demand; entity-scoped schedules
 
 **Date:** 2026-04-24
 **Substrates affected:** [S1]
 **Status:** active
 
-**Decision:** Substrate 1 sync runs in two modes: periodic background sync (default schedule TBD per substrate, candidates: hourly, nightly, configurable per tenant) keeps the model warm, and on-demand sync of specific slices runs before critical operations (e.g., test generation for a release). Event-driven sync (Salesforce Change Data Capture, Platform Events, deploy notifications) is explicitly deferred — possibly to v3 or v4.
+**Decision:** Substrate 1 sync runs in two modes: periodic background sync keeps the model warm, and on-demand sync of specific slices runs before critical operations. Event-driven sync (Salesforce CDC, Platform Events) is deferred indefinitely.
 
-**Rationale:** Event-driven sync sounds elegant but Salesforce CDC is incomplete (doesn't cover metadata changes), Platform Events require per-tenant setup, and the infrastructure overhead is enormous. Background-and-on-demand achieves 90% of the freshness benefit at 10% of the implementation cost. The complexity of true event-driven sync isn't warranted until tenants demand near-realtime test generation in response to org changes.
+**Refinement (Phase 2, D-020):** Sync is entity-scoped, not org-scoped. Structural metadata (Objects, Fields, Layouts, Profiles, ValidationRules, Flows) syncs at one cadence. Operational data (Users, PermissionSetAssignments) syncs at higher frequency since it changes daily.
 
-**Alternatives considered:**
-- Pure on-demand sync — rejected; background sync prevents cold-start latency for every test generation.
-- Event-driven only — rejected as above; complexity trap.
-- All three (event + background + on-demand) — rejected for v1; pick the simpler two-mode approach now, add the third when warranted.
+**Rationale:** Event-driven sync sounds elegant but Salesforce CDC is incomplete and the infrastructure overhead is enormous. Background-and-on-demand achieves 90% of the benefit at 10% of the cost. Entity-scoped scheduling lets operational data stay fresh without forcing full-org syncs.
 
 **References:** substrate_1_semantic_org_model/SPEC.md §"Sync Strategy"
 
@@ -197,16 +184,11 @@ Append-only record of architectural decisions. Each decision has a monotonic ID.
 **Substrates affected:** [S1, S3, S4, S6]
 **Status:** active
 
-**Decision:** The semantic org model evolves in tiers. Tier 1 covers structural facts (objects, fields, relationships, record types, layouts, profiles, permission sets, validation rule formula parsing). Tier 2 covers behavior interpretation (flow logic, permission inheritance, sharing rules). Tier 3 covers deep semantics (Apex analysis, complex sharing edge cases, lightning page composition).
+**Decision:** The semantic org model evolves in tiers. Tier 1 covers structural facts plus validation rule formula parsing. Tier 2 covers behavior interpretation. Tier 3 covers deep semantics (Apex analysis).
 
-The model exposes a `capability_level` (TIER_1 | TIER_2 | TIER_3) so consumers know what they can rely on. Consumers must check capability_level before assuming a Tier-2 or Tier-3 capability is available.
+The model exposes a `capability_level` (TIER_1 | TIER_2 | TIER_3) so consumers know what they can rely on.
 
-**Rationale:** Building the entire behavior graph at once is multi-month work. Tiering lets us ship a useful Substrate 1 progressively. Exposing capability_level prevents the failure mode of consumers blindly expecting capabilities the model hasn't loaded yet. Validation rule formula parsing was promoted to Tier 1 (not Tier 2) because without it, Substrate 3 generates tests that randomly fail validation — making Tier 1 too thin to be useful.
-
-**Alternatives considered:**
-- Build all tiers as one monolith — rejected; multi-month work blocks all consumers.
-- Tier without capability exposure — rejected; consumers would silently break when expecting Tier-2 features at Tier-1.
-- Validation parsing in Tier 2 — rejected; Tier 1 without it is a toy.
+**Rationale:** Building the entire behavior graph at once is multi-month work. Tiering lets us ship a useful Substrate 1 progressively. Validation rule formula parsing was promoted to Tier 1 because without it, Substrate 3 generates tests that randomly fail validation.
 
 **References:** substrate_1_semantic_org_model/SPEC.md §"Tiered Capability Model"
 
@@ -219,21 +201,15 @@ The model exposes a `capability_level` (TIER_1 | TIER_2 | TIER_3) so consumers k
 **Status:** active
 
 **Decision:** Cross-tenant data sharing is governed by a three-tier policy:
+- Tier 1 (raw data) — STRICTLY PRIVATE
+- Tier 2 (derived patterns) — SAFE TO SHARE
+- Tier 3 (aggregated statistics) — SAFE TO SHARE
 
-- **Tier 1 (raw data) — STRICTLY PRIVATE.** Formulas, field values, org-specific configurations, names, descriptions, structure that could identify a tenant or reveal business logic. Never crosses tenant boundaries.
-- **Tier 2 (derived patterns) — SAFE TO SHARE.** Abstract patterns observed across tenants, e.g., "When Stage = Closed Won, Amount is typically required." Patterns are abstractions, not redacted data.
-- **Tier 3 (aggregated statistics) — SAFE TO SHARE.** Distributions, frequencies, e.g., "73% of orgs have a validation rule of this shape." Aggregate-only.
+Reconstructable tenant logic is forbidden, even when "anonymized."
 
-**Reconstructable tenant logic is forbidden — even when "anonymized."** Anonymized formula examples are NOT permitted because formulas leak business logic by their structure alone.
+**Rationale:** "Anonymized" is treacherous, especially in Salesforce where formula structure encodes business rules. The bright line "patterns and statistics yes, examples no" is enforceable.
 
-**Rationale:** "Anonymized" is a treacherous category — what looks anonymized often isn't, especially in Salesforce where formula structure encodes business rules. The bright line "patterns and statistics yes, examples no" is enforceable; "anonymized examples" requires per-case judgment that will eventually fail. Customers buying PrimeQA need to trust that their org's logic isn't being shared — that trust is foundational and worth more than any cross-tenant feature this restriction blocks.
-
-**Alternatives considered:**
-- Allow anonymized examples — rejected; anonymization is a leaky abstraction for Salesforce content.
-- Per-tenant opt-in for sharing — rejected for v1; adds policy complexity before we've earned trust.
-- No cross-tenant data sharing at all — rejected as too restrictive; patterns and statistics can be safely shared and improve the product.
-
-**References:** PLATFORM_VISION.md §"Substrate 5", substrate_1_semantic_org_model/SPEC.md §"Cross-Tenant Boundary"
+**References:** substrate_1_semantic_org_model/SPEC.md §"Cross-Tenant Boundary"
 
 ---
 
@@ -243,15 +219,11 @@ The model exposes a `capability_level` (TIER_1 | TIER_2 | TIER_3) so consumers k
 **Substrates affected:** [S1, S6, S8]
 **Status:** active
 
-**Decision:** Substrate 1 includes a diff engine as a first-class subsystem. The diff engine answers queries of the form "what changed between version A and version B that affects entity E?" — where E might be a test case, a flow, a profile, or any other entity in the model.
+**Decision:** Substrate 1 includes a diff engine as a first-class subsystem.
 
-The diff engine is not a feature consumers cobble together by querying raw change logs. It is a designed subsystem of S1 with its own contract.
+**Refinement (Phase 2, D-021):** Three query types — entity-scoped, impact, time-window — with direction control, mandatory edge category filter, raw Change output, deterministic ordering, fail-loud on purged versions.
 
-**Rationale:** Diff is the engine of explainability. Without it, "why did this test fail" devolves to "the org changed somehow." With it, we can say "between when this test was last green and now, validation rule X was added, and the test triggers it." Both Substrate 6 (Interpretation) and Substrate 8 (Evolution) depend on this capability — without making it first-class, both substrates would reinvent it incompatibly.
-
-**Alternatives considered:**
-- Expose raw change log, let consumers compute diffs — rejected; consumers would compute incompatibly, performance would suffer, and the most important use case (impact-aware diff) requires graph traversal that consumers shouldn't reimplement.
-- Diff as a Substrate 6 capability — rejected; diff fundamentally operates on S1's data and belongs there. S6 consumes it.
+**Rationale:** Diff is the engine of explainability. Substrate 6 and Substrate 8 both depend on it. Without making it first-class, both substrates would reinvent it incompatibly.
 
 **References:** substrate_1_semantic_org_model/SPEC.md §"Diff Engine"
 
@@ -263,14 +235,330 @@ The diff engine is not a feature consumers cobble together by querying raw chang
 **Substrates affected:** [S1, S3, S4, S6]
 **Status:** active
 
-**Decision:** Validation rule formula parsing — extracting the fields referenced and the conditions asserted — is a Tier 1 capability of the semantic org model. Not Tier 2.
+**Decision:** Validation rule formula parsing — extracting fields referenced and conditions asserted — is Tier 1.
 
-**Rationale:** A Tier 1 model that knows validation rules exist but doesn't know what they check is too thin to be useful. Substrate 3 (Generation) at this thin Tier 1 would produce tests that randomly fail validation. Substrate 6 (Interpretation) would explain failures as "validation rule failed" without saying which fields or conditions were involved. The cost of formula parsing is real but not prohibitive — Salesforce formulas have a finite grammar, parsers exist, and the result enables the consuming substrates to be useful at the same tier as S1.
-
-What stays in Tier 2: flow logic interpretation (entry conditions, record updates, decision branches), permission inheritance computation across profile + permission set chains, sharing rule modeling. These genuinely warrant deferral.
-
-**Alternatives considered:**
-- Validation parsing in Tier 2 (TA's initial proposal) — rejected; makes Tier 1 too thin to ship.
-- Validation as a separate "Tier 1.5" — rejected; arbitrary granularity.
+**Rationale:** A Tier 1 model that knows validation rules exist but doesn't know what they check is too thin to be useful.
 
 **References:** substrate_1_semantic_org_model/SPEC.md §"Tiered Capability Model"
+
+---
+
+## D-014 — Storage backend: Postgres with graph-friendly design
+
+**Date:** 2026-04-25
+**Substrates affected:** [S1]
+**Status:** active
+
+**Decision:** Storage backend is PostgreSQL. The model is structured as a true graph using two canonical patterns: an `entities` table holding all nodes with type discriminators, and an `edges` table holding all derived relationships uniformly with `edge_type` discriminator and version bounds.
+
+Three commitments are part of this decision:
+
+1. **Edges are canonical.** Every derived relationship lives in the `edges` table. New edge types add new `edge_type` values, never new tables.
+2. **Traversal is SQL-only.** Consumers never pull entities into application memory to traverse them. Recursive CTEs or stored procedures handle traversal at the database layer.
+3. **Optimization stays in Postgres.** Hot queries get materialized views or denormalized columns within Postgres. No in-memory caches at the application layer.
+
+**Rationale:** Postgres handles target queries within acceptable performance bounds. Operating it is a known quantity. The graph-friendly design (canonical edges, SQL-only traversal, in-database optimization) prevents drift toward speculative complexity.
+
+**Alternatives considered:**
+- Dedicated graph database (Neo4j, FalkorDB) — rejected; operational cost not warranted for a solo founder; talent pool small.
+- In-process graph (NetworkX) — rejected; doesn't scale, doesn't handle multi-process concurrency.
+- Hybrid (Postgres + in-memory graph) — rejected; cache invalidation problem, two abstractions to maintain, speculative complexity.
+- Document database (MongoDB) — rejected; wrong shape for relational/graph data.
+
+**References:** substrate_1_semantic_org_model/SPEC.md §"Storage Backend"
+
+---
+
+## D-015 — Schema-per-tenant isolation with safe connection resolver
+
+**Date:** 2026-04-25
+**Substrates affected:** [S1]
+**Status:** active
+
+**Decision:** Per-tenant isolation uses Postgres schemas (Option β). One database, one schema per tenant (`tenant_<integer_id>`), plus a `shared` schema for cross-tenant control-plane data.
+
+Connection access happens through a canonical resolver, `get_tenant_connection(tenant_id)`, which:
+- Takes tenant_id as explicit parameter (works in any context)
+- Sets search_path via `SET LOCAL` inside a transaction (transaction-scoped, automatic reset)
+- Sets `app.tenant_id` via `SET LOCAL` for defensive assertion
+- Has connection pool checkin hooks that reset search_path defensively
+- Validates search_path took effect in development environment
+- Is the only sanctioned entry point for tenant-scoped queries
+
+Flask `g` integration is a thin wrapper for request handlers. Workers, scripts, and admin tools use the canonical resolver directly with explicit `tenant_id`.
+
+Admin operations have dedicated entry points: `admin_iterate_all_tenants()` for cross-tenant work, `admin_run_in_shared_schema()` for control-plane operations.
+
+Migration framework (Alembic) is configured per-schema with `version_table_schema` set to the tenant's schema.
+
+`SET LOCAL` works correctly under PgBouncer transaction-mode pooling, so future migration to a connection multiplexer requires no code changes.
+
+**Rationale:** β provides genuine isolation with manageable ops. Schema-per-tenant scales to thousands of tenants on one Postgres instance. Pure α (database-per-tenant) is deferred to enterprise tier when paying customer demands it.
+
+**Alternatives considered:**
+- Option α (database-per-tenant) — deferred to enterprise tier; ops cost not warranted for current customer profile.
+- Option γ (row-level isolation with tenant_id) — rejected; security risk too high.
+- Option β-α hybrid built upfront — rejected; speculative complexity.
+
+**References:** substrate_1_semantic_org_model/SPEC.md §"Connection Resolver"
+
+---
+
+## D-016 — Canonical foundation tables: logical_versions, entities, edges, change_log
+
+**Date:** 2026-04-25
+**Substrates affected:** [S1]
+**Status:** active
+
+**Decision:** Four canonical tables form the foundation of S1's data model:
+
+- `logical_versions` — version markers (version_seq BIGSERIAL PK, version_name UNIQUE, version_type, parent_version_seq)
+- `entities` — all nodes (UUID PK, entity_type, sf_id, sf_api_name, attributes JSONB, valid_from_seq, valid_to_seq, tenant_id assertion)
+- `edges` — all derived relationships (UUID PK, source_entity_id, target_entity_id, edge_type, edge_category, properties JSONB, valid_from_seq, valid_to_seq, tenant_id assertion)
+- `change_log` — event source (BIGSERIAL PK, change_type, target_table, target_id, before_state JSONB, after_state JSONB, changed_field_names TEXT[], version_seq, tenant_id assertion)
+
+Bitemporal versioning uses `valid_from_seq` and `valid_to_seq` (BIGINT, references `logical_versions(version_seq)`). Currently-valid rows have `valid_to_seq IS NULL`.
+
+Defensive `tenant_id` columns on canonical tables only (NOT on detail tables). Set via `current_setting('app.tenant_id')::INT` default; CHECK constraint validates equality. Acts as assertion, not access control. Detail tables don't carry it.
+
+JSONB validation discipline: application-layer Pydantic schemas validate `attributes` and `properties` JSONB. DB-level CHECK constraints enforce `jsonb_typeof = 'object'` only. Promotion rule: if a JSONB attribute is queried, filtered, or joined, it must be promoted to a column.
+
+**Rationale:** version_seq (integer) replaces string-based version names in queries for fast comparisons. Bitemporal columns enable point-in-time queries directly without rebuilding from event log. Defensive tenant_id on canonical tables provides isolation safety net without adding noise to detail tables.
+
+**Alternatives considered:**
+- VARCHAR version names in queries — rejected; slow string comparison, fragile sorting.
+- Snapshot-based versioning — rejected; storage cost prohibitive.
+- Event-sourced rebuild on every query — rejected; too slow for hot path.
+- tenant_id on every detail table — rejected; noise without proportional protection.
+- DB-level JSONB schema validation — rejected; brittle, defer to application layer.
+
+**References:** substrate_1_semantic_org_model/SPEC.md §"Foundation Tables"
+
+---
+
+## D-017 — Containment-vs-edge rule and edge_category classification
+
+**Date:** 2026-04-25
+**Substrates affected:** [S1]
+**Status:** active
+
+**Decision:** 
+
+**Containment rule:** Containment relationships are stored as columns on detail tables (authoritative source of truth). Edges of category STRUCTURAL/BELONGS_TO are derived projections — automatically generated from columns, never independently written. This applies to: Field → Object, RecordType → Object, ValidationRule → Object, Layout → Object, Flow → Object (trigger), User → Profile.
+
+**Layout structure rule:** Layouts model field placement as edges (`Layout INCLUDES_FIELD Field`) with structured properties (section_name, section_order, row, column, is_required, is_readonly). Sections are not entities. Properties schema is application-layer enforced via Pydantic.
+
+**Edge category classification:** Every edge has an `edge_category` discriminator with four values:
+- STRUCTURAL — containment and object-to-object relationships
+- CONFIG — layouts, picklists, layout assignments
+- PERMISSION — access grants, inheritance, user assignments
+- BEHAVIOR — triggers, rule applications, formula references
+
+Categories enable filtered traversal and category-scoped queries.
+
+**Containment cardinality:** Containment edges have `UNIQUE (source_entity_id, edge_type, valid_from_seq) WHERE edge_category = 'STRUCTURAL'` to prevent duplicate BELONGS_TO entries.
+
+**Rationale:** Column-only fails graph traversal needs. Edge-only forces simple lookups through unnecessary joins. Hybrid (column for identity, edge for traversal) gives both. Categories enable bounded traversal during impact analysis.
+
+**Alternatives considered:**
+- Pure column-only — rejected; loses uniform traversal.
+- Pure edge-only — rejected; constant tax on simple lookups.
+- Sections as separate entities — rejected; over-modeling presentation artifacts.
+- Layout structure in JSONB — rejected; loses queryability.
+
+**References:** substrate_1_semantic_org_model/SPEC.md §"Containment vs Edges"
+
+---
+
+## D-018 — 10 Tier 1 entity types with detail tables
+
+**Date:** 2026-04-25
+**Substrates affected:** [S1]
+**Status:** active
+
+**Decision:** Tier 1 captures 10 entity types, each with a corresponding detail table for hot/queryable attributes:
+
+1. Object → `object_details`
+2. Field → `field_details`
+3. RecordType → `record_type_details`
+4. Layout → `layout_details`
+5. ValidationRule → `validation_rule_details` + `validation_rule_field_refs` (hot reference table)
+6. Flow → `flow_details` (existence + trigger only at Tier 1)
+7. Profile → `profile_details`
+8. PermissionSet → `permission_set_details`
+9. User → `user_details`
+10. PicklistValueSet → `picklist_value_details`
+
+Detail tables follow the rule: hot/queryable attributes are columns; sparse/lightweight metadata is JSONB on the entities row. Detail tables do NOT carry `tenant_id` (only canonical tables do).
+
+`validation_rule_field_refs` is a separate hot table powering "which validation rules reference field X" without JSONB containment queries.
+
+`flow_details` reserves columns for Tier 2 (`parsed_logic JSONB`, `interpreted_at_capability_level`) — populated NULL at Tier 1, filled when Tier 2 capability ships.
+
+**Rationale:** Salesforce metadata structure is stable enough to commit to specific columns for hot attributes. JSONB-only would make critical queries (find all currency fields, find all active validation rules) slow. Detail tables per type prevent pollution of any single table while keeping the entity-edge canonical structure clean.
+
+**Alternatives considered:**
+- All attributes in JSONB — rejected; queries become ugly, indexes weak.
+- Single mega-table with all attributes — rejected; sparse columns, schema confusion.
+- One table per Salesforce metadata type (broader than needed) — rejected; over-fragmentation.
+
+**References:** substrate_1_semantic_org_model/SPEC.md §"Entity Detail Tables"
+
+---
+
+## D-019 — 14 Tier 1 edge types with category, type constraints, properties schemas
+
+**Date:** 2026-04-25
+**Substrates affected:** [S1]
+**Status:** active
+
+**Decision:** Tier 1 ships with 14 edge types, registered in a code-level constant `TIER_1_EDGES` mapping edge_type → metadata (category, source/target entity types, properties schema name, derived-from-column flag):
+
+**STRUCTURAL (2):**
+- BELONGS_TO (derived from column)
+- HAS_RELATIONSHIP_TO (derived from `field_details.references_object_entity_id`)
+
+**CONFIG (4):**
+- INCLUDES_FIELD (Layout → Field; independently written; properties: section_name, section_order, row, column, is_required, is_readonly)
+- ASSIGNED_TO_PROFILE_RECORDTYPE (Layout → Profile; independently written; properties: record_type_entity_id, is_default)
+- CONSTRAINS_PICKLIST_VALUES (RecordType → PicklistValueSet; derived from column)
+- HAS_PICKLIST_VALUES (Field → PicklistValueSet; derived from column)
+
+**PERMISSION (5):**
+- GRANTS_OBJECT_ACCESS (Profile/PermissionSet → Object; properties: can_create, can_read, can_edit, can_delete, can_view_all, can_modify_all)
+- GRANTS_FIELD_ACCESS (Profile/PermissionSet → Field; properties: can_read, can_edit)
+- INHERITS_PERMISSION_SET (PermissionSet → PermissionSet; for permission set groups)
+- HAS_PROFILE (User → Profile; derived from column)
+- HAS_PERMISSION_SET (User → PermissionSet; properties: assigned_at, assigned_by_user_entity_id, expiration_date)
+
+**BEHAVIOR (3):**
+- TRIGGERS_ON (Flow → Object; derived from column; properties: trigger_type, condition_text)
+- APPLIES_TO (ValidationRule → Object; derived from column)
+- REFERENCES (ValidationRule → Field; derived from `validation_rule_field_refs`; properties: reference_type, is_priorvalue, is_ischanged, is_isnew)
+
+8 of 14 edges are derived from columns (auto-generated alongside their source row). 6 are independently written.
+
+**Rationale:** A single registry of edge types prevents type-system drift. The derived-from-column distinction enforces D-017's rule. Properties schemas are named for application-layer Pydantic enforcement.
+
+**References:** substrate_1_semantic_org_model/SPEC.md §"Edge Types"
+
+---
+
+## D-020 — Permission grants as edges with property matrix; effective permissions materialized; user assignments at higher sync frequency
+
+**Date:** 2026-04-25
+**Substrates affected:** [S1, S4]
+**Status:** active
+
+**Decision:**
+
+**Storage:** Permission grants stored as edges with property matrix. One edge per (Profile/PermissionSet, Field) with properties capturing all access flags (can_read, can_edit). Not separate edges per access type.
+
+**Effective permission materialization:** A materialized view `effective_field_permissions` computes per-(User, Field) effective access by aggregating Profile + assigned PermissionSets + inherited PermissionSets, taking most-permissive. Refreshed after sync or via `REFRESH MATERIALIZED VIEW CONCURRENTLY`.
+
+**Materialized view caveat:** Reflects "current state as of last refresh." Not version-aware. For "as-of-version-V" permission queries, consumers query underlying tables (slower) or accept the materialized view's freshness window.
+
+**Sync frequency:** User assignments (HAS_PERMISSION_SET edges) sync at higher frequency than structural metadata. Sync is entity-scoped, not org-scoped — different entity types have different schedules.
+
+**Rationale:** Field-level permissions for a typical org produce ~250K edges. Acceptable in indexed Postgres. Effective permission computation across inheritance chains is expensive on every query — materialization makes the hot path fast. User assignments change daily and warrant their own sync cadence.
+
+**Alternatives considered:**
+- Store only deviations from default — rejected; absence-means-default semantics cause bugs.
+- Compute effective permissions on-demand — rejected; too slow for hot path.
+- User assignments as Tier 2 — rejected; blocks permission test execution at Tier 1.
+
+**References:** substrate_1_semantic_org_model/SPEC.md §"Permission Modeling"
+
+---
+
+## D-021 — Diff engine: three query types, direction control, mandatory edge category filter
+
+**Date:** 2026-04-25
+**Substrates affected:** [S1, S6, S8]
+**Status:** active
+
+**Decision:** The diff engine exposes three query primitives:
+
+**diff_for_entities(entity_ids, from_seq, to_seq, traversal=None):**
+- Direct changes to named entities and their edges
+- Optional `traversal` (TraversalSpec) extends to neighbors via direction (inbound/outbound/both/none), max_depth, edge_categories, edge_types
+
+**diff_impact(changed_entity_id, at_seq, direction='inbound', max_depth=3, edge_categories):**
+- Returns entities affected by a change, traversing in the given direction
+- `edge_categories` is REQUIRED (no None default) — caller declares intent
+- Default direction is 'inbound' (who depends on this entity)
+
+**diff_window(from_seq, to_seq, entity_types=None, change_types=None, limit=1000, offset=0):**
+- All changes between two versions, paginated
+- Deterministic ordering: ORDER BY version_seq, target_table, target_id, id
+
+**Output:** Raw structured `Change` objects. No interpretation layer (Substrate 6's job). Each Change carries change_type, before_state, after_state, changed_field_names, version_seq, sync_run_id.
+
+**change_log granularity:** change_type values are granular — entity_created, entity_field_modified, entity_attributes_modified, entity_deleted, edge_created, edge_properties_modified, edge_deleted, detail_field_modified, detail_added, detail_removed. Plus `changed_field_names TEXT[]` column with GIN index for targeted queries.
+
+**Purged versions:** Diff queries against purged versions raise `VersionNotFoundError`. No silent fallback. (Phase 1 decision; versions not currently purged but contract is set for future.)
+
+**Performance contract (initial targets):**
+- Entity-scoped diff for 10 entities across 1000 version_seq range: <100ms
+- Impact diff at depth 3 on org with 50K entities: <500ms
+- Time-window diff returning 1000 changes: <200ms
+
+**Rationale:** Three query shapes are fundamentally different (bounded entity scope vs unbounded impact traversal vs version-range scan). Direction control prevents conflating "what depends on me" with "what I depend on." Mandatory edge_categories prevents uncontrolled traversal exploding through STRUCTURAL noise.
+
+**Alternatives considered:**
+- Single unified diff query — rejected; query shapes too different.
+- Optional edge category filter — rejected; uncontrolled traversal causes performance and semantic problems.
+- Interpreted diff output — rejected; couples diff to interpretation logic; raw is a cleaner boundary.
+- Silent fallback on purged versions — rejected; produces wrong answers.
+
+**References:** substrate_1_semantic_org_model/SPEC.md §"Diff Engine"
+
+---
+
+## D-022 — Query interface: minimal contract with enforced invariants
+
+**Date:** 2026-04-25
+**Substrates affected:** [S1, S3, S4, S6, S8]
+**Status:** active
+
+**Decision:** Substrate 1 exposes a minimal query interface to consuming substrates. The interface enforces invariants now; full ergonomics emerge during Substrate 3 design.
+
+**Principles (non-negotiable):**
+
+1. **Version-aware access only.** Every primitive takes `at_seq` (point-in-time) or `(from_seq, to_seq)` (range). Calls without version context fail at the API boundary. No `at_seq=None` for "current" — consumers call `model.current_version_seq()` first, then pass it.
+
+2. **Centralized edge traversal.** No consumer writes recursive CTEs. The `traverse()` primitive is the only way to walk the graph multi-hop.
+
+3. **Explicit edge filtering.** `edge_categories` is required on traversal calls. No hidden defaults.
+
+4. **Explicit direction.** `inbound | outbound | both` declared per call.
+
+5. **No raw SQL across the boundary.** Consumers do not access `entities`, `edges`, `change_log`, or detail tables directly.
+
+**Five primitives:**
+
+```python
+class SemanticOrgModel:
+    def __init__(self, conn: Connection): ...
+    
+    def get_entities(self, entity_type, at_seq, filters=None) -> list[Entity]: ...
+    def get_related(self, entity_id, edge_types, direction, at_seq) -> list[RelatedEntity]: ...
+    def traverse(self, start_ids, edge_categories, direction, max_depth, at_seq, edge_types=None) -> list[TraversedEntity]: ...
+    def query_entities(self, entity_type, at_seq, conditions) -> list[Entity]: ...
+    
+    # Diff primitives (D-021)
+    def diff_for_entities(self, ...) -> DiffResult: ...
+    def diff_impact(self, ...) -> ImpactResult: ...
+    def diff_window(self, ...) -> list[Change]: ...
+```
+
+**What's NOT designed:** Per-entity-type helpers, domain shortcuts, query DSL, caching strategy, bulk operations. These emerge during Substrate 3 design when real query patterns surface.
+
+**Rationale:** The interface enforces invariants (version correctness, traversal consistency, edge filter discipline, abstraction boundary). Full ergonomics designed speculatively would overfit to imagined use cases. Minimal contract now plus evolution with Substrate 3 prevents both extremes.
+
+**Alternatives considered:**
+- Full repository-pattern API — rejected; overkill at our scale; speculative.
+- Direct SQL via connection — rejected; loses abstraction boundary.
+- `at_seq=None` for current — rejected; hidden default contradicts version-awareness principle.
+
+**References:** substrate_1_semantic_org_model/SPEC.md §"Query Interface"

@@ -2,58 +2,56 @@
 
 Questions that affect multiple substrates or are not yet assigned. Substrate-specific open questions live in the relevant substrate's directory.
 
-When a question is answered, move it into DECISIONS_LOG.md as a formal decision and remove from this list.
-
 ---
 
 ## Resolved
 
-- ~~Q-001 — Tenant isolation model for learned knowledge~~ → resolved by D-006 (per-tenant authoritative) + D-011 (cross-tenant boundary policy).
-- ~~Q-003 — Sync model between live Salesforce orgs and the semantic model~~ → resolved by D-009 (background + on-demand, no event-driven for v1).
+- ~~Q-001 — Tenant isolation model for learned knowledge~~ → resolved by D-006 + D-011
+- ~~Q-002 — Storage backend for the semantic org model~~ → resolved by D-014 (Postgres with graph-friendly design)
+- ~~Q-003 — Sync model between live Salesforce orgs and the semantic model~~ → resolved by D-009 + D-020 (background + on-demand, entity-scoped schedules)
 
 ## Open
 
-### Q-002 — What is the storage backend for the semantic org model?
-
-Substrate 1's storage technology is not yet decided. Options:
-- PostgreSQL with JSONB + relational tables (leverages existing infrastructure; pgvector already deployed)
-- Graph database (Neo4j, FalkorDB, etc.)
-- In-process graph (NetworkX or similar) with persistent snapshots
-- Hybrid (relational for entities, graph layer for traversals)
-
-This is one of the most consequential decisions for S1. Defer to Phase 2 design when concrete query patterns and scale requirements are clearer.
-
 ### Q-004 — How does Architecture 4's useful work carry forward?
 
-A4 spec (v1-v4) captured real design thinking: scenario declarations binding execution, state refs returned by tools not invented, strict validation errors, retry with narrowed context. Some of this transfers to the eventual Substrate 3 (Generation Engine) design. Some doesn't — the execute-during-generation pattern is explicitly dropped.
+A4 spec captured real design thinking: scenario declarations binding execution, state refs returned by tools not invented, strict validation errors, retry with narrowed context. Some of this transfers to the eventual Substrate 3 (Generation Engine) design.
 
-When we design S3, we revisit A4 for salvageable patterns. Don't archive-and-forget.
+Worth carrying forward (per archive/ARCHITECTURE_4_NOTE.md):
+- Scenario binds execution (declared actors constrain operations)
+- State is handed out, not invented (state refs returned by creation tools)
+- Strict validation over silent recovery
+- Retry with narrowed context
+- Feature-flag-gated rollout with shadow mode
+
+Open question: Is tool-use the right generation model, or is single-shot structured JSON generation with validate-then-retry sufficient? Address during S3 design with Tier 1 model in hand.
 
 ### Q-005 — Is there a substrate between "Execution Engine" and "Observation" that we haven't named?
 
-Question raised by Claude during vision-setting. S4 runs tests and captures evidence; S6 interprets results and explains failures. Is there a "result processing" substrate between them — a place where raw execution data is normalized, enriched with org context, and made queryable? Or is that part of S4 or S6?
+S4 runs tests and captures evidence; S6 interprets results. Is there a "result processing" substrate between them — normalizing raw execution data, enriching with org context, making it queryable?
 
 Revisit when S4 or S6 design begins.
 
 ### Q-006 — Does the Evolution Engine (S8) act autonomously or with human approval?
 
-When the org changes (field renamed, flow deactivated), S8 may update affected tests. Two modes possible:
-- Autonomous: system updates tests and notifies the user
-- Review-required: system proposes updates, user approves
+When the org changes (field renamed, flow deactivated), S8 may update affected tests:
+- Autonomous: system updates and notifies
+- Review-required: system proposes, user approves
 
-Could vary by change type (autonomous for cosmetic changes, review-required for semantic changes). Revisit during S8 design.
+Could vary by change type. Revisit during S8 design.
 
 ### Q-007 — Logical version naming policy
 
-D-007 commits to logical version names but doesn't define a naming policy. Examples used in SPEC: `v_genesis`, `v_2026_04_24_pre_deploy`, `v_deploy_42`.
+Phase 2 (D-016) committed to dual identifiers: `version_seq` (BIGINT, monotonic) for queries, `version_name` (VARCHAR) for human use. Naming convention `<type>-<timestamp>-<sequence>` (e.g., `deploy-20260425-001`).
 
-Should names follow a fixed schema (timestamp + tag), be free-form when manually checkpointed, or both? Decide before Phase 3 (operational details).
+Refinement still open: How are user-named manual checkpoints structured? `manual-<timestamp>-<user>-<freeform>`? Allow arbitrary user naming?
+
+Decide during Phase 3 (operational details) or first manual-checkpoint feature work.
 
 ### Q-008 — How does S5 (Knowledge System) actually derive shareable patterns from per-tenant models?
 
 D-011 commits to the cross-tenant boundary policy. The mechanism by which S5 derives Tier 2 patterns and Tier 3 statistics from per-tenant models is left for S5 design.
 
-This is a real design problem (statistical derivation that respects the boundary), not just a policy question. Revisit when S5 design begins.
+Real design problem (statistical derivation that respects the boundary). Revisit when S5 design begins.
 
 ---
 
