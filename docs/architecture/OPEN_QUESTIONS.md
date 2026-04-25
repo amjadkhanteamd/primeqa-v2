@@ -6,25 +6,22 @@ When a question is answered, move it into DECISIONS_LOG.md as a formal decision 
 
 ---
 
-## Cross-cutting questions
+## Resolved
 
-### Q-001 — What is the tenant isolation model for learned knowledge?
+- ~~Q-001 — Tenant isolation model for learned knowledge~~ → resolved by D-006 (per-tenant authoritative) + D-011 (cross-tenant boundary policy).
+- ~~Q-003 — Sync model between live Salesforce orgs and the semantic model~~ → resolved by D-009 (background + on-demand, no event-driven for v1).
 
-Substrate 5 (Knowledge System) will accumulate tenant-specific facts and cross-tenant patterns. The boundary between "tenant's private knowledge" and "aggregated learning across tenants" needs a clear model.
+## Open
 
-Implications for Substrate 1 (org model stores facts about this org), Substrate 5 (knowledge), Substrate 7 (conversation — what can users ask across their history vs their org only).
+### Q-002 — What is the storage backend for the semantic org model?
 
-### Q-002 — Is the semantic org model a graph database, relational, or something else?
+Substrate 1's storage technology is not yet decided. Options:
+- PostgreSQL with JSONB + relational tables (leverages existing infrastructure; pgvector already deployed)
+- Graph database (Neo4j, FalkorDB, etc.)
+- In-process graph (NetworkX or similar) with persistent snapshots
+- Hybrid (relational for entities, graph layer for traversals)
 
-Substrate 1's storage technology is not yet decided. Graph databases (Neo4j, FalkorDB, in-process like NetworkX) are a natural fit for relationship-heavy data. Relational (PostgreSQL with JSONB, possibly with pgvector — which PrimeQA already uses) keeps infrastructure simple.
-
-This decision affects query expressiveness, performance characteristics, ops burden, and how other substrates interact with S1. Decide during S1 design work.
-
-### Q-003 — What is the sync model between live Salesforce orgs and the semantic model?
-
-Substrate 1 represents an org's state, but the org changes constantly. When do we refresh? Continuous sync is expensive. Snapshot-on-demand may be stale. Event-driven (react to Change Data Capture, Platform Events, deploy notifications) is ideal but requires infrastructure.
-
-Will need a decision framework: which parts of the model are hot (refreshed often) vs warm (on-demand) vs cold (snapshotted at known intervals).
+This is one of the most consequential decisions for S1. Defer to Phase 2 design when concrete query patterns and scale requirements are clearer.
 
 ### Q-004 — How does Architecture 4's useful work carry forward?
 
@@ -41,11 +38,22 @@ Revisit when S4 or S6 design begins.
 ### Q-006 — Does the Evolution Engine (S8) act autonomously or with human approval?
 
 When the org changes (field renamed, flow deactivated), S8 may update affected tests. Two modes possible:
-
 - Autonomous: system updates tests and notifies the user
 - Review-required: system proposes updates, user approves
 
 Could vary by change type (autonomous for cosmetic changes, review-required for semantic changes). Revisit during S8 design.
+
+### Q-007 — Logical version naming policy
+
+D-007 commits to logical version names but doesn't define a naming policy. Examples used in SPEC: `v_genesis`, `v_2026_04_24_pre_deploy`, `v_deploy_42`.
+
+Should names follow a fixed schema (timestamp + tag), be free-form when manually checkpointed, or both? Decide before Phase 3 (operational details).
+
+### Q-008 — How does S5 (Knowledge System) actually derive shareable patterns from per-tenant models?
+
+D-011 commits to the cross-tenant boundary policy. The mechanism by which S5 derives Tier 2 patterns and Tier 3 statistics from per-tenant models is left for S5 design.
+
+This is a real design problem (statistical derivation that respects the boundary), not just a policy question. Revisit when S5 design begins.
 
 ---
 

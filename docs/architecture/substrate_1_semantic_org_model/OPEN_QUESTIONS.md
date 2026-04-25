@@ -6,66 +6,108 @@ When a question is answered, move it into DECISIONS_LOG.md as a formal decision 
 
 ---
 
-## S1-Q-001 — What level of behavior modeling do we commit to for flows?
+## Resolved in Phase 1 (2026-04-24)
 
-Flows are XML. Their behavior is knowable by parsing and interpreting the XML, but that's a significant effort. We have three options:
+- ~~S1-Q-008 — Storage-layer decision~~ → still open (Phase 2 work), tracked at top-level Q-002
+- Cross-tenant policy question → resolved by D-011
 
-- **Reference only** — model stores "flow F exists, triggers on object O, activated yes/no." Doesn't know what the flow does.
-- **Partial interpretation** — parse flow XML to extract entry criteria, record updates, and outputs. Don't simulate full flow logic.
-- **Full simulation** — essentially rebuilding Flow's runtime in our model. Almost certainly out of scope.
+---
 
-Decision affects how useful S1 is for Substrate 3 (generation) and Substrate 6 (interpretation). Partial interpretation is likely the right answer, but the boundary ("partial" means what exactly?) needs definition.
+## Open
 
-## S1-Q-002 — How do we model validation rules?
+### S1-Q-001 — Flow logic interpretation depth
 
-Validation rules are formulas. Parsing formulas to understand what they assert is non-trivial. Options similar to flows:
-- Reference only (rule exists, on object X, active/inactive)
-- Partial interpretation (extract fields referenced, extract comparison operators)
-- Full evaluation (essentially a formula engine)
+Tier 2 commits to interpreting flow XML. The depth question remains:
 
-Partial interpretation enables impact analysis ("which validation rules reference field Y") without building a formula engine.
+- **Minimum (Tier 2 starter):** Extract entry conditions and record updates only. Don't simulate decision branches.
+- **Medium (Tier 2 mature):** Interpret decision branches, loops, and assignments to track which records get created/updated under which conditions.
+- **Full (Tier 3):** Simulate flow execution to predict outcomes given input conditions.
 
-## S1-Q-003 — Apex trigger and apex class bodies — in the model or not?
+Decide when Phase 2 design begins for flow modeling. The minimum-Tier-2 starter is likely the right ambition.
 
-Apex behavior cannot be determined from metadata. Options:
-- Exclude from model entirely (reference only)
-- Include as opaque text (available for LLM reading but not reasoning)
-- Static analysis (expensive, complex, uncertain value)
+### S1-Q-002 — Validation rule formula parser scope
 
-Most likely answer: reference only, with apex text available as a separate fetch when a consumer needs it.
+We've committed validation rule formula parsing to Tier 1. The parser must handle:
+- Field references (always)
+- Comparison operators (always)
+- Logical operators AND/OR/NOT (always)
+- Functions (ISBLANK, ISCHANGED, ISNEW, PRIORVALUE, TEXT, VALUE, etc. — finite set)
+- Cross-object references via relationship traversal (e.g., Account.Owner.Profile.Name)
+- CASE statements
+- Custom labels and custom metadata references
 
-## S1-Q-004 — Granularity of change history
+Unknown: do we attempt to interpret SaaS-specific functions like `RegEx()` or do we mark formulas containing them as "partially parsed"? Worth deciding before implementation.
 
-When the model detects changes, what level of granularity do we record?
-- Field-level: every field change logged independently
-- Entity-level: "Object O was modified on date D" with a diff stored separately
-- Snapshot-level: periodic full snapshots, diffs computed on-demand
+### S1-Q-003 — Apex modeling approach
 
-Affects storage cost and query performance of "what changed" queries.
+Apex behavior is opaque from metadata. Options for Tier 3:
 
-## S1-Q-005 — How do we represent the relationship between RecordType, Profile, and PageLayout?
+- **Reference only:** Model knows apex classes/triggers exist, what objects they touch (from describe), but doesn't reason about behavior.
+- **LLM-assisted interpretation:** Feed apex code to an LLM at sync time, extract structured summaries.
+- **Static analysis:** Build an actual analyzer (high cost, uncertain return).
 
-Salesforce has a three-way assignment: a Profile + RecordType combination maps to a specific PageLayout. Modeling this correctly is fiddly but essential for Archetype B (configuration tests) that ask "does the Service Rep profile see the IsEscalated field on Case record type Escalation?"
+Likely answer: reference-only at Tier 3 entry, LLM-assisted summaries when value is shown to be high. Static analysis probably not worth it.
 
-## S1-Q-006 — How do we handle managed packages?
+### S1-Q-004 — Granularity of change history events
 
-Managed packages introduce namespaced objects, fields, validation rules, and flows. Their internals are opaque. Options:
-- Treat them as first-class entities with namespace labels
-- Treat the package as an opaque blob referenced by its namespace
-- Hybrid: expose the package's public API (global methods, exposed objects) but treat internals as opaque
+When sync detects changes, what level of granularity do we record?
 
-Affects testability of orgs that rely on managed packages (most enterprise orgs).
+- Field-level: every field change is its own event
+- Entity-level: "Object O was modified" with a diff payload
+- Hybrid: entity-level by default, field-level for entity types where field-level matters (validation rules, formulas)
 
-## S1-Q-007 — What subset of metadata do we capture initially?
+Affects storage cost and query performance of "what changed" queries. Decide in Phase 2.
 
-The Salesforce metadata API exposes hundreds of entity types. We don't need them all on day one. What's the minimum viable set?
+### S1-Q-005 — RecordType + Profile + Layout three-way assignment representation
 
-Starting proposal: Object, Field, Relationship, RecordType, Layout, ValidationRule, Flow (reference only), Profile, PermissionSet, PermissionSetAssignment.
+Salesforce's RecordType + Profile → PageLayout mapping is fundamental for Archetype B testing. The model must represent this correctly. Specifically:
 
-Deferred: ApprovalProcess, SharingRule, ApexTrigger, CustomSetting, CustomMetadataType, outbound messages, platform events.
+- A Profile + RecordType combination maps to one PageLayout
+- A PageLayout includes specific fields in specific sections
+- A Profile can also override which fields are visible/required regardless of layout (FLS)
 
-Revisit when consuming substrates (S3, S4) tell us what they need.
+The data model must let us answer "for user U with profile P, on a record of type RT, can they see field F?" cleanly. This requires careful representation. Decide in Phase 2.
 
-## S1-Q-008 — Storage-layer decision (cross-reference top-level Q-002)
+### S1-Q-006 — Managed package handling
 
-Top-level Q-002 covers this. Noting here because it's a substrate-level decision with substrate-level implications.
+Managed packages introduce namespaced entities with opaque internals. Options:
+
+- First-class entities with namespace labels (treat them like any other entity, just namespaced)
+- Opaque blobs (the package is "a thing" but its internals aren't represented)
+- Hybrid: public API exposed, internals opaque
+
+Affects testability of orgs relying on managed packages. Decide in Phase 2.
+
+### S1-Q-007 — Initial Tier 1 entity coverage
+
+The metadata API exposes hundreds of entity types. Tier 1 doesn't need them all. Starting list (subject to Phase 2 review):
+
+**In Tier 1:**
+- Object (sObject)
+- Field
+- Relationship
+- RecordType
+- Layout, Layout assignment
+- ValidationRule (with formula parsing)
+- Flow (existence + trigger object only)
+- Profile, PermissionSet, PermissionSetAssignment
+- User
+- ChangeEvent (the change log itself)
+
+**Deferred to later tiers:**
+- ApprovalProcess
+- SharingRule (Tier 2 — modeling enters at T2)
+- ApexTrigger, ApexClass (Tier 3)
+- CustomSetting, CustomMetadataType (TBD)
+- OutboundMessage, PlatformEvent (Archetype E — Tier 3)
+
+### S1-Q-008 — Default background sync schedule
+
+The decision in D-009 commits to background + on-demand sync. The actual schedule defaults remain open:
+
+- Hourly sync for active tenants?
+- Nightly for inactive?
+- Tenant-configurable?
+- Different schedules per entity type (faster for flow changes, slower for layouts)?
+
+Decide in Phase 3 (operational details).
