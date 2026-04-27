@@ -111,6 +111,10 @@ def run_migrations_for_schema(schema_name: str, connectable) -> None:
 
     with connectable.connect() as connection:
         with connection.begin():
+            # Ensure the schema exists before Alembic tries to create
+            # alembic_version in it (chicken-and-egg on first run).
+            connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"'))
+
             # search_path puts the target schema first, so unqualified
             # table names resolve there.
             connection.execute(text(f'SET LOCAL search_path TO "{schema_name}", public'))
