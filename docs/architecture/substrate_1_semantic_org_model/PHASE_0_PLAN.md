@@ -128,17 +128,17 @@ Then `git revert` the Phase 0 commits and merge back to main. Public schema is u
 
 ## Definition of Done
 
-- [ ] D-023 reverted (commit reverted, change_log table dropped)
-- [ ] D-024 in DECISIONS_LOG.md
-- [ ] PHASE_0_PLAN.md committed (this file)
-- [ ] Phase 0 code artifacts on `phase-0-substrate-1` branch
-- [ ] `alembic -x mode=shared upgrade head` ran clean against Railway
-- [ ] At least one tenant row backfilled into `shared.tenants`
-- [ ] At least one `tenant_<id>` schema provisioned
-- [ ] `alembic -x mode=all_tenants upgrade head` ran clean against Railway
-- [ ] `validate_search_path_takes_effect(tenant_id)` passes
-- [ ] Smoke test inserts and reads back a `logical_versions` row
-- [ ] Phase 0 branch reviewed and merged to main
+- [x] D-023 reverted (commit reverted, change_log table dropped)
+- [x] D-024 in DECISIONS_LOG.md
+- [x] PHASE_0_PLAN.md committed (this file)
+- [x] Phase 0 code artifacts on `phase-0-substrate-1` branch
+- [x] `alembic -x mode=shared upgrade head` ran clean against Railway
+- [x] At least one tenant row backfilled into `shared.tenants`
+- [x] At least one `tenant_<id>` schema provisioned
+- [x] `alembic -x mode=all_tenants upgrade head` ran clean against Railway
+- [x] `validate_search_path_takes_effect(tenant_id)` passes
+- [x] Smoke test inserts and reads back a `logical_versions` row
+- [x] Phase 0 branch reviewed and merged to main
 
 ---
 
@@ -165,3 +165,18 @@ Captured during Phase 0 execution. These are gotchas future readers of this plan
 **Schema chicken-and-egg on first run:** Alembic creates its `alembic_version` tracking table inside the target schema BEFORE running the migration's `upgrade()`. On a fresh database the target schema doesn't exist yet, so version-table creation fails. `alembic/env.py` handles this by issuing `CREATE SCHEMA IF NOT EXISTS "<schema>"` inside `run_migrations_for_schema` before `context.configure()` runs. Idempotent — no-op on subsequent runs. See commit 0d22a8a.
 
 **Sourcing .env into the shell:** Alembic reads DATABASE_URL from the environment, not from a config file. Before invoking Alembic in a fresh shell, run `set -a; source .env; set +a` to export all .env values. Confirm with `[[ -n "$DATABASE_URL" ]] && echo set || echo NOT_SET` (without printing the value).
+
+---
+
+## Phase 0 complete
+
+Phase 0 closed 2026-04-27. All Definition of Done boxes ticked. Substrate 1 foundation is live on Railway:
+
+- `shared` schema with `tenants` table and `provision_tenant_schema(p_tenant_id INT)` function
+- `tenant_1` schema with `logical_versions`, `entities`, `change_log` tables, all CHECK constraints including the GUC-asserted `tenant_id = current_setting('app.tenant_id')::INT` invariant
+- `primeqa.semantic.connection` providing `get_tenant_connection`, `admin_run_in_shared_schema`, `admin_iterate_all_tenants`, `validate_search_path_takes_effect`
+- One `genesis` row in `tenant_1.logical_versions` confirming end-to-end smoke test passed
+
+Source code on `main`. Phase 0 work archived on the `phase-0-substrate-1` branch (preserved for historical reference).
+
+Next: Phase 1 (`edges` table, 14 Tier 1 edge types, 10 detail tables, containment-as-column derivation, Pydantic validators). Begins in next session per the lock under D-024.
