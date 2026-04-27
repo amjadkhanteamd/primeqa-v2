@@ -81,3 +81,15 @@ Phase 2 complete. Decisions D-014 through D-022 recorded. SPEC.md sections 5-12 
 - Caching strategy
 
 Substrate 1 is design-complete on dimensions that block Substrate 3. Ready for Substrate 3 design when user is ready.
+
+---
+
+## 2026-04-25 — D-023: Implementation begins with change_log + diff_window
+
+Phase 2 design remains locked but is reclassified as implementation-deferred. First milestone is the smallest customer-facing capability v2 cannot deliver: `change_log` table + `diff_window` primitive, shipped in `public` schema using v2 conventions (raw SQL, explicit `tenant_id`, `meta_versions.id` as version anchor, no Alembic, no GUC assertions, no entities/edges).
+
+Structural commitments D-014 through D-022 remain design-locked but their implementation gates on pilot validation of the diff capability. If validation succeeds, they ship as designed. If it fails, `change_log` absorbs into the existing metadata module as a feature, not a substrate.
+
+The forensic codebase report's Phase A (3–4 weeks of foundation plumbing) is bypassed. Phase D's generation-pipeline integration (`generation.py:316`) is also bypassed in this milestone — the first customer-visible surface is the release-detail "Org changes since last green run" panel, which only reads the diff output and does not touch `worker.py` or `generation_jobs.py`.
+
+See D-023.

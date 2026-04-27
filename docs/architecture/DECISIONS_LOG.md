@@ -562,3 +562,108 @@ class SemanticOrgModel:
 - `at_seq=None` for current — rejected; hidden default contradicts version-awareness principle.
 
 **References:** substrate_1_semantic_org_model/SPEC.md §"Query Interface"
+
+## D-023 — Substrate 1 implementation begins with change_log + diff_window in `public` schema; D-014–D-022 structural commitments deferred pending pilot validation
+
+**Date:** 2026-04-25
+**Substrates affected:** [S1]
+**Status:** active
+
+**Decision:** Substrate 1 implementation does not begin with the structural foundation (schema-per-tenant, entities/edges, logical_versions, query interface). It begins with the smallest customer-facing capability that v2's existing `meta_*` schema cannot deliver: **change_log + diff_window**, shipped in the `public` schema using v2 conventions (raw SQL migrations, explicit tenant_id columns, integer primary keys, no GUC-based assertions, no Alembic).
+
+The Phase 2 structural decisions remain design-locked but are reclassified as **implementation-deferred**:
+
+- D-014 (canonical edges) — design-locked, no entities/edges built
+- D-015 (schema-per-tenant) — design-locked, no schema infrastructure built
+- D-016 (logical_versions, UUID target_ids, GUC tenant assertion) — design-locked; first implementation uses `meta_versions.id` as version anchor and `BIGINT` target_ids
+- D-017–D-019 (containment rules, edge taxonomy) — design-locked, no graph layer
+- D-020 (effective permissions materialized view) — design-locked
+- D-021 (diff engine) — partially implemented at Tier 0: `diff_window` only, against `change_log` alone
+- D-022 (query interface) — design-locked, no `SemanticOrgModel` class yet
+
+The behavioural commitments from D-021 ARE in scope for D-023: deterministic ordering, raw `Change` objects, fail-loud on missing versions, paginated output.
+
+**Sequence (revised from forensic report's 13–20 weeks):**
+
+- Week 1: `change_log` table; shadow writes hooked into `MetadataRepository.store_*`; no readers
+- Week 2: `diff_window` primitive; admin-only `GET /api/admin/diff` endpoint
+- Week 3: customer-visible "Org changes since last green run" panel on release detail, behind per-tenant feature flag (`diff_panel_enabled`)
+
+The `_build_metadata_context` swap point (`generation.py:316`) identified by the forensic report is NOT touched in this phase. Generation pipeline integration is deferred to keep `worker.py` and `generation_jobs.py` (the tightly-coupled glue) untouched until pilot validation.
+
+**Rationale:** v2's existing capabilities cover most of S1's claimed use cases (object/field lookup, validation rule references, SOQL parsing in `TestCaseValidator`). The single capability v2 cannot deliver is diff and impact analysis. Building that on the existing schema lets pilot customers validate whether diff is the killer feature *before* paying the 3–5 month structural-foundation cost the forensic report estimated. If pilot validation succeeds, D-014–D-022 ship as designed. If it fails, `change_log` absorbs into the existing metadata module as a feature, not a substrate.
+
+**Alternatives considered:**
+
+- Phase A foundation work as designed (Alembic + schema-per-tenant + connection resolver + admin entry points) — rejected; 3–4 weeks of plumbing before any customer-facing capability, with the structural decisions still unvalidated against pilot needs.
+- Greenfield rewrite parallel to v2 — rejected; throws away 211 commits of production hardening (audit fixes, worker-death recovery, durable run_events, LLM gateway with feedback loop, validator, domain packs, story view).
+- Full Phase B implementation in `public` schema (entities + edges + change_log together) — rejected; commits to D-018/D-019's entity/edge taxonomy before a single query has surfaced from S3.
+
+**References:** `substrate_1_semantic_org_model/SPEC.md` §11 (Diff Engine); forensic codebase report (chat history, 2026-04-25).
+
+---
+
+## D-024 — Substrate 1 ships full Phase 2 SPEC; D-023 superseded; design locked for 12 weeks
+
+**Date:** 2026-04-27
+**Substrates affected:** [S1, all downstream substrates]
+**Status:** active
+**Supersedes:** D-023 (partially — historical record retained)
+
+**Decision:** Substrate 1 ships as a complete implementation of the Phase 2 SPEC, not a Tier 0 scaffold. All structural commitments D-014 through D-022 move from "implementation-deferred" to "in active implementation." The decision space is **locked** for 12 weeks: from 2026-04-27 through approximately 2026-07-20, the SPEC is treated as immutable. No SPEC revisions, no scope reductions, no "let's just ship a quick win" deviations during this window. At end of week 12, a full re-evaluation is permitted based on what was learned.
+
+**Greenfield commitment (Flavour 3):**
+
+- v2's `meta_*` tables (`meta_versions`, `meta_objects`, `meta_fields`, `meta_validation_rules`, `meta_flows`, `meta_triggers`, `meta_record_types`, `meta_sync_status`) are deprecated. They will be dropped in a single migration during Phase 4 cutover (week 8-10) once S1 is verified as the production data source.
+- v2's `MetadataRepository` and `MetadataSyncEngine` are likewise deprecated. The new Substrate 1 sync engine (`primeqa/semantic/sync.py`) is greenfield, not bridged.
+- The change_log scaffold from D-023 (migration 050) is reverted before Phase 0 begins.
+
+**Survivor list from v2 (kept and reused):**
+
+- LLM gateway (`intelligence/llm/`) — router, feedback loop, tier optimisation, prompt cache
+- Executor (`execution/executor.py`) — self-contained Salesforce execution
+- Static validator logic (`intelligence/validator.py`) — kept; data-source layer rewritten in Phase 4 to read S1 instead of `meta_*`
+- run_events SSE stream — durable log, worker recovery
+- Domain packs — customer customisation surface
+- Salesforce client — auth, retry, rate limiting (reused by S1's new sync engine)
+- Worker — refactored in Phase 4 to call S1 sync; structural changes minimal
+- Test management, runs, releases data — kept; this is customer data and works
+
+**Phase plan (12 weeks):**
+
+| Phase | Weeks | Scope |
+|-------|-------|-------|
+| Phase 0 | 1 | Alembic introduction, schema-per-tenant scaffolding (`shared` schema, tenant provisioning, `get_tenant_connection` resolver, pool checkin hook), `logical_versions` + `entities` + `change_log` tables in per-tenant schemas |
+| Phase 1 | 2-3 | `edges` table, 14 Tier 1 edge types, 10 detail tables, containment-as-column derivation logic, Pydantic validators |
+| Phase 2 | 4-5 | New `primeqa/semantic/sync.py` (greenfield, reuses `SalesforceClient`), `effective_field_permissions` materialized view, `sync_run_id` correlation |
+| Phase 3 | 6-7 | `SemanticOrgModel` query class (5 query primitives + 3 diff primitives), performance validation, admin diff endpoint |
+| Phase 4 | 8-10 | Cutover: generation, validator, linter switched to read S1; `meta_*` dropped; worker refactored; `_build_metadata_context` rewritten on `SemanticOrgModel.get_entities()` |
+| Phase 5 | 11-12 | Hardening, observability per SPEC §13, change_log retention policy, first pilot tenant onboarded |
+
+**Schema-per-tenant decision (D-015) — affirmed.** Despite earlier pushback that row-level scoping with `FORCE ROW LEVEL SECURITY` would be cheaper, full SPEC means full SPEC. Schema-per-tenant ships from day one with the GUC-asserted CHECK constraints, the `SET LOCAL` connection resolver, and the Alembic-per-schema migration tooling. The operational cost is accepted as the cost of doing it right.
+
+**Lock terms:**
+
+The lock is the load-bearing commitment of D-024. During weeks 1-12:
+
+- The SPEC is not edited except for genuine errata (e.g., a typo in a column name, a contradictory constraint discovered during implementation). Errata edits require a corresponding DECISIONS_LOG entry explaining what changed and why.
+- Scope is not reduced. If a phase runs long, it runs long; we do not cut features to compress timeline.
+- Pilot timing pressure does not reopen the lock. If a customer asks for a demo before week 12, they see what's built so far without altering the plan.
+- New decisions (D-025 onward) may be added for matters not covered by D-014 through D-024, but they may not contradict locked decisions.
+
+**End-of-lock review:**
+
+At week 12, the following are evaluated:
+
+- Did Substrate 1 ship as designed? What deviated, and why?
+- Does the diff capability resonate with pilot customers, or is the killer feature elsewhere?
+- Are the substrate framings (S2-S8) still the right architecture given what was learned?
+- Is schema-per-tenant proving its operational cost, or should we reconsider?
+
+If the review is favourable, S2 design begins. If not, the lock-and-build cycle is the lesson, not the architecture — we re-plan.
+
+**Rationale:** Three earlier conversations produced three different week-1 plans within two days. This is not a healthy decision process. The lock exists to give the build phase the stability it needs. Founders iterating on architecture mid-build is the most common cause of delivery failure on platform-grade systems; D-024 buys 12 weeks of freedom from that failure mode.
+
+**References:** SPEC.md (entire document, version locked at 2026-04-27); DECISIONS_LOG entries D-014 through D-023; forensic codebase report (chat history, 2026-04-25).
+
+---
