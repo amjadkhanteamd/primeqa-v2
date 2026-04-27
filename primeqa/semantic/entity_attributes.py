@@ -15,9 +15,9 @@ engine and query layer can look up the right schema and detail table
 without if/elif chains. Mirrors the TIER_1_EDGES pattern in edges.py.
 
 Phase 1 grows this file incrementally as detail tables ship. Today:
-ObjectAttributes only (paired with object_details). Tomorrow's
-field_details migration will add FieldAttributes here. And so on through
-the 10 Tier 1 entity types.
+ObjectAttributes (paired with object_details) and FieldAttributes
+(paired with field_details). Eight more entity types to follow as their
+detail tables land.
 """
 
 from __future__ import annotations
@@ -81,6 +81,63 @@ class ObjectAttributes(_EntityAttributes):
 
 
 # ----------------------------------------------------------------------
+# FieldAttributes — sparse metadata for entity_type='Field'
+# ----------------------------------------------------------------------
+
+class FieldAttributes(_EntityAttributes):
+    """Sparse Field metadata living in entities.attributes JSONB.
+
+    Per D-025: hot Field attributes (object_entity_id, references_object_entity_id,
+    field_type, the seven boolean flags, length/precision/scale) are columns
+    on field_details. The remaining DescribeFieldResult metadata lands here.
+
+    Boolean axes:
+      - is_required vs is_nillable (column on field_details): distinct concepts.
+        is_nillable is the database-level NULL constraint on the underlying
+        Salesforce column; is_required is the UI/create-time enforcement set
+        on the page layout. A field can be nillable=True but required=True,
+        meaning the column allows NULL but the layout demands a value at
+        create time.
+      - is_groupable / is_aggregatable: type-dependent. Numerics tend to be
+        aggregatable, picklists tend to be groupable. Default False because
+        most fields are neither.
+      - is_case_sensitive / is_html_formatted: text-type-only concerns; False
+        for non-text fields.
+
+    String axes:
+      - default_value: literal or formula expression for the field default.
+        NULL when the field has none.
+      - formula: present on formula fields only. NULL for direct-entry fields.
+      - inline_help_text: the on-hover help bubble (Salesforce caps at 510).
+      - help_text: the longer field description (Salesforce caps at 1000).
+      - relationship_name: API-name suffix for the relationship (e.g. 'Owner'
+        for OwnerId). Set only on lookup/master-detail field types.
+      - controller_name: name of the controlling field for dependent picklists.
+
+    Defaults reflect Salesforce realism: most fields are not required, not
+    groupable, not aggregatable, not case-sensitive, not HTML-formatted, and
+    carry no default / formula / help / relationship / controller. Real values
+    come from the sync engine reading DescribeFieldResult; the defaults exist
+    so partial dicts validate during testing.
+
+    Promotion rule (D-018, D-025): if any of these attributes starts being
+    queried, filtered, or joined across entities by application code, it is
+    promoted to a column on field_details in a follow-up migration.
+    """
+    is_required: bool = False
+    is_groupable: bool = False
+    is_aggregatable: bool = False
+    is_case_sensitive: bool = False
+    is_html_formatted: bool = False
+    default_value: Optional[str] = Field(default=None, max_length=4000)
+    formula: Optional[str] = Field(default=None, max_length=5000)
+    inline_help_text: Optional[str] = Field(default=None, max_length=510)
+    help_text: Optional[str] = Field(default=None, max_length=1000)
+    relationship_name: Optional[str] = Field(default=None, max_length=80)
+    controller_name: Optional[str] = Field(default=None, max_length=80)
+
+
+# ----------------------------------------------------------------------
 # Registry: TIER_1_ENTITIES
 # ----------------------------------------------------------------------
 
@@ -105,8 +162,11 @@ TIER_1_ENTITIES: dict[str, EntityTypeMetadata] = {
         attributes_schema=ObjectAttributes,
         detail_table="object_details",
     ),
+    "Field": EntityTypeMetadata(
+        attributes_schema=FieldAttributes,
+        detail_table="field_details",
+    ),
     # Future entity types added here as detail tables ship:
-    # "Field":          EntityTypeMetadata(attributes_schema=FieldAttributes,         detail_table="field_details"),
     # "RecordType":     EntityTypeMetadata(attributes_schema=RecordTypeAttributes,    detail_table="record_type_details"),
     # "Layout":         EntityTypeMetadata(attributes_schema=LayoutAttributes,        detail_table="layout_details"),
     # "ValidationRule": EntityTypeMetadata(attributes_schema=ValidationRuleAttributes, detail_table="validation_rule_details"),
