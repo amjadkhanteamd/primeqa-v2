@@ -88,15 +88,16 @@ def _make_engine() -> Engine:
     # Defensive checkin hook. See module docstring.
     @event.listens_for(engine, "checkin")
     def _reset_session_state(dbapi_connection, connection_record):
+        if dbapi_connection is None:
+            return
         try:
             cursor = dbapi_connection.cursor()
             cursor.execute("RESET search_path")
             cursor.execute("RESET app.tenant_id")
             cursor.close()
+            dbapi_connection.commit()
         except Exception:
-            # If RESET fails, the connection is in trouble. Discard it
-            # rather than putting it back in the pool with bad state.
-            connection_record.connection = None
+            connection_record.invalidate()
             raise
 
     return engine
