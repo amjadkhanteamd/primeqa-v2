@@ -137,6 +137,30 @@ class FieldAttributes(_EntityAttributes):
     controller_name: Optional[str] = Field(default=None, max_length=80)
 
 
+class RecordTypeAttributes(_EntityAttributes):
+    """Sparse RecordType metadata living in entities.attributes JSONB.
+
+    Per D-025: hot RecordType attributes (object_entity_id, is_active,
+    is_master) are columns on record_type_details. The remaining
+    DescribeSObjectResult.recordTypeInfos / RecordType-related metadata
+    lands here.
+
+    RecordType has unusually little hot metadata; most of its semantic
+    weight lives in outgoing edges (CONSTRAINS_PICKLIST_VALUES to
+    PicklistValueSets, ASSIGNED_TO_PROFILE_RECORDTYPE to Profiles).
+    The JSONB stays sparse on purpose.
+
+    business_process_id is populated only for RecordTypes attached to
+    Cases, Leads, Opportunities, or Solutions — those four objects
+    support BusinessProcess. NULL/absent for all other RecordTypes.
+    Stored as the Salesforce 18-char ID; if/when BusinessProcess becomes
+    its own entity_type, this gets promoted to a column FK on a future
+    detail-table revision (per D-025's promotion rule).
+    """
+    description: Optional[str] = Field(default=None, max_length=255)
+    business_process_id: Optional[str] = Field(default=None, max_length=18)
+
+
 # ----------------------------------------------------------------------
 # Registry: TIER_1_ENTITIES
 # ----------------------------------------------------------------------
@@ -167,7 +191,10 @@ TIER_1_ENTITIES: dict[str, EntityTypeMetadata] = {
         detail_table="field_details",
     ),
     # Future entity types added here as detail tables ship:
-    # "RecordType":     EntityTypeMetadata(attributes_schema=RecordTypeAttributes,    detail_table="record_type_details"),
+    "RecordType": EntityTypeMetadata(
+        attributes_schema=RecordTypeAttributes,
+        detail_table="record_type_details",
+    ),
     # "Layout":         EntityTypeMetadata(attributes_schema=LayoutAttributes,        detail_table="layout_details"),
     # "ValidationRule": EntityTypeMetadata(attributes_schema=ValidationRuleAttributes, detail_table="validation_rule_details"),
     # "Flow":           EntityTypeMetadata(attributes_schema=FlowAttributes,          detail_table="flow_details"),
