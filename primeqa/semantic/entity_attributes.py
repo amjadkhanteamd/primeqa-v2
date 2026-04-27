@@ -218,6 +218,60 @@ class ProfileAttributes(_EntityAttributes):
     user_type: Optional[str] = Field(default=None, max_length=40)
 
 
+class PermissionSetAttributes(_EntityAttributes):
+    """Sparse PermissionSet metadata living in entities.attributes JSONB.
+
+    Per D-025: hot PermissionSet attributes (is_custom, license_type) are
+    columns on permission_set_details. PermissionSet has no containment
+    column — it's a top-level entity referenced by edges (HAS_PERMISSION_SET
+    inbound from User, GRANTS_OBJECT_ACCESS to Object, GRANTS_FIELD_ACCESS
+    to Field, INHERITS_PERMISSION_SET to other PermissionSets).
+
+    namespace_prefix is the managed-package namespace prefix for
+    PermissionSets installed via managed packages (e.g., "myPackage__").
+    NULL/absent for org-native PermissionSets. Salesforce limits
+    namespace prefixes to 15 characters. If managed-vs-unmanaged becomes
+    a hot filter, the appropriate move is a partial index on this JSONB
+    field, not a denormalized is_managed BOOLEAN column.
+
+    description is the user-facing PermissionSet description. Optional.
+    """
+    description: Optional[str] = Field(default=None, max_length=255)
+    namespace_prefix: Optional[str] = Field(default=None, max_length=15)
+
+
+class UserAttributes(_EntityAttributes):
+    """Sparse User metadata living in entities.attributes JSONB.
+
+    Per D-025: hot User attributes (profile_entity_id, is_active, is_external,
+    user_type) are columns on user_details. profile_entity_id is the
+    assignment FK driving HAS_PROFILE — this is a PERMISSION-category edge
+    per D-019, not STRUCTURAL containment. Users exist independently of any
+    specific Profile in the bitemporal sense; assignment can change.
+
+    email and username are privacy-sensitive personal identifiers. Kept in
+    JSONB rather than promoted to columns:
+      - Not core to graph reasoning (Users are referenced by id, not email)
+      - Not joined across entities
+      - Privacy-sensitive (GDPR) — JSONB makes it slightly harder to leak
+        into logs and indexes
+      - Low-frequency cross-population filters (no current "find users by
+        email pattern" query — promote later if that emerges)
+    Application-layer discipline: never expose email/username in logs or
+    diff output by default. (Documented for Phase 2 sync engine.)
+
+    time_zone_sid_key, locale_sid_key, language_locale_key — Salesforce
+    locale identifiers (e.g., 'America/Los_Angeles', 'en_US'). Per-user
+    attributes; not queried across population. Fixed-format Salesforce
+    keys, capped at 40 chars to match SF's max.
+    """
+    email: Optional[str] = Field(default=None, max_length=254)
+    username: Optional[str] = Field(default=None, max_length=80)
+    time_zone_sid_key: Optional[str] = Field(default=None, max_length=40)
+    locale_sid_key: Optional[str] = Field(default=None, max_length=40)
+    language_locale_key: Optional[str] = Field(default=None, max_length=40)
+
+
 # ----------------------------------------------------------------------
 # Registry: TIER_1_ENTITIES
 # ----------------------------------------------------------------------
@@ -262,8 +316,14 @@ TIER_1_ENTITIES: dict[str, EntityTypeMetadata] = {
         attributes_schema=ProfileAttributes,
         detail_table="profile_details",
     ),
-    # "PermissionSet":  EntityTypeMetadata(attributes_schema=PermissionSetAttributes, detail_table="permission_set_details"),
-    # "User":           EntityTypeMetadata(attributes_schema=UserAttributes,          detail_table="user_details"),
+    "PermissionSet": EntityTypeMetadata(
+        attributes_schema=PermissionSetAttributes,
+        detail_table="permission_set_details",
+    ),
+    "User": EntityTypeMetadata(
+        attributes_schema=UserAttributes,
+        detail_table="user_details",
+    ),
     "PicklistValue": EntityTypeMetadata(
         attributes_schema=PicklistValueAttributes,
         detail_table="picklist_value_details",
