@@ -161,6 +161,63 @@ class RecordTypeAttributes(_EntityAttributes):
     business_process_id: Optional[str] = Field(default=None, max_length=18)
 
 
+class LayoutAttributes(_EntityAttributes):
+    """Sparse Layout metadata living in entities.attributes JSONB.
+
+    Per D-025: hot Layout attributes (object_entity_id, layout_type,
+    layout_api_name, is_active) are columns on layout_details. The
+    structural weight of a Layout — which fields appear in which sections
+    at which positions — lives on INCLUDES_FIELD edges (D-019), not on
+    this attribute schema.
+
+    description is the user-facing Layout description text. Always optional;
+    Salesforce only requires it for Lightning page layouts in some contexts.
+    """
+    description: Optional[str] = Field(default=None, max_length=255)
+
+
+class PicklistValueAttributes(_EntityAttributes):
+    """Sparse PicklistValue metadata living in entities.attributes JSONB.
+
+    Per D-025: hot PicklistValue attributes (picklist_value_set_entity_id,
+    value_label, value_api_name, is_active, is_default, sort_order) are
+    columns on picklist_value_details. The remaining metadata lands here.
+
+    color_code is the Salesforce color-picker hex code, used by some Lightning
+    UI components to color-code picklist values (e.g., "Hot" lead = red,
+    "Cold" = blue). Optional VARCHAR(7) for #RRGGBB format. Rare in most orgs
+    but present on certain standard picklists like Lead Status.
+
+    Most PicklistValue metadata is on the detail table because picklist values
+    ARE their attributes — there is no edge structure to lean on. JSONB stays
+    sparse intentionally; if more attributes start being queried, they get
+    promoted to columns per D-025's promotion rule.
+    """
+    color_code: Optional[str] = Field(default=None, max_length=7)
+
+
+class ProfileAttributes(_EntityAttributes):
+    """Sparse Profile metadata living in entities.attributes JSONB.
+
+    Per D-025: hot Profile attributes (is_active, is_custom, user_license_type)
+    are columns on profile_details. Profile has no containment column —
+    Profiles are top-level org entities referenced by edges (HAS_PROFILE
+    from Users, GRANTS_OBJECT_ACCESS to Objects, GRANTS_FIELD_ACCESS to
+    Fields, ASSIGNED_TO_PROFILE_RECORDTYPE from Layouts).
+
+    user_type is distinct from user_license_type. License type is the
+    Salesforce license tier ('Salesforce', 'Salesforce Platform', etc.)
+    and is the queryable hot column. user_type is a finer-grained subdivision
+    ('Standard', 'PowerCustomerSuccess', 'CsnOnly', etc.) that's rarely
+    queried directly — most generation/diff paths care about license tier,
+    not user-type subdivisions. Stays in JSONB until that changes.
+
+    description is the user-facing Profile description. Optional.
+    """
+    description: Optional[str] = Field(default=None, max_length=255)
+    user_type: Optional[str] = Field(default=None, max_length=40)
+
+
 # ----------------------------------------------------------------------
 # Registry: TIER_1_ENTITIES
 # ----------------------------------------------------------------------
@@ -195,13 +252,22 @@ TIER_1_ENTITIES: dict[str, EntityTypeMetadata] = {
         attributes_schema=RecordTypeAttributes,
         detail_table="record_type_details",
     ),
-    # "Layout":         EntityTypeMetadata(attributes_schema=LayoutAttributes,        detail_table="layout_details"),
+    "Layout": EntityTypeMetadata(
+        attributes_schema=LayoutAttributes,
+        detail_table="layout_details",
+    ),
     # "ValidationRule": EntityTypeMetadata(attributes_schema=ValidationRuleAttributes, detail_table="validation_rule_details"),
     # "Flow":           EntityTypeMetadata(attributes_schema=FlowAttributes,          detail_table="flow_details"),
-    # "Profile":        EntityTypeMetadata(attributes_schema=ProfileAttributes,       detail_table="profile_details"),
+    "Profile": EntityTypeMetadata(
+        attributes_schema=ProfileAttributes,
+        detail_table="profile_details",
+    ),
     # "PermissionSet":  EntityTypeMetadata(attributes_schema=PermissionSetAttributes, detail_table="permission_set_details"),
     # "User":           EntityTypeMetadata(attributes_schema=UserAttributes,          detail_table="user_details"),
-    # "PicklistValueSet": EntityTypeMetadata(attributes_schema=PicklistValueSetAttributes, detail_table="picklist_value_details"),
+    "PicklistValue": EntityTypeMetadata(
+        attributes_schema=PicklistValueAttributes,
+        detail_table="picklist_value_details",
+    ),
 }
 
 
