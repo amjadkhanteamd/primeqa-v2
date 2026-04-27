@@ -149,3 +149,19 @@ Then `git revert` the Phase 0 commits and merge back to main. Public schema is u
 The only v2 file that changes during Phase 0 is `requirements.txt` (adds Alembic). No imports change. No behaviour changes. The risk surface for v2 regression is approximately zero.
 
 This is intentional: Phase 0 ships infrastructure, not features. Customer impact arrives in Phase 4 cutover.
+
+---
+
+## Apply-sequence notes
+
+Captured during Phase 0 execution. These are gotchas future readers of this plan would otherwise re-discover.
+
+**Alembic upgrade target syntax:** Use `shared@head` and `tenant@head`, not bare `head`. The migrations have branch labels (per `branch_labels = ("shared",)` and `branch_labels = ("tenant",)` in the migration files) which makes `head` ambiguous to Alembic — it will refuse with "Multiple head revisions are present." Branch-qualified head resolves cleanly.
+
+  Correct:   `alembic -x mode=shared upgrade shared@head`
+  Correct:   `alembic -x mode=all_tenants upgrade tenant@head`
+  Incorrect: `alembic -x mode=shared upgrade head`
+
+**Schema chicken-and-egg on first run:** Alembic creates its `alembic_version` tracking table inside the target schema BEFORE running the migration's `upgrade()`. On a fresh database the target schema doesn't exist yet, so version-table creation fails. `alembic/env.py` handles this by issuing `CREATE SCHEMA IF NOT EXISTS "<schema>"` inside `run_migrations_for_schema` before `context.configure()` runs. Idempotent — no-op on subsequent runs. See commit 0d22a8a.
+
+**Sourcing .env into the shell:** Alembic reads DATABASE_URL from the environment, not from a config file. Before invoking Alembic in a fresh shell, run `set -a; source .env; set +a` to export all .env values. Confirm with `[[ -n "$DATABASE_URL" ]] && echo set || echo NOT_SET` (without printing the value).
