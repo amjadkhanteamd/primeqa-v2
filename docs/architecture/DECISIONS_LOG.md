@@ -667,3 +667,75 @@ If the review is favourable, S2 design begins. If not, the lock-and-build cycle 
 **References:** SPEC.md (entire document, version locked at 2026-04-27); DECISIONS_LOG entries D-014 through D-023; forensic codebase report (chat history, 2026-04-25).
 
 ---
+
+## D-025 — Detail tables: per-entity-version rows, hot columns + JSONB attributes split, Pydantic schemas in entity_attributes.py
+
+**Date:** 2026-04-27
+**Substrates affected:** [S1]
+**Status:** active
+
+**Context:** D-018 specified 10 detail tables but did not lock their column-level DDL or their lifecycle relative to bitemporal entity versioning. SPEC §9 reserved that for "IMPLEMENTATION.md or migration files." This decision locks the patterns that govern all 10 detail tables of Phase 1, starting with `object_details`.
+
+**Decision:**
+
+**(1) Detail tables are per-entity-version, joined by `entity_id`.**
+
+A detail table has one row per entity-row in `entities`. When an entity is superseded (a new version of the same Salesforce object/field/etc creates a new entities row with new `valid_from_seq`), a new detail-table row is inserted for that new entity_id. Old detail rows linger, paired with their (now superseded) entity rows.
+
+```sql
+object_details.entity_id UUID PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE
+```
+
+The `entity_id` is the PRIMARY KEY of each detail table — one detail row per entity row. Detail tables do NOT have their own `valid_from_seq` / `valid_to_seq`. Bitemporality flows through the entities row.
+
+Rejected: current-state-only (in-place update) — would lose explainability for "what was Object's keyPrefix at version V" without log replay. Rejected: independent bitemporal columns on detail tables — double bitemporality (entities + details) creates four-way version logic that nothing requires.
+
+The per-entity-version model produces detail change events (`detail_field_modified`, `detail_added`, `detail_removed` from SPEC §11) cleanly: each entity supersession is a new detail row, change_log records the diff between old and new detail row contents.
+
+**(2) Detail columns capture hot attributes only; entities.attributes JSONB carries sparse metadata.**
+
+Per D-018: "Hot/queryable attributes are columns; sparse/lightweight metadata is JSONB on the entities row." This decision operationalizes the rule.
+
+A column is "hot" if generation/validation/diff queries filter, group, sort, or join by it across entities. A JSONB attribute is "sparse" if it's accessed by name from a single entity but not queried across the population.
+
+For Object specifically, the hot columns are:
+- `key_prefix` (3-character prefix used by diff queries to identify standard vs custom)
+- `is_custom`
+- `is_queryable`, `is_createable`, `is_updateable`, `is_deletable` (generation needs to know valid CRUD operations)
+
+Sparse attributes living in `entities.attributes` for Object:
+- `is_searchable`, `is_layoutable`, `is_mergeable`, `is_replicable`
+- `is_retrievable`, `is_undeletable`
+- `is_feed_enabled`, `is_history_tracked`
+- `plural_label`, `description`
+
+Promotion rule: if a JSONB attribute starts being queried, filtered, or joined by application code, it is promoted to a column in a follow-up migration. Application code does not query JSONB by attribute name in hot paths.
+
+Future detail tables follow the same split. Each detail-table migration documents which Salesforce metadata fields are hot columns vs JSONB attributes, with rationale.
+
+**(3) Pydantic schemas for entity attributes live in `primeqa/semantic/entity_attributes.py`, one class per entity_type.**
+
+Parallel to `primeqa/semantic/edges.py` (which holds 14 edge schemas plus a registry). The new file holds one Pydantic v2 class per entity_type:
+
+```python
+class ObjectAttributes(_EntityAttributes): ...
+class FieldAttributes(_EntityAttributes): ...
+# ... one per entity_type as detail tables ship
+```
+
+A `validate_entity_attributes(entity_type, attrs_dict)` helper mirrors `validate_edge_properties`: parse through Pydantic, return JSON-serializable dict ready for `entities.attributes` INSERT. Strict mode (`extra='forbid'`, `frozen=True`) for boundary discipline per D-016.
+
+Phase 1 grows the file incrementally as detail tables ship. Phase 2 sync engine uses the validators at the write boundary.
+
+**Rationale:** Three architectural choices that propagate across all 10 detail tables. Locking them now (rather than deciding ad-hoc per detail table) keeps the 10 migrations consistent and makes the cross-tenant pattern reviewable. None of these contradict D-014–D-024; they fill in a gap explicitly left by SPEC §9.
+
+**Alternatives considered and rejected:**
+
+- Detail tables as views over entities — rejected; SPEC §5.2 commitment 1 ("edges canonical, traversal SQL-only") implies hot data is materially stored, not computed at query time.
+- Single `details` table with TEXT discriminator — rejected; D-018's per-type table choice is explicitly to prevent column pollution.
+- All attributes in JSONB, no detail tables — rejected by D-018.
+- Pydantic schemas inline in each migration — rejected; Pydantic schemas should be importable by the sync engine and query layer, not buried in migration files.
+
+**References:** SPEC §6.5/§9 (detail tables), D-016 (JSONB validation discipline), D-018 (10 detail tables), D-019 (edge registry pattern this mirrors).
+
+---
