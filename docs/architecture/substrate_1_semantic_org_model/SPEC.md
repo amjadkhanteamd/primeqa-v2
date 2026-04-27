@@ -4,12 +4,6 @@
 
 **Last substantive update:** 2026-04-25 (Phase 2 — storage, data model, diff engine, query interface)
 
-**Implementation status (per D-023):** Phase 2 is design-locked but
-implementation-deferred. The first implementation milestone is `change_log`
-+ `diff_window` in `public` schema (no entities/edges, no schema-per-tenant,
-no `logical_versions`). Full structural implementation gated on pilot
-validation. See D-023.
-
 **Supersedes:** the flat "metadata context" pattern in current generation code.
 
 ---
@@ -455,13 +449,6 @@ class DiffEngine:
 - Impact diff at depth 3, 50K entities: <500ms
 - Time-window diff returning 1000 changes: <200ms
 
-**Implementation note (D-023):** First implementation ships `diff_window` only,
-anchored on `meta_versions.id` rather than `version_seq`. `diff_for_entities`
-and `diff_impact` remain design-locked and ship after entities/edges arrive.
-Behavioural commitments above (deterministic ordering, raw Change objects,
-fail-loud on missing versions, performance targets adjusted to single-table
-scan against `change_log`) apply to the Tier 0 `diff_window` from day one.
-
 ---
 
 ## 12. Query Interface (Phase 2)
@@ -551,18 +538,6 @@ Per D-010 / D-013. (See Phase 1 spec section 7 for full tiering.)
 - Tenant onboarding sequence
 - Schema migration strategy at scale (parallel runners, failure handling)
 - Cleanup and retention policy for change_log
-
-**Reclassified deferrals (D-023) — design-locked, implementation-deferred
-pending pilot validation of the diff capability:**
-
-- Schema-per-tenant infrastructure (Alembic, `get_tenant_connection`, schema
-  provisioning, admin entry points)
-- Canonical `entities`/`edges` tables and the 14 Tier 1 edge types
-- `logical_versions` table (current implementation reuses `meta_versions.id`
-  as version anchor)
-- Effective permissions materialized view
-- `SemanticOrgModel` query class — repositories use direct SQL until query
-  patterns surface from real consumers
 
 ---
 
