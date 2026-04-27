@@ -13,3 +13,4 @@ anthropic>=0.25
 pgvector>=0.3
 numpy>=1.26
 PyYAML>=6.0
+alembic>=1.13
