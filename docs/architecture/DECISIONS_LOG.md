@@ -667,3 +667,182 @@ If the review is favourable, S2 design begins. If not, the lock-and-build cycle 
 **References:** SPEC.md (entire document, version locked at 2026-04-27); DECISIONS_LOG entries D-014 through D-023; forensic codebase report (chat history, 2026-04-25).
 
 ---
+
+## D-025 — Detail tables: per-entity-version rows, hot columns + JSONB attributes split, Pydantic schemas in entity_attributes.py
+
+**Date:** 2026-04-27
+**Substrates affected:** [S1]
+**Status:** active
+
+**Context:** D-018 specified 10 detail tables but did not lock their column-level DDL or their lifecycle relative to bitemporal entity versioning. SPEC §9 reserved that for "IMPLEMENTATION.md or migration files." This decision locks the patterns that govern all 10 detail tables of Phase 1, starting with `object_details`.
+
+**Decision:**
+
+**(1) Detail tables are per-entity-version, joined by `entity_id`.**
+
+A detail table has one row per entity-row in `entities`. When an entity is superseded (a new version of the same Salesforce object/field/etc creates a new entities row with new `valid_from_seq`), a new detail-table row is inserted for that new entity_id. Old detail rows linger, paired with their (now superseded) entity rows.
+
+```sql
+object_details.entity_id UUID PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE
+```
+
+The `entity_id` is the PRIMARY KEY of each detail table — one detail row per entity row. Detail tables do NOT have their own `valid_from_seq` / `valid_to_seq`. Bitemporality flows through the entities row.
+
+Rejected: current-state-only (in-place update) — would lose explainability for "what was Object's keyPrefix at version V" without log replay. Rejected: independent bitemporal columns on detail tables — double bitemporality (entities + details) creates four-way version logic that nothing requires.
+
+The per-entity-version model produces detail change events (`detail_field_modified`, `detail_added`, `detail_removed` from SPEC §11) cleanly: each entity supersession is a new detail row, change_log records the diff between old and new detail row contents.
+
+**(2) Detail columns capture hot attributes only; entities.attributes JSONB carries sparse metadata.**
+
+Per D-018: "Hot/queryable attributes are columns; sparse/lightweight metadata is JSONB on the entities row." This decision operationalizes the rule.
+
+A column is "hot" if generation/validation/diff queries filter, group, sort, or join by it across entities. A JSONB attribute is "sparse" if it's accessed by name from a single entity but not queried across the population.
+
+For Object specifically, the hot columns are:
+- `key_prefix` (3-character prefix used by diff queries to identify standard vs custom)
+- `is_custom`
+- `is_queryable`, `is_createable`, `is_updateable`, `is_deletable` (generation needs to know valid CRUD operations)
+
+Sparse attributes living in `entities.attributes` for Object:
+- `is_searchable`, `is_layoutable`, `is_mergeable`, `is_replicable`
+- `is_retrievable`, `is_undeletable`
+- `is_feed_enabled`, `is_history_tracked`
+- `plural_label`, `description`
+
+Promotion rule: if a JSONB attribute starts being queried, filtered, or joined by application code, it is promoted to a column in a follow-up migration. Application code does not query JSONB by attribute name in hot paths.
+
+Future detail tables follow the same split. Each detail-table migration documents which Salesforce metadata fields are hot columns vs JSONB attributes, with rationale.
+
+**(3) Pydantic schemas for entity attributes live in `primeqa/semantic/entity_attributes.py`, one class per entity_type.**
+
+Parallel to `primeqa/semantic/edges.py` (which holds 14 edge schemas plus a registry). The new file holds one Pydantic v2 class per entity_type:
+
+```python
+class ObjectAttributes(_EntityAttributes): ...
+class FieldAttributes(_EntityAttributes): ...
+# ... one per entity_type as detail tables ship
+```
+
+A `validate_entity_attributes(entity_type, attrs_dict)` helper mirrors `validate_edge_properties`: parse through Pydantic, return JSON-serializable dict ready for `entities.attributes` INSERT. Strict mode (`extra='forbid'`, `frozen=True`) for boundary discipline per D-016.
+
+Phase 1 grows the file incrementally as detail tables ship. Phase 2 sync engine uses the validators at the write boundary.
+
+**Rationale:** Three architectural choices that propagate across all 10 detail tables. Locking them now (rather than deciding ad-hoc per detail table) keeps the 10 migrations consistent and makes the cross-tenant pattern reviewable. None of these contradict D-014–D-024; they fill in a gap explicitly left by SPEC §9.
+
+**Alternatives considered and rejected:**
+
+- Detail tables as views over entities — rejected; SPEC §5.2 commitment 1 ("edges canonical, traversal SQL-only") implies hot data is materially stored, not computed at query time.
+- Single `details` table with TEXT discriminator — rejected; D-018's per-type table choice is explicitly to prevent column pollution.
+- All attributes in JSONB, no detail tables — rejected by D-018.
+- Pydantic schemas inline in each migration — rejected; Pydantic schemas should be importable by the sync engine and query layer, not buried in migration files.
+
+**References:** SPEC §6.5/§9 (detail tables), D-016 (JSONB validation discipline), D-018 (10 detail tables), D-019 (edge registry pattern this mirrors).
+
+---
+
+---
+
+## D-026 — Hot reference table pattern (Phase 1)
+
+**Date:** 2026-04-28
+**Status:** Active
+**Phase:** 1
+
+When a 1:many relationship needs first-class queryable representation per row (rather than being collapsed into a JSONB array on a parent detail row), use a hot reference table — a junction table outside the D-025 detail-table family.
+
+**Pattern characteristics:**
+
+- Composite primary key naming the relationship dimensions (no surrogate UUID id)
+- Asymmetric `ON DELETE` behavior: CASCADE on the "rule" side (the entity whose deletion logically removes all its references), no CASCADE on the "referenced" side (deleting a referenced entity while a rule still points to it should fail loudly so the rule can be fixed first)
+- DB CHECK constraints when the table has an enum-typed column (mirroring edge property schema enums where applicable)
+- One reverse-lookup index for impact analysis ("which rules reference X")
+- No Pydantic schema; row construction handled by the sync engine using DB constraints for validation
+
+**When to use:**
+
+- Cardinality is genuinely 1:many or many:many between entity types
+- Each row needs to be queryable and indexable individually
+- The relationship is part of an entity's lifecycle (CASCADE makes sense on at least one side)
+
+**When NOT to use:**
+
+- 1:1 cardinality (a column on the relevant detail table is correct — see HAS_PICKLIST_VALUES sourced from `field_details.picklist_value_set_entity_id`)
+- The relationship doesn't need per-row queryability (an array in JSONB attributes may be sufficient)
+
+**Phase 1 instances:**
+
+- `validation_rule_field_refs` — REFERENCES edge source (validation_rule → field, with `reference_type` discriminator)
+- `record_type_picklist_value_grants` — CONSTRAINS_PICKLIST_VALUES edge source (record_type → picklist_value)
+
+Both implemented per migrations `20260427_0120` and `20260427_0140` respectively.
+
+**Related decisions:** D-018 (named these tables when cataloging Phase 1 schema), D-019 (REFERENCES and CONSTRAINS_PICKLIST_VALUES edge types these tables source).
+
+---
+
+## D-027 — Tier 2 reservation pattern (Phase 1)
+
+**Date:** 2026-04-28
+**Status:** Active
+**Phase:** 1
+
+When a detail table will be populated by both Tier 1 and Tier 2 sync code, reserve Tier 2 columns nullable in Tier 1 schema rather than waiting for a Tier 2 migration. Tier 1 sync writes NULL or 'tier_1' in the capability_level column; Tier 2 sync upgrades the same row in place.
+
+**Schema shape (from `flow_details`, the only Phase 1 detail table using this pattern):**
+
+```sql
+parsed_logic JSONB,                          -- Tier 2 populates
+interpreted_at_capability_level VARCHAR(10), -- 'tier_1' or 'tier_2'
+CONSTRAINT _capability_level_known CHECK (
+    interpreted_at_capability_level IS NULL
+    OR interpreted_at_capability_level IN ('tier_1', 'tier_2')
+)
+```
+
+**Why reserve nullable now:**
+
+- Avoids a future schema migration that would lock production tables for the column add
+- Lets Tier 2 sync code be deployed without coordinating a schema change
+- Tier 1 testing exercises the full schema today (proven: smoke tests in `flow_details` migration write to `parsed_logic` and validate the CHECK constraint on `interpreted_at_capability_level`, end-to-end before any Tier 2 sync code exists)
+
+**When to apply:**
+
+- The detail table represents an entity whose capability tier will increase (parsing depth, derivation depth, etc.)
+- The Tier 2 columns can reasonably be nullable (Tier 1 rows have NULL, Tier 2 rows have populated values)
+- The CHECK enum on capability_level enforces the valid set at DB level
+
+**When not to apply:**
+
+- The detail table is fully Tier 1 (no Tier 2 plans for that entity type)
+- Tier 2 would require fundamentally different relationships (new FKs, new tables) that can't be reserved nullable
+
+**Phase 1 reference:** SPEC §9 explicitly calls this out for `flow_details`. Future detail tables should consider this pattern when their capability tier is expected to grow.
+
+**Related decisions:** D-024 (12-week design lock — Tier 2 work is explicitly inside Phase 1's scope through reservation, not deferred to a separate phase).
+
+---
+
+## D-028 — `validate_edge_properties` JSON serialization behavior (Phase 1)
+
+**Date:** 2026-04-28
+**Status:** Active
+**Phase:** 1
+
+`validate_edge_properties(edge_type, properties)` from `primeqa/semantic/edges.py` returns properties in their JSONB-serialized form, not as native Python objects.
+
+**Implications for callers:**
+
+- UUID property values come back as strings, not `uuid.UUID` instances. This is correct because the dict is destined for a JSONB column, where strings are the canonical representation.
+- Propertyless edges raise `ValueError` (not `pydantic.ValidationError`) when given non-empty properties. This is a deliberate distinction: propertyless edges don't have a Pydantic schema to violate, so the rejection happens at a different layer.
+
+**Why this matters:**
+
+- Test code asserting on returned properties must compare via `str()` or expect the serialized form, not the input form (caught during 10A test development).
+- Sync engine code constructing edge dicts must accept that the validated dict is "as good as written to DB" — no further serialization step needed before INSERT.
+- Phase 2 sync engine code should not assume `validate_edge_properties` performs identity transformation; it serializes.
+
+**Caught during:** Test suite development (Phase 1 step 10A). Initial test assertions failed because they compared a returned UUID-shaped string against a `uuid.UUID` input.
+
+**Related modules:** `primeqa/semantic/edges.py` (`validate_edge_properties`), `primeqa/semantic/derivation.py` (consumer that relies on this serialization for `INSERT INTO edges ... CAST(:p AS JSONB)`).
+
+---
