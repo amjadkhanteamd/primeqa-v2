@@ -272,6 +272,76 @@ class UserAttributes(_EntityAttributes):
     language_locale_key: Optional[str] = Field(default=None, max_length=40)
 
 
+class FlowAttributes(_EntityAttributes):
+    """Sparse Flow metadata living in entities.attributes JSONB.
+
+    Per D-025: hot Flow attributes (triggers_on_object_entity_id, flow_type,
+    trigger_type, is_active, version_number) are columns on flow_details.
+    Flow also has Tier 2 reservation columns (parsed_logic JSONB and
+    interpreted_at_capability_level) per SPEC §9 — those live on the
+    detail table, not on this attribute schema, because they're
+    structurally first-class storage rather than sparse attributes.
+
+    triggers_on_object_entity_id is a behavior FK driving the TRIGGERS_ON
+    edge (BEHAVIOR-category per D-019, not STRUCTURAL containment). Flows
+    don't 'belong to' Objects — they fire when records of those Objects
+    change. Same shape as user_details.profile_entity_id (assignment FK
+    driving HAS_PROFILE PERMISSION-category edge), under different category.
+
+    description is the user-facing flow description. Optional.
+
+    process_type is the legacy classification field on older flows.
+    Distinct from flow_type for compatibility — flow_type covers the
+    modern Salesforce taxonomy; process_type is what older
+    process-builder migrations carry. May be redundant for new flows
+    but kept for legacy Salesforce data.
+
+    entry_condition_text is the raw text of the flow's entry condition
+    formula (e.g., "ISCHANGED(Status) && Status = 'Closed'"). Tier 1
+    stores this raw; Tier 2 sync will parse it into structured logic
+    in flow_details.parsed_logic. The raw text stays here for audit and
+    human-readable display even after Tier 2 parsing.
+    """
+    description: Optional[str] = Field(default=None, max_length=255)
+    process_type: Optional[str] = Field(default=None, max_length=40)
+    entry_condition_text: Optional[str] = Field(default=None, max_length=4000)
+
+
+class ValidationRuleAttributes(_EntityAttributes):
+    """Sparse ValidationRule metadata living in entities.attributes JSONB.
+
+    Per D-025: hot ValidationRule attributes (object_entity_id, is_active)
+    are columns on validation_rule_details. The rule's field references —
+    which fields the formula reads, with PRIORVALUE/ISCHANGED/ISNEW
+    annotations — live in validation_rule_field_refs (a hot reference
+    table; not a D-025 detail table; see migration 20260427_0120 docstring).
+
+    error_message is the user-facing string displayed when the rule fails
+    (Salesforce caps these at 4000 chars in some contexts; we cap at 4000
+    to match the more permissive bound).
+
+    error_display_field is the API name of the field where the error
+    anchors in the UI. NULL/absent means the error displays at the top
+    of the page rather than next to a specific field. Capped at 80 chars
+    to match Salesforce's API name length limits.
+
+    formula_text is the raw formula text (e.g.,
+    'Amount > 0 && PRIORVALUE(Status) <> Status'). Tier 1 stores raw;
+    future Tier 2 may parse into structured logic. Capped at 8000 chars
+    to match Salesforce's formula length limit.
+
+    Why formula_text in JSONB rather than a hot column: it's per-rule,
+    not queried across the population. Per D-025 promotion rule, JSONB
+    is the right default. The field references INSIDE the formula are
+    materialized into validation_rule_field_refs (queryable across
+    population), and the raw text stays here for audit and human
+    inspection.
+    """
+    error_message: Optional[str] = Field(default=None, max_length=4000)
+    error_display_field: Optional[str] = Field(default=None, max_length=80)
+    formula_text: Optional[str] = Field(default=None, max_length=8000)
+
+
 # ----------------------------------------------------------------------
 # Registry: TIER_1_ENTITIES
 # ----------------------------------------------------------------------
@@ -310,8 +380,14 @@ TIER_1_ENTITIES: dict[str, EntityTypeMetadata] = {
         attributes_schema=LayoutAttributes,
         detail_table="layout_details",
     ),
-    # "ValidationRule": EntityTypeMetadata(attributes_schema=ValidationRuleAttributes, detail_table="validation_rule_details"),
-    # "Flow":           EntityTypeMetadata(attributes_schema=FlowAttributes,          detail_table="flow_details"),
+    "ValidationRule": EntityTypeMetadata(
+        attributes_schema=ValidationRuleAttributes,
+        detail_table="validation_rule_details",
+    ),
+    "Flow": EntityTypeMetadata(
+        attributes_schema=FlowAttributes,
+        detail_table="flow_details",
+    ),
     "Profile": EntityTypeMetadata(
         attributes_schema=ProfileAttributes,
         detail_table="profile_details",
