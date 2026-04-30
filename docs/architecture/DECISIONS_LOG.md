@@ -846,3 +846,342 @@ CONSTRAINT _capability_level_known CHECK (
 **Related modules:** `primeqa/semantic/edges.py` (`validate_edge_properties`), `primeqa/semantic/derivation.py` (consumer that relies on this serialization for `INSERT INTO edges ... CAST(:p AS JSONB)`).
 
 ---
+
+Format note: Major architectural decisions get full entries with context, alternatives, and consequences. Routine mechanical decisions (column additions, naming, etc.) get concise entries.
+
+---
+
+## D-029 — Generation/execution split
+
+**Status:** Locked
+**Date:** 2026-04-28
+**Phase:** 2 (foundational; applies to all subsequent phases)
+
+**Context.** PrimeQA's QA workflow has two structurally different metadata needs. When a QA writes test cases from a JIRA ticket, they reference *requirements* — what the application should do. When they execute those tests, the org's actual current metadata becomes relevant. Conflating these into a single "always-current mirror of all connected orgs" produces the heavy per-connection metadata cache architecture that Provar and similar tools struggle with operationally.
+
+**Decision.** The normative semantic model (Substrate 1) serves test generation and is org-agnostic at the conceptual level. Per-org metadata access for test execution is a separate concern, deferred to Substrate 3 / 4 work. Phase 2 builds only the generation-side substrate.
+
+**Alternatives considered.**
+- Per-connection metadata caches (Provar-style): rejected as architecturally heavy, validated as painful by Provar's own published optimization work.
+- Continuous sync from all connected orgs into a unified model: rejected because mixing metadata from production and sandboxes corrupts the "what is true" question.
+
+**Consequences.** Phase 2 sync is much lighter than originally framed. Per-org execution-time concerns (describe API at runtime, locator resolution, etc.) become Substrate 3 work. The substrate is positioned to serve both test authoring (Substrate 2) and failure attribution (Substrate 4) without org-binding.
+
+**Cross-references.** Product doc §4.1, §4.2.
+
+---
+
+## D-030 — Sync is per-(org, run); model is shared across orgs
+
+**Status:** Locked
+**Date:** 2026-04-28
+**Phase:** 2
+
+**Context.** Customers connect multiple orgs to a tenant: one production, multiple sandboxes, scratch orgs. Question: which org does sync pull from, and how does the model represent metadata that may differ across them?
+
+**Decision.** Phase 2 supports syncing from any registered org into the canonical normative model. Initial seed sync (typically from a customer-recommended base org during onboarding) populates the model. Subsequent syncs from other registered orgs (developer sandboxes, UAT) update the model in place. The model is a single canonical picture; per-entity provenance (`last_synced_from_org_id`, see D-040) tracks which org each entity was most recently sourced from.
+
+**Alternatives considered.**
+- Single-source-of-truth org with `is_seed_source` flag: rejected because real workflows require multiple orgs to update the model over time (developer testing against sandbox, QA lead testing against UAT).
+- Per-org metadata storage with `org_id` on every entity: rejected because it creates duplication across orgs and complicates the single-canonical-truth principle. Multi-org diffing is out of scope per Phase 2 boundaries.
+- Model as union of all seen orgs: rejected because it creates frankenstate metadata that doesn't represent any actual reality.
+
+**Consequences.** Single-release-context model. The model represents whichever org most recently synced. Multi-release support (parallel branches of metadata) is explicitly deferred (D-041). The `release_label` column on `connected_orgs` is the future-extensibility hook.
+
+**Cross-references.** Product doc §4.2; D-040; D-041.
+
+---
+
+## D-031 — `entity_origin` column on entities
+
+**Status:** Locked
+**Date:** 2026-04-28
+**Phase:** 2
+
+**Decision.** Add `entity_origin VARCHAR(20) NOT NULL DEFAULT 'sync'` to `entities`, with CHECK constraint allowing `'sync' | 'requirements' | 'manual_curation'`. Phase 2 only writes `'sync'`. Other values are reserved for Phase 3+ paths (requirements-doc ingestion, manual curation UI).
+
+**Rationale.** Forward-compatibility hook prevents schema migration when Phase 3 adds non-sync sources of truth.
+
+---
+
+## D-032 — Hash-based diffing on `entities.last_seed_hash`
+
+**Status:** Locked
+**Date:** 2026-04-28
+**Phase:** 2
+
+**Decision.** Add `last_seed_hash VARCHAR(64)` to `entities` storing SHA-256 hex of the entity's normalized content (per D-035). On subsequent syncs, compare the current hash to the stored hash to detect changes. CHECK constraint: `last_seed_hash` is non-NULL only when `entity_origin = 'sync'`.
+
+**Rationale.** Hash-based diffing is robust against Salesforce metadata oddities (presentation reordering, internal ID drift) provided normalization is correct. Constraining to sync-sourced entities keeps the column meaningful — requirements-sourced and manually-curated entities have no remote authority to compare against.
+
+---
+
+## D-033 — On-demand sync only in Phase 2
+
+**Status:** Locked
+**Date:** 2026-04-28
+**Phase:** 2
+
+**Decision.** Sync is user-triggered. No cron, no Salesforce streaming API, no polling. A future phase may add scheduled-fallback syncs once the on-demand path is operationally solid.
+
+**Rationale.** Continuous sync compounds cost and complexity (Salesforce API quota, sync conflict resolution, partial-failure handling) for a feature whose value is unclear pre-customer-validation. On-demand sync covers the real workflow: developer or QA syncs the org they're about to test against, before testing.
+
+---
+
+## D-034 — OAuth tokens stored plaintext in Phase 2; encryption is Phase 5
+
+**Status:** Locked
+**Date:** 2026-04-28
+**Phase:** 2 (with Phase 5 commitment)
+
+**Context.** `connected_orgs.oauth_access_token` and `oauth_refresh_token` are sensitive credentials. Encryption-at-rest is standard practice. Question: do we encrypt now or defer?
+
+**Decision.** Tokens are stored plaintext in Phase 2 with `# TODO Phase 5: encrypt at rest` comments at storage boundaries. Encryption-at-rest is committed as Phase 5 hardening work. **No production org may be connected until Phase 5 ships.** Phases 2-4 testing is sandbox-only.
+
+**Alternatives considered.**
+- Encrypt now (AES + Railway env var key): rejected as premature. Encryption strategy depends on key rotation, key recovery, multi-tenant key isolation, and integration with other secrets infrastructure (audit logging, request signing) that doesn't exist yet. Building the encryption layer now means rebuilding it in Phase 5 once those dependencies exist.
+- Defer to Phase 6+: rejected because Phase 5 is the natural hardening phase and we want customer production connection gated on the encryption work landing.
+
+**Consequences.** Constrains Phases 2-4 to sandbox testing. Makes Phase 5 hardening work concretely scoped (encryption is part of it). Trade-off accepted because we have no production traffic and no real production tokens at risk during Phases 2-4.
+
+**Cross-references.** Product doc §6.4 (v1 supports sandbox connections only); §6.5 (production connection in v1+ is post-v1 work).
+
+---
+
+## D-035 — Mandatory normalization before hashing
+
+**Status:** Locked
+**Date:** 2026-04-28
+**Phase:** 2
+
+**Decision.** Per-entity-type `normalize_*` functions in `primeqa/semantic/normalization.py` produce canonical, stable dict representations of each entity before hashing. Functions sort collections without semantic order (layout sections by position, picklist values by api_name), strip Salesforce-internal IDs that change without semantic meaning, fix attribute ordering, and drop volatile timestamps.
+
+**Rationale.** Without normalization, Salesforce describe API output ordering and serialization variance produce phantom hash changes on every sync. The hash-based diffing strategy (D-032) is broken in practice without this discipline. Normalization functions are independently unit-tested with table-driven cases covering known phantom-change scenarios.
+
+**Cross-references.** D-032.
+
+---
+
+## D-036 — Sync atomicity: all-or-nothing for structural; partial-success for AI primitives
+
+**Status:** Locked
+**Date:** 2026-04-30
+**Phase:** 2
+
+**Context.** A sync run touches many entities: structural writes (entities, detail rows, edges, derivations) and AI primitive writes (embeddings, summaries). Question: does the whole run commit-or-rollback together, or are the layers separable?
+
+**Decision.** Two-phase atomicity. Structural sync is one Postgres transaction — all-or-nothing. The model never enters an inconsistent structural state. AI primitive generation is a second transaction that begins after structural commit. If AI primitive generation fails (LLM rate limit, embedding API down, individual summary failure), the structural commit holds and `sync_runs.status` is set to `'partial_success'` with `summaries_failed` counter populated. A subsequent sync run will fill in missing AI primitives.
+
+**Alternatives considered.**
+- Strict all-or-nothing across both layers: rejected because LLM API failures are common enough that strict atomicity would frequently roll back valid structural work for transient AI issues.
+- Independent layers, no atomicity: rejected because structural writes need transactional integrity (entity + detail row + edges must commit together).
+
+**Consequences.** AI primitive failures degrade gracefully (entities still queryable structurally, just without retrieval enrichment). Substrate 4 attribution that depends on summaries can fall back to raw error visibility for entities whose summaries failed. The `partial_success` status surfaces the issue without blocking the workflow.
+
+**Cross-references.** D-048; product rule 5 (graceful fallback over hallucination).
+
+---
+
+## D-037 — Strict entity-type ordering during sync
+
+**Status:** Locked
+**Date:** 2026-04-28
+**Phase:** 2
+
+**Decision.** Sync writes entities in dependency order so each entity's parents exist before it does:
+
+```
+Object
+  → PicklistValueSet
+    → PicklistValue
+    → Field, RecordType, Layout, ValidationRule
+  → Profile
+  → PermissionSet
+  → User
+  → Flow
+```
+
+`derivation.supersede_and_derive` is called per entity after its detail row is written. Hot reference table rows are written between the parent entity's detail row and `supersede_and_derive`.
+
+**Rationale.** FK dependencies require parents-first ordering. PicklistValueSet must precede Field because picklist Fields reference PVS; PicklistValue must follow PVS for its own FK. Without strict ordering, derivation produces incomplete edges or sync transactions fail on FK violations.
+
+---
+
+## D-038 — Withdrawn
+
+**Status:** Withdrawn 2026-04-30
+**Original decision:** `is_seed_source` change protection trigger on `connected_orgs`.
+
+The `is_seed_source` flag itself was removed when sync architecture simplified to "any registered org can sync into the model" (D-030). The protective trigger has no invariant left to protect and was removed before any implementation work. ID retired; not reused.
+
+---
+
+## D-039 — Single `mv_active_graph` materialized view
+
+**Status:** Locked
+**Date:** 2026-04-28
+**Phase:** 2
+
+**Context.** Substrate 2 (test generation) and Substrate 4 (attribution) read from a denormalized projection of the active model. Question: one matview covering entities + edges + AI primitives, or separate matviews per concern?
+
+**Decision.** Single matview `mv_active_graph`. Includes active entities (`valid_to_seq IS NULL`), active edges, hot detail-table columns (LEFT JOIN per entity type), full `attributes` JSONB, AI primitive columns (semantic_text, embedding, embedding_model). Excludes superseded rows, raw bitemporal columns, hot reference table rows (accessed via edges they produce), change log, raw OAuth tokens. Refreshed via `REFRESH MATERIALIZED VIEW CONCURRENTLY` at the end of each successful sync run; concurrent refresh requires the unique index on `entity_id`.
+
+**Alternatives considered.**
+- Separate `mv_active_entities` and `mv_active_edges`: rejected as premature decomposition. Single matview is simpler to operate and refresh; refactor only if Phase 3 query patterns reveal a real need.
+- Lean matview without JSONB: rejected because attribute-filter queries are common (e.g., "find all required Fields") and forcing JOINs back to `entities` defeats the matview's purpose.
+
+**Consequences.** All consumers see the same shape. Concurrent refresh keeps reads available during sync. Schema simplicity at the cost of some duplication (the JSONB attributes appear both in `entities` and the matview).
+
+---
+
+## D-040 — Per-entity sync provenance via `last_synced_from_org_id`
+
+**Status:** Locked
+**Date:** 2026-04-28
+**Phase:** 2
+
+**Decision.** Add `last_synced_from_org_id UUID REFERENCES connected_orgs(id)` to `entities`, with CHECK constraint requiring `entity_origin = 'sync'` for non-NULL values. Updated by sync to reflect the org each entity was most recently sourced from.
+
+**Rationale.** With multiple orgs syncing into the canonical model over time (D-030), per-entity provenance tells you what the model represents right now. A QA can answer "this test asserts Account.Industry exists; the model says it was last synced from UAT 30 minutes ago." Substrate 4 attribution uses this for confidence indication.
+
+**Cross-references.** D-030.
+
+---
+
+## D-041 — Multi-release deferred indefinitely
+
+**Status:** Locked
+**Date:** 2026-04-28
+**Phase:** 2 (deferral; future implementation undated)
+
+**Context.** Enterprise customers run multiple Salesforce releases simultaneously: production at release N, UAT at N+1, dev sandboxes at various N+1/N+2 feature branches. A release-aware metadata model would represent these as parallel branches with merge testing capability.
+
+**Decision.** Phase 2 (and the path to v1) ships single-release-context only. The model represents whichever release was most recently synced. Customers with multi-release setups can use Phase 2 with the limitation that the model represents one release at a time. True multi-release support — parallel metadata branches, branch-aware queries, merge testing — is deferred until a real customer drives the requirements.
+
+**Alternatives considered.**
+- Add `release_id` to every entity now (Option A from earlier discussion): rejected as substantial schema expansion for a feature with no current customer driving it. Risk of designing the wrong abstraction without real workflow data.
+- Per-release schema (Option B): rejected as duplicating shared concepts across orgs and complicating cross-release queries.
+- Releases as edge-association (Option C): rejected as awkward fit for non-linear branching reality.
+
+**Consequences.** `connected_orgs.release_label VARCHAR(100)` (free-form text) is the future-extensibility hook — customers can tag their topology for visibility, but Phase 2 does not consume it for logic. When a customer drives multi-release work, the seam exists for retrofit. Decision revisitable when concrete customer requirements arrive.
+
+**Cross-references.** Product doc §5.4, §6.5.
+
+---
+
+## D-042 — pgvector for embedding storage
+
+**Status:** Locked
+**Date:** 2026-04-30
+**Phase:** 2
+
+**Decision.** Use the `pgvector` Postgres extension for embedding column storage and similarity search. Embedding columns typed `VECTOR(1536)`. Indexed via `ivfflat` with `vector_cosine_ops` for cosine similarity search.
+
+**Rationale.** pgvector is mature, available on Railway's Postgres, and keeps the entire data model in one database (no separate vector store like Pinecone or Qdrant). Single-database simplicity matters disproportionately for a small team — fewer operational concerns, fewer integration boundaries, transactional consistency between metadata and embeddings.
+
+**Alternatives considered.**
+- Standalone vector store (Pinecone, Qdrant, Weaviate): rejected as operational overhead. Embedding-database consistency would require dual-write patterns.
+- pgvector with `hnsw` index: deferred (D-related O-8). hnsw is faster at query time but has more parameters to tune. Switch later if query latency requires it; migration is straightforward.
+
+**Consequences.** Embeddings co-located with entities. Queries can JOIN structural data and similarity search in one statement. ivfflat `lists = 100` is conservative for tenants up to ~100K entities.
+
+---
+
+## D-043 — OpenAI `text-embedding-3-small` for entity embeddings
+
+**Status:** Locked
+**Date:** 2026-04-30
+**Phase:** 2
+
+**Decision.** Use OpenAI's `text-embedding-3-small` model for all entity embeddings. 1536-dimensional output. Tracked per-row in `entities.embedding_model` as `'openai/text-embedding-3-small'` for forward-compat.
+
+**Alternatives considered.**
+- `text-embedding-3-large` (3072-dim): rejected on cost/storage. ~6x cost per call, doubles storage, marginal quality difference for structured Salesforce metadata text.
+- Voyage AI `voyage-3`: competitive quality, less ecosystem support. No compelling reason to take on the integration.
+- Self-hosted (sentence-transformers): rejected as operational overhead disproportionate to a small team. Quality difference vs. text-embedding-3-small is meaningful for retrieval.
+
+**Consequences.** Embedding cost is essentially zero at our expected scale (~$0.50/sync for 50K entities). Vendor lock-in to OpenAI for embeddings is real but mitigated by the `embedding_model` column — a future model swap is a re-embedding migration, not a schema change.
+
+---
+
+## D-044 — Anthropic Claude Haiku 4.5 for plain-English summaries
+
+**Status:** Locked
+**Date:** 2026-04-30
+**Phase:** 2
+
+**Decision.** Generate plain-English summaries of validation rule formulas and flow logic via Anthropic Claude Haiku 4.5. Summary target length ~100-150 tokens. Stored on detail tables (per D-045) with `summary_model VARCHAR(50)` capturing the model identifier and `summary_prompt_version VARCHAR(20)` capturing the prompt version.
+
+**Alternatives considered.**
+- Claude Sonnet 4.6: rejected on cost grounds for this volume. Summaries are short and structurally bounded; quality difference unlikely to justify Sonnet's cost premium. We can selectively upgrade specific failing cases to Sonnet later if Haiku quality proves insufficient.
+- OpenAI GPT-4: comparable quality, no compelling reason to add a third LLM provider. Sticking with Anthropic for all generative work simplifies key management and prompt versioning.
+
+**Consequences.** Cost is bookable per customer (~$30-50 for initial seed sync of a 50K-entity org, ~$1-5 per delta sync). Re-summarization on prompt-version change is a separate manual operation, not part of normal sync.
+
+---
+
+## D-045 — Summaries stored as columns on detail tables, not a separate `entity_interpretations` table
+
+**Status:** Locked
+**Date:** 2026-04-30
+**Phase:** 2
+
+**Decision.** Plain-English summaries live on `validation_rule_details.plain_english_summary` and `flow_details.plain_english_summary`, with metadata columns (`summary_model`, `summary_prompt_version`, `summary_generated_at`) alongside. No separate `entity_interpretations` table.
+
+**Rationale.** Earlier design considered a polymorphic `entity_interpretations` table with multiple `interpretation_type` values per entity, confidence scores, and rich structured semantic extraction. Rejected as over-engineered: only two entity types contain natural-language semantics that warrant summarization, and one summary per entity is the expected cardinality. The simpler column-per-detail-table approach matches what we actually need.
+
+**Consequences.** When future entity types need summarization (Phase 3+ might surface this for Apex or layout description text), they get a column on their own detail table, not a row in a generic interpretations table. Slightly more migration work per addition; significantly simpler queries.
+
+---
+
+## D-046 — AI for translation, not invention
+
+**Status:** Locked
+**Date:** 2026-04-30
+**Phase:** 2 (foundational principle; applies to all AI usage in PrimeQA)
+
+**Context.** Throughout the AI-first design discussion, the question of LLM hallucination came up repeatedly. A QA who trusts a hallucinated explanation makes wrong release decisions; this is the most expensive failure mode (product doc §5.1). Architectural defense matters more than monitoring.
+
+**Decision.** AI is used to translate structured technical context into natural-language explanations and to retrieve semantically relevant entities. AI does not invent structural facts about the org. Specifically:
+
+- Object existence, field types, relationships, picklist values, validation rule formulas, flow definitions: come from Salesforce describe and tooling APIs, parsed deterministically, written through Pydantic-validated boundaries. The LLM does not get to invent or alter these.
+- Summaries: bounded LLM outputs grounded in the structural source content. The summary is not the source of truth; the underlying formula or flow definition remains the truth. Summary failures degrade gracefully (NULL summary, falls back to raw content).
+- Future LLM uses (Substrate 2 generation, Substrate 4 explanation): outputs constrained via schema-enforced LLM calls. LLM cannot reference entities that don't exist in the model. Schema validation rejects hallucinated entity references at the boundary.
+
+**Consequences.** This principle shapes every AI integration in the product. It is the architectural defense against confident wrongness. It also constrains what AI does — we deliberately decline to ask AI questions whose answers it would have to invent.
+
+**Cross-references.** Product doc §4.7 rule 7 ("AI for translation, not invention"); product doc §5.1 (most expensive failure mode); D-048.
+
+---
+
+## D-047 — Re-embed and re-summarize only on hash change
+
+**Status:** Locked
+**Date:** 2026-04-30
+**Phase:** 2
+
+**Decision.** Embeddings and summaries are regenerated only when an entity's `last_seed_hash` differs from its prior value. Unchanged entities skip both operations.
+
+**Rationale.** Cost discipline. Initial seed sync of a 50K-entity org generates all embeddings and summaries once. Subsequent delta syncs touch only the small subset of entities that changed. This keeps per-sync cost bounded (~$1-5) regardless of org size.
+
+**Consequences.** Cross-entity context changes (e.g., parent Object's label changes, affecting Field's semantic context) do not trigger re-embedding of children. Acceptable staleness in exchange for cost predictability. If retrieval quality suffers from this, a manual full-re-embed operation can be run (separate from sync). Prompt version changes that warrant re-summarization are a manual operation, not automatic.
+
+---
+
+## D-048 — Graceful fallback for AI primitive failures
+
+**Status:** Locked
+**Date:** 2026-04-30
+**Phase:** 2
+
+**Decision.** When AI primitive generation fails for an entity (LLM rate limit, embedding API timeout, individual summary returns malformed output, etc.), the failure is logged but does not crash sync. The entity is committed structurally (per D-036's two-phase atomicity) without its embedding or summary. The sync run is marked `partial_success` with the relevant counter (`embeddings_failed` or `summaries_failed`) incremented. A subsequent sync run will re-attempt the failed primitive.
+
+**Rationale.** The architectural posture of graceful fallback over hallucination (product rule 5) requires that AI failures degrade rather than block. A failed summary is recoverable; a hallucinated summary is a trust-eroding event in the wild.
+
+**Consequences.** Substrate 4 attribution must handle entities with NULL summaries by falling back to raw content. The UI must surface entities with missing AI primitives clearly (not silently treat them as fully-enriched). Trade-off: some entities take multiple sync runs to fully enrich; acceptable cost for the architectural defense.
+
+**Cross-references.** D-036; D-046; product rule 5.
+
+---
+
+*End of Phase 2 additions.*
