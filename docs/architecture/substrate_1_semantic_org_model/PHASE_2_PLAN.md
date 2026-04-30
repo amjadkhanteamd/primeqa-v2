@@ -139,6 +139,35 @@ CREATE EXTENSION IF NOT EXISTS vector;     -- for embedding storage and similari
 
 Both extensions are available on Railway's Postgres. Verify availability at the start of step 1A; if either is unavailable, that's a Railway configuration question to resolve before proceeding.
 
+### 3.1.1 Step 1A verification log (2026-04-30)
+
+Verification ran against `pg_extension` on the Railway Postgres instance.
+Findings:
+
+- `pgcrypto` v1.4 — installed per-tenant-schema (relocated via
+  `WITH SCHEMA <tenant>`). Phase 0 bootstrap
+  (`alembic/versions/shared/20260427_0001_phase0_shared_bootstrap.py`)
+  provisions this for each tenant schema as part of `provision_tenant_schema()`.
+- `vector` v0.8.2 — installed in `public`. Supports both ivfflat and hnsw
+  indexes. Reachable from any tenant schema via the standard search path
+  (`<tenant>, public`).
+
+**Pattern asymmetry, deliberate.** pgcrypto is per-tenant-schema; vector is
+database-wide in `public`. The asymmetry reflects what each extension
+actually provides:
+
+- pgcrypto provides functions (`gen_random_uuid()`, encryption primitives)
+  where per-tenant relocation gives clean schema-owned encapsulation.
+- vector provides a *type* (`vector(N)`) which is database-wide by nature —
+  types live in the catalog, not in user schemas. Installing pgvector
+  per-tenant would not isolate anything.
+
+No migration was required for Step 1A. The verification (the `pg_extension`
+query) was the work; both extensions were already present and reachable. If
+a future fresh-database setup is required (e.g., a different Postgres
+provider for testing), the bootstrap for that environment must include
+`CREATE EXTENSION IF NOT EXISTS vector;` to provision the type.
+
 ### 3.2 `tenant_1.connected_orgs`
 
 Per-tenant table capturing which Salesforce orgs this tenant has connected.
@@ -447,12 +476,12 @@ To be appended to `docs/architecture/DECISIONS_LOG.md` during Phase 2:
 
 | Step | Artifact | Notes |
 |---|---|---|
-| 1A | Verify `pgcrypto` and `pgvector` available; enable if needed | Railway Postgres extension migration |
+| 1A | Verify `pgcrypto` and `pgvector` available | Verified 2026-04-30; both present, no migration needed (see §3.1.1) |
 | 1B | `connected_orgs` table migration + smoke | Per-tenant, includes `release_label` |
 | 1C | `sync_runs` table migration + smoke | Includes AI primitive counters |
 | 1D | `entities` ALTER for entity_origin / last_seed_hash / last_synced_from_org_id / semantic_text / embedding / embedding_model / embedding_generated_at | All constraints + ivfflat index |
 | 1E | `validation_rule_details` and `flow_details` ALTER for summary columns + summary_embedding + indexes | |
-| 1F | Combined commit for 1A-1E | Schema additions for Phase 2 |
+| 1F | Combined commit for 1B-1E | Schema additions for Phase 2 (1A produced no migration; see §3.1.1) |
 | 2A | `normalization.py` + per-type unit tests | Pure functions, table-driven tests |
 | 2B | `semantic_text.py` + per-type unit tests | Deterministic templating, tested for stability |
 | 2C | `sf_client.py` + integration test against developer sandbox | OAuth flow, REST + Tooling fetches |
