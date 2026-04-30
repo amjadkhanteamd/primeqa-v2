@@ -3,7 +3,7 @@
 **Project:** PrimeQA v2, Substrate 1 (Semantic Org Model)
 **Phase:** 2 — Sync engine + AI retrieval primitives + materialized view
 **Branch:** `phase-2-substrate-1` (to be created from `main` at the latest commit)
-**Status:** Draft for final user review before lock
+**Status:** Locked 2026-04-30. Open questions O-1 through O-10 resolved (see §7). Step 1A pending kickoff.
 **Date:** 2026-04-30
 **Foundation:** Derives from `docs/product/PRIMEQA_PRODUCT_DEFINITION.md` v1.0
 
@@ -474,29 +474,53 @@ To be appended to `docs/architecture/DECISIONS_LOG.md` during Phase 2:
 
 Per-step gates apply per the working agreement: schema-inspection prompts before any test asserts production-code-specific names (lesson from Phase 1 step 10).
 
-Realistic timeline estimate: **5-7 days** of focused work, assuming OpenAI and Anthropic API access is set up and a Salesforce developer sandbox is available. The structural sync (steps 2-4) is roughly Phase 2 as originally planned (~3 days). The AI primitive layer (steps 3, 4B) adds ~2 days. The matview and close-out are ~1 day.
+Realistic effort estimate: **5-7 days of focused work**, decomposed as: structural sync (~3 days, roughly Phase 2 as originally planned), AI primitive layer (~2 days for embeddings + summaries), matview and close-out (~1 day). This is an effort budget, not a calendar schedule. Per the substrate-first approach (product doc §6.2) and the absence of time pressure (product doc §6.1), the work happens when it happens; elapsed calendar time is not tracked against it.
 
-## 7. Open questions for final user review
+Prerequisites assumed: OpenAI and Anthropic API access set up (credentials + budget), Salesforce developer sandbox available (resolved per O-5).
+
+## 7. Open questions — resolutions
+
+All ten open questions resolved 2026-04-30. Plan is locked from this point.
 
 **O-1.** "No production org connection until Phase 5" as a hard rule — confirm acceptable. Constrains Phases 2-4 testing to sandboxes only.
 
+> **Resolution:** Confirmed. Cross-references product doc rule 3 and §4.1 of this plan. Sandboxes only through Phase 4.
+
 **O-2.** Matview includes the full `attributes` JSONB to support attribute-filter queries without JOINs. Confirm acceptable, or do we want a leaner matview?
+
+> **Resolution:** Confirmed. Storage cost is bounded since matview is "current state only" (no superseded rows). Leaner matview is a future optimization if storage grows.
 
 **O-3.** Single `mv_active_graph` covering both entities and edges, or separate matviews? Lean: single, refactor only if Phase 3 query patterns demand it.
 
-**O-4.** Salesforce API version pinning. Lean: pin to a current stable version (v60.0 or later as of April 2026), document in `sf_client.py`, plan periodic version bumps as normal dependency-update activity.
+> **Resolution:** Single matview. Refactor to separate views only if Phase 3 query patterns make it necessary.
+
+**O-4.** Salesforce API version pinning. Lean: pin to a current stable version, document in `sf_client.py`, plan periodic version bumps as normal dependency-update activity.
+
+> **Resolution:** Pin to **v66.0** (Spring '26 release, current as of April 2026). Verified via web search. Document in `sf_client.py` constants. Salesforce ships 3 versions per year; bumps are normal dependency maintenance. Earlier draft of this plan named v60.0, which was Spring '24 and would have left us pinned to a two-year-old version — corrected.
 
 **O-5.** Sample developer sandbox availability for steps 2C, 3A-B, 4D. Prerequisite to start hands-on Phase 2 work — confirm one is set up.
 
+> **Resolution:** User has an existing Salesforce developer org. Hands-on Phase 2 work can begin without sandbox-provisioning blocker.
+
 **O-6.** OpenAI `text-embedding-3-small` (1536-dim) vs `text-embedding-3-large` (3072-dim). Lean: small, on cost grounds. Quality difference is marginal for Salesforce metadata use cases. Storage cost doubles for large.
+
+> **Resolution:** `text-embedding-3-small`. 1536-dim. Stored in `entities.embedding`. Captured in `embedding_model` per-row for forward-compat.
 
 **O-7.** Anthropic Claude Haiku 4.5 for summaries — confirm or push toward Sonnet for higher quality. Lean: Haiku. Summaries are short and structural; quality difference unlikely to justify Sonnet's cost premium for this volume.
 
+> **Resolution:** Haiku 4.5 for bulk summarization. Selective upgrade to Sonnet later only if quality on validation rule formulas proves insufficient (escalation path noted in `summaries.py`).
+
 **O-8.** ivfflat vs hnsw for embedding indexes. Lean: ivfflat for Phase 2 simplicity. hnsw is faster at query time but has more parameters to tune. Switch to hnsw later if query latency demands it.
+
+> **Resolution:** ivfflat. Migration to hnsw is straightforward if Phase 3+ query latency requires it.
 
 **O-9.** Prompt version directory location. Lean: `primeqa/prompts/v1/validation_rule_summary.txt`, `primeqa/prompts/v1/flow_summary.txt`, etc. Versioned subdirectories so v2, v3 can coexist.
 
+> **Resolution:** Confirmed. Prompts under `primeqa/prompts/v1/`. Version bumps create `v2/`, `v3/` parallel directories without removing old ones.
+
 **O-10.** Phase 2 timeline acceptance: 5-7 days realistic. Confirm or push back. (Original Phase 2 estimate was 2-4 days; AI primitive additions roughly double the scope.)
+
+> **Resolution:** Effort estimate accepted. **Critical framing correction:** This is an effort budget, not a calendar schedule. Substrate-first approach (product doc §6.2) and absence of time pressure (product doc §6.1) mean elapsed calendar time is not tracked against the estimate. The 5-7 days is the volume of focused work the phase represents; it does not mean "Phase 2 must complete within 5-7 calendar days." This framing applies to all subsequent phase plans.
 
 ## 8. Out of scope (explicit)
 
@@ -518,15 +542,17 @@ Phase 2 does not include:
 - Confidence scoring on summaries (over-engineered; embeddings provide implicit confidence via similarity score)
 - Cross-entity context updates triggering re-embedding (only direct hash change triggers re-embedding)
 
-## 9. Approval
+## 9. Lock status
 
-Phase 2 work begins on the `phase-2-substrate-1` branch only after:
+Plan locked 2026-04-30. All preconditions for Phase 2 work satisfied:
 
-1. User reviews this plan
-2. Open questions O-1 through O-10 are resolved
-3. Plan is committed to `docs/architecture/substrate_1_semantic_org_model/PHASE_2_PLAN.md` on the branch as the first commit
+1. ✓ Plan reviewed by user
+2. ✓ Open questions O-1 through O-10 resolved (see §7)
+3. ✓ Plan committed to `docs/architecture/substrate_1_semantic_org_model/PHASE_2_PLAN.md` on branch `phase-2-substrate-1` (commit `2abaed7` for v1; current commit appends resolutions)
 
-After commit, step 1A begins.
+**Next:** Step 1A — verify `pgcrypto` and `pgvector` extension availability on Railway Postgres, write extension migration if needed, run smoke.
+
+Per the working agreement: implementation in Claude Code, direction from user, schema-inspection gates before any test asserts production-code-specific names, multi-pass cleanup ordering by default for FK dependencies. Code blocks tagged `### FOR YOUR TERMINAL` or `### FOR CLAUDE CODE`; status reports tagged `[FROM TERMINAL]` or `[FROM CC]`.
 
 ---
 
