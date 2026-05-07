@@ -55,24 +55,29 @@ The plan could clarify this distinction in a future revision
 entity types, including those without Pydantic attribute schemas
 like PicklistValueSet").
 
-## §4.2 fetch_validation_rules: Salesforce Tooling Metadata 1-row constraint
+## §4.2 Salesforce Tooling Metadata-or-FullName 1-row constraint
 
 **Date:** 2026-05-07
 **Step:** 2C
 **Source:** PHASE_2_PLAN.md §4.2 implies fetch_validation_rules makes
             one Tooling SOQL call returning all rules with full Metadata.
 
-Discovered at live-test time: Salesforce Tooling API rejects SOQL queries
-selecting the `Metadata` field unless the query returns at most 1 row.
-Documented Salesforce constraint, not surfaced in any SOQL syntax checker.
-HTTP 400 with errorCode MALFORMED_QUERY: "When retrieving results with
-Metadata or FullName fields, the query qualifications must specify no more
-than one row for retrieval."
+Discovered at live-test time during Step 2C (ValidationRule) and
+confirmed during 2C-extended (RecordType): Salesforce Tooling API
+rejects SOQL queries selecting EITHER the `Metadata` field OR the
+`FullName` field unless the query returns at most 1 row. Documented
+Salesforce constraint, not surfaced in any SOQL syntax checker.
+HTTP 400 with errorCode MALFORMED_QUERY: "When retrieving results
+with Metadata or FullName fields, the query qualifications must
+specify no more than one row for retrieval."
 
-**Resolution:** Two-phase fetch within fetch_validation_rules.
-- Phase 1: Bulk SOQL fetches Id + non-Metadata fields for all rules.
-- Phase 2: Per-Id SOQL fetches Metadata for each rule (1 row each).
-- N+1 round trips for N rules. Sandbox at 61 rules → 62 calls, ~45s.
+**Resolution:** Two-phase fetch within the affected fetch method.
+- Phase 1: Bulk SOQL fetches Id + non-Metadata, non-FullName fields
+  for all rows.
+- Phase 2: Per-Id SOQL fetches Metadata AND/OR FullName for each
+  row (1 row each).
+- N+1 round trips for N rows. Sandbox at 61 ValidationRules and
+  5+ RecordTypes confirms the pattern.
 
 Implementation: primeqa/integrations/sf_client.py fetch_validation_rules,
 with inline comment documenting the constraint. Unit tests include
@@ -82,6 +87,14 @@ structurally.
 **Plan implication:** §4.2 should note the two-phase pattern is required
 for any entity type whose Tooling representation requires Metadata. Future
 entity types (Flow Metadata, etc.) likely face the same constraint.
+
+**Implication for 2C-extended fetch methods:** Any Tooling-API
+fetch that needs Metadata or FullName must use the two-phase
+pattern. RecordType (already confirmed), Layout, Profile,
+PermissionSet, Flow are all expected to fall into this category.
+The Tooling representation of these entities returns the rich
+data via Metadata; bulk-fetching is structurally impossible
+without this pattern.
 
 ## §4.2 fetch_validation_rules Phase 1: EntityDefinition 1000-row subquery
 
