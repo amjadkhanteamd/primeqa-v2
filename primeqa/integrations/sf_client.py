@@ -231,6 +231,35 @@ class SalesforceClient:
         resp = self._request("GET", path)
         return resp.json().get("fields", [])
 
+    def fetch_layouts_for_object(self, object_name: str) -> dict:
+        """GET /services/data/{api_version}/sobjects/{name}/describe/layouts.
+
+        Returns the full describe/layouts response as a dict with three
+        top-level keys: layouts, recordTypeMappings, recordTypeSelectorRequired.
+
+        # REST per-object describe/layouts endpoint. Returns full structured
+        # response (layouts, recordTypeMappings, recordTypeSelectorRequired)
+        # as-is; sync layer (Phase 2 step 4) extracts and normalizes.
+        #
+        # Layout-name resolution NOT fetched here. The REST describe response
+        # does NOT include layout names — only Ids. Sync layer must run a
+        # second-pass Tooling SOQL to resolve names:
+        #   SELECT Id, Name, EntityDefinitionId FROM Layout
+        # Plain Name (no FullName, no Metadata) is safe in bulk SOQL — no
+        # 1-row constraint applies. This is a Phase 2 step 4 concern.
+        #
+        # Payload weight: ~121 KB per object on a typical Account layout.
+        # For a ~600-object sync, ~75 MB of layout JSON. Within budget but
+        # significant; capacity-planning reference for sync runtime estimates.
+        """
+        encoded = urllib.parse.quote(object_name, safe="")
+        path = (
+            f"/services/data/{self.api_version}"
+            f"/sobjects/{encoded}/describe/layouts"
+        )
+        resp = self._request("GET", path)
+        return resp.json()
+
     def fetch_validation_rules(self) -> list[dict]:
         """Tooling SOQL: SELECT … FROM ValidationRule, with full Metadata.
 

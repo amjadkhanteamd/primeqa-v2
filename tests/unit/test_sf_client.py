@@ -775,3 +775,214 @@ class TestFetchRecordTypes:
             assert rec.get("FullName") is not None
             assert rec.get("Metadata") is not None
         c.close()
+
+
+# ----------------------------------------------------------------------
+# fetch_layouts_for_object (2C-extended Method 2)
+# ----------------------------------------------------------------------
+
+# Minimal-but-realistic mock response shape mirroring the live sandbox:
+# 1 layout with 1 detail section, 1 row, 1 item, 1 layoutComponent, plus
+# 1 recordTypeMapping and 1 recordTypeSelectorRequired entry.
+def _layouts_describe_fixture() -> dict:
+    return {
+        "layouts": [
+            {
+                "id": "00h000000000001",
+                "buttonLayoutSection": {"detailButtons": []},
+                "detailLayoutSections": [
+                    {
+                        "heading": "Account Information",
+                        "columns": 2,
+                        "rows": 1,
+                        "collapsed": False,
+                        "useCollapsibleSection": False,
+                        "useHeading": True,
+                        "tabOrder": "LeftRight",
+                        "layoutSectionId": "0Md000000000001",
+                        "parentLayoutId": "00h000000000001",
+                        "layoutRows": [
+                            {
+                                "numItems": 1,
+                                "layoutItems": [
+                                    {
+                                        "label": "Account Name",
+                                        "editableForNew": True,
+                                        "editableForUpdate": True,
+                                        "placeholder": False,
+                                        "required": True,
+                                        "uiBehavior": "Edit",
+                                        "layoutComponents": [
+                                            {"type": "Field", "value": "Name"},
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+                "editLayoutSections": [],
+                "multirowEditLayoutSections": [],
+                "feedView": None,
+                "highlightsPanelLayoutSection": None,
+                "offlineLinks": [],
+                "quickActionList": {"quickActionListItems": []},
+                "relatedContent": None,
+                "relatedLists": [],
+                "saveOptions": [],
+            },
+        ],
+        "recordTypeMappings": [
+            {
+                "recordTypeId": "012000000000000AAA",
+                "layoutId": "00h000000000001",
+                "name": "Master",
+                "developerName": "Master",
+                "active": True,
+                "available": True,
+                "defaultRecordTypeMapping": True,
+                "master": True,
+                "picklistsForRecordType": [],
+                "urls": {"layout": "/services/data/v66.0/..."},
+            },
+        ],
+        "recordTypeSelectorRequired": [True],
+    }
+
+
+class TestFetchLayoutsForObject:
+    def test_fetch_layouts_uses_describe_endpoint(self) -> None:
+        urls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json=_layouts_describe_fixture())
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_layouts_for_object("Account")
+        expected = f"/services/data/{SF_API_VERSION}/sobjects/Account/describe/layouts"
+        assert expected in urls_seen
+        c.close()
+
+    def test_fetch_layouts_returns_full_response_dict(self) -> None:
+        """All 3 top-level keys preserved (layouts, recordTypeMappings,
+        recordTypeSelectorRequired). Transparent transport boundary;
+        sync layer extracts what it needs."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json=_layouts_describe_fixture())
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_layouts_for_object("Account")
+        assert isinstance(result, dict)
+        # All 3 top-level keys present
+        assert "layouts" in result
+        assert "recordTypeMappings" in result
+        assert "recordTypeSelectorRequired" in result
+        # Each is the right shape
+        assert isinstance(result["layouts"], list)
+        assert len(result["layouts"]) == 1
+        assert isinstance(result["recordTypeMappings"], list)
+        assert len(result["recordTypeMappings"]) == 1
+        assert isinstance(result["recordTypeSelectorRequired"], list)
+        assert len(result["recordTypeSelectorRequired"]) == 1
+        c.close()
+
+    def test_fetch_layouts_returns_layouts_with_nested_structure(self) -> None:
+        """Nested structure detailLayoutSections -> layoutRows -> layoutItems
+        -> layoutComponents survives the call. Multi-section layout."""
+        # Build a 2-section layout, each section with 2 items
+        fixture = _layouts_describe_fixture()
+        # First section already exists; add a second with 2 items
+        fixture["layouts"][0]["detailLayoutSections"].append({
+            "heading": "Address Information",
+            "columns": 2,
+            "rows": 2,
+            "collapsed": False,
+            "useCollapsibleSection": False,
+            "useHeading": True,
+            "tabOrder": "LeftRight",
+            "layoutSectionId": "0Md000000000002",
+            "parentLayoutId": "00h000000000001",
+            "layoutRows": [
+                {
+                    "numItems": 2,
+                    "layoutItems": [
+                        {"label": "Billing Street", "layoutComponents": [
+                            {"type": "Field", "value": "BillingStreet"},
+                        ]},
+                        {"label": "Shipping Street", "layoutComponents": [
+                            {"type": "Field", "value": "ShippingStreet"},
+                        ]},
+                    ],
+                },
+            ],
+        })
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json=fixture)
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_layouts_for_object("Account")
+
+        layouts = result["layouts"]
+        assert len(layouts) == 1
+        sections = layouts[0]["detailLayoutSections"]
+        assert len(sections) == 2
+        # Section 1: 1 row with 1 item
+        assert sections[0]["heading"] == "Account Information"
+        assert len(sections[0]["layoutRows"]) == 1
+        assert len(sections[0]["layoutRows"][0]["layoutItems"]) == 1
+        # Section 2: 1 row with 2 items
+        assert sections[1]["heading"] == "Address Information"
+        assert len(sections[1]["layoutRows"]) == 1
+        assert len(sections[1]["layoutRows"][0]["layoutItems"]) == 2
+        # layoutComponents structure preserved
+        components = sections[1]["layoutRows"][0]["layoutItems"][0]["layoutComponents"]
+        assert components[0]["type"] == "Field"
+        assert components[0]["value"] == "BillingStreet"
+        c.close()
+
+    @pytest.mark.parametrize("object_name", ["Account", "Contact", "Custom_Object__c"])
+    def test_fetch_layouts_object_name_in_url(self, object_name: str) -> None:
+        """URL is correctly constructed for standard, common, and custom (__c)
+        object names. Custom-suffix __c must round-trip without erroneous
+        URL encoding (urllib.parse.quote with safe='' should still produce
+        Account, Contact, Custom_Object__c verbatim — underscore/letters
+        are URL-safe)."""
+        urls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json=_layouts_describe_fixture())
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_layouts_for_object(object_name)
+        expected = (
+            f"/services/data/{SF_API_VERSION}"
+            f"/sobjects/{object_name}/describe/layouts"
+        )
+        assert expected in urls_seen
+        c.close()
+
+    def test_fetch_layouts_makes_one_call(self) -> None:
+        """Single REST call — no N+1 round-trips like Tooling-API methods."""
+        api_calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            api_calls.append(request.url.path)
+            return httpx.Response(200, json=_layouts_describe_fixture())
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_layouts_for_object("Account")
+        assert len(api_calls) == 1, f"Expected exactly 1 API call, got {len(api_calls)}"
+        c.close()

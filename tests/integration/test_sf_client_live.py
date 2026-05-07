@@ -118,3 +118,34 @@ def test_live_fetch_record_types(live_client):
             assert "active" in metadata
             assert "label" in metadata
             assert "picklistValues" in metadata  # list, possibly empty
+
+
+def test_live_fetch_layouts_for_account(live_client):
+    """REST describe/layouts for Account should return the full structured
+    response: layouts, recordTypeMappings, recordTypeSelectorRequired.
+
+    Sandbox at the time of writing has 1 Account layout. Don't assert on
+    layout name or count beyond >=1 — varies by org. Verifies the nested
+    detailLayoutSections / layoutRows structure that the sync layer will
+    walk in Phase 2 step 4.
+    """
+    result = live_client.fetch_layouts_for_object("Account")
+    assert isinstance(result, dict)
+    assert "layouts" in result
+    assert "recordTypeMappings" in result
+    assert "recordTypeSelectorRequired" in result
+    assert isinstance(result["layouts"], list)
+    assert len(result["layouts"]) >= 1
+
+    # Inspect first layout structure
+    layout = result["layouts"][0]
+    assert "id" in layout
+    assert "detailLayoutSections" in layout
+    assert isinstance(layout["detailLayoutSections"], list)
+    assert len(layout["detailLayoutSections"]) >= 1
+
+    # Section structure
+    section = layout["detailLayoutSections"][0]
+    assert "heading" in section
+    assert "layoutRows" in section
+    assert isinstance(section["layoutRows"], list)
