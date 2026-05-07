@@ -281,3 +281,58 @@ class SalesforceClient:
                 rec["Metadata"] = phase2_records[0].get("Metadata")
 
         return records
+
+    def fetch_record_types(self) -> list[dict]:
+        """Tooling SOQL: SELECT … FROM RecordType, with FullName + Metadata.
+
+        Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
+
+        Returned records carry: Id, Name, IsActive, Description, SobjectType,
+        EntityDefinitionId, BusinessProcessId, ManageableState,
+        NamespacePrefix, FullName, and Metadata. Metadata exposes RecordType
+        configuration: active, label, description, businessProcess (id),
+        compactLayoutAssignment, picklistValues (per-field allowed values),
+        and urls.
+
+        # Two-phase fetch driven by Salesforce Tooling API constraints:
+        # 1. Cannot select Metadata or FullName fields on a query returning
+        #    >1 row (Salesforce-documented limit; both fields share this
+        #    constraint).
+        # 2. EntityDefinition relationship traversal not used (subquery
+        #    limit risk on managed-package-heavy orgs).
+        # Phase 1 fetches IDs + non-Metadata/FullName fields without joining
+        # EntityDefinition. Phase 2 fetches FullName + Metadata per-Id one
+        # row at a time. Sync layer (Phase 2 step 4) resolves
+        # EntityDefinitionId → Object entity_id via Object describe cache.
+        # FullName format example: 'sfLma__License__c.sfLma__Trial' for
+        # managed-package; '<ObjectName>.<Name>' for org-native.
+        """
+        path = f"/services/data/{self.api_version}/tooling/query/"
+
+        # Phase 1: bulk fetch all record types without Metadata or FullName,
+        # no EntityDefinition join.
+        phase1_soql = (
+            "SELECT Id, Name, IsActive, Description, SobjectType, "
+            "EntityDefinitionId, BusinessProcessId, ManageableState, "
+            "NamespacePrefix "
+            "FROM RecordType"
+        )
+        phase1_resp = self._request("GET", path, params={"q": phase1_soql})
+        records: list[dict] = phase1_resp.json().get("records", [])
+
+        # Phase 2: per-Id FullName + Metadata fetch (Salesforce constraint:
+        # 1 row max when selecting either field).
+        for rec in records:
+            rec_id = rec.get("Id")
+            if not rec_id:
+                continue
+            phase2_soql = (
+                f"SELECT Id, FullName, Metadata FROM RecordType WHERE Id = '{rec_id}'"
+            )
+            phase2_resp = self._request("GET", path, params={"q": phase2_soql})
+            phase2_records = phase2_resp.json().get("records", [])
+            if phase2_records:
+                rec["FullName"] = phase2_records[0].get("FullName")
+                rec["Metadata"] = phase2_records[0].get("Metadata")
+
+        return records

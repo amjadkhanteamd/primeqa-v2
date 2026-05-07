@@ -85,3 +85,36 @@ def test_live_fetch_validation_rules(live_client):
         # Tooling API field naming is PascalCase
         assert "ValidationName" in first or "validationName" in first
         assert "Metadata" in first or "metadata" in first
+
+
+def test_live_fetch_record_types(live_client):
+    """Tooling SOQL for RecordType should return a list (possibly empty)
+    with FullName and Metadata merged in via the two-phase fetch.
+
+    Sandbox at the time of writing has 5 RecordTypes (all from the
+    License Management App managed package). Don't assert on count
+    or specific values — just verify shape and that both phases
+    completed for each record.
+    """
+    rts = live_client.fetch_record_types()
+    assert isinstance(rts, list)
+    assert len(rts) > 0, "Sandbox should have at least one RecordType"
+
+    for rt in rts:
+        # Phase 1 fields
+        assert "Id" in rt
+        assert "Name" in rt
+        assert "IsActive" in rt
+        assert "SobjectType" in rt
+        assert "EntityDefinitionId" in rt
+        assert "ManageableState" in rt
+        # Phase 2 fields (merged in from per-Id query)
+        assert "FullName" in rt
+        assert "Metadata" in rt
+        if rt["Metadata"]:
+            # Metadata should have these keys per Salesforce schema,
+            # though values may be None (e.g., businessProcess often NULL).
+            metadata = rt["Metadata"]
+            assert "active" in metadata
+            assert "label" in metadata
+            assert "picklistValues" in metadata  # list, possibly empty

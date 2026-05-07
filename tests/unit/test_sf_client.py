@@ -535,3 +535,243 @@ class TestContextManager:
             assert client_in_block is c
         # After exit, close() has been called. Accessing _client should still work
         # (close is graceful).
+
+
+# ----------------------------------------------------------------------
+# fetch_record_types (2C-extended Method 1)
+# ----------------------------------------------------------------------
+
+class TestFetchRecordTypes:
+    def test_fetch_record_types_uses_tooling_endpoint(self) -> None:
+        urls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_record_types()
+        assert any(
+            f"/services/data/{SF_API_VERSION}/tooling/query" in p for p in urls_seen
+        )
+        c.close()
+
+    def test_fetch_record_types_returns_records_list(self) -> None:
+        """Two-phase fetch: phase 1 returns N record types without
+        FullName/Metadata; phase 2 returns 1 record per Id with both.
+        Result merges FullName and Metadata onto each phase-1 record."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            # Phase 1: bulk SELECT (no FullName, no Metadata) → return 2 records
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {
+                            "Id": "012000000000001",
+                            "Name": "Customer",
+                            "IsActive": True,
+                            "Description": "Direct customer accounts",
+                            "SobjectType": "Account",
+                            "EntityDefinitionId": "01IF9000001CNEB",
+                            "BusinessProcessId": None,
+                            "ManageableState": "unmanaged",
+                            "NamespacePrefix": None,
+                        },
+                        {
+                            "Id": "012000000000002",
+                            "Name": "Partner",
+                            "IsActive": True,
+                            "Description": "Channel partner accounts",
+                            "SobjectType": "Account",
+                            "EntityDefinitionId": "01IF9000001CNEB",
+                            "BusinessProcessId": None,
+                            "ManageableState": "unmanaged",
+                            "NamespacePrefix": None,
+                        },
+                    ]
+                })
+            # Phase 2: per-Id SELECT Id, FullName, Metadata WHERE Id = '...'
+            # First record: populated picklistValues element shape per Salesforce schema
+            if "012000000000001" in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "012000000000001",
+                        "FullName": "Account.Customer",
+                        "Metadata": {
+                            "active": True,
+                            "label": "Customer",
+                            "description": "Direct customer accounts",
+                            "businessProcess": None,
+                            "compactLayoutAssignment": None,
+                            "picklistValues": [
+                                {
+                                    "picklist": "Status",
+                                    "values": [
+                                        {"valueName": "Open", "default": True, "isActive": True},
+                                        {"valueName": "Closed", "default": False, "isActive": True},
+                                    ],
+                                },
+                            ],
+                            "urls": None,
+                        },
+                    }]
+                })
+            if "012000000000002" in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "012000000000002",
+                        "FullName": "Account.Partner",
+                        "Metadata": {
+                            "active": True,
+                            "label": "Partner",
+                            "description": "Channel partner accounts",
+                            "businessProcess": None,
+                            "compactLayoutAssignment": None,
+                            "picklistValues": [],
+                            "urls": None,
+                        },
+                    }]
+                })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_record_types()
+        assert len(result) == 2
+
+        # Phase 1 fields preserved
+        assert result[0]["Name"] == "Customer"
+        assert result[0]["SobjectType"] == "Account"
+        assert result[0]["EntityDefinitionId"] == "01IF9000001CNEB"
+        assert result[0]["ManageableState"] == "unmanaged"
+
+        # Phase 2 fields merged in
+        assert result[0]["FullName"] == "Account.Customer"
+        assert result[1]["FullName"] == "Account.Partner"
+        assert result[0]["Metadata"]["active"] is True
+        assert result[0]["Metadata"]["label"] == "Customer"
+
+        # Populated picklistValues element shape exercised
+        pv_lists = result[0]["Metadata"]["picklistValues"]
+        assert len(pv_lists) == 1
+        first_pv = pv_lists[0]
+        assert first_pv["picklist"] == "Status"
+        assert len(first_pv["values"]) == 2
+        assert first_pv["values"][0]["valueName"] == "Open"
+        assert first_pv["values"][0]["default"] is True
+        assert first_pv["values"][0]["isActive"] is True
+
+        # Empty picklistValues case handled too
+        assert result[1]["Metadata"]["picklistValues"] == []
+        c.close()
+
+    def test_fetch_record_types_phase_split(self) -> None:
+        """Phase 1 SOQL must NOT contain Metadata OR FullName.
+        Phase 2 SOQL MUST contain both Metadata and FullName + WHERE Id."""
+        soqls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            soqls_seen.append(soql)
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [{"Id": "012000000000001", "Name": "X"}]
+                })
+            return httpx.Response(200, json={
+                "records": [{"Id": "012000000000001", "FullName": "Account.X", "Metadata": {}}]
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_record_types()
+
+        phase1_soqls = [s for s in soqls_seen if "Metadata" not in s and "FullName" not in s]
+        phase2_soqls = [s for s in soqls_seen if "Metadata" in s and "FullName" in s]
+
+        assert len(phase1_soqls) == 1, "Exactly one phase-1 bulk query expected"
+        assert "Metadata" not in phase1_soqls[0]
+        assert "FullName" not in phase1_soqls[0]
+        assert "RecordType" in phase1_soqls[0]
+        assert "EntityDefinitionId" in phase1_soqls[0]
+
+        assert len(phase2_soqls) >= 1, "At least one phase-2 per-Id query expected"
+        assert "Metadata" in phase2_soqls[0]
+        assert "FullName" in phase2_soqls[0]
+        assert "WHERE Id =" in phase2_soqls[0]
+        c.close()
+
+    def test_fetch_record_types_phase1_does_not_traverse_entitydefinition(
+        self,
+    ) -> None:
+        """Regression guard: Phase 1 SOQL must NOT join EntityDefinition.
+
+        Same constraint as ValidationRule's Phase 1 — managed-package-heavy
+        orgs trip the EXTERNAL_OBJECT_UNSUPPORTED_EXCEPTION subquery limit
+        when traversing EntityDefinition. Use EntityDefinitionId direct
+        field instead.
+        """
+        soqls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soqls_seen.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_record_types()
+
+        assert len(soqls_seen) == 1, "Empty phase 1 → no phase 2 expected"
+        phase1 = soqls_seen[0]
+        assert "EntityDefinition." not in phase1, (
+            f"Phase 1 SOQL must not traverse EntityDefinition relationship; "
+            f"got: {phase1!r}"
+        )
+        c.close()
+
+    def test_fetch_record_types_makes_n_plus_one_calls(self) -> None:
+        """Phase 1 returns 3 IDs → exactly 3 phase-2 calls = 4 total Tooling
+        API calls. Locks in the N+1 contract for RecordType."""
+        tooling_calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            tooling_calls.append(request.url.params.get("q", ""))
+            soql = request.url.params.get("q", "")
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "012000000000001", "Name": "RT1"},
+                        {"Id": "012000000000002", "Name": "RT2"},
+                        {"Id": "012000000000003", "Name": "RT3"},
+                    ]
+                })
+            for rid in ("012000000000001", "012000000000002", "012000000000003"):
+                if rid in soql:
+                    return httpx.Response(200, json={
+                        "records": [{
+                            "Id": rid,
+                            "FullName": f"Account.{rid}",
+                            "Metadata": {"label": rid, "active": True, "picklistValues": []},
+                        }]
+                    })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_record_types()
+        assert len(tooling_calls) == 4
+        # Phase 1: exactly one query without Metadata/FullName
+        assert sum(1 for s in tooling_calls if "Metadata" not in s and "FullName" not in s) == 1
+        # Phase 2: exactly three queries with both Metadata and FullName
+        assert sum(1 for s in tooling_calls if "Metadata" in s and "FullName" in s) == 3
+        # All 3 records have FullName + Metadata merged in
+        assert len(result) == 3
+        for rec in result:
+            assert rec.get("FullName") is not None
+            assert rec.get("Metadata") is not None
+        c.close()
