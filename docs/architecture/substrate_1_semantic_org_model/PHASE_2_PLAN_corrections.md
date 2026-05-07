@@ -156,3 +156,49 @@ fetch_validation_rules).
 
 This is a working-agreement update; future fetch-method work should
 follow this pattern.
+
+## §4.2 StandardValueSet: reified-column-required SOQL constraint
+
+**Date:** 2026-05-07
+**Step:** 2C-extended Method 3 (Picklist value sets)
+**Source:** Phase 2 plan §4.2 implies fetch methods can use bulk
+            SOQL on Tooling entities. Discovered at live-test time
+            that StandardValueSet rejects unfiltered queries.
+
+Salesforce Tooling API requires SOQL queries against
+`StandardValueSet` to include a WHERE filter on either `MasterLabel`
+or `DurableId`. Documented Salesforce constraint, distinct from the
+Metadata-or-FullName 1-row constraint and from the EntityDefinition
+subquery limit. HTTP 400 with errorCode MALFORMED_QUERY:
+"StandardValueSet: a filter on a reified column is required
+[MasterLabel, DurableId]".
+
+Affects only StandardValueSet (verified). GlobalValueSet supports
+unfiltered bulk enumeration normally. The constraint reflects that
+StandardValueSet is a system-defined catalog of built-in Salesforce
+picklist types (~30-40 entries pinned per API version), not a
+user-mutable table; Salesforce treats enumeration of it as a
+catalog-lookup operation, not a row-scan operation.
+
+**Resolution:** No bulk enumeration step for StandardValueSet.
+fetch_standard_value_sets() iterates a hardcoded catalog of
+MasterLabels (defined in primeqa/integrations/sf_constants.py)
+and issues one Tooling SOQL Metadata fetch per label. The catalog
+is pinned to Salesforce API v66.0 (matching sf_client.api_version)
+and re-audited when the API version bumps as a tracked
+dependency-update activity.
+
+**Implication for sync architecture:** The hardcoded-catalog
+pattern is appropriate where Salesforce treats an entity as a
+system-defined catalog rather than user-mutable data. Future entity
+types with similar semantics (e.g., entity-definition-level system
+catalogs) may need the same approach. Discovery-driven enumeration
+(walking field metadata for picklistValueSetName references) was
+considered and rejected: it inverts the D-037 entity ordering and
+produces sync-coverage gaps for SVSes not referenced in the synced
+field set.
+
+**Pattern: catalog-pin-and-rebumb.** When SOQL bulk enumeration is
+blocked by a reified-column constraint and the entity is system-
+defined, prefer the hardcoded catalog approach over discovery.
+Pin to the API version; revisit at version bump.
