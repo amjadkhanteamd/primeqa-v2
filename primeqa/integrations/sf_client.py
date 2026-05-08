@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import time
 import urllib.parse
-from typing import Any
+from typing import Any, Iterable
 
 import httpx
 
@@ -45,6 +45,7 @@ from .exceptions import (
     SFRateLimitError,
     SFRequestError,
 )
+from .sf_constants import STANDARD_VALUE_SET_LABELS
 
 
 SF_API_VERSION = "v66.0"  # Salesforce Spring '26; rotate ~quarterly
@@ -365,3 +366,115 @@ class SalesforceClient:
                 rec["Metadata"] = phase2_records[0].get("Metadata")
 
         return records
+
+    def fetch_global_value_sets(self) -> list[dict]:
+        """Tooling SOQL: SELECT … FROM GlobalValueSet, with FullName + Metadata.
+
+        Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
+
+        Returned records carry: Id, MasterLabel, Description, ManageableState,
+        NamespacePrefix, FullName, and Metadata. Metadata exposes the
+        customValue list (each element: fullName, default, isActive, label).
+
+        # Two-phase fetch driven by the Metadata-or-FullName 1-row
+        # constraint (corrections log §1). Phase 1 bulk-fetches non-
+        # Metadata/FullName fields; Phase 2 fetches FullName + Metadata
+        # per-Id. N+1 round trips for N GVSes.
+        # Sandbox at 0 GlobalValueSets in this dev org; live integration
+        # test exercises the empty path. Populated path covered by unit-
+        # test mocks against documented Salesforce schema:
+        # Metadata.customValue: list of {fullName, default, isActive,
+        # label}.
+        # Sync layer (Phase 2 step 4) materializes child PicklistValue
+        # entities from each customValue element per D-037 entity
+        # ordering.
+        """
+        path = f"/services/data/{self.api_version}/tooling/query/"
+
+        # Phase 1: bulk fetch all GVSes without Metadata or FullName.
+        phase1_soql = (
+            "SELECT Id, MasterLabel, Description, ManageableState, "
+            "NamespacePrefix "
+            "FROM GlobalValueSet"
+        )
+        phase1_resp = self._request("GET", path, params={"q": phase1_soql})
+        records: list[dict] = phase1_resp.json().get("records", [])
+
+        # Phase 2: per-Id FullName + Metadata fetch (Salesforce constraint:
+        # 1 row max when selecting either field).
+        for rec in records:
+            rec_id = rec.get("Id")
+            if not rec_id:
+                continue
+            phase2_soql = (
+                f"SELECT Id, FullName, Metadata FROM GlobalValueSet "
+                f"WHERE Id = '{rec_id}'"
+            )
+            phase2_resp = self._request("GET", path, params={"q": phase2_soql})
+            phase2_records = phase2_resp.json().get("records", [])
+            if phase2_records:
+                rec["FullName"] = phase2_records[0].get("FullName")
+                rec["Metadata"] = phase2_records[0].get("Metadata")
+
+        return records
+
+    def fetch_standard_value_sets(
+        self,
+        labels: Iterable[str] | None = None,
+    ) -> list[dict]:
+        """Tooling SOQL: SELECT … FROM StandardValueSet WHERE MasterLabel = …
+
+        Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
+
+        Returned records carry: Id, MasterLabel, FullName, Metadata.
+        Metadata exposes the standardValue list (each element with
+        SVS-specific shape per the Salesforce Metadata API guide).
+
+        # No bulk enumeration available — StandardValueSet requires WHERE
+        # filter on MasterLabel or DurableId per the reified-column
+        # constraint (corrections log §4). Iterates either the full
+        # canonical catalog (sf_constants.STANDARD_VALUE_SET_LABELS, 616
+        # entries pinned to API v66.0) or a caller-supplied label subset.
+        #
+        # labels=None: full-iteration mode. ~6 min wall-clock against
+        # this sandbox (~0.6s/call × 616 labels). Most calls return 0
+        # rows on uncustomized orgs (per §5 category 3). Used for catalog
+        # audits and initial seed syncs.
+        #
+        # labels=<iterable>: subset mode. Sync layer (Phase 2 step 4)
+        # discovers SVSes referenced by field describes and passes the
+        # subset, materializing only what the org actually uses.
+        #
+        # FullName is selectable (per Tooling describe of StandardValueSet)
+        # despite filterable=False — the WHERE filter on MasterLabel
+        # satisfies the 1-row constraint, freeing FullName + Metadata in
+        # the same query.
+        #
+        # Sync layer materializes child PicklistValue entities from
+        # Metadata.standardValue per D-037 entity ordering.
+        """
+        path = f"/services/data/{self.api_version}/tooling/query/"
+        target_labels: tuple[str, ...] | tuple[str, ...]
+        if labels is None:
+            target_labels = STANDARD_VALUE_SET_LABELS
+        else:
+            target_labels = tuple(labels)
+
+        results: list[dict] = []
+        for label in target_labels:
+            # Defensive escape: SOQL string literals escape apostrophes
+            # with backslash. None of the canonical catalog labels contain
+            # apostrophes, but caller-supplied subset mode could carry
+            # discovered labels with arbitrary characters.
+            escaped_label = label.replace("'", "\\'")
+            soql = (
+                "SELECT Id, MasterLabel, FullName, Metadata "
+                "FROM StandardValueSet "
+                f"WHERE MasterLabel = '{escaped_label}'"
+            )
+            resp = self._request("GET", path, params={"q": soql})
+            recs = resp.json().get("records", [])
+            if recs:
+                results.append(recs[0])
+
+        return results

@@ -986,3 +986,365 @@ class TestFetchLayoutsForObject:
         c.fetch_layouts_for_object("Account")
         assert len(api_calls) == 1, f"Expected exactly 1 API call, got {len(api_calls)}"
         c.close()
+
+
+# ----------------------------------------------------------------------
+# fetch_global_value_sets (2C-extended Method 3, GVS half)
+# ----------------------------------------------------------------------
+
+class TestFetchGlobalValueSets:
+    def test_fetch_global_value_sets_uses_tooling_endpoint(self) -> None:
+        urls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_global_value_sets()
+        assert any(
+            f"/services/data/{SF_API_VERSION}/tooling/query" in p for p in urls_seen
+        )
+        c.close()
+
+    def test_fetch_global_value_sets_returns_records_list(self) -> None:
+        """Two-phase fetch: phase 1 returns N records (no Metadata, no
+        FullName); phase 2 returns 1 row per Id with FullName + Metadata.
+        Mock uses Salesforce-documented schema: Metadata.customValue is
+        a list of dicts with fullName, default, isActive, label."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            # Phase 1: bulk SELECT (no Metadata, no FullName) → 2 records
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {
+                            "Id": "0Nt000000000001",
+                            "MasterLabel": "Region",
+                            "Description": "Sales region picklist",
+                            "ManageableState": "unmanaged",
+                            "NamespacePrefix": None,
+                        },
+                        {
+                            "Id": "0Nt000000000002",
+                            "MasterLabel": "Tier",
+                            "Description": "Account tier",
+                            "ManageableState": "unmanaged",
+                            "NamespacePrefix": None,
+                        },
+                    ]
+                })
+            # Phase 2: per-Id Metadata + FullName fetch
+            if "0Nt000000000001" in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "0Nt000000000001",
+                        "FullName": "Region",
+                        "Metadata": {
+                            "masterLabel": "Region",
+                            "description": "Sales region picklist",
+                            "sorted": False,
+                            "customValue": [
+                                {"fullName": "NA", "default": True,
+                                 "isActive": True, "label": "North America"},
+                                {"fullName": "EU", "default": False,
+                                 "isActive": True, "label": "Europe"},
+                            ],
+                        },
+                    }]
+                })
+            if "0Nt000000000002" in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "0Nt000000000002",
+                        "FullName": "Tier",
+                        "Metadata": {
+                            "masterLabel": "Tier",
+                            "description": "Account tier",
+                            "sorted": False,
+                            "customValue": [
+                                {"fullName": "Gold", "default": False,
+                                 "isActive": True, "label": "Gold"},
+                            ],
+                        },
+                    }]
+                })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_global_value_sets()
+        assert len(result) == 2
+        assert result[0]["MasterLabel"] == "Region"
+        # Phase 1 fields
+        assert result[0]["Description"] == "Sales region picklist"
+        assert result[0]["ManageableState"] == "unmanaged"
+        # Phase 2 fields merged onto phase-1 records
+        assert result[0]["FullName"] == "Region"
+        assert "customValue" in result[0]["Metadata"]
+        assert len(result[0]["Metadata"]["customValue"]) == 2
+        assert result[0]["Metadata"]["customValue"][0]["fullName"] == "NA"
+        assert result[1]["FullName"] == "Tier"
+        c.close()
+
+    def test_fetch_global_value_sets_phase_split(self) -> None:
+        """Phase 1 SOQL must NOT contain Metadata or FullName.
+        Phase 2 SOQL MUST contain Metadata + FullName + WHERE Id = '...'."""
+        soqls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            soqls_seen.append(soql)
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "0Nt000000000001", "MasterLabel": "X"},
+                    ],
+                })
+            return httpx.Response(200, json={
+                "records": [{
+                    "Id": "0Nt000000000001",
+                    "FullName": "X",
+                    "Metadata": {},
+                }],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_global_value_sets()
+
+        # 2 SOQLs total: 1 phase-1 bulk + 1 phase-2 per-Id
+        assert len(soqls_seen) == 2
+
+        # Phase 1: no Metadata, no FullName
+        phase1 = soqls_seen[0]
+        assert "FROM GlobalValueSet" in phase1
+        assert "Metadata" not in phase1
+        assert "FullName" not in phase1
+        assert "WHERE" not in phase1  # bulk, no filter
+
+        # Phase 2: BOTH Metadata and FullName, with WHERE Id = '...'
+        phase2 = soqls_seen[1]
+        assert "Metadata" in phase2
+        assert "FullName" in phase2
+        assert "WHERE Id = '0Nt000000000001'" in phase2
+        c.close()
+
+    def test_fetch_global_value_sets_phase1_bulk_no_filter(self) -> None:
+        """Phase 1 is unfiltered bulk SELECT — distinguishes from the
+        SVS pattern where every query is filtered (reified-column
+        constraint). Regression guard for category-1 vs category-3
+        treatment."""
+        soqls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            soqls_seen.append(soql)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_global_value_sets()
+
+        # Exactly 1 SOQL when phase 1 returns empty (no phase-2 iteration)
+        assert len(soqls_seen) == 1
+        phase1 = soqls_seen[0]
+        assert "FROM GlobalValueSet" in phase1
+        # No filter clause — confirms unfiltered enumeration
+        assert "WHERE" not in phase1
+        c.close()
+
+    def test_fetch_global_value_sets_makes_n_plus_one_calls(self) -> None:
+        """N records → N+1 API calls (1 bulk phase 1 + N per-Id phase 2)."""
+        api_calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            api_calls.append(soql)
+            if "Metadata" not in soql and "FullName" not in soql:
+                # Phase 1: 3 records
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": f"0Nt00000000000{i}", "MasterLabel": f"L{i}"}
+                        for i in (1, 2, 3)
+                    ]
+                })
+            # Phase 2: each Id resolves to one record
+            return httpx.Response(200, json={
+                "records": [{
+                    "Id": "0Nt000000000001",
+                    "FullName": "X",
+                    "Metadata": {},
+                }],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_global_value_sets()
+        assert len(result) == 3
+        # 1 phase-1 call + 3 phase-2 calls
+        assert len(api_calls) == 4
+        c.close()
+
+
+# ----------------------------------------------------------------------
+# fetch_standard_value_sets (2C-extended Method 3, SVS half)
+# ----------------------------------------------------------------------
+
+class TestFetchStandardValueSets:
+    def test_fetch_standard_value_sets_uses_tooling_endpoint(self) -> None:
+        urls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_standard_value_sets(labels=["Industry"])
+        assert any(
+            f"/services/data/{SF_API_VERSION}/tooling/query" in p for p in urls_seen
+        )
+        c.close()
+
+    def test_fetch_standard_value_sets_default_iterates_full_catalog(self) -> None:
+        """labels=None → iterate sf_constants.STANDARD_VALUE_SET_LABELS
+        in order. One SOQL per label, each WHERE-filtered by MasterLabel.
+        Verifies the 616-entry catalog drives default behaviour."""
+        from primeqa.integrations.sf_constants import (
+            STANDARD_VALUE_SET_LABELS,
+        )
+
+        soqls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soqls_seen.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_standard_value_sets()  # labels=None default
+
+        # One SOQL per catalog label
+        assert len(soqls_seen) == len(STANDARD_VALUE_SET_LABELS)
+        assert len(soqls_seen) == 616  # locks the catalog size
+
+        # Every query filters by MasterLabel and the labels appear in
+        # the same order as STANDARD_VALUE_SET_LABELS
+        for label, soql in zip(STANDARD_VALUE_SET_LABELS, soqls_seen):
+            assert f"WHERE MasterLabel = '{label}'" in soql
+        c.close()
+
+    def test_fetch_standard_value_sets_subset_iterates_provided_labels(self) -> None:
+        """labels=<iterable> → exactly the provided labels, in the
+        provided order. No reference to the canonical catalog."""
+        soqls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soqls_seen.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_standard_value_sets(
+            labels=["Industry", "CaseStatus", "LeadSource"]
+        )
+
+        assert len(soqls_seen) == 3
+        assert "WHERE MasterLabel = 'Industry'" in soqls_seen[0]
+        assert "WHERE MasterLabel = 'CaseStatus'" in soqls_seen[1]
+        assert "WHERE MasterLabel = 'LeadSource'" in soqls_seen[2]
+        c.close()
+
+    def test_fetch_standard_value_sets_soql_shape(self) -> None:
+        """Each query SELECTs Id, MasterLabel, FullName, Metadata
+        FROM StandardValueSet WHERE MasterLabel = '<label>'."""
+        soqls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soqls_seen.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_standard_value_sets(labels=["Industry"])
+
+        soql = soqls_seen[0]
+        # SELECT clause: all 4 expected fields
+        assert "Id" in soql
+        assert "MasterLabel" in soql
+        assert "FullName" in soql
+        assert "Metadata" in soql
+        # FROM clause
+        assert "FROM StandardValueSet" in soql
+        # WHERE clause with MasterLabel filter (the reified-column
+        # constraint pattern from corrections-log §4)
+        assert "WHERE MasterLabel = 'Industry'" in soql
+        c.close()
+
+    def test_fetch_standard_value_sets_skips_empty_results(self) -> None:
+        """Some labels return 0 rows on uncustomized orgs (per §5).
+        Those are silently skipped — only non-empty results in output."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "MasterLabel = 'Industry'" in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "0VS000000000001",
+                        "MasterLabel": "Industry",
+                        "FullName": "Industry",
+                        "Metadata": {"standardValue": []},
+                    }],
+                })
+            if "MasterLabel = 'AccountType'" in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "0VS000000000002",
+                        "MasterLabel": "AccountType",
+                        "FullName": "AccountType",
+                        "Metadata": {"standardValue": []},
+                    }],
+                })
+            # All other labels return empty (e.g., uncustomized built-in)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_standard_value_sets(
+            labels=["Industry", "ZZZ_Empty1", "AccountType", "ZZZ_Empty2"]
+        )
+
+        # Only the 2 populated labels appear in the result
+        assert len(result) == 2
+        assert {r["MasterLabel"] for r in result} == {"Industry", "AccountType"}
+        c.close()
+
+    def test_fetch_standard_value_sets_makes_n_calls_not_n_plus_one(self) -> None:
+        """No bulk phase exists for SVS (reified-column constraint).
+        Every label is one call. Distinct from category-2 N+1 pattern."""
+        api_calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            api_calls.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        labels = ["Industry", "CaseStatus", "OpportunityStage",
+                  "LeadStatus", "OrderStatus"]
+        c.fetch_standard_value_sets(labels=labels)
+        # Exactly N calls (not N+1; no phase-1 bulk)
+        assert len(api_calls) == len(labels) == 5
+        c.close()

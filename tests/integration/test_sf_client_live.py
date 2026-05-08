@@ -149,3 +149,45 @@ def test_live_fetch_layouts_for_account(live_client):
     assert "heading" in section
     assert "layoutRows" in section
     assert isinstance(section["layoutRows"], list)
+
+
+def test_live_fetch_global_value_sets(live_client):
+    """Two-phase Tooling SOQL for GlobalValueSet should return a list
+    (possibly empty). This sandbox has 0 GVSes; the live test exercises
+    the empty path. Populated path is covered by unit-test mocks against
+    the documented Salesforce schema.
+    """
+    result = live_client.fetch_global_value_sets()
+    assert isinstance(result, list)
+    # Sandbox has 0 GVSes; this is the empty-path coverage.
+    for gvs in result:  # may be empty; that's fine
+        assert "Id" in gvs
+        assert "MasterLabel" in gvs
+        assert "FullName" in gvs
+        assert "Metadata" in gvs
+
+
+def test_live_fetch_standard_value_sets_subset(live_client):
+    """Subset-mode fetch via 5 well-known core-platform labels.
+    Full-catalog mode (labels=None) is ~6min runtime — NOT exercised
+    here; unit-test mocks provide that contract coverage.
+
+    The 5 labels are a stable subset of the 30 confirmed during the
+    sanity-check phase of Method 3 catalog capture.
+    """
+    labels = [
+        "Industry",
+        "CaseStatus",
+        "LeadSource",
+        "OpportunityStage",
+        "AccountType",
+    ]
+    result = live_client.fetch_standard_value_sets(labels=labels)
+    assert isinstance(result, list)
+    assert len(result) == 5  # all 5 confirmed during sanity-check
+    for svs in result:
+        assert "Id" in svs
+        assert "MasterLabel" in svs
+        assert "FullName" in svs
+        assert "Metadata" in svs
+        assert svs["MasterLabel"] in labels
