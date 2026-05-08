@@ -259,3 +259,37 @@ def test_live_fetch_permission_sets(live_client):
     fp = result["field_permissions"][0]
     assert "ParentId" in fp
     assert "Field" in fp
+
+
+def test_live_fetch_users(live_client):
+    """Single-phase Data-API SOQL for User. Sandbox at ~6 users
+    (well under the 2000-row pagination cap). Verifies the
+    deliberately-scoped 12-field shape is populated; doesn't assert
+    specific synthetic UserTypes (composition can shift across
+    sandbox refreshes).
+    """
+    result = live_client.fetch_users()
+    assert isinstance(result, list)
+
+    # Sandbox at ~6 users; allow margin for org-state shifts
+    assert 1 <= len(result) <= 50
+
+    # Required field shape on every record
+    for u in result:
+        assert "Id" in u
+        assert "Username" in u
+        assert "IsActive" in u
+        assert "UserType" in u
+        assert "ProfileId" in u
+        assert "CreatedDate" in u
+        # UserRoleId is permitted to be null on this sandbox;
+        # don't assert non-null
+        assert "UserRoleId" in u
+
+    # Sandbox should have at least one Standard user (the
+    # developer logged in)
+    user_types = {u["UserType"] for u in result}
+    assert "Standard" in user_types
+
+    # Don't assert specific synthetic UserTypes are present;
+    # composition can shift across sandbox refreshes

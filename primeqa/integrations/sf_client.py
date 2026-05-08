@@ -632,3 +632,68 @@ class SalesforceClient:
             "object_permissions": object_permissions,
             "field_permissions": field_permissions,
         }
+
+    def fetch_users(self) -> list[dict]:
+        """Fetch all User records via Data API SOQL with a deliberately-
+        scoped 12-field SELECT.
+
+        Category 1 single-phase pattern (corrections-log §5): User has
+        no Metadata complexvalue and no two-phase fetch requirement.
+        Single SOQL returns all data needed.
+
+        # ENDPOINT: Data API (/services/data/{v}/query/), not Tooling.
+        # User is a standard sObject, not a Tooling-API entity. First
+        # non-Tooling fetch method on this client. Uses the data_path
+        # pattern established by fetch_permission_sets.
+        #
+        # PAGINATION: _query_all walks any paginated response. Sandbox
+        # at 6 users (single page). Customer orgs commonly have hundreds
+        # to low thousands of users; pagination engages on orgs with
+        # >2000.
+        #
+        # FIELD SCOPE — 12 fields, deliberately limited:
+        # - Identity: Id, Username, Email, Name, Alias
+        # - Status/role: IsActive, UserType, ProfileId, UserRoleId
+        # - Audit timestamps: CreatedDate, LastModifiedDate, LastLoginDate
+        #
+        # Not pulled: Phone, Fax, Street/City/PostalCode, MobilePhone,
+        # CompanyName, Title, Department, Division, EmployeeNumber,
+        # ManagerId, FederationIdentifier, profile photos, ContactId,
+        # AccountId (community users), ~70 other standard fields.
+        # Rationale: PrimeQA's semantic model uses User entities for
+        # test attribution (which user ran a test, which user owns a
+        # record referenced by a test). Personal data beyond identity
+        # + role context isn't needed for that purpose. The deliberate
+        # scope also reduces accidental PII surface in sync, model
+        # storage, and downstream LLM context.
+        #
+        # UserLicenseId NOT selected: User does not carry it directly
+        # (verified live; INVALID_FIELD on User.UserLicenseId at v66.0).
+        # License attribution is derived at sync time via
+        # User.ProfileId → Profile.UserLicenseId join. fetch_profiles
+        # (Method 4) already pulls UserLicenseId via Profile.Metadata.
+        #
+        # NO FETCH-TIME FILTERING: returns all User rows regardless of
+        # IsActive or UserType. Sync layer filters per its policy
+        # (e.g., excluding platform synthetics like AutomatedProcess /
+        # CloudIntegrationUser / CsnOnly, or excluding inactive
+        # historical users). Per transparent-transport-boundary
+        # principle.
+        #
+        # Sandbox composition (developer org, 2026-05-08):
+        # - 6 total users (1 page)
+        # - UserType: 3 Standard, 1 AutomatedProcess,
+        #   1 CloudIntegrationUser, 1 CsnOnly
+        # - IsActive: 5 active, 1 inactive
+        # - 4 distinct ProfileIds (some shared)
+        # - UserRoleId universally null (roles undefined; typical for
+        #   developer sandboxes)
+        """
+        data_path = f"/services/data/{self.api_version}/query/"
+        soql = (
+            "SELECT Id, Username, Email, Name, Alias, "
+            "IsActive, UserType, ProfileId, UserRoleId, "
+            "CreatedDate, LastModifiedDate, LastLoginDate "
+            "FROM User"
+        )
+        return self._query_all(data_path, soql)

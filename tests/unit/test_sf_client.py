@@ -1897,3 +1897,226 @@ class TestQueryAll:
         # Exactly 1 SOQL call (no follow-up because no cursor)
         assert call_count[0] == 1
         c.close()
+
+
+# ----------------------------------------------------------------------
+# fetch_users (2C-extended Method 6 — Category 1 single-phase, Data API)
+# ----------------------------------------------------------------------
+
+class TestFetchUsers:
+    def test_fetch_users_uses_data_api_endpoint(self) -> None:
+        """First non-Tooling fetch method. URL is /services/data/v66.0/
+        query/, NOT /tooling/query/. User is a standard sObject."""
+        urls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_users()
+        # ≥1 call to Data API
+        data_hits = [p for p in urls_seen
+                     if p == f"/services/data/{SF_API_VERSION}/query/"]
+        assert len(data_hits) >= 1
+        # No call to Tooling
+        tooling_hits = [p for p in urls_seen
+                        if p == f"/services/data/{SF_API_VERSION}"
+                                f"/tooling/query/"]
+        assert len(tooling_hits) == 0
+        c.close()
+
+    def test_fetch_users_soql_field_set(self) -> None:
+        """Regression guard against scope creep. SOQL must SELECT
+        exactly the 12 spec'd fields and nothing else (no
+        FIELDS(STANDARD), no Phone/Address/etc)."""
+        soqls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soqls_seen.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_users()
+        assert len(soqls_seen) == 1
+        soql = soqls_seen[0]
+
+        # All 12 expected fields present
+        expected_fields = (
+            "Id", "Username", "Email", "Name", "Alias",
+            "IsActive", "UserType", "ProfileId", "UserRoleId",
+            "CreatedDate", "LastModifiedDate", "LastLoginDate",
+        )
+        for field in expected_fields:
+            assert field in soql, f"missing expected field {field!r}"
+
+        # FROM User
+        assert "FROM User" in soql
+
+        # Scope-creep guards: NOT FIELDS(STANDARD), NOT pulling
+        # PII-heavy or out-of-scope fields
+        assert "FIELDS(STANDARD)" not in soql.upper()
+        for field in ("Phone", "MobilePhone", "Street", "PostalCode",
+                      "EmployeeNumber", "ManagerId",
+                      "FederationIdentifier", "Department", "Title"):
+            assert field not in soql, (
+                f"unexpected field in scope: {field!r} — "
+                f"deliberate-scope contract violated"
+            )
+
+        # UserLicenseId regression guard (User.UserLicenseId is
+        # INVALID_FIELD per live probe)
+        assert "UserLicenseId" not in soql
+        c.close()
+
+    def test_fetch_users_returns_records_list(self) -> None:
+        """Mixed UserType records flow through unchanged."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={
+                "totalSize": 3,
+                "done": True,
+                "records": [
+                    {
+                        "Id": "005F900000000001",
+                        "Username": "alice@example.com",
+                        "Email": "alice@example.com",
+                        "Name": "Alice Test",
+                        "Alias": "atest",
+                        "IsActive": True,
+                        "UserType": "Standard",
+                        "ProfileId": "00eF9000001e6qNIAQ",
+                        "UserRoleId": None,
+                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
+                        "LastModifiedDate": "2026-04-01T00:00:00.000+0000",
+                        "LastLoginDate": "2026-05-01T00:00:00.000+0000",
+                    },
+                    {
+                        "Id": "005F900000000002",
+                        "Username": "autoproc",
+                        "Email": "autoproc@example.com",
+                        "Name": "Automated Process",
+                        "Alias": "autop",
+                        "IsActive": True,
+                        "UserType": "AutomatedProcess",
+                        "ProfileId": "00eF9000001e6qOIAQ",
+                        "UserRoleId": None,
+                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
+                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
+                        "LastLoginDate": None,
+                    },
+                    {
+                        "Id": "005F900000000003",
+                        "Username": "csn",
+                        "Email": "csn@example.com",
+                        "Name": "Chatter External",
+                        "Alias": "cext",
+                        "IsActive": True,
+                        "UserType": "CsnOnly",
+                        "ProfileId": "00eF9000001e6qPIAQ",
+                        "UserRoleId": None,
+                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
+                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
+                        "LastLoginDate": None,
+                    },
+                ],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_users()
+        assert len(result) == 3
+        # Field shape preserved
+        assert result[0]["Id"] == "005F900000000001"
+        assert result[0]["UserType"] == "Standard"
+        assert result[0]["ProfileId"] == "00eF9000001e6qNIAQ"
+        assert result[1]["UserType"] == "AutomatedProcess"
+        assert result[2]["UserType"] == "CsnOnly"
+        c.close()
+
+    def test_fetch_users_returns_inactive_users(self) -> None:
+        """No fetch-time IsActive filter — sync-layer concern.
+        Both active and inactive users appear in result."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={
+                "totalSize": 2,
+                "done": True,
+                "records": [
+                    {
+                        "Id": "005F900000000001",
+                        "Username": "active",
+                        "IsActive": True,
+                        "UserType": "Standard",
+                        "ProfileId": "00eF9000001e6qNIAQ",
+                        "UserRoleId": None,
+                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
+                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
+                        "LastLoginDate": None,
+                    },
+                    {
+                        "Id": "005F900000000002",
+                        "Username": "inactive",
+                        "IsActive": False,
+                        "UserType": "Standard",
+                        "ProfileId": "00eF9000001e6qNIAQ",
+                        "UserRoleId": None,
+                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
+                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
+                        "LastLoginDate": None,
+                    },
+                ],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_users()
+        assert len(result) == 2
+        active_states = {r["IsActive"] for r in result}
+        assert active_states == {True, False}  # both kept
+        c.close()
+
+    def test_fetch_users_returns_synthetic_user_types(self) -> None:
+        """Platform-synthetic UserTypes (AutomatedProcess,
+        CloudIntegrationUser, etc.) appear in fetch result.
+        Filtering them is a sync-layer policy decision per
+        transparent-transport-boundary principle."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={
+                "totalSize": 3,
+                "done": True,
+                "records": [
+                    {
+                        "Id": f"005F90000000000{i}",
+                        "Username": utype,
+                        "IsActive": True,
+                        "UserType": utype,
+                        "ProfileId": "00eF9000001e6qNIAQ",
+                        "UserRoleId": None,
+                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
+                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
+                        "LastLoginDate": None,
+                    }
+                    for i, utype in enumerate(
+                        ["Standard", "AutomatedProcess",
+                         "CloudIntegrationUser"], start=1
+                    )
+                ],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_users()
+        assert len(result) == 3
+        utypes = {r["UserType"] for r in result}
+        assert utypes == {
+            "Standard",
+            "AutomatedProcess",
+            "CloudIntegrationUser",
+        }
+        c.close()
