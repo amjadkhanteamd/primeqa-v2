@@ -697,3 +697,147 @@ class SalesforceClient:
             "FROM User"
         )
         return self._query_all(data_path, soql)
+
+    def fetch_flow_definitions(self) -> list[dict]:
+        """Tooling SOQL: SELECT … FROM FlowDefinition, with FullName + Metadata.
+
+        Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
+
+        Returned records carry: Id, DeveloperName, MasterLabel,
+        ActiveVersionId, LatestVersionId, ManageableState,
+        NamespacePrefix, ApiVersion, Description, CreatedDate,
+        LastModifiedDate, FullName, Metadata. Metadata is summary-only
+        (activeVersionNumber, masterLabel, description, urls).
+
+        # Two-phase fetch (Category 2) per corrections-log §1, §5.
+        # Phase 1 bulk fetches Id + naming/version-pointer/audit fields.
+        # Phase 2 fetches FullName + Metadata per-Id.
+        #
+        # FlowDefinition is the named-flow entity in Salesforce's three-
+        # tier flow model. The full graph definition (decision nodes,
+        # screen elements, action calls, etc.) lives on Flow rows
+        # (versions), not here. FlowDefinition.Metadata is summary-only
+        # (~82 bytes typically: activeVersionNumber, masterLabel,
+        # description, urls). For graph data, see fetch_flow_versions().
+        #
+        # ActiveVersionId is the FK pointing to the currently-active
+        # Flow row (Flow.Id). LatestVersionId points to the most-recent
+        # Flow row regardless of active status; the two can differ when
+        # a draft has been created but not yet activated.
+        #
+        # MasterLabel is null in some sandboxes — the human-readable
+        # label lives on Flow rows for those flows. DeveloperName +
+        # NamespacePrefix uniquely identify the flow.
+        #
+        # Sandbox at 13 FlowDefinitions in this dev org. Customer orgs
+        # with custom flows commonly have 20-200 named flows.
+        """
+        path = f"/services/data/{self.api_version}/tooling/query/"
+
+        # Phase 1: bulk fetch FlowDefinitions without Metadata or FullName.
+        phase1_soql = (
+            "SELECT Id, DeveloperName, MasterLabel, ActiveVersionId, "
+            "LatestVersionId, ManageableState, NamespacePrefix, "
+            "ApiVersion, Description, CreatedDate, LastModifiedDate "
+            "FROM FlowDefinition"
+        )
+        records: list[dict] = self._query_all(path, phase1_soql)
+
+        # Phase 2: per-Id FullName + Metadata fetch (Salesforce constraint:
+        # 1 row max when selecting either field).
+        for rec in records:
+            rec_id = rec.get("Id")
+            if not rec_id:
+                continue
+            phase2_soql = (
+                f"SELECT Id, FullName, Metadata FROM FlowDefinition "
+                f"WHERE Id = '{rec_id}'"
+            )
+            phase2_records = self._query_all(path, phase2_soql)
+            if phase2_records:
+                rec["FullName"] = phase2_records[0].get("FullName")
+                rec["Metadata"] = phase2_records[0].get("Metadata")
+
+        return records
+
+    def fetch_flow_versions(self) -> list[dict]:
+        """Tooling SOQL: SELECT … FROM Flow, with FullName + Metadata.
+
+        Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
+
+        Returned records carry: Id, DefinitionId, MasterLabel,
+        VersionNumber, Status, ProcessType, ManageableState, ApiVersion,
+        IsTemplate, IsOverridable, RunInMode, TriggerOrder, Environments,
+        IsPaused, CreatedDate, LastModifiedDate, FullName, Metadata.
+        Metadata exposes the full flow graph: actionCalls, decisions,
+        screens, recordCreates/Updates/Deletes/Lookups/Rollbacks, loops,
+        assignments, subflows, transforms, waits, variables, constants,
+        formulas, choices, dynamicChoiceSets, customErrors, textTemplates,
+        start, plus 30+ other top-level keys (50 total at v66.0).
+
+        # Two-phase fetch (Category 2) per corrections-log §1, §5.
+        # Phase 1 bulk fetches version-level metadata. Phase 2 fetches
+        # FullName + Metadata per-Id.
+        #
+        # Flow rows are versions of a FlowDefinition. The full graph
+        # definition lives in Flow.Metadata: actionCalls, decisions,
+        # screens, recordCreates/Updates/Deletes/Lookups/Rollbacks,
+        # loops, assignments, subflows, transforms, waits, variables,
+        # constants, formulas, choices, dynamicChoiceSets, customErrors,
+        # textTemplates, start, plus 30+ other top-level keys (50 total
+        # observed at v66.0).
+        #
+        # NO active-only filter at fetch time. Returns all versions
+        # regardless of Status (Active / Obsolete / Draft / InvalidDraft).
+        # Sync layer filters per its policy; historical versions are
+        # relevant for audit attribution.
+        #
+        # FullName is selected per Category 2 pattern even though it
+        # equals FlowDefinition.FullName for the same flow (Flow rows
+        # inherit the namespace + developer name). Free in the Phase 2
+        # query (1-row constraint already satisfied by WHERE Id =).
+        # Keeping it makes Flow rows self-sufficient for sync paths
+        # that don't always join back through FlowDefinition.
+        #
+        # Metadata payload sizes vary widely:
+        # - Simple AutoLaunchedFlow: ~15 KB (sandbox-observed)
+        # - Complex Screen flow with 20+ screens, decisions, subflows:
+        #   100-500 KB
+        # Customer orgs with 200 flow versions × ~50 KB avg ≈ 10 MB
+        # per sync — within budget but capacity-planning-relevant.
+        #
+        # Sandbox at 14 Flow versions (13 Active + 1 Obsolete) across
+        # 13 FlowDefinitions in this dev org. All AutoLaunchedFlow
+        # ProcessType in this sandbox; customer orgs typically have
+        # mixed ProcessTypes (Flow / AutoLaunchedFlow / RecordTriggered /
+        # Workflow legacy / etc.).
+        """
+        path = f"/services/data/{self.api_version}/tooling/query/"
+
+        # Phase 1: bulk fetch Flow versions without Metadata or FullName.
+        phase1_soql = (
+            "SELECT Id, DefinitionId, MasterLabel, VersionNumber, Status, "
+            "ProcessType, ManageableState, ApiVersion, "
+            "IsTemplate, IsOverridable, RunInMode, TriggerOrder, "
+            "Environments, IsPaused, "
+            "CreatedDate, LastModifiedDate "
+            "FROM Flow"
+        )
+        records: list[dict] = self._query_all(path, phase1_soql)
+
+        # Phase 2: per-Id FullName + Metadata fetch (Salesforce constraint:
+        # 1 row max when selecting either field).
+        for rec in records:
+            rec_id = rec.get("Id")
+            if not rec_id:
+                continue
+            phase2_soql = (
+                f"SELECT Id, FullName, Metadata FROM Flow "
+                f"WHERE Id = '{rec_id}'"
+            )
+            phase2_records = self._query_all(path, phase2_soql)
+            if phase2_records:
+                rec["FullName"] = phase2_records[0].get("FullName")
+                rec["Metadata"] = phase2_records[0].get("Metadata")
+
+        return records

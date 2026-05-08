@@ -293,3 +293,61 @@ def test_live_fetch_users(live_client):
 
     # Don't assert specific synthetic UserTypes are present;
     # composition can shift across sandbox refreshes
+
+
+def test_live_fetch_flow_definitions(live_client):
+    """Two-phase Tooling SOQL for FlowDefinition. Sandbox at 13
+    FlowDefinitions; allow margin for org-state shifts and
+    managed-package updates. Verifies summary Metadata payload
+    structure."""
+    fds = live_client.fetch_flow_definitions()
+    assert isinstance(fds, list)
+
+    # Sandbox at 13 FlowDefinitions; allow margin for org-state
+    # shifts and managed-package updates
+    assert 5 <= len(fds) <= 100
+
+    for fd in fds:
+        assert "Id" in fd
+        assert "DeveloperName" in fd
+        assert "FullName" in fd
+        assert "Metadata" in fd
+        # Some FlowDefinitions may have no active version
+        # (draft-only flows); ActiveVersionId can be null
+        assert "ActiveVersionId" in fd
+
+
+def test_live_fetch_flow_versions(live_client):
+    """Two-phase Tooling SOQL for Flow versions. Sandbox at 14
+    versions; verifies the full graph Metadata structure
+    (processType + start element). Asserts at least one Active
+    version is present."""
+    versions = live_client.fetch_flow_versions()
+    assert isinstance(versions, list)
+
+    # Sandbox at 14 versions; same margin
+    assert 5 <= len(versions) <= 200
+
+    for v in versions:
+        assert "Id" in v
+        assert "DefinitionId" in v
+        assert "VersionNumber" in v
+        assert "Status" in v
+        assert "ProcessType" in v
+        assert "FullName" in v
+        assert "Metadata" in v
+        if v["Metadata"]:
+            md = v["Metadata"]
+            # Verify Metadata has the expected top-level
+            # structure — the array keys are present even
+            # when empty, so this asserts shape not content
+            assert "processType" in md
+            # 'start' is the entry-point reference; present
+            # on every well-formed flow
+            assert "start" in md or "startElementReference" in md
+
+    # Should have at least one Active version (the sandbox's
+    # ManageableState='installed' managed-package flows are
+    # all Active)
+    statuses = {v["Status"] for v in versions}
+    assert "Active" in statuses

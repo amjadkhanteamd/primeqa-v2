@@ -2120,3 +2120,455 @@ class TestFetchUsers:
             "CloudIntegrationUser",
         }
         c.close()
+
+
+# ----------------------------------------------------------------------
+# fetch_flow_definitions (2C-extended Method 5, FlowDefinition half —
+# Category 2)
+# ----------------------------------------------------------------------
+
+class TestFetchFlowDefinitions:
+    def test_fetch_flow_definitions_uses_tooling_endpoint(self) -> None:
+        urls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_flow_definitions()
+        assert any(
+            f"/services/data/{SF_API_VERSION}/tooling/query" in p
+            for p in urls_seen
+        )
+        c.close()
+
+    def test_fetch_flow_definitions_returns_records_list(self) -> None:
+        """Two-phase fetch: phase 1 returns N records (no Metadata,
+        no FullName); phase 2 returns 1 row per Id with summary
+        Metadata (activeVersionNumber, masterLabel, description, urls)
+        per Salesforce-documented schema."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {
+                            "Id": "300F90000000001",
+                            "DeveloperName": "Org_Expiration_Notification",
+                            "MasterLabel": None,
+                            "ActiveVersionId": "301F90000000001",
+                            "LatestVersionId": "301F90000000001",
+                            "ManageableState": "installed",
+                            "NamespacePrefix": "MHolt",
+                        },
+                        {
+                            "Id": "300F90000000002",
+                            "DeveloperName": "Custom_Flow",
+                            "MasterLabel": "Custom Flow",
+                            "ActiveVersionId": "301F90000000010",
+                            "LatestVersionId": "301F90000000010",
+                            "ManageableState": "unmanaged",
+                            "NamespacePrefix": None,
+                        },
+                    ],
+                })
+            if "300F90000000001" in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "300F90000000001",
+                        "FullName": "MHolt__Org_Expiration_Notification",
+                        "Metadata": {
+                            "activeVersionNumber": 2,
+                            "description": None,
+                            "masterLabel": None,
+                            "urls": {
+                                "metadata": "/services/data/v66.0/...",
+                            },
+                        },
+                    }],
+                })
+            if "300F90000000002" in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "300F90000000002",
+                        "FullName": "Custom_Flow",
+                        "Metadata": {
+                            "activeVersionNumber": 1,
+                            "description": "Custom flow description",
+                            "masterLabel": "Custom Flow",
+                            "urls": {
+                                "metadata": "/services/data/v66.0/...",
+                            },
+                        },
+                    }],
+                })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_flow_definitions()
+        assert len(result) == 2
+        # Phase 1 fields preserved
+        assert result[0]["DeveloperName"] == "Org_Expiration_Notification"
+        assert result[0]["NamespacePrefix"] == "MHolt"
+        assert result[0]["ActiveVersionId"] == "301F90000000001"
+        assert result[1]["DeveloperName"] == "Custom_Flow"
+        # Phase 2 merged
+        assert result[0]["FullName"] == "MHolt__Org_Expiration_Notification"
+        assert result[0]["Metadata"]["activeVersionNumber"] == 2
+        assert result[1]["FullName"] == "Custom_Flow"
+        assert result[1]["Metadata"]["description"] == \
+            "Custom flow description"
+        c.close()
+
+    def test_fetch_flow_definitions_phase_split(self) -> None:
+        """Phase 1 SOQL must NOT contain Metadata or FullName.
+        Phase 2 SOQL MUST contain BOTH + WHERE Id = '...'."""
+        soqls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            soqls_seen.append(soql)
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "300F90000000001",
+                        "DeveloperName": "X",
+                    }],
+                })
+            return httpx.Response(200, json={
+                "records": [{
+                    "Id": "300F90000000001",
+                    "FullName": "X",
+                    "Metadata": {},
+                }],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_flow_definitions()
+        assert len(soqls_seen) == 2
+
+        phase1 = soqls_seen[0]
+        assert "FROM FlowDefinition" in phase1
+        assert "Metadata" not in phase1
+        assert "FullName" not in phase1
+        assert "WHERE" not in phase1
+
+        phase2 = soqls_seen[1]
+        assert "Metadata" in phase2
+        assert "FullName" in phase2
+        assert "WHERE Id = '300F90000000001'" in phase2
+        c.close()
+
+    def test_fetch_flow_definitions_phase1_bulk_no_filter(self) -> None:
+        """Phase 1 is unfiltered bulk SELECT — Category 2 standard
+        (no reified-column constraint applies to FlowDefinition)."""
+        soqls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soqls_seen.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_flow_definitions()
+        # Exactly 1 SOQL when phase 1 returns empty
+        assert len(soqls_seen) == 1
+        phase1 = soqls_seen[0]
+        assert "FROM FlowDefinition" in phase1
+        assert "WHERE" not in phase1
+        c.close()
+
+    def test_fetch_flow_definitions_makes_n_plus_one_calls(self) -> None:
+        """N FlowDefinitions → N+1 API calls (1 bulk + N per-Id)."""
+        api_calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            api_calls.append(soql)
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": f"300F9000000000{i}",
+                         "DeveloperName": f"Flow_{i}"}
+                        for i in (1, 2, 3, 4, 5)
+                    ],
+                })
+            return httpx.Response(200, json={
+                "records": [{
+                    "Id": "300F90000000001",
+                    "FullName": "X",
+                    "Metadata": {},
+                }],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_flow_definitions()
+        assert len(result) == 5
+        # 1 phase-1 + 5 phase-2 = 6 calls
+        assert len(api_calls) == 6
+        c.close()
+
+
+# ----------------------------------------------------------------------
+# fetch_flow_versions (2C-extended Method 5, Flow half — Category 2)
+# ----------------------------------------------------------------------
+
+class TestFetchFlowVersions:
+    def test_fetch_flow_versions_uses_tooling_endpoint(self) -> None:
+        urls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_flow_versions()
+        assert any(
+            f"/services/data/{SF_API_VERSION}/tooling/query" in p
+            for p in urls_seen
+        )
+        c.close()
+
+    def test_fetch_flow_versions_returns_records_list(self) -> None:
+        """Two-phase fetch: phase 1 returns version-level fields;
+        phase 2 returns full graph Metadata (actionCalls, decisions,
+        recordLookups, etc. per Salesforce v66.0 schema)."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {
+                            "Id": "301F90000000001",
+                            "DefinitionId": "300F90000000001",
+                            "MasterLabel": "Org Expiration Notification",
+                            "VersionNumber": 2,
+                            "Status": "Active",
+                            "ProcessType": "AutoLaunchedFlow",
+                            "ManageableState": "unmanaged",
+                            "ApiVersion": 60.0,
+                            "IsTemplate": False,
+                            "IsOverridable": False,
+                            "RunInMode": None,
+                            "TriggerOrder": None,
+                            "Environments": "Default",
+                            "IsPaused": False,
+                        },
+                    ],
+                })
+            return httpx.Response(200, json={
+                "records": [{
+                    "Id": "301F90000000001",
+                    "FullName": "MHolt__Org_Expiration_Notification",
+                    "Metadata": {
+                        "actionCalls": [
+                            {"name": "Send_Email",
+                             "actionType": "emailAlert",
+                             "actionName": "MHolt__OrgExpiration"},
+                        ],
+                        "decisions": [
+                            {"name": "Days_Until",
+                             "rules": []},
+                        ],
+                        "recordLookups": [
+                            {"name": "Get_Org",
+                             "object": "Organization"},
+                        ],
+                        "screens": [],
+                        "variables": [
+                            {"name": "daysUntilExpiry",
+                             "dataType": "Number",
+                             "isCollection": False},
+                        ],
+                        "start": {
+                            "connector": {"targetReference": "Get_Org"},
+                            "locationX": 50,
+                            "locationY": 0,
+                        },
+                        "processType": "AutoLaunchedFlow",
+                        "label": "Org Expiration Notification",
+                    },
+                }],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_flow_versions()
+        assert len(result) == 1
+        # Phase 1 fields preserved
+        assert result[0]["DefinitionId"] == "300F90000000001"
+        assert result[0]["Status"] == "Active"
+        assert result[0]["ProcessType"] == "AutoLaunchedFlow"
+        # Phase 2 merged
+        md = result[0]["Metadata"]
+        assert md["processType"] == "AutoLaunchedFlow"
+        assert len(md["actionCalls"]) == 1
+        assert len(md["decisions"]) == 1
+        assert len(md["recordLookups"]) == 1
+        assert len(md["variables"]) == 1
+        assert "start" in md
+        c.close()
+
+    def test_fetch_flow_versions_phase_split(self) -> None:
+        """Phase 1 has no Metadata/FullName; Phase 2 has both
+        + WHERE Id = '...'."""
+        soqls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            soqls_seen.append(soql)
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "301F90000000001",
+                        "DefinitionId": "300F90000000001",
+                        "Status": "Active",
+                    }],
+                })
+            return httpx.Response(200, json={
+                "records": [{
+                    "Id": "301F90000000001",
+                    "FullName": "X",
+                    "Metadata": {},
+                }],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_flow_versions()
+        assert len(soqls_seen) == 2
+
+        phase1 = soqls_seen[0]
+        assert "FROM Flow" in phase1
+        assert "Metadata" not in phase1
+        assert "FullName" not in phase1
+        # Phase 1 has NO WHERE — returns all versions, including
+        # Obsolete/Draft (no active-only filter)
+        assert "WHERE" not in phase1
+
+        phase2 = soqls_seen[1]
+        assert "Metadata" in phase2
+        assert "FullName" in phase2
+        assert "WHERE Id = '301F90000000001'" in phase2
+        c.close()
+
+    def test_fetch_flow_versions_returns_inactive_versions(self) -> None:
+        """No Status filter at fetch — Active, Obsolete, Draft, and
+        InvalidDraft all flow through. Codifies the no-active-filter
+        principle so a future PR cannot silently add WHERE Status =
+        'Active'."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "301F90000000001", "Status": "Active",
+                         "DefinitionId": "300F90000000001"},
+                        {"Id": "301F90000000002", "Status": "Obsolete",
+                         "DefinitionId": "300F90000000001"},
+                        {"Id": "301F90000000003", "Status": "Draft",
+                         "DefinitionId": "300F90000000002"},
+                    ],
+                })
+            return httpx.Response(200, json={
+                "records": [{
+                    "Id": "301F90000000001",
+                    "FullName": "X",
+                    "Metadata": {},
+                }],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_flow_versions()
+        assert len(result) == 3
+        statuses = {r["Status"] for r in result}
+        assert statuses == {"Active", "Obsolete", "Draft"}
+        c.close()
+
+    def test_fetch_flow_versions_returns_mixed_process_types(self) -> None:
+        """No ProcessType filter at fetch — all flow types (Flow,
+        AutoLaunchedFlow, RecordTriggered, etc.) flow through. Sync
+        layer filters per its policy if needed."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "301F90000000001",
+                         "DefinitionId": "300F90000000001",
+                         "ProcessType": "Flow", "Status": "Active"},
+                        {"Id": "301F90000000002",
+                         "DefinitionId": "300F90000000002",
+                         "ProcessType": "AutoLaunchedFlow",
+                         "Status": "Active"},
+                        {"Id": "301F90000000003",
+                         "DefinitionId": "300F90000000003",
+                         "ProcessType": "RecordTriggered",
+                         "Status": "Active"},
+                    ],
+                })
+            return httpx.Response(200, json={
+                "records": [{
+                    "Id": "301F90000000001",
+                    "FullName": "X",
+                    "Metadata": {},
+                }],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_flow_versions()
+        assert len(result) == 3
+        ptypes = {r["ProcessType"] for r in result}
+        assert ptypes == {"Flow", "AutoLaunchedFlow", "RecordTriggered"}
+        c.close()
+
+    def test_fetch_flow_versions_makes_n_plus_one_calls(self) -> None:
+        """N Flow versions → N+1 API calls (1 bulk + N per-Id)."""
+        api_calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            api_calls.append(soql)
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": f"301F9000000000{i}",
+                         "DefinitionId": f"300F9000000000{i}",
+                         "Status": "Active"}
+                        for i in (1, 2, 3, 4)
+                    ],
+                })
+            return httpx.Response(200, json={
+                "records": [{
+                    "Id": "301F90000000001",
+                    "FullName": "X",
+                    "Metadata": {},
+                }],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_flow_versions()
+        assert len(result) == 4
+        # 1 phase-1 + 4 phase-2 = 5 calls
+        assert len(api_calls) == 5
+        c.close()
