@@ -10,11 +10,28 @@ design.
 - `salesforce_metadata_api_v66.0.pdf` — Metadata API Developer
   Guide (Salesforce Spring '26). Covers SOAP and REST Metadata
   API operations, listMetadata, the canonical StandardValueSet
-  names catalog, and metadata type definitions.
+  names catalog (Appendix C), and metadata type definitions.
 - `salesforce_tooling_api_v66.0.pdf` — Tooling API Developer
   Guide (Salesforce Spring '26). Covers Tooling SOQL grammar,
   sobject schemas (RecordType, ValidationRule, GlobalValueSet,
   etc.), and the Metadata-or-FullName 1-row constraint family.
+- `salesforce_soap_api_v66.0.pdf` — SOAP API Developer Guide
+  (Salesforce Spring '26). Canonical reference for standard
+  sObject schemas, describe response shapes, and the formal
+  permission model used by Profile and PermissionSet entities
+  (relevant for upcoming 2C-extended methods).
+- `salesforce_soql_sosl_v66.0.pdf` — SOQL and SOSL Reference
+  (Salesforce Spring '26). Foundational query-language
+  reference: grammar, governor limits, function reference,
+  and the formal definition of constraints documented in
+  PHASE_2_PLAN_corrections.md (reified columns, subquery
+  limits, relationship traversal rules).
+- `salesforce_object_reference_v66.0.pdf` — Object Reference
+  for the Salesforce Platform (Salesforce Spring '26).
+  Per-object field listings with semantics. Used to verify
+  test-generation assertions against the documented platform
+  schema rather than relying on CC's training-data
+  reconstructions.
 
 ## API version pinning
 
