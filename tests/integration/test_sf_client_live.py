@@ -191,3 +191,71 @@ def test_live_fetch_standard_value_sets_subset(live_client):
         assert "FullName" in svs
         assert "Metadata" in svs
         assert svs["MasterLabel"] in labels
+
+
+def test_live_fetch_profiles(live_client):
+    """Two-phase Tooling SOQL for Profile. Sandbox has 18 standard
+    profiles; verify all phase-2 fields land and the documented
+    Metadata sub-keys are present (objectPermissions, userPermissions,
+    userLicense)."""
+    profiles = live_client.fetch_profiles()
+    assert isinstance(profiles, list)
+    assert len(profiles) >= 15  # standard profiles always present
+    for p in profiles:
+        assert "Id" in p
+        assert "Name" in p
+        assert "FullName" in p
+        assert "Metadata" in p
+        if p["Metadata"]:
+            md = p["Metadata"]
+            assert "userPermissions" in md
+            assert "objectPermissions" in md
+            assert "userLicense" in md
+
+
+def test_live_fetch_permission_sets(live_client):
+    """Category 4 three-query fetch. Verify the three-key dict shape,
+    parent rows include FIELDS(STANDARD)'s wide-flat-row Permissions*
+    columns, Type='Profile' synthetic rows are included (not filtered
+    at fetch layer), and child entities ObjectPermissions /
+    FieldPermissions are populated.
+    """
+    result = live_client.fetch_permission_sets()
+    assert isinstance(result, dict)
+    assert set(result.keys()) == {
+        "permission_sets",
+        "object_permissions",
+        "field_permissions",
+    }
+    assert len(result["permission_sets"]) > 0
+    # Sandbox has 71 PSes; expect at least 50 to allow for platform changes
+    assert len(result["permission_sets"]) >= 50
+
+    # Spot-check parent row shape
+    ps = result["permission_sets"][0]
+    assert "Id" in ps
+    assert "Name" in ps
+    assert "Type" in ps
+    # Verify some Permissions* boolean field is present
+    permissions_keys = [k for k in ps.keys() if k.startswith("Permissions")]
+    assert len(permissions_keys) > 100  # ~350 expected from FIELDS(STANDARD)
+
+    # Spot-check that Type='Profile' synthetic rows are included
+    # (transparent-transport-boundary; sync-layer filters)
+    types = {p["Type"] for p in result["permission_sets"]}
+    assert "Profile" in types
+
+    # Spot-check children query results are populated, and verify
+    # SOQL pagination kicked in (both child queries return well over
+    # the 2000-row Salesforce default cap on this sandbox per
+    # corrections-log §6).
+    assert len(result["object_permissions"]) > 2000  # confirms pagination
+    assert len(result["field_permissions"]) > 2000   # confirms pagination
+
+    op = result["object_permissions"][0]
+    assert "ParentId" in op
+    assert "SobjectType" in op
+
+    fp = result["field_permissions"][0]
+    assert "ParentId" in fp
+    assert "Field" in fp

@@ -207,6 +207,45 @@ class SalesforceClient:
 
         return resp
 
+    def _query_all(self, path: str, soql: str) -> list[dict]:
+        """Issue SOQL via the given path and walk pagination.
+
+        Salesforce SOQL endpoints (both /tooling/query/ and /query/)
+        return at most 2000 rows per response by default, with
+        `done=False` and a `nextRecordsUrl` cursor when more rows
+        exist. This helper walks the cursor chain until `done=True`,
+        returning the aggregated records list.
+
+        Per corrections-log §6: the 2000-row cap is a Salesforce
+        platform constraint applying to all SOQL responses. Direct
+        use of self._request for SOQL is a correctness bug because
+        rows past 2000 are silently dropped. All SOQL-issuing fetch
+        methods route through this helper.
+
+        REST methods (sobjects/, describe/, etc.) are NOT subject to
+        this constraint — different pagination semantics — and use
+        self._request directly.
+
+        nextRecordsUrl values returned by Salesforce are server-
+        relative paths (e.g., /services/data/v66.0/query/<cursor>);
+        they're passed to self._request unchanged. The cursor is in
+        the path, not the params, so subsequent calls don't pass
+        a `q` parameter.
+        """
+        resp = self._request("GET", path, params={"q": soql})
+        data = resp.json()
+        records: list[dict] = list(data.get("records", []))
+        while not data.get("done", True):
+            next_url = data.get("nextRecordsUrl")
+            if not next_url:
+                # Defensive: done=False with no nextRecordsUrl is
+                # malformed; break rather than infinite-loop.
+                break
+            resp = self._request("GET", next_url)
+            data = resp.json()
+            records.extend(data.get("records", []))
+        return records
+
     # --------------------------------------------------------------
     # Entity fetches (skinny scope: 3 types)
     # --------------------------------------------------------------
@@ -293,8 +332,7 @@ class SalesforceClient:
             "ErrorDisplayField, Description, EntityDefinitionId "
             "FROM ValidationRule"
         )
-        phase1_resp = self._request("GET", path, params={"q": phase1_soql})
-        records: list[dict] = phase1_resp.json().get("records", [])
+        records: list[dict] = self._query_all(path, phase1_soql)
 
         # Phase 2: per-Id Metadata fetch (Salesforce constraint: 1 row max
         # when selecting Metadata).
@@ -305,8 +343,7 @@ class SalesforceClient:
             phase2_soql = (
                 f"SELECT Id, Metadata FROM ValidationRule WHERE Id = '{rec_id}'"
             )
-            phase2_resp = self._request("GET", path, params={"q": phase2_soql})
-            phase2_records = phase2_resp.json().get("records", [])
+            phase2_records = self._query_all(path, phase2_soql)
             if phase2_records:
                 rec["Metadata"] = phase2_records[0].get("Metadata")
 
@@ -347,8 +384,7 @@ class SalesforceClient:
             "NamespacePrefix "
             "FROM RecordType"
         )
-        phase1_resp = self._request("GET", path, params={"q": phase1_soql})
-        records: list[dict] = phase1_resp.json().get("records", [])
+        records: list[dict] = self._query_all(path, phase1_soql)
 
         # Phase 2: per-Id FullName + Metadata fetch (Salesforce constraint:
         # 1 row max when selecting either field).
@@ -359,8 +395,7 @@ class SalesforceClient:
             phase2_soql = (
                 f"SELECT Id, FullName, Metadata FROM RecordType WHERE Id = '{rec_id}'"
             )
-            phase2_resp = self._request("GET", path, params={"q": phase2_soql})
-            phase2_records = phase2_resp.json().get("records", [])
+            phase2_records = self._query_all(path, phase2_soql)
             if phase2_records:
                 rec["FullName"] = phase2_records[0].get("FullName")
                 rec["Metadata"] = phase2_records[0].get("Metadata")
@@ -397,8 +432,7 @@ class SalesforceClient:
             "NamespacePrefix "
             "FROM GlobalValueSet"
         )
-        phase1_resp = self._request("GET", path, params={"q": phase1_soql})
-        records: list[dict] = phase1_resp.json().get("records", [])
+        records: list[dict] = self._query_all(path, phase1_soql)
 
         # Phase 2: per-Id FullName + Metadata fetch (Salesforce constraint:
         # 1 row max when selecting either field).
@@ -410,8 +444,7 @@ class SalesforceClient:
                 f"SELECT Id, FullName, Metadata FROM GlobalValueSet "
                 f"WHERE Id = '{rec_id}'"
             )
-            phase2_resp = self._request("GET", path, params={"q": phase2_soql})
-            phase2_records = phase2_resp.json().get("records", [])
+            phase2_records = self._query_all(path, phase2_soql)
             if phase2_records:
                 rec["FullName"] = phase2_records[0].get("FullName")
                 rec["Metadata"] = phase2_records[0].get("Metadata")
@@ -472,9 +505,130 @@ class SalesforceClient:
                 "FROM StandardValueSet "
                 f"WHERE MasterLabel = '{escaped_label}'"
             )
-            resp = self._request("GET", path, params={"q": soql})
-            recs = resp.json().get("records", [])
+            recs = self._query_all(path, soql)
             if recs:
                 results.append(recs[0])
 
         return results
+
+    def fetch_profiles(self) -> list[dict]:
+        """Tooling SOQL: SELECT … FROM Profile, with FullName + Metadata.
+
+        Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
+
+        Returned records carry: Id, Name, Description, CreatedDate,
+        LastModifiedDate, FullName, Metadata. Metadata exposes the full
+        Profile permission shape: objectPermissions, fieldPermissions,
+        userPermissions, tabVisibilities, recordTypeVisibilities,
+        classAccesses, pageAccesses, applicationVisibilities, etc.
+
+        # Two-phase fetch (Category 2) per corrections-log §1, §5.
+        # Phase 1 bulk fetches Id + 4 metadata-light fields. Phase 2
+        # fetches FullName + Metadata per-Id. Sandbox at 18 standard
+        # Profiles; Profile.Metadata payload averages ~278 KB
+        # (System Administrator measured at 277,853 bytes), so per-sync
+        # network ~5 MB for the standard sandbox profile set.
+        # Customer orgs typically have 30-100 profiles → 8-30 MB; within
+        # sync budget but capacity-planning-relevant.
+        # Metadata.objectPermissions / fieldPermissions / userPermissions /
+        # tabVisibilities / recordTypeVisibilities arrays are returned
+        # verbatim; sync layer normalizes into edge entities per D-037.
+        # Profile schema confirmed at 9 fields per Tooling describe;
+        # UserType / UserLicenseId do NOT exist on Profile in Tooling
+        # API at v66.0 (those live on the User object instead).
+        """
+        path = f"/services/data/{self.api_version}/tooling/query/"
+
+        # Phase 1: bulk fetch Profiles without Metadata or FullName.
+        phase1_soql = (
+            "SELECT Id, Name, Description, CreatedDate, LastModifiedDate "
+            "FROM Profile"
+        )
+        records: list[dict] = self._query_all(path, phase1_soql)
+
+        # Phase 2: per-Id FullName + Metadata fetch (Salesforce constraint:
+        # 1 row max when selecting either field).
+        for rec in records:
+            rec_id = rec.get("Id")
+            if not rec_id:
+                continue
+            phase2_soql = (
+                f"SELECT Id, FullName, Metadata FROM Profile "
+                f"WHERE Id = '{rec_id}'"
+            )
+            phase2_records = self._query_all(path, phase2_soql)
+            if phase2_records:
+                rec["FullName"] = phase2_records[0].get("FullName")
+                rec["Metadata"] = phase2_records[0].get("Metadata")
+
+        return records
+
+    def fetch_permission_sets(self) -> dict:
+        """Tooling SOQL × 1 (parent) + Data SOQL × 2 (children) — full
+        Category 4 fetch for PermissionSet.
+
+        Returns:
+            {
+                "permission_sets": list[dict],     # parent rows
+                "object_permissions": list[dict],  # child grants, ParentId-joined
+                "field_permissions": list[dict],   # child grants, ParentId-joined
+            }
+
+        # Category 4 pattern (corrections-log §5). PermissionSet has no
+        # Metadata complexvalue column; permission data is denormalized as
+        # ~350 Permissions* boolean columns on the parent row plus separate
+        # ObjectPermissions and FieldPermissions child entities.
+        #
+        # ENDPOINT ASYMMETRY: PermissionSet is queryable via both Tooling
+        # API and Data API. ObjectPermissions and FieldPermissions are
+        # Data-API-only — the Tooling API rejects them with INVALID_TYPE.
+        # We use Tooling for the parent query (FIELDS(STANDARD) is a
+        # Tooling-API SOQL feature giving us all 408 columns in one
+        # statement) and Data API for the two child queries. Same OAuth
+        # token, same retry plumbing; only the URL path differs.
+        #
+        # Three queries fetch the full picture. Sync layer joins children
+        # to parents via ParentId.
+        #
+        # Returns dict with three keys (permission_sets, object_permissions,
+        # field_permissions) rather than a flat list to make the structural
+        # asymmetry from Category 2 entities explicit at the API surface.
+        # Matches fetch_layouts_for_object's structured-dict precedent.
+        #
+        # Sandbox at 71 PermissionSet rows; 18 of those are Type='Profile'
+        # auto-synthetic duplicates of the Profile rows (corrections-log
+        # §5 Category 4 note). Sync layer filters Type='Profile' to avoid
+        # duplication; fetch returns them per transparent-transport-
+        # boundary principle.
+        """
+        tooling_path = f"/services/data/{self.api_version}/tooling/query/"
+        data_path = f"/services/data/{self.api_version}/query/"
+
+        # Query 1: PermissionSet parent rows via FIELDS(STANDARD) — Tooling
+        parent_soql = "SELECT FIELDS(STANDARD) FROM PermissionSet"
+        permission_sets = self._query_all(tooling_path, parent_soql)
+
+        # Query 2: ObjectPermissions — Data API (Tooling rejects with
+        # INVALID_TYPE)
+        op_soql = (
+            "SELECT ParentId, SobjectType, "
+            "PermissionsRead, PermissionsCreate, PermissionsEdit, "
+            "PermissionsDelete, PermissionsModifyAllRecords, "
+            "PermissionsViewAllRecords "
+            "FROM ObjectPermissions"
+        )
+        object_permissions = self._query_all(data_path, op_soql)
+
+        # Query 3: FieldPermissions — Data API (same INVALID_TYPE rationale)
+        fp_soql = (
+            "SELECT ParentId, Field, "
+            "PermissionsRead, PermissionsEdit "
+            "FROM FieldPermissions"
+        )
+        field_permissions = self._query_all(data_path, fp_soql)
+
+        return {
+            "permission_sets": permission_sets,
+            "object_permissions": object_permissions,
+            "field_permissions": field_permissions,
+        }

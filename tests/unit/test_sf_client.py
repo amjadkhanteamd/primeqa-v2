@@ -1348,3 +1348,552 @@ class TestFetchStandardValueSets:
         # Exactly N calls (not N+1; no phase-1 bulk)
         assert len(api_calls) == len(labels) == 5
         c.close()
+
+
+# ----------------------------------------------------------------------
+# fetch_profiles (2C-extended Method 4, Profile half — Category 2)
+# ----------------------------------------------------------------------
+
+class TestFetchProfiles:
+    def test_fetch_profiles_uses_tooling_endpoint(self) -> None:
+        urls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_profiles()
+        assert any(
+            f"/services/data/{SF_API_VERSION}/tooling/query" in p for p in urls_seen
+        )
+        c.close()
+
+    def test_fetch_profiles_returns_records_list(self) -> None:
+        """Two-phase fetch: phase 1 returns N records (no Metadata, no
+        FullName); phase 2 returns 1 row per Id with FullName + Metadata.
+        Mock uses Salesforce-documented Profile.Metadata schema with
+        objectPermissions, fieldPermissions, userPermissions arrays."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            # Phase 1: no Metadata, no FullName → return 2 profiles
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {
+                            "Id": "00e000000000001",
+                            "Name": "System Administrator",
+                            "Description": None,
+                            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+                            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+                        },
+                        {
+                            "Id": "00e000000000002",
+                            "Name": "Standard User",
+                            "Description": None,
+                            "CreatedDate": "2024-01-01T00:00:00.000+0000",
+                            "LastModifiedDate": "2024-06-01T00:00:00.000+0000",
+                        },
+                    ],
+                })
+            if "00e000000000001" in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "00e000000000001",
+                        "FullName": "Admin",
+                        "Metadata": {
+                            "userLicense": "Salesforce",
+                            "objectPermissions": [
+                                {"object": "Account", "allowRead": True,
+                                 "allowCreate": True, "allowEdit": True,
+                                 "allowDelete": True,
+                                 "modifyAllRecords": True,
+                                 "viewAllRecords": True,
+                                 "viewAllFields": False,
+                                 "customizeSetup": False,
+                                 "deleteSetup": False,
+                                 "viewSetup": True},
+                                {"object": "Contact", "allowRead": True,
+                                 "allowCreate": True, "allowEdit": True,
+                                 "allowDelete": False,
+                                 "modifyAllRecords": False,
+                                 "viewAllRecords": False,
+                                 "viewAllFields": False,
+                                 "customizeSetup": False,
+                                 "deleteSetup": False,
+                                 "viewSetup": False},
+                            ],
+                            "fieldPermissions": [
+                                {"field": "Account.Name",
+                                 "readable": True, "editable": True},
+                                {"field": "Account.Industry",
+                                 "readable": True, "editable": True},
+                                {"field": "Contact.Email",
+                                 "readable": True, "editable": True},
+                            ],
+                            "userPermissions": [
+                                {"name": "ApiEnabled", "enabled": True},
+                                {"name": "ViewSetup", "enabled": True},
+                            ],
+                        },
+                    }],
+                })
+            if "00e000000000002" in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "00e000000000002",
+                        "FullName": "Standard",
+                        "Metadata": {
+                            "userLicense": "Salesforce",
+                            "objectPermissions": [],
+                            "fieldPermissions": [],
+                            "userPermissions": [
+                                {"name": "ApiEnabled", "enabled": False},
+                            ],
+                        },
+                    }],
+                })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_profiles()
+        assert len(result) == 2
+        # Phase 1 fields preserved
+        assert result[0]["Name"] == "System Administrator"
+        assert result[1]["Name"] == "Standard User"
+        # Phase 2 merged
+        assert result[0]["FullName"] == "Admin"
+        assert result[1]["FullName"] == "Standard"
+        # Metadata structure
+        md = result[0]["Metadata"]
+        assert md["userLicense"] == "Salesforce"
+        assert len(md["objectPermissions"]) == 2
+        assert len(md["fieldPermissions"]) == 3
+        assert len(md["userPermissions"]) == 2
+        c.close()
+
+    def test_fetch_profiles_phase_split(self) -> None:
+        """Phase 1 SOQL must NOT contain Metadata or FullName.
+        Phase 2 SOQL MUST contain BOTH + WHERE Id = '...'."""
+        soqls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            soqls_seen.append(soql)
+            if "Metadata" not in soql and "FullName" not in soql:
+                return httpx.Response(200, json={
+                    "records": [{"Id": "00e000000000001", "Name": "X"}],
+                })
+            return httpx.Response(200, json={
+                "records": [{
+                    "Id": "00e000000000001",
+                    "FullName": "X",
+                    "Metadata": {},
+                }],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_profiles()
+
+        # 2 SOQLs: 1 phase-1 bulk + 1 phase-2 per-Id
+        assert len(soqls_seen) == 2
+
+        # Phase 1: no Metadata, no FullName, no WHERE
+        phase1 = soqls_seen[0]
+        assert "FROM Profile" in phase1
+        assert "Metadata" not in phase1
+        assert "FullName" not in phase1
+        assert "WHERE" not in phase1
+
+        # Phase 2: BOTH Metadata and FullName, WHERE Id = '...'
+        phase2 = soqls_seen[1]
+        assert "Metadata" in phase2
+        assert "FullName" in phase2
+        assert "WHERE Id = '00e000000000001'" in phase2
+        c.close()
+
+    def test_fetch_profiles_phase1_does_not_traverse_entitydefinition(self) -> None:
+        """Regression guard: Phase 1 must NOT traverse any relationship
+        (no '.' joins, no EntityDefinition.X). Profile schema is flat
+        (Tooling describe shows 9 fields, none are reference traversals
+        we need)."""
+        soqls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soqls_seen.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_profiles()
+
+        # Phase 1 query — no relationship traversals
+        phase1 = soqls_seen[0]
+        # No EntityDefinition reference at all
+        assert "EntityDefinition" not in phase1
+        # No relationship dots between FROM and end of statement (only
+        # the simple field-list)
+        assert "." not in phase1.split("FROM")[0]
+        c.close()
+
+    def test_fetch_profiles_makes_n_plus_one_calls(self) -> None:
+        """N profiles → N+1 API calls (1 bulk phase 1 + N per-Id phase 2)."""
+        api_calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            api_calls.append(soql)
+            if "Metadata" not in soql and "FullName" not in soql:
+                # Phase 1: 4 profiles
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": f"00e00000000000{i}", "Name": f"P{i}"}
+                        for i in (1, 2, 3, 4)
+                    ],
+                })
+            return httpx.Response(200, json={
+                "records": [{
+                    "Id": "00e000000000001",
+                    "FullName": "X",
+                    "Metadata": {},
+                }],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_profiles()
+        assert len(result) == 4
+        # 1 phase-1 + 4 phase-2 = 5 calls
+        assert len(api_calls) == 5
+        c.close()
+
+
+# ----------------------------------------------------------------------
+# fetch_permission_sets (2C-extended Method 4, PermissionSet half —
+# Category 4: wide-flat-row + child entities)
+# ----------------------------------------------------------------------
+
+class TestFetchPermissionSets:
+    def test_fetch_permission_sets_uses_correct_endpoints(self) -> None:
+        """Endpoint asymmetry: parent query goes through Tooling API
+        (FIELDS(STANDARD) is Tooling-only); child queries
+        (ObjectPermissions, FieldPermissions) go through the Data API
+        because the Tooling API rejects them with INVALID_TYPE."""
+        urls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_permission_sets()
+        # ≥1 call goes to Tooling (parent FIELDS(STANDARD))
+        tooling_hits = [p for p in urls_seen
+                        if p == f"/services/data/{SF_API_VERSION}/tooling/query/"]
+        assert len(tooling_hits) >= 1
+        # ≥1 call goes to Data API (children ObjectPermissions /
+        # FieldPermissions)
+        data_hits = [p for p in urls_seen
+                     if p == f"/services/data/{SF_API_VERSION}/query/"]
+        assert len(data_hits) >= 1
+        c.close()
+
+    def test_fetch_permission_sets_returns_three_key_dict(self) -> None:
+        """Result must be a dict with exactly the three keys
+        permission_sets / object_permissions / field_permissions,
+        each a list — Category 4 structured-dict precedent matching
+        fetch_layouts_for_object."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "FROM PermissionSet" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "0PS000000000001", "Name": "Custom",
+                         "Type": "Regular",
+                         "PermissionsApiEnabled": True},
+                    ],
+                })
+            if "FROM ObjectPermissions" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"ParentId": "0PS000000000001",
+                         "SobjectType": "Account",
+                         "PermissionsRead": True,
+                         "PermissionsCreate": True,
+                         "PermissionsEdit": True,
+                         "PermissionsDelete": False,
+                         "PermissionsModifyAllRecords": False,
+                         "PermissionsViewAllRecords": False},
+                    ],
+                })
+            if "FROM FieldPermissions" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"ParentId": "0PS000000000001",
+                         "Field": "Account.Industry",
+                         "PermissionsRead": True,
+                         "PermissionsEdit": True},
+                    ],
+                })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_permission_sets()
+        assert isinstance(result, dict)
+        assert set(result.keys()) == {
+            "permission_sets",
+            "object_permissions",
+            "field_permissions",
+        }
+        assert isinstance(result["permission_sets"], list)
+        assert isinstance(result["object_permissions"], list)
+        assert isinstance(result["field_permissions"], list)
+        assert len(result["permission_sets"]) == 1
+        assert len(result["object_permissions"]) == 1
+        assert len(result["field_permissions"]) == 1
+        c.close()
+
+    def test_fetch_permission_sets_makes_three_calls(self) -> None:
+        """Exactly three SOQL queries: parent + ObjectPermissions
+        + FieldPermissions. No N+1, no per-PS iteration."""
+        api_calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            api_calls.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_permission_sets()
+        assert len(api_calls) == 3
+        c.close()
+
+    def test_fetch_permission_sets_parent_query_uses_fields_standard(self) -> None:
+        """Parent SOQL uses FIELDS(STANDARD) per FIELDS-syntax confirmed
+        live on Tooling API v66.0 (returns 408 columns: 390 Permissions*
+        booleans + 18 descriptive)."""
+        soqls_seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soqls_seen.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_permission_sets()
+        # Find the parent query (the one against PermissionSet, not the
+        # child entities)
+        parent_soqls = [s for s in soqls_seen
+                        if "FROM PermissionSet" in s]
+        assert len(parent_soqls) == 1
+        parent = parent_soqls[0]
+        # FIELDS(STANDARD) is the canonical wide-SELECT shorthand
+        assert "FIELDS(STANDARD)" in parent.upper()
+        assert "FROM PermissionSet" in parent
+        c.close()
+
+    def test_fetch_permission_sets_object_permissions_query_shape(self) -> None:
+        """ObjectPermissions query SELECTs ParentId + SobjectType +
+        Permissions* fields. Entity-wide — no WHERE clause. Goes through
+        the Data API endpoint, NOT Tooling (Tooling rejects this entity
+        with INVALID_TYPE)."""
+        seen: list[tuple[str, str]] = []  # (path, soql)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            seen.append((request.url.path, request.url.params.get("q", "")))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_permission_sets()
+        op_calls = [(path, q) for (path, q) in seen
+                    if "FROM ObjectPermissions" in q]
+        assert len(op_calls) == 1
+        op_path, op = op_calls[0]
+        # Endpoint check: Data API, NOT Tooling
+        assert op_path == f"/services/data/{SF_API_VERSION}/query/"
+        assert "tooling" not in op_path
+        # Required SELECT fields
+        assert "ParentId" in op
+        assert "SobjectType" in op
+        # At least one permissions column
+        assert "Permissions" in op
+        # No filter — entity-wide query
+        assert "WHERE" not in op
+        c.close()
+
+    def test_fetch_permission_sets_field_permissions_query_shape(self) -> None:
+        """FieldPermissions query SELECTs ParentId + Field + Permissions*.
+        Entity-wide — no WHERE clause. Goes through the Data API
+        endpoint, NOT Tooling (same INVALID_TYPE rationale as
+        ObjectPermissions)."""
+        seen: list[tuple[str, str]] = []  # (path, soql)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            seen.append((request.url.path, request.url.params.get("q", "")))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_permission_sets()
+        fp_calls = [(path, q) for (path, q) in seen
+                    if "FROM FieldPermissions" in q]
+        assert len(fp_calls) == 1
+        fp_path, fp = fp_calls[0]
+        # Endpoint check: Data API, NOT Tooling
+        assert fp_path == f"/services/data/{SF_API_VERSION}/query/"
+        assert "tooling" not in fp_path
+        # Required SELECT fields
+        assert "ParentId" in fp
+        assert "Field" in fp
+        # At least one permissions column
+        assert "Permissions" in fp
+        # No filter — entity-wide query
+        assert "WHERE" not in fp
+        c.close()
+
+    def test_fetch_permission_sets_includes_synthetic_profile_rows(self) -> None:
+        """Type='Profile' synthetic auto-gen rows appear in results.
+        Filtering them is a sync-layer concern (per corrections-log §5),
+        not fetch's responsibility — transparent transport boundary."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "FROM PermissionSet" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "0PS000000000001", "Name": "Custom",
+                         "Type": "Regular"},
+                        {"Id": "0PS000000000002", "Name": "X00e00001",
+                         "Type": "Profile"},  # synthetic auto-gen
+                        {"Id": "0PS000000000003", "Name": "Standard",
+                         "Type": "Standard"},
+                    ],
+                })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_permission_sets()
+        # All 3 rows present — Type='Profile' NOT filtered at fetch layer
+        assert len(result["permission_sets"]) == 3
+        types = {r["Type"] for r in result["permission_sets"]}
+        assert types == {"Regular", "Profile", "Standard"}
+        c.close()
+
+
+# ----------------------------------------------------------------------
+# _query_all — SOQL pagination helper (corrections-log §6)
+# ----------------------------------------------------------------------
+
+class TestQueryAll:
+    def test_query_all_single_page(self) -> None:
+        """done=true on first response → one HTTP call, all records
+        returned."""
+        api_calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            api_calls.append((request.url.path, dict(request.url.params)))
+            return httpx.Response(200, json={
+                "totalSize": 5,
+                "done": True,
+                "records": [{"Id": f"00100000000000{i}"} for i in range(5)],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        path = f"/services/data/{SF_API_VERSION}/tooling/query/"
+        result = c._query_all(path, "SELECT Id FROM SomeEntity")
+        assert len(result) == 5
+        # Exactly 1 SOQL call (token call doesn't count)
+        assert len(api_calls) == 1
+        assert api_calls[0][0] == path
+        assert api_calls[0][1].get("q") == "SELECT Id FROM SomeEntity"
+        c.close()
+
+    def test_query_all_walks_pagination(self) -> None:
+        """done=false + nextRecordsUrl → walk cursor until done.
+        Aggregates records across pages. Cursor calls don't pass q
+        param (cursor encodes the query state in the path)."""
+        api_calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            api_calls.append((request.url.path, dict(request.url.params)))
+            # Initial query: done=false, 2000 records, give cursor
+            if request.url.params.get("q"):
+                return httpx.Response(200, json={
+                    "totalSize": 2600,
+                    "done": False,
+                    "nextRecordsUrl":
+                        f"/services/data/{SF_API_VERSION}/query/cursor1-2000",
+                    "records": [{"Id": f"page1_{i}"} for i in range(2000)],
+                })
+            # Cursor call: done=true, 600 records
+            return httpx.Response(200, json={
+                "totalSize": 2600,
+                "done": True,
+                "records": [{"Id": f"page2_{i}"} for i in range(600)],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        path = f"/services/data/{SF_API_VERSION}/query/"
+        result = c._query_all(path, "SELECT Id FROM Big")
+        # Aggregated total
+        assert len(result) == 2600
+        # First 2000 from page 1, last 600 from page 2
+        assert result[0]["Id"] == "page1_0"
+        assert result[1999]["Id"] == "page1_1999"
+        assert result[2000]["Id"] == "page2_0"
+        assert result[2599]["Id"] == "page2_599"
+        # Exactly 2 SOQL calls
+        assert len(api_calls) == 2
+        # Second call uses the cursor URL — and importantly, NO 'q' param
+        cursor_path = f"/services/data/{SF_API_VERSION}/query/cursor1-2000"
+        assert api_calls[1][0] == cursor_path
+        assert "q" not in api_calls[1][1]
+        c.close()
+
+    def test_query_all_handles_done_false_without_next_url(self) -> None:
+        """Defensive: done=false but no nextRecordsUrl is a malformed
+        Salesforce response. _query_all must break the loop and return
+        what it has, not infinite-loop."""
+        call_count = [0]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            call_count[0] += 1
+            return httpx.Response(200, json={
+                "totalSize": 99,
+                "done": False,
+                # nextRecordsUrl deliberately absent
+                "records": [{"Id": "0010000000001"}],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        path = f"/services/data/{SF_API_VERSION}/tooling/query/"
+        result = c._query_all(path, "SELECT Id FROM Weird")
+        # Returns what it has; no infinite loop
+        assert len(result) == 1
+        # Exactly 1 SOQL call (no follow-up because no cursor)
+        assert call_count[0] == 1
+        c.close()

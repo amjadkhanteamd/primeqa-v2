@@ -302,3 +302,54 @@ to the model (Apex classes, custom labels, email templates,
 etc.), the first design step is determining which category
 applies. The live-test-first process (§3) is the primary tool
 for that determination.
+
+## SOQL pagination requires explicit handling
+
+**Date:** 2026-05-08
+**Step:** 2C-extended Method 4 (PermissionSet child queries)
+**Source:** Live-test discovery during fetch_permission_sets
+            implementation. ObjectPermissions returned 2,000 of
+            2,606 rows; FieldPermissions returned 2,000 of 11,258
+            rows. The remainder were silently dropped before the
+            caller saw the result.
+
+Salesforce SOQL endpoints (both `/services/data/{v}/query/` and
+`/services/data/{v}/tooling/query/`) cap response size at 2000
+rows by default. When a query result exceeds this, the response
+carries `done: false` plus a `nextRecordsUrl` cursor. Subsequent
+GETs on the cursor path return the next page (also up to 2000
+rows). Iteration continues until `done: true`.
+
+This is a uniform platform constraint affecting all SOQL methods,
+not specific to any entity type or category from §5. Passing the
+initial response straight back to the caller silently drops every
+row past 2000 — a correctness bug, not a performance issue.
+
+**Resolution:** SalesforceClient._query_all helper centralizes
+pagination. All SOQL-issuing fetch methods route through it:
+fetch_validation_rules, fetch_record_types,
+fetch_global_value_sets, fetch_standard_value_sets,
+fetch_profiles, fetch_permission_sets (parent + both child
+queries). Direct use of _request for SOQL is now a correctness
+bug.
+
+REST methods (sobjects/describe, sobjects/{X}/describe, etc.) are
+NOT subject to this constraint — different pagination semantics —
+and continue using _request directly.
+
+**Implication for sync architecture:** Fetch methods that pull
+high-cardinality entities (FieldPermissions in this discovery,
+potentially fields per object on managed-package-heavy orgs,
+potentially ValidationRules on rule-heavy customer orgs) will
+make multiple round trips per fetch invocation. Sync runtime
+budget includes pagination-walk cost: ~0.6s per page at sandbox
+latency. For a customer org with 50K FieldPermissions, that's
+~25 pagination calls (~15s) for the FieldPermissions query
+alone. Within sync budgets but a real factor.
+
+**Why discovered now:** Prior fetch methods worked against
+sandbox row counts well below 2000 (max was 71 PermissionSets,
+61 ValidationRules). PermissionSet's child entities pushed past
+the cap (2606 ObjectPermissions, 11258 FieldPermissions) and
+surfaced the bug. Other fetch methods would have hit the same
+bug on production-scale orgs without this fix.
