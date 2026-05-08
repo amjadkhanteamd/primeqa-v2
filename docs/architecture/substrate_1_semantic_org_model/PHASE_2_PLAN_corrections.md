@@ -213,7 +213,7 @@ Pin to the API version; revisit at version bump.
 The Salesforce metadata-access surface at v66.0 does not present
 a uniform retrieval strategy across entity types. Fetch-method
 design must accommodate this asymmetry rather than assume a
-single pattern. Three categories observed so far:
+single pattern. Four categories observed so far:
 
 **Category 1 — Runtime-introspectable types.** REST `describe`
 and Tooling SOQL bulk enumeration both work cleanly. Examples:
@@ -263,7 +263,31 @@ subtle ways:
   sf_constants.py for attribution and correctness.
 Example: StandardValueSet at v66.0. Catalog pinned in
 primeqa/integrations/sf_constants.py from the Metadata API
-Developer Guide v66.0 (docs/references/salesforce/).
+Developer Guide v66.0 (docs/references/salesforce/). Note that
+Category 3's "deployment-artifact" framing applies to types
+whose canonical catalog lives outside the runtime API; this is
+distinct from Category 4 below, where the data IS in the runtime
+API but in an unusual schema shape.
+
+**Category 4 — Wide-flat-row types with separate child-permission
+entities.** Tooling representation denormalizes "metadata" as
+columns directly on the parent row plus separate child-entity
+tables for grants. No Metadata complexvalue column, no FullName,
+no 1-row constraint. Tooling SOQL bulk works cleanly for the
+parent and each child. Discoverability is high — opposite of
+Category 3 — but the parent's column count can be very large
+(PermissionSet has ~350 boolean Permissions* columns plus
+descriptive fields). Child entities (ObjectPermissions,
+FieldPermissions) are queryable entity-wide with `ParentId`
+joining child grants to parent rows.
+Example: PermissionSet at v66.0. Three SOQL queries fetch the
+full data: parent row wide-SELECT, all object-level grants,
+all field-level grants. Sync layer joins by ParentId.
+Special note: PermissionSet has 'Profile'-type rows that are
+auto-generated synthetics per Profile, structurally duplicating
+Profile's permission data. Sync layer should filter these
+(Type = 'Profile') to avoid duplication; fetch returns them
+per the transparent-transport-boundary principle.
 
 **Implication for fetch-method design.** Each entity type's
 enumeration strategy is a per-type design decision derived from
