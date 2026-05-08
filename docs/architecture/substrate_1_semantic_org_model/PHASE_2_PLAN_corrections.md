@@ -202,3 +202,79 @@ field set.
 blocked by a reified-column constraint and the entity is system-
 defined, prefer the hardcoded catalog approach over discovery.
 Pin to the API version; revisit at version bump.
+
+## Salesforce metadata APIs are asymmetric
+
+**Date:** 2026-05-08
+**Step:** 2C-extended Method 3 (StandardValueSet catalog work)
+**Source:** Architectural observation surfacing across §1, §2, §4
+            and the StandardValueSet enumeration cul-de-sac.
+
+The Salesforce metadata-access surface at v66.0 does not present
+a uniform retrieval strategy across entity types. Fetch-method
+design must accommodate this asymmetry rather than assume a
+single pattern. Three categories observed so far:
+
+**Category 1 — Runtime-introspectable types.** REST `describe`
+and Tooling SOQL bulk enumeration both work cleanly. Examples:
+Object (sobjects/), Field (sobjects/{name}/describe), Layout
+(sobjects/{name}/describe/layouts), GlobalValueSet (Tooling
+SOQL bulk works for non-Metadata fields).
+
+**Category 2 — Tooling-API-with-Metadata-constraint types.**
+Tooling SOQL works but the Metadata-or-FullName 1-row constraint
+forces a two-phase fetch (bulk Phase 1 for Ids and metadata-light
+fields, per-Id Phase 2 for Metadata/FullName). Examples:
+ValidationRule, RecordType, GlobalValueSet (the Metadata path).
+Likely upcoming: Profile, PermissionSet, Flow.
+
+**Category 3 — Deployment-artifact types whose discoverability
+surfaces customization state, not platform definition.** System-
+defined catalogs that Salesforce treats as deployment artifacts
+rather than queryable rows. Discoverability surfaces vary in
+subtle ways:
+- SOAP listMetadata (and sf CLI's invocation of it) returns
+  only org-specific customizations, not the platform's built-in
+  catalog. A pristine org returns empty (verified in this
+  sandbox: zero entries despite SOQL confirming several
+  built-ins exist).
+- REST endpoints return the type-describe object, not member
+  listings.
+- SOQL is constraint-blocked (reified-column-required) for
+  bulk enumeration; per-label filtering works for some entries
+  but not all, with no clear org-state-independent way to know
+  which entries are queryable.
+- The platform's canonical catalog exists in Salesforce's
+  published documentation per release. That documentation IS
+  the source of truth.
+- Catalog scale at v66.0 may be substantially larger than
+  informal expectations: StandardValueSet expanded from a
+  sales/service-oriented core (~30-60 entries) to 616 entries
+  with the addition of industry-cloud-introduced SVSes (Health,
+  Financial Services, Public Sector, Education, etc., which use
+  naming conventions like trailing-digit version markers).
+  Architectural responses to category 3 must accommodate this
+  scale: sanity-check via representative sampling rather than
+  full enumeration; consumer-layer fetch methods should support
+  optional discovery-driven label restriction (planned for
+  Commit 2b's fetch_standard_value_sets signature) so sync runs
+  materialize only SVSes the customer's fields actually
+  reference, while the canonical catalog remains complete in
+  sf_constants.py for attribution and correctness.
+Example: StandardValueSet at v66.0. Catalog pinned in
+primeqa/integrations/sf_constants.py from the Metadata API
+Developer Guide v66.0 (docs/references/salesforce/).
+
+**Implication for fetch-method design.** Each entity type's
+enumeration strategy is a per-type design decision derived from
+its category. The hardcoded-catalog-with-audit-discipline pattern
+(see §4 and primeqa/integrations/sf_constants.py) is the
+codified response for category 3. The two-phase pattern (see §1)
+is the response for category 2. Direct REST is the response for
+category 1.
+
+**Implication for Phase 3+.** When Phase 3+ adds new entity types
+to the model (Apex classes, custom labels, email templates,
+etc.), the first design step is determining which category
+applies. The live-test-first process (§3) is the primary tool
+for that determination.
