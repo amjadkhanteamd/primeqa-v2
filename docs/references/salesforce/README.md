@@ -60,6 +60,19 @@ When the API version bumps:
 - The audit-at-version-bump discipline becomes operationally
   concrete: replace the PDFs, re-run the catalogs.
 
+## Repo configuration note
+
+Pushing this directory (binary PDFs totaling ~15 MB) exceeds git's
+default 1 MB `http.postBuffer`, which causes pushes to fail with
+HTTP 400 / sideband disconnect on first attempt. Fix per-clone:
+
+    git config http.postBuffer 524288000
+
+This is a one-time, repo-local configuration change. Already set
+on the primary development clone. Future contractors who clone
+fresh and push binaries will hit this wall once and need the same
+one-line fix.
+
 ## Related documents
 
 - `docs/architecture/substrate_1_semantic_org_model/PHASE_2_PLAN.md`
