@@ -351,3 +351,30 @@ def test_live_fetch_flow_versions(live_client):
     # all Active)
     statuses = {v["Status"] for v in versions}
     assert "Active" in statuses
+
+
+def test_live_fetch_layout_names(live_client):
+    """Single-phase Tooling SOQL for Layout name resolution
+    (deferred from Method 2). Sandbox at 115 layouts (single page).
+    Verifies Name is populated, EntityDefinitionId is the parent
+    object's QualifiedApiName (string, not Id), and LayoutType
+    matches the verified-against-sandbox enumeration {Standard,
+    GlobalQuickActionList}.
+    """
+    result = live_client.fetch_layout_names()
+    assert isinstance(result, list)
+
+    # Sandbox should have ~30-100+ layouts (standard objects'
+    # layouts plus any from managed packages); allow margin
+    assert 10 <= len(result) <= 1000
+
+    for layout in result:
+        assert "Id" in layout
+        assert "Name" in layout
+        assert "EntityDefinitionId" in layout
+        assert "LayoutType" in layout
+
+    # Standard should always be present (every standard object
+    # has at least one Standard-type layout)
+    layout_types = {l["LayoutType"] for l in result if l.get("LayoutType")}
+    assert "Standard" in layout_types

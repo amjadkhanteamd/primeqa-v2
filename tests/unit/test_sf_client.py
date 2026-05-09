@@ -2572,3 +2572,151 @@ class TestFetchFlowVersions:
         # 1 phase-1 + 4 phase-2 = 5 calls
         assert len(api_calls) == 5
         c.close()
+
+
+# ----------------------------------------------------------------------
+# fetch_layout_names (2C-extended Method 7 — single-phase Tooling SOQL,
+# closes the layout-name-resolution second-pass deferred from Method 2)
+# ----------------------------------------------------------------------
+
+class TestFetchLayoutNames:
+    def test_fetch_layout_names_uses_tooling_endpoint(self) -> None:
+        urls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_layout_names()
+        assert any(
+            f"/services/data/{SF_API_VERSION}/tooling/query" in p
+            for p in urls_seen
+        )
+        c.close()
+
+    def test_fetch_layout_names_returns_records_list(self) -> None:
+        """Mock 3 records with the verified-against-sandbox LayoutType
+        enumeration {Standard, GlobalQuickActionList}. Shape preservation
+        verified across both LayoutType values."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={
+                "totalSize": 3,
+                "done": True,
+                "records": [
+                    {
+                        "Id": "00hF900000CBOs9IAH",
+                        "Name": "Account Layout",
+                        "EntityDefinitionId": "Account",
+                        "NamespacePrefix": None,
+                        "ManageableState": "unmanaged",
+                        "LayoutType": "Standard",
+                    },
+                    {
+                        "Id": "00hF900000CBOsAIAX",
+                        "Name": "Contact Layout",
+                        "EntityDefinitionId": "Contact",
+                        "NamespacePrefix": None,
+                        "ManageableState": "unmanaged",
+                        "LayoutType": "Standard",
+                    },
+                    {
+                        "Id": "00hF900000CBOsBIAX",
+                        "Name": "Global Quick Action List",
+                        "EntityDefinitionId": "Global",
+                        "NamespacePrefix": None,
+                        "ManageableState": "unmanaged",
+                        "LayoutType": "GlobalQuickActionList",
+                    },
+                ],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_layout_names()
+        assert len(result) == 3
+        # Field shape preserved across both LayoutType values
+        assert result[0]["Name"] == "Account Layout"
+        assert result[0]["LayoutType"] == "Standard"
+        # EntityDefinitionId is QualifiedApiName, not Id
+        assert result[0]["EntityDefinitionId"] == "Account"
+        assert result[2]["LayoutType"] == "GlobalQuickActionList"
+        # All 3 distinct LayoutType values present (Standard ×2 +
+        # GlobalQuickActionList ×1)
+        ltypes = [r["LayoutType"] for r in result]
+        assert ltypes.count("Standard") == 2
+        assert ltypes.count("GlobalQuickActionList") == 1
+        c.close()
+
+    def test_fetch_layout_names_soql_field_set(self) -> None:
+        """Regression guard against scope creep. SOQL must SELECT
+        exactly the 6 spec'd fields; no Metadata, no FullName, no
+        FIELDS(STANDARD)."""
+        soqls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soqls_seen.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_layout_names()
+        assert len(soqls_seen) == 1
+        soql = soqls_seen[0]
+
+        # All 6 expected fields present
+        for field in ("Id", "Name", "EntityDefinitionId",
+                      "NamespacePrefix", "ManageableState",
+                      "LayoutType"):
+            assert field in soql, f"missing expected field {field!r}"
+
+        # FROM Layout
+        assert "FROM Layout" in soql
+
+        # Scope-creep guards: NOT Metadata, NOT FullName, NOT
+        # FIELDS(STANDARD), NOT TableEnumOrId (in describe but
+        # out of spec), NOT audit timestamps
+        for field in ("Metadata", "FullName", "TableEnumOrId",
+                      "ShowSubmitAndAttachButton"):
+            assert field not in soql, (
+                f"unexpected field in scope: {field!r}"
+            )
+        assert "FIELDS(STANDARD)" not in soql.upper()
+
+        # Single-phase: no WHERE clause (Layout has no reified-column
+        # constraint; bulk enumeration works directly)
+        assert "WHERE" not in soql
+        c.close()
+
+    def test_fetch_layout_names_makes_one_call(self) -> None:
+        """Single-phase: exactly one SOQL. _query_all short-circuits
+        on done=true. No per-Id loop (no Metadata to fetch)."""
+        api_calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            api_calls.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={
+                "totalSize": 5,
+                "done": True,
+                "records": [
+                    {"Id": f"00hF90000000{i:03d}",
+                     "Name": f"Layout {i}",
+                     "EntityDefinitionId": "Account",
+                     "LayoutType": "Standard"}
+                    for i in range(5)
+                ],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_layout_names()
+        assert len(result) == 5
+        # Single SOQL call (no phase-2 iteration, no pagination
+        # follow-up because done=true)
+        assert len(api_calls) == 1
+        c.close()

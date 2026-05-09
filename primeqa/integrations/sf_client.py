@@ -841,3 +841,53 @@ class SalesforceClient:
                 rec["Metadata"] = phase2_records[0].get("Metadata")
 
         return records
+
+    def fetch_layout_names(self) -> list[dict]:
+        """Tooling SOQL: SELECT … FROM Layout. Single-phase, no Metadata.
+
+        Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
+
+        Returned records carry: Id, Name, EntityDefinitionId,
+        NamespacePrefix, ManageableState, LayoutType.
+
+        # Layout name-resolution second-pass for fetch_layouts_for_object
+        # (corrections-log §5, deferred from Method 2). The REST describe/
+        # layouts endpoint returns layout Ids but only developer-name-
+        # format names; this Tooling SOQL provides the Id-to-human-label
+        # map. Verified live: Name values are human-readable labels
+        # ("Authorization Form Layout", "Contact Point Type Consent
+        # Layout", etc.) — spaces, capitalization, no underscores.
+        #
+        # Single-phase Tooling SOQL — no Metadata, no two-phase pattern
+        # needed. Sync layer joins layout-Id back to the rich layout
+        # data from fetch_layouts_for_object via Layout.Id == layout id
+        # from describe/layouts response.
+        #
+        # Bulk fetch (no per-object scoping). Customer orgs commonly have
+        # 50-500 layouts across all objects; pagination handled by
+        # _query_all if count exceeds 2000. Sandbox at 115 layouts in
+        # this dev org (single page).
+        #
+        # EntityDefinitionId is a string column holding the parent
+        # object's QualifiedApiName (e.g., 'Account', 'AuthorizationForm'),
+        # NOT its 18-char Salesforce Id. Same shape as
+        # RecordType.EntityDefinitionId. Sync layer's join key is the
+        # object's API name; matches the join key already used for
+        # RecordType.
+        #
+        # LayoutType discriminates Standard layouts from
+        # GlobalQuickActionList layouts (the special variant backing the
+        # Salesforce UI's global quick-actions menu). Verified-against-
+        # sandbox enumeration at v66.0: {Standard, GlobalQuickActionList}.
+        # Page-layout vs compact-layout vs search-layout discrimination
+        # happens at the sObject level (Layout / CompactLayout /
+        # SearchLayout — separate Tooling tables), NOT via this
+        # LayoutType column.
+        """
+        path = f"/services/data/{self.api_version}/tooling/query/"
+        soql = (
+            "SELECT Id, Name, EntityDefinitionId, NamespacePrefix, "
+            "ManageableState, LayoutType "
+            "FROM Layout"
+        )
+        return self._query_all(path, soql)
