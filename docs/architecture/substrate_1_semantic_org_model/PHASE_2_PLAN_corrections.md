@@ -353,3 +353,48 @@ sandbox row counts well below 2000 (max was 71 PermissionSets,
 the cap (2606 ObjectPermissions, 11258 FieldPermissions) and
 surfaced the bug. Other fetch methods would have hit the same
 bug on production-scale orgs without this fix.
+
+## Cross-cutting drift: normalization.py and ENTITY_ORDER
+
+**Date:** 2026-05-12
+**Step:** 2C-extended Method 5 (FlowDefinition) introduced
+            FlowDefinition as a 12th entity type; normalization.py
+            still has 11 normalizers
+**Source:** Discovered during Phase 2 step 4 Object phase
+            survey — materialize helper would route through
+            get_normalize_function('FlowDefinition') and find
+            no entry
+
+Substrate-1's primeqa/semantic/normalization.py has type-specific
+normalize functions for 11 entity types: Object, Field,
+ValidationRule, RecordType, Layout, GlobalValueSet,
+StandardValueSet, Profile, PermissionSet, User, Flow.
+
+2C-extended Method 5 (commit bac9e8d) added FlowDefinition as a
+separate entity type in ENTITY_ORDER (since it has distinct
+semantics from Flow versions — FlowDefinition is the named flow;
+Flow rows are versions). FlowDefinition wasn't added to
+normalization.py at that time because the normalization module
+was a substrate-1 artifact and FlowDefinition was a fetch-method-
+level addition.
+
+**Resolution:** When the FlowDefinition phase is implemented
+(per PHASE_2_STEP_4_SYNC_DESIGN.md §9 step 3), extend
+primeqa/semantic/normalization.py with a normalize_flow_definition
+function following the established per-type pattern. Same for
+semantic_text.py's _to_text_* router and the presentation module's
+per-type adapter (introduced in this design step). Tracked as
+a pre-requisite for the FlowDefinition phase cycle.
+
+**Pattern: normalize / semantic_text / presentation as parallel
+registries.** When adding new entity types to ENTITY_ORDER,
+extend all three modules consistently. The materialize helper's
+router lookups (get_normalize_function, get_semantic_text_function,
+to_presentation) raise KeyError on missing types; this would
+surface at the entity type's first sync but fails too late
+to be a clean error path. The discipline is: add ENTITY_ORDER
+entry + normalize entry + semantic_text entry + presentation
+entry in the same commit. A future test
+test_normalize_registry_matches_entity_order codifies the
+consistency check.
+
