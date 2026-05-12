@@ -38,8 +38,11 @@ def _make_engine() -> SyncEngine:
 
 def _success_phase_fn(entity_type: str, count: int = 1):
     """Return a phase function that records a single insert and
-    returns success."""
-    def phase(ctx) -> PhaseResult:
+    returns success.
+
+    Phase function signature is (ctx, conn) per the
+    connection-threading refactor."""
+    def phase(ctx, conn) -> PhaseResult:
         return PhaseResult(
             entity_type=entity_type,
             entities_inserted=count,
@@ -49,7 +52,7 @@ def _success_phase_fn(entity_type: str, count: int = 1):
 
 def _failure_phase_fn(entity_type: str, msg: str = "phase failed"):
     """Return a phase function that returns a failure PhaseResult."""
-    def phase(ctx) -> PhaseResult:
+    def phase(ctx, conn) -> PhaseResult:
         return PhaseResult(
             entity_type=entity_type,
             error_message=msg,
@@ -59,7 +62,7 @@ def _failure_phase_fn(entity_type: str, msg: str = "phase failed"):
 
 def _raising_phase_fn(entity_type: str, exc: Exception):
     """Return a phase function that raises an exception."""
-    def phase(ctx) -> PhaseResult:
+    def phase(ctx, conn) -> PhaseResult:
         raise exc
     return phase
 
@@ -169,9 +172,11 @@ class TestRunSyncOrchestration:
 
         # Called once per entity type in ENTITY_ORDER
         assert engine._advance_last_completed_phase.call_count == len(ENTITY_ORDER)
-        # Phase names passed in order
+        # Phase names passed in order. Signature is now
+        # (conn, sync_run_id, phase_name, result) post-refactor;
+        # phase_name is args[2].
         called_phases = [
-            c.args[1] for c in engine._advance_last_completed_phase.call_args_list
+            c.args[2] for c in engine._advance_last_completed_phase.call_args_list
         ]
         assert called_phases == list(ENTITY_ORDER)
 
@@ -190,7 +195,7 @@ class TestRunSyncOrchestration:
         call_order: list[str] = []
 
         def tracking_phase(entity_type: str):
-            def phase(ctx) -> PhaseResult:
+            def phase(ctx, conn) -> PhaseResult:
                 call_order.append(entity_type)
                 return PhaseResult(entity_type=entity_type)
             return phase
@@ -218,7 +223,7 @@ class TestRunSyncOrchestration:
         call_counts: dict[str, int] = {et: 0 for et in ENTITY_ORDER}
 
         def counting_phase(entity_type: str):
-            def phase(ctx) -> PhaseResult:
+            def phase(ctx, conn) -> PhaseResult:
                 call_counts[entity_type] += 1
                 return PhaseResult(entity_type=entity_type)
             return phase
@@ -249,7 +254,7 @@ class TestRunSyncOrchestration:
         call_order: list[str] = []
 
         def tracking_phase(entity_type: str):
-            def phase(ctx) -> PhaseResult:
+            def phase(ctx, conn) -> PhaseResult:
                 call_order.append(entity_type)
                 return PhaseResult(entity_type=entity_type)
             return phase
@@ -285,7 +290,7 @@ class TestRunSyncOrchestration:
         call_order: list[str] = []
 
         def make_phase(entity_type: str):
-            def phase(ctx) -> PhaseResult:
+            def phase(ctx, conn) -> PhaseResult:
                 call_order.append(entity_type)
                 if entity_type == "Field":
                     return PhaseResult(

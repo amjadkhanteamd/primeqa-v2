@@ -7,6 +7,10 @@ _enqueue_ai_primitives) and the upstream normalize / presentation /
 to_semantic_text / hash_normalized helpers. Verify call order +
 PhaseResult mutation behavior — the SQL itself is exercised by the
 live integration test.
+
+Connection-threading: materialize_entity now takes an explicit
+`conn` parameter (refactored post-Object-phase). Tests pass a
+MagicMock conn alongside the stub context.
 """
 from __future__ import annotations
 
@@ -39,6 +43,7 @@ class TestMaterializeNewEntity:
         """When _read_existing_entity returns None, _insert_entity is
         called."""
         result = PhaseResult(entity_type="Object")
+        conn = MagicMock()
         with patch(_patch_path("normalize"), return_value={"normalized": True}), \
              patch(_patch_path("hash_normalized"), return_value="abc123"), \
              patch(_patch_path("to_presentation"), return_value={"pres": True}), \
@@ -50,6 +55,7 @@ class TestMaterializeNewEntity:
              patch(_patch_path("_touch_existing_row")) as mock_touch:
             materialize_entity(
                 ctx=_stub_ctx(),
+                conn=conn,
                 entity_type="Object",
                 external_id="Account",
                 raw_payload={"name": "Account"},
@@ -67,6 +73,7 @@ class TestMaterializeNewEntity:
     ) -> None:
         """entities_inserted incremented by exactly 1 per new entity."""
         result = PhaseResult(entity_type="Object")
+        conn = MagicMock()
         with patch(_patch_path("normalize"), return_value={"n": True}), \
              patch(_patch_path("hash_normalized"), return_value="h"), \
              patch(_patch_path("to_presentation"), return_value={"p": True}), \
@@ -74,7 +81,7 @@ class TestMaterializeNewEntity:
              patch(_patch_path("_read_existing_entity"), return_value=None), \
              patch(_patch_path("_insert_entity"), return_value="eid"), \
              patch(_patch_path("_enqueue_ai_primitives")):
-            materialize_entity(_stub_ctx(), "Object", "X",
+            materialize_entity(_stub_ctx(), conn, "Object", "X",
                                {"name": "X"}, result)
         assert result.entities_inserted == 1
         assert result.entities_superseded == 0
@@ -89,6 +96,7 @@ class TestMaterializeNewEntity:
         Here just verify the call happened with the right args."""
         ctx = _stub_ctx()
         result = PhaseResult(entity_type="Object")
+        conn = MagicMock()
         with patch(_patch_path("normalize"), return_value={}), \
              patch(_patch_path("hash_normalized"), return_value="h"), \
              patch(_patch_path("to_presentation"), return_value={}), \
@@ -96,8 +104,9 @@ class TestMaterializeNewEntity:
              patch(_patch_path("_read_existing_entity"), return_value=None), \
              patch(_patch_path("_insert_entity"), return_value="new-id"), \
              patch(_patch_path("_enqueue_ai_primitives")) as mock_enqueue:
-            materialize_entity(ctx, "Object", "X", {"name": "X"}, result)
-        mock_enqueue.assert_called_once_with(ctx, "Object", "new-id", result)
+            materialize_entity(ctx, conn, "Object", "X", {"name": "X"}, result)
+        # _enqueue_ai_primitives signature: (conn, entity_type, entity_id, result)
+        mock_enqueue.assert_called_once_with(conn, "Object", "new-id", result)
 
 
 class TestMaterializeChangedEntity:
@@ -108,6 +117,7 @@ class TestMaterializeChangedEntity:
         is called for the old row AND _insert_entity is called for
         the new row."""
         result = PhaseResult(entity_type="Object")
+        conn = MagicMock()
         existing = {"id": "old-id", "last_seed_hash": "OLDHASH"}
         with patch(_patch_path("normalize"), return_value={}), \
              patch(_patch_path("hash_normalized"), return_value="NEWHASH"), \
@@ -118,7 +128,7 @@ class TestMaterializeChangedEntity:
              patch(_patch_path("_insert_entity"), return_value="new-id") as mock_insert, \
              patch(_patch_path("_enqueue_ai_primitives")) as mock_enqueue, \
              patch(_patch_path("_touch_existing_row")) as mock_touch:
-            materialize_entity(_stub_ctx(), "Object", "X",
+            materialize_entity(_stub_ctx(), conn, "Object", "X",
                                {"name": "X"}, result)
         # Old row superseded
         mock_supersede.assert_called_once()
@@ -136,6 +146,7 @@ class TestMaterializeChangedEntity:
         entity; entities_inserted NOT incremented (semantically
         these are supersessions, not new entities)."""
         result = PhaseResult(entity_type="Object")
+        conn = MagicMock()
         with patch(_patch_path("normalize"), return_value={}), \
              patch(_patch_path("hash_normalized"), return_value="NEW"), \
              patch(_patch_path("to_presentation"), return_value={}), \
@@ -145,7 +156,7 @@ class TestMaterializeChangedEntity:
              patch(_patch_path("_supersede_existing_row")), \
              patch(_patch_path("_insert_entity"), return_value="new-id"), \
              patch(_patch_path("_enqueue_ai_primitives")):
-            materialize_entity(_stub_ctx(), "Object", "X",
+            materialize_entity(_stub_ctx(), conn, "Object", "X",
                                {"name": "X"}, result)
         assert result.entities_inserted == 0
         assert result.entities_superseded == 1
@@ -160,6 +171,7 @@ class TestMaterializeChangedEntity:
         any state. Verify call args here; UPSERT SQL is exercised
         at integration time."""
         ctx = _stub_ctx()
+        conn = MagicMock()
         result = PhaseResult(entity_type="Object")
         with patch(_patch_path("normalize"), return_value={}), \
              patch(_patch_path("hash_normalized"), return_value="NEW"), \
@@ -170,9 +182,10 @@ class TestMaterializeChangedEntity:
              patch(_patch_path("_supersede_existing_row")), \
              patch(_patch_path("_insert_entity"), return_value="new-id"), \
              patch(_patch_path("_enqueue_ai_primitives")) as mock_enqueue:
-            materialize_entity(ctx, "Object", "X", {"name": "X"}, result)
+            materialize_entity(ctx, conn, "Object", "X",
+                               {"name": "X"}, result)
         # Enqueue against NEW entity_id, not the old one
-        mock_enqueue.assert_called_once_with(ctx, "Object", "new-id", result)
+        mock_enqueue.assert_called_once_with(conn, "Object", "new-id", result)
 
 
 class TestMaterializeUnchangedEntity:
@@ -185,6 +198,7 @@ class TestMaterializeUnchangedEntity:
         """Hash match → _touch_existing_row called, _insert_entity
         NOT called, _enqueue_ai_primitives NOT called."""
         result = PhaseResult(entity_type="Object")
+        conn = MagicMock()
         with patch(_patch_path("normalize"), return_value={}), \
              patch(_patch_path("hash_normalized"), return_value="SAMEHASH"), \
              patch(_patch_path("to_presentation"), return_value={}), \
@@ -195,7 +209,7 @@ class TestMaterializeUnchangedEntity:
              patch(_patch_path("_insert_entity")) as mock_insert, \
              patch(_patch_path("_enqueue_ai_primitives")) as mock_enqueue, \
              patch(_patch_path("_touch_existing_row")) as mock_touch:
-            materialize_entity(_stub_ctx(), "Object", "X",
+            materialize_entity(_stub_ctx(), conn, "Object", "X",
                                {"name": "X"}, result)
         mock_touch.assert_called_once()
         mock_supersede.assert_not_called()
@@ -219,6 +233,7 @@ class TestMaterializePipelineOrder:
         """to_semantic_text receives the OUTPUT of to_presentation,
         not the output of normalize."""
         result = PhaseResult(entity_type="Object")
+        conn = MagicMock()
         normalized_payload = {"name": "Account", "custom": False}
         presentation_payload = {
             "name": "Account", "is_custom": False, "label": "Account",
@@ -233,7 +248,7 @@ class TestMaterializePipelineOrder:
              patch(_patch_path("_read_existing_entity"), return_value=None), \
              patch(_patch_path("_insert_entity"), return_value="eid"), \
              patch(_patch_path("_enqueue_ai_primitives")):
-            materialize_entity(_stub_ctx(), "Object", "X",
+            materialize_entity(_stub_ctx(), conn, "Object", "X",
                                {"name": "X"}, result)
         # to_presentation called with the normalized payload
         mock_pres.assert_called_once_with("Object", normalized_payload)

@@ -20,7 +20,7 @@ The engine calls each phase function inside its own transaction
 """
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable
 
 from primeqa.sync.context import SyncContext
 from primeqa.sync.fk_assertion import ENTITY_ORDER
@@ -28,7 +28,11 @@ from primeqa.sync.materialize import materialize_entity
 from primeqa.sync.result import PhaseResult
 
 
-PhaseFunction = Callable[[SyncContext], PhaseResult]
+# A phase function receives (ctx, conn) where conn is the SQLAlchemy
+# Connection opened by engine._phase_transaction. All DB writes go
+# through this conn so the entire phase is atomic. Per the
+# connection-threading refactor (post 5ed6c84).
+PhaseFunction = Callable[[SyncContext, Any], PhaseResult]
 
 
 def _noop_phase(entity_type: str) -> PhaseFunction:
@@ -36,10 +40,12 @@ def _noop_phase(entity_type: str) -> PhaseFunction:
 
     The returned function does no Salesforce fetching, no DB writes,
     and returns an empty PhaseResult. Used during skeleton bring-up;
-    real implementations replace these one cycle at a time.
+    real implementations replace these one cycle at a time. Accepts
+    the conn parameter per the PhaseFunction contract but ignores
+    it (no writes to perform).
     """
 
-    def phase(ctx: SyncContext) -> PhaseResult:
+    def phase(ctx: SyncContext, conn: Any) -> PhaseResult:
         return PhaseResult(entity_type=entity_type)
 
     phase.__name__ = f"phase_{entity_type.lower()}"
@@ -78,7 +84,7 @@ def _is_syncable_object(raw: dict) -> bool:
     )
 
 
-def phase_object(ctx: SyncContext) -> PhaseResult:
+def phase_object(ctx: SyncContext, conn: Any) -> PhaseResult:
     """Object phase — fetches all syncable sObjects and materializes
     them as Object entities.
 
@@ -91,6 +97,10 @@ def phase_object(ctx: SyncContext) -> PhaseResult:
     Uses Salesforce API name (raw['name']) as external_id.
     Substrate-1's fetch_objects() returns ~700+ sObjects on a
     typical org; ~50-200 typically pass the filter.
+
+    All DB writes execute on `conn` (engine._phase_transaction's
+    transaction); commit happens when this function returns and
+    the engine exits the _phase_transaction context.
     """
     result = PhaseResult(entity_type="Object")
     raw_objects = ctx.sf_client.fetch_objects()
@@ -99,6 +109,7 @@ def phase_object(ctx: SyncContext) -> PhaseResult:
             continue
         materialize_entity(
             ctx=ctx,
+            conn=conn,
             entity_type="Object",
             external_id=raw["name"],
             raw_payload=raw,

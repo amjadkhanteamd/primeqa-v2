@@ -47,6 +47,8 @@ class TestPhaseRegistry:
         entity types ARE registered; this test verifies the no-op
         SHAPE behavior of remaining placeholders."""
         ctx = _stub_context()
+        from unittest.mock import MagicMock
+        stub_conn = MagicMock()
         # Real phase implementations live elsewhere and are tested
         # separately; this test covers only the remaining no-op
         # placeholders.
@@ -54,7 +56,7 @@ class TestPhaseRegistry:
         for entity_type, phase_fn in PHASE_REGISTRY.items():
             if entity_type in real_phases:
                 continue
-            result = phase_fn(ctx)
+            result = phase_fn(ctx, stub_conn)
             assert isinstance(result, PhaseResult)
             assert result.entity_type == entity_type
             assert result.entities_inserted == 0
@@ -150,8 +152,9 @@ class TestPhaseObject:
         ctx.sf_client.fetch_objects()."""
         ctx = _stub_ctx_with_mock_sf()
         ctx.sf_client.fetch_objects.return_value = []
+        conn = MagicMock()
         with patch("primeqa.sync.phases.materialize_entity"):
-            phase_object(ctx)
+            phase_object(ctx, conn)
         ctx.sf_client.fetch_objects.assert_called_once_with()
 
     def test_phase_object_filters_non_queryable_objects(self) -> None:
@@ -162,8 +165,9 @@ class TestPhaseObject:
             _account_raw(),         # passes
             _non_queryable_raw(),   # filtered
         ]
+        conn = MagicMock()
         with patch("primeqa.sync.phases.materialize_entity") as mock_mat:
-            phase_object(ctx)
+            phase_object(ctx, conn)
         assert mock_mat.call_count == 1
         # The single call's external_id was 'Account'
         call_kwargs = mock_mat.call_args.kwargs
@@ -176,8 +180,9 @@ class TestPhaseObject:
             _account_raw(),
             _custom_setting_raw(),
         ]
+        conn = MagicMock()
         with patch("primeqa.sync.phases.materialize_entity") as mock_mat:
-            phase_object(ctx)
+            phase_object(ctx, conn)
         assert mock_mat.call_count == 1
         assert mock_mat.call_args.kwargs["external_id"] == "Account"
 
@@ -188,8 +193,9 @@ class TestPhaseObject:
             _account_raw(),
             _deprecated_raw(),
         ]
+        conn = MagicMock()
         with patch("primeqa.sync.phases.materialize_entity") as mock_mat:
-            phase_object(ctx)
+            phase_object(ctx, conn)
         assert mock_mat.call_count == 1
         assert mock_mat.call_args.kwargs["external_id"] == "Account"
 
@@ -207,8 +213,9 @@ class TestPhaseObject:
             _custom_setting_raw(),   # filtered
             _deprecated_raw(),       # filtered
         ]
+        conn = MagicMock()
         with patch("primeqa.sync.phases.materialize_entity") as mock_mat:
-            phase_object(ctx)
+            phase_object(ctx, conn)
         assert mock_mat.call_count == 2
         external_ids = [c.kwargs["external_id"] for c in mock_mat.call_args_list]
         assert external_ids == ["Account", "Contact"]

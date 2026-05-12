@@ -140,9 +140,11 @@ class SyncEngine:
 
         for phase_name in ENTITY_ORDER[start_index:]:
             try:
-                with self._phase_transaction(sync_run_id, phase_name):
+                with self._phase_transaction(
+                    sync_run_id, phase_name,
+                ) as conn:
                     phase_fn = get_phase_function(phase_name)
-                    result = phase_fn(ctx)
+                    result = phase_fn(ctx, conn)
                     if not result.succeeded:
                         # Phase reported failure via result rather than
                         # raising. Convert to PhaseExecutionError to
@@ -155,7 +157,7 @@ class SyncEngine:
                             ),
                         )
                     self._advance_last_completed_phase(
-                        sync_run_id, phase_name, result,
+                        conn, sync_run_id, phase_name, result,
                     )
             except PhaseExecutionError as e:
                 failed_phase = phase_name
@@ -327,36 +329,36 @@ class SyncEngine:
 
     def _advance_last_completed_phase(
         self,
+        conn: Any,
         sync_run_id: str,
         phase_name: str,
         result: PhaseResult,
     ) -> None:
         """UPDATE last_completed_phase + accumulate counter columns.
 
-        Called after a phase function has returned successfully and
-        the phase transaction is about to commit. Same transaction as
-        the phase write (caller's responsibility — this is called
-        inside _phase_transaction's `with` block).
+        Called from inside a phase transaction (caller's responsibility
+        — this UPDATE runs in the same transaction as the phase's
+        entity writes, ensuring atomicity between data writes and
+        phase-marker advancement).
         """
-        with self._connect() as conn:
-            conn.execute(text("""
-                UPDATE sync_runs
-                SET last_completed_phase = :phase,
-                    entities_inserted = entities_inserted + :ei,
-                    entities_superseded = entities_superseded + :es,
-                    entities_unchanged = entities_unchanged + :eu,
-                    edges_inserted = edges_inserted + :gi,
-                    edges_superseded = edges_superseded + :gs
-                WHERE id = :id
-            """), {
-                "phase": phase_name,
-                "ei": result.entities_inserted,
-                "es": result.entities_superseded,
-                "eu": result.entities_unchanged,
-                "gi": result.edges_inserted,
-                "gs": result.edges_superseded,
-                "id": sync_run_id,
-            })
+        conn.execute(text("""
+            UPDATE sync_runs
+            SET last_completed_phase = :phase,
+                entities_inserted = entities_inserted + :ei,
+                entities_superseded = entities_superseded + :es,
+                entities_unchanged = entities_unchanged + :eu,
+                edges_inserted = edges_inserted + :gi,
+                edges_superseded = edges_superseded + :gs
+            WHERE id = :id
+        """), {
+            "phase": phase_name,
+            "ei": result.entities_inserted,
+            "es": result.entities_superseded,
+            "eu": result.entities_unchanged,
+            "gi": result.edges_inserted,
+            "gs": result.edges_superseded,
+            "id": sync_run_id,
+        })
 
     def _mark_sync_run_structural_complete(
         self,
@@ -479,17 +481,19 @@ class SyncEngine:
         sync_run_id: str,
         phase_name: str,
     ) -> Iterator[Any]:
-        """Wrap a phase in its own transaction.
+        """Wrap a phase in its own transaction; yield the connection.
 
-        Begins a transaction on the tenant schema, yields control to
-        the phase, and commits on clean exit OR rollbacks on
-        exception. Per design doc §3 "Mechanics" — each phase's
-        atomicity is independent.
+        Per design doc §3 "Mechanics" — each phase's atomicity is
+        independent. ONE connection per phase, threaded through the
+        phase function and its downstream materialize calls. All
+        writes within the phase commit atomically; failure rolls
+        back the whole phase.
 
-        Note: this is a no-op wrapper in the current skeleton; phase
-        functions don't yet use the connection. Real phase
-        implementations in subsequent cycles will receive the
-        connection via SyncContext or via this manager's yield value.
+        This replaces the prior per-helper short-lived-connection
+        pattern (commit 5ed6c84). The Object phase live test went
+        from 1038s → <60s after this change because the
+        connection-ceremony overhead dominated for high-row-count
+        phases.
         """
         logger.info(
             "sync_run=%s phase=%r begin", sync_run_id, phase_name,
