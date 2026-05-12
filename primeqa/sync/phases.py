@@ -186,6 +186,109 @@ def phase_picklist_value_set(
     return result
 
 
+def phase_picklist_value(ctx: SyncContext, conn: Any) -> PhaseResult:
+    """PicklistValue phase — individual values within value sets.
+
+    Per substrate-1 design (corrections-log §8 + PicklistValueAttributes
+    docstring): PicklistValue's parent linkage is a NOT NULL FK column
+    on picklist_value_details (picklist_value_set_entity_id), not an
+    edges row. TIER_1_EDGES has no edge type covering this
+    relationship — substrate-1's stated rationale is "picklist values
+    ARE their attributes; there is no edge structure to lean on".
+
+    No fresh Salesforce call exclusive to this phase: values come
+    nested inside GVS records' Metadata.customValue and SVS records'
+    Metadata.standardValue. PicklistValueSet phase already fetched
+    these in the prior phase — this phase re-fetches via the same
+    sf_client methods (cheap; SF caches describe responses) and
+    extracts the nested values.
+
+    Each value gets two phase-injected markers before
+    batched_materialize:
+      _parent_external_id  — the parent PVS's external_id, including
+                             the 'SVS:' prefix for StandardValueSet
+                             sources (so child external_ids inherit
+                             the namespace-collision avoidance)
+      _sort_order          — the value's position in the parent's
+                             customValue/standardValue list (Salesforce
+                             returns them in display order; no
+                             explicit sortOrder field on the value
+                             record itself)
+
+    Both markers survive _strip_volatile (not in _VOLATILE_KEYS) and
+    land in the normalized payload, contributing to the hash. A
+    re-ordered parent list → child sort_order changes → child
+    supersession. That's the right semantic — display order is
+    meaningful metadata.
+
+    The detail-table write happens inside batched_materialize via the
+    PicklistValue mapper in detail_mappers.py, which uses
+    make_parent_resolver(conn, ctx) to look up the parent
+    PicklistValueSet entity_id by _parent_external_id.
+
+    Memory note: a sandbox with 95 PVS records × ~10 values each
+    produces ~950 PicklistValue payloads in memory simultaneously
+    before batched_materialize chunks them. At ~500 bytes per value
+    record, that's ~500KB — well within budget. Production orgs with
+    industry clouds enabled might see 5x this; still acceptable.
+    """
+    result = PhaseResult(entity_type="PicklistValue")
+
+    # Re-fetch parents to extract their nested value lists.
+    raw_gvs = ctx.sf_client.fetch_global_value_sets()
+    raw_svs = ctx.sf_client.fetch_standard_value_sets(labels=None)
+
+    pv_payloads: list[dict[str, Any]] = []
+
+    # GVS path: parent_external_id is unprefixed (per PVS cycle's
+    # GVS contract). Values live in Metadata.customValue.
+    for gvs in raw_gvs:
+        parent_external_id = gvs["FullName"]
+        meta = gvs.get("Metadata") or {}
+        values = meta.get("customValue") or []
+        for idx, v in enumerate(values):
+            if not isinstance(v, dict):
+                continue
+            if not v.get("valueName"):
+                # Defensive: skip placeholder/blank entries that the
+                # Metadata API occasionally returns; their external_id
+                # would be malformed and the detail mapper would fail.
+                continue
+            pv_payloads.append({
+                **v,
+                "_parent_external_id": parent_external_id,
+                "_sort_order": idx,
+            })
+
+    # SVS path: parent_external_id carries the 'SVS:' prefix per the
+    # PVS cycle's collision-avoidance contract. Values live in
+    # Metadata.standardValue.
+    for svs in raw_svs:
+        parent_external_id = f"SVS:{svs['FullName']}"
+        meta = svs.get("Metadata") or {}
+        values = meta.get("standardValue") or []
+        for idx, v in enumerate(values):
+            if not isinstance(v, dict):
+                continue
+            if not v.get("valueName"):
+                continue
+            pv_payloads.append({
+                **v,
+                "_parent_external_id": parent_external_id,
+                "_sort_order": idx,
+            })
+
+    if pv_payloads:
+        batched_materialize(
+            ctx=ctx,
+            conn=conn,
+            entity_type="PicklistValue",
+            raw_payloads=pv_payloads,
+            result=result,
+        )
+    return result
+
+
 # One phase function per ENTITY_ORDER value. Kept aligned by
 # construction below — see test_phase_registry_has_function_for_every_
 # entity_order_value for the lock. Real phase implementations replace
@@ -195,6 +298,7 @@ PHASE_REGISTRY: dict[str, PhaseFunction] = {
 }
 PHASE_REGISTRY["Object"] = phase_object
 PHASE_REGISTRY["PicklistValueSet"] = phase_picklist_value_set
+PHASE_REGISTRY["PicklistValue"] = phase_picklist_value
 
 
 def get_phase_function(entity_type: str) -> PhaseFunction:

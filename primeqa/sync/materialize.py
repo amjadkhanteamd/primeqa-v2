@@ -73,7 +73,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable, Optional
 
 from sqlalchemy import text
 
@@ -84,6 +84,7 @@ from primeqa.sync.batching import (
     bucket_entities,
 )
 from primeqa.sync.context import SyncContext
+from primeqa.sync.detail_mappers import get_detail_mapper
 from primeqa.sync.presentation import to_presentation
 from primeqa.sync.result import PhaseResult
 
@@ -171,6 +172,41 @@ def _materialize_chunk(
         _batch_touch_existing(conn, buckets.unchanged_ids, now)
         result.entities_unchanged += len(buckets.unchanged_ids)
 
+    # 4b. Detail-table rows for new + changed entities.
+    #
+    # Detail rows are tied to entity_id, which already carries SCD
+    # semantics. When an entity supersedes, the new entity_id gets a
+    # fresh detail row; the old detail row remains attached to the
+    # old entity_id for historical reference. No detail-row work for
+    # the unchanged bucket — the existing detail row stays attached
+    # to the same (still-active) entity_id.
+    #
+    # PicklistValue's mapper needs to resolve parent PicklistValueSet
+    # entity_ids; make_parent_resolver provides a per-chunk memoizing
+    # closure that caps the N+1 worst-case at one query per distinct
+    # parent within the chunk.
+    detail_info = get_detail_mapper(entity_type)
+    if detail_info is not None:
+        detail_table_name, mapper = detail_info
+        parent_resolver = make_parent_resolver(conn, ctx)
+        detail_rows: list[dict[str, Any]] = []
+        for e, eid in zip(buckets.new, new_entity_ids):
+            detail_rows.append(mapper(
+                normalized=e.normalized,
+                entity_id=eid,
+                parent_resolver=parent_resolver,
+            ))
+        for e, eid in zip(buckets.changed, changed_new_ids):
+            detail_rows.append(mapper(
+                normalized=e.normalized,
+                entity_id=eid,
+                parent_resolver=parent_resolver,
+            ))
+        if detail_rows:
+            _batch_insert_details(
+                conn, detail_table_name, detail_rows,
+            )
+
     # 5. Batched UPSERT to enrichment queue for new + changed.
     entity_ids_needing_enrichment = new_entity_ids + changed_new_ids
     if entity_ids_needing_enrichment:
@@ -194,6 +230,11 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
             (e.g., 'SVS:AccountSource'). The 'SVS:' prefix prevents
             collisions between a customer-named GVS (e.g.,
             'Industry') and the SVS catalog entry of the same name.
+    PicklistValue: composite — f"{parent_external_id}.{valueName}"
+        (e.g., 'SVS:AccountType.Analyst' or 'MyGVS.Banking').
+        Parent external_id is namespaced consistently with the
+        PVS source, so PicklistValue external_ids inherit GVS/SVS
+        collision-avoidance automatically.
 
     Other types added by their respective phase cycles. KeyError
     on unknown type catches drift.
@@ -206,11 +247,94 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
             return raw["FullName"]
         # StandardValueSet — prefix to avoid GVS/SVS namespace collision.
         return f"SVS:{raw['FullName']}"
+    if entity_type == "PicklistValue":
+        parent = raw.get("_parent_external_id")
+        value_name = raw.get("valueName")
+        if not parent or not value_name:
+            raise ValueError(
+                f"PicklistValue requires both '_parent_external_id' "
+                f"(injected by phase_picklist_value) and 'valueName' "
+                f"(from Salesforce response); got parent={parent!r}, "
+                f"valueName={value_name!r}"
+            )
+        return f"{parent}.{value_name}"
     raise KeyError(
         f"No external_id extractor for entity_type "
         f"{entity_type!r}. Add to "
         f"primeqa/sync/materialize.py::_extract_external_id."
     )
+
+
+def resolve_entity_id_by_external_id(
+    conn: Any,
+    ctx: SyncContext,
+    entity_type: str,
+    external_id: str,
+) -> Optional[str]:
+    """Resolve a single (entity_type, external_id) → entity_id.
+
+    Returns the UUID (as a string) of the currently-active entity
+    row matching the lookup, or None if not found.
+
+    Used by detail-table mappers to resolve FK references to other
+    entities (e.g., PicklistValue's parent PicklistValueSet
+    entity_id for picklist_value_details.picklist_value_set_entity_id).
+
+    Filters:
+      - last_synced_from_org_id = ctx.connected_org_id (tenant +
+        connected org scope)
+      - entity_type = :entity_type
+      - sf_api_name = :external_id
+      - valid_to_seq IS NULL (currently-active row only)
+
+    Single-row lookup. Callers materializing many children of the
+    same parent type should wrap this in a memoizing closure to
+    avoid N+1; see make_parent_resolver() below.
+    """
+    row = conn.execute(text("""
+        SELECT id FROM entities
+        WHERE last_synced_from_org_id = :org_id
+          AND entity_type = :entity_type
+          AND sf_api_name = :external_id
+          AND valid_to_seq IS NULL
+        LIMIT 1
+    """), {
+        "org_id": ctx.connected_org_id,
+        "entity_type": entity_type,
+        "external_id": external_id,
+    }).first()
+    return str(row.id) if row else None
+
+
+def make_parent_resolver(
+    conn: Any, ctx: SyncContext,
+) -> Callable[..., Optional[str]]:
+    """Build a memoizing resolver bound to this conn + ctx.
+
+    The returned callable signature:
+      resolver(entity_type=..., external_id=...) → entity_id or None
+
+    Caches lookups for the lifetime of the closure. For a chunk
+    of 500 PicklistValue rows pointing at ~95 distinct
+    PicklistValueSet parents, the cache reduces 500 lookup queries
+    to 95.
+
+    Discarded at chunk boundaries (callers create a fresh resolver
+    per chunk via _materialize_chunk), which is fine — parents
+    don't change mid-phase and cross-chunk re-resolves are
+    informationally identical.
+    """
+    cache: dict[tuple[str, str], Optional[str]] = {}
+
+    def _resolve(*, entity_type: str, external_id: str) -> Optional[str]:
+        key = (entity_type, external_id)
+        if key not in cache:
+            cache[key] = resolve_entity_id_by_external_id(
+                conn, ctx, entity_type, external_id,
+            )
+        return cache[key]
+
+    return _resolve
 
 
 # ----------------------------------------------------------------------
@@ -423,5 +547,56 @@ def _batch_upsert_queue(
             started_at = NULL,
             completed_at = NULL,
             error_text = NULL
+    """
+    conn.execute(text(sql), params)
+
+
+def _batch_insert_details(
+    conn: Any,
+    detail_table_name: str,
+    detail_rows: list[dict[str, Any]],
+) -> None:
+    """Multi-row INSERT into a detail table.
+
+    detail_rows: list of column-name → value dicts produced by the
+    entity_type's mapper. Every dict in the list must have the same
+    key set — heterogeneous shapes would corrupt the multi-row VALUES
+    template. Mappers are deterministic per-type, so this invariant
+    holds by construction; defensive validation here would just be
+    overhead.
+
+    No SCD on detail rows: detail rows are 1:1 with entity_ids, and
+    entity_ids already carry SCD semantics in the entities table.
+    When an entity supersedes, the new entity_id gets a fresh detail
+    row; the old detail row stays attached to the old (now-superseded)
+    entity_id. Queries traversing historical state can join from a
+    valid-as-of entity row to its detail row by entity_id.
+
+    Tenant scoping: detail tables in substrate-1 don't carry a
+    tenant_id column (they live in the tenant's schema; entities
+    enforce tenant via the GUC CHECK). Detail rows inherit tenant
+    via the entity_id FK — querying picklist_value_details from
+    tenant_2 yields no rows because no tenant_2 entity exists. No
+    explicit tenant_id needed in the INSERT.
+
+    Empty input is a no-op (defensive against callers that build the
+    list eagerly and may end up with zero rows for a no-detail-mapper
+    entity_type — though _materialize_chunk gates this call already).
+    """
+    if not detail_rows:
+        return
+
+    columns = list(detail_rows[0].keys())
+    values_clauses: list[str] = []
+    params: dict[str, Any] = {}
+    for i, row in enumerate(detail_rows):
+        placeholders = ", ".join(f":{col}_{i}" for col in columns)
+        values_clauses.append(f"({placeholders})")
+        for col in columns:
+            params[f"{col}_{i}"] = row[col]
+
+    sql = f"""
+        INSERT INTO {detail_table_name} ({', '.join(columns)})
+        VALUES {', '.join(values_clauses)}
     """
     conn.execute(text(sql), params)

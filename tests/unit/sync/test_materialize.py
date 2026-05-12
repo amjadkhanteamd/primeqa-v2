@@ -569,6 +569,17 @@ class TestExtractExternalId:
          {"_source": "StandardValueSet",
           "FullName": "Industry"},  # collision-prone catalog name
          "SVS:Industry"),
+        # PicklistValue: composite external_id, parent prefix from
+        # _parent_external_id marker (which already inherits SVS:
+        # prefix for StandardValueSet sources).
+        ("PicklistValue",
+         {"_parent_external_id": "SVS:AccountType",
+          "valueName": "Analyst"},
+         "SVS:AccountType.Analyst"),
+        ("PicklistValue",
+         {"_parent_external_id": "MyCustomGVS",
+          "valueName": "Banking"},
+         "MyCustomGVS.Banking"),
     ])
     def test_extract_external_id_known_types(
         self, entity_type: str, raw: dict, expected: str,
@@ -581,3 +592,281 @@ class TestExtractExternalId:
         msg = str(excinfo.value)
         assert "NotAnEntity" in msg
         assert "_extract_external_id" in msg
+
+    def test_extract_external_id_picklist_value_missing_parent_raises(
+        self,
+    ) -> None:
+        """PicklistValue without _parent_external_id marker — fail
+        loudly with a message naming both missing fields."""
+        with pytest.raises(ValueError) as excinfo:
+            _extract_external_id(
+                "PicklistValue", {"valueName": "Analyst"},
+            )
+        msg = str(excinfo.value)
+        assert "_parent_external_id" in msg
+        assert "valueName" in msg
+
+
+# ----------------------------------------------------------------------
+# resolve_entity_id_by_external_id + make_parent_resolver
+# ----------------------------------------------------------------------
+
+from primeqa.sync.materialize import (
+    make_parent_resolver,
+    resolve_entity_id_by_external_id,
+)
+
+
+class _RowStub:
+    def __init__(self, id_):
+        self.id = id_
+
+
+class TestResolveEntityIdByExternalId:
+    def test_returns_id_when_found(self) -> None:
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        conn.execute.return_value.first.return_value = _RowStub("uuid-abc")
+        result = resolve_entity_id_by_external_id(
+            conn, ctx, "PicklistValueSet", "SVS:AccountType",
+        )
+        assert result == "uuid-abc"
+        # Verify the bound parameters were passed through
+        call_kwargs = conn.execute.call_args[0][1]
+        assert call_kwargs["entity_type"] == "PicklistValueSet"
+        assert call_kwargs["external_id"] == "SVS:AccountType"
+        assert call_kwargs["org_id"] == ctx.connected_org_id
+
+    def test_returns_none_when_not_found(self) -> None:
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        conn.execute.return_value.first.return_value = None
+        result = resolve_entity_id_by_external_id(
+            conn, ctx, "PicklistValueSet", "SVS:NeverHeardOfIt",
+        )
+        assert result is None
+
+
+class TestMakeParentResolver:
+    def test_caches_repeated_lookups(self) -> None:
+        """A resolver for one chunk should issue at most one query
+        per (entity_type, external_id) pair, regardless of call
+        count. Critical for the PicklistValue chunk shape (many
+        children share each parent)."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        conn.execute.return_value.first.return_value = _RowStub("uuid-parent")
+
+        resolver = make_parent_resolver(conn, ctx)
+        # Same parent called 5 times → 1 query
+        for _ in range(5):
+            r = resolver(
+                entity_type="PicklistValueSet",
+                external_id="SVS:AccountType",
+            )
+            assert r == "uuid-parent"
+        assert conn.execute.call_count == 1
+
+    def test_distinct_lookups_issue_distinct_queries(self) -> None:
+        """Distinct (entity_type, external_id) pairs each get their
+        own query. Cache is a memoizer, not a single-result lock."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        # Different rows on subsequent calls
+        conn.execute.return_value.first.side_effect = [
+            _RowStub("uuid-a"), _RowStub("uuid-b"), _RowStub("uuid-c"),
+        ]
+
+        resolver = make_parent_resolver(conn, ctx)
+        a = resolver(entity_type="PicklistValueSet", external_id="P1")
+        b = resolver(entity_type="PicklistValueSet", external_id="P2")
+        c = resolver(entity_type="PicklistValueSet", external_id="P3")
+        assert (a, b, c) == ("uuid-a", "uuid-b", "uuid-c")
+        assert conn.execute.call_count == 3
+
+    def test_caches_none_results(self) -> None:
+        """Resolver should also memoize None — re-querying an
+        unresolvable external_id within a chunk is wasted IO."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        conn.execute.return_value.first.return_value = None
+
+        resolver = make_parent_resolver(conn, ctx)
+        for _ in range(3):
+            r = resolver(
+                entity_type="PicklistValueSet",
+                external_id="SVS:Ghost",
+            )
+            assert r is None
+        assert conn.execute.call_count == 1
+
+
+# ----------------------------------------------------------------------
+# Detail-table integration with _materialize_chunk
+# ----------------------------------------------------------------------
+
+
+class TestMaterializeChunkDetailRows:
+    """Verify _materialize_chunk routes through detail_mappers when
+    the entity_type has a registered mapper, and skips otherwise."""
+
+    def test_calls_batch_insert_details_for_object(self) -> None:
+        """Object has a registered mapper; new entities → detail
+        rows inserted in the Object detail table."""
+        result = PhaseResult(entity_type="Object")
+        conn = MagicMock()
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            # Pipeline patches
+            mocks = {
+                name: stack.enter_context(p)
+                for name, p in zip(
+                    ("normalize", "hash", "pres", "text",
+                     "read", "insert", "close", "touch", "upsert"),
+                    _patch_pipeline(
+                        normalize_return={"name": "Account", "custom": False,
+                                          "queryable": True},
+                        presentation_return={"name": "Account",
+                                              "label": "Account"},
+                        existing_return={},  # all-new
+                        insert_return=["entity-uuid-1"],
+                    ),
+                )
+            }
+            # Patch the detail-table INSERT helper
+            mock_details = stack.enter_context(
+                patch(_patch_path("_batch_insert_details")),
+            )
+            batched_materialize(
+                _stub_ctx(), conn, "Object",
+                raw_payloads=[{"name": "Account"}],
+                result=result,
+            )
+        mock_details.assert_called_once()
+        # Verify call shape: conn, table_name, rows
+        call_args = mock_details.call_args[0]
+        assert call_args[1] == "object_details"
+        rows = call_args[2]
+        assert len(rows) == 1
+        assert rows[0]["entity_id"] == "entity-uuid-1"
+
+    def test_skips_detail_writes_for_picklist_value_set(self) -> None:
+        """PicklistValueSet has no detail-table mapper — _batch_
+        insert_details must NOT be called even when entities are
+        inserted."""
+        result = PhaseResult(entity_type="PicklistValueSet")
+        conn = MagicMock()
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("get_detail_mapper"),
+                return_value=None,
+            ))
+            mocks = {
+                name: stack.enter_context(p)
+                for name, p in zip(
+                    ("normalize", "hash", "pres", "text",
+                     "read", "insert", "close", "touch", "upsert"),
+                    _patch_pipeline(
+                        existing_return={},
+                        insert_return=["e1"],
+                    ),
+                )
+            }
+            mock_details = stack.enter_context(
+                patch(_patch_path("_batch_insert_details")),
+            )
+            batched_materialize(
+                _stub_ctx(), conn, "PicklistValueSet",
+                raw_payloads=[{"FullName": "X"}],
+                result=result,
+            )
+        mock_details.assert_not_called()
+
+    def test_detail_writes_cover_changed_bucket_too(self) -> None:
+        """Changed-bucket entities also need fresh detail rows for
+        their new entity_ids. The mapper is called once per (new +
+        changed) row total."""
+        result = PhaseResult(entity_type="Object")
+        conn = MagicMock()
+        # Two payloads: one new, one changed
+        from contextlib import ExitStack
+
+        def fake_normalize(et, raw):
+            return {"name": raw["name"], "custom": False}
+
+        def fake_hash(n):
+            # Different hash than the "existing" one to force changed
+            return f"h_{n['name']}"
+
+        with ExitStack() as stack:
+            stack.enter_context(patch(_patch_path("normalize"),
+                                      side_effect=fake_normalize))
+            stack.enter_context(patch(_patch_path("hash_normalized"),
+                                      side_effect=fake_hash))
+            stack.enter_context(patch(_patch_path("to_presentation"),
+                                      return_value={"name": "X", "label": "X"}))
+            stack.enter_context(patch(_patch_path("to_semantic_text"),
+                                      return_value="text"))
+            # Account exists with old hash; Contact is new
+            stack.enter_context(patch(
+                _patch_path("_batch_read_existing"),
+                return_value={
+                    "Account": {"id": "existing-uuid-1",
+                                "last_seed_hash": "old_hash"},
+                },
+            ))
+            stack.enter_context(patch(
+                _patch_path("_batch_insert_new_entities"),
+                # Called once for new (Contact), once for changed (Account)
+                side_effect=[["new-uuid-contact"], ["new-uuid-account"]],
+            ))
+            stack.enter_context(patch(_patch_path("_batch_close_superseded")))
+            stack.enter_context(patch(_patch_path("_batch_touch_existing")))
+            stack.enter_context(patch(_patch_path("_batch_upsert_queue")))
+            mock_details = stack.enter_context(
+                patch(_patch_path("_batch_insert_details")),
+            )
+            batched_materialize(
+                _stub_ctx(), conn, "Object",
+                raw_payloads=[
+                    {"name": "Account"},  # changed
+                    {"name": "Contact"},  # new
+                ],
+                result=result,
+            )
+        mock_details.assert_called_once()
+        rows = mock_details.call_args[0][2]
+        # 1 new + 1 changed = 2 detail rows
+        assert len(rows) == 2
+        entity_ids = {r["entity_id"] for r in rows}
+        assert entity_ids == {"new-uuid-contact", "new-uuid-account"}
+
+
+from primeqa.sync.materialize import _batch_insert_details
+
+
+class TestBatchInsertDetails:
+    def test_empty_input_is_noop(self) -> None:
+        """No detail rows → no SQL executed (guard against malformed
+        INSERT with empty VALUES list)."""
+        conn = MagicMock()
+        _batch_insert_details(conn, "object_details", [])
+        conn.execute.assert_not_called()
+
+    def test_builds_multi_row_insert(self) -> None:
+        """Multiple rows → one INSERT with VALUES (...), (...), ...
+        and bound parameters keyed by col_index."""
+        conn = MagicMock()
+        rows = [
+            {"entity_id": "u1", "is_custom": True},
+            {"entity_id": "u2", "is_custom": False},
+        ]
+        _batch_insert_details(conn, "object_details", rows)
+        conn.execute.assert_called_once()
+        # First positional arg is the text() clause; second is params
+        params = conn.execute.call_args[0][1]
+        assert params["entity_id_0"] == "u1"
+        assert params["is_custom_0"] is True
+        assert params["entity_id_1"] == "u2"
+        assert params["is_custom_1"] is False

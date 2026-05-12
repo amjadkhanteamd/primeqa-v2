@@ -6,6 +6,7 @@ import pytest
 
 from primeqa.sync.presentation import (
     _to_presentation_object,
+    _to_presentation_picklist_value,
     _to_presentation_picklist_value_set,
     to_presentation,
 )
@@ -209,3 +210,76 @@ class TestToPresentationPicklistValueSet:
         }
         presentation = _to_presentation_picklist_value_set(normalized)
         assert presentation["description"] is None
+
+
+class TestToPresentationPicklistValue:
+    def test_to_presentation_picklist_value_maps_live_shape(self) -> None:
+        """Live Salesforce shape (verified against AccountType etc.):
+        {valueName, label, default, isActive, description, ...}.
+        Adapter bridges to semantic_text input {value, set_name,
+        is_active, is_default}."""
+        normalized = {
+            "valueName": "Analyst",
+            "label": "Analyst",
+            "default": False,
+            "isActive": True,
+            "_parent_external_id": "SVS:AccountType",
+            "_sort_order": 0,
+        }
+        presentation = _to_presentation_picklist_value(normalized)
+        assert presentation["value"] == "Analyst"
+        assert presentation["set_name"] == "SVS:AccountType"
+        assert presentation["is_active"] is True
+        assert presentation["is_default"] is False
+
+    def test_to_presentation_picklist_value_treats_none_isactive_as_true(
+        self,
+    ) -> None:
+        """Salesforce returns isActive=None on standard values when
+        the flag isn't explicitly set; semantic default is active.
+        None → True (matches the detail-table mapper's convention)."""
+        normalized = {
+            "valueName": "Banking",
+            "label": "Banking",
+            "isActive": None,  # the live SVS shape
+            "default": False,
+            "_parent_external_id": "SVS:Industry",
+        }
+        presentation = _to_presentation_picklist_value(normalized)
+        assert presentation["is_active"] is True
+
+    def test_to_presentation_picklist_value_explicit_false_isactive(
+        self,
+    ) -> None:
+        """Explicit False stays False — None-as-True coercion must
+        not swallow the genuine inactive case."""
+        normalized = {
+            "valueName": "DeprecatedValue",
+            "label": "Deprecated Value",
+            "isActive": False,
+            "default": False,
+            "_parent_external_id": "MyGVS",
+        }
+        presentation = _to_presentation_picklist_value(normalized)
+        assert presentation["is_active"] is False
+
+    def test_to_presentation_picklist_value_set_name_uses_parent_marker(
+        self,
+    ) -> None:
+        """set_name in semantic_text input comes from the phase-
+        injected _parent_external_id marker — including the 'SVS:'
+        prefix for StandardValueSet sources, so the rendered text
+        reflects the namespaced identifier."""
+        gvs_normalized = {
+            "valueName": "Banking",
+            "_parent_external_id": "MyCustomGVS",
+        }
+        gvs_pres = _to_presentation_picklist_value(gvs_normalized)
+        assert gvs_pres["set_name"] == "MyCustomGVS"
+
+        svs_normalized = {
+            "valueName": "Analyst",
+            "_parent_external_id": "SVS:AccountType",
+        }
+        svs_pres = _to_presentation_picklist_value(svs_normalized)
+        assert svs_pres["set_name"] == "SVS:AccountType"

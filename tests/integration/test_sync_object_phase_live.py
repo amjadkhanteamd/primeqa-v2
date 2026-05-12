@@ -1,8 +1,9 @@
-"""Live integration test for Object + PicklistValueSet phases.
+"""Live integration test for Object + PicklistValueSet + PicklistValue
+phases, including detail-table writes.
 
 End-to-end: SyncEngine.run_sync() runs all 12 phases for a fresh
-connected_org. Object + PicklistValueSet phases materialize
-entities; other phases are no-ops returning empty results.
+connected_org. Object + PicklistValueSet + PicklistValue phases
+materialize entities; other phases are no-ops returning empty results.
 Verifies:
   - entities table populated with Object rows
   - ai_enrichment_queue populated (2 rows per entity: embedding + summary)
@@ -29,10 +30,24 @@ Verifies:
     external_id per corrections-log §8 addendum.
   - Second sync: all PVS entities also report as unchanged (no
     spurious supersession from the _source marker round-trip).
+  - PicklistValue phase extracts nested values from GVS.Metadata.
+    customValue + SVS.Metadata.standardValue. Each child PicklistValue
+    entity carries a composite external_id ({parent}.{valueName})
+    and a picklist_value_details row with picklist_value_set_entity_id
+    resolved via make_parent_resolver. Sandbox produces ~600-1500
+    PicklistValue rows (95 SVSes × varying value counts).
+  - Detail-table writes: object_details populated for every Object
+    entity, picklist_value_details populated for every PicklistValue
+    entity. FK integrity: zero orphan rows pointing at non-
+    PicklistValueSet entities or NULL.
+  - Second-sync idempotency holds for PV entities + detail rows
+    (no spurious supersession from _parent_external_id / _sort_order
+    round-tripping through normalize/hash).
 
 Cleanup: deletes all rows referencing the test connected_org's id
 (FK-aware: queue → entities → sync_runs back-ref → logical_versions
-→ sync_runs → connected_orgs).
+→ sync_runs → connected_orgs; detail rows cascade with entity
+deletes via no-cascade FK so they're deleted explicitly).
 
 Gated on @pytest.mark.sandbox; requires SF_* env vars + DATABASE_URL.
 """
@@ -135,6 +150,25 @@ def test_org(db_engine):
             )
         """), {"id": org_id})
 
+        # 3b. Delete detail rows BEFORE entities. Two reasons:
+        #   - entity_id FKs on detail tables ARE ON DELETE CASCADE,
+        #     so they'd auto-clean — but
+        #   - picklist_value_details.picklist_value_set_entity_id FK
+        #     does NOT cascade, so deleting a PVS entity while a child
+        #     PV detail row still references it via this FK would
+        #     fail the row-level constraint check.
+        # Explicit detail-row delete first avoids the ordering risk
+        # and makes the cleanup robust against future detail-table
+        # additions.
+        for detail_table in ("picklist_value_details", "object_details"):
+            conn.execute(text(f"""
+                DELETE FROM {detail_table}
+                WHERE entity_id IN (
+                    SELECT id FROM entities
+                    WHERE last_synced_from_org_id = :id
+                )
+            """), {"id": org_id})
+
         # 4. Delete entities for this org (including superseded rows)
         conn.execute(text("""
             DELETE FROM entities WHERE last_synced_from_org_id = :id
@@ -159,10 +193,11 @@ def test_org(db_engine):
         """), {"id": org_id})
 
 
-def test_live_object_and_picklist_value_set_sync(
+def test_live_object_pvs_pv_sync_with_details(
     live_sf_client, db_engine, test_org,
 ):
-    """End-to-end Object + PicklistValueSet phase cycle."""
+    """End-to-end Object + PicklistValueSet + PicklistValue phases
+    + detail-table writes."""
     from primeqa.sync.engine import SyncEngine
 
     engine = SyncEngine(
@@ -290,6 +325,87 @@ def test_live_object_and_picklist_value_set_sync(
             f"(2× entity count); got {pvs_queue}"
         )
 
+        # ----- PicklistValue entities + picklist_value_details -----
+        # PVs come from nested customValue/standardValue inside the
+        # 95-PVS sandbox set. Most SVSes have 5-20 values; floor 200
+        # for regression guard.
+        pv_count = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'PicklistValue'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert pv_count >= 200, (
+            f"Expected >=200 PicklistValue entities (regression "
+            f"floor; PVs derive from {pvs_count} PVS parents × "
+            f"~5-20 values each); got {pv_count}"
+        )
+
+        # picklist_value_details: 1 row per active PV entity
+        pv_details = conn.execute(text("""
+            SELECT COUNT(*) FROM picklist_value_details pvd
+            JOIN entities e ON e.id = pvd.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'PicklistValue'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert pv_details == pv_count, (
+            f"picklist_value_details rows ({pv_details}) != "
+            f"PicklistValue entity count ({pv_count}); detail "
+            f"mapper / batched_materialize misaligned"
+        )
+
+        # FK integrity: every PV detail row's
+        # picklist_value_set_entity_id must point at a real
+        # PicklistValueSet entity row (no NULL, no orphan, no
+        # wrong-type misroute from a parent_resolver bug).
+        orphan_count = conn.execute(text("""
+            SELECT COUNT(*) FROM picklist_value_details pvd
+            JOIN entities child ON child.id = pvd.entity_id
+            LEFT JOIN entities parent
+                ON parent.id = pvd.picklist_value_set_entity_id
+            WHERE child.last_synced_from_org_id = :id
+              AND child.entity_type = 'PicklistValue'
+              AND child.valid_to_seq IS NULL
+              AND (parent.id IS NULL
+                   OR parent.entity_type != 'PicklistValueSet')
+        """), {"id": test_org}).scalar()
+        assert orphan_count == 0, (
+            f"Found {orphan_count} PicklistValue detail rows with "
+            f"orphan or wrong-type parent FK — parent_resolver bug"
+        )
+
+        # PV enrichment queue: 2× entity count
+        pv_queue = conn.execute(text("""
+            SELECT COUNT(*) FROM ai_enrichment_queue
+            WHERE entity_type = 'PicklistValue'
+              AND entity_id IN (
+                  SELECT id FROM entities
+                  WHERE last_synced_from_org_id = :id
+                    AND entity_type = 'PicklistValue'
+              )
+        """), {"id": test_org}).scalar()
+        assert pv_queue == pv_count * 2, (
+            f"Expected {pv_count * 2} PicklistValue queue rows; "
+            f"got {pv_queue}"
+        )
+
+        # ----- Object detail-table retrofit -----
+        # object_details should now have 1 row per active Object
+        # entity (this cycle retrofits Object phase to write its
+        # detail rows via the same _DETAIL_TABLE_MAPPERS registry).
+        obj_details = conn.execute(text("""
+            SELECT COUNT(*) FROM object_details od
+            JOIN entities e ON e.id = od.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'Object'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert obj_details == object_count, (
+            f"object_details rows ({obj_details}) != Object entity "
+            f"count ({object_count}); retrofit incomplete"
+        )
+
     # ===== Second sync =====
     sync_run_id_2 = engine.run_sync(connected_org_id=test_org)
     assert sync_run_id_2 != sync_run_id_1
@@ -310,13 +426,15 @@ def test_live_object_and_picklist_value_set_sync(
             f"Second sync should report 0 superseded (hashes match); "
             f"got {run2.entities_superseded}"
         )
-        # Total unchanged = Object count + PVS count (every entity
-        # from sync 1 should have an unchanged-hash match on sync 2).
-        expected_unchanged = object_count + pvs_count
+        # Total unchanged = Object + PVS + PV counts (every entity
+        # from sync 1 should have an unchanged-hash match on sync 2,
+        # including children whose _parent_external_id + _sort_order
+        # markers round-trip through normalize/hash identically).
+        expected_unchanged = object_count + pvs_count + pv_count
         assert run2.entities_unchanged == expected_unchanged, (
             f"Second sync should report {expected_unchanged} unchanged "
-            f"(Object {object_count} + PVS {pvs_count}); "
-            f"got {run2.entities_unchanged}"
+            f"(Object {object_count} + PVS {pvs_count} + PV "
+            f"{pv_count}); got {run2.entities_unchanged}"
         )
 
         # Object queue did NOT grow (unchanged entities don't
@@ -362,4 +480,62 @@ def test_live_object_and_picklist_value_set_sync(
         assert pvs_queue_after == pvs_queue, (
             f"PVS queue should not grow on unchanged sync "
             f"({pvs_queue}); got {pvs_queue_after}"
+        )
+
+        # PV entity count unchanged + no spurious supersession.
+        # Catches a bug where _parent_external_id or _sort_order
+        # markers change between syncs (which they should not —
+        # parent identifiers and list positions are stable).
+        pv_count_after = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'PicklistValue'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert pv_count_after == pv_count, (
+            f"PV active count should remain {pv_count} after "
+            f"second sync; got {pv_count_after}"
+        )
+
+        # PV detail-row count unchanged (no new detail rows written
+        # for unchanged entities — confirms the materialize layer
+        # gates detail writes on new + changed buckets only).
+        pv_details_after = conn.execute(text("""
+            SELECT COUNT(*) FROM picklist_value_details pvd
+            JOIN entities e ON e.id = pvd.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'PicklistValue'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert pv_details_after == pv_details, (
+            f"PV detail count should remain {pv_details} after "
+            f"second sync; got {pv_details_after}"
+        )
+
+        # PV queue did not grow.
+        pv_queue_after = conn.execute(text("""
+            SELECT COUNT(*) FROM ai_enrichment_queue
+            WHERE entity_type = 'PicklistValue'
+              AND entity_id IN (
+                  SELECT id FROM entities
+                  WHERE last_synced_from_org_id = :id
+                    AND entity_type = 'PicklistValue'
+              )
+        """), {"id": test_org}).scalar()
+        assert pv_queue_after == pv_queue, (
+            f"PV queue should not grow on unchanged sync "
+            f"({pv_queue}); got {pv_queue_after}"
+        )
+
+        # Object detail rows also stable across syncs.
+        obj_details_after = conn.execute(text("""
+            SELECT COUNT(*) FROM object_details od
+            JOIN entities e ON e.id = od.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'Object'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert obj_details_after == obj_details, (
+            f"object_details count should remain {obj_details} "
+            f"after second sync; got {obj_details_after}"
         )

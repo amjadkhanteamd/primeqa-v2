@@ -451,3 +451,32 @@ normalized hash — a record's source is part of its identity.
 One-time GVS supersession on first-sync-after-this-cycle is
 expected and harmless.
 
+## §9: SVS-catalog re-fetch in PicklistValue phase
+
+**Date:** 2026-05-12
+**Step:** PicklistValue phase implementation (cycle 3 of 12)
+**Source:** Live test wall-clock observation — PicklistValue
+            phase re-fetches both GVS and SVS streams to extract
+            nested values, redundant with PicklistValueSet phase's
+            earlier fetch of the same data
+
+PicklistValue values come nested inside the GVS/SVS records that
+PicklistValueSet phase already fetched. Re-fetching in
+phase_picklist_value is ~7 min wall-clock on this sandbox (the
+616-entry SVS catalog with per-label Metadata fetch).
+
+Possible optimization: thread parent records from PicklistValueSet
+phase into PicklistValue phase via SyncContext caching.
+
+Architectural cost:
+- SyncContext gains per-entity-type caching
+- Phase ordering becomes explicit (currently any phase can run
+  independently with its own fetches)
+- Need to clear cache when sync_run completes to avoid leaking
+  between runs
+
+Not implemented now. Deferred until either (a) total sync
+wall-clock becomes a customer-visible problem, or (b) we have
+multiple phases with redundant fetches and a uniform solution
+is worth designing.
+

@@ -52,7 +52,7 @@ class TestPhaseRegistry:
         # Real phase implementations live elsewhere and are tested
         # separately; this test covers only the remaining no-op
         # placeholders.
-        real_phases = {"Object", "PicklistValueSet"}
+        real_phases = {"Object", "PicklistValueSet", "PicklistValue"}
         for entity_type, phase_fn in PHASE_REGISTRY.items():
             if entity_type in real_phases:
                 continue
@@ -348,3 +348,145 @@ class TestPhasePicklistValueSet:
         combined = mock_bm.call_args.kwargs["raw_payloads"]
         assert len(combined) == 1
         assert combined[0]["_source"] == "StandardValueSet"
+
+
+# ----------------------------------------------------------------------
+# phase_picklist_value — third real phase; first to derive children
+# from already-fetched parent records
+# ----------------------------------------------------------------------
+
+from primeqa.sync.phases import phase_picklist_value
+
+
+class TestPhasePicklistValue:
+    def test_phase_picklist_value_calls_both_parent_fetchers(self) -> None:
+        '''No fresh SF call exclusive to PV — values come nested
+        inside GVS + SVS records. Phase re-fetches via the same
+        methods PVS phase used.'''
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_global_value_sets.return_value = []
+        ctx.sf_client.fetch_standard_value_sets.return_value = []
+        conn = MagicMock()
+        with patch('primeqa.sync.phases.batched_materialize'):
+            phase_picklist_value(ctx, conn)
+        ctx.sf_client.fetch_global_value_sets.assert_called_once_with()
+        ctx.sf_client.fetch_standard_value_sets.assert_called_once_with(
+            labels=None,
+        )
+
+    def test_phase_picklist_value_extracts_gvs_values(self) -> None:
+        '''Each GVS's Metadata.customValue entries become
+        PicklistValue raw payloads with the parent_external_id
+        unprefixed (GVS contract).'''
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_global_value_sets.return_value = [
+            {
+                'FullName': 'MyGVS',
+                'Metadata': {
+                    'customValue': [
+                        {'valueName': 'Banking', 'label': 'Banking'},
+                        {'valueName': 'Tech', 'label': 'Technology'},
+                    ],
+                },
+            },
+        ]
+        ctx.sf_client.fetch_standard_value_sets.return_value = []
+        conn = MagicMock()
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm:
+            phase_picklist_value(ctx, conn)
+        mock_bm.assert_called_once()
+        payloads = mock_bm.call_args.kwargs['raw_payloads']
+        assert len(payloads) == 2
+        assert payloads[0]['_parent_external_id'] == 'MyGVS'
+        assert payloads[0]['_sort_order'] == 0
+        assert payloads[0]['valueName'] == 'Banking'
+        assert payloads[1]['_parent_external_id'] == 'MyGVS'
+        assert payloads[1]['_sort_order'] == 1
+
+    def test_phase_picklist_value_extracts_svs_values_with_prefix(
+        self,
+    ) -> None:
+        '''SVS values get parent_external_id with the 'SVS:' prefix
+        so child external_ids inherit the namespace.'''
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_global_value_sets.return_value = []
+        ctx.sf_client.fetch_standard_value_sets.return_value = [
+            {
+                'FullName': 'AccountType',
+                'Metadata': {
+                    'standardValue': [
+                        {'valueName': 'Analyst', 'label': 'Analyst',
+                         'isActive': None, 'default': False},
+                    ],
+                },
+            },
+        ]
+        conn = MagicMock()
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm:
+            phase_picklist_value(ctx, conn)
+        payloads = mock_bm.call_args.kwargs['raw_payloads']
+        assert len(payloads) == 1
+        assert payloads[0]['_parent_external_id'] == 'SVS:AccountType'
+        assert payloads[0]['_sort_order'] == 0
+        assert payloads[0]['valueName'] == 'Analyst'
+
+    def test_phase_picklist_value_handles_empty_value_lists(self) -> None:
+        '''A parent with empty customValue/standardValue contributes
+        no PV payloads. Empty parents are common — most uncustomized
+        sandbox SVSes return an empty value list.'''
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_global_value_sets.return_value = []
+        ctx.sf_client.fetch_standard_value_sets.return_value = [
+            {'FullName': 'EmptyVS', 'Metadata': {'standardValue': []}},
+            {'FullName': 'NullMetaVS', 'Metadata': None},
+            {'FullName': 'MissingMetaVS'},  # no Metadata key at all
+        ]
+        conn = MagicMock()
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm:
+            phase_picklist_value(ctx, conn)
+        # All three parents have no values → no payloads → no call
+        mock_bm.assert_not_called()
+
+    def test_phase_picklist_value_skips_value_with_missing_value_name(
+        self,
+    ) -> None:
+        '''Defensive: Metadata API occasionally returns placeholder
+        entries with empty/missing valueName. The phase function
+        filters these so downstream external_id construction
+        doesn't fail.'''
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_global_value_sets.return_value = []
+        ctx.sf_client.fetch_standard_value_sets.return_value = [
+            {
+                'FullName': 'PartialVS',
+                'Metadata': {
+                    'standardValue': [
+                        {'valueName': 'Good', 'label': 'Good'},
+                        {'valueName': '', 'label': 'Blank'},  # filtered
+                        {'label': 'NoValueName'},  # filtered
+                        'NotADict',  # filtered
+                    ],
+                },
+            },
+        ]
+        conn = MagicMock()
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm:
+            phase_picklist_value(ctx, conn)
+        payloads = mock_bm.call_args.kwargs['raw_payloads']
+        assert len(payloads) == 1
+        assert payloads[0]['valueName'] == 'Good'
+
+    def test_phase_picklist_value_empty_no_call(self) -> None:
+        '''Both fetchers return [] → no batched_materialize call →
+        all-zero PhaseResult.'''
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_global_value_sets.return_value = []
+        ctx.sf_client.fetch_standard_value_sets.return_value = []
+        conn = MagicMock()
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm:
+            result = phase_picklist_value(ctx, conn)
+        mock_bm.assert_not_called()
+        assert result.entity_type == 'PicklistValue'
+        assert result.entities_inserted == 0
+        assert result.succeeded is True
+

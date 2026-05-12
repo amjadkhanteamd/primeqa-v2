@@ -105,9 +105,49 @@ def _to_presentation_picklist_value_set(
     }
 
 
+def _to_presentation_picklist_value(
+    normalized: dict[str, Any],
+) -> dict[str, Any]:
+    """Map normalized PicklistValue to semantic_text input shape.
+
+    Live Salesforce shape from Tooling API customValue/standardValue
+    entries (verified live against AccountType, Industry,
+    OpportunityStage):
+        valueName        — value identifier (e.g., 'Analyst')
+        label            — display label (e.g., 'Analyst' or 'Account
+                           Executive'); occasionally None on synthetic
+                           catalog entries
+        default          — bool, is this the default value?
+        isActive         — tri-state: True / False / None.
+                           Salesforce returns null when isActive isn't
+                           explicitly set on a Standard value (default
+                           semantic = active). Treat None as True.
+        description      — usually None
+        + 13 domain-specific keys (color, won, closed, forecastCategory,
+          probability, ...) — not surfaced in semantic_text
+
+    Substrate-1's _to_text_picklist_value reads {value, set_name,
+    is_active, is_default}. set_name comes from the phase-injected
+    _parent_external_id marker (matches the parent PicklistValueSet's
+    external_id, which is itself namespaced with SVS: prefix for
+    StandardValueSet sources).
+
+    is_active is_not_False rather than truthy: this preserves the
+    "None means active" Salesforce convention. Truthy on None would
+    coerce to False, which inverts the semantic.
+    """
+    return {
+        "value": normalized.get("valueName"),
+        "set_name": normalized.get("_parent_external_id"),
+        "is_active": normalized.get("isActive") is not False,
+        "is_default": bool(normalized.get("default", False)),
+    }
+
+
 _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "Object": _to_presentation_object,
     "PicklistValueSet": _to_presentation_picklist_value_set,
+    "PicklistValue": _to_presentation_picklist_value,
     # Other entity types added by their respective phase cycles per
     # PHASE_2_PLAN_corrections.md §7.
 }
