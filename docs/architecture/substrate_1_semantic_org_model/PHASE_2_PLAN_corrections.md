@@ -480,6 +480,84 @@ wall-clock becomes a customer-visible problem, or (b) we have
 multiple phases with redundant fetches and a uniform solution
 is worth designing.
 
+## §10: HAS_PICKLIST_VALUES deferred — REST describe doesn't expose GVS refs
+
+**Date:** 2026-05-12
+**Step:** Field phase (4 of 12) — first edge-writing phase
+**Source:** Field phase live probe of standard picklist fields
+            (Account.Industry, Account.AccountSource) showed no
+            valueSet/valueSetName key in REST describe response
+
+Substrate-1's TIER_1_EDGES has HAS_PICKLIST_VALUES (Field →
+PicklistValueSet), but the REST sObject describe endpoint
+(fetch_fields_for_object) does NOT expose value-set references.
+Standard picklist fields expose inline picklistValues only;
+global-value-set-referencing fields expose the same inline view.
+
+Detecting GVS references requires the Tooling API path:
+  SELECT Id, Metadata FROM CustomField WHERE Id = '...'
+per the §1 Metadata 1-row constraint. The CustomField record's
+Metadata.valueSet.valueSetName carries the GVS FullName.
+
+Substrate-1 does not have fetch_custom_field_metadata today.
+Adding it is a Category-2 (two-phase Tooling+Metadata) fetcher
+similar to fetch_validation_rules.
+
+Additionally, standard-value-set references (e.g., Account.
+AccountSource → SVS:AccountSource) are not directly exposed by
+any single API; detection would require content-matching field
+picklistValues against each SVS's standardValue list.
+
+**Resolution:** HAS_PICKLIST_VALUES deferred to a dedicated
+cycle that adds fetch_custom_field_metadata. Sandbox has 0
+GVSes, so the deferral has zero observable test impact today;
+field_details.picklist_value_set_entity_id stays NULL for all
+Field rows until that cycle lands. Schema accommodates the
+future fill (column already nullable).
+
+**Pattern for future cycles:** REST describe is the "fast path"
+for Salesforce metadata but is incomplete for several
+cross-entity relationship details. When the sync needs a piece
+of metadata that REST doesn't expose, expect a Category-2
+Tooling+Metadata fetcher to be the answer.
+
+## §11: Edge supersession semantics — property-less edges use identity-based diff
+
+**Date:** 2026-05-12
+**Step:** Field phase (4 of 12) — first edge-writing phase
+**Source:** Survey of TIER_1_EDGES revealed BELONGS_TO,
+            HAS_PICKLIST_VALUES, HAS_RELATIONSHIP_TO all have
+            properties_schema=None; substrate-1's
+            validate_edge_properties accepts only empty dict
+            for these.
+
+Substrate-1's TIER_1_EDGES has both:
+- Property-less edge types (BELONGS_TO, HAS_RELATIONSHIP_TO,
+  HAS_PICKLIST_VALUES, HAS_PROFILE per the validate function
+  docstring) — properties_schema=None; the edge accepts only {}
+- Property-bearing edge types (INCLUDES_FIELD with positional
+  field-order metadata, GRANTS_OBJECT_ACCESS with permission
+  flags, etc.) — properties_schema defines required fields
+
+For property-less edges, edge identity is the tuple
+(source_id, target_id, edge_type). There is no per-edge
+properties dict to hash. Supersession is binary:
+- In incoming sync set, not in existing-active set → INSERT
+- In existing-active set, not in incoming set → close
+  (valid_to_seq = current logical_version_seq - 1)
+- In both sets → no-op (unchanged)
+
+No properties_hash column needed; sync_engine doesn't compute
+hashes for these edges. Set-difference is sufficient.
+
+When property-bearing edge types land in their respective phase
+cycles (Layout for INCLUDES_FIELD; Profile / PermissionSet for
+GRANTS_*), the supersession algorithm extends with hash-compare
+semantics for the properties dict, mirroring entity supersession.
+At that point, adding a last_seed_hash column to the edges table
+may make sense; for now, deferred per YAGNI (the column doesn't
+benefit any current edge type and would just be unused weight).
+
 ## §12: Edges containment-unique index narrowed to BELONGS_TO
 
 **Date:** 2026-05-12

@@ -8,11 +8,12 @@ behavior.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
 from primeqa.sync.detail_mappers import (
+    _map_field_details,
     _map_object_details,
     _map_picklist_value_details,
     get_detail_mapper,
@@ -256,3 +257,163 @@ class TestGetDetailMapper:
         caller's concern — materialize uses get_detail_mapper as a
         feature-flag, not a lookup."""
         assert get_detail_mapper("NotARealEntity") is None
+
+    def test_get_detail_mapper_returns_tuple_for_field(self) -> None:
+        """Field is registered — returns ('field_details', mapper)."""
+        result = get_detail_mapper("Field")
+        assert result is not None
+        table_name, mapper = result
+        assert table_name == "field_details"
+        assert mapper is _map_field_details
+
+
+class TestMapFieldDetails:
+    def _normalized(self, **overrides) -> dict:
+        base = {
+            "name": "Industry",
+            "type": "picklist",
+            "label": "Industry",
+            "custom": False,
+            "nillable": True,
+            "unique": False,
+            "externalId": False,
+            "calculated": False,
+            "filterable": True,
+            "sortable": True,
+            "length": 40,
+            "precision": 0,
+            "scale": 0,
+            "referenceTo": [],
+            "_parent_object_api_name": "Account",
+        }
+        base.update(overrides)
+        return base
+
+    def test_map_field_details_resolves_parent_object(self) -> None:
+        """The _parent_object_api_name marker drives the
+        object_entity_id FK resolution."""
+        resolver = MagicMock(return_value="obj-account-uuid")
+        row = _map_field_details(
+            normalized=self._normalized(),
+            entity_id="fld-industry-uuid",
+            parent_resolver=resolver,
+        )
+        # First call is the parent Object resolution
+        assert resolver.call_args_list[0] == call(
+            entity_type="Object", external_id="Account",
+        )
+        assert row["entity_id"] == "fld-industry-uuid"
+        assert row["object_entity_id"] == "obj-account-uuid"
+        assert row["field_type"] == "picklist"
+        # No referenceTo → null FK column, picklist_value_set
+        # always null this cycle
+        assert row["references_object_entity_id"] is None
+        assert row["picklist_value_set_entity_id"] is None
+        # Hot booleans + INTs from normalized
+        assert row["is_custom"] is False
+        assert row["is_nillable"] is True
+        assert row["is_filterable"] is True
+        assert row["length"] == 40
+
+    def test_map_field_details_resolves_reference_target(self) -> None:
+        """A reference-typed field with referenceTo=['User'] resolves
+        references_object_entity_id from the FIRST target. Polymorphic
+        refs lose secondary targets at the detail-table level (full
+        set is in HAS_RELATIONSHIP_TO edges)."""
+        # Resolver returns different ids per (entity_type, external_id)
+        def resolver(*, entity_type, external_id):
+            return {
+                ("Object", "Account"): "obj-account",
+                ("Object", "User"): "obj-user",
+            }[(entity_type, external_id)]
+        row = _map_field_details(
+            normalized=self._normalized(
+                name="OwnerId", type="reference",
+                referenceTo=["User"], nillable=False,
+            ),
+            entity_id="fld-owner-uuid",
+            parent_resolver=resolver,
+        )
+        assert row["object_entity_id"] == "obj-account"
+        assert row["references_object_entity_id"] == "obj-user"
+        assert row["field_type"] == "reference"
+        assert row["is_nillable"] is False
+
+    def test_map_field_details_polymorphic_takes_first_target_only(
+        self,
+    ) -> None:
+        """Polymorphic ref (Task.WhoId → Contact OR Lead): detail
+        column gets only the first target. Edges layer captures the
+        full multi-target relationship."""
+        def resolver(*, entity_type, external_id):
+            return {
+                ("Object", "Task"): "obj-task",
+                ("Object", "Contact"): "obj-contact",
+                ("Object", "Lead"): "obj-lead",
+            }[(entity_type, external_id)]
+        row = _map_field_details(
+            normalized=self._normalized(
+                name="WhoId", type="reference",
+                referenceTo=["Contact", "Lead"],
+                _parent_object_api_name="Task",
+            ),
+            entity_id="fld-who",
+            parent_resolver=resolver,
+        )
+        # references_object_entity_id takes referenceTo[0] (Contact)
+        assert row["references_object_entity_id"] == "obj-contact"
+
+    def test_map_field_details_unresolvable_ref_target_is_null(
+        self,
+    ) -> None:
+        """If reference target Object isn't materialized (filtered
+        by Object phase syncability filter), references_object_entity_id
+        stays NULL. Column is nullable; this is the right semantic —
+        keep the field's detail row, lose the dangling reference."""
+        def resolver(*, entity_type, external_id):
+            return {
+                ("Object", "Account"): "obj-account",
+                # Quote not in the synced set
+            }.get((entity_type, external_id))
+        row = _map_field_details(
+            normalized=self._normalized(
+                name="QuoteId", type="reference",
+                referenceTo=["Quote"],
+            ),
+            entity_id="fld-quote",
+            parent_resolver=resolver,
+        )
+        assert row["object_entity_id"] == "obj-account"
+        assert row["references_object_entity_id"] is None
+
+    def test_map_field_details_raises_on_missing_parent_marker(
+        self,
+    ) -> None:
+        """Missing _parent_object_api_name marker → ValueError naming
+        the missing marker. Phase function bug detection."""
+        normalized = self._normalized()
+        normalized.pop("_parent_object_api_name")
+        with pytest.raises(ValueError) as excinfo:
+            _map_field_details(
+                normalized=normalized, entity_id="x",
+                parent_resolver=lambda **_: "parent",
+            )
+        assert "_parent_object_api_name" in str(excinfo.value)
+
+    def test_map_field_details_raises_on_unresolvable_parent(
+        self,
+    ) -> None:
+        """Unresolvable parent Object → ValueError naming the parent
+        and pointing at ENTITY_ORDER. NOT NULL column means we MUST
+        fail rather than write NULL."""
+        with pytest.raises(ValueError) as excinfo:
+            _map_field_details(
+                normalized=self._normalized(
+                    _parent_object_api_name="MysteryObject",
+                ),
+                entity_id="x",
+                parent_resolver=lambda **_: None,
+            )
+        msg = str(excinfo.value)
+        assert "MysteryObject" in msg
+        assert "ENTITY_ORDER" in msg

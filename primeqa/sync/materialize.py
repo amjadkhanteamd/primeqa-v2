@@ -99,16 +99,32 @@ def batched_materialize(
     raw_payloads: list[dict[str, Any]],
     result: PhaseResult,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
-) -> None:
+    return_id_map: bool = False,
+) -> Optional[dict[str, str]]:
     """Batched normalize → bucket → write → enqueue for one
     entity type.
 
     Iterates raw_payloads in chunk_size-row chunks. Counters on
     `result` accumulate across chunks. No-op if raw_payloads is empty.
+
+    When return_id_map=True, returns a dict mapping every input
+    payload's external_id to its entity_id (covering new + changed
+    + unchanged buckets). Used by phase functions that need entity
+    ids to construct edges in a follow-on call to
+    materialize_edges_for_entities. Returns None when
+    return_id_map=False (the default) so callers that don't need
+    the map don't pay the accumulation cost.
     """
+    aggregate_id_map: dict[str, str] = {} if return_id_map else None  # type: ignore[assignment]
     for chunk_start in range(0, len(raw_payloads), chunk_size):
         chunk = raw_payloads[chunk_start:chunk_start + chunk_size]
-        _materialize_chunk(ctx, conn, entity_type, chunk, result)
+        chunk_id_map = _materialize_chunk(
+            ctx, conn, entity_type, chunk, result,
+            return_id_map=return_id_map,
+        )
+        if return_id_map and chunk_id_map:
+            aggregate_id_map.update(chunk_id_map)
+    return aggregate_id_map if return_id_map else None
 
 
 def _materialize_chunk(
@@ -117,10 +133,17 @@ def _materialize_chunk(
     entity_type: str,
     raw_chunk: list[dict[str, Any]],
     result: PhaseResult,
-) -> None:
-    """Process one chunk through full read→bucket→write→enqueue cycle."""
+    return_id_map: bool = False,
+) -> Optional[dict[str, str]]:
+    """Process one chunk through full read→bucket→write→enqueue cycle.
+
+    When return_id_map=True, returns {external_id: entity_id} for
+    every entity in the chunk (new + changed + unchanged). Used by
+    phase functions that need to construct edges from materialized
+    entities — see materialize_edges_for_entities.
+    """
     if not raw_chunk:
-        return
+        return {} if return_id_map else None
 
     # 1. Compute-only stage: prepare EntityForWrite objects.
     incoming: list[EntityForWrite] = []
@@ -216,6 +239,25 @@ def _materialize_chunk(
         result.embeddings_queued += len(entity_ids_needing_enrichment)
         result.summaries_queued += len(entity_ids_needing_enrichment)
 
+    # 6. (Optional) Build {external_id: entity_id} for callers
+    # that need to construct edges from this chunk's entities.
+    # Skipped when return_id_map=False (most callers don't need it
+    # and the dict-build cost is non-trivial at high cardinality).
+    if return_id_map:
+        chunk_id_map: dict[str, str] = {}
+        for e, eid in zip(buckets.new, new_entity_ids):
+            chunk_id_map[e.external_id] = eid
+        for e, eid in zip(buckets.changed, changed_new_ids):
+            chunk_id_map[e.external_id] = eid
+        # Unchanged: pull from the existing_rows dict (keyed by
+        # external_id, value carries 'id'). Source of truth is the
+        # SELECT we already did at the top of this chunk.
+        for ext_id, ext_row in existing_rows.items():
+            if ext_id not in chunk_id_map:
+                chunk_id_map[ext_id] = ext_row["id"]
+        return chunk_id_map
+    return None
+
 
 def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
     """Per-entity-type external_id extraction.
@@ -258,6 +300,17 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
                 f"valueName={value_name!r}"
             )
         return f"{parent}.{value_name}"
+    if entity_type == "Field":
+        parent = raw.get("_parent_object_api_name")
+        name = raw.get("name")
+        if not parent or not name:
+            raise ValueError(
+                f"Field requires both '_parent_object_api_name' "
+                f"(injected by phase_field) and 'name' (from "
+                f"Salesforce describe); got parent={parent!r}, "
+                f"name={name!r}"
+            )
+        return f"{parent}.{name}"
     raise KeyError(
         f"No external_id extractor for entity_type "
         f"{entity_type!r}. Add to "
@@ -600,3 +653,284 @@ def _batch_insert_details(
         VALUES {', '.join(values_clauses)}
     """
     conn.execute(text(sql), params)
+
+
+# ----------------------------------------------------------------------
+# Edge writes — property-less edges
+# ----------------------------------------------------------------------
+#
+# Identity for property-less edges (TIER_1_EDGES properties_schema=
+# None) is the triple (source_entity_id, target_entity_id, edge_type).
+# Supersession is binary set-difference, not hash-compare:
+#
+#   incoming_set − existing_active_set → INSERT (new edges)
+#   existing_active_set − incoming_set → close (set valid_to_seq)
+#   intersection                        → no-op (already active)
+#
+# When property-bearing edges land (INCLUDES_FIELD, GRANTS_*, etc.),
+# extend the bucketing with a properties-hash compare for the
+# intersection set — same pattern as entity supersession in
+# bucket_entities(). Documented in corrections-log §11.
+
+
+def _lookup_edge_category(edge_type: str) -> str:
+    """Look up an edge_type's category from substrate-1's TIER_1_EDGES.
+
+    Category is required when writing the edges row (edges.edge_category
+    NOT NULL CHECK). Reading from TIER_1_EDGES (rather than hardcoding
+    here) keeps substrate-1 as the single source of truth — if
+    TIER_1_EDGES.BELONGS_TO.category changes from STRUCTURAL to
+    something else, our writes follow automatically.
+    """
+    from primeqa.semantic.edges import TIER_1_EDGES
+    return TIER_1_EDGES[edge_type].category
+
+
+def _batch_read_existing_edges_for_sources(
+    conn: Any,
+    edge_type: str,
+    source_entity_ids: list[str],
+) -> set[tuple[str, str]]:
+    """Batched SELECT — currently-active edges of `edge_type` sourced
+    from any of `source_entity_ids`.
+
+    Returns a set of (source_id, target_id) tuples. The set form is
+    the natural representation for the bucketing step (set-difference
+    against the incoming set).
+
+    Filter: WHERE edge_type = ... AND source_entity_id = ANY(...)
+            AND valid_to_seq IS NULL  -- currently-active only
+
+    No org-scope filter here — edges don't carry a connected-org
+    column. Scope is implicit via source_entity_ids (which were
+    already filtered by org at the calling phase). Empty input
+    short-circuits to empty set.
+    """
+    if not source_entity_ids:
+        return set()
+    rows = conn.execute(text("""
+        SELECT source_entity_id, target_entity_id FROM edges
+        WHERE edge_type = :edge_type
+          AND source_entity_id = ANY(CAST(:ids AS uuid[]))
+          AND valid_to_seq IS NULL
+    """), {
+        "edge_type": edge_type,
+        "ids": source_entity_ids,
+    }).fetchall()
+    return {(str(row.source_entity_id), str(row.target_entity_id))
+            for row in rows}
+
+
+def _batch_insert_new_edges(
+    conn: Any,
+    ctx: SyncContext,
+    edge_type: str,
+    edge_category: str,
+    new_pairs: list[tuple[str, str]],
+) -> None:
+    """Multi-row INSERT for new property-less edges.
+
+    Columns populated explicitly:
+      source_entity_id, target_entity_id, edge_type, edge_category,
+      valid_from_seq
+    Columns left to DB defaults:
+      id (gen_random_uuid), properties ('{}'::jsonb),
+      valid_to_seq (NULL), tenant_id (current_setting),
+      created_at (NOW())
+
+    Empty input is a no-op (defensive).
+    """
+    if not new_pairs:
+        return
+    values_clauses: list[str] = []
+    params: dict[str, Any] = {
+        "edge_type": edge_type,
+        "edge_category": edge_category,
+        "valid_from_seq": ctx.logical_version_seq,
+    }
+    for i, (sid, tid) in enumerate(new_pairs):
+        values_clauses.append(
+            f"(CAST(:source_{i} AS uuid), CAST(:target_{i} AS uuid), "
+            f":edge_type, :edge_category, :valid_from_seq)"
+        )
+        params[f"source_{i}"] = sid
+        params[f"target_{i}"] = tid
+    sql = f"""
+        INSERT INTO edges (
+            source_entity_id, target_entity_id, edge_type,
+            edge_category, valid_from_seq
+        )
+        VALUES {', '.join(values_clauses)}
+    """
+    conn.execute(text(sql), params)
+
+
+def _batch_close_superseded_edges(
+    conn: Any,
+    ctx: SyncContext,
+    edge_type: str,
+    superseded_pairs: list[tuple[str, str]],
+) -> None:
+    """Multi-row UPDATE: close edges whose (source, target) pair is
+    no longer in the incoming set.
+
+    Uses Postgres tuple-IN syntax with explicit UUID casts. SQLAlchemy
+    text() parses `::` as a malformed bind token (see module docstring
+    on the CAST(...) AS ... ANSI form); same idiom here for the
+    per-tuple values.
+
+    Closed-open SCD: sets valid_to_seq = ctx.logical_version_seq.
+    Old edge valid for [valid_from_seq, valid_to_seq); new sync
+    picks up at logical_version_seq. The edges_validity_range
+    CHECK (valid_to_seq IS NULL OR > valid_from_seq) holds because
+    logical_version_seq is strictly increasing across sync_runs.
+    """
+    if not superseded_pairs:
+        return
+    pair_clauses: list[str] = []
+    params: dict[str, Any] = {
+        "edge_type": edge_type,
+        "close_seq": ctx.logical_version_seq,
+    }
+    for i, (sid, tid) in enumerate(superseded_pairs):
+        pair_clauses.append(
+            f"(CAST(:source_{i} AS uuid), CAST(:target_{i} AS uuid))"
+        )
+        params[f"source_{i}"] = sid
+        params[f"target_{i}"] = tid
+    sql = f"""
+        UPDATE edges
+        SET valid_to_seq = :close_seq
+        WHERE edge_type = :edge_type
+          AND valid_to_seq IS NULL
+          AND (source_entity_id, target_entity_id) IN ({', '.join(pair_clauses)})
+    """
+    conn.execute(text(sql), params)
+
+
+def batched_materialize_property_less_edges(
+    ctx: SyncContext,
+    conn: Any,
+    edge_writes: list[tuple[str, str, str, str]],
+    result: PhaseResult,
+) -> None:
+    """Drive the property-less edge supersession pipeline.
+
+    edge_writes: list of (source_id, target_id, edge_type,
+                          edge_category) tuples — every edge this
+                          sync wants currently active.
+
+    Groups by edge_type internally so each edge_type's bucketing
+    happens against a same-edge-type existing-set. Counters
+    accumulated on `result.edges_inserted` / `result.edges_superseded`.
+    Unchanged edges (in both incoming and existing sets) are
+    no-ops — neither counted nor touched.
+    """
+    if not edge_writes:
+        return
+
+    # Group by edge_type. categories[edge_type] is consistent
+    # because edge_category is derived from edge_type via TIER_1_EDGES.
+    by_type: dict[str, list[tuple[str, str]]] = {}
+    categories: dict[str, str] = {}
+    for sid, tid, etype, ecat in edge_writes:
+        by_type.setdefault(etype, []).append((sid, tid))
+        categories[etype] = ecat
+
+    for etype, pairs in by_type.items():
+        incoming_set = set(pairs)
+        source_ids = sorted({sid for sid, _ in pairs})
+
+        existing_set = _batch_read_existing_edges_for_sources(
+            conn, etype, source_ids,
+        )
+
+        new_pairs = incoming_set - existing_set
+        superseded_pairs = existing_set - incoming_set
+        # intersection = unchanged; no-op.
+
+        if new_pairs:
+            _batch_insert_new_edges(
+                conn, ctx, etype, categories[etype], list(new_pairs),
+            )
+            result.edges_inserted += len(new_pairs)
+
+        if superseded_pairs:
+            _batch_close_superseded_edges(
+                conn, ctx, etype, list(superseded_pairs),
+            )
+            result.edges_superseded += len(superseded_pairs)
+
+
+def materialize_edges_for_entities(
+    ctx: SyncContext,
+    conn: Any,
+    source_entity_type: str,
+    entity_id_map: dict[str, str],
+    normalized_payloads: list[dict[str, Any]],
+    result: PhaseResult,
+) -> None:
+    """Compose: read edge_specs for `source_entity_type`, extract
+    per-payload target external_ids, resolve target entity_ids via
+    parent_resolver, then call the batched edge-write pipeline.
+
+    entity_id_map: {external_id: entity_id} for the source entities
+    just materialized (typically the return value of
+    batched_materialize(..., return_id_map=True)).
+
+    normalized_payloads: the same source entities' normalized
+    payloads (used to feed the per-spec extractors). Must be aligned
+    in semantics with the entity_id_map keys — each payload's
+    external_id (per _extract_external_id) must match a key in the
+    map.
+
+    Targets that don't resolve to a materialized entity_id are
+    silently skipped. This is the right semantics for cases like
+    a Field referenceTo='Quote' where Quote was filtered out by
+    Object phase's syncability filter — we don't want to write a
+    dangling edge, and we also don't want to fail the whole sync.
+    Skipped targets could be logged for diagnostics in a future
+    cycle if customers report missing edges.
+    """
+    from primeqa.sync.edge_specs import get_edge_specs
+
+    specs = get_edge_specs(source_entity_type)
+    if not specs:
+        return
+
+    parent_resolver = make_parent_resolver(conn, ctx)
+    edge_writes: list[tuple[str, str, str, str]] = []
+
+    for normalized in normalized_payloads:
+        source_external_id = _extract_external_id(
+            source_entity_type, normalized,
+        )
+        source_id = entity_id_map.get(source_external_id)
+        if source_id is None:
+            # Source entity wasn't in this batch's id_map; skip.
+            # Defensive — normally every payload in normalized_payloads
+            # comes from the same batched_materialize call that built
+            # the id_map.
+            continue
+
+        for spec in specs:
+            edge_category = _lookup_edge_category(spec.edge_type)
+            target_external_ids = spec.extract_target_external_ids(
+                normalized,
+            )
+            for target_external_id in target_external_ids:
+                target_id = parent_resolver(
+                    entity_type=spec.target_entity_type,
+                    external_id=target_external_id,
+                )
+                if target_id is None:
+                    continue
+                edge_writes.append((
+                    source_id, target_id,
+                    spec.edge_type, edge_category,
+                ))
+
+    if edge_writes:
+        batched_materialize_property_less_edges(
+            ctx, conn, edge_writes, result,
+        )

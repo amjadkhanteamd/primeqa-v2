@@ -52,7 +52,7 @@ class TestPhaseRegistry:
         # Real phase implementations live elsewhere and are tested
         # separately; this test covers only the remaining no-op
         # placeholders.
-        real_phases = {"Object", "PicklistValueSet", "PicklistValue"}
+        real_phases = {"Object", "PicklistValueSet", "PicklistValue", "Field"}
         for entity_type, phase_fn in PHASE_REGISTRY.items():
             if entity_type in real_phases:
                 continue
@@ -490,3 +490,126 @@ class TestPhasePicklistValue:
         assert result.entities_inserted == 0
         assert result.succeeded is True
 
+
+
+# ----------------------------------------------------------------------
+# phase_field — fourth real phase; FIRST edge-writing phase
+# ----------------------------------------------------------------------
+
+from primeqa.sync.phases import phase_field
+
+
+class TestPhaseField:
+    def _ctx_with_objects(self, object_rows):
+        """Set up ctx + conn where the Object SELECT returns the given
+        rows. Each row is a (id, sf_api_name) namedtuple-style."""
+        ctx = _stub_ctx_with_mock_sf()
+        conn = MagicMock()
+        # The Object SELECT inside phase_field
+        conn.execute.return_value.fetchall.return_value = [
+            type('R', (), {'id': r[0], 'sf_api_name': r[1]})()
+            for r in object_rows
+        ]
+        return ctx, conn
+
+    def test_phase_field_iterates_over_object_entities(self) -> None:
+        """phase_field reads currently-active Object entities from this
+        sync's data and calls fetch_fields_for_object once per Object."""
+        ctx, conn = self._ctx_with_objects([
+            ('obj-acc', 'Account'),
+            ('obj-con', 'Contact'),
+        ])
+        ctx.sf_client.fetch_fields_for_object.return_value = []
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            phase_field(ctx, conn)
+        # Called once per Object
+        assert ctx.sf_client.fetch_fields_for_object.call_count == 2
+        ctx.sf_client.fetch_fields_for_object.assert_any_call('Account')
+        ctx.sf_client.fetch_fields_for_object.assert_any_call('Contact')
+        # No fields → no materialize
+        mock_bm.assert_not_called()
+
+    def test_phase_field_decorates_fields_with_parent_marker(
+        self,
+    ) -> None:
+        """Each field payload is tagged with _parent_object_api_name
+        before going to batched_materialize. Marker drives both
+        external_id construction and detail-row FK resolution."""
+        ctx, conn = self._ctx_with_objects([('obj-acc', 'Account')])
+        ctx.sf_client.fetch_fields_for_object.return_value = [
+            {'name': 'Industry', 'type': 'picklist'},
+            {'name': 'Name', 'type': 'string'},
+        ]
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            mock_bm.return_value = {
+                'Account.Industry': 'fld-1',
+                'Account.Name': 'fld-2',
+            }
+            phase_field(ctx, conn)
+        mock_bm.assert_called_once()
+        payloads = mock_bm.call_args.kwargs['raw_payloads']
+        assert all(
+            p['_parent_object_api_name'] == 'Account' for p in payloads
+        )
+        # return_id_map=True is required (edges need the map)
+        assert mock_bm.call_args.kwargs.get('return_id_map') is True
+
+    def test_phase_field_passes_normalized_payloads_to_edge_writer(
+        self,
+    ) -> None:
+        """phase_field re-normalizes the raw payloads before feeding
+        them to materialize_edges_for_entities so the edge spec
+        extractors see the post-_strip_volatile shape (same view
+        substrate-1 uses for derived-edge inference)."""
+        ctx, conn = self._ctx_with_objects([('obj-acc', 'Account')])
+        ctx.sf_client.fetch_fields_for_object.return_value = [
+            {'name': 'OwnerId', 'type': 'reference',
+             'referenceTo': ['User']},
+        ]
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch(
+                 'primeqa.sync.phases.materialize_edges_for_entities',
+             ) as mock_edges, \
+             patch(
+                 'primeqa.sync.phases.normalize',
+                 side_effect=lambda et, p: {**p, '_normalized': True},
+             ):
+            mock_bm.return_value = {'Account.OwnerId': 'fld-1'}
+            phase_field(ctx, conn)
+        mock_edges.assert_called_once()
+        # Verify shape passed
+        kwargs = mock_edges.call_args.kwargs
+        assert kwargs['source_entity_type'] == 'Field'
+        assert kwargs['entity_id_map'] == {'Account.OwnerId': 'fld-1'}
+        # normalized_payloads aligned 1:1 with the input
+        assert len(kwargs['normalized_payloads']) == 1
+        assert kwargs['normalized_payloads'][0]['_normalized'] is True
+
+    def test_phase_field_no_objects_no_work(self) -> None:
+        """No Object entities in this sync → no fetches, no
+        materialize, no edges. Defensive against an empty sync run."""
+        ctx, conn = self._ctx_with_objects([])
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch(
+                 'primeqa.sync.phases.materialize_edges_for_entities',
+             ) as mock_edges:
+            result = phase_field(ctx, conn)
+        ctx.sf_client.fetch_fields_for_object.assert_not_called()
+        mock_bm.assert_not_called()
+        mock_edges.assert_not_called()
+        assert result.entity_type == 'Field'
+        assert result.entities_inserted == 0
+
+    def test_phase_field_returns_phase_result_with_correct_type(
+        self,
+    ) -> None:
+        """Result entity_type is 'Field' regardless of work done."""
+        ctx, conn = self._ctx_with_objects([])
+        with patch('primeqa.sync.phases.batched_materialize'), \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            result = phase_field(ctx, conn)
+        assert isinstance(result, PhaseResult)
+        assert result.entity_type == 'Field'
+        assert result.succeeded is True

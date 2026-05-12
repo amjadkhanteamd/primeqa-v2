@@ -144,10 +144,57 @@ def _to_presentation_picklist_value(
     }
 
 
+def _to_presentation_field(normalized: dict[str, Any]) -> dict[str, Any]:
+    """Map normalized Field to semantic_text input shape.
+
+    Salesforce REST describe returns ~56 camelCase keys per field
+    (verified live against Account.Industry, Account.OwnerId,
+    Account.Name). Substrate-1's _to_text_field reads:
+        {name, object_name, type, label, help_text, is_custom,
+         is_required, reference_to, picklist_value_set_name}
+
+    Bridges:
+      name              ← name
+      object_name       ← _parent_object_api_name (phase-injected)
+      type              ← type (e.g., 'string', 'picklist', 'reference')
+      label             ← label
+      help_text         ← inlineHelpText (the Salesforce term);
+                          falls through None for fields without help
+      is_custom         ← custom
+      is_required       = NOT nillable (substrate-1 convention; see
+                          fixture in test_semantic_text.py — Industry
+                          is nillable AND is_required=False, matching
+                          this derivation)
+      reference_to      ← referenceTo[0] when present, else None.
+                          Substrate-1's fixture uses scalar 'User',
+                          NOT a list. Multi-target polymorphic refs
+                          (Task.WhoId → Contact OR Lead) lose
+                          per-target detail in the rendered text;
+                          the FULL polymorphic graph lives in
+                          HAS_RELATIONSHIP_TO edges (one per target).
+      picklist_value_set_name = None for this cycle. Detecting GVS
+                          references requires Tooling+Metadata API
+                          per corrections-log §10; deferred.
+    """
+    ref_to_list = normalized.get("referenceTo") or []
+    return {
+        "name": normalized.get("name"),
+        "object_name": normalized.get("_parent_object_api_name"),
+        "type": normalized.get("type"),
+        "label": normalized.get("label"),
+        "help_text": normalized.get("inlineHelpText"),
+        "is_custom": normalized.get("custom", False),
+        "is_required": not normalized.get("nillable", True),
+        "reference_to": ref_to_list[0] if ref_to_list else None,
+        "picklist_value_set_name": None,
+    }
+
+
 _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "Object": _to_presentation_object,
     "PicklistValueSet": _to_presentation_picklist_value_set,
     "PicklistValue": _to_presentation_picklist_value,
+    "Field": _to_presentation_field,
     # Other entity types added by their respective phase cycles per
     # PHASE_2_PLAN_corrections.md §7.
 }

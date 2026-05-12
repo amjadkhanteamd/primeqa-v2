@@ -870,3 +870,432 @@ class TestBatchInsertDetails:
         assert params["is_custom_0"] is True
         assert params["entity_id_1"] == "u2"
         assert params["is_custom_1"] is False
+
+
+# ----------------------------------------------------------------------
+# Edge writes — property-less variant
+# ----------------------------------------------------------------------
+
+from primeqa.sync.materialize import (
+    _batch_close_superseded_edges,
+    _batch_insert_new_edges,
+    _batch_read_existing_edges_for_sources,
+    _lookup_edge_category,
+    batched_materialize_property_less_edges,
+    materialize_edges_for_entities,
+)
+
+
+class TestLookupEdgeCategory:
+    def test_returns_structural_for_belongs_to(self) -> None:
+        """BELONGS_TO is STRUCTURAL per substrate-1's TIER_1_EDGES."""
+        assert _lookup_edge_category("BELONGS_TO") == "STRUCTURAL"
+
+    def test_returns_structural_for_has_relationship_to(self) -> None:
+        """HAS_RELATIONSHIP_TO is STRUCTURAL."""
+        assert _lookup_edge_category("HAS_RELATIONSHIP_TO") == "STRUCTURAL"
+
+    def test_raises_for_unknown_edge_type(self) -> None:
+        """Lookup is strict — unknown edge_type raises KeyError from
+        TIER_1_EDGES (not silently returns a default)."""
+        import pytest as _pytest
+        with _pytest.raises(KeyError):
+            _lookup_edge_category("NOT_A_REAL_EDGE")
+
+
+class TestBatchReadExistingEdgesForSources:
+    def test_empty_source_list_returns_empty_set(self) -> None:
+        """Empty input short-circuits — no DB call."""
+        conn = MagicMock()
+        result = _batch_read_existing_edges_for_sources(
+            conn, "BELONGS_TO", [],
+        )
+        assert result == set()
+        conn.execute.assert_not_called()
+
+    def test_returns_set_of_source_target_tuples(self) -> None:
+        """Rows from the SELECT are reshaped into a set of
+        (source_id, target_id) tuples for set-difference bucketing."""
+        conn = MagicMock()
+        row1 = type("R", (), {"source_entity_id": "s1",
+                              "target_entity_id": "t1"})()
+        row2 = type("R", (), {"source_entity_id": "s2",
+                              "target_entity_id": "t2"})()
+        conn.execute.return_value.fetchall.return_value = [row1, row2]
+        result = _batch_read_existing_edges_for_sources(
+            conn, "BELONGS_TO", ["s1", "s2"],
+        )
+        assert result == {("s1", "t1"), ("s2", "t2")}
+
+
+class TestBatchInsertNewEdges:
+    def test_empty_pairs_is_noop(self) -> None:
+        """Defensive empty-input check — no malformed VALUES list."""
+        conn = MagicMock()
+        ctx = _stub_ctx()
+        _batch_insert_new_edges(conn, ctx, "BELONGS_TO", "STRUCTURAL", [])
+        conn.execute.assert_not_called()
+
+    def test_builds_multi_row_insert_with_uuid_casts(self) -> None:
+        """Bound parameters keyed by source_{i}/target_{i}. SQL uses
+        CAST(... AS uuid) form per the materialize module's
+        documented idiom (avoids :: parser ambiguity)."""
+        conn = MagicMock()
+        ctx = _stub_ctx()
+        pairs = [("s1", "t1"), ("s2", "t2")]
+        _batch_insert_new_edges(
+            conn, ctx, "BELONGS_TO", "STRUCTURAL", pairs,
+        )
+        conn.execute.assert_called_once()
+        sql_text = str(conn.execute.call_args[0][0])
+        assert "CAST(:source_0 AS uuid)" in sql_text
+        assert "CAST(:target_1 AS uuid)" in sql_text
+        params = conn.execute.call_args[0][1]
+        assert params["source_0"] == "s1"
+        assert params["target_1"] == "t2"
+        assert params["edge_type"] == "BELONGS_TO"
+        assert params["edge_category"] == "STRUCTURAL"
+        assert params["valid_from_seq"] == ctx.logical_version_seq
+
+
+class TestBatchCloseSupersededEdges:
+    def test_empty_pairs_is_noop(self) -> None:
+        conn = MagicMock()
+        ctx = _stub_ctx()
+        _batch_close_superseded_edges(conn, ctx, "BELONGS_TO", [])
+        conn.execute.assert_not_called()
+
+    def test_uses_tuple_in_with_uuid_casts(self) -> None:
+        """UPDATE close uses Postgres tuple-IN with explicit UUID
+        casts on each side of each pair."""
+        conn = MagicMock()
+        ctx = _stub_ctx()
+        pairs = [("s1", "t1"), ("s2", "t2")]
+        _batch_close_superseded_edges(
+            conn, ctx, "BELONGS_TO", pairs,
+        )
+        conn.execute.assert_called_once()
+        sql_text = str(conn.execute.call_args[0][0])
+        assert "(source_entity_id, target_entity_id) IN" in sql_text
+        assert "CAST(:source_0 AS uuid)" in sql_text
+        params = conn.execute.call_args[0][1]
+        assert params["close_seq"] == ctx.logical_version_seq
+        assert params["edge_type"] == "BELONGS_TO"
+
+
+class TestBatchedMaterializePropertyLessEdges:
+    def _setup(self, existing_pairs, incoming):
+        """Common setup: ctx, conn with _batch_read returning
+        existing_pairs as a set; existing_pairs is what's currently
+        in the DB; incoming is what this sync wants."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="Field")
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch(
+            _patch_path("_batch_read_existing_edges_for_sources"),
+            return_value=existing_pairs,
+        ))
+        mock_insert = stack.enter_context(patch(
+            _patch_path("_batch_insert_new_edges"),
+        ))
+        mock_close = stack.enter_context(patch(
+            _patch_path("_batch_close_superseded_edges"),
+        ))
+        return ctx, conn, result, mock_insert, mock_close, stack
+
+    def test_inserts_only_new_pairs(self) -> None:
+        """Pairs in incoming but not in existing → INSERT; pairs in
+        both → no-op (unchanged)."""
+        existing = {("s1", "t1")}
+        incoming = [
+            ("s1", "t1", "BELONGS_TO", "STRUCTURAL"),
+            ("s2", "t2", "BELONGS_TO", "STRUCTURAL"),
+        ]
+        ctx, conn, result, mock_insert, mock_close, stack = self._setup(
+            existing, incoming,
+        )
+        with stack:
+            batched_materialize_property_less_edges(
+                ctx, conn, incoming, result,
+            )
+        mock_insert.assert_called_once()
+        new_pairs = mock_insert.call_args[0][4]
+        assert set(new_pairs) == {("s2", "t2")}
+        mock_close.assert_not_called()
+        assert result.edges_inserted == 1
+        assert result.edges_superseded == 0
+
+    def test_closes_only_removed_pairs(self) -> None:
+        """Pairs in existing but not in incoming → close. Pairs in
+        incoming but not in existing → INSERT."""
+        existing = {("s1", "t1"), ("s2", "t2")}
+        incoming = [
+            ("s1", "t1", "BELONGS_TO", "STRUCTURAL"),
+            ("s3", "t3", "BELONGS_TO", "STRUCTURAL"),
+        ]
+        ctx, conn, result, mock_insert, mock_close, stack = self._setup(
+            existing, incoming,
+        )
+        with stack:
+            batched_materialize_property_less_edges(
+                ctx, conn, incoming, result,
+            )
+        # New: (s3, t3) only
+        assert set(mock_insert.call_args[0][4]) == {("s3", "t3")}
+        # Superseded: (s2, t2) only
+        assert set(mock_close.call_args[0][3]) == {("s2", "t2")}
+        assert result.edges_inserted == 1
+        assert result.edges_superseded == 1
+
+    def test_idempotent_when_incoming_equals_existing(self) -> None:
+        """All pairs in incoming match existing → unchanged set is
+        full → no INSERT, no UPDATE. Idempotency for repeated syncs."""
+        existing = {("s1", "t1"), ("s2", "t2")}
+        incoming = [
+            ("s1", "t1", "BELONGS_TO", "STRUCTURAL"),
+            ("s2", "t2", "BELONGS_TO", "STRUCTURAL"),
+        ]
+        ctx, conn, result, mock_insert, mock_close, stack = self._setup(
+            existing, incoming,
+        )
+        with stack:
+            batched_materialize_property_less_edges(
+                ctx, conn, incoming, result,
+            )
+        mock_insert.assert_not_called()
+        mock_close.assert_not_called()
+        assert result.edges_inserted == 0
+        assert result.edges_superseded == 0
+
+    def test_groups_by_edge_type(self) -> None:
+        """Multiple edge_types in incoming → bucketed per edge_type
+        independently; each gets its own existing-set lookup."""
+        existing_calls = []
+
+        def fake_read(conn, edge_type, source_ids):
+            existing_calls.append(edge_type)
+            return set()
+        conn = MagicMock()
+        ctx = _stub_ctx()
+        result = PhaseResult(entity_type="Field")
+        incoming = [
+            ("s1", "t1", "BELONGS_TO", "STRUCTURAL"),
+            ("s1", "tref", "HAS_RELATIONSHIP_TO", "STRUCTURAL"),
+        ]
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("_batch_read_existing_edges_for_sources"),
+                side_effect=fake_read,
+            ))
+            stack.enter_context(patch(
+                _patch_path("_batch_insert_new_edges"),
+            ))
+            batched_materialize_property_less_edges(
+                ctx, conn, incoming, result,
+            )
+        # Both edge_types' existing sets were independently queried
+        assert set(existing_calls) == {"BELONGS_TO",
+                                        "HAS_RELATIONSHIP_TO"}
+
+
+class TestMaterializeEdgesForEntities:
+    def _normalized_field(self, name, parent="Account",
+                           reference_to=None) -> dict:
+        n = {"name": name, "_parent_object_api_name": parent}
+        if reference_to is not None:
+            n["referenceTo"] = list(reference_to)
+        return n
+
+    def test_no_edges_when_no_specs_for_entity_type(self) -> None:
+        """If get_edge_specs returns [] for the source entity_type,
+        no edge work happens at all (no parent_resolver creation,
+        no batched_materialize_property_less_edges call)."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="Object")
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            mock_bm = stack.enter_context(patch(
+                _patch_path("batched_materialize_property_less_edges"),
+            ))
+            materialize_edges_for_entities(
+                ctx, conn, "Object",
+                entity_id_map={"Account": "obj-acc"},
+                normalized_payloads=[{"name": "Account"}],
+                result=result,
+            )
+        mock_bm.assert_not_called()
+
+    def test_writes_belongs_to_for_every_field(self) -> None:
+        """Each Field with a resolved parent Object produces one
+        BELONGS_TO edge_write tuple."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="Field")
+        normalized_payloads = [
+            self._normalized_field("Industry"),
+            self._normalized_field("Name"),
+        ]
+        entity_id_map = {
+            "Account.Industry": "fld-001",
+            "Account.Name": "fld-002",
+        }
+
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("make_parent_resolver"),
+                return_value=lambda **_kw: "obj-account",
+            ))
+            mock_bm = stack.enter_context(patch(
+                _patch_path("batched_materialize_property_less_edges"),
+            ))
+            materialize_edges_for_entities(
+                ctx, conn, "Field",
+                entity_id_map=entity_id_map,
+                normalized_payloads=normalized_payloads,
+                result=result,
+            )
+        mock_bm.assert_called_once()
+        edge_writes = mock_bm.call_args[0][2]
+        # 2 fields × 1 BELONGS_TO each = 2 edges
+        # (no referenceTo → 0 HAS_RELATIONSHIP_TO)
+        belongs_to = [e for e in edge_writes if e[2] == "BELONGS_TO"]
+        assert len(belongs_to) == 2
+
+    def test_writes_has_relationship_to_for_reference_field(self) -> None:
+        """A reference field with referenceTo=['User'] produces a
+        HAS_RELATIONSHIP_TO edge to the User Object entity."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="Field")
+        normalized_payloads = [
+            self._normalized_field("OwnerId", reference_to=["User"]),
+        ]
+        entity_id_map = {"Account.OwnerId": "fld-owner"}
+
+        # Resolver: Account → obj-account, User → obj-user
+        def resolver(*, entity_type, external_id):
+            return {
+                ("Object", "Account"): "obj-account",
+                ("Object", "User"): "obj-user",
+            }.get((entity_type, external_id))
+
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("make_parent_resolver"),
+                return_value=resolver,
+            ))
+            mock_bm = stack.enter_context(patch(
+                _patch_path("batched_materialize_property_less_edges"),
+            ))
+            materialize_edges_for_entities(
+                ctx, conn, "Field",
+                entity_id_map=entity_id_map,
+                normalized_payloads=normalized_payloads,
+                result=result,
+            )
+        edge_writes = mock_bm.call_args[0][2]
+        # 1 BELONGS_TO + 1 HAS_RELATIONSHIP_TO
+        assert len(edge_writes) == 2
+        edge_types = {e[2] for e in edge_writes}
+        assert edge_types == {"BELONGS_TO", "HAS_RELATIONSHIP_TO"}
+
+    def test_skips_edges_to_unresolvable_targets(self) -> None:
+        """If parent_resolver returns None for a target (target Object
+        was filtered out or not yet synced), skip the edge silently.
+        Don't write a dangling edge; don't fail the whole sync."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="Field")
+        # Reference to an Object that isn't materialized
+        normalized_payloads = [
+            self._normalized_field(
+                "MysteryRef", reference_to=["UnmappedObject"],
+            ),
+        ]
+        entity_id_map = {"Account.MysteryRef": "fld-mystery"}
+
+        def resolver(*, entity_type, external_id):
+            return {
+                ("Object", "Account"): "obj-account",
+                # No UnmappedObject — resolver returns None
+            }.get((entity_type, external_id))
+
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("make_parent_resolver"),
+                return_value=resolver,
+            ))
+            mock_bm = stack.enter_context(patch(
+                _patch_path("batched_materialize_property_less_edges"),
+            ))
+            materialize_edges_for_entities(
+                ctx, conn, "Field",
+                entity_id_map=entity_id_map,
+                normalized_payloads=normalized_payloads,
+                result=result,
+            )
+        edge_writes = mock_bm.call_args[0][2]
+        # Only BELONGS_TO survives; HAS_RELATIONSHIP_TO skipped
+        assert len(edge_writes) == 1
+        assert edge_writes[0][2] == "BELONGS_TO"
+
+
+# ----------------------------------------------------------------------
+# batched_materialize return_id_map
+# ----------------------------------------------------------------------
+
+
+class TestBatchedMaterializeReturnIdMap:
+    def test_default_returns_none(self) -> None:
+        """When return_id_map=False (default), batched_materialize
+        returns None — the caller pays no accumulation cost."""
+        from contextlib import ExitStack
+        result = PhaseResult(entity_type="Object")
+        conn = MagicMock()
+        with ExitStack() as stack:
+            for _name, p in zip(
+                ("normalize", "hash", "pres", "text",
+                 "read", "insert", "close", "touch", "upsert"),
+                _patch_pipeline(),
+            ):
+                stack.enter_context(p)
+            stack.enter_context(patch(_patch_path("_batch_insert_details")))
+            ret = batched_materialize(
+                _stub_ctx(), conn, "Object",
+                raw_payloads=[{"name": "Account"}],
+                result=result,
+            )
+        assert ret is None
+
+    def test_returns_dict_when_enabled(self) -> None:
+        """return_id_map=True → returns {external_id: entity_id} for
+        every input payload (new + changed + unchanged)."""
+        from contextlib import ExitStack
+        result = PhaseResult(entity_type="Object")
+        conn = MagicMock()
+        with ExitStack() as stack:
+            for _name, p in zip(
+                ("normalize", "hash", "pres", "text",
+                 "read", "insert", "close", "touch", "upsert"),
+                _patch_pipeline(
+                    normalize_return={"name": "Account", "custom": False},
+                    existing_return={},  # all new
+                    insert_return=["entity-uuid-1"],
+                ),
+            ):
+                stack.enter_context(p)
+            stack.enter_context(patch(_patch_path("_batch_insert_details")))
+            ret = batched_materialize(
+                _stub_ctx(), conn, "Object",
+                raw_payloads=[{"name": "Account"}],
+                result=result,
+                return_id_map=True,
+            )
+        assert ret == {"Account": "entity-uuid-1"}

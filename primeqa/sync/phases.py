@@ -22,9 +22,15 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from sqlalchemy import text
+
+from primeqa.semantic.normalization import normalize
 from primeqa.sync.context import SyncContext
 from primeqa.sync.fk_assertion import ENTITY_ORDER
-from primeqa.sync.materialize import batched_materialize
+from primeqa.sync.materialize import (
+    batched_materialize,
+    materialize_edges_for_entities,
+)
 from primeqa.sync.result import PhaseResult
 
 
@@ -296,9 +302,111 @@ def phase_picklist_value(ctx: SyncContext, conn: Any) -> PhaseResult:
 PHASE_REGISTRY: dict[str, PhaseFunction] = {
     entity_type: _noop_phase(entity_type) for entity_type in ENTITY_ORDER
 }
+def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
+    """Field phase — fields per Object, with detail rows + edges.
+
+    First edge-writing phase in the sync pipeline. Establishes the
+    batched edge-write pattern for subsequent phases (RecordType,
+    ValidationRule, Layout) to use.
+
+    Iterates over Object entities materialized earlier in the same
+    sync_run (looked up via SELECT scoped to this org's currently-
+    active Object rows). For each Object, calls
+    fetch_fields_for_object to get the REST describe response's
+    `fields` list, decorates each field with the
+    `_parent_object_api_name` marker, and accumulates payloads for
+    batched materialization.
+
+    Three things land per Field:
+      1. Entity row in `entities` (entity_type='Field',
+         sf_api_name='{Object}.{fieldName}')
+      2. Detail row in `field_details` with object_entity_id +
+         optional references_object_entity_id resolved via
+         make_parent_resolver
+      3. Edges:
+         - BELONGS_TO → parent Object (always)
+         - HAS_RELATIONSHIP_TO → each referenceTo target Object
+           (none for non-reference fields, one for standard refs,
+           N for polymorphic refs)
+
+      HAS_PICKLIST_VALUES → PicklistValueSet is deferred per
+      corrections-log §10 (REST describe doesn't expose value-set
+      references; would require a separate Tooling-API fetcher).
+
+    High-cardinality phase: 146 Objects × ~30-150 fields each
+    ≈ 4500-15000 Field entities + ≈ same BELONGS_TO + ~500-1500
+    HAS_RELATIONSHIP_TO. Wall-clock cost is dominated by the
+    per-Object REST describe calls (~0.5-1s each → ~75-150s for
+    the fetch phase) + the materialization writes.
+
+    Memory: all field payloads accumulated in memory before
+    batched_materialize chunks them at 500-row boundaries. At
+    ~10KB per raw describe field, 10K fields × 10KB ≈ 100MB —
+    within budget. Production orgs with managed packages might hit
+    2-3× this; still acceptable.
+    """
+    result = PhaseResult(entity_type="Field")
+
+    # 1. Read this sync's Object entities to enumerate. Filter:
+    # currently-active rows for this connected_org. ENTITY_ORDER
+    # guarantees Object phase ran before Field phase in the same
+    # sync_run, so this returns the freshly-synced Object set.
+    objects = conn.execute(text("""
+        SELECT id, sf_api_name FROM entities
+        WHERE last_synced_from_org_id = :org_id
+          AND entity_type = 'Object'
+          AND valid_to_seq IS NULL
+    """), {"org_id": ctx.connected_org_id}).fetchall()
+
+    # 2. Fetch fields per Object. Each fetch is one REST round trip
+    # to /sobjects/{name}/describe; SF caches these per-org so
+    # repeated syncs against the same org are fast.
+    field_payloads: list[dict[str, Any]] = []
+    for obj in objects:
+        object_api_name = obj.sf_api_name
+        fields = ctx.sf_client.fetch_fields_for_object(object_api_name)
+        for f in fields:
+            f["_parent_object_api_name"] = object_api_name
+            field_payloads.append(f)
+
+    if not field_payloads:
+        return result
+
+    # 3. Materialize Field entities + field_details rows (the latter
+    # via detail_mappers registry inside batched_materialize). Get
+    # back the entity_id_map so edge construction can resolve source
+    # entity_ids without re-querying.
+    entity_id_map = batched_materialize(
+        ctx=ctx,
+        conn=conn,
+        entity_type="Field",
+        raw_payloads=field_payloads,
+        result=result,
+        return_id_map=True,
+    )
+
+    # 4. Edges. Compute normalized payloads (same as
+    # batched_materialize did internally for hashing) so the edge
+    # extractors see the post-_strip_volatile, sort_list_of_dicts
+    # shape — same view substrate-1 uses when emitting derived
+    # edges from entities.
+    normalized_payloads = [normalize("Field", p) for p in field_payloads]
+    materialize_edges_for_entities(
+        ctx=ctx,
+        conn=conn,
+        source_entity_type="Field",
+        entity_id_map=entity_id_map,
+        normalized_payloads=normalized_payloads,
+        result=result,
+    )
+
+    return result
+
+
 PHASE_REGISTRY["Object"] = phase_object
 PHASE_REGISTRY["PicklistValueSet"] = phase_picklist_value_set
 PHASE_REGISTRY["PicklistValue"] = phase_picklist_value
+PHASE_REGISTRY["Field"] = phase_field
 
 
 def get_phase_function(entity_type: str) -> PhaseFunction:

@@ -161,9 +161,112 @@ def _map_picklist_value_details(
     }
 
 
+def _map_field_details(
+    normalized: dict[str, Any],
+    entity_id: str,
+    parent_resolver: Callable[..., Optional[str]],
+) -> dict[str, Any]:
+    """Map normalized Field payload → field_details row.
+
+    field_details has three FK columns to resolve via parent_resolver:
+      object_entity_id              ← parent Object (always set; field
+                                      can't exist without a parent
+                                      Object). Resolved from
+                                      _parent_object_api_name marker
+                                      that phase_field injects.
+      references_object_entity_id   ← the Object this field's
+                                      reference points to (nullable).
+                                      For reference-typed fields with
+                                      referenceTo populated, takes the
+                                      first target (substrate-1 detail
+                                      column is singular UUID, not a
+                                      list). Polymorphic refs' full
+                                      multi-target graph lives in
+                                      HAS_RELATIONSHIP_TO edges; this
+                                      column captures only the
+                                      primary target for hot-query use.
+                                      If the target Object isn't
+                                      materialized (e.g., filtered by
+                                      Object phase's syncability
+                                      filter), the column stays NULL
+                                      — the edge resolution would
+                                      also skip it, keeping data
+                                      consistent.
+      picklist_value_set_entity_id  ← always NULL this cycle. GVS
+                                      reference detection requires
+                                      Tooling+Metadata API
+                                      (corrections-log §10); deferred.
+
+    All booleans + INT length/precision/scale come from the raw
+    describe per substrate-1's column-naming convention:
+      is_custom        ← custom
+      is_unique        ← unique
+      is_external_id   ← externalId
+      is_nillable      ← nillable
+      is_calculated    ← calculated
+      is_filterable    ← filterable
+      is_sortable      ← sortable
+      length/precision/scale pass through (nullable INTs)
+
+    Raises ValueError if parent Object can't be resolved (ENTITY_ORDER
+    places Object before Field, so this would indicate a serious bug
+    — fail loud rather than write a NULL into a NOT NULL column).
+    """
+    parent_marker = normalized.get("_parent_object_api_name")
+    if not parent_marker:
+        raise ValueError(
+            f"Field normalized payload missing "
+            f"'_parent_object_api_name' marker; phase_field must "
+            f"inject this. Got keys: {sorted(normalized.keys())}"
+        )
+    parent_object_id = parent_resolver(
+        entity_type="Object",
+        external_id=parent_marker,
+    )
+    if parent_object_id is None:
+        raise ValueError(
+            f"Cannot resolve parent Object {parent_marker!r} for "
+            f"Field {normalized.get('name')!r}. Parent must be "
+            f"materialized before child (ENTITY_ORDER places Object "
+            f"before Field)."
+        )
+
+    # Reference target: only the first target lands in the detail
+    # column; full set is in HAS_RELATIONSHIP_TO edges. Resolver
+    # returns None if the target Object isn't in this org's synced
+    # entity set (filtered or not-yet-synced) — that's OK; column
+    # is nullable.
+    ref_to_list = normalized.get("referenceTo") or []
+    references_object_id: Optional[str] = None
+    if ref_to_list:
+        references_object_id = parent_resolver(
+            entity_type="Object",
+            external_id=ref_to_list[0],
+        )
+
+    return {
+        "entity_id": entity_id,
+        "object_entity_id": parent_object_id,
+        "references_object_entity_id": references_object_id,
+        "picklist_value_set_entity_id": None,
+        "field_type": normalized.get("type"),
+        "is_custom": bool(normalized.get("custom", False)),
+        "is_unique": bool(normalized.get("unique", False)),
+        "is_external_id": bool(normalized.get("externalId", False)),
+        "is_nillable": bool(normalized.get("nillable", True)),
+        "is_calculated": bool(normalized.get("calculated", False)),
+        "is_filterable": bool(normalized.get("filterable", True)),
+        "is_sortable": bool(normalized.get("sortable", True)),
+        "length": normalized.get("length"),
+        "precision": normalized.get("precision"),
+        "scale": normalized.get("scale"),
+    }
+
+
 _DETAIL_TABLE_MAPPERS: dict[str, DetailMapper] = {
     "Object": _map_object_details,
     "PicklistValue": _map_picklist_value_details,
+    "Field": _map_field_details,
     # Other entity types added by their respective phase cycles.
     # PicklistValueSet intentionally absent — no detail table.
 }

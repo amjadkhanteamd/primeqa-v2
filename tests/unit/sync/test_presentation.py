@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from primeqa.sync.presentation import (
+    _to_presentation_field,
     _to_presentation_object,
     _to_presentation_picklist_value,
     _to_presentation_picklist_value_set,
@@ -283,3 +284,75 @@ class TestToPresentationPicklistValue:
         }
         svs_pres = _to_presentation_picklist_value(svs_normalized)
         assert svs_pres["set_name"] == "SVS:AccountType"
+
+
+class TestToPresentationField:
+    def test_to_presentation_field_maps_live_shape(self) -> None:
+        """REST describe shape (camelCase, ~56 keys) → semantic_text
+        input shape (snake_case, 9 keys) per substrate-1's
+        _to_text_field expectations."""
+        normalized = {
+            "name": "Industry",
+            "type": "picklist",
+            "label": "Industry",
+            "inlineHelpText": "Customer industry classification.",
+            "custom": False,
+            "nillable": True,
+            "referenceTo": [],
+            "_parent_object_api_name": "Account",
+        }
+        presentation = _to_presentation_field(normalized)
+        assert presentation["name"] == "Industry"
+        assert presentation["object_name"] == "Account"
+        assert presentation["type"] == "picklist"
+        assert presentation["label"] == "Industry"
+        assert presentation["help_text"] == (
+            "Customer industry classification."
+        )
+        assert presentation["is_custom"] is False
+        # is_required = NOT nillable → False (nillable=True)
+        assert presentation["is_required"] is False
+        assert presentation["reference_to"] is None
+        # picklist_value_set_name always None this cycle per §10
+        assert presentation["picklist_value_set_name"] is None
+
+    def test_to_presentation_field_required_when_not_nillable(
+        self,
+    ) -> None:
+        """Substrate-1's is_required derives from NOT nillable. Verify
+        the inversion: nillable=False → is_required=True."""
+        normalized = {
+            "name": "Name",
+            "type": "string",
+            "nillable": False,
+            "_parent_object_api_name": "Account",
+        }
+        presentation = _to_presentation_field(normalized)
+        assert presentation["is_required"] is True
+
+    def test_to_presentation_field_takes_first_reference_to(self) -> None:
+        """Polymorphic referenceTo (Task.WhoId → Contact OR Lead)
+        loses secondary targets in the rendered text. Detail column
+        also takes first only; HAS_RELATIONSHIP_TO edges carry the
+        full graph."""
+        normalized = {
+            "name": "WhoId",
+            "type": "reference",
+            "referenceTo": ["Contact", "Lead"],
+            "_parent_object_api_name": "Task",
+        }
+        presentation = _to_presentation_field(normalized)
+        assert presentation["reference_to"] == "Contact"
+
+    def test_to_presentation_field_handles_empty_reference_to(
+        self,
+    ) -> None:
+        """Non-reference field with empty list → reference_to=None
+        (substrate-1 fixture uses scalar None, not empty list)."""
+        normalized = {
+            "name": "Industry",
+            "referenceTo": [],
+            "_parent_object_api_name": "Account",
+        }
+        presentation = _to_presentation_field(normalized)
+        assert presentation["reference_to"] is None
