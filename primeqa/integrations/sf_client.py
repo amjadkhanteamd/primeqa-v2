@@ -33,6 +33,7 @@ Connection management: implements context-manager protocol
 """
 from __future__ import annotations
 
+import logging
 import time
 import urllib.parse
 from typing import Any, Iterable
@@ -52,6 +53,8 @@ SF_API_VERSION = "v66.0"  # Salesforce Spring '26; rotate ~quarterly
 TRANSIENT_STATUS_CODES = {429, 502, 503, 504}
 MAX_RETRIES = 3
 RETRY_BACKOFF_SEQ: tuple[float, ...] = (1.0, 2.0, 4.0)  # seconds
+
+logger = logging.getLogger(__name__)
 
 
 class SalesforceClient:
@@ -485,6 +488,26 @@ class SalesforceClient:
         #
         # Sync layer materializes child PicklistValue entities from
         # Metadata.standardValue per D-037 entity ordering.
+        #
+        # Per-label fault tolerance: the canonical catalog
+        # (sf_constants.STANDARD_VALUE_SET_LABELS) spans 616 entries
+        # pinned to v66.0 across all industry clouds. Many catalog
+        # entries are industry-cloud-specific (Health, Financial
+        # Services, Public Sector, ...) and return HTTP 500 in orgs
+        # where the corresponding cloud is not enabled. Per
+        # corrections-log §6 (Salesforce metadata APIs are
+        # asymmetric, category 3): the canonical catalog is
+        # complete-by-publication, the runtime queryability per
+        # org is incomplete-by-design.
+        #
+        # An empirical sandbox probe shows ~32% of labels return
+        # HTTP 500 on an org with no industry clouds enabled. A
+        # single label's failure must not abort the iteration —
+        # otherwise the consumer (sync layer) gets zero SVS rows
+        # rather than the subset the org actually supports.
+        # SFAuthError + SFRateLimitError remain uncaught — those
+        # signal infrastructure/quota issues that should still
+        # abort the iteration.
         """
         path = f"/services/data/{self.api_version}/tooling/query/"
         target_labels: tuple[str, ...] | tuple[str, ...]
@@ -494,6 +517,7 @@ class SalesforceClient:
             target_labels = tuple(labels)
 
         results: list[dict] = []
+        skipped: list[tuple[str, int | None]] = []
         for label in target_labels:
             # Defensive escape: SOQL string literals escape apostrophes
             # with backslash. None of the canonical catalog labels contain
@@ -505,10 +529,26 @@ class SalesforceClient:
                 "FROM StandardValueSet "
                 f"WHERE MasterLabel = '{escaped_label}'"
             )
-            recs = self._query_all(path, soql)
+            try:
+                recs = self._query_all(path, soql)
+            except SFRequestError as e:
+                # Catalog gap for this org (industry-cloud SVS not
+                # enabled, or sandbox-specific runtime hiccup).
+                # Informational — corrections-log §6 category 3.
+                skipped.append((label, e.status_code))
+                continue
             if recs:
                 results.append(recs[0])
 
+        if skipped:
+            logger.info(
+                "fetch_standard_value_sets skipped %d/%d catalog "
+                "labels (per-label SFRequestError). First-5 "
+                "samples: %s",
+                len(skipped),
+                len(target_labels),
+                skipped[:5],
+            )
         return results
 
     def fetch_profiles(self) -> list[dict]:

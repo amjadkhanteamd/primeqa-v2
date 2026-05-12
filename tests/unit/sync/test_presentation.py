@@ -141,3 +141,71 @@ class TestToPresentationPicklistValueSet:
         }
         presentation = _to_presentation_picklist_value_set(normalized)
         assert presentation["description"] is None
+
+    def test_to_presentation_picklist_value_set_defaults_to_gvs_when_source_missing(
+        self,
+    ) -> None:
+        """Backward compatibility: raw payloads without `_source`
+        (e.g., fixtures pre-dating the SVS cycle) default to the GVS
+        branch — is_global_value_set=True."""
+        normalized = {
+            "FullName": "RegionVS",
+            "MasterLabel": "Region",
+            "Description": "Sales regions",
+            # _source deliberately absent
+        }
+        presentation = _to_presentation_picklist_value_set(normalized)
+        assert presentation["is_global_value_set"] is True
+        assert presentation["description"] == "Sales regions"
+
+    def test_to_presentation_picklist_value_set_gvs_source_explicit(
+        self,
+    ) -> None:
+        """`_source='GlobalValueSet'` explicit selects GVS branch:
+        is_global_value_set=True, description from payload."""
+        normalized = {
+            "_source": "GlobalValueSet",
+            "FullName": "RegionVS",
+            "MasterLabel": "Region",
+            "Description": "Sales regions",
+        }
+        presentation = _to_presentation_picklist_value_set(normalized)
+        assert presentation["name"] == "RegionVS"
+        assert presentation["label"] == "Region"
+        assert presentation["is_restricted"] is True
+        assert presentation["is_global_value_set"] is True
+        assert presentation["description"] == "Sales regions"
+
+    def test_to_presentation_picklist_value_set_svs_source(self) -> None:
+        """`_source='StandardValueSet'` selects SVS branch:
+        is_global_value_set=False, description hardcoded None
+        (SVS Tooling response has no Description column)."""
+        normalized = {
+            "_source": "StandardValueSet",
+            "FullName": "AccountSource",
+            "MasterLabel": "Account Source",
+            # Description deliberately absent (matches SVS Tooling
+            # response shape).
+        }
+        presentation = _to_presentation_picklist_value_set(normalized)
+        assert presentation["name"] == "AccountSource"
+        assert presentation["label"] == "Account Source"
+        assert presentation["is_restricted"] is True
+        assert presentation["is_global_value_set"] is False
+        assert presentation["description"] is None
+
+    def test_to_presentation_picklist_value_set_svs_ignores_description_in_payload(
+        self,
+    ) -> None:
+        """SVS branch hardcodes description=None even if a Description
+        key is present (it's not in the documented SVS Tooling
+        response; this guards against accidental leak-through if a
+        future fetcher synthesizes one)."""
+        normalized = {
+            "_source": "StandardValueSet",
+            "FullName": "CaseOrigin",
+            "MasterLabel": "Case Origin",
+            "Description": "leak-through guard",
+        }
+        presentation = _to_presentation_picklist_value_set(normalized)
+        assert presentation["description"] is None

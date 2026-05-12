@@ -185,8 +185,15 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
     """Per-entity-type external_id extraction.
 
     Object: raw['name'] (e.g., 'Account')
-    PicklistValueSet: raw['FullName'] (e.g., 'MyValueSet' or
-        'MyNamespace__MyValueSet' for managed-package GVSes)
+    PicklistValueSet: branches on raw['_source'] (per corrections-
+        log §8 addendum) to namespace SVS external_ids:
+          - GlobalValueSet (default): raw['FullName']
+            (e.g., 'MyValueSet' or 'MyNamespace__MyValueSet' for
+            managed-package GVSes)
+          - StandardValueSet: f"SVS:{raw['FullName']}"
+            (e.g., 'SVS:AccountSource'). The 'SVS:' prefix prevents
+            collisions between a customer-named GVS (e.g.,
+            'Industry') and the SVS catalog entry of the same name.
 
     Other types added by their respective phase cycles. KeyError
     on unknown type catches drift.
@@ -194,7 +201,11 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
     if entity_type == "Object":
         return raw["name"]
     if entity_type == "PicklistValueSet":
-        return raw["FullName"]
+        source = raw.get("_source", "GlobalValueSet")
+        if source == "GlobalValueSet":
+            return raw["FullName"]
+        # StandardValueSet — prefix to avoid GVS/SVS namespace collision.
+        return f"SVS:{raw['FullName']}"
     raise KeyError(
         f"No external_id extractor for entity_type "
         f"{entity_type!r}. Add to "

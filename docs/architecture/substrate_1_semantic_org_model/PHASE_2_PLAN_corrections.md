@@ -436,3 +436,18 @@ presentation + semantic_text). The phase function for a unified
 entity_type may need to call multiple fetch methods and
 combine streams before calling batched_materialize.
 
+## §8 addendum (SVS source implementation)
+
+SVS records inherit the same FullName-keyed identifier shape
+as GVS records. To prevent collisions between a customer-
+named GVS (e.g., `'Industry'`) and the SVS catalog entry of
+the same name, SVS external_ids are namespaced with `SVS:`
+prefix at materialization. GVS external_ids remain
+unprefixed (preserving the prior cycle's contract).
+
+The `_source` marker added to raw payloads at the phase
+function survives _strip_volatile and contributes to the
+normalized hash — a record's source is part of its identity.
+One-time GVS supersession on first-sync-after-this-cycle is
+expected and harmless.
+

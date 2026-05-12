@@ -54,12 +54,12 @@ def _to_presentation_object(normalized: dict[str, Any]) -> dict[str, Any]:
 def _to_presentation_picklist_value_set(
     normalized: dict[str, Any],
 ) -> dict[str, Any]:
-    """Map normalized GlobalValueSet to semantic_text input shape.
+    """Map normalized PicklistValueSet to semantic_text input shape.
 
     Substrate-1 unifies GlobalValueSet + StandardValueSet under one
-    PicklistValueSet entity_type (per corrections-log §8). This
-    adapter handles the GVS source; an analogous SVS branch lands
-    in the StandardValueSet phase cycle.
+    PicklistValueSet entity_type (per corrections-log §8). The
+    `_source` marker on the normalized payload selects the branch:
+    `'GlobalValueSet'` (default) or `'StandardValueSet'`.
 
     Field mapping (verified against substrate-1's
     _picklist_value_set_fixture + _to_text_picklist_value_set):
@@ -67,24 +67,41 @@ def _to_presentation_picklist_value_set(
                             namespacing as <namespace>__<dev_name>)
         label             ← MasterLabel (display name)
         is_restricted     = True (hardcoded — see rationale below)
-        is_global_value_set = True (GVS source, always)
-        description       ← Description (may be None)
+        is_global_value_set ← True for GVS source, False for SVS
+        description       ← Description (GVS only; SVS has no
+                            Description in the Tooling response,
+                            hardcoded to None)
 
-    is_restricted hardcoded True rationale: GlobalValueSets are
-    generally restricted by design (reusable canonical
-    enumerations; the whole point is constraining values to a
-    known list). Salesforce's Metadata API doesn't expose a clean
-    isRestricted flag at the top level of the GVS record.
-    Revisit if customers report semantic_text misrepresenting a
-    GVS as restricted when it isn't — though I'd be surprised if
-    that case is common enough to surface.
+    is_restricted hardcoded True rationale: Both GlobalValueSets and
+    StandardValueSets are restricted by design (reusable canonical
+    enumerations; the whole point is constraining values to a known
+    list). Salesforce's Metadata API doesn't expose a clean
+    isRestricted flag at the top level of the GVS record; SVSes
+    are restricted by definition (they're the platform's canonical
+    catalog).
+
+    Defaults to the GVS branch when `_source` is absent — preserves
+    backward compatibility with raw payloads that pre-date the
+    `_source` marker (e.g., unit-test fixtures from the prior cycle).
     """
+    source = normalized.get("_source", "GlobalValueSet")
+    if source == "GlobalValueSet":
+        return {
+            "name": normalized.get("FullName"),
+            "label": normalized.get("MasterLabel"),
+            "is_restricted": True,
+            "is_global_value_set": True,
+            "description": normalized.get("Description"),
+        }
+    # StandardValueSet branch — FullName ≈ MasterLabel for catalog
+    # entries; both surface in the Tooling response. Description is
+    # not in the SVS SELECT clause (see fetch_standard_value_sets).
     return {
         "name": normalized.get("FullName"),
         "label": normalized.get("MasterLabel"),
         "is_restricted": True,
-        "is_global_value_set": True,
-        "description": normalized.get("Description"),
+        "is_global_value_set": False,
+        "description": None,
     }
 
 

@@ -232,62 +232,119 @@ from primeqa.sync.phases import phase_picklist_value_set
 
 
 class TestPhasePicklistValueSet:
-    def test_phase_picklist_value_set_calls_fetch_global_value_sets(
+    def test_phase_picklist_value_set_calls_both_fetchers(
         self,
     ) -> None:
-        """phase_picklist_value_set delegates Salesforce fetching to
-        ctx.sf_client.fetch_global_value_sets()."""
+        """phase_picklist_value_set delegates fetching to BOTH
+        fetch_global_value_sets() and fetch_standard_value_sets()
+        per the unified GVS + SVS source design (corrections-log §8
+        addendum). Object fetcher remains untouched (different phase).
+        """
         ctx = _stub_ctx_with_mock_sf()
         ctx.sf_client.fetch_global_value_sets.return_value = []
+        ctx.sf_client.fetch_standard_value_sets.return_value = []
         conn = MagicMock()
         with patch("primeqa.sync.phases.batched_materialize"):
             phase_picklist_value_set(ctx, conn)
         ctx.sf_client.fetch_global_value_sets.assert_called_once_with()
-        # Object fetcher NOT called (different phase)
+        ctx.sf_client.fetch_standard_value_sets.assert_called_once_with(
+            labels=None,
+        )
         ctx.sf_client.fetch_objects.assert_not_called()
 
-    def test_phase_picklist_value_set_calls_batched_materialize(
+    def test_phase_picklist_value_set_combines_gvs_and_svs_streams(
         self,
     ) -> None:
-        """When fetch returns records, batched_materialize is called
-        once with entity_type='PicklistValueSet' and the raw payload
-        list."""
+        """Both fetchers' returns are tagged with the appropriate
+        `_source` marker and concatenated (GVS first, SVS second)
+        before being passed to batched_materialize."""
         ctx = _stub_ctx_with_mock_sf()
-        raw = [
+        raw_gvs = [
             {"Id": "0Nt000000000001", "FullName": "RegionVS",
              "MasterLabel": "Region", "Description": "Sales regions"},
-            {"Id": "0Nt000000000002", "FullName": "TierVS",
-             "MasterLabel": "Tier", "Description": None},
         ]
-        ctx.sf_client.fetch_global_value_sets.return_value = raw
+        raw_svs = [
+            {"Id": "00X000000000001", "FullName": "AccountSource",
+             "MasterLabel": "Account Source",
+             "Metadata": {"standardValue": []}},
+            {"Id": "00X000000000002", "FullName": "CaseOrigin",
+             "MasterLabel": "Case Origin",
+             "Metadata": {"standardValue": []}},
+        ]
+        ctx.sf_client.fetch_global_value_sets.return_value = raw_gvs
+        ctx.sf_client.fetch_standard_value_sets.return_value = raw_svs
         conn = MagicMock()
         with patch("primeqa.sync.phases.batched_materialize") as mock_bm:
             result = phase_picklist_value_set(ctx, conn)
+
         mock_bm.assert_called_once()
         call_kwargs = mock_bm.call_args.kwargs
         assert call_kwargs["entity_type"] == "PicklistValueSet"
-        assert call_kwargs["raw_payloads"] == raw
         assert call_kwargs["conn"] is conn
-        # Result returned (counters not mutated in this mock — that's
-        # batched_materialize's job, which we're mocking)
+
+        combined = call_kwargs["raw_payloads"]
+        # 1 GVS + 2 SVS = 3 records total, in GVS-first order.
+        assert len(combined) == 3
+        assert combined[0]["FullName"] == "RegionVS"
+        assert combined[0]["_source"] == "GlobalValueSet"
+        assert combined[1]["FullName"] == "AccountSource"
+        assert combined[1]["_source"] == "StandardValueSet"
+        assert combined[2]["FullName"] == "CaseOrigin"
+        assert combined[2]["_source"] == "StandardValueSet"
+
         assert result.entity_type == "PicklistValueSet"
 
-    def test_phase_picklist_value_set_handles_empty_response(
+    def test_phase_picklist_value_set_handles_empty_both_streams(
         self,
     ) -> None:
-        """When fetch returns [], batched_materialize is NOT called
-        and result reports all zeros. This is the substrate-1
-        sandbox case (0 GlobalValueSets)."""
+        """When BOTH fetchers return [], batched_materialize is NOT
+        called and result reports all zeros. (Note: in practice the
+        SVS catalog is 616 entries pinned to v66.0, so both-empty is
+        rare outside fully-mocked tests.)"""
         ctx = _stub_ctx_with_mock_sf()
         ctx.sf_client.fetch_global_value_sets.return_value = []
+        ctx.sf_client.fetch_standard_value_sets.return_value = []
         conn = MagicMock()
         with patch("primeqa.sync.phases.batched_materialize") as mock_bm:
             result = phase_picklist_value_set(ctx, conn)
-        # batched_materialize NOT called (empty input short-circuits)
         mock_bm.assert_not_called()
-        # Result is zero everywhere
         assert result.entity_type == "PicklistValueSet"
         assert result.entities_inserted == 0
         assert result.entities_superseded == 0
         assert result.entities_unchanged == 0
         assert result.succeeded is True
+
+    def test_phase_picklist_value_set_gvs_only(self) -> None:
+        """GVS records present, SVS empty — combined list contains
+        only GVS rows (each tagged) and batched_materialize is
+        called exactly once."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_global_value_sets.return_value = [
+            {"FullName": "GVS1", "MasterLabel": "GVS 1"},
+        ]
+        ctx.sf_client.fetch_standard_value_sets.return_value = []
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm:
+            phase_picklist_value_set(ctx, conn)
+        mock_bm.assert_called_once()
+        combined = mock_bm.call_args.kwargs["raw_payloads"]
+        assert len(combined) == 1
+        assert combined[0]["_source"] == "GlobalValueSet"
+
+    def test_phase_picklist_value_set_svs_only(self) -> None:
+        """SVS records present, GVS empty (typical sandbox case
+        after this cycle) — combined list contains only SVS rows
+        (each tagged) and batched_materialize is called once."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_global_value_sets.return_value = []
+        ctx.sf_client.fetch_standard_value_sets.return_value = [
+            {"FullName": "AccountSource", "MasterLabel": "Account Source",
+             "Metadata": {"standardValue": []}},
+        ]
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm:
+            phase_picklist_value_set(ctx, conn)
+        mock_bm.assert_called_once()
+        combined = mock_bm.call_args.kwargs["raw_payloads"]
+        assert len(combined) == 1
+        assert combined[0]["_source"] == "StandardValueSet"

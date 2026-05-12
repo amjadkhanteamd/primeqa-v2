@@ -10,9 +10,25 @@ Verifies:
   - logical_versions row allocated per sync_run
   - second sync reports all entities as unchanged (hash match)
   - second sync doesn't grow the queue
-  - PicklistValueSet phase ran cleanly (sandbox has 0 GVSes per
-    sf_client.fetch_global_value_sets docstring; exercises the
-    empty path)
+  - PicklistValueSet phase materialized the unified GVS + SVS
+    stream. Sandbox has 0 GVSes per the GVS fetch docstring; SVS
+    iterates the 616-entry canonical catalog
+    (sf_constants.STANDARD_VALUE_SET_LABELS pinned to API v66.0).
+    Not every catalog label is queryable in every org — industry-
+    cloud SVSes (Health, Financial Services, Public Sector, ...)
+    return HTTP 500 in orgs where the corresponding cloud is not
+    enabled, per corrections-log §6 category 3. This sandbox has
+    no industry clouds enabled, so the queryable subset is the
+    core CRM portion of the catalog (~95 in measurements).
+    The assertion `>= 50` is a regression floor — catches a
+    regression to 0 or near-0 while accepting the real-world
+    sandbox shape. A future org-class-aware test (sandbox with
+    Health Cloud enabled, for instance) would assert against a
+    different floor.
+  - PicklistValueSet entities are tagged with the SVS:-prefixed
+    external_id per corrections-log §8 addendum.
+  - Second sync: all PVS entities also report as unchanged (no
+    spurious supersession from the _source marker round-trip).
 
 Cleanup: deletes all rows referencing the test connected_org's id
 (FK-aware: queue → entities → sync_runs back-ref → logical_versions
@@ -195,7 +211,9 @@ def test_live_object_and_picklist_value_set_sync(
             f"(Account, Contact, Lead, Opportunity, Case, ...); "
             f"got {object_count}"
         )
-        assert object_count == run1.entities_inserted
+        # Note: run1.entities_inserted is the cross-phase total
+        # (Object + PicklistValueSet); the PVS-vs-Object split is
+        # verified below in the PicklistValueSet block.
 
         # ai_enrichment_queue — 2 rows per entity (embedding + summary)
         queue_count = conn.execute(text("""
@@ -222,34 +240,54 @@ def test_live_object_and_picklist_value_set_sync(
             f"Expected 1 logical_versions row per sync_run; got {version_count}"
         )
 
-        # PicklistValueSet entities — sandbox has 0 GlobalValueSets per
-        # sf_client.fetch_global_value_sets docstring; expect 0
-        # materializations. Verifies the phase ran cleanly (no errors,
-        # no INSERTs) on the empty path. When the SVS-source phase
-        # lands, this assertion updates to assert non-zero from the
-        # StandardValueSet catalog.
+        # PicklistValueSet entities — unified GVS + SVS source.
+        # Sandbox typically has 0 GVSes; SVS iterates the 616-entry
+        # canonical catalog. Per corrections-log §6 category 3,
+        # industry-cloud SVSes return HTTP 500 in orgs where the
+        # cloud is not enabled (~85% of the catalog in this sandbox).
+        # Floor is 50 — catches regression to 0/near-0 while accepting
+        # the real-world catalog-queryable subset.
         pvs_count = conn.execute(text("""
             SELECT COUNT(*) FROM entities
             WHERE entity_type = 'PicklistValueSet'
               AND last_synced_from_org_id = :id
               AND valid_to_seq IS NULL
         """), {"id": test_org}).scalar()
-        assert pvs_count == 0, (
-            f"Expected 0 PicklistValueSet entities (sandbox has 0 GVSes); "
-            f"got {pvs_count}"
+        assert pvs_count >= 50, (
+            f"Expected >=50 PicklistValueSet entities (SVS catalog "
+            f"regression floor); got {pvs_count}"
         )
 
-        # No queue rows for PicklistValueSet (empty insert path)
+        # SVS rows carry the 'SVS:' prefix on sf_api_name per
+        # corrections-log §8 addendum — verifies the namespace
+        # discipline actually landed in storage.
+        svs_count = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'PicklistValueSet'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+              AND sf_api_name LIKE 'SVS:%'
+        """), {"id": test_org}).scalar()
+        # Sandbox has 0 GVSes, so every PVS row should be SVS-prefixed.
+        assert svs_count == pvs_count, (
+            f"Expected all {pvs_count} PVS rows to be SVS-prefixed "
+            f"(sandbox has 0 GVSes); got {svs_count} prefixed"
+        )
+
+        # Queue rows = 2× entity count for PicklistValueSet
+        # (embedding + summary primitives per entity).
         pvs_queue = conn.execute(text("""
             SELECT COUNT(*) FROM ai_enrichment_queue
             WHERE entity_type = 'PicklistValueSet'
               AND entity_id IN (
                   SELECT id FROM entities
                   WHERE last_synced_from_org_id = :id
+                    AND entity_type = 'PicklistValueSet'
               )
         """), {"id": test_org}).scalar()
-        assert pvs_queue == 0, (
-            f"Expected 0 PicklistValueSet queue rows; got {pvs_queue}"
+        assert pvs_queue == pvs_count * 2, (
+            f"Expected {pvs_count * 2} PicklistValueSet queue rows "
+            f"(2× entity count); got {pvs_queue}"
         )
 
     # ===== Second sync =====
@@ -272,12 +310,17 @@ def test_live_object_and_picklist_value_set_sync(
             f"Second sync should report 0 superseded (hashes match); "
             f"got {run2.entities_superseded}"
         )
-        assert run2.entities_unchanged == object_count, (
-            f"Second sync should report {object_count} unchanged; "
+        # Total unchanged = Object count + PVS count (every entity
+        # from sync 1 should have an unchanged-hash match on sync 2).
+        expected_unchanged = object_count + pvs_count
+        assert run2.entities_unchanged == expected_unchanged, (
+            f"Second sync should report {expected_unchanged} unchanged "
+            f"(Object {object_count} + PVS {pvs_count}); "
             f"got {run2.entities_unchanged}"
         )
 
-        # Queue did NOT grow (unchanged entities don't re-enqueue)
+        # Object queue did NOT grow (unchanged entities don't
+        # re-enqueue).
         queue_count_after = conn.execute(text("""
             SELECT COUNT(*) FROM ai_enrichment_queue
             WHERE entity_type = 'Object'
@@ -288,6 +331,35 @@ def test_live_object_and_picklist_value_set_sync(
               )
         """), {"id": test_org}).scalar()
         assert queue_count_after == queue_count, (
-            f"Queue should not grow on unchanged sync ({queue_count}); "
-            f"got {queue_count_after}"
+            f"Object queue should not grow on unchanged sync "
+            f"({queue_count}); got {queue_count_after}"
+        )
+
+        # PicklistValueSet entity count unchanged across syncs
+        # (no spurious supersession from the _source marker
+        # round-trip — corrections-log §8 addendum lock).
+        pvs_count_after = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'PicklistValueSet'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert pvs_count_after == pvs_count, (
+            f"PVS active count should remain {pvs_count} after "
+            f"second sync; got {pvs_count_after}"
+        )
+
+        # PVS queue did NOT grow either.
+        pvs_queue_after = conn.execute(text("""
+            SELECT COUNT(*) FROM ai_enrichment_queue
+            WHERE entity_type = 'PicklistValueSet'
+              AND entity_id IN (
+                  SELECT id FROM entities
+                  WHERE last_synced_from_org_id = :id
+                    AND entity_type = 'PicklistValueSet'
+              )
+        """), {"id": test_org}).scalar()
+        assert pvs_queue_after == pvs_queue, (
+            f"PVS queue should not grow on unchanged sync "
+            f"({pvs_queue}); got {pvs_queue_after}"
         )

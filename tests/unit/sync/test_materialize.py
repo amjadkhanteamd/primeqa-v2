@@ -548,12 +548,27 @@ class TestExtractExternalId:
     @pytest.mark.parametrize("entity_type,raw,expected", [
         ("Object", {"name": "Account"}, "Account"),
         ("Object", {"name": "MyCustom__c"}, "MyCustom__c"),
+        # PicklistValueSet defaults to GVS shape when no _source
+        # marker (backward compat with pre-SVS-cycle fixtures).
         ("PicklistValueSet",
          {"FullName": "RegionVS", "MasterLabel": "Region"},
          "RegionVS"),
         ("PicklistValueSet",
          {"FullName": "MyNamespace__MyVS"},
          "MyNamespace__MyVS"),
+        # _source='GlobalValueSet' explicit — same as default.
+        ("PicklistValueSet",
+         {"_source": "GlobalValueSet", "FullName": "RegionVS"},
+         "RegionVS"),
+        # _source='StandardValueSet' — namespaced with SVS: prefix
+        # per corrections-log §8 addendum (collision avoidance).
+        ("PicklistValueSet",
+         {"_source": "StandardValueSet", "FullName": "AccountSource"},
+         "SVS:AccountSource"),
+        ("PicklistValueSet",
+         {"_source": "StandardValueSet",
+          "FullName": "Industry"},  # collision-prone catalog name
+         "SVS:Industry"),
     ])
     def test_extract_external_id_known_types(
         self, entity_type: str, raw: dict, expected: str,

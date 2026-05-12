@@ -125,35 +125,62 @@ def phase_object(ctx: SyncContext, conn: Any) -> PhaseResult:
 def phase_picklist_value_set(
     ctx: SyncContext, conn: Any,
 ) -> PhaseResult:
-    """PicklistValueSet phase — GlobalValueSet source.
+    """PicklistValueSet phase — unified GVS + SVS source.
 
-    Per corrections-log §8: PicklistValueSet entity_type unifies
-    GVS + SVS. This phase handles the GVS source via
-    fetch_global_value_sets; the SVS source is implemented in
-    its own subsequent cycle and also materializes under
-    entity_type='PicklistValueSet'.
+    Per corrections-log §8 + §8 addendum: PicklistValueSet
+    entity_type unifies two Salesforce sObject sources under one
+    entity:
+      - GlobalValueSet via fetch_global_value_sets — Tooling SOQL
+        bulk; user-defined; sandbox typically has 0.
+      - StandardValueSet via fetch_standard_value_sets — hardcoded
+        616-entry catalog (sf_constants.STANDARD_VALUE_SET_LABELS,
+        pinned to API v66.0) iterated as N=616 per-label Metadata
+        fetches per the reified-column-required constraint
+        (corrections-log §4).
+
+    Both streams are tagged with a `_source` marker before being
+    combined and passed to batched_materialize. The marker:
+      - survives _strip_volatile (not in _VOLATILE_KEYS), so it
+        lands in the normalized payload and contributes to the
+        hash — a record's source is part of its identity
+      - drives _to_presentation_picklist_value_set's branch
+        between is_global_value_set=True/False
+      - drives _extract_external_id's `SVS:` prefix for SVS rows,
+        preventing collisions between a customer GVS named
+        'Industry' and the SVS catalog entry 'Industry'
 
     Runs after Object per ENTITY_ORDER. Field phase will reference
     PicklistValueSet entities for fields whose picklist values
     derive from a value set.
 
-    No filter applied — every GlobalValueSet is user-defined and
-    worth syncing. Unlike Object, there are no platform meta-objects
-    to exclude.
+    No filter applied to either stream — every record is worth
+    materializing. Sandbox: 0 GVSes + ~600 SVSes ≈ ~600 rows total.
+    Wall-clock dominated by SVS fetch (~6 min for full 616-entry
+    iteration at ~0.6s/call).
 
-    Sandbox at the time of writing has 0 GlobalValueSets (per
-    sf_client.fetch_global_value_sets docstring); the empty path
-    is the live-test coverage. Populated path is exercised by
-    unit-test mocks against the documented Salesforce schema.
+    SVS iteration uses labels=None (full canonical catalog). A
+    future cycle may switch to a discovered-label subset once
+    Field phase exposes which SVSes are actually referenced.
     """
     result = PhaseResult(entity_type="PicklistValueSet")
-    raw_value_sets = ctx.sf_client.fetch_global_value_sets()
-    if raw_value_sets:
+
+    # GVS source.
+    raw_gvs = ctx.sf_client.fetch_global_value_sets()
+    for r in raw_gvs:
+        r["_source"] = "GlobalValueSet"
+
+    # SVS source — full canonical catalog iteration (labels=None).
+    raw_svs = ctx.sf_client.fetch_standard_value_sets(labels=None)
+    for r in raw_svs:
+        r["_source"] = "StandardValueSet"
+
+    combined = list(raw_gvs) + list(raw_svs)
+    if combined:
         batched_materialize(
             ctx=ctx,
             conn=conn,
             entity_type="PicklistValueSet",
-            raw_payloads=raw_value_sets,
+            raw_payloads=combined,
             result=result,
         )
     return result

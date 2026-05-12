@@ -1349,6 +1349,79 @@ class TestFetchStandardValueSets:
         assert len(api_calls) == len(labels) == 5
         c.close()
 
+    def test_fetch_standard_value_sets_tolerates_per_label_500(self) -> None:
+        """Industry-cloud SVSes return HTTP 500 in orgs where the
+        corresponding cloud is not enabled (~32% of catalog in a
+        no-cloud sandbox). A single label's failure must not abort
+        the iteration; the consumer should still receive the
+        subset the org supports. Per corrections-log §6 category 3
+        + §8 addendum."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            # Healthy labels return populated records
+            if "MasterLabel = 'AccountType'" in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "0VS000000000001",
+                        "MasterLabel": "AccountType",
+                        "FullName": "AccountType",
+                        "Metadata": {"standardValue": []},
+                    }],
+                })
+            if "MasterLabel = 'Industry'" in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "0VS000000000002",
+                        "MasterLabel": "Industry",
+                        "FullName": "Industry",
+                        "Metadata": {"standardValue": []},
+                    }],
+                })
+            # Industry-cloud-style label returns persistent 500
+            # (HTTP 500 is not in TRANSIENT_STATUS_CODES, so it
+            # raises SFRequestError immediately).
+            return httpx.Response(500, json={"errorCode": "UNKNOWN",
+                                              "message": "cloud not enabled"})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_standard_value_sets(
+            labels=["AccountType", "HealthCloudFoo", "Industry",
+                    "PublicSectorBar"],
+        )
+        # Only the 2 healthy labels surface; the 2 failed labels
+        # are skipped (no exception bubbles).
+        assert len(result) == 2
+        assert {r["MasterLabel"] for r in result} == {
+            "AccountType", "Industry",
+        }
+        c.close()
+
+    def test_fetch_standard_value_sets_auth_error_still_aborts(
+        self,
+    ) -> None:
+        """SFAuthError signals an infrastructure/credential issue
+        that should still abort the iteration — the per-label
+        try/except deliberately does NOT swallow it."""
+        from primeqa.integrations.exceptions import SFAuthError
+        call_count = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                # First token call OK; subsequent refresh attempt
+                # (after 401) also returns 401 → SFAuthError.
+                if call_count["n"] == 0:
+                    call_count["n"] += 1
+                    return _token_response()
+                return httpx.Response(400, json={"error": "invalid_grant"})
+            return httpx.Response(401, json={"error": "expired"})
+
+        c = _make_client(httpx.MockTransport(handler))
+        with pytest.raises(SFAuthError):
+            c.fetch_standard_value_sets(labels=["AccountType", "Industry"])
+        c.close()
+
 
 # ----------------------------------------------------------------------
 # fetch_profiles (2C-extended Method 4, Profile half — Category 2)
