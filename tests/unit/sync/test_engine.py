@@ -106,7 +106,7 @@ class TestRunSyncOrchestration:
         """When resume_sync_run_id is None, _create_sync_run_row is
         called; otherwise it isn't."""
         engine = _make_engine()
-        engine._create_sync_run_row = MagicMock(return_value="new-run-id")
+        engine._create_sync_run_row = MagicMock(return_value=("new-run-id", 1))
         engine._get_last_completed_phase = MagicMock(return_value=None)
         engine._advance_last_completed_phase = MagicMock()
         engine._mark_sync_run_structural_complete = MagicMock()
@@ -129,6 +129,7 @@ class TestRunSyncOrchestration:
         is NOT called; engine resumes the existing run."""
         engine = _make_engine()
         engine._create_sync_run_row = MagicMock()
+        engine._get_logical_version_seq = MagicMock(return_value=42)
         engine._get_last_completed_phase = MagicMock(return_value=None)
         engine._advance_last_completed_phase = MagicMock()
         engine._mark_sync_run_structural_complete = MagicMock()
@@ -152,7 +153,7 @@ class TestRunSyncOrchestration:
         """_advance_last_completed_phase is called for each successful
         phase in the run."""
         engine = _make_engine()
-        engine._create_sync_run_row = MagicMock(return_value="run-1")
+        engine._create_sync_run_row = MagicMock(return_value=("run-1", 1))
         engine._get_last_completed_phase = MagicMock(return_value=None)
         engine._advance_last_completed_phase = MagicMock()
         engine._mark_sync_run_structural_complete = MagicMock()
@@ -177,7 +178,7 @@ class TestRunSyncOrchestration:
     def test_run_sync_runs_phases_in_entity_order(self) -> None:
         """Phase functions are invoked in ENTITY_ORDER sequence."""
         engine = _make_engine()
-        engine._create_sync_run_row = MagicMock(return_value="run-1")
+        engine._create_sync_run_row = MagicMock(return_value=("run-1", 1))
         engine._get_last_completed_phase = MagicMock(return_value=None)
         engine._advance_last_completed_phase = MagicMock()
         engine._mark_sync_run_structural_complete = MagicMock()
@@ -205,7 +206,7 @@ class TestRunSyncOrchestration:
         """On a clean run with no resume, each phase function is
         called exactly once."""
         engine = _make_engine()
-        engine._create_sync_run_row = MagicMock(return_value="run-1")
+        engine._create_sync_run_row = MagicMock(return_value=("run-1", 1))
         engine._get_last_completed_phase = MagicMock(return_value=None)
         engine._advance_last_completed_phase = MagicMock()
         engine._mark_sync_run_structural_complete = MagicMock()
@@ -236,6 +237,7 @@ class TestRunSyncOrchestration:
         PicklistValue/Field."""
         engine = _make_engine()
         engine._create_sync_run_row = MagicMock()
+        engine._get_logical_version_seq = MagicMock(return_value=42)
         engine._get_last_completed_phase = MagicMock(return_value="Field")
         engine._advance_last_completed_phase = MagicMock()
         engine._mark_sync_run_structural_complete = MagicMock()
@@ -271,7 +273,7 @@ class TestRunSyncOrchestration:
         """When a phase raises (or returns error), subsequent phases
         are NOT invoked."""
         engine = _make_engine()
-        engine._create_sync_run_row = MagicMock(return_value="run-1")
+        engine._create_sync_run_row = MagicMock(return_value=("run-1", 1))
         engine._get_last_completed_phase = MagicMock(return_value=None)
         engine._advance_last_completed_phase = MagicMock()
         engine._mark_sync_run_structural_complete = MagicMock()
@@ -311,7 +313,7 @@ class TestRunSyncOrchestration:
         catches PhaseExecutionError at the run_sync level so it
         doesn't propagate."""
         engine = _make_engine()
-        engine._create_sync_run_row = MagicMock(return_value="run-1")
+        engine._create_sync_run_row = MagicMock(return_value=("run-1", 1))
         engine._get_last_completed_phase = MagicMock(return_value=None)
         engine._advance_last_completed_phase = MagicMock()
         engine._mark_sync_run_structural_complete = MagicMock()
@@ -352,7 +354,7 @@ class TestRunSyncOrchestration:
         """When all phases succeed, _mark_sync_run_structural_complete
         is called (NOT _mark_sync_run_failed)."""
         engine = _make_engine()
-        engine._create_sync_run_row = MagicMock(return_value="run-1")
+        engine._create_sync_run_row = MagicMock(return_value=("run-1", 1))
         engine._get_last_completed_phase = MagicMock(return_value=None)
         engine._advance_last_completed_phase = MagicMock()
         engine._mark_sync_run_structural_complete = MagicMock()
@@ -375,7 +377,7 @@ class TestRunSyncOrchestration:
         """When a phase fails, _mark_sync_run_failed is called with
         the failing phase name + PhaseExecutionError."""
         engine = _make_engine()
-        engine._create_sync_run_row = MagicMock(return_value="run-1")
+        engine._create_sync_run_row = MagicMock(return_value=("run-1", 1))
         engine._get_last_completed_phase = MagicMock(return_value=None)
         engine._advance_last_completed_phase = MagicMock()
         engine._mark_sync_run_structural_complete = MagicMock()
@@ -400,6 +402,77 @@ class TestRunSyncOrchestration:
         assert isinstance(call_args.args[2], PhaseExecutionError)
 
 
+class TestConnectAndAllocateLogicalVersion:
+    """Per-Object-phase additions: _connect now sets app.tenant_id
+    GUC; sync_run creation allocates a logical_versions row."""
+
+    def test_connect_sets_tenant_id_guc(self) -> None:
+        """_connect issues both SET search_path AND
+        SET app.tenant_id, derived from tenant_schema."""
+        mock_db = MagicMock(name="engine_db")
+        mock_sf = MagicMock(name="sf_client")
+        with patch(
+            "primeqa.sync.engine.assert_entity_order_respects_schema_fks"
+        ):
+            engine = SyncEngine(
+                engine_db=mock_db, sf_client=mock_sf,
+                tenant_schema="tenant_42",
+            )
+
+        # Capture the connection mock's execute calls
+        mock_conn = MagicMock()
+        mock_db.connect.return_value.__enter__.return_value = mock_conn
+        mock_conn.begin.return_value.__enter__.return_value = None
+
+        # Enter the _connect context to trigger the SET statements
+        with engine._connect() as conn:
+            pass
+
+        # Collect all execute calls' SQL text
+        sql_calls = [
+            str(call.args[0]) for call in mock_conn.execute.call_args_list
+        ]
+        assert any("search_path" in s for s in sql_calls), (
+            f"search_path SET not issued; calls: {sql_calls}"
+        )
+        assert any("app.tenant_id" in s for s in sql_calls), (
+            f"app.tenant_id SET not issued; calls: {sql_calls}"
+        )
+
+    def test_create_sync_run_allocates_logical_version(self) -> None:
+        """_create_sync_run_row calls _allocate_logical_version and
+        back-links logical_version_seq onto the sync_run row.
+        Returns (sync_run_id, version_seq) tuple."""
+        engine = _make_engine()
+
+        # Mock the inner methods: _connect returns a connection
+        # whose execute returns a fetchone result.
+        mock_conn = MagicMock()
+        # First execute (INSERT sync_run): returns ('run-1',)
+        # Second execute (INSERT logical_versions): handled by
+        # _allocate_logical_version, which we patch
+        # Third execute (UPDATE sync_run): no fetchone needed
+        mock_conn.execute.return_value.fetchone.return_value = ("run-1",)
+
+        # Patch _connect to yield this mock conn
+        from contextlib import contextmanager
+
+        @contextmanager
+        def fake_connect():
+            yield mock_conn
+
+        engine._connect = fake_connect
+        engine._allocate_logical_version = MagicMock(return_value=99)
+
+        sync_run_id, version_seq = engine._create_sync_run_row("org-1")
+
+        assert sync_run_id == "run-1"
+        assert version_seq == 99
+        engine._allocate_logical_version.assert_called_once_with(
+            mock_conn, "run-1",
+        )
+
+
 class TestResumeFromUnknownPhase:
     def test_run_sync_raises_if_last_completed_phase_not_in_entity_order(
         self,
@@ -408,7 +481,7 @@ class TestResumeFromUnknownPhase:
         the engine raises SyncEngineError rather than silently
         miscounting."""
         engine = _make_engine()
-        engine._create_sync_run_row = MagicMock(return_value="run-1")
+        engine._create_sync_run_row = MagicMock(return_value=("run-1", 1))
         engine._get_last_completed_phase = MagicMock(
             return_value="DeprecatedPhase",
         )

@@ -24,6 +24,7 @@ from typing import Callable
 
 from primeqa.sync.context import SyncContext
 from primeqa.sync.fk_assertion import ENTITY_ORDER
+from primeqa.sync.materialize import materialize_entity
 from primeqa.sync.result import PhaseResult
 
 
@@ -46,12 +47,74 @@ def _noop_phase(entity_type: str) -> PhaseFunction:
     return phase
 
 
+def _is_syncable_object(raw: dict) -> bool:
+    """Filter Salesforce sObjects to those representing user-facing
+    data objects.
+
+    Excludes:
+    - Non-queryable / non-searchable objects (meta types like
+      AggregateResult, OutgoingEmail, RecentlyViewed, etc. — these
+      cannot be SELECTed from)
+    - Deprecated objects (no longer used; would clutter the model)
+    - Custom Setting objects (configuration storage, not user data —
+      distinct entity-modeling concern; out of scope for Object phase)
+
+    Includes:
+    - Standard objects (Account, Contact, Lead, Opportunity, Case, ...)
+    - Custom objects (suffix __c)
+    - Managed-package objects (NamespacePrefix__Object__c)
+    - Platform objects representing users/permissions
+      (User, Profile, PermissionSet) — these are sObjects at the
+      Salesforce level even though our model also has separate User /
+      Profile / PermissionSet entities. Their semantics in the model:
+      Object entity captures the SCHEMA (table definition); User /
+      Profile / PermissionSet entities capture the ROW-LEVEL data.
+    """
+    return (
+        bool(raw.get("queryable"))
+        and bool(raw.get("searchable"))
+        and not bool(raw.get("deprecatedAndHidden"))
+        and not bool(raw.get("customSetting"))
+    )
+
+
+def phase_object(ctx: SyncContext) -> PhaseResult:
+    """Object phase — fetches all syncable sObjects and materializes
+    them as Object entities.
+
+    Per PHASE_2_STEP_4_SYNC_DESIGN.md §§4-5. First phase in
+    ENTITY_ORDER; no upstream dependencies.
+
+    Filter: queryable AND searchable AND NOT deprecatedAndHidden
+    AND NOT customSetting (see _is_syncable_object).
+
+    Uses Salesforce API name (raw['name']) as external_id.
+    Substrate-1's fetch_objects() returns ~700+ sObjects on a
+    typical org; ~50-200 typically pass the filter.
+    """
+    result = PhaseResult(entity_type="Object")
+    raw_objects = ctx.sf_client.fetch_objects()
+    for raw in raw_objects:
+        if not _is_syncable_object(raw):
+            continue
+        materialize_entity(
+            ctx=ctx,
+            entity_type="Object",
+            external_id=raw["name"],
+            raw_payload=raw,
+            result=result,
+        )
+    return result
+
+
 # One phase function per ENTITY_ORDER value. Kept aligned by
 # construction below — see test_phase_registry_has_function_for_every_
-# entity_order_value for the lock.
+# entity_order_value for the lock. Real phase implementations replace
+# their _noop_phase entries one cycle at a time per design doc §9.
 PHASE_REGISTRY: dict[str, PhaseFunction] = {
     entity_type: _noop_phase(entity_type) for entity_type in ENTITY_ORDER
 }
+PHASE_REGISTRY["Object"] = phase_object
 
 
 def get_phase_function(entity_type: str) -> PhaseFunction:

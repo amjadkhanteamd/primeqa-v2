@@ -108,12 +108,17 @@ class SyncEngine:
         """
         # 1. Create or resume sync_run row.
         if resume_sync_run_id is None:
-            sync_run_id = self._create_sync_run_row(connected_org_id)
+            sync_run_id, logical_version_seq = self._create_sync_run_row(
+                connected_org_id,
+            )
         else:
             sync_run_id = resume_sync_run_id
+            logical_version_seq = self._get_logical_version_seq(sync_run_id)
 
         # 2. Build context.
-        ctx = self._build_context(sync_run_id, connected_org_id)
+        ctx = self._build_context(
+            sync_run_id, connected_org_id, logical_version_seq,
+        )
 
         # 3. Determine where to start (resumability).
         last_completed = self._get_last_completed_phase(sync_run_id)
@@ -194,23 +199,116 @@ class SyncEngine:
     # Internal: sync_run row lifecycle
     # ------------------------------------------------------------------
 
-    def _create_sync_run_row(self, connected_org_id: str) -> str:
-        """INSERT a new sync_run row in 'running' / 'structural' state.
+    def _create_sync_run_row(
+        self, connected_org_id: str,
+    ) -> tuple[str, int]:
+        """Three-step initialization: sync_run row, then
+        logical_versions row with back-reference, then back-link
+        sync_run.logical_version_seq.
 
-        Returns the new sync_run id (UUID, stringified).
+        All three statements run in the same transaction so partial
+        state is impossible.
+
+        Chicken-and-egg ordering rationale: sync_run must exist
+        before logical_versions.created_by_sync_run_id can reference
+        it; logical_version_seq must be allocated before sync_run
+        can store it. Solution: create sync_run with NULL
+        logical_version_seq, allocate logical_version (referencing
+        the now-existing sync_run_id), UPDATE sync_run with the
+        allocated seq.
+
+        Returns:
+            (sync_run_id, logical_version_seq) tuple.
         """
         with self._connect() as conn:
-            row = conn.execute(text("""
+            # 1. Create sync_run row (logical_version_seq starts as
+            # NULL; will be back-filled in step 3).
+            sync_run_row = conn.execute(text("""
                 INSERT INTO sync_runs (source_org_id, status, phase)
                 VALUES (:org_id, 'running', 'structural')
                 RETURNING id
             """), {"org_id": connected_org_id}).fetchone()
+            if sync_run_row is None:
+                raise SyncEngineError(
+                    f"INSERT into sync_runs returned no row for "
+                    f"connected_org_id={connected_org_id!r}"
+                )
+            sync_run_id = str(sync_run_row[0])
+
+            # 2. Allocate logical_versions row with back-reference.
+            logical_version_seq = self._allocate_logical_version(
+                conn, sync_run_id,
+            )
+
+            # 3. Back-link sync_run.logical_version_seq.
+            conn.execute(text("""
+                UPDATE sync_runs
+                SET logical_version_seq = :v
+                WHERE id = :id
+            """), {"v": logical_version_seq, "id": sync_run_id})
+
+        return sync_run_id, logical_version_seq
+
+    def _allocate_logical_version(
+        self, conn: Any, sync_run_id: str,
+    ) -> int:
+        """Allocate a new logical_versions row for this sync_run.
+
+        Per Object phase cycle decision: one version per sync_run.
+        All entities written by this run share its version_seq for
+        valid_from_seq. Hash-change supersession sets prior rows'
+        valid_to_seq to the NEW row's valid_from_seq (closed-open
+        interval semantics — old row valid for [valid_from, valid_to);
+        constraint valid_to > valid_from holds since version_seq is
+        strictly increasing).
+
+        version_type='sync_run' per migration 20260512_0020.
+        version_name='sync_run_{uuid}' is deterministic and never
+        collides (UNIQUE constraint on version_name).
+        """
+        result = conn.execute(text("""
+            INSERT INTO logical_versions
+                (version_name, version_type, description,
+                 created_by_sync_run_id)
+            VALUES
+                (:name, 'sync_run', :description, :sync_run_id)
+            RETURNING version_seq
+        """), {
+            "name": f"sync_run_{sync_run_id}",
+            "description": f"Allocated by sync_run {sync_run_id}",
+            "sync_run_id": sync_run_id,
+        })
+        row = result.fetchone()
         if row is None:
             raise SyncEngineError(
-                f"INSERT into sync_runs returned no row for "
-                f"connected_org_id={connected_org_id!r}"
+                f"INSERT into logical_versions returned no row "
+                f"for sync_run {sync_run_id}"
             )
-        return str(row[0])
+        return int(row[0])
+
+    def _get_logical_version_seq(self, sync_run_id: str) -> int:
+        """SELECT logical_version_seq FROM sync_runs WHERE id = :id.
+
+        Used when resuming an existing sync_run. Raises if the row
+        doesn't exist or if logical_version_seq is still NULL
+        (which would mean the sync_run was created but never had
+        its version allocated — a bug in _create_sync_run_row).
+        """
+        with self._connect() as conn:
+            row = conn.execute(text("""
+                SELECT logical_version_seq FROM sync_runs
+                WHERE id = :id
+            """), {"id": sync_run_id}).fetchone()
+        if row is None:
+            raise SyncEngineError(
+                f"sync_run {sync_run_id} not found"
+            )
+        if row[0] is None:
+            raise SyncEngineError(
+                f"sync_run {sync_run_id} has NULL logical_version_seq; "
+                f"cannot resume without an allocated version"
+            )
+        return int(row[0])
 
     def _get_last_completed_phase(
         self, sync_run_id: str,
@@ -319,6 +417,7 @@ class SyncEngine:
         self,
         sync_run_id: str,
         connected_org_id: str,
+        logical_version_seq: int,
     ) -> SyncContext:
         """Construct the SyncContext passed to phase functions."""
         return SyncContext(
@@ -327,20 +426,50 @@ class SyncEngine:
             sync_run_id=sync_run_id,
             connected_org_id=connected_org_id,
             tenant_schema=self.tenant_schema,
+            logical_version_seq=logical_version_seq,
         )
+
+    def _tenant_id_from_schema(self) -> int:
+        """Parse 'tenant_1' → 1.
+
+        Used by _connect to set the app.tenant_id GUC so that
+        entities_tenant_assertion CHECK constraints pass on
+        INSERTs.
+        """
+        prefix = "tenant_"
+        if not self.tenant_schema.startswith(prefix):
+            raise SyncEngineError(
+                f"tenant_schema {self.tenant_schema!r} does not "
+                f"match the tenant_<int> naming convention"
+            )
+        try:
+            return int(self.tenant_schema[len(prefix):])
+        except ValueError as e:
+            raise SyncEngineError(
+                f"tenant_schema {self.tenant_schema!r} does not end "
+                f"with an integer tenant id: {e}"
+            )
 
     @contextmanager
     def _connect(self) -> Iterator[Any]:
-        """Open a connection with tenant search_path set.
+        """Open a connection with tenant search_path AND
+        app.tenant_id GUC set.
 
-        Sets search_path to the engine's tenant_schema for the
-        duration of the connection so unqualified table references
-        resolve there.
+        Per substrate-1's tenant-isolation pattern (primeqa/semantic/
+        connection.py): every entity-table operation requires
+        BOTH search_path (so unqualified table references resolve)
+        AND the app.tenant_id GUC (so the entities_tenant_assertion
+        CHECK constraint passes during INSERT).
         """
+        tenant_id = self._tenant_id_from_schema()
         with self.db.connect() as conn:
             with conn.begin():
                 conn.execute(
                     text(f'SET LOCAL search_path TO "{self.tenant_schema}", public')
+                )
+                conn.execute(
+                    text("SET LOCAL app.tenant_id = :tid"),
+                    {"tid": str(tenant_id)},
                 )
                 yield conn
 
