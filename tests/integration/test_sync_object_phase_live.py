@@ -94,7 +94,19 @@ def live_sf_client():
 def db_engine():
     if not HAS_CREDS:
         pytest.skip("DATABASE_URL not configured")
-    eng = create_engine(os.environ["DATABASE_URL"])
+    # pool_pre_ping + pool_recycle match primeqa/db.py and
+    # primeqa/semantic/connection.py settings — Railway's proxy
+    # drops idle connections after ~15 min, and a sync phase that
+    # holds a connection across multi-minute Salesforce REST
+    # roundtrips can exceed that timeout. Without these settings
+    # the test's engine pool hands out dead connections and the
+    # next query hangs in poll() indefinitely (local TCP keepalive
+    # default is 2 hours).
+    eng = create_engine(
+        os.environ["DATABASE_URL"],
+        pool_pre_ping=True,
+        pool_recycle=300,
+    )
     yield eng
     eng.dispose()
 

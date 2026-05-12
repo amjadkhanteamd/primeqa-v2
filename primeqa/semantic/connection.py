@@ -83,6 +83,12 @@ def _make_engine() -> Engine:
         # pool_pre_ping catches stale connections (Railway can drop them
         # silently). Cheap; worth keeping.
         pool_pre_ping=True,
+        # pool_recycle: belt-and-suspenders against Railway proxy idle
+        # timeouts. Forces reconnect every 5 minutes regardless of
+        # whether pool_pre_ping caught the drop. Critical for long-
+        # running sync phases that hold a connection across many
+        # Salesforce REST roundtrips without DB traffic in between.
+        pool_recycle=300,
     )
 
     # Defensive checkin hook. See module docstring.

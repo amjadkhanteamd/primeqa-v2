@@ -14,7 +14,21 @@ def init_db(database_url):
     global engine, SessionLocal
     if engine is not None:
         return
-    engine = create_engine(database_url, pool_pre_ping=True)
+    # pool_pre_ping: cheap SELECT 1 before reusing a pooled connection;
+    # transparently reconnects if Railway's proxy has dropped the
+    # connection (idle timeout ~15 min, shorter than Linux TCP
+    # keepalive default of 2 hours — without this, dropped pool
+    # connections cause indefinite poll() hangs).
+    # pool_recycle: forces connection recycle every 5 minutes as a
+    # belt-and-suspenders safety net for long-running operations
+    # (sync phases that hold a connection across several Salesforce
+    # API roundtrips can idle the connection long enough for the
+    # proxy to drop it).
+    engine = create_engine(
+        database_url,
+        pool_pre_ping=True,
+        pool_recycle=300,
+    )
     SessionLocal = scoped_session(sessionmaker(bind=engine))
 
 
