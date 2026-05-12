@@ -480,3 +480,46 @@ wall-clock becomes a customer-visible problem, or (b) we have
 multiple phases with redundant fetches and a uniform solution
 is worth designing.
 
+## §12: Edges containment-unique index narrowed to BELONGS_TO
+
+**Date:** 2026-05-12
+**Step:** Field phase (3 of 12) — first phase to write
+            multi-target STRUCTURAL edges
+**Source:** Live test failed with UniqueViolation on
+            idx_edges_unique_containment when Field phase
+            attempted to write multiple HAS_RELATIONSHIP_TO
+            edges from a single polymorphic-reference Field
+            (Task.WhoId → [Contact, Lead], Lead.OwnerId →
+            [User, Group], etc.)
+
+Substrate-1's migration `20260427_0020_phase1_edges.py`
+created idx_edges_unique_containment with partial filter
+`WHERE edge_category = 'STRUCTURAL'`. The accompanying
+comment stated the intent: "Prevents duplicate BELONGS_TO
+entries for the same source at the same version."
+
+The filter over-generalized. Both BELONGS_TO and
+HAS_RELATIONSHIP_TO are STRUCTURAL category in
+TIER_1_EDGES. The original intent (one-parent-per-child
+containment uniqueness for BELONGS_TO specifically) wasn't
+captured precisely in the filter.
+
+HAS_RELATIONSHIP_TO is multi-target by design: polymorphic
+references in Salesforce (WhoId → Contact|Lead, etc.) need
+multiple edges from one source Field at one valid_from_seq.
+
+**Resolution:** Migration 20260512_0030 narrows the filter
+to `WHERE edge_type = 'BELONGS_TO'`. Active-edge uniqueness
+for all edge types remains enforced by
+idx_edges_unique_active_non_references (keys on
+source_entity_id, edge_type, target_entity_id — which
+correctly distinguishes multi-target edges by their
+distinct target_entity_id values).
+
+**Pattern for future cycles:** When adding new STRUCTURAL
+edge types to TIER_1_EDGES, verify whether the new type is
+single-target-by-design (like BELONGS_TO) or multi-target
+(like HAS_RELATIONSHIP_TO). Single-target types should
+reference idx_edges_unique_containment by being added to
+its partial filter; multi-target types should NOT.
+
