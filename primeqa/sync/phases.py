@@ -24,7 +24,7 @@ from typing import Any, Callable
 
 from primeqa.sync.context import SyncContext
 from primeqa.sync.fk_assertion import ENTITY_ORDER
-from primeqa.sync.materialize import materialize_entity
+from primeqa.sync.materialize import batched_materialize
 from primeqa.sync.result import PhaseResult
 
 
@@ -88,7 +88,7 @@ def phase_object(ctx: SyncContext, conn: Any) -> PhaseResult:
     """Object phase — fetches all syncable sObjects and materializes
     them as Object entities.
 
-    Per PHASE_2_STEP_4_SYNC_DESIGN.md §§4-5. First phase in
+    Per PHASE_2_STEP_4_SYNC_DESIGN.md §§4-5, 7. First phase in
     ENTITY_ORDER; no upstream dependencies.
 
     Filter: queryable AND searchable AND NOT deprecatedAndHidden
@@ -98,21 +98,25 @@ def phase_object(ctx: SyncContext, conn: Any) -> PhaseResult:
     Substrate-1's fetch_objects() returns ~700+ sObjects on a
     typical org; ~50-200 typically pass the filter.
 
+    Calls batched_materialize once with the full syncable list.
+    Internally chunked at 500 rows per pass per design doc §7.
+    For typical sandbox object counts (<500 syncable), this is a
+    single chunk = a single batched-INSERT statement (plus the
+    SELECT, the queue UPSERT, etc.).
+
     All DB writes execute on `conn` (engine._phase_transaction's
     transaction); commit happens when this function returns and
     the engine exits the _phase_transaction context.
     """
     result = PhaseResult(entity_type="Object")
     raw_objects = ctx.sf_client.fetch_objects()
-    for raw in raw_objects:
-        if not _is_syncable_object(raw):
-            continue
-        materialize_entity(
+    syncable = [raw for raw in raw_objects if _is_syncable_object(raw)]
+    if syncable:
+        batched_materialize(
             ctx=ctx,
             conn=conn,
             entity_type="Object",
-            external_id=raw["name"],
-            raw_payload=raw,
+            raw_payloads=syncable,
             result=result,
         )
     return result

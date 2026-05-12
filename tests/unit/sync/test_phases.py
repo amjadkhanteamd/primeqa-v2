@@ -153,25 +153,26 @@ class TestPhaseObject:
         ctx = _stub_ctx_with_mock_sf()
         ctx.sf_client.fetch_objects.return_value = []
         conn = MagicMock()
-        with patch("primeqa.sync.phases.materialize_entity"):
+        with patch("primeqa.sync.phases.batched_materialize"):
             phase_object(ctx, conn)
         ctx.sf_client.fetch_objects.assert_called_once_with()
 
     def test_phase_object_filters_non_queryable_objects(self) -> None:
         """Non-queryable raw payloads are NOT passed to
-        materialize_entity."""
+        batched_materialize."""
         ctx = _stub_ctx_with_mock_sf()
         ctx.sf_client.fetch_objects.return_value = [
             _account_raw(),         # passes
             _non_queryable_raw(),   # filtered
         ]
         conn = MagicMock()
-        with patch("primeqa.sync.phases.materialize_entity") as mock_mat:
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm:
             phase_object(ctx, conn)
-        assert mock_mat.call_count == 1
-        # The single call's external_id was 'Account'
-        call_kwargs = mock_mat.call_args.kwargs
-        assert call_kwargs["external_id"] == "Account"
+        # batched_materialize called once with the filtered list
+        mock_bm.assert_called_once()
+        raw_payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        names = [r["name"] for r in raw_payloads]
+        assert names == ["Account"]
 
     def test_phase_object_filters_custom_setting_objects(self) -> None:
         """customSetting=True payloads are NOT passed through."""
@@ -181,10 +182,11 @@ class TestPhaseObject:
             _custom_setting_raw(),
         ]
         conn = MagicMock()
-        with patch("primeqa.sync.phases.materialize_entity") as mock_mat:
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm:
             phase_object(ctx, conn)
-        assert mock_mat.call_count == 1
-        assert mock_mat.call_args.kwargs["external_id"] == "Account"
+        mock_bm.assert_called_once()
+        names = [r["name"] for r in mock_bm.call_args.kwargs["raw_payloads"]]
+        assert names == ["Account"]
 
     def test_phase_object_filters_deprecated_objects(self) -> None:
         """deprecatedAndHidden=True payloads are NOT passed through."""
@@ -194,16 +196,17 @@ class TestPhaseObject:
             _deprecated_raw(),
         ]
         conn = MagicMock()
-        with patch("primeqa.sync.phases.materialize_entity") as mock_mat:
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm:
             phase_object(ctx, conn)
-        assert mock_mat.call_count == 1
-        assert mock_mat.call_args.kwargs["external_id"] == "Account"
+        mock_bm.assert_called_once()
+        names = [r["name"] for r in mock_bm.call_args.kwargs["raw_payloads"]]
+        assert names == ["Account"]
 
     def test_phase_object_materializes_filtered_objects_only(
         self,
     ) -> None:
         """Mixed input — verify exactly the syncable subset reaches
-        materialize_entity."""
+        batched_materialize."""
         ctx = _stub_ctx_with_mock_sf()
         contact_raw = {**_account_raw(), "name": "Contact"}
         ctx.sf_client.fetch_objects.return_value = [
@@ -214,8 +217,8 @@ class TestPhaseObject:
             _deprecated_raw(),       # filtered
         ]
         conn = MagicMock()
-        with patch("primeqa.sync.phases.materialize_entity") as mock_mat:
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm:
             phase_object(ctx, conn)
-        assert mock_mat.call_count == 2
-        external_ids = [c.kwargs["external_id"] for c in mock_mat.call_args_list]
-        assert external_ids == ["Account", "Contact"]
+        mock_bm.assert_called_once()
+        names = [r["name"] for r in mock_bm.call_args.kwargs["raw_payloads"]]
+        assert names == ["Account", "Contact"]
