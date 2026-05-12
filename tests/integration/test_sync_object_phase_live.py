@@ -107,18 +107,29 @@ def live_sf_client():
 def db_engine():
     if not HAS_CREDS:
         pytest.skip("DATABASE_URL not configured")
-    # pool_pre_ping + pool_recycle match primeqa/db.py and
-    # primeqa/semantic/connection.py settings — Railway's proxy
-    # drops idle connections after ~15 min, and a sync phase that
-    # holds a connection across multi-minute Salesforce REST
-    # roundtrips can exceed that timeout. Without these settings
-    # the test's engine pool hands out dead connections and the
-    # next query hangs in poll() indefinitely (local TCP keepalive
-    # default is 2 hours).
+    # pool_pre_ping + pool_recycle + TCP keepalive match
+    # primeqa/db.py and primeqa/semantic/connection.py settings.
+    # Railway's proxy drops idle connections after ~15 min:
+    #   - pool_pre_ping catches drops between checkouts (cheap
+    #     SELECT 1 before pool reuse)
+    #   - pool_recycle forces 5-min recycle as belt-and-suspenders
+    #   - TCP keepalive keeps mid-transaction connections alive
+    #     when a phase holds them across multi-minute SQL
+    #     operations (PV phase's _batch_read_existing scanning
+    #     ~500 external_ids is the original surfacing case)
+    # Without keepalive, a held connection idle-closes by the
+    # proxy and the next query fails with OperationalError
+    # after the TCP timeout.
     eng = create_engine(
         os.environ["DATABASE_URL"],
         pool_pre_ping=True,
         pool_recycle=300,
+        connect_args={
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
+        },
     )
     yield eng
     eng.dispose()

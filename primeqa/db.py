@@ -24,10 +24,26 @@ def init_db(database_url):
     # (sync phases that hold a connection across several Salesforce
     # API roundtrips can idle the connection long enough for the
     # proxy to drop it).
+    # TCP keepalive (libpq + kernel level): probes start at 30s
+    # idle, every 10s, 5 attempts. Keeps connections visible to
+    # Railway's proxy across long-held phase transactions where
+    # SQL operations may take several minutes (e.g., PV phase's
+    # _batch_read_existing scanning ~500 external_ids). Without
+    # this, the proxy idle-closes the connection mid-transaction
+    # and the next query fails with OperationalError after the
+    # TCP timeout. Distinct from pool_pre_ping: pre-ping only
+    # validates connections AT CHECKOUT; keepalive keeps a
+    # held-by-transaction connection alive mid-flight.
     engine = create_engine(
         database_url,
         pool_pre_ping=True,
         pool_recycle=300,
+        connect_args={
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
+        },
     )
     SessionLocal = scoped_session(sessionmaker(bind=engine))
 

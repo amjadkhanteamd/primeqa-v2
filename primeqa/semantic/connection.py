@@ -89,6 +89,22 @@ def _make_engine() -> Engine:
         # running sync phases that hold a connection across many
         # Salesforce REST roundtrips without DB traffic in between.
         pool_recycle=300,
+        # TCP keepalive (libpq + kernel level): probes start at 30s
+        # idle, every 10s, 5 attempts. Keeps connections visible to
+        # Railway's proxy across long-held phase transactions where
+        # SQL operations may take several minutes (e.g., PV phase's
+        # _batch_read_existing scanning ~500 external_ids). Without
+        # this, the proxy idle-closes the connection mid-transaction
+        # and the next query fails with OperationalError after the
+        # TCP timeout. Distinct from pool_pre_ping: pre-ping only
+        # validates connections AT CHECKOUT; keepalive keeps a
+        # held-by-transaction connection alive mid-flight.
+        connect_args={
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
+        },
     )
 
     # Defensive checkin hook. See module docstring.
