@@ -530,3 +530,39 @@ class TestBatchedMaterializeQueueReEnqueue:
         # embeddings + summaries each queued for both
         assert result.embeddings_queued == 2
         assert result.summaries_queued == 2
+
+
+# ----------------------------------------------------------------------
+# _extract_external_id — per-entity-type external_id routing
+# ----------------------------------------------------------------------
+
+import pytest
+
+from primeqa.sync.materialize import _extract_external_id
+
+
+class TestExtractExternalId:
+    """Verifies the per-entity-type router. Each new phase cycle
+    adds a branch here; the test parametrizes the known mappings."""
+
+    @pytest.mark.parametrize("entity_type,raw,expected", [
+        ("Object", {"name": "Account"}, "Account"),
+        ("Object", {"name": "MyCustom__c"}, "MyCustom__c"),
+        ("PicklistValueSet",
+         {"FullName": "RegionVS", "MasterLabel": "Region"},
+         "RegionVS"),
+        ("PicklistValueSet",
+         {"FullName": "MyNamespace__MyVS"},
+         "MyNamespace__MyVS"),
+    ])
+    def test_extract_external_id_known_types(
+        self, entity_type: str, raw: dict, expected: str,
+    ) -> None:
+        assert _extract_external_id(entity_type, raw) == expected
+
+    def test_extract_external_id_unknown_type_raises(self) -> None:
+        with pytest.raises(KeyError) as excinfo:
+            _extract_external_id("NotAnEntity", {"name": "X"})
+        msg = str(excinfo.value)
+        assert "NotAnEntity" in msg
+        assert "_extract_external_id" in msg

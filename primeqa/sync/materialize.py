@@ -185,13 +185,16 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
     """Per-entity-type external_id extraction.
 
     Object: raw['name'] (e.g., 'Account')
+    PicklistValueSet: raw['FullName'] (e.g., 'MyValueSet' or
+        'MyNamespace__MyValueSet' for managed-package GVSes)
 
-    Other types added by their respective phase cycles. For now
-    only Object is implemented; KeyError on unknown type catches
-    drift.
+    Other types added by their respective phase cycles. KeyError
+    on unknown type catches drift.
     """
     if entity_type == "Object":
         return raw["name"]
+    if entity_type == "PicklistValueSet":
+        return raw["FullName"]
     raise KeyError(
         f"No external_id extractor for entity_type "
         f"{entity_type!r}. Add to "

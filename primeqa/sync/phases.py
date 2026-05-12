@@ -122,6 +122,43 @@ def phase_object(ctx: SyncContext, conn: Any) -> PhaseResult:
     return result
 
 
+def phase_picklist_value_set(
+    ctx: SyncContext, conn: Any,
+) -> PhaseResult:
+    """PicklistValueSet phase — GlobalValueSet source.
+
+    Per corrections-log §8: PicklistValueSet entity_type unifies
+    GVS + SVS. This phase handles the GVS source via
+    fetch_global_value_sets; the SVS source is implemented in
+    its own subsequent cycle and also materializes under
+    entity_type='PicklistValueSet'.
+
+    Runs after Object per ENTITY_ORDER. Field phase will reference
+    PicklistValueSet entities for fields whose picklist values
+    derive from a value set.
+
+    No filter applied — every GlobalValueSet is user-defined and
+    worth syncing. Unlike Object, there are no platform meta-objects
+    to exclude.
+
+    Sandbox at the time of writing has 0 GlobalValueSets (per
+    sf_client.fetch_global_value_sets docstring); the empty path
+    is the live-test coverage. Populated path is exercised by
+    unit-test mocks against the documented Salesforce schema.
+    """
+    result = PhaseResult(entity_type="PicklistValueSet")
+    raw_value_sets = ctx.sf_client.fetch_global_value_sets()
+    if raw_value_sets:
+        batched_materialize(
+            ctx=ctx,
+            conn=conn,
+            entity_type="PicklistValueSet",
+            raw_payloads=raw_value_sets,
+            result=result,
+        )
+    return result
+
+
 # One phase function per ENTITY_ORDER value. Kept aligned by
 # construction below — see test_phase_registry_has_function_for_every_
 # entity_order_value for the lock. Real phase implementations replace
@@ -130,6 +167,7 @@ PHASE_REGISTRY: dict[str, PhaseFunction] = {
     entity_type: _noop_phase(entity_type) for entity_type in ENTITY_ORDER
 }
 PHASE_REGISTRY["Object"] = phase_object
+PHASE_REGISTRY["PicklistValueSet"] = phase_picklist_value_set
 
 
 def get_phase_function(entity_type: str) -> PhaseFunction:

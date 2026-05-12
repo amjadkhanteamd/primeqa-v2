@@ -51,8 +51,46 @@ def _to_presentation_object(normalized: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _to_presentation_picklist_value_set(
+    normalized: dict[str, Any],
+) -> dict[str, Any]:
+    """Map normalized GlobalValueSet to semantic_text input shape.
+
+    Substrate-1 unifies GlobalValueSet + StandardValueSet under one
+    PicklistValueSet entity_type (per corrections-log §8). This
+    adapter handles the GVS source; an analogous SVS branch lands
+    in the StandardValueSet phase cycle.
+
+    Field mapping (verified against substrate-1's
+    _picklist_value_set_fixture + _to_text_picklist_value_set):
+        name              ← FullName (canonical identifier, handles
+                            namespacing as <namespace>__<dev_name>)
+        label             ← MasterLabel (display name)
+        is_restricted     = True (hardcoded — see rationale below)
+        is_global_value_set = True (GVS source, always)
+        description       ← Description (may be None)
+
+    is_restricted hardcoded True rationale: GlobalValueSets are
+    generally restricted by design (reusable canonical
+    enumerations; the whole point is constraining values to a
+    known list). Salesforce's Metadata API doesn't expose a clean
+    isRestricted flag at the top level of the GVS record.
+    Revisit if customers report semantic_text misrepresenting a
+    GVS as restricted when it isn't — though I'd be surprised if
+    that case is common enough to surface.
+    """
+    return {
+        "name": normalized.get("FullName"),
+        "label": normalized.get("MasterLabel"),
+        "is_restricted": True,
+        "is_global_value_set": True,
+        "description": normalized.get("Description"),
+    }
+
+
 _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "Object": _to_presentation_object,
+    "PicklistValueSet": _to_presentation_picklist_value_set,
     # Other entity types added by their respective phase cycles per
     # PHASE_2_PLAN_corrections.md §7.
 }

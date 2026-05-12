@@ -52,7 +52,7 @@ class TestPhaseRegistry:
         # Real phase implementations live elsewhere and are tested
         # separately; this test covers only the remaining no-op
         # placeholders.
-        real_phases = {"Object"}
+        real_phases = {"Object", "PicklistValueSet"}
         for entity_type, phase_fn in PHASE_REGISTRY.items():
             if entity_type in real_phases:
                 continue
@@ -222,3 +222,72 @@ class TestPhaseObject:
         mock_bm.assert_called_once()
         names = [r["name"] for r in mock_bm.call_args.kwargs["raw_payloads"]]
         assert names == ["Account", "Contact"]
+
+
+# ----------------------------------------------------------------------
+# phase_picklist_value_set — GVS source, second real phase
+# ----------------------------------------------------------------------
+
+from primeqa.sync.phases import phase_picklist_value_set
+
+
+class TestPhasePicklistValueSet:
+    def test_phase_picklist_value_set_calls_fetch_global_value_sets(
+        self,
+    ) -> None:
+        """phase_picklist_value_set delegates Salesforce fetching to
+        ctx.sf_client.fetch_global_value_sets()."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_global_value_sets.return_value = []
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize"):
+            phase_picklist_value_set(ctx, conn)
+        ctx.sf_client.fetch_global_value_sets.assert_called_once_with()
+        # Object fetcher NOT called (different phase)
+        ctx.sf_client.fetch_objects.assert_not_called()
+
+    def test_phase_picklist_value_set_calls_batched_materialize(
+        self,
+    ) -> None:
+        """When fetch returns records, batched_materialize is called
+        once with entity_type='PicklistValueSet' and the raw payload
+        list."""
+        ctx = _stub_ctx_with_mock_sf()
+        raw = [
+            {"Id": "0Nt000000000001", "FullName": "RegionVS",
+             "MasterLabel": "Region", "Description": "Sales regions"},
+            {"Id": "0Nt000000000002", "FullName": "TierVS",
+             "MasterLabel": "Tier", "Description": None},
+        ]
+        ctx.sf_client.fetch_global_value_sets.return_value = raw
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm:
+            result = phase_picklist_value_set(ctx, conn)
+        mock_bm.assert_called_once()
+        call_kwargs = mock_bm.call_args.kwargs
+        assert call_kwargs["entity_type"] == "PicklistValueSet"
+        assert call_kwargs["raw_payloads"] == raw
+        assert call_kwargs["conn"] is conn
+        # Result returned (counters not mutated in this mock — that's
+        # batched_materialize's job, which we're mocking)
+        assert result.entity_type == "PicklistValueSet"
+
+    def test_phase_picklist_value_set_handles_empty_response(
+        self,
+    ) -> None:
+        """When fetch returns [], batched_materialize is NOT called
+        and result reports all zeros. This is the substrate-1
+        sandbox case (0 GlobalValueSets)."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_global_value_sets.return_value = []
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm:
+            result = phase_picklist_value_set(ctx, conn)
+        # batched_materialize NOT called (empty input short-circuits)
+        mock_bm.assert_not_called()
+        # Result is zero everywhere
+        assert result.entity_type == "PicklistValueSet"
+        assert result.entities_inserted == 0
+        assert result.entities_superseded == 0
+        assert result.entities_unchanged == 0
+        assert result.succeeded is True

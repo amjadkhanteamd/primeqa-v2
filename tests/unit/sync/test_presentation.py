@@ -6,6 +6,7 @@ import pytest
 
 from primeqa.sync.presentation import (
     _to_presentation_object,
+    _to_presentation_picklist_value_set,
     to_presentation,
 )
 
@@ -76,3 +77,67 @@ class TestToPresentationRouter:
         msg = str(excinfo.value)
         assert "NotAnEntity" in msg
         assert "_PRESENTATION_FUNCTIONS" in msg
+
+
+class TestToPresentationPicklistValueSet:
+    def test_to_presentation_picklist_value_set_maps_pascal_to_snake(
+        self,
+    ) -> None:
+        """fetch_global_value_sets returns Tooling-API PascalCase
+        (FullName, MasterLabel, Description); the semantic_text
+        template expects snake_case (name, label, description).
+        Adapter bridges the schemas."""
+        normalized = {
+            "Id": "0Nt000000000001",
+            "FullName": "MyValueSet",
+            "MasterLabel": "My Value Set",
+            "Description": "A reusable value set",
+            "ManageableState": "unmanaged",
+            "NamespacePrefix": None,
+        }
+        presentation = _to_presentation_picklist_value_set(normalized)
+        assert presentation["name"] == "MyValueSet"
+        assert presentation["label"] == "My Value Set"
+        assert presentation["description"] == "A reusable value set"
+        # PascalCase keys NOT carried through
+        assert "FullName" not in presentation
+        assert "MasterLabel" not in presentation
+        assert "Description" not in presentation
+
+    def test_to_presentation_picklist_value_set_hardcodes_is_restricted(
+        self,
+    ) -> None:
+        """is_restricted is hardcoded True for GlobalValueSets per
+        the adapter's design decision (GVSes are reusable canonical
+        enumerations — restricted by intent). Same for
+        is_global_value_set since this adapter handles only the
+        GVS source.
+
+        This test locks the hardcoding so a future PR can't silently
+        flip the semantic_text-output meaning."""
+        # Try variants that might tempt a reader to make
+        # is_restricted dependent on input — adapter should ignore
+        # them and emit True.
+        for input_variant in [
+            {"FullName": "X", "MasterLabel": "X"},
+            {"FullName": "X", "isRestricted": False},  # bogus key
+            {"FullName": "X", "is_restricted": False},  # bogus key
+        ]:
+            presentation = _to_presentation_picklist_value_set(input_variant)
+            assert presentation["is_restricted"] is True
+            assert presentation["is_global_value_set"] is True
+
+    def test_to_presentation_picklist_value_set_handles_missing_description(
+        self,
+    ) -> None:
+        """Description is None when fetch_global_value_sets returns
+        a GVS without a Description. The adapter passes None through;
+        downstream _to_text_picklist_value_set substitutes
+        "no description provided" via _str_or_default_clean."""
+        normalized = {
+            "FullName": "MyVS",
+            "MasterLabel": "My VS",
+            # Description deliberately absent
+        }
+        presentation = _to_presentation_picklist_value_set(normalized)
+        assert presentation["description"] is None

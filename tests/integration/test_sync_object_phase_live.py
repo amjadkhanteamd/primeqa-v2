@@ -1,14 +1,18 @@
-"""Live integration test for Object phase against dev sandbox.
+"""Live integration test for Object + PicklistValueSet phases.
 
 End-to-end: SyncEngine.run_sync() runs all 12 phases for a fresh
-connected_org. Object phase materializes entities; other phases
-are no-ops returning empty results. Verifies:
+connected_org. Object + PicklistValueSet phases materialize
+entities; other phases are no-ops returning empty results.
+Verifies:
   - entities table populated with Object rows
   - ai_enrichment_queue populated (2 rows per entity: embedding + summary)
   - sync_run state advances (phase='enrichment', last_completed_phase='Flow')
   - logical_versions row allocated per sync_run
   - second sync reports all entities as unchanged (hash match)
   - second sync doesn't grow the queue
+  - PicklistValueSet phase ran cleanly (sandbox has 0 GVSes per
+    sf_client.fetch_global_value_sets docstring; exercises the
+    empty path)
 
 Cleanup: deletes all rows referencing the test connected_org's id
 (FK-aware: queue → entities → sync_runs back-ref → logical_versions
@@ -139,8 +143,10 @@ def test_org(db_engine):
         """), {"id": org_id})
 
 
-def test_live_phase_object_full_cycle(live_sf_client, db_engine, test_org):
-    """End-to-end Object phase cycle."""
+def test_live_object_and_picklist_value_set_sync(
+    live_sf_client, db_engine, test_org,
+):
+    """End-to-end Object + PicklistValueSet phase cycle."""
     from primeqa.sync.engine import SyncEngine
 
     engine = SyncEngine(
@@ -214,6 +220,36 @@ def test_live_phase_object_full_cycle(live_sf_client, db_engine, test_org):
         """), {"id": sync_run_id_1}).scalar()
         assert version_count == 1, (
             f"Expected 1 logical_versions row per sync_run; got {version_count}"
+        )
+
+        # PicklistValueSet entities — sandbox has 0 GlobalValueSets per
+        # sf_client.fetch_global_value_sets docstring; expect 0
+        # materializations. Verifies the phase ran cleanly (no errors,
+        # no INSERTs) on the empty path. When the SVS-source phase
+        # lands, this assertion updates to assert non-zero from the
+        # StandardValueSet catalog.
+        pvs_count = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'PicklistValueSet'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert pvs_count == 0, (
+            f"Expected 0 PicklistValueSet entities (sandbox has 0 GVSes); "
+            f"got {pvs_count}"
+        )
+
+        # No queue rows for PicklistValueSet (empty insert path)
+        pvs_queue = conn.execute(text("""
+            SELECT COUNT(*) FROM ai_enrichment_queue
+            WHERE entity_type = 'PicklistValueSet'
+              AND entity_id IN (
+                  SELECT id FROM entities
+                  WHERE last_synced_from_org_id = :id
+              )
+        """), {"id": test_org}).scalar()
+        assert pvs_queue == 0, (
+            f"Expected 0 PicklistValueSet queue rows; got {pvs_queue}"
         )
 
     # ===== Second sync =====

@@ -398,3 +398,41 @@ entry in the same commit. A future test
 test_normalize_registry_matches_entity_order codifies the
 consistency check.
 
+## PicklistValueSet entity_type unifies GlobalValueSet + StandardValueSet
+
+**Date:** 2026-05-12
+**Step:** Phase 2 step 4 PicklistValueSet phase implementation
+**Source:** Discovered during PicklistValueSet phase survey —
+            substrate-1's _to_text_picklist_value_set reads an
+            `is_global_value_set` boolean and the fixture
+            demonstrates the both-sources-under-one-entity-type
+            pattern
+
+Substrate-1 unifies two Salesforce sObject types under one
+entity_type='PicklistValueSet':
+- GlobalValueSet records (fetched via fetch_global_value_sets,
+  Tooling+Metadata): is_global_value_set=True
+- StandardValueSet records (fetched via fetch_standard_value_sets,
+  hardcoded 616-entry catalog + per-label Metadata fetch):
+  is_global_value_set=False
+
+The unified design lets downstream consumers (Field phase,
+attribution queries) treat picklist value sources uniformly —
+Field's "values come from value set X" reference resolves
+regardless of whether X is global or standard.
+
+**Implementation sequencing:**
+- This cycle: GVS source only (sandbox has 0 GVSes, exercises
+  empty path)
+- Subsequent cycle: SVS source via fetch_standard_value_sets
+  iteration over sf_constants.STANDARD_VALUE_SET_LABELS catalog
+- Both sources materialize under entity_type='PicklistValueSet'
+  via the same batched_materialize pipeline
+
+Pattern: when one substrate-1 entity_type covers multiple
+Salesforce source streams, each source has its own fetch +
+phase-step but shares the materialize chain (normalize +
+presentation + semantic_text). The phase function for a unified
+entity_type may need to call multiple fetch methods and
+combine streams before calling batched_materialize.
+
