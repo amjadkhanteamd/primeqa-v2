@@ -24,6 +24,9 @@ from primeqa.sync.edge_specs import (
     _profile_grants_object_access_properties,
     _profile_grants_object_access_targets,
     _record_type_belongs_to_targets,
+    _user_has_permission_set_properties,
+    _user_has_permission_set_targets,
+    _user_has_profile_targets,
     _validation_rule_applies_to_targets,
     _validation_rule_belongs_to_targets,
     get_edge_specs,
@@ -843,3 +846,185 @@ class TestGetEdgeSpecsPermissionSet:
         assert goa.target_entity_type == "Object"
         assert gfa.target_entity_type == "Field"
         assert inh.target_entity_type == "PermissionSet"
+
+
+# ----------------------------------------------------------------------
+# User edge spec extractors (HAS_PROFILE property-less +
+# HAS_PERMISSION_SET property-bearing with HasPermissionSetProperties)
+# ----------------------------------------------------------------------
+
+
+class TestUserHasProfileTargets:
+    def test_returns_profile_name_when_marker_present(self) -> None:
+        """phase_user resolves User.ProfileId → Profile.Name via
+        the fetcher's profile_id_to_name map and injects the
+        resolved name as `_profile_name` on each User payload."""
+        normalized = {
+            "Username": "alice@example.com",
+            "_profile_name": "System Administrator",
+        }
+        assert _user_has_profile_targets(normalized) == [
+            "System Administrator",
+        ]
+
+    def test_returns_empty_when_marker_missing(self) -> None:
+        """Defensive: marker missing → []. Should not happen in
+        normal flow (phase_user always injects, falling back to
+        None when ProfileId unmappable); detail mapper would
+        raise downstream in that case anyway."""
+        assert _user_has_profile_targets({"Username": "no-prof"}) == []
+
+    def test_returns_empty_when_marker_is_none(self) -> None:
+        """ProfileId unmappable from profile_id_to_name → marker
+        is None → []."""
+        assert _user_has_profile_targets({
+            "Username": "x", "_profile_name": None,
+        }) == []
+
+
+class TestUserHasPermissionSetTargets:
+    def _user(self, assignments=()) -> dict:
+        return {
+            "Username": "alice@example.com",
+            "_ps_assignments": list(assignments),
+        }
+
+    def test_extracts_ps_names_from_each_assignment(self) -> None:
+        """Targets come from _ps_assignments — each entry's
+        permission_set_name (the PSA's nested PermissionSet.Name
+        resolved by the fetcher's SOQL related-query syntax)."""
+        targets = _user_has_permission_set_targets(self._user([
+            {"permission_set_name": "MarketingUser"},
+            {"permission_set_name": "ServiceAgentBase"},
+        ]))
+        assert targets == ["MarketingUser", "ServiceAgentBase"]
+
+    def test_returns_empty_when_no_assignments(self) -> None:
+        """User with no PSAs → []. Common for system / inactive
+        / fresh-created users."""
+        assert _user_has_permission_set_targets(self._user([])) == []
+
+    def test_returns_empty_when_marker_missing(self) -> None:
+        """Defensive: marker missing → []."""
+        assert _user_has_permission_set_targets({
+            "Username": "no-psas",
+        }) == []
+
+    def test_skips_entries_with_missing_name(self) -> None:
+        """Defensive: PSA entries without permission_set_name
+        (e.g., PermissionSet relationship not loaded) are dropped
+        silently."""
+        targets = _user_has_permission_set_targets(self._user([
+            {"permission_set_name": "Good"},
+            {"permission_set_name": ""},                 # filtered
+            {"assigned_at": "2026-01-01"},                # no name
+        ]))
+        assert targets == ["Good"]
+
+
+class TestUserHasPermissionSetProperties:
+    def _user_with(self, assignments) -> dict:
+        return {"_ps_assignments": assignments}
+
+    def test_maps_assigned_at_and_expiration_date(self) -> None:
+        """HasPermissionSetProperties optional fields populated
+        from PSA's CreatedDate (assigned_at) + ExpirationDate
+        + the post-pass-2 assigned_by_user_entity_id (resolved
+        from CreatedById by phase_user before the extractor
+        runs). Only non-None values appear in the returned dict
+        — Pydantic schema treats absence as None on the JSONB
+        column, same observable shape."""
+        a = {
+            "permission_set_name": "MarketingUser",
+            "assigned_at": "2026-01-15T10:00:00.000+0000",
+            "expiration_date": "2026-12-31",
+            "assigned_by_user_entity_id":
+                "11111111-2222-3333-4444-555555555555",
+        }
+        props = _user_has_permission_set_properties(
+            self._user_with([a]), "MarketingUser",
+        )
+        assert props == {
+            "assigned_at": "2026-01-15T10:00:00.000+0000",
+            "expiration_date": "2026-12-31",
+            "assigned_by_user_entity_id":
+                "11111111-2222-3333-4444-555555555555",
+        }
+
+    def test_omits_none_valued_fields(self) -> None:
+        """Optional fields with None values are OMITTED from the
+        returned dict (not present at all). edges.properties JSONB
+        will end up with the absent keys defaulting to None at
+        the Pydantic-validation step downstream."""
+        a = {
+            "permission_set_name": "Base",
+            "assigned_at": None,
+            "expiration_date": None,
+            "assigned_by_user_entity_id": None,
+        }
+        props = _user_has_permission_set_properties(
+            self._user_with([a]), "Base",
+        )
+        assert props == {}
+
+    def test_returns_partial_when_only_some_fields_present(self) -> None:
+        """Real-world: PSA might have CreatedDate (assigned_at)
+        but no ExpirationDate (indefinite assignment), and the
+        assigner might not be in this sync's User set
+        (assigned_by_user_entity_id left None)."""
+        a = {
+            "permission_set_name": "IndefinitePS",
+            "assigned_at": "2026-03-01T00:00:00.000+0000",
+            "expiration_date": None,
+            "assigned_by_user_entity_id": None,
+        }
+        props = _user_has_permission_set_properties(
+            self._user_with([a]), "IndefinitePS",
+        )
+        assert props == {
+            "assigned_at": "2026-03-01T00:00:00.000+0000",
+        }
+
+    def test_returns_empty_when_target_not_found(self) -> None:
+        """No matching permission_set_name → {}. Defensive."""
+        props = _user_has_permission_set_properties(
+            self._user_with([{"permission_set_name": "X"}]),
+            "Y",
+        )
+        assert props == {}
+
+    def test_locates_correct_assignment_among_many(self) -> None:
+        """Multiple PSAs on same User — match by name returns
+        the matching entry's properties only."""
+        a1 = {
+            "permission_set_name": "A",
+            "assigned_at": "2026-01-01",
+        }
+        a2 = {
+            "permission_set_name": "B",
+            "assigned_at": "2026-02-01",
+        }
+        props = _user_has_permission_set_properties(
+            self._user_with([a1, a2]), "B",
+        )
+        assert props == {"assigned_at": "2026-02-01"}
+
+
+class TestGetEdgeSpecsUser:
+    def test_returns_two_specs_for_user(self) -> None:
+        """User registers HAS_PROFILE (property-less) +
+        HAS_PERMISSION_SET (property-bearing)."""
+        specs = get_edge_specs("User")
+        assert len(specs) == 2
+        edge_types = {s.edge_type for s in specs}
+        assert edge_types == {"HAS_PROFILE", "HAS_PERMISSION_SET"}
+        hp = next(s for s in specs if s.edge_type == "HAS_PROFILE")
+        hps = next(
+            s for s in specs if s.edge_type == "HAS_PERMISSION_SET"
+        )
+        # HAS_PROFILE: property-less
+        assert hp.extract_properties is None
+        assert hp.target_entity_type == "Profile"
+        # HAS_PERMISSION_SET: property-bearing
+        assert hps.extract_properties is not None
+        assert hps.target_entity_type == "PermissionSet"

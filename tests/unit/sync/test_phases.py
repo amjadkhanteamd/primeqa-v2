@@ -54,7 +54,8 @@ class TestPhaseRegistry:
         # placeholders.
         real_phases = {"Object", "PicklistValueSet", "PicklistValue",
                        "Field", "RecordType", "Layout",
-                       "ValidationRule", "Profile", "PermissionSet"}
+                       "ValidationRule", "Profile",
+                       "PermissionSet", "User"}
         for entity_type, phase_fn in PHASE_REGISTRY.items():
             if entity_type in real_phases:
                 continue
@@ -2010,3 +2011,514 @@ class TestPhasePermissionSet:
         # Sorted alphabetically by Field
         fp_order = [fp["Field"] for fp in ps["fieldPermissions"]]
         assert fp_order == ["Account.Name", "Zebra.Stripe"]
+
+
+# ----------------------------------------------------------------------
+# phase_user — tenth real phase. Two-pass materialization for
+# HasPermissionSetProperties.assigned_by_user_entity_id forward
+# reference resolution.
+# ----------------------------------------------------------------------
+
+
+from primeqa.sync.phases import phase_user
+
+
+def _make_user_conn(profile_map=None, ps_map=None) -> MagicMock:
+    """Build a MagicMock conn whose execute().fetchall() returns
+    Profile and PermissionSet entity rows that phase_user reads to
+    build its Id → external_id maps.
+
+    phase_user runs TWO `SELECT attributes->>'Id', sf_api_name FROM
+    entities WHERE entity_type=...` queries — one for Profile, one
+    for PermissionSet. The side_effect dispatches on the WHERE
+    clause's entity_type literal."""
+    profile_map = profile_map or {}
+    ps_map = ps_map or {}
+
+    def _make_row(sf_id, ext_id):
+        m = MagicMock()
+        m.sf_id = sf_id
+        m.sf_api_name = ext_id
+        return m
+
+    profile_rows = [_make_row(i, e) for i, e in profile_map.items()]
+    ps_rows = [_make_row(i, e) for i, e in ps_map.items()]
+
+    def _side_effect(stmt, params=None):
+        sql = str(stmt)
+        r = MagicMock()
+        if "entity_type = 'Profile'" in sql:
+            r.fetchall.return_value = profile_rows
+        elif "entity_type = 'PermissionSet'" in sql:
+            r.fetchall.return_value = ps_rows
+        else:
+            r.fetchall.return_value = []
+        return r
+
+    conn = MagicMock()
+    conn.execute.side_effect = _side_effect
+    return conn
+
+
+class TestPhaseUser:
+    def _ok_fetch_result(
+        self,
+        users=None,
+        permission_set_assignments=None,
+    ):
+        """Build the 2-key fetch_users-shaped dict (User cycle).
+        Profile + PermissionSet Id → external_id maps are built
+        by phase_user from the entities table at sync time, not
+        from fetch_users."""
+        return {
+            "users": users or [],
+            "permission_set_assignments":
+                permission_set_assignments or [],
+        }
+
+    def _user(
+        self, user_id="005U001", username="alice@example.com",
+        profile_id="00eA", **overrides,
+    ):
+        base = {
+            "Id": user_id,
+            "Username": username,
+            "Name": "Alice Test",
+            "Email": username,
+            "IsActive": True,
+            "UserType": "Standard",
+            "ProfileId": profile_id,
+        }
+        base.update(overrides)
+        return base
+
+    def test_phase_user_calls_fetch_users(self) -> None:
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_users.return_value = (
+            self._ok_fetch_result()
+        )
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize"):
+            phase_user(ctx, conn)
+        ctx.sf_client.fetch_users.assert_called_once_with()
+
+    def test_phase_user_empty_users_returns_zero_result(self) -> None:
+        """Org with no users → no materialize call, all-zero
+        PhaseResult."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_users.return_value = (
+            self._ok_fetch_result()
+        )
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges:
+            result = phase_user(ctx, conn)
+        mock_bm.assert_not_called()
+        mock_edges.assert_not_called()
+        assert result.entities_inserted == 0
+        assert result.succeeded is True
+
+    def test_phase_user_decorates_profile_name_from_entities_table(
+        self,
+    ) -> None:
+        """Each User payload gets `_profile_name` injected via the
+        Profile Id → external_id map that phase_user builds from
+        the entities table (Profile entities materialized by an
+        earlier phase per ENTITY_ORDER). Reading from entities
+        sidesteps the SOQL Tooling-vs-Data Name asymmetry on
+        Profile."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_users.return_value = (
+            self._ok_fetch_result(
+                users=[
+                    self._user(profile_id="00eA"),
+                    self._user(user_id="005U002",
+                                username="bob@example.com",
+                                profile_id="00eB"),
+                ],
+            )
+        )
+        conn = _make_user_conn(
+            profile_map={
+                # Note: external_id IS Tooling FullName (e.g.,
+                # 'Admin' for 'System Administrator') because
+                # that's what Profile entity sf_api_name carries.
+                "00eA": "Admin",
+                "00eB": "Standard",
+            },
+        )
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {
+                "alice@example.com": "u1",
+                "bob@example.com": "u2",
+            }
+            phase_user(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        by_username = {p["Username"]: p for p in payloads}
+        assert by_username["alice@example.com"]["_profile_name"] == (
+            "Admin"
+        )
+        assert by_username["bob@example.com"]["_profile_name"] == (
+            "Standard"
+        )
+
+    def test_phase_user_filters_users_with_unresolvable_profile(
+        self,
+    ) -> None:
+        """User.ProfileId missing from synced Profile entities →
+        the User is SKIPPED (silent skip + INFO log). Salesforce
+        hides some system profiles (e.g., Automated Process for
+        AutomatedProcess users); the affected Users can't be
+        materialized because user_details.profile_entity_id is
+        NOT NULL FK with no Profile entity to reference."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_users.return_value = (
+            self._ok_fetch_result(
+                users=[
+                    self._user(user_id="005U001",
+                                username="alice@example.com",
+                                profile_id="00eA"),       # resolves
+                    self._user(user_id="005U002",
+                                username="autoproc",
+                                profile_id="00eUNKNOWN"),  # unresolvable
+                ],
+            )
+        )
+        conn = _make_user_conn(profile_map={"00eA": "Admin"})
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {"alice@example.com": "u1"}
+            phase_user(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        usernames = [p["Username"] for p in payloads]
+        # autoproc filtered; alice retained
+        assert usernames == ["alice@example.com"]
+
+    def test_phase_user_all_users_filtered_returns_zero_result(
+        self,
+    ) -> None:
+        """If EVERY User has an unresolvable ProfileId (no Profile
+        entities materialized at all, or all User ProfileIds
+        misalign — defensive case), no materialize call, all-zero
+        result."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_users.return_value = (
+            self._ok_fetch_result(
+                users=[self._user(profile_id="00eUNKNOWN")],
+            )
+        )
+        conn = _make_user_conn(profile_map={})  # no Profiles
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges:
+            result = phase_user(ctx, conn)
+        mock_bm.assert_not_called()
+        mock_edges.assert_not_called()
+        assert result.succeeded is True
+        assert result.entities_inserted == 0
+
+    def test_phase_user_joins_psas_by_assignee_id(self) -> None:
+        """Each User gets a `_ps_assignments` list, joined by
+        AssigneeId. PSAs for other users don't leak into this
+        user's list. PSA.PermissionSetId is resolved to PS
+        external_id via the entities-table-derived map (the
+        SOQL related-query approach declined HTTP 400 in v66.0)."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_users.return_value = (
+            self._ok_fetch_result(
+                users=[
+                    self._user(user_id="005U001",
+                                username="alice@example.com"),
+                    self._user(user_id="005U002",
+                                username="bob@example.com"),
+                ],
+                permission_set_assignments=[
+                    {"Id": "0Pa1", "AssigneeId": "005U001",
+                     "PermissionSetId": "0PSmkt",
+                     "PermissionSetGroupId": None,
+                     "SystemModstamp": "2026-01-01",
+                     "ExpirationDate": None},
+                    {"Id": "0Pa2", "AssigneeId": "005U002",
+                     "PermissionSetId": "0PSsvc",
+                     "PermissionSetGroupId": None,
+                     "SystemModstamp": "2026-02-01",
+                     "ExpirationDate": None},
+                ],
+            )
+        )
+        conn = _make_user_conn(
+            profile_map={"00eA": "Admin"},
+            ps_map={"0PSmkt": "MarketingPS", "0PSsvc": "ServicePS"},
+        )
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {
+                "alice@example.com": "u1",
+                "bob@example.com": "u2",
+            }
+            phase_user(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        by_username = {p["Username"]: p for p in payloads}
+        alice_psas = by_username["alice@example.com"][
+            "_ps_assignments"
+        ]
+        bob_psas = by_username["bob@example.com"][
+            "_ps_assignments"
+        ]
+        assert len(alice_psas) == 1
+        assert alice_psas[0]["permission_set_name"] == "MarketingPS"
+        assert alice_psas[0]["assigned_at"] == "2026-01-01"
+        assert len(bob_psas) == 1
+        assert bob_psas[0]["permission_set_name"] == "ServicePS"
+
+    def test_phase_user_drops_psas_with_unresolvable_permission_set(
+        self,
+    ) -> None:
+        """PSA whose PermissionSetId is NOT in the
+        entities-derived permission_set_id_to_external_id map →
+        dropped silently (PermissionSet was filtered out,
+        Type='Profile' shadow, or never synced; nothing to write
+        a HAS_PERMISSION_SET edge for)."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_users.return_value = (
+            self._ok_fetch_result(
+                users=[self._user()],
+                permission_set_assignments=[
+                    {"Id": "0Pa1", "AssigneeId": "005U001",
+                     "PermissionSetId": "0PSknown",
+                     "PermissionSetGroupId": None,
+                     "SystemModstamp": "2026-01-01",
+                     "ExpirationDate": None},
+                    {"Id": "0Pa2", "AssigneeId": "005U001",
+                     "PermissionSetId": "0PSunknown",
+                     "PermissionSetGroupId": None,
+                     "SystemModstamp": "2026-01-01",
+                     "ExpirationDate": None},
+                ],
+            )
+        )
+        conn = _make_user_conn(
+            profile_map={"00eA": "Admin"},
+            ps_map={"0PSknown": "MyPS"},  # 0PSunknown absent
+        )
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {"alice@example.com": "u1"}
+            phase_user(ctx, conn)
+        psas = mock_bm.call_args.kwargs["raw_payloads"][0][
+            "_ps_assignments"
+        ]
+        # Only the resolvable PS remains
+        assert len(psas) == 1
+        assert psas[0]["permission_set_name"] == "MyPS"
+
+    def test_phase_user_filters_psg_derived_psas_in_python(
+        self,
+    ) -> None:
+        """PSG-derived PSAs (PermissionSetGroupId IS NOT NULL) are
+        filtered OUT in Python. The SOQL `WHERE PermissionSetGroupId
+        = NULL` syntax returns HTTP 400 in v66.0; we filter in
+        Python instead. PSG memberships are already captured via
+        INHERITS_PERMISSION_SET edges from the PermissionSet
+        cycle."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_users.return_value = (
+            self._ok_fetch_result(
+                users=[self._user()],
+                permission_set_assignments=[
+                    {"Id": "0Pa1", "AssigneeId": "005U001",
+                     "PermissionSetId": "0PS1",
+                     "PermissionSetGroupId": None,           # direct
+                     "SystemModstamp": "2026-01-01",
+                     "ExpirationDate": None},
+                    {"Id": "0Pa2", "AssigneeId": "005U001",
+                     "PermissionSetId": "0PS2",
+                     "PermissionSetGroupId": "0PGsome",      # PSG-derived
+                     "SystemModstamp": "2026-01-01",
+                     "ExpirationDate": None},
+                ],
+            )
+        )
+        conn = _make_user_conn(
+            profile_map={"00eA": "Admin"},
+            ps_map={"0PS1": "DirectPS", "0PS2": "PSGDerivedPS"},
+        )
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {"alice@example.com": "u1"}
+            phase_user(ctx, conn)
+        psas = mock_bm.call_args.kwargs["raw_payloads"][0][
+            "_ps_assignments"
+        ]
+        # Only the direct PSA remains; PSG-derived is filtered
+        names = [a["permission_set_name"] for a in psas]
+        assert names == ["DirectPS"]
+
+    def test_phase_user_two_pass_logic_no_op_when_created_by_id_missing(
+        self,
+    ) -> None:
+        """V1 reality: CreatedById is restricted on PSA in v66.0,
+        so the SOQL doesn't fetch it. The two-pass logic still
+        runs (architectural placeholder) but always sees
+        _created_by_user_id=None → no resolution → no
+        assigned_by_user_entity_id on any assignment. Pydantic
+        schema's Optional field handles the absence gracefully."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_users.return_value = (
+            self._ok_fetch_result(
+                users=[self._user()],
+                permission_set_assignments=[
+                    # No CreatedById key — matches the v66.0 SOQL
+                    {"Id": "0Pa1", "AssigneeId": "005U001",
+                     "PermissionSetId": "0PS1",
+                     "PermissionSetGroupId": None,
+                     "SystemModstamp": "2026-01-01",
+                     "ExpirationDate": None},
+                ],
+            )
+        )
+        conn = _make_user_conn(
+            profile_map={"00eA": "Admin"},
+            ps_map={"0PS1": "MyPS"},
+        )
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {"alice@example.com": "u1"}
+            phase_user(ctx, conn)
+        assignment = mock_bm.call_args.kwargs[
+            "raw_payloads"
+        ][0]["_ps_assignments"][0]
+        # No assigned_by_user_entity_id (CreatedById was absent
+        # → pass 2 had nothing to resolve)
+        assert "assigned_by_user_entity_id" not in assignment
+        # Phase-internal marker popped
+        assert "_created_by_user_id" not in assignment
+
+    def test_phase_user_psas_sorted_for_determinism(self) -> None:
+        """Per-User PSA list is sorted by PermissionSet name so
+        the entity hash is stable across syncs regardless of
+        SOQL-result ordering. Sort happens in the decoration
+        step (after PS Id→Name resolution), not at normalize time."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_users.return_value = (
+            self._ok_fetch_result(
+                users=[self._user()],
+                permission_set_assignments=[
+                    {"Id": "0Pa1", "AssigneeId": "005U001",
+                     "PermissionSetId": "0PSz",
+                     "PermissionSetGroupId": None,
+                     "SystemModstamp": "2026-01-01"},
+                    {"Id": "0Pa2", "AssigneeId": "005U001",
+                     "PermissionSetId": "0PSa",
+                     "PermissionSetGroupId": None,
+                     "SystemModstamp": "2026-01-01"},
+                    {"Id": "0Pa3", "AssigneeId": "005U001",
+                     "PermissionSetId": "0PSm",
+                     "PermissionSetGroupId": None,
+                     "SystemModstamp": "2026-01-01"},
+                ],
+            )
+        )
+        conn = _make_user_conn(
+            profile_map={"00eA": "Admin"},
+            ps_map={
+                "0PSz": "Zebra",
+                "0PSa": "Account",
+                "0PSm": "Mongoose",
+            },
+        )
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {"alice@example.com": "u1"}
+            phase_user(ctx, conn)
+        psas = mock_bm.call_args.kwargs["raw_payloads"][0][
+            "_ps_assignments"
+        ]
+        names = [a["permission_set_name"] for a in psas]
+        assert names == ["Account", "Mongoose", "Zebra"]
+
+    def test_phase_user_calls_materialize_and_edges(self) -> None:
+        """phase_user materializes Users with return_id_map=True
+        (needed for two-pass assigner resolution), then writes
+        edges via materialize_edges_for_entities."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_users.return_value = (
+            self._ok_fetch_result(users=[self._user()])
+        )
+        conn = _make_user_conn(profile_map={"00eA": "Admin"})
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges, \
+             patch(
+                 "primeqa.sync.phases.normalize",
+                 side_effect=lambda et, p: {**p, "_norm": True},
+             ):
+            mock_bm.return_value = {"alice@example.com": "u1"}
+            phase_user(ctx, conn)
+        # Materialize called with return_id_map=True (pass 1)
+        assert mock_bm.call_args.kwargs.get("return_id_map") is True
+        assert mock_bm.call_args.kwargs["entity_type"] == "User"
+        # Edges call (pass 2 post-resolution)
+        mock_edges.assert_called_once()
+        edge_kwargs = mock_edges.call_args.kwargs
+        assert edge_kwargs["source_entity_type"] == "User"
+        assert edge_kwargs["entity_id_map"] == {
+            "alice@example.com": "u1",
+        }
+
+    def test_phase_user_does_not_filter_by_synced_objects(self) -> None:
+        """User is org-level; §18 parent-filter pattern does NOT
+        apply. Edge target resolution skips unsyncable
+        Profile/PermissionSet via the §19 observability counter."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_users.return_value = (
+            self._ok_fetch_result(users=[self._user()])
+        )
+        conn = _make_user_conn(profile_map={"00eA": "Admin"})
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+        ) as mock_filter, \
+             patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities"):
+            mock_bm.return_value = {}
+            phase_user(ctx, conn)
+        mock_filter.assert_not_called()

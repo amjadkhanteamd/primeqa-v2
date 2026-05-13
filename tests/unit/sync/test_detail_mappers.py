@@ -20,6 +20,7 @@ from primeqa.sync.detail_mappers import (
     _map_picklist_value_details,
     _map_profile_details,
     _map_record_type_details,
+    _map_user_details,
     _map_validation_rule_details,
     get_detail_mapper,
 )
@@ -901,3 +902,131 @@ class TestGetDetailMapperPermissionSet:
         table_name, mapper = result
         assert table_name == "permission_set_details"
         assert mapper is _map_permission_set_details
+
+
+class TestMapUserDetails:
+    """Maps decorated User payload → user_details row. TWO NOT NULL
+    FK-bearing/required columns the mapper sets:
+      - profile_entity_id (NOT NULL FK; resolved via parent_resolver
+        from _profile_name marker)
+      - user_type (NOT NULL varchar(40) no default; from UserType)
+    Plus DB-default booleans is_active + is_external (the latter
+    derived from UserType against an EXTERNAL_USER_TYPES set)."""
+
+    def _normalized(self, **overrides) -> dict:
+        base = {
+            "Id": "005U001",
+            "Username": "alice@example.com",
+            "Name": "Alice",
+            "Email": "alice@example.com",
+            "IsActive": True,
+            "UserType": "Standard",
+            "ProfileId": "00eA",
+            "_profile_name": "System Administrator",
+        }
+        base.update(overrides)
+        return base
+
+    def test_writes_entity_id_and_required_columns(self) -> None:
+        """All required columns populated. parent_resolver invoked
+        for Profile (returns the resolved entity_id)."""
+        resolver = MagicMock(return_value="prof-uuid-abc")
+        row = _map_user_details(
+            normalized=self._normalized(),
+            entity_id="user-uuid-001",
+            parent_resolver=resolver,
+        )
+        assert row == {
+            "entity_id": "user-uuid-001",
+            "profile_entity_id": "prof-uuid-abc",
+            "is_active": True,
+            "is_external": False,
+            "user_type": "Standard",
+        }
+        resolver.assert_called_once_with(
+            entity_type="Profile",
+            external_id="System Administrator",
+        )
+
+    def test_raises_when_profile_name_marker_missing(self) -> None:
+        """Defensive: missing _profile_name marker indicates a
+        phase function bug (always sets it, even to None on
+        unmappable ProfileId; None then triggers the resolver-
+        returns-None branch below). Empty/missing marker → raise."""
+        normalized = self._normalized()
+        normalized.pop("_profile_name")
+        with pytest.raises(ValueError) as excinfo:
+            _map_user_details(
+                normalized=normalized, entity_id="x",
+                parent_resolver=lambda **_: None,
+            )
+        assert "_profile_name" in str(excinfo.value)
+
+    def test_raises_when_parent_resolver_returns_none(self) -> None:
+        """If the Profile entity isn't materialized (ENTITY_ORDER
+        violation or filtered Profile), fail loud — user_details.
+        profile_entity_id NOT NULL FK requires resolution."""
+        with pytest.raises(ValueError) as excinfo:
+            _map_user_details(
+                normalized=self._normalized(),
+                entity_id="x",
+                parent_resolver=lambda **_: None,
+            )
+        assert "Profile" in str(excinfo.value)
+        assert "System Administrator" in str(excinfo.value)
+
+    def test_raises_when_user_type_missing(self) -> None:
+        """UserType is NOT NULL no-default on user_details. Salesforce
+        always returns UserType on User records; missing means
+        malformed upstream payload — fail loud."""
+        normalized = self._normalized()
+        normalized.pop("UserType")
+        with pytest.raises(ValueError) as excinfo:
+            _map_user_details(
+                normalized=normalized, entity_id="x",
+                parent_resolver=lambda **_: "prof-uuid",
+            )
+        assert "UserType" in str(excinfo.value)
+
+    def test_inactive_user(self) -> None:
+        """IsActive=False passes through."""
+        row = _map_user_details(
+            normalized=self._normalized(IsActive=False),
+            entity_id="x",
+            parent_resolver=lambda **_: "prof-uuid",
+        )
+        assert row["is_active"] is False
+
+    def test_external_user_type_csn_only(self) -> None:
+        """CsnOnly is in the EXTERNAL_USER_TYPES set →
+        is_external=True. CsnOnly is Chatter customer portal users."""
+        row = _map_user_details(
+            normalized=self._normalized(UserType="CsnOnly"),
+            entity_id="x",
+            parent_resolver=lambda **_: "prof-uuid",
+        )
+        assert row["is_external"] is True
+        assert row["user_type"] == "CsnOnly"
+
+    def test_internal_user_types_not_external(self) -> None:
+        """Standard, AutomatedProcess, CloudIntegrationUser are
+        internal (is_external=False)."""
+        for utype in ("Standard", "AutomatedProcess",
+                      "CloudIntegrationUser"):
+            row = _map_user_details(
+                normalized=self._normalized(UserType=utype),
+                entity_id="x",
+                parent_resolver=lambda **_: "prof-uuid",
+            )
+            assert row["is_external"] is False, (
+                f"{utype!r} should not be flagged is_external"
+            )
+
+
+class TestGetDetailMapperUser:
+    def test_returns_tuple_for_user(self) -> None:
+        result = get_detail_mapper("User")
+        assert result is not None
+        table_name, mapper = result
+        assert table_name == "user_details"
+        assert mapper is _map_user_details

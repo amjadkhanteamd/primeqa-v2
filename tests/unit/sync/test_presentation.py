@@ -13,6 +13,7 @@ from primeqa.sync.presentation import (
     _to_presentation_picklist_value_set,
     _to_presentation_profile,
     _to_presentation_record_type,
+    _to_presentation_user,
     _to_presentation_validation_rule,
     to_presentation,
 )
@@ -661,3 +662,59 @@ class TestToPresentationPermissionSet:
         ps.pop("_license_label")
         presentation = _to_presentation_permission_set(ps)
         assert presentation["license"] is None
+
+
+class TestToPresentationUser:
+    """Maps post-decoration User payload → substrate-1's
+    _to_text_user input shape {username, full_name, profile_name,
+    is_active, email}. profile_name comes from the
+    phase-injected _profile_name marker (resolved via
+    profile_id_to_name from the fetcher)."""
+
+    def _user(self, **overrides) -> dict:
+        base = {
+            "Id": "005U001",
+            "Username": "alice@example.com",
+            "Name": "Alice Test",
+            "Email": "alice@example.com",
+            "IsActive": True,
+            "UserType": "Standard",
+            "ProfileId": "00eA",
+            "_profile_name": "System Administrator",
+        }
+        base.update(overrides)
+        return base
+
+    def test_maps_all_fields(self) -> None:
+        presentation = _to_presentation_user(self._user())
+        assert presentation == {
+            "username": "alice@example.com",
+            "full_name": "Alice Test",
+            "profile_name": "System Administrator",
+            "is_active": True,
+            "email": "alice@example.com",
+        }
+
+    def test_inactive_user(self) -> None:
+        """is_active flag passes through verbatim. Substrate-1's
+        _to_text_user renders this as 'Active: yes/no'."""
+        presentation = _to_presentation_user(self._user(
+            IsActive=False,
+        ))
+        assert presentation["is_active"] is False
+
+    def test_handles_missing_profile_name_marker(self) -> None:
+        """Defensive: if _profile_name wasn't injected (shouldn't
+        happen — phase always injects), profile_name is None.
+        Downstream _to_text_user substitutes 'no profile listed'."""
+        u = self._user()
+        u.pop("_profile_name")
+        presentation = _to_presentation_user(u)
+        assert presentation["profile_name"] is None
+
+    def test_handles_missing_email(self) -> None:
+        """Some platform synthetic users (AutomatedProcess) may
+        have no Email — adapter passes None through."""
+        u = self._user(Email=None)
+        presentation = _to_presentation_user(u)
+        assert presentation["email"] is None

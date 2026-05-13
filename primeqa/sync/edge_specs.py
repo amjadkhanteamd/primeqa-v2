@@ -573,6 +573,106 @@ def _permission_set_inherits_permission_set_targets(
 
 
 # ----------------------------------------------------------------------
+# User edge spec extractors (HAS_PROFILE property-less +
+# HAS_PERMISSION_SET property-bearing with HasPermissionSetProperties)
+# ----------------------------------------------------------------------
+#
+# User source draws from phase-decorated markers:
+#   _profile_name      — single Profile Name resolved via the
+#                        fetcher's profile_id_to_name map and
+#                        decorated by phase_user
+#   _ps_assignments    — list of {permission_set_name, assigned_at,
+#                        expiration_date, assigned_by_user_entity_id?}
+#                        built by phase_user from PermissionSetAssignment
+#                        rows (with a two-pass step that resolves
+#                        CreatedById → assigned_by_user_entity_id)
+#
+# HAS_PERMISSION_SET is property-bearing per TIER_1_EDGES
+# (HasPermissionSetProperties: assigned_at, assigned_by_user_entity_id,
+# expiration_date — all Optional).
+
+
+def _user_has_profile_targets(normalized: dict) -> list[str]:
+    """Every User has at most one Profile.
+
+    The phase function resolves User.ProfileId → Profile.Name via
+    the fetcher's profile_id_to_name map and injects the resolved
+    name as `_profile_name` on each User payload. The extractor
+    returns that name (or [] when missing — defensive against a
+    phase-function bug or a User whose ProfileId doesn't appear
+    in the fetcher's Profile catalog).
+    """
+    profile_name = normalized.get("_profile_name")
+    return [profile_name] if profile_name else []
+
+
+def _user_has_permission_set_targets(normalized: dict) -> list[str]:
+    """Users may have N direct PermissionSet assignments.
+
+    phase_user reads PermissionSetAssignment rows from the
+    fetcher (filtered to PermissionSetGroupId IS NULL — direct
+    assignments only; PSG-derived memberships flow through
+    INHERITS_PERMISSION_SET from the PermissionSet cycle), builds
+    a per-User _ps_assignments list, and the extractor returns
+    each entry's permission_set_name as a target external_id.
+    Targets pointing at PermissionSets the org filters out
+    (Type='Profile' shadows etc.) silently skip at the materialize
+    layer's parent_resolver guard.
+    """
+    assignments = normalized.get("_ps_assignments") or []
+    targets: list[str] = []
+    for a in assignments:
+        if not isinstance(a, dict):
+            continue
+        name = a.get("permission_set_name")
+        if name:
+            targets.append(name)
+    return targets
+
+
+def _user_has_permission_set_properties(
+    normalized: dict, target_external_id: str,
+) -> dict:
+    """Locate the matching assignment by PS Name; return
+    HasPermissionSetProperties fields.
+
+    Mapping (PSA shape → schema property):
+      CreatedDate           → assigned_at         (date)
+      ExpirationDate        → expiration_date     (date)
+      CreatedById           → assigned_by_user_entity_id  (UUID)
+                              (RESOLVED by phase_user's pass 2 from
+                              the fresh User-Id→entity_id map; this
+                              extractor reads the resolved value
+                              directly. Cleaner than threading the
+                              map into the extractor signature.)
+
+    Returns {} if target not found (shouldn't happen if _targets
+    and _properties are coherent; defensive). Returns only the
+    keys whose values are non-None to keep the property dict tight
+    — Pydantic schema defaults Optional fields to None on absence,
+    same observable shape on the edges.properties JSONB column.
+    """
+    assignments = normalized.get("_ps_assignments") or []
+    for a in assignments:
+        if not isinstance(a, dict):
+            continue
+        if a.get("permission_set_name") != target_external_id:
+            continue
+        props: dict = {}
+        assigned_at = a.get("assigned_at")
+        if assigned_at is not None:
+            props["assigned_at"] = assigned_at
+        assigner = a.get("assigned_by_user_entity_id")
+        if assigner is not None:
+            props["assigned_by_user_entity_id"] = assigner
+        exp = a.get("expiration_date")
+        if exp is not None:
+            props["expiration_date"] = exp
+        return props
+    return {}
+
+
+# ----------------------------------------------------------------------
 # Registry
 # ----------------------------------------------------------------------
 
@@ -675,6 +775,22 @@ _EDGE_SPECS: dict[str, list[EdgeSpec]] = {
             extract_target_external_ids=_permission_set_inherits_permission_set_targets,
             # property-less (no extract_properties — TIER_1_EDGES
             # registers properties_schema=None for this edge type)
+        ),
+    ],
+    "User": [
+        EdgeSpec(
+            target_entity_type="Profile",
+            edge_type="HAS_PROFILE",
+            extract_target_external_ids=_user_has_profile_targets,
+            # property-less per TIER_1_EDGES (derived_from_column=True
+            # on Profile attribution — captured here as an explicit
+            # edge to support traversal queries)
+        ),
+        EdgeSpec(
+            target_entity_type="PermissionSet",
+            edge_type="HAS_PERMISSION_SET",
+            extract_target_external_ids=_user_has_permission_set_targets,
+            extract_properties=_user_has_permission_set_properties,
         ),
     ],
     # Other entity types add their specs here as their phase cycles land.

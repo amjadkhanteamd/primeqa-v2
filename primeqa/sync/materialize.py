@@ -386,6 +386,19 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
                 f"{sorted(raw.keys())[:30]}..."
             )
         return name
+    if entity_type == "User":
+        # User via Data API SOQL returns Username (unique per org;
+        # human-readable; format usually 'name@org.domain'). Org-
+        # level entity. Same external_id idiom as PermissionSet
+        # (Name) — uniqueness guarantee, no composition needed.
+        username = raw.get("Username")
+        if not username:
+            raise ValueError(
+                f"User requires 'Username' (from Salesforce Data "
+                f"API SOQL fetch); got raw keys "
+                f"{sorted(raw.keys())}"
+            )
+        return username
     raise KeyError(
         f"No external_id extractor for entity_type "
         f"{entity_type!r}. Add to "

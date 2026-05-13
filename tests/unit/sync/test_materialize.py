@@ -631,6 +631,20 @@ class TestExtractExternalId:
          {"Id": "0PS000000000002", "Name": "ScaleCenterUsers",
           "Type": "Group"},
          "ScaleCenterUsers"),
+        # User: external_id = Username (unique per org;
+        # human-readable). Same idiom as PermissionSet (Name) and
+        # Profile (FullName=Name) — single-key identifier from
+        # the SOQL response.
+        ("User",
+         {"Id": "005F900000000001",
+          "Username": "alice@example.com",
+          "UserType": "Standard"},
+         "alice@example.com"),
+        ("User",
+         {"Id": "005F900000000002",
+          "Username": "autoproc@00dip0000008mzpmai",
+          "UserType": "AutomatedProcess"},
+         "autoproc@00dip0000008mzpmai"),
     ])
     def test_extract_external_id_known_types(
         self, entity_type: str, raw: dict, expected: str,
@@ -662,6 +676,18 @@ class TestExtractExternalId:
                 {"Id": "0PS000000000001", "Type": "Regular"},
             )
         assert "Name" in str(excinfo.value)
+
+    def test_extract_external_id_user_raises_when_username_missing(
+        self,
+    ) -> None:
+        """User without Username → ValueError. Data API SOQL always
+        returns Username for User; missing means malformed upstream."""
+        with pytest.raises(ValueError) as excinfo:
+            _extract_external_id(
+                "User",
+                {"Id": "005F900000000001", "UserType": "Standard"},
+            )
+        assert "Username" in str(excinfo.value)
 
     def test_extract_external_id_layout_raises_when_marker_missing(
         self,

@@ -1149,6 +1149,307 @@ def phase_permission_set(
     return result
 
 
+def phase_user(ctx: SyncContext, conn: Any) -> PhaseResult:
+    """User phase — workforce identity + Profile/PermissionSet
+    attribution.
+
+    Tenth real phase (10/12). First entity to write
+    HAS_PROFILE edges (User → Profile, property-less; the Profile
+    cycle's deferred target now resolves) AND
+    HAS_PERMISSION_SET edges (User → PermissionSet, property-
+    bearing with HasPermissionSetProperties: assigned_at,
+    assigned_by_user_entity_id, expiration_date).
+
+    Fetched via fetch_users (substrate-1 Category 4 per
+    corrections-log §5; extended this cycle to return 5-key dict):
+      - users: parent rows from Data API SOQL (12 fields)
+      - permission_set_assignments: direct PSA rows (PSG-derived
+        membership excluded via WHERE PermissionSetGroupId IS
+        NULL — captured via INHERITS_PERMISSION_SET edges already)
+        with nested PermissionSet.Name for cheap edge target
+        resolution
+      - profile_id_to_name: Id→Name map for the
+        user_details.profile_entity_id NOT NULL FK resolution
+        (User has only ProfileId; Profile entities use Name as
+        external_id)
+
+    Sandbox cardinality (probe 2026-05-13):
+      6 Users (3 Standard, 1 AutomatedProcess,
+      1 CloudIntegrationUser, 1 CsnOnly) × ~1 Profile each →
+      6 HAS_PROFILE edges; 5 PSAs → 5 HAS_PERMISSION_SET edges.
+
+    TWO-PASS MATERIALIZATION (per task directive 2B):
+      Pass 1: materialize User entities; capture
+              Username → entity_id map (return_id_map=True)
+      Pass 2: build User.Id → entity_id map (User.Id is the
+              Salesforce Id; entity_id is the UUID); update each
+              user's _ps_assignments entries with the resolved
+              assigned_by_user_entity_id (from CreatedById →
+              entity_id lookup); then call
+              materialize_edges_for_entities with the same
+              normalized payloads (which now carry the resolved
+              assigners in their _ps_assignments markers).
+
+    The two-pass approach handles HasPermissionSetProperties's
+    forward reference to assigned_by_user_entity_id (a User
+    entity_id) without leaving the schema field as None when
+    the assigner is in this sync's User set. Unresolvable
+    assigners (e.g., assigner is a system user not in the synced
+    User set, or assigner User was filtered) fall back to None
+    — schema allows Optional.
+
+    No §18 entity-level parent filter — User is org-level. Edge
+    target resolution for HAS_PROFILE / HAS_PERMISSION_SET
+    silently skips unsyncable targets via the materialize layer's
+    §19 observability counter on PhaseResult.
+    """
+    result = PhaseResult(entity_type="User")
+
+    fetch_result = ctx.sf_client.fetch_users()
+    raw_users = fetch_result.get("users") or []
+    psas = fetch_result.get("permission_set_assignments") or []
+
+    if not raw_users:
+        return result
+
+    # Build Profile + PermissionSet Id → external_id maps from
+    # the entities table. These entity types are materialized
+    # BEFORE User per ENTITY_ORDER, so the entities table is the
+    # authoritative source of truth for external_ids. Reading
+    # from the DB sidesteps the Salesforce SOQL asymmetry where
+    # `SELECT Name FROM Profile` returns display names that
+    # differ from Tooling Profile.FullName (e.g., 'System
+    # Administrator' vs 'Admin', 'Standard User' vs 'Standard');
+    # Profile entities use FullName as external_id, so a
+    # Data-API Name map would mis-resolve and break HAS_PROFILE
+    # edge writes + user_details FK resolution.
+    #
+    # PermissionSet entities use Name directly (no Tooling-vs-
+    # Data asymmetry there), but we build the map the same way
+    # for consistency + to avoid extra SOQL hops.
+    profile_id_to_external_id: dict[str, str] = {}
+    profile_rows = conn.execute(text("""
+        SELECT attributes->>'Id' AS sf_id, sf_api_name
+        FROM entities
+        WHERE last_synced_from_org_id = :org_id
+          AND entity_type = 'Profile'
+          AND valid_to_seq IS NULL
+    """), {"org_id": ctx.connected_org_id}).fetchall()
+    for row in profile_rows:
+        if row.sf_id and row.sf_api_name:
+            profile_id_to_external_id[row.sf_id] = row.sf_api_name
+
+    permission_set_id_to_external_id: dict[str, str] = {}
+    ps_rows = conn.execute(text("""
+        SELECT attributes->>'Id' AS sf_id, sf_api_name
+        FROM entities
+        WHERE last_synced_from_org_id = :org_id
+          AND entity_type = 'PermissionSet'
+          AND valid_to_seq IS NULL
+    """), {"org_id": ctx.connected_org_id}).fetchall()
+    for row in ps_rows:
+        if row.sf_id and row.sf_api_name:
+            permission_set_id_to_external_id[row.sf_id] = row.sf_api_name
+
+    # Filter Users whose ProfileId isn't in the synced Profile
+    # entity set. Salesforce keeps some system profiles (e.g.,
+    # "Automated Process" for AutomatedProcess users) hidden
+    # from both Data API and Tooling SELECT FROM Profile; those
+    # Users can't be materialized because
+    # user_details.profile_entity_id is NOT NULL FK with no
+    # Profile entity to reference. Silent skip + INFO log per
+    # the §19 observability pattern.
+    syncable_users: list[dict[str, Any]] = []
+    skipped_user_count = 0
+    for user in raw_users:
+        profile_id = user.get("ProfileId")
+        if profile_id and profile_id in profile_id_to_external_id:
+            syncable_users.append(user)
+        else:
+            skipped_user_count += 1
+            logger.debug(
+                "phase_user: skipping User %r — ProfileId %r not "
+                "in synced Profile entity set (Salesforce hides "
+                "some system profiles)",
+                user.get("Username"), profile_id,
+            )
+    if skipped_user_count > 0:
+        logger.info(
+            "phase_user: skipped %d Users whose ProfileId could "
+            "not be resolved (typical for AutomatedProcess / "
+            "platform-synthetic users whose profile is not "
+            "exposed via Salesforce SOQL); their HAS_PROFILE "
+            "and HAS_PERMISSION_SET edges will not be written.",
+            skipped_user_count,
+        )
+
+    if not syncable_users:
+        return result
+
+    # Filter PSAs to direct-PS assignments (PermissionSetGroupId
+    # IS NULL). PSG-derived memberships are already captured via
+    # INHERITS_PERMISSION_SET edges from the PermissionSet cycle;
+    # writing HAS_PERMISSION_SET edges for them would duplicate
+    # the traversal path. Python-side filter (SOQL `WHERE
+    # PermissionSetGroupId = NULL` is HTTP 400 in this org).
+    direct_psas: list[dict[str, Any]] = []
+    psg_derived_count = 0
+    for psa in psas:
+        if not isinstance(psa, dict):
+            continue
+        if psa.get("PermissionSetGroupId"):
+            psg_derived_count += 1
+            continue
+        direct_psas.append(psa)
+    if psg_derived_count > 0:
+        logger.debug(
+            "phase_user: filtered out %d PSG-derived PSAs "
+            "(captured via INHERITS_PERMISSION_SET edges from "
+            "the PermissionSet cycle)",
+            psg_derived_count,
+        )
+
+    # Build helper indexes:
+    # - direct PSAs grouped by AssigneeId (User Id) → list of PSA rows
+    psa_by_assignee: dict[str, list[dict[str, Any]]] = {}
+    for psa in direct_psas:
+        assignee = psa.get("AssigneeId")
+        if assignee:
+            psa_by_assignee.setdefault(assignee, []).append(psa)
+
+    # Decorate each User payload with:
+    # - _profile_name: resolved via profile_id_to_external_id
+    #   (always present for syncable_users post-filter above)
+    # - _ps_assignments: list ready for the edge extractor +
+    #   properties extractor. Pass 2 below augments each entry
+    #   with assigned_by_user_entity_id (currently always None
+    #   in v1 — CreatedById is restricted on PSA in v66.0
+    #   per fetch_users docstring).
+    for user in syncable_users:
+        profile_id = user.get("ProfileId")
+        user["_profile_name"] = profile_id_to_external_id.get(
+            profile_id,
+        )
+
+        user_psas = psa_by_assignee.get(user.get("Id"), [])
+        # Resolve each PSA's PermissionSetId → PermissionSet
+        # external_id via the entities-table-derived map. PSAs
+        # whose PermissionSetId doesn't resolve (PermissionSet
+        # was filtered, never synced, or is a Type='Profile'
+        # shadow we excluded) get name=None and are dropped by
+        # the extractor's `if name` guard.
+        decorated_psas: list[dict[str, Any]] = []
+        for psa in user_psas:
+            ps_id = psa.get("PermissionSetId")
+            ps_name = (
+                permission_set_id_to_external_id.get(ps_id)
+                if ps_id else None
+            )
+            if not ps_name:
+                # PermissionSet not in our id map; skip silently
+                # (substrate-1 silent-skip pattern, observability
+                # already covered at the materialize edge layer
+                # for the target-resolution step).
+                continue
+            decorated_psas.append({
+                "permission_set_name": ps_name,
+                # SystemModstamp serves as `assigned_at` proxy
+                # (CreatedDate is restricted on PSA in v66.0;
+                # SystemModstamp is the closest available).
+                "assigned_at": psa.get("SystemModstamp"),
+                "expiration_date": psa.get("ExpirationDate"),
+                # _created_by_user_id: phase-internal marker for
+                # pass 2's assigner resolution. CreatedById is
+                # restricted in v66.0 (returns None always) so
+                # pass 2's resolution always lands at "unsynced"
+                # branch — assigned_by_user_entity_id stays None.
+                # Architecture supports it for future versions.
+                "_created_by_user_id": psa.get("CreatedById"),
+            })
+        # Sort for deterministic order (SOQL doesn't guarantee
+        # stable ordering of PSAs across syncs).
+        decorated_psas.sort(
+            key=lambda a: str(a.get("permission_set_name", "")),
+        )
+        user["_ps_assignments"] = decorated_psas
+
+    # PASS 1: materialize User entities; capture entity_id_map
+    # (Username → entity_id).
+    entity_id_map = batched_materialize(
+        ctx=ctx,
+        conn=conn,
+        entity_type="User",
+        raw_payloads=syncable_users,
+        result=result,
+        return_id_map=True,
+    )
+
+    # PASS 2: build User.Id → entity_id map and resolve
+    # assigned_by_user_entity_id on each PSA entry. In v1 with
+    # v66.0 SOQL restricting CreatedById on PSA, the marker is
+    # always None and this resolution is a no-op — every
+    # assignment falls through to the "unsynced assigner"
+    # branch. Architecture stays in place for future versions
+    # that recover CreatedById.
+    user_id_to_entity_id: dict[str, str] = {}
+    for user in syncable_users:
+        username = user.get("Username")
+        user_id = user.get("Id")
+        eid = entity_id_map.get(username) if entity_id_map else None
+        if eid and user_id:
+            user_id_to_entity_id[user_id] = eid
+
+    skipped_assigner_count = 0
+    for user in syncable_users:
+        for assignment in user.get("_ps_assignments", []):
+            created_by_id = assignment.pop(
+                "_created_by_user_id", None,
+            )
+            if not created_by_id:
+                continue
+            resolved = user_id_to_entity_id.get(created_by_id)
+            if resolved:
+                assignment["assigned_by_user_entity_id"] = resolved
+            else:
+                # Assigner not in synced User set — likely a
+                # system user (PlatformIntegrationUser, etc.) or
+                # an inactive historical user filtered out
+                # upstream. Leave the property as None (schema
+                # allows Optional).
+                skipped_assigner_count += 1
+                logger.debug(
+                    "phase_user: PSA assigner %r not in synced "
+                    "User set; assigned_by left None",
+                    created_by_id,
+                )
+    if skipped_assigner_count > 0:
+        logger.info(
+            "phase_user: %d PSA assignments had "
+            "assigned_by_user_entity_id unresolvable (assigner "
+            "not in synced User set); HAS_PERMISSION_SET property "
+            "left as None on those edges.",
+            skipped_assigner_count,
+        )
+
+    # Write edges. The extractors read each user's decorated
+    # _profile_name and _ps_assignments (now with resolved
+    # assigners where available) to build the edge targets +
+    # properties.
+    normalized_payloads = [
+        normalize("User", u) for u in syncable_users
+    ]
+    materialize_edges_for_entities(
+        ctx=ctx,
+        conn=conn,
+        source_entity_type="User",
+        entity_id_map=entity_id_map,
+        normalized_payloads=normalized_payloads,
+        result=result,
+    )
+
+    return result
+
+
 PHASE_REGISTRY["Object"] = phase_object
 PHASE_REGISTRY["PicklistValueSet"] = phase_picklist_value_set
 PHASE_REGISTRY["PicklistValue"] = phase_picklist_value
@@ -1158,6 +1459,7 @@ PHASE_REGISTRY["Layout"] = phase_layout
 PHASE_REGISTRY["ValidationRule"] = phase_validation_rule
 PHASE_REGISTRY["Profile"] = phase_profile
 PHASE_REGISTRY["PermissionSet"] = phase_permission_set
+PHASE_REGISTRY["User"] = phase_user
 
 
 def get_phase_function(entity_type: str) -> PhaseFunction:

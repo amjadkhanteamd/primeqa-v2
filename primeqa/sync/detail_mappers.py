@@ -541,6 +541,86 @@ def _map_permission_set_details(
     }
 
 
+def _map_user_details(
+    normalized: dict[str, Any],
+    entity_id: str,
+    parent_resolver: Callable[..., Optional[str]],
+) -> dict[str, Any]:
+    """Map normalized User payload → user_details row.
+
+    user_details has TWO NOT NULL columns the mapper sets:
+      entity_id          ← caller-supplied
+      profile_entity_id  ← resolved via parent_resolver from the
+                           phase-decorated `_profile_name` marker
+                           (NOT NULL FK to entities)
+      user_type          ← UserType from the SOQL response
+                           (NOT NULL varchar(40) no-default;
+                           AutomatedProcess / CloudIntegrationUser /
+                           CsnOnly / Standard / etc.)
+
+    Plus two DB-default-backed booleans:
+      is_active     ← IsActive
+      is_external   ← derived: UserType ∈ external set
+                      (CustomerSuccess, CspLitePortal, etc. are
+                       Salesforce-defined external/community user
+                       types; Standard/AutomatedProcess/
+                       CloudIntegrationUser/CsnOnly are internal)
+
+    Raises ValueError if:
+      - _profile_name marker missing (phase function bug)
+      - parent_resolver returns None for the profile (Profile
+        wasn't materialized — ENTITY_ORDER places Profile before
+        User, so this would indicate a serious upstream problem)
+      - UserType missing (Salesforce always returns it on User
+        records; if absent, fail loud)
+    """
+    profile_name = normalized.get("_profile_name")
+    if not profile_name:
+        raise ValueError(
+            f"User normalized payload missing '_profile_name' "
+            f"marker; phase_user must resolve User.ProfileId via "
+            f"the fetcher's profile_id_to_name map. "
+            f"Got Username={normalized.get('Username')!r}"
+        )
+    profile_entity_id = parent_resolver(
+        entity_type="Profile",
+        external_id=profile_name,
+    )
+    if profile_entity_id is None:
+        raise ValueError(
+            f"Cannot resolve Profile {profile_name!r} for User "
+            f"{normalized.get('Username')!r}. Profile must be "
+            f"materialized before User (ENTITY_ORDER places "
+            f"Profile before User)."
+        )
+
+    user_type = normalized.get("UserType")
+    if not user_type:
+        raise ValueError(
+            f"User requires UserType (NOT NULL no-default); got "
+            f"{user_type!r} for Username "
+            f"{normalized.get('Username')!r}"
+        )
+
+    # External user heuristic — Salesforce-defined external/community
+    # user types. Conservative starter set; can be extended as more
+    # community types surface.
+    EXTERNAL_USER_TYPES = {
+        "CustomerSuccess",
+        "CspLitePortal",
+        "PowerCustomerSuccess",
+        "CsnOnly",        # Chatter customer portal users
+        "Guest",
+    }
+    return {
+        "entity_id": entity_id,
+        "profile_entity_id": profile_entity_id,
+        "is_active": bool(normalized.get("IsActive", True)),
+        "is_external": user_type in EXTERNAL_USER_TYPES,
+        "user_type": user_type,
+    }
+
+
 _DETAIL_TABLE_MAPPERS: dict[str, DetailMapper] = {
     "Object": _map_object_details,
     "PicklistValue": _map_picklist_value_details,
@@ -550,6 +630,7 @@ _DETAIL_TABLE_MAPPERS: dict[str, DetailMapper] = {
     "ValidationRule": _map_validation_rule_details,
     "Profile": _map_profile_details,
     "PermissionSet": _map_permission_set_details,
+    "User": _map_user_details,
     # Other entity types added by their respective phase cycles.
     # PicklistValueSet intentionally absent — no detail table.
 }

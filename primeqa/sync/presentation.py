@@ -403,6 +403,38 @@ def _to_presentation_permission_set(
     }
 
 
+def _to_presentation_user(normalized: dict[str, Any]) -> dict[str, Any]:
+    """Map normalized User (post-decoration) → semantic_text input
+    shape.
+
+    User payload (post-phase-decoration) carries top-level keys:
+      Username, Name (= full_name), Email, IsActive, UserType,
+      ProfileId, plus phase-decorated `_profile_name` (resolved
+      via the fetcher's profile_id_to_name map).
+
+    Substrate-1's _to_text_user input shape:
+        {username, full_name, profile_name, is_active, email}
+
+    Bridges:
+      username      ← Username
+      full_name     ← Name (Salesforce's display Name)
+      profile_name  ← _profile_name (phase-decorated; falls back
+                      to the SF Id if marker missing — defensive
+                      but shouldn't happen since
+                      profile_id_to_name covers every profile in
+                      the org)
+      is_active     ← IsActive
+      email         ← Email
+    """
+    return {
+        "username": normalized.get("Username"),
+        "full_name": normalized.get("Name"),
+        "profile_name": normalized.get("_profile_name"),
+        "is_active": normalized.get("IsActive"),
+        "email": normalized.get("Email"),
+    }
+
+
 _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "Object": _to_presentation_object,
     "PicklistValueSet": _to_presentation_picklist_value_set,
@@ -413,6 +445,7 @@ _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] =
     "ValidationRule": _to_presentation_validation_rule,
     "Profile": _to_presentation_profile,
     "PermissionSet": _to_presentation_permission_set,
+    "User": _to_presentation_user,
     # Other entity types added by their respective phase cycles per
     # PHASE_2_PLAN_corrections.md §7.
 }

@@ -2390,9 +2390,10 @@ class TestFetchUsers:
         c.close()
 
     def test_fetch_users_soql_field_set(self) -> None:
-        """Regression guard against scope creep. SOQL must SELECT
-        exactly the 12 spec'd fields and nothing else (no
-        FIELDS(STANDARD), no Phone/Address/etc)."""
+        """Regression guard against scope creep on the User SOQL.
+        User query (the first of two SOQLs) must SELECT exactly
+        the 12 spec'd fields and nothing else (no FIELDS(STANDARD),
+        no Phone/Address/etc)."""
         soqls_seen: list[str] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -2403,8 +2404,17 @@ class TestFetchUsers:
 
         c = _make_client(httpx.MockTransport(handler))
         c.fetch_users()
-        assert len(soqls_seen) == 1
-        soql = soqls_seen[0]
+        # 2 SOQLs: User + PSA. Profile + PermissionSet Id→external_id
+        # maps are built by phase_user from the entities table.
+        assert len(soqls_seen) == 2
+        user_soqls = [
+            s for s in soqls_seen
+            if "FROM User" in s
+            and "FROM UserRole" not in s
+            and "FROM PermissionSetAssignment" not in s
+        ]
+        assert len(user_soqls) == 1
+        soql = user_soqls[0]
 
         # All 12 expected fields present
         expected_fields = (
@@ -2415,7 +2425,6 @@ class TestFetchUsers:
         for field in expected_fields:
             assert field in soql, f"missing expected field {field!r}"
 
-        # FROM User
         assert "FROM User" in soql
 
         # Scope-creep guards: NOT FIELDS(STANDARD), NOT pulling
@@ -2434,147 +2443,201 @@ class TestFetchUsers:
         assert "UserLicenseId" not in soql
         c.close()
 
-    def test_fetch_users_returns_records_list(self) -> None:
-        """Mixed UserType records flow through unchanged."""
+    def test_fetch_users_returns_two_key_dict(self) -> None:
+        """Category 4 result is a 2-key dict. Profile +
+        PermissionSet Id→external_id maps are built by phase_user
+        from the entities table — sidesteps the Salesforce SOQL
+        Tooling-vs-Data API name asymmetry on Profile (live test
+        caught that Tooling Profile.FullName like 'Admin'
+        differs from Data API Profile.Name like 'System
+        Administrator')."""
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/services/oauth2/token":
                 return _token_response()
-            return httpx.Response(200, json={
-                "totalSize": 3,
-                "done": True,
-                "records": [
-                    {
-                        "Id": "005F900000000001",
-                        "Username": "alice@example.com",
-                        "Email": "alice@example.com",
-                        "Name": "Alice Test",
-                        "Alias": "atest",
-                        "IsActive": True,
-                        "UserType": "Standard",
-                        "ProfileId": "00eF9000001e6qNIAQ",
-                        "UserRoleId": None,
-                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastModifiedDate": "2026-04-01T00:00:00.000+0000",
-                        "LastLoginDate": "2026-05-01T00:00:00.000+0000",
-                    },
-                    {
-                        "Id": "005F900000000002",
-                        "Username": "autoproc",
-                        "Email": "autoproc@example.com",
-                        "Name": "Automated Process",
-                        "Alias": "autop",
-                        "IsActive": True,
-                        "UserType": "AutomatedProcess",
-                        "ProfileId": "00eF9000001e6qOIAQ",
-                        "UserRoleId": None,
-                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastLoginDate": None,
-                    },
-                    {
-                        "Id": "005F900000000003",
-                        "Username": "csn",
-                        "Email": "csn@example.com",
-                        "Name": "Chatter External",
-                        "Alias": "cext",
-                        "IsActive": True,
-                        "UserType": "CsnOnly",
-                        "ProfileId": "00eF9000001e6qPIAQ",
-                        "UserRoleId": None,
-                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastLoginDate": None,
-                    },
-                ],
-            })
+            soql = request.url.params.get("q", "")
+            if "FROM PermissionSetAssignment" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "0Pa001", "AssigneeId": "005U001",
+                         "PermissionSetId": "0PS001",
+                         "PermissionSetGroupId": None,
+                         "ExpirationDate": None,
+                         "SystemModstamp": (
+                             "2026-01-01T00:00:00.000+0000"
+                         )},
+                    ],
+                })
+            if "FROM User" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "005U001",
+                         "Username": "alice@example.com",
+                         "UserType": "Standard",
+                         "ProfileId": "00eA",
+                         "IsActive": True},
+                    ],
+                })
+            return httpx.Response(200, json={"records": []})
 
         c = _make_client(httpx.MockTransport(handler))
         result = c.fetch_users()
-        assert len(result) == 3
-        # Field shape preserved
-        assert result[0]["Id"] == "005F900000000001"
-        assert result[0]["UserType"] == "Standard"
-        assert result[0]["ProfileId"] == "00eF9000001e6qNIAQ"
-        assert result[1]["UserType"] == "AutomatedProcess"
-        assert result[2]["UserType"] == "CsnOnly"
+        assert isinstance(result, dict)
+        assert set(result.keys()) == {
+            "users",
+            "permission_set_assignments",
+        }
+        assert isinstance(result["users"], list)
+        assert isinstance(result["permission_set_assignments"], list)
+        # Users
+        assert len(result["users"]) == 1
+        # PSAs (no PermissionSet.Name nested — that came from a
+        # related-query the v66.0 SOQL declined)
+        assert len(result["permission_set_assignments"]) == 1
+        psa = result["permission_set_assignments"][0]
+        assert psa["AssigneeId"] == "005U001"
+        assert psa["PermissionSetId"] == "0PS001"
+        c.close()
+
+    def test_fetch_users_makes_two_calls(self) -> None:
+        """User cycle scopes fetch_users to exactly 2 SOQLs:
+        User + PermissionSetAssignment. Profile + PermissionSet
+        Id→external_id resolution happens in phase_user against
+        the entities table."""
+        api_calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            api_calls.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_users()
+        assert len(api_calls) == 2
+        c.close()
+
+    def test_fetch_users_psa_soql_shape(self) -> None:
+        """PSA SOQL includes the 6 spec'd fields + uses SystemModstamp
+        as the assigned_at proxy (CreatedById/CreatedDate restricted
+        on PSA in v66.0). NO WHERE filter — PSG filtering happens
+        in phase_user's Python code."""
+        soqls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soqls_seen.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_users()
+        psa_soqls = [
+            s for s in soqls_seen
+            if "FROM PermissionSetAssignment" in s
+        ]
+        assert len(psa_soqls) == 1
+        psa = psa_soqls[0]
+        # Required field set
+        for f in ("AssigneeId", "PermissionSetId",
+                  "PermissionSetGroupId", "ExpirationDate",
+                  "SystemModstamp"):
+            assert f in psa, f"missing PSA field {f!r}"
+        # PermissionSet.Name related-query NOT used (HTTP 400 in
+        # v66.0 — see fetch_users docstring)
+        assert "PermissionSet.Name" not in psa
+        # CreatedById/CreatedDate NOT used (HTTP 400 in v66.0)
+        assert "CreatedById" not in psa
+        assert "CreatedDate" not in psa
+        # No WHERE filter — PSG filtering moved to Python
+        assert "WHERE" not in psa
+        c.close()
+
+    def test_fetch_users_psa_failure_returns_empty_list(self) -> None:
+        """Fault tolerance: if PermissionSetAssignment query fails
+        (rare; integration user without PSA read access), the
+        fetcher logs and returns empty list; User entities still
+        materialize via the User query. HAS_PERMISSION_SET edges
+        become 0 for this sync."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "FROM PermissionSetAssignment" in soql:
+                return httpx.Response(403, json={
+                    "errorCode": "FORBIDDEN",
+                    "message": "no access",
+                })
+            if "FROM User" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "005U001", "Username": "alice",
+                         "ProfileId": "00eA", "UserType": "Standard"},
+                    ],
+                })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_users()
+        # Empty list on PSA failure; users still populated
+        assert result["permission_set_assignments"] == []
+        assert len(result["users"]) == 1
         c.close()
 
     def test_fetch_users_returns_inactive_users(self) -> None:
         """No fetch-time IsActive filter — sync-layer concern.
-        Both active and inactive users appear in result."""
+        Both active and inactive users appear in users list."""
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/services/oauth2/token":
                 return _token_response()
-            return httpx.Response(200, json={
-                "totalSize": 2,
-                "done": True,
-                "records": [
-                    {
-                        "Id": "005F900000000001",
-                        "Username": "active",
-                        "IsActive": True,
-                        "UserType": "Standard",
-                        "ProfileId": "00eF9000001e6qNIAQ",
-                        "UserRoleId": None,
-                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastLoginDate": None,
-                    },
-                    {
-                        "Id": "005F900000000002",
-                        "Username": "inactive",
-                        "IsActive": False,
-                        "UserType": "Standard",
-                        "ProfileId": "00eF9000001e6qNIAQ",
-                        "UserRoleId": None,
-                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastLoginDate": None,
-                    },
-                ],
-            })
+            soql = request.url.params.get("q", "")
+            if "FROM User" in soql and "Permission" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "005U001", "Username": "active",
+                         "IsActive": True, "UserType": "Standard",
+                         "ProfileId": "00eA"},
+                        {"Id": "005U002", "Username": "inactive",
+                         "IsActive": False, "UserType": "Standard",
+                         "ProfileId": "00eA"},
+                    ],
+                })
+            return httpx.Response(200, json={"records": []})
 
         c = _make_client(httpx.MockTransport(handler))
         result = c.fetch_users()
-        assert len(result) == 2
-        active_states = {r["IsActive"] for r in result}
+        users = result["users"]
+        assert len(users) == 2
+        active_states = {r["IsActive"] for r in users}
         assert active_states == {True, False}  # both kept
         c.close()
 
     def test_fetch_users_returns_synthetic_user_types(self) -> None:
         """Platform-synthetic UserTypes (AutomatedProcess,
-        CloudIntegrationUser, etc.) appear in fetch result.
-        Filtering them is a sync-layer policy decision per
-        transparent-transport-boundary principle."""
+        CloudIntegrationUser, etc.) appear in fetch result's
+        users list. Filtering them is a sync-layer policy
+        decision per transparent-transport-boundary principle."""
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/services/oauth2/token":
                 return _token_response()
-            return httpx.Response(200, json={
-                "totalSize": 3,
-                "done": True,
-                "records": [
-                    {
-                        "Id": f"005F90000000000{i}",
-                        "Username": utype,
-                        "IsActive": True,
-                        "UserType": utype,
-                        "ProfileId": "00eF9000001e6qNIAQ",
-                        "UserRoleId": None,
-                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastLoginDate": None,
-                    }
-                    for i, utype in enumerate(
-                        ["Standard", "AutomatedProcess",
-                         "CloudIntegrationUser"], start=1
-                    )
-                ],
-            })
+            soql = request.url.params.get("q", "")
+            if "FROM User" in soql and "Permission" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": f"005U00{i}",
+                         "Username": utype,
+                         "IsActive": True, "UserType": utype,
+                         "ProfileId": "00eA"}
+                        for i, utype in enumerate(
+                            ["Standard", "AutomatedProcess",
+                             "CloudIntegrationUser"], start=1,
+                        )
+                    ],
+                })
+            return httpx.Response(200, json={"records": []})
 
         c = _make_client(httpx.MockTransport(handler))
         result = c.fetch_users()
-        assert len(result) == 3
-        utypes = {r["UserType"] for r in result}
+        utypes = {r["UserType"] for r in result["users"]}
         assert utypes == {
             "Standard",
             "AutomatedProcess",

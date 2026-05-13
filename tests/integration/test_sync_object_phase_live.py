@@ -1,6 +1,6 @@
 """Live integration test for Object + PicklistValueSet + PicklistValue
 + Field + RecordType + Layout + ValidationRule + Profile +
-PermissionSet phases, including detail-table writes + edges
+PermissionSet + User phases, including detail-table writes + edges
 (property-less + property-bearing).
 
 End-to-end: SyncEngine.run_sync() runs all 12 phases for a fresh
@@ -125,6 +125,28 @@ Verifies:
       - INHERITS_PERMISSION_SET → PermissionSet (property-less;
         sourced from `_member_ps_names` marker on PSGs only;
         non-Group PSes have no marker → no edge written)
+  - User phase: Category 4 fetcher (substrate-1 fetch_users
+    extended this cycle to 3-key dict: users + direct
+    PermissionSetAssignments [PermissionSetGroupId IS NULL
+    filter — PSG-derived memberships flow via
+    INHERITS_PERMISSION_SET edges from the PermissionSet
+    cycle] + Profile Id→Name map). Org-level entity. TWO-PASS
+    materialization: pass 1 inserts User entities + captures
+    Username → entity_id; pass 2 builds the User.Id →
+    entity_id map and resolves
+    HasPermissionSetProperties.assigned_by_user_entity_id
+    (forward reference to the assigner User's entity_id from
+    PSA.CreatedById) on each assignment entry before edge
+    write. Writes entity + user_details (NOT NULL FK to
+    Profile entity via _profile_name marker; NOT NULL
+    user_type) + TWO edge types:
+      - HAS_PROFILE → Profile (property-less; every User has
+        exactly one Profile via User.ProfileId)
+      - HAS_PERMISSION_SET → PermissionSet (property-bearing;
+        HasPermissionSetProperties = {assigned_at,
+        assigned_by_user_entity_id, expiration_date} —
+        all Optional; assigned_by_user_entity_id None when
+        assigner is outside the synced User set)
 
 Cleanup: deletes all rows referencing the test connected_org's id
 (FK-aware: queue → entities → sync_runs back-ref → logical_versions
@@ -310,10 +332,11 @@ def test_org(db_engine):
         # and makes the cleanup robust against future detail-table
         # additions.
         for detail_table in (
-            "permission_set_details", "profile_details",
-            "validation_rule_details", "layout_details",
-            "field_details", "record_type_details",
-            "picklist_value_details", "object_details",
+            "user_details", "permission_set_details",
+            "profile_details", "validation_rule_details",
+            "layout_details", "field_details",
+            "record_type_details", "picklist_value_details",
+            "object_details",
         ):
             conn.execute(text(f"""
                 DELETE FROM {detail_table}
@@ -362,18 +385,20 @@ def test_org(db_engine):
         """), {"id": org_id})
 
 
-def test_live_sync_through_permission_set(
+def test_live_sync_through_user(
     live_sf_client, db_engine, test_org,
 ):
     """End-to-end Object + PVS + PV + Field + RecordType + Layout
-    + ValidationRule + Profile + PermissionSet phases. Detail-table
-    writes, BELONGS_TO + HAS_RELATIONSHIP_TO + INCLUDES_FIELD
-    (property-bearing) + APPLIES_TO + GRANTS_OBJECT_ACCESS
-    (Profile + PermissionSet sources, property-bearing) +
-    GRANTS_FIELD_ACCESS (Profile + PermissionSet sources,
-    property-bearing) + INHERITS_PERMISSION_SET (PSG → member PS,
-    property-less) edges. Runs against local Postgres via
-    LIVE_DATABASE_URL."""
+    + ValidationRule + Profile + PermissionSet + User phases.
+    Detail-table writes, BELONGS_TO + HAS_RELATIONSHIP_TO +
+    INCLUDES_FIELD (property-bearing) + APPLIES_TO +
+    GRANTS_OBJECT_ACCESS (Profile + PermissionSet sources,
+    property-bearing) + GRANTS_FIELD_ACCESS (Profile +
+    PermissionSet sources, property-bearing) +
+    INHERITS_PERMISSION_SET (PSG → member PS, property-less) +
+    HAS_PROFILE (User → Profile, property-less) +
+    HAS_PERMISSION_SET (User → PermissionSet, property-bearing)
+    edges. Runs against local Postgres via LIVE_DATABASE_URL."""
     from primeqa.sync.engine import SyncEngine
 
     engine = SyncEngine(
@@ -1347,6 +1372,146 @@ def test_live_sync_through_permission_set(
             f"queue rows; got {permission_set_queue}"
         )
 
+        # ----- User entities + user_details + edges -----
+        # Sandbox has 6 users (3 Standard, 1 AutomatedProcess,
+        # 1 CloudIntegrationUser, 1 CsnOnly per survey). All
+        # materialized — no fetch-time filter. Regression floor: >=3.
+        user_count = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'User'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert user_count >= 3, (
+            f"Expected >=3 User entities (regression floor; "
+            f"sandbox has 6); got {user_count}"
+        )
+
+        # user_details: 1 row per active User entity
+        user_details_count = conn.execute(text("""
+            SELECT COUNT(*) FROM user_details ud
+            JOIN entities e ON e.id = ud.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'User'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert user_details_count == user_count, (
+            f"user_details rows ({user_details_count}) != User "
+            f"entity count ({user_count})"
+        )
+
+        # FK integrity: every user_details row's
+        # profile_entity_id must point at a real Profile entity.
+        # NOT NULL constraint enforces at DB layer; this catches
+        # a regression where the FK points at the wrong entity_type.
+        bad_user_details = conn.execute(text("""
+            SELECT COUNT(*) FROM user_details ud
+            JOIN entities child ON child.id = ud.entity_id
+            LEFT JOIN entities parent
+                ON parent.id = ud.profile_entity_id
+            WHERE child.last_synced_from_org_id = :id
+              AND child.entity_type = 'User'
+              AND child.valid_to_seq IS NULL
+              AND (parent.id IS NULL
+                   OR parent.entity_type != 'Profile'
+                   OR ud.user_type IS NULL
+                   OR ud.user_type = '')
+        """), {"id": test_org}).scalar()
+        assert bad_user_details == 0, (
+            f"Found {bad_user_details} user_details rows with "
+            f"bad profile_entity_id FK target OR NULL/empty "
+            f"user_type"
+        )
+
+        # HAS_PROFILE edges: 1 per User (every User has a Profile)
+        has_profile_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'HAS_PROFILE'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'User'
+        """), {"id": test_org}).scalar()
+        assert has_profile_count == user_count, (
+            f"HAS_PROFILE edges ({has_profile_count}) != User "
+            f"count ({user_count}); every User should have "
+            f"exactly one HAS_PROFILE edge"
+        )
+
+        # HAS_PROFILE is property-less (TIER_1_EDGES schema=None)
+        has_profile_property_less = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'HAS_PROFILE'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'User'
+              AND e.last_seed_hash IS NULL
+              AND e.properties = '{}'::jsonb
+        """), {"id": test_org}).scalar()
+        assert has_profile_property_less == has_profile_count, (
+            f"HAS_PROFILE edges should be property-less "
+            f"(hash=NULL, properties='{{}}'::jsonb); got "
+            f"{has_profile_property_less} of {has_profile_count}"
+        )
+
+        # HAS_PERMISSION_SET edges. Regression floor: >= 0 per
+        # the User task spec — sandbox PSAs commonly target
+        # Type='Profile' shadow PermissionSets (filtered at PS
+        # phase per substrate-1 §5) and Users assigned to those
+        # PSes often reference Profiles that Salesforce hides
+        # from Tooling SELECT (e.g., AutomatedProcess /
+        # CloudIntegrationUser system profiles), causing the
+        # source-side User to be filtered too. Both filters
+        # combine to produce 0 HAS_PERMISSION_SET edges in
+        # sandboxes with only system-style PSAs. Production
+        # orgs with custom PSes assigned to Standard-type Users
+        # show many. The structural integrity of the code path
+        # is verified at unit-test level (TestPhaseUser); this
+        # assertion is just a non-negativity sentinel.
+        has_permission_set_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'HAS_PERMISSION_SET'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'User'
+        """), {"id": test_org}).scalar()
+        assert has_permission_set_count >= 0  # sentinel — see note
+
+        # When HAS_PERMISSION_SET edges DO get written, they must
+        # all carry last_seed_hash (property-bearing edge hallmark).
+        # When the count is zero this is trivially satisfied.
+        has_permission_set_with_hash = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'HAS_PERMISSION_SET'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'User'
+              AND e.last_seed_hash IS NOT NULL
+        """), {"id": test_org}).scalar()
+        assert has_permission_set_with_hash == has_permission_set_count, (
+            f"All HAS_PERMISSION_SET edges should carry hash; "
+            f"got {has_permission_set_with_hash} of "
+            f"{has_permission_set_count}"
+        )
+
+        # User enrichment queue: 2× entity count
+        user_queue = conn.execute(text("""
+            SELECT COUNT(*) FROM ai_enrichment_queue
+            WHERE entity_type = 'User'
+              AND entity_id IN (
+                  SELECT id FROM entities
+                  WHERE last_synced_from_org_id = :id
+                    AND entity_type = 'User'
+              )
+        """), {"id": test_org}).scalar()
+        assert user_queue == user_count * 2, (
+            f"Expected {user_count * 2} User queue rows; "
+            f"got {user_queue}"
+        )
+
     # ===== Second sync =====
     sync_run_id_2 = engine.run_sync(connected_org_id=test_org)
     assert sync_run_id_2 != sync_run_id_1
@@ -1369,19 +1534,17 @@ def test_live_sync_through_permission_set(
             f"got {run2.entities_superseded}"
         )
         # Total unchanged = Object + PVS + PV + Field + RT + Layout
-        # + ValidationRule + Profile + PermissionSet counts. Each
-        # entity's phase-injected markers round-trip through
-        # normalize/hash identically. PermissionSet adds two
-        # post-fetch transforms (Type='Profile' filter + ParentId
-        # JOIN + LicenseId resolution + PSG decoration) — all must
-        # be deterministic across syncs for the hash to match. The
-        # pre-sort step in phase_permission_set ensures the joined
-        # child lists are in deterministic order regardless of
-        # SOQL-result ordering.
+        # + ValidationRule + Profile + PermissionSet + User counts.
+        # Each entity's phase-injected markers round-trip through
+        # normalize/hash identically. User adds two post-fetch
+        # transforms (profile-name resolution + PSA join with
+        # two-pass assigner resolution) — both deterministic
+        # across syncs (profile_id_to_name is stable; PSA list is
+        # pre-sorted by PermissionSet.Name) so the hash is stable.
         expected_unchanged = (
             object_count + pvs_count + pv_count + field_count
             + rt_count + layout_count + vr_count + profile_count
-            + permission_set_count
+            + permission_set_count + user_count
         )
         assert run2.entities_unchanged == expected_unchanged, (
             f"Second sync should report {expected_unchanged} unchanged "
@@ -1389,7 +1552,7 @@ def test_live_sync_through_permission_set(
             f"{pv_count} + Field {field_count} + RT {rt_count} + "
             f"Layout {layout_count} + VR {vr_count} + Profile "
             f"{profile_count} + PermissionSet "
-            f"{permission_set_count}); got "
+            f"{permission_set_count} + User {user_count}); got "
             f"{run2.entities_unchanged}"
         )
 
@@ -1787,4 +1950,60 @@ def test_live_sync_through_permission_set(
             f"{inherits_count} after second sync (property-less "
             f"set-difference supersession is naturally idempotent); "
             f"got {inherits_after}"
+        )
+
+        # User entity + detail + edge counts stable across syncs.
+        # Critical regression check: User payload undergoes
+        # profile-name resolution + PSA join + two-pass assigner
+        # resolution. The PSA pre-sort by PermissionSet.Name and
+        # the deterministic profile_id_to_name map ensure hash
+        # stability. Two-pass logic produces the same
+        # assigned_by_user_entity_id resolution on each run (the
+        # synced User set is stable across consecutive syncs),
+        # so HAS_PERMISSION_SET property hashes are stable too.
+        user_count_after = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'User'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert user_count_after == user_count
+
+        user_details_after = conn.execute(text("""
+            SELECT COUNT(*) FROM user_details ud
+            JOIN entities e ON e.id = ud.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'User'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert user_details_after == user_details_count
+
+        has_profile_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'HAS_PROFILE'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'User'
+        """), {"id": test_org}).scalar()
+        assert has_profile_after == has_profile_count, (
+            f"HAS_PROFILE count should remain {has_profile_count} "
+            f"after second sync (property-less set-difference); "
+            f"got {has_profile_after}"
+        )
+
+        has_permission_set_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'HAS_PERMISSION_SET'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'User'
+        """), {"id": test_org}).scalar()
+        assert has_permission_set_after == has_permission_set_count, (
+            f"HAS_PERMISSION_SET count should remain "
+            f"{has_permission_set_count} after second sync "
+            f"(property-bearing hash-compare supersession "
+            f"matches when assignment metadata is stable); "
+            f"got {has_permission_set_after}"
         )

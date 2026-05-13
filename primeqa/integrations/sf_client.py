@@ -910,25 +910,66 @@ class SalesforceClient:
             "license_id_to_label": license_id_to_label,
         }
 
-    def fetch_users(self) -> list[dict]:
-        """Fetch all User records via Data API SOQL with a deliberately-
-        scoped 12-field SELECT.
+    def fetch_users(self) -> dict:
+        """Fetch User records + PermissionSetAssignment rows.
+        Category 4 multi-query fetch for User entity (2 SOQLs).
 
-        Category 1 single-phase pattern (corrections-log §5): User has
-        no Metadata complexvalue and no two-phase fetch requirement.
-        Single SOQL returns all data needed.
+        Returns:
+            {
+                "users":                       list[dict],
+                "permission_set_assignments":  list[dict],     # all PSAs
+            }
 
+        Two SOQL queries. The Id → external_id resolution maps for
+        Profile and PermissionSet (needed for HAS_PROFILE and
+        HAS_PERMISSION_SET edge target resolution) are built by
+        phase_user from the entities table, NOT from SOQL — both
+        Profile and PermissionSet entities are materialized BEFORE
+        User per ENTITY_ORDER, so the entities table is the
+        authoritative source of truth for external_ids. Building
+        the maps from the DB sidesteps a Salesforce SOQL
+        asymmetry: `SELECT Name FROM Profile` returns display
+        names (e.g., 'System Administrator') that differ from
+        Tooling `Profile.FullName` (e.g., 'Admin'); Profile
+        entities use FullName as external_id, so a Data-API map
+        would mis-resolve.
+
+        Originally the User cycle's spec called for the maps to
+        come from fetch_users (matching the precedent set by
+        fetch_permission_sets' license_id_to_label). The
+        Tooling-vs-Data API name asymmetry on Profile (caught
+        during live verification) forced the redesign — building
+        the maps from the entities table is both correct AND
+        simpler (fewer SOQL hops in fetch_users).
+        1. SELECT … FROM User (12-field identity + role context)
+        2. SELECT … FROM PermissionSetAssignment WHERE
+           PermissionSetGroupId = NULL (direct PS assignments only;
+           PSG-derived assignments resolve via
+           INHERITS_PERMISSION_SET edges from the PermissionSet
+           cycle's PSG decoration).
+        3. SELECT Id, Name FROM Profile (Id→Name map for the
+           User.ProfileId resolution that user_details.profile_entity_id
+           NOT NULL FK requires)
+
+        # Category 1 originally (single SOQL); extended to Category 4
+        # for the User cycle (corrections-log §5) — PermissionSetAssignment
+        # data is needed for HAS_PERMISSION_SET edges (TIER_1_EDGES
+        # property-bearing edge from User → PermissionSet); profile_id_to_name
+        # is needed for user_details.profile_entity_id resolution
+        # (Profile entities use Name as external_id but User has only
+        # ProfileId).
+        #
         # ENDPOINT: Data API (/services/data/{v}/query/), not Tooling.
-        # User is a standard sObject, not a Tooling-API entity. First
-        # non-Tooling fetch method on this client. Uses the data_path
-        # pattern established by fetch_permission_sets.
+        # User is a standard sObject; PermissionSetAssignment is also
+        # Data-API-only; Profile is queryable on the Data API too.
+        # All three queries hit the same endpoint.
         #
-        # PAGINATION: _query_all walks any paginated response. Sandbox
-        # at 6 users (single page). Customer orgs commonly have hundreds
-        # to low thousands of users; pagination engages on orgs with
-        # >2000.
+        # PAGINATION: _query_all walks any paginated response.
+        # Sandbox at 6 users, 5 PSAs, 18 profiles (all single page).
+        # Customer orgs commonly have hundreds to low thousands of
+        # users and PSAs; pagination engages on larger orgs.
         #
-        # FIELD SCOPE — 12 fields, deliberately limited:
+        # USER FIELD SCOPE — 12 fields, deliberately limited:
         # - Identity: Id, Username, Email, Name, Alias
         # - Status/role: IsActive, UserType, ProfileId, UserRoleId
         # - Audit timestamps: CreatedDate, LastModifiedDate, LastLoginDate
@@ -950,30 +991,104 @@ class SalesforceClient:
         # User.ProfileId → Profile.UserLicenseId join. fetch_profiles
         # (Method 4) already pulls UserLicenseId via Profile.Metadata.
         #
-        # NO FETCH-TIME FILTERING: returns all User rows regardless of
-        # IsActive or UserType. Sync layer filters per its policy
-        # (e.g., excluding platform synthetics like AutomatedProcess /
-        # CloudIntegrationUser / CsnOnly, or excluding inactive
-        # historical users). Per transparent-transport-boundary
+        # PSA FIELD SCOPE — 7 fields. PermissionSet.Name is fetched
+        # via SOQL related-query syntax (psa['PermissionSet']['Name']
+        # in the response) so the sync layer can resolve PSA →
+        # PermissionSet entity without a separate join query. PSG-
+        # derived assignments (where PermissionSetGroupId is non-NULL)
+        # are FILTERED at the WHERE clause — those memberships are
+        # already captured via INHERITS_PERMISSION_SET edges from
+        # PSGs in the PermissionSet cycle.
+        #
+        # PROFILE FIELD SCOPE — Id + Name only. Just enough for
+        # the Id→Name resolution map; everything else is in
+        # fetch_profiles (Method 4) which the Profile phase already
+        # consumed. We don't piggyback the full Profile.Metadata
+        # here — small focused query, predictable performance.
+        #
+        # NO FETCH-TIME FILTERING on Users: returns all User rows
+        # regardless of IsActive or UserType. Sync layer filters
+        # per its policy. Per transparent-transport-boundary
         # principle.
         #
-        # Sandbox composition (developer org, 2026-05-08):
+        # PSA QUERY FAILURE TOLERANCE: if PermissionSetAssignment
+        # is inaccessible to the integration user (rare; PSAs are
+        # widely-readable), the fetcher logs a warning and returns
+        # an empty list. HAS_PERMISSION_SET edges become 0 for the
+        # sync; User entities still materialize via the User query.
+        #
+        # PROFILE QUERY FAILURE INTOLERANT: user_details.profile_entity_id
+        # is NOT NULL no-default. If the Profile Id→Name map is
+        # empty, every User materialization fails downstream at the
+        # FK resolution. Fail-loud here is the right semantic
+        # (the User cycle pre-requires Profile cycle).
+        #
+        # Sandbox composition (developer org, 2026-05-13):
         # - 6 total users (1 page)
         # - UserType: 3 Standard, 1 AutomatedProcess,
         #   1 CloudIntegrationUser, 1 CsnOnly
         # - IsActive: 5 active, 1 inactive
         # - 4 distinct ProfileIds (some shared)
-        # - UserRoleId universally null (roles undefined; typical for
-        #   developer sandboxes)
+        # - 5 PSAs (all direct; PermissionSetGroupId all NULL in this
+        #   sandbox)
         """
         data_path = f"/services/data/{self.api_version}/query/"
-        soql = (
+
+        # Query 1: User parent rows (existing 12-field scope)
+        user_soql = (
             "SELECT Id, Username, Email, Name, Alias, "
             "IsActive, UserType, ProfileId, UserRoleId, "
             "CreatedDate, LastModifiedDate, LastLoginDate "
             "FROM User"
         )
-        return self._query_all(data_path, soql)
+        users = self._query_all(data_path, user_soql)
+
+        # Query 2: PermissionSetAssignment.
+        #
+        # FIELD SCOPE — 6 fields. Audit fields (CreatedById,
+        # CreatedDate) are RESTRICTED on PSA in some org/version
+        # combinations (Tooling SOQL access required for them in
+        # v66.0+ unless the integration user has "View Setup and
+        # Configuration"). We use SystemModstamp as a close-enough
+        # proxy for `assigned_at` (PSAs rarely get post-creation
+        # updates), and accept that
+        # HasPermissionSetProperties.assigned_by_user_entity_id is
+        # permanently None for v1 (no CreatedById means the
+        # two-pass assigner resolution in phase_user has nothing
+        # to resolve). Future cycle could switch this query to
+        # the Tooling endpoint to recover audit fields.
+        #
+        # PSG-DERIVED FILTERING happens in PYTHON (in phase_user),
+        # not via a SOQL WHERE clause — the `WHERE
+        # PermissionSetGroupId = NULL` syntax surfaces an HTTP 400
+        # in this org's SOQL implementation. Python-side filter
+        # is simple and version-stable.
+        #
+        # PERMISSION_SET.NAME via RELATED-QUERY also surfaced HTTP
+        # 400 in this org. We instead populate a separate PS
+        # Id→Name map (query 3 below) and resolve in phase_user.
+        psa_soql = (
+            "SELECT Id, AssigneeId, PermissionSetId, "
+            "PermissionSetGroupId, ExpirationDate, "
+            "SystemModstamp "
+            "FROM PermissionSetAssignment"
+        )
+        try:
+            permission_set_assignments = self._query_all(
+                data_path, psa_soql,
+            )
+        except SFRequestError as e:
+            logger.warning(
+                "fetch_users: PermissionSetAssignment query failed "
+                "(%s); HAS_PERMISSION_SET edges will be empty for "
+                "this sync.", e,
+            )
+            permission_set_assignments = []
+
+        return {
+            "users": users,
+            "permission_set_assignments": permission_set_assignments,
+        }
 
     def fetch_flow_definitions(self) -> list[dict]:
         """Tooling SOQL: SELECT … FROM FlowDefinition, with FullName + Metadata.
