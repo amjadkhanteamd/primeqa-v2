@@ -620,6 +620,17 @@ class TestExtractExternalId:
         ("Profile",
          {"FullName": "Read Only"},
          "Read Only"),
+        # PermissionSet: external_id = Tooling Name (FIELDS(STANDARD)
+        # doesn't return FullName for PermissionSet; Name is the
+        # API-name identifier and is unique per org).
+        ("PermissionSet",
+         {"Id": "0PS000000000001", "Name": "MyCustomPS",
+          "Type": "Regular"},
+         "MyCustomPS"),
+        ("PermissionSet",
+         {"Id": "0PS000000000002", "Name": "ScaleCenterUsers",
+          "Type": "Group"},
+         "ScaleCenterUsers"),
     ])
     def test_extract_external_id_known_types(
         self, entity_type: str, raw: dict, expected: str,
@@ -638,6 +649,19 @@ class TestExtractExternalId:
                 {"Name": "System Administrator"},
             )
         assert "FullName" in str(excinfo.value)
+
+    def test_extract_external_id_permission_set_raises_when_name_missing(
+        self,
+    ) -> None:
+        """PermissionSet without Name → ValueError. FIELDS(STANDARD)
+        always returns Name; missing indicates a deeper failure
+        upstream (e.g., malformed response)."""
+        with pytest.raises(ValueError) as excinfo:
+            _extract_external_id(
+                "PermissionSet",
+                {"Id": "0PS000000000001", "Type": "Regular"},
+            )
+        assert "Name" in str(excinfo.value)
 
     def test_extract_external_id_layout_raises_when_marker_missing(
         self,

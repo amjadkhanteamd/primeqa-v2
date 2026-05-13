@@ -8,6 +8,7 @@ from primeqa.sync.presentation import (
     _to_presentation_field,
     _to_presentation_layout,
     _to_presentation_object,
+    _to_presentation_permission_set,
     _to_presentation_picklist_value,
     _to_presentation_picklist_value_set,
     _to_presentation_profile,
@@ -582,3 +583,81 @@ class TestToPresentationProfile:
         profile.pop("Description")
         presentation = _to_presentation_profile(profile)
         assert presentation["description"] is None
+
+
+class TestToPresentationPermissionSet:
+    """Maps the post-join PS record (with `objectPermissions`,
+    `fieldPermissions`, `_license_label` markers) → substrate-1's
+    _to_text_permission_set input shape.
+
+    Distinct from Profile in that the source uses top-level fields
+    (Name, License) rather than Metadata sub-tree; and the license
+    label is injected as a marker by phase_permission_set after
+    LicenseId → MasterLabel resolution."""
+
+    def _ps(self, **overrides) -> dict:
+        """Sample post-join PermissionSet payload."""
+        base = {
+            "Id": "0PS000000000001",
+            "Name": "MyPS",
+            "Label": "My Permission Set",
+            "Type": "Regular",
+            "IsCustom": True,
+            "Description": "Custom PS for testing",
+            "_license_label": "Salesforce Platform",
+            "objectPermissions": [
+                {"SobjectType": "Account"},
+                {"SobjectType": "Contact"},
+            ],
+            "fieldPermissions": [
+                {"Field": "Account.Industry"},
+                {"Field": "Account.Phone"},
+                {"Field": "Contact.Email"},
+            ],
+        }
+        base.update(overrides)
+        return base
+
+    def test_maps_name_license_description(self) -> None:
+        presentation = _to_presentation_permission_set(self._ps())
+        assert presentation["name"] == "MyPS"
+        assert presentation["license"] == "Salesforce Platform"
+        assert presentation["description"] == "Custom PS for testing"
+
+    def test_maps_perm_counts_from_joined_lists(self) -> None:
+        """obj_perm_count and field_perm_count are derived from
+        the lengths of the joined permission lists, not from
+        nested Metadata (PS has no Metadata complexvalue)."""
+        presentation = _to_presentation_permission_set(self._ps())
+        assert presentation["obj_perm_count"] == 2
+        assert presentation["field_perm_count"] == 3
+
+    def test_handles_empty_permission_lists(self) -> None:
+        """A PS with no objectPermissions / fieldPermissions yields
+        zero counts. Downstream _to_text_permission_set handles
+        0 gracefully."""
+        presentation = _to_presentation_permission_set(self._ps(
+            objectPermissions=[], fieldPermissions=[],
+        ))
+        assert presentation["obj_perm_count"] == 0
+        assert presentation["field_perm_count"] == 0
+
+    def test_handles_missing_description(self) -> None:
+        """Standard PSes often have no Description; adapter passes
+        None through."""
+        ps = self._ps()
+        ps.pop("Description")
+        presentation = _to_presentation_permission_set(ps)
+        assert presentation["description"] is None
+
+    def test_license_falls_back_to_none_when_marker_missing(
+        self,
+    ) -> None:
+        """If phase_permission_set somehow didn't inject
+        _license_label (shouldn't happen — defensive), presentation
+        forwards None. Downstream semantic_text substitutes
+        'no license listed'."""
+        ps = self._ps()
+        ps.pop("_license_label")
+        presentation = _to_presentation_permission_set(ps)
+        assert presentation["license"] is None

@@ -16,6 +16,7 @@ from primeqa.sync.detail_mappers import (
     _map_field_details,
     _map_layout_details,
     _map_object_details,
+    _map_permission_set_details,
     _map_picklist_value_details,
     _map_profile_details,
     _map_record_type_details,
@@ -806,3 +807,97 @@ class TestGetDetailMapperProfile:
         table_name, mapper = result
         assert table_name == "profile_details"
         assert mapper is _map_profile_details
+
+
+class TestMapPermissionSetDetails:
+    """Maps post-join, post-license-resolution PermissionSet payload
+    → permission_set_details row.
+
+    permission_set_details has 3 NOT NULL columns (entity_id,
+    is_custom, license_type). PS is org-level — parent_resolver
+    not used by this mapper. license_type comes from the phase-
+    injected `_license_label` marker (resolved from LicenseId via
+    license_id_to_label map; sentinel '(no license)' for null /
+    unmapped)."""
+
+    def _normalized(self, **overrides) -> dict:
+        base = {
+            "Name": "MyCustomPS",
+            "Type": "Regular",
+            "IsCustom": True,
+            "_license_label": "Salesforce Platform",
+        }
+        base.update(overrides)
+        return base
+
+    def test_writes_entity_id_and_required_columns(self) -> None:
+        """entity_id, is_custom, license_type all populated per
+        the NOT NULL schema constraints."""
+        resolver = MagicMock()  # not used for org-level PS
+        row = _map_permission_set_details(
+            normalized=self._normalized(),
+            entity_id="aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa",
+            parent_resolver=resolver,
+        )
+        assert row == {
+            "entity_id": "aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa",
+            "is_custom": True,
+            "license_type": "Salesforce Platform",
+        }
+        resolver.assert_not_called()
+
+    def test_is_custom_defaults_to_false_when_missing(self) -> None:
+        """Standard Salesforce PSes don't always carry IsCustom in
+        Tooling — default to False (matches PS schema column
+        default but enforced at mapper level for safety)."""
+        row = _map_permission_set_details(
+            normalized=self._normalized(IsCustom=None),
+            entity_id="x", parent_resolver=lambda **_: None,
+        )
+        assert row["is_custom"] is False
+
+    def test_license_label_falls_back_to_sentinel_when_missing(
+        self,
+    ) -> None:
+        """Defensive: if phase_permission_set somehow didn't inject
+        _license_label (e.g., LicenseId was null AND mapper called
+        bypassing phase), the mapper falls back to the
+        '(no license)' sentinel rather than NULL — keeps the NOT
+        NULL schema constraint satisfied."""
+        row = _map_permission_set_details(
+            normalized={"Name": "X", "IsCustom": False},
+            entity_id="y", parent_resolver=lambda **_: None,
+        )
+        assert row["license_type"] == "(no license)"
+
+    def test_license_label_falls_back_for_empty_string(self) -> None:
+        """Empty _license_label string → sentinel (treats it the
+        same as missing)."""
+        row = _map_permission_set_details(
+            normalized=self._normalized(_license_label=""),
+            entity_id="x", parent_resolver=lambda **_: None,
+        )
+        assert row["license_type"] == "(no license)"
+
+    def test_handles_various_license_labels(self) -> None:
+        """Realistic license labels — pass through verbatim."""
+        for label in [
+            "Salesforce",
+            "Salesforce Platform",
+            "Analytics Cloud Integration User",
+            "Sales Cloud",
+        ]:
+            row = _map_permission_set_details(
+                normalized=self._normalized(_license_label=label),
+                entity_id="x", parent_resolver=lambda **_: None,
+            )
+            assert row["license_type"] == label
+
+
+class TestGetDetailMapperPermissionSet:
+    def test_returns_tuple_for_permission_set(self) -> None:
+        result = get_detail_mapper("PermissionSet")
+        assert result is not None
+        table_name, mapper = result
+        assert table_name == "permission_set_details"
+        assert mapper is _map_permission_set_details

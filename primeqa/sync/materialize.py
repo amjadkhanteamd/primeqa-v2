@@ -372,6 +372,20 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
                 f"{sorted(raw.keys())}"
             )
         return full_name
+    if entity_type == "PermissionSet":
+        # PermissionSet via Tooling FIELDS(STANDARD) returns Name
+        # (API name; unique per org). Org-level entity. FullName is
+        # NOT among the STANDARD columns for PermissionSet, so we
+        # use Name directly — same uniqueness guarantee for
+        # external_id purposes.
+        name = raw.get("Name")
+        if not name:
+            raise ValueError(
+                f"PermissionSet requires 'Name' (from Salesforce "
+                f"Tooling FIELDS(STANDARD) fetch); got raw keys "
+                f"{sorted(raw.keys())[:30]}..."
+            )
+        return name
     raise KeyError(
         f"No external_id extractor for entity_type "
         f"{entity_type!r}. Add to "

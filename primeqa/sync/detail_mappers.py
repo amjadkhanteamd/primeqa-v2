@@ -498,6 +498,49 @@ def _map_profile_details(
     }
 
 
+def _map_permission_set_details(
+    normalized: dict[str, Any],
+    entity_id: str,
+    parent_resolver: Callable[..., Optional[str]],
+) -> dict[str, Any]:
+    """Map normalized PermissionSet (post-join, post-license-resolution)
+    → permission_set_details row.
+
+    PermissionSet is ORG-LEVEL (not child-of-Object). No parent FK to
+    resolve. parent_resolver is unused — kept in signature for registry
+    uniformity.
+
+    Schema (3 NOT NULL columns; permission_set_details has no
+    AI-enrichment columns this cycle):
+      entity_id     ← caller-supplied
+      is_custom     ← IsCustom from PS row (standard Salesforce PSes
+                      have IsCustom=False; user-created PSes have
+                      IsCustom=True)
+      license_type  ← _license_label injected by phase_permission_set
+                      via license_id_to_label resolution. Falls back
+                      to '(no license)' sentinel for PSes with null
+                      LicenseId or LicenseId unmappable from the
+                      fetched PermissionSetLicense rows. Sentinel
+                      satisfies NOT NULL constraint without losing
+                      information.
+
+    NOT NULL no-default column: license_type. The phase function
+    enforces resolution to a non-empty string before this mapper
+    runs (the sentinel ensures we never write NULL).
+    """
+    license_label = normalized.get("_license_label")
+    if not license_label:
+        # Defensive — phase function should always set this before
+        # calling materialize. If it's missing/empty, fall back to
+        # the sentinel rather than failing the whole sync.
+        license_label = "(no license)"
+    return {
+        "entity_id": entity_id,
+        "is_custom": bool(normalized.get("IsCustom", False)),
+        "license_type": license_label,
+    }
+
+
 _DETAIL_TABLE_MAPPERS: dict[str, DetailMapper] = {
     "Object": _map_object_details,
     "PicklistValue": _map_picklist_value_details,
@@ -506,6 +549,7 @@ _DETAIL_TABLE_MAPPERS: dict[str, DetailMapper] = {
     "Layout": _map_layout_details,
     "ValidationRule": _map_validation_rule_details,
     "Profile": _map_profile_details,
+    "PermissionSet": _map_permission_set_details,
     # Other entity types added by their respective phase cycles.
     # PicklistValueSet intentionally absent — no detail table.
 }

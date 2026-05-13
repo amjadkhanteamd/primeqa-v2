@@ -778,14 +778,16 @@ class SalesforceClient:
         return records
 
     def fetch_permission_sets(self) -> dict:
-        """Tooling SOQL × 1 (parent) + Data SOQL × 2 (children) — full
-        Category 4 fetch for PermissionSet.
+        """Tooling SOQL × 1 (parent) + Data SOQL × 4 (children + licenses
+        + PSG components) — full Category 4 fetch for PermissionSet.
 
         Returns:
             {
-                "permission_sets": list[dict],     # parent rows
-                "object_permissions": list[dict],  # child grants, ParentId-joined
-                "field_permissions": list[dict],   # child grants, ParentId-joined
+                "permission_sets":      list[dict],     # parent rows
+                "object_permissions":   list[dict],     # child grants, ParentId-joined
+                "field_permissions":    list[dict],     # child grants, ParentId-joined
+                "psg_components":       list[dict],     # PSG → member PS join rows
+                "license_id_to_label":  dict[str, str], # LicenseId → MasterLabel
             }
 
         # Category 4 pattern (corrections-log §5). PermissionSet has no
@@ -794,26 +796,41 @@ class SalesforceClient:
         # ObjectPermissions and FieldPermissions child entities.
         #
         # ENDPOINT ASYMMETRY: PermissionSet is queryable via both Tooling
-        # API and Data API. ObjectPermissions and FieldPermissions are
-        # Data-API-only — the Tooling API rejects them with INVALID_TYPE.
-        # We use Tooling for the parent query (FIELDS(STANDARD) is a
-        # Tooling-API SOQL feature giving us all 408 columns in one
-        # statement) and Data API for the two child queries. Same OAuth
-        # token, same retry plumbing; only the URL path differs.
+        # API and Data API. ObjectPermissions, FieldPermissions, and
+        # PermissionSetGroupComponent are Data-API-only — the Tooling API
+        # rejects them with INVALID_TYPE. PermissionSetLicense is also
+        # Data-API-only. We use Tooling for the parent query (FIELDS(STANDARD)
+        # is a Tooling-API SOQL feature giving us all 408 columns in one
+        # statement) and Data API for everything else. Same OAuth token,
+        # same retry plumbing; only the URL path differs.
         #
-        # Three queries fetch the full picture. Sync layer joins children
-        # to parents via ParentId.
+        # Five queries fetch the full picture. Sync layer joins children to
+        # parents via ParentId, joins PSGs to member PSes via the
+        # PermissionSetGroupComponent rows, and resolves LicenseId to
+        # MasterLabel via license_id_to_label.
         #
-        # Returns dict with three keys (permission_sets, object_permissions,
-        # field_permissions) rather than a flat list to make the structural
-        # asymmetry from Category 2 entities explicit at the API surface.
-        # Matches fetch_layouts_for_object's structured-dict precedent.
+        # Returns a dict (5 keys) rather than a flat list to make the
+        # structural asymmetry from Category 2 entities explicit at the
+        # API surface. Matches fetch_layouts_for_object's structured-dict
+        # precedent.
         #
         # Sandbox at 71 PermissionSet rows; 18 of those are Type='Profile'
         # auto-synthetic duplicates of the Profile rows (corrections-log
         # §5 Category 4 note). Sync layer filters Type='Profile' to avoid
         # duplication; fetch returns them per transparent-transport-
         # boundary principle.
+        #
+        # Sandbox PSG count: 2 (Type='Group' PermissionSets:
+        # ScaleCenterUsers, SalesWorkspacePSG). PermissionSetGroupComponent
+        # rows join PSGs to their member PSes — N rows per PSG (typically
+        # 2-10 members).
+        #
+        # PermissionSetLicense query is fault-tolerant: if the org doesn't
+        # grant query access to PermissionSetLicense (rare but defensible
+        # for tightly-scoped integration users), the query catches
+        # SFRequestError and returns an empty map. Downstream mapper falls
+        # back to a "(no license)" sentinel — preserves NOT NULL constraint
+        # without aborting the entire sync.
         """
         tooling_path = f"/services/data/{self.api_version}/tooling/query/"
         data_path = f"/services/data/{self.api_version}/query/"
@@ -841,10 +858,56 @@ class SalesforceClient:
         )
         field_permissions = self._query_all(data_path, fp_soql)
 
+        # Query 4: PermissionSetGroupComponent — Data API. Joins a
+        # parent PSG (PermissionSetGroupId) to a member PS
+        # (PermissionSetId). Source for INHERITS_PERMISSION_SET edges.
+        psg_soql = (
+            "SELECT Id, PermissionSetGroupId, PermissionSetId "
+            "FROM PermissionSetGroupComponent"
+        )
+        try:
+            psg_components = self._query_all(data_path, psg_soql)
+        except SFRequestError as e:
+            # Org has no PSG access (rare but possible on legacy orgs
+            # without PSG feature enabled). Log + return empty —
+            # INHERITS edges become 0; sync continues.
+            logger.warning(
+                "fetch_permission_sets: PermissionSetGroupComponent "
+                "query failed (%s); INHERITS_PERMISSION_SET edges "
+                "will be empty this sync.", e,
+            )
+            psg_components = []
+
+        # Query 5: PermissionSetLicense — Data API. Builds Id →
+        # MasterLabel map so the sync layer can populate
+        # permission_set_details.license_type with the human-readable
+        # license name (NOT NULL no-default column).
+        license_soql = "SELECT Id, MasterLabel FROM PermissionSetLicense"
+        license_id_to_label: dict[str, str] = {}
+        try:
+            license_rows = self._query_all(data_path, license_soql)
+            for row in license_rows:
+                lid = row.get("Id")
+                label = row.get("MasterLabel")
+                if lid and label:
+                    license_id_to_label[lid] = label
+        except SFRequestError as e:
+            # Per-query failure tolerance: if PermissionSetLicense
+            # is inaccessible, return empty map. Downstream mapper
+            # falls back to a "(no license)" sentinel — keeps NOT
+            # NULL constraint satisfied without aborting the sync.
+            logger.warning(
+                "fetch_permission_sets: PermissionSetLicense query "
+                "failed (%s); license_type will fall back to "
+                "'(no license)' sentinel.", e,
+            )
+
         return {
             "permission_sets": permission_sets,
             "object_permissions": object_permissions,
             "field_permissions": field_permissions,
+            "psg_components": psg_components,
+            "license_id_to_label": license_id_to_label,
         }
 
     def fetch_users(self) -> list[dict]:

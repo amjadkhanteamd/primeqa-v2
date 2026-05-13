@@ -358,6 +358,51 @@ def _to_presentation_profile(normalized: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _to_presentation_permission_set(
+    normalized: dict[str, Any],
+) -> dict[str, Any]:
+    """Map normalized PermissionSet (post-join Tooling + Data API) to
+    semantic_text input shape.
+
+    PermissionSet's per-PS shape (after sync layer joins the
+    Category-4 child lists into each PS row) carries top-level keys:
+      Name, Label, Description, License (resolved label from
+      license_id_to_label map injected as `_license_label`),
+      objectPermissions[], fieldPermissions[]
+
+    Substrate-1's _to_text_permission_set input shape:
+        {name, license, description, obj_perm_count,
+         field_perm_count, optional parent_profile}
+
+    Bridges:
+      name              ← Name
+      license           ← _license_label (resolved by phase_permission_set
+                          from LicenseId via license_id_to_label map; falls
+                          back to '(no license)' sentinel for unmappable
+                          / null LicenseId — matches detail mapper
+                          license_type column behavior)
+      description       ← Description (often None on standard PSes)
+      obj_perm_count    = len(objectPermissions)
+      field_perm_count  = len(fieldPermissions)
+      parent_profile    omitted (would only apply to Type='Profile' PSes,
+                        which phase_permission_set filters out per
+                        substrate-1 §5)
+
+    Same COUNTS-not-arrays pattern as Profile presentation; the full
+    permission graph lives in GRANTS_OBJECT_ACCESS + GRANTS_FIELD_ACCESS
+    edges.
+    """
+    obj_perms = normalized.get("objectPermissions") or []
+    field_perms = normalized.get("fieldPermissions") or []
+    return {
+        "name": normalized.get("Name"),
+        "license": normalized.get("_license_label"),
+        "description": normalized.get("Description"),
+        "obj_perm_count": len(obj_perms),
+        "field_perm_count": len(field_perms),
+    }
+
+
 _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "Object": _to_presentation_object,
     "PicklistValueSet": _to_presentation_picklist_value_set,
@@ -367,6 +412,7 @@ _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] =
     "Layout": _to_presentation_layout,
     "ValidationRule": _to_presentation_validation_rule,
     "Profile": _to_presentation_profile,
+    "PermissionSet": _to_presentation_permission_set,
     # Other entity types added by their respective phase cycles per
     # PHASE_2_PLAN_corrections.md §7.
 }

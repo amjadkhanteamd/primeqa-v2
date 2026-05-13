@@ -922,6 +922,233 @@ def phase_profile(ctx: SyncContext, conn: Any) -> PhaseResult:
     return result
 
 
+def phase_permission_set(
+    ctx: SyncContext, conn: Any,
+) -> PhaseResult:
+    """PermissionSet phase — org-level permission templates +
+    PSG inheritance.
+
+    Ninth real phase (9/12). Second source for GRANTS_OBJECT_ACCESS
+    and GRANTS_FIELD_ACCESS (Profile being the first); first writer
+    of INHERITS_PERMISSION_SET (PSG → member PS).
+
+    Fetched via fetch_permission_sets (substrate-1 Category 4 per
+    corrections-log §5): five SOQL queries return a 5-key dict —
+      permission_sets:     parent rows from Tooling FIELDS(STANDARD)
+      object_permissions:  Data API rows, ParentId-joined
+      field_permissions:   Data API rows, ParentId-joined
+      psg_components:      PSG → member PS join rows
+      license_id_to_label: LicenseId → MasterLabel map
+
+    Sandbox cardinality (probe 2026-05-13):
+      71 raw PS rows → filter Type='Profile' (18 auto-synth dups
+      per substrate-1 §5) → 53 syncable PSes
+      2,648 ObjectPermissions ÷ 53 ≈ 50 ops avg per PS
+      11,397 FieldPermissions ÷ 53 ≈ 215 fps avg per PS
+      Expected: ~2,650 GRANTS_OBJECT_ACCESS + ~11,400
+      GRANTS_FIELD_ACCESS + ~6-10 INHERITS_PERMISSION_SET edges
+      (2 PSGs × ~3-5 members each).
+
+    Three transformations applied before materialize:
+
+    1. Filter Type='Profile' rows. These are auto-synth duplicates
+       of Profile entities (corrections-log §5 Category 4 note).
+       Skipped count is logged.
+
+    2. JOIN ObjectPermissions / FieldPermissions to each surviving
+       PS by ParentId. The substrate-1 _normalize_permission_set
+       expects top-level `objectPermissions` and `fieldPermissions`
+       lists (mirrors Profile's Metadata.* shape); the join builds
+       them. O(N) using ParentId-keyed dicts to avoid N+1.
+
+    3. Resolve LicenseId → MasterLabel via license_id_to_label map.
+       Inject `_license_label` marker on each PS. Used by the
+       detail mapper (license_type NOT NULL column) and the
+       presentation adapter (semantic_text input). Sentinel
+       '(no license)' for null / unmapped LicenseId.
+
+    PSG decoration:
+      For each Type='Group' PS (PSG), walk psg_components rows
+      where PermissionSetGroupId == PSG.Id; resolve each row's
+      PermissionSetId → member PS.Name via an Id→Name map built
+      from permission_sets list. Inject `_member_ps_names: list[str]`
+      marker on the PSG. Non-PSGs have no marker → no INHERITS
+      edges (extractor returns []).
+
+    Three edge types written:
+    - GRANTS_OBJECT_ACCESS → Object (property-bearing, 6 flags)
+    - GRANTS_FIELD_ACCESS → Field (property-bearing, 2 flags)
+    - INHERITS_PERMISSION_SET → PermissionSet (property-less; only
+      written for PSGs via _member_ps_names marker)
+
+    No §18 entity-level parent filter — PS is org-level. Edge
+    target resolution naturally skips unsyncable targets via the
+    materialize layer's skip-counter (corrections-log §19); skip
+    counts surface in PhaseResult.edges_skipped_by_type.
+    """
+    result = PhaseResult(entity_type="PermissionSet")
+
+    fetch_result = ctx.sf_client.fetch_permission_sets()
+    raw_ps_records = fetch_result.get("permission_sets") or []
+    object_permissions = fetch_result.get("object_permissions") or []
+    field_permissions = fetch_result.get("field_permissions") or []
+    psg_components = fetch_result.get("psg_components") or []
+    license_id_to_label = fetch_result.get("license_id_to_label") or {}
+
+    if not raw_ps_records:
+        return result
+
+    # Filter Type='Profile' auto-synth duplicates per substrate-1 §5.
+    skipped_profile_count = 0
+    syncable_ps_records: list[dict[str, Any]] = []
+    for ps in raw_ps_records:
+        if ps.get("Type") == "Profile":
+            skipped_profile_count += 1
+            continue
+        syncable_ps_records.append(ps)
+    if skipped_profile_count > 0:
+        logger.info(
+            "phase_permission_set: skipped %d Type='Profile' "
+            "PermissionSets (auto-synth duplicates of Profile "
+            "entities per substrate-1 §5)",
+            skipped_profile_count,
+        )
+
+    if not syncable_ps_records:
+        return result
+
+    # Build ParentId-keyed indexes for O(N) JOIN against syncable PSes.
+    op_by_parent: dict[str, list[dict[str, Any]]] = {}
+    for op in object_permissions:
+        if not isinstance(op, dict):
+            continue
+        pid = op.get("ParentId")
+        if pid:
+            op_by_parent.setdefault(pid, []).append(op)
+    fp_by_parent: dict[str, list[dict[str, Any]]] = {}
+    for fp in field_permissions:
+        if not isinstance(fp, dict):
+            continue
+        pid = fp.get("ParentId")
+        if pid:
+            fp_by_parent.setdefault(pid, []).append(fp)
+
+    # Build PSG-component index + Id→Name map for member-name
+    # resolution.
+    #
+    # IMPORTANT — Salesforce schema asymmetry: the Type='Group' row
+    # in PermissionSet is a SHADOW of the actual PermissionSetGroup
+    # entity, which lives in a SEPARATE table with its own Id
+    # (prefix 0PG vs PermissionSet's 0PS). The two are linked by
+    # PermissionSet.PermissionSetGroupId → PermissionSetGroup.Id.
+    # PermissionSetGroupComponent rows reference the PSG's 0PG-
+    # prefixed Id via PermissionSetGroupId, not the shadow PS's
+    # 0PS-prefixed Id.
+    #
+    # Correct join chain:
+    #   PermissionSet(Type='Group').PermissionSetGroupId   (0PG...)
+    #   ↓
+    #   PermissionSetGroupComponent.PermissionSetGroupId   (0PG...)
+    #   ↓
+    #   PermissionSetGroupComponent.PermissionSetId        (0PS...)
+    #   ↓
+    #   PermissionSet.Id  (member PS's 0PS Id)
+    #
+    # The Id→Name map uses the FULL ps list (including Type='Profile'
+    # rows we filtered out) because a PSG could reference a member
+    # of any Type; using the full list is defensive against
+    # Salesforce's evolving Type taxonomy.
+    psg_components_by_group: dict[str, list[dict[str, Any]]] = {}
+    for psg_c in psg_components:
+        if not isinstance(psg_c, dict):
+            continue
+        gid = psg_c.get("PermissionSetGroupId")
+        if gid:
+            psg_components_by_group.setdefault(gid, []).append(psg_c)
+    ps_id_to_name: dict[str, str] = {}
+    for ps in raw_ps_records:
+        ps_id = ps.get("Id")
+        ps_name = ps.get("Name")
+        if ps_id and ps_name:
+            ps_id_to_name[ps_id] = ps_name
+
+    # Decorate each syncable PS: JOIN children + resolve license +
+    # PSG inheritance (Type='Group' only).
+    #
+    # Pre-sort the joined child lists by their PS-shape identity
+    # keys (SobjectType / Field). Substrate-1's
+    # _normalize_permission_set sorts on Profile-shape keys
+    # (lowercase `object` / `field`); against PS data the sort
+    # key resolves to "" for every entry, so the substrate-1
+    # sort is a no-op. Pre-sorting here gives the lists a
+    # deterministic order BEFORE normalize+hash so two consecutive
+    # syncs don't see spurious supersession from SOQL-result
+    # ordering. (Python's sort is stable, so substrate-1's
+    # subsequent uniform-"" sort preserves our order.)
+    for ps in syncable_ps_records:
+        ps_id = ps.get("Id")
+        op_list = list(op_by_parent.get(ps_id, []))
+        op_list.sort(key=lambda p: str(p.get("SobjectType", "")))
+        fp_list = list(fp_by_parent.get(ps_id, []))
+        fp_list.sort(key=lambda p: str(p.get("Field", "")))
+        ps["objectPermissions"] = op_list
+        ps["fieldPermissions"] = fp_list
+        license_id = ps.get("LicenseId")
+        # _license_label sentinel keeps the NOT NULL license_type
+        # column satisfied even when LicenseId is null or
+        # unmapped (per §5 fault-tolerance: license query may
+        # have returned []).
+        ps["_license_label"] = (
+            license_id_to_label.get(license_id) or "(no license)"
+        )
+        # PSG decoration: Type='Group' PSes get _member_ps_names
+        # for INHERITS_PERMISSION_SET edge extraction. Look up
+        # components via PermissionSetGroupId (the 0PG... id, NOT
+        # the shadow PS's 0PS... Id — see comment above on the
+        # Salesforce schema asymmetry). Non-Group PSes don't get
+        # the marker; extractor returns [].
+        if ps.get("Type") == "Group":
+            psg_real_id = ps.get("PermissionSetGroupId")
+            components = (
+                psg_components_by_group.get(psg_real_id, [])
+                if psg_real_id else []
+            )
+            member_names: list[str] = []
+            for c in components:
+                member_id = c.get("PermissionSetId")
+                if not member_id:
+                    continue
+                member_name = ps_id_to_name.get(member_id)
+                if member_name:
+                    member_names.append(member_name)
+            # Sort for deterministic hash (component fetch order
+            # isn't guaranteed to be stable across syncs).
+            ps["_member_ps_names"] = sorted(member_names)
+
+    entity_id_map = batched_materialize(
+        ctx=ctx,
+        conn=conn,
+        entity_type="PermissionSet",
+        raw_payloads=syncable_ps_records,
+        result=result,
+        return_id_map=True,
+    )
+
+    normalized_payloads = [
+        normalize("PermissionSet", p) for p in syncable_ps_records
+    ]
+    materialize_edges_for_entities(
+        ctx=ctx,
+        conn=conn,
+        source_entity_type="PermissionSet",
+        entity_id_map=entity_id_map,
+        normalized_payloads=normalized_payloads,
+        result=result,
+    )
+
+    return result
+
+
 PHASE_REGISTRY["Object"] = phase_object
 PHASE_REGISTRY["PicklistValueSet"] = phase_picklist_value_set
 PHASE_REGISTRY["PicklistValue"] = phase_picklist_value
@@ -930,6 +1157,7 @@ PHASE_REGISTRY["RecordType"] = phase_record_type
 PHASE_REGISTRY["Layout"] = phase_layout
 PHASE_REGISTRY["ValidationRule"] = phase_validation_rule
 PHASE_REGISTRY["Profile"] = phase_profile
+PHASE_REGISTRY["PermissionSet"] = phase_permission_set
 
 
 def get_phase_function(entity_type: str) -> PhaseFunction:

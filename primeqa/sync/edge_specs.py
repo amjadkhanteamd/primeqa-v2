@@ -430,6 +430,149 @@ def _profile_grants_field_access_properties(
 
 
 # ----------------------------------------------------------------------
+# PermissionSet edge spec extractors
+# ----------------------------------------------------------------------
+#
+# PermissionSet differs from Profile in that the same edge types
+# (GRANTS_OBJECT_ACCESS, GRANTS_FIELD_ACCESS) draw from a DIFFERENT
+# raw shape:
+#   Profile.Metadata.objectPermissions[].object        + allow* flags
+#   PermissionSet.objectPermissions[].SobjectType     + Permissions* flags
+# (the sync layer joins ObjectPermissions / FieldPermissions to each
+# PS by ParentId, so the per-PS shape ends up looking similar to
+# Profile but with different field-naming).
+#
+# Adding a third edge type for PSG support:
+#   INHERITS_PERMISSION_SET: source=PermissionSet (Group),
+#   target=PermissionSet (member). Property-less. Walks
+#   `_member_ps_names` marker on the normalized payload (phase
+#   function decorates PSGs with this list after joining
+#   PermissionSetGroupComponent rows to their member PSes).
+
+
+def _permission_set_grants_object_access_targets(normalized: dict) -> list[str]:
+    """Extract Object external_ids (sObject api names) from a
+    PermissionSet's objectPermissions list.
+
+    Each entry's `SobjectType` field IS the Object api_name (per
+    PermissionSet's Data-API ObjectPermissions shape — different
+    field name than Profile's Metadata.objectPermissions which
+    uses `object`). Same downstream meaning: the Object api_name
+    to look up against synced entities.
+    """
+    perms = normalized.get("objectPermissions") or []
+    targets: list[str] = []
+    for p in perms:
+        if not isinstance(p, dict):
+            continue
+        obj_name = p.get("SobjectType")
+        if obj_name:
+            targets.append(obj_name)
+    return targets
+
+
+def _permission_set_grants_object_access_properties(
+    normalized: dict, target_external_id: str,
+) -> dict:
+    """Locate the objectPermissions entry for target_external_id and
+    return GrantsObjectAccessProperties.
+
+    Mapping (Salesforce PS field → schema property):
+      PermissionsCreate              → can_create
+      PermissionsRead                → can_read
+      PermissionsEdit                → can_edit
+      PermissionsDelete              → can_delete
+      PermissionsViewAllRecords      → can_view_all
+      PermissionsModifyAllRecords    → can_modify_all
+
+    Different field-naming than Profile (PermissionsCreate vs
+    allowCreate); same schema output. The schema lives in
+    primeqa/semantic/edges.GrantsObjectAccessProperties.
+    """
+    for p in normalized.get("objectPermissions") or []:
+        if not isinstance(p, dict):
+            continue
+        if p.get("SobjectType") != target_external_id:
+            continue
+        return {
+            "can_create": bool(p.get("PermissionsCreate", False)),
+            "can_read": bool(p.get("PermissionsRead", False)),
+            "can_edit": bool(p.get("PermissionsEdit", False)),
+            "can_delete": bool(p.get("PermissionsDelete", False)),
+            "can_view_all": bool(p.get("PermissionsViewAllRecords", False)),
+            "can_modify_all": bool(p.get("PermissionsModifyAllRecords", False)),
+        }
+    return {}
+
+
+def _permission_set_grants_field_access_targets(normalized: dict) -> list[str]:
+    """Extract Field external_ids from a PermissionSet's
+    fieldPermissions list.
+
+    Each entry's `Field` field is the composite '{Object}.{Field}'
+    api name — matches Field phase's external_id format. Same shape
+    as Profile.Metadata.fieldPermissions[].field; the Data-API
+    column is capitalized 'Field' rather than 'field', so we read
+    accordingly.
+    """
+    perms = normalized.get("fieldPermissions") or []
+    targets: list[str] = []
+    for p in perms:
+        if not isinstance(p, dict):
+            continue
+        field_ref = p.get("Field")
+        if field_ref:
+            targets.append(field_ref)
+    return targets
+
+
+def _permission_set_grants_field_access_properties(
+    normalized: dict, target_external_id: str,
+) -> dict:
+    """Locate the fieldPermissions entry for target_external_id and
+    return GrantsFieldAccessProperties.
+
+    Mapping (Salesforce PS field → schema property):
+      PermissionsRead   → can_read
+      PermissionsEdit   → can_edit
+
+    Field-level permissions are simpler than object-level (no
+    create/delete/view_all/modify_all at the field level).
+    """
+    for p in normalized.get("fieldPermissions") or []:
+        if not isinstance(p, dict):
+            continue
+        if p.get("Field") != target_external_id:
+            continue
+        return {
+            "can_read": bool(p.get("PermissionsRead", False)),
+            "can_edit": bool(p.get("PermissionsEdit", False)),
+        }
+    return {}
+
+
+def _permission_set_inherits_permission_set_targets(
+    normalized: dict,
+) -> list[str]:
+    """Extract member PermissionSet Names from a PSG's
+    `_member_ps_names` marker.
+
+    INHERITS_PERMISSION_SET represents PermissionSetGroup → member
+    PermissionSet membership (per DECISIONS_LOG D-019). The sync
+    layer's phase_permission_set decorates each Type='Group' PS
+    with `_member_ps_names: list[str]` by joining
+    PermissionSetGroupComponent rows to permission_sets and looking
+    up Id → Name for each component's PermissionSetId.
+
+    Non-PSGs have no `_member_ps_names` marker → returns [] →
+    no INHERITS edges. The edge spec doesn't need to filter on
+    Type; the absence of the marker is the filter.
+    """
+    member_names = normalized.get("_member_ps_names") or []
+    return list(member_names)
+
+
+# ----------------------------------------------------------------------
 # Registry
 # ----------------------------------------------------------------------
 
@@ -511,6 +654,27 @@ _EDGE_SPECS: dict[str, list[EdgeSpec]] = {
             edge_type="GRANTS_FIELD_ACCESS",
             extract_target_external_ids=_profile_grants_field_access_targets,
             extract_properties=_profile_grants_field_access_properties,
+        ),
+    ],
+    "PermissionSet": [
+        EdgeSpec(
+            target_entity_type="Object",
+            edge_type="GRANTS_OBJECT_ACCESS",
+            extract_target_external_ids=_permission_set_grants_object_access_targets,
+            extract_properties=_permission_set_grants_object_access_properties,
+        ),
+        EdgeSpec(
+            target_entity_type="Field",
+            edge_type="GRANTS_FIELD_ACCESS",
+            extract_target_external_ids=_permission_set_grants_field_access_targets,
+            extract_properties=_permission_set_grants_field_access_properties,
+        ),
+        EdgeSpec(
+            target_entity_type="PermissionSet",
+            edge_type="INHERITS_PERMISSION_SET",
+            extract_target_external_ids=_permission_set_inherits_permission_set_targets,
+            # property-less (no extract_properties — TIER_1_EDGES
+            # registers properties_schema=None for this edge type)
         ),
     ],
     # Other entity types add their specs here as their phase cycles land.

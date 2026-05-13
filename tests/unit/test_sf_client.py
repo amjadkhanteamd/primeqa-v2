@@ -1929,15 +1929,32 @@ class TestFetchPermissionSets:
         assert len(data_hits) >= 1
         c.close()
 
-    def test_fetch_permission_sets_returns_three_key_dict(self) -> None:
-        """Result must be a dict with exactly the three keys
-        permission_sets / object_permissions / field_permissions,
-        each a list — Category 4 structured-dict precedent matching
-        fetch_layouts_for_object."""
+    def test_fetch_permission_sets_returns_five_key_dict(self) -> None:
+        """Result must be a dict with exactly five keys —
+        permission_sets / object_permissions / field_permissions /
+        psg_components / license_id_to_label — matching the
+        Category 4 structured-dict precedent. Cycle 9 (PermissionSet
+        phase) extended the original three-key shape to support
+        INHERITS_PERMISSION_SET edges and license_type resolution."""
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/services/oauth2/token":
                 return _token_response()
             soql = request.url.params.get("q", "")
+            if "FROM PermissionSetGroupComponent" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "0PCxxxx",
+                         "PermissionSetGroupId": "0PSyyyy",
+                         "PermissionSetId": "0PSzzzz"},
+                    ],
+                })
+            if "FROM PermissionSetLicense" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "0PLxxxx",
+                         "MasterLabel": "Salesforce Platform"},
+                    ],
+                })
             if "FROM PermissionSet" in soql:
                 return httpx.Response(200, json={
                     "records": [
@@ -1977,18 +1994,27 @@ class TestFetchPermissionSets:
             "permission_sets",
             "object_permissions",
             "field_permissions",
+            "psg_components",
+            "license_id_to_label",
         }
         assert isinstance(result["permission_sets"], list)
         assert isinstance(result["object_permissions"], list)
         assert isinstance(result["field_permissions"], list)
+        assert isinstance(result["psg_components"], list)
+        assert isinstance(result["license_id_to_label"], dict)
         assert len(result["permission_sets"]) == 1
         assert len(result["object_permissions"]) == 1
         assert len(result["field_permissions"]) == 1
+        assert len(result["psg_components"]) == 1
+        assert result["license_id_to_label"] == {
+            "0PLxxxx": "Salesforce Platform",
+        }
         c.close()
 
-    def test_fetch_permission_sets_makes_three_calls(self) -> None:
-        """Exactly three SOQL queries: parent + ObjectPermissions
-        + FieldPermissions. No N+1, no per-PS iteration."""
+    def test_fetch_permission_sets_makes_five_calls(self) -> None:
+        """Exactly five SOQL queries: parent + ObjectPermissions
+        + FieldPermissions + PermissionSetGroupComponent +
+        PermissionSetLicense. No N+1, no per-PS iteration."""
         api_calls = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -1999,7 +2025,7 @@ class TestFetchPermissionSets:
 
         c = _make_client(httpx.MockTransport(handler))
         c.fetch_permission_sets()
-        assert len(api_calls) == 3
+        assert len(api_calls) == 5
         c.close()
 
     def test_fetch_permission_sets_parent_query_uses_fields_standard(self) -> None:
@@ -2016,10 +2042,15 @@ class TestFetchPermissionSets:
 
         c = _make_client(httpx.MockTransport(handler))
         c.fetch_permission_sets()
-        # Find the parent query (the one against PermissionSet, not the
-        # child entities)
-        parent_soqls = [s for s in soqls_seen
-                        if "FROM PermissionSet" in s]
+        # Find the parent query (the FROM PermissionSet one — NOT the
+        # child entities PermissionSetGroupComponent / PermissionSetLicense
+        # which also match "FROM PermissionSet" as a prefix).
+        parent_soqls = [
+            s for s in soqls_seen
+            if "FROM PermissionSet " in s + " "
+            and "FROM PermissionSetGroupComponent" not in s
+            and "FROM PermissionSetLicense" not in s
+        ]
         assert len(parent_soqls) == 1
         parent = parent_soqls[0]
         # FIELDS(STANDARD) is the canonical wide-SELECT shorthand
@@ -2097,7 +2128,8 @@ class TestFetchPermissionSets:
             if request.url.path == "/services/oauth2/token":
                 return _token_response()
             soql = request.url.params.get("q", "")
-            if "FROM PermissionSet" in soql:
+            if "FROM PermissionSet" in soql and "Component" not in soql \
+               and "License" not in soql:
                 return httpx.Response(200, json={
                     "records": [
                         {"Id": "0PS000000000001", "Name": "Custom",
@@ -2116,6 +2148,114 @@ class TestFetchPermissionSets:
         assert len(result["permission_sets"]) == 3
         types = {r["Type"] for r in result["permission_sets"]}
         assert types == {"Regular", "Profile", "Standard"}
+        c.close()
+
+    def test_fetch_permission_sets_psg_components_query_shape(
+        self,
+    ) -> None:
+        """PermissionSetGroupComponent query SELECTs Id +
+        PermissionSetGroupId + PermissionSetId. Entity-wide (no WHERE).
+        Goes through Data API (not Tooling)."""
+        seen: list[tuple[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            seen.append((request.url.path,
+                         request.url.params.get("q", "")))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_permission_sets()
+        psg_calls = [
+            (path, q) for (path, q) in seen
+            if "FROM PermissionSetGroupComponent" in q
+        ]
+        assert len(psg_calls) == 1
+        psg_path, psg_q = psg_calls[0]
+        assert psg_path == f"/services/data/{SF_API_VERSION}/query/"
+        assert "PermissionSetGroupId" in psg_q
+        assert "PermissionSetId" in psg_q
+        assert "WHERE" not in psg_q
+        c.close()
+
+    def test_fetch_permission_sets_license_query_shape_and_map(
+        self,
+    ) -> None:
+        """PermissionSetLicense query SELECTs Id + MasterLabel. The
+        fetcher transforms the rows into an Id → MasterLabel dict
+        (not a list) so downstream callers can do O(1) lookups."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "FROM PermissionSetLicense" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "0PL_AAA",
+                         "MasterLabel": "Salesforce"},
+                        {"Id": "0PL_BBB",
+                         "MasterLabel": "Salesforce Platform"},
+                    ],
+                })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_permission_sets()
+        assert result["license_id_to_label"] == {
+            "0PL_AAA": "Salesforce",
+            "0PL_BBB": "Salesforce Platform",
+        }
+        c.close()
+
+    def test_fetch_permission_sets_license_query_failure_returns_empty_map(
+        self,
+    ) -> None:
+        """Fault tolerance: if PermissionSetLicense is inaccessible
+        (returns 400/403), the fetcher logs a warning and returns an
+        empty license_id_to_label map. Downstream mapper falls back
+        to the '(no license)' sentinel — sync continues."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "FROM PermissionSetLicense" in soql:
+                # Simulate org-level access denial
+                return httpx.Response(403, json={
+                    "errorCode": "FORBIDDEN",
+                    "message": "no access to PermissionSetLicense",
+                })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_permission_sets()
+        # Empty map on failure; other 4 keys present and well-formed
+        assert result["license_id_to_label"] == {}
+        assert "permission_sets" in result
+        assert "psg_components" in result
+        c.close()
+
+    def test_fetch_permission_sets_psg_components_failure_returns_empty(
+        self,
+    ) -> None:
+        """Fault tolerance for PSG: if PermissionSetGroupComponent
+        is inaccessible, the fetcher logs and returns an empty
+        psg_components list. INHERITS_PERMISSION_SET edges become
+        empty for this sync; everything else continues."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "FROM PermissionSetGroupComponent" in soql:
+                return httpx.Response(400, json={
+                    "errorCode": "INVALID_TYPE",
+                    "message": "PSG feature not enabled",
+                })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_permission_sets()
+        assert result["psg_components"] == []
         c.close()
 
 

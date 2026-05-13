@@ -54,7 +54,7 @@ class TestPhaseRegistry:
         # placeholders.
         real_phases = {"Object", "PicklistValueSet", "PicklistValue",
                        "Field", "RecordType", "Layout",
-                       "ValidationRule", "Profile"}
+                       "ValidationRule", "Profile", "PermissionSet"}
         for entity_type, phase_fn in PHASE_REGISTRY.items():
             if entity_type in real_phases:
                 continue
@@ -1612,3 +1612,401 @@ class TestPhaseProfile:
             phase_profile(ctx, conn)
         # Profile phase doesn't need the parent-scope filter
         mock_filter.assert_not_called()
+
+
+# ----------------------------------------------------------------------
+# phase_permission_set — ninth real phase (Category 4 fetcher;
+# Type='Profile' filter; ParentId JOIN; PSG decoration via
+# psg_components + Id→Name map; license_id_to_label resolution)
+# ----------------------------------------------------------------------
+
+
+from primeqa.sync.phases import phase_permission_set
+
+
+class TestPhasePermissionSet:
+    def _ok_fetch_result(
+        self,
+        permission_sets=None,
+        object_permissions=None,
+        field_permissions=None,
+        psg_components=None,
+        license_id_to_label=None,
+    ):
+        """Build a five-key fetch_permission_sets-shaped dict."""
+        return {
+            "permission_sets": permission_sets or [],
+            "object_permissions": object_permissions or [],
+            "field_permissions": field_permissions or [],
+            "psg_components": psg_components or [],
+            "license_id_to_label": license_id_to_label or {},
+        }
+
+    def _regular_ps(
+        self, ps_id="0PS001", name="MyPS", license_id=None,
+    ):
+        return {
+            "Id": ps_id, "Name": name, "Label": name,
+            "Type": "Regular", "IsCustom": True,
+            "Description": "Test PS",
+            "LicenseId": license_id,
+        }
+
+    def _profile_synth_ps(self, ps_id="0PS018", name="X00e00001"):
+        """Type='Profile' auto-synth duplicate that the phase MUST
+        filter out per substrate-1 §5."""
+        return {
+            "Id": ps_id, "Name": name, "Type": "Profile",
+            "IsCustom": False, "LicenseId": None,
+        }
+
+    def test_phase_permission_set_calls_fetch_permission_sets(
+        self,
+    ) -> None:
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_permission_sets.return_value = (
+            self._ok_fetch_result()
+        )
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize"):
+            phase_permission_set(ctx, conn)
+        ctx.sf_client.fetch_permission_sets.assert_called_once_with()
+
+    def test_phase_permission_set_filters_type_profile_rows(
+        self,
+    ) -> None:
+        """Type='Profile' rows are dropped per substrate-1 §5 —
+        they're auto-synth duplicates of Profile entities and
+        materializing them would double-count permissions."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_permission_sets.return_value = (
+            self._ok_fetch_result(
+                permission_sets=[
+                    self._regular_ps(ps_id="0PS001", name="Reg1"),
+                    self._profile_synth_ps(),
+                    self._regular_ps(ps_id="0PS002", name="Reg2"),
+                ],
+            )
+        )
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {"Reg1": "id1", "Reg2": "id2"}
+            phase_permission_set(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        names = [p["Name"] for p in payloads]
+        # X00e00001 (Type='Profile') filtered; Reg1 + Reg2 kept
+        assert names == ["Reg1", "Reg2"]
+        assert "X00e00001" not in names
+
+    def test_phase_permission_set_joins_child_permissions_by_parent_id(
+        self,
+    ) -> None:
+        """ObjectPermissions / FieldPermissions are flat lists with
+        ParentId; phase must JOIN them into each PS's record as
+        top-level `objectPermissions` / `fieldPermissions` lists
+        (matching substrate-1's _normalize_permission_set
+        expectation of Profile-shape payload)."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_permission_sets.return_value = (
+            self._ok_fetch_result(
+                permission_sets=[self._regular_ps(ps_id="0PS001")],
+                object_permissions=[
+                    {"ParentId": "0PS001",
+                     "SobjectType": "Account",
+                     "PermissionsRead": True},
+                    {"ParentId": "0PS001",
+                     "SobjectType": "Contact",
+                     "PermissionsRead": True},
+                    # Should NOT land on 0PS001 (different parent)
+                    {"ParentId": "0PSOther",
+                     "SobjectType": "Lead",
+                     "PermissionsRead": True},
+                ],
+                field_permissions=[
+                    {"ParentId": "0PS001",
+                     "Field": "Account.Industry",
+                     "PermissionsRead": True},
+                ],
+            )
+        )
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {"MyPS": "id1"}
+            phase_permission_set(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        assert len(payloads) == 1
+        ps = payloads[0]
+        # Only the 2 OPs sharing ParentId=0PS001 landed
+        assert len(ps["objectPermissions"]) == 2
+        sob_types = {op["SobjectType"] for op in ps["objectPermissions"]}
+        assert sob_types == {"Account", "Contact"}
+        # FPs joined
+        assert len(ps["fieldPermissions"]) == 1
+        assert ps["fieldPermissions"][0]["Field"] == "Account.Industry"
+
+    def test_phase_permission_set_resolves_license_label(self) -> None:
+        """LicenseId → MasterLabel via license_id_to_label map.
+        The mapper reads `_license_label` (not LicenseId) so the
+        resolved label lands in permission_set_details.license_type."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_permission_sets.return_value = (
+            self._ok_fetch_result(
+                permission_sets=[
+                    self._regular_ps(
+                        ps_id="0PS001", name="WithLicense",
+                        license_id="0PL_xxx",
+                    ),
+                    self._regular_ps(
+                        ps_id="0PS002", name="NoLicense",
+                        license_id=None,
+                    ),
+                    self._regular_ps(
+                        ps_id="0PS003", name="UnknownLicense",
+                        license_id="0PL_unmapped",
+                    ),
+                ],
+                license_id_to_label={"0PL_xxx": "Salesforce Platform"},
+            )
+        )
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {}
+            phase_permission_set(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        labels = {p["Name"]: p["_license_label"] for p in payloads}
+        # Resolved
+        assert labels["WithLicense"] == "Salesforce Platform"
+        # Null LicenseId → sentinel
+        assert labels["NoLicense"] == "(no license)"
+        # Unmapped LicenseId → sentinel
+        assert labels["UnknownLicense"] == "(no license)"
+
+    def test_phase_permission_set_decorates_psg_with_member_ps_names(
+        self,
+    ) -> None:
+        """Type='Group' PSes (PSGs) get `_member_ps_names` injected
+        by joining psg_components to permission_sets via the
+        Salesforce schema's two-step lookup:
+        - PermissionSet(Type='Group').PermissionSetGroupId (0PG...)
+          matches PermissionSetGroupComponent.PermissionSetGroupId
+        - PermissionSetGroupComponent.PermissionSetId (0PS...)
+          matches PermissionSet.Id of the member.
+
+        The PSG shadow row's own `Id` is 0PS-prefixed and is NOT
+        used for component lookup — that was the bug the live test
+        caught (initial cycle used Id directly; INHERITS edges
+        always came out empty)."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_permission_sets.return_value = (
+            self._ok_fetch_result(
+                permission_sets=[
+                    # PSG shadow: Id is 0PS-prefixed; the actual PSG's
+                    # Id is in PermissionSetGroupId (0PG-prefixed).
+                    {"Id": "0PSShadowGroup",
+                     "PermissionSetGroupId": "0PGReal",
+                     "Name": "MyPSG",
+                     "Type": "Group", "IsCustom": True},
+                    {"Id": "0PS001", "Name": "MemberA",
+                     "Type": "Regular", "IsCustom": True},
+                    {"Id": "0PS002", "Name": "MemberB",
+                     "Type": "Regular", "IsCustom": True},
+                ],
+                psg_components=[
+                    # Components reference the 0PG-prefixed PSG Id
+                    {"PermissionSetGroupId": "0PGReal",
+                     "PermissionSetId": "0PS001"},
+                    {"PermissionSetGroupId": "0PGReal",
+                     "PermissionSetId": "0PS002"},
+                ],
+            )
+        )
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {}
+            phase_permission_set(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        by_name = {p["Name"]: p for p in payloads}
+        # PSG decorated with sorted member names
+        assert by_name["MyPSG"]["_member_ps_names"] == [
+            "MemberA", "MemberB",
+        ]
+        # Non-Group PSes get NO marker
+        assert "_member_ps_names" not in by_name["MemberA"]
+        assert "_member_ps_names" not in by_name["MemberB"]
+
+    def test_phase_permission_set_psg_without_permission_set_group_id_no_marker(
+        self,
+    ) -> None:
+        """Defensive: a Type='Group' shadow without a
+        PermissionSetGroupId field (malformed Salesforce response)
+        gets `_member_ps_names = []` rather than crashing. The
+        INHERITS extractor returns no edges for that PSG."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_permission_sets.return_value = (
+            self._ok_fetch_result(
+                permission_sets=[
+                    {"Id": "0PSGroup", "Name": "MalformedPSG",
+                     # PermissionSetGroupId MISSING
+                     "Type": "Group", "IsCustom": True},
+                ],
+            )
+        )
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {}
+            phase_permission_set(ctx, conn)
+        ps = mock_bm.call_args.kwargs["raw_payloads"][0]
+        # Marker present but empty — extractor will return []
+        assert ps["_member_ps_names"] == []
+
+    def test_phase_permission_set_calls_materialize_and_edges(
+        self,
+    ) -> None:
+        """phase_permission_set materializes PS entities then writes
+        edges via materialize_edges_for_entities — same pattern as
+        Profile cycle."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_permission_sets.return_value = (
+            self._ok_fetch_result(
+                permission_sets=[self._regular_ps()],
+            )
+        )
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges, \
+             patch(
+                 "primeqa.sync.phases.normalize",
+                 side_effect=lambda et, p: {**p, "_normalized": True},
+             ):
+            mock_bm.return_value = {"MyPS": "ps-id"}
+            phase_permission_set(ctx, conn)
+        assert mock_bm.call_args.kwargs.get("return_id_map") is True
+        assert mock_bm.call_args.kwargs["entity_type"] == "PermissionSet"
+        mock_edges.assert_called_once()
+        edge_kwargs = mock_edges.call_args.kwargs
+        assert edge_kwargs["source_entity_type"] == "PermissionSet"
+        assert edge_kwargs["entity_id_map"] == {"MyPS": "ps-id"}
+
+    def test_phase_permission_set_empty_after_filter(self) -> None:
+        """Org returning only Type='Profile' rows → after filtering,
+        nothing to materialize → no materialize call, all-zero
+        result."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_permission_sets.return_value = (
+            self._ok_fetch_result(
+                permission_sets=[
+                    self._profile_synth_ps(ps_id="0PS001",
+                                            name="X00e0001"),
+                    self._profile_synth_ps(ps_id="0PS002",
+                                            name="X00e0002"),
+                ],
+            )
+        )
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges:
+            result = phase_permission_set(ctx, conn)
+        mock_bm.assert_not_called()
+        mock_edges.assert_not_called()
+        assert result.entity_type == "PermissionSet"
+        assert result.entities_inserted == 0
+        assert result.succeeded is True
+
+    def test_phase_permission_set_does_not_filter_by_synced_objects(
+        self,
+    ) -> None:
+        """PermissionSet is org-level. §18 parent-filter pattern
+        does NOT apply. Edge target resolution skips unsyncable
+        Objects/Fields via the §19 skip-counter instead."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_permission_sets.return_value = (
+            self._ok_fetch_result(
+                permission_sets=[self._regular_ps()],
+            )
+        )
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+        ) as mock_filter, \
+             patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities"):
+            mock_bm.return_value = {}
+            phase_permission_set(ctx, conn)
+        mock_filter.assert_not_called()
+
+    def test_phase_permission_set_pre_sorts_lists_for_determinism(
+        self,
+    ) -> None:
+        """ObjectPermissions / FieldPermissions are pre-sorted by
+        PS-shape identity keys (SobjectType / Field) before
+        normalize. Substrate-1's normalize-time sort uses
+        Profile-shape keys (`field` lowercase) which resolve to
+        "" against PS data → no-op sort. Pre-sorting here gives
+        the lists deterministic order so two consecutive syncs
+        produce the same hash."""
+        ctx = _stub_ctx_with_mock_sf()
+        # Pass child permissions in REVERSE order; verify they
+        # land in alphabetical order on the PS payload.
+        ctx.sf_client.fetch_permission_sets.return_value = (
+            self._ok_fetch_result(
+                permission_sets=[self._regular_ps()],
+                object_permissions=[
+                    {"ParentId": "0PS001", "SobjectType": "Zebra"},
+                    {"ParentId": "0PS001", "SobjectType": "Account"},
+                    {"ParentId": "0PS001", "SobjectType": "Mongoose"},
+                ],
+                field_permissions=[
+                    {"ParentId": "0PS001", "Field": "Zebra.Stripe"},
+                    {"ParentId": "0PS001", "Field": "Account.Name"},
+                ],
+            )
+        )
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {}
+            phase_permission_set(ctx, conn)
+        ps = mock_bm.call_args.kwargs["raw_payloads"][0]
+        # Sorted alphabetically by SobjectType
+        op_order = [op["SobjectType"] for op in ps["objectPermissions"]]
+        assert op_order == ["Account", "Mongoose", "Zebra"]
+        # Sorted alphabetically by Field
+        fp_order = [fp["Field"] for fp in ps["fieldPermissions"]]
+        assert fp_order == ["Account.Name", "Zebra.Stripe"]

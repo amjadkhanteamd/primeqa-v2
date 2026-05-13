@@ -1,7 +1,7 @@
 """Live integration test for Object + PicklistValueSet + PicklistValue
-+ Field + RecordType + Layout + ValidationRule + Profile phases,
-including detail-table writes + edges (property-less + property-
-bearing).
++ Field + RecordType + Layout + ValidationRule + Profile +
+PermissionSet phases, including detail-table writes + edges
+(property-less + property-bearing).
 
 End-to-end: SyncEngine.run_sync() runs all 12 phases for a fresh
 connected_org. Object + PicklistValueSet + PicklistValue + Field +
@@ -104,6 +104,27 @@ Verifies:
     guard. ASSIGNED_TO_PROFILE_RECORDTYPE (Layout source per
     §16) deferred to next cycle — needs Layout payload
     layoutAssignments[] survey.
+  - PermissionSet phase: Category 4 fetcher (substrate-1
+    fetch_permission_sets, 5 SOQL queries total — Tooling
+    FIELDS(STANDARD) parent + Data API ObjectPermissions +
+    FieldPermissions + PermissionSetGroupComponent +
+    PermissionSetLicense). Org-level entity, like Profile.
+    Sync layer filters Type='Profile' auto-synth duplicates per
+    substrate-1 §5; joins child OP/FP by ParentId; resolves
+    LicenseId → MasterLabel via the fetched license map;
+    decorates Type='Group' PSes (PSGs) with `_member_ps_names`
+    by joining PermissionSetGroupComponent to permission_sets
+    via Id→Name. Writes entity + permission_set_details +
+    THREE edge types:
+      - GRANTS_OBJECT_ACCESS → Object (property-bearing; same
+        schema as Profile's but reads PS field-naming —
+        PermissionsCreate/Read/Edit/etc instead of allowCreate/
+        allowRead/allowEdit/etc)
+      - GRANTS_FIELD_ACCESS → Field (property-bearing; same
+        schema, PS field-naming)
+      - INHERITS_PERMISSION_SET → PermissionSet (property-less;
+        sourced from `_member_ps_names` marker on PSGs only;
+        non-Group PSes have no marker → no edge written)
 
 Cleanup: deletes all rows referencing the test connected_org's id
 (FK-aware: queue → entities → sync_runs back-ref → logical_versions
@@ -289,10 +310,10 @@ def test_org(db_engine):
         # and makes the cleanup robust against future detail-table
         # additions.
         for detail_table in (
-            "profile_details", "validation_rule_details",
-            "layout_details", "field_details",
-            "record_type_details", "picklist_value_details",
-            "object_details",
+            "permission_set_details", "profile_details",
+            "validation_rule_details", "layout_details",
+            "field_details", "record_type_details",
+            "picklist_value_details", "object_details",
         ):
             conn.execute(text(f"""
                 DELETE FROM {detail_table}
@@ -341,15 +362,18 @@ def test_org(db_engine):
         """), {"id": org_id})
 
 
-def test_live_sync_through_profile(
+def test_live_sync_through_permission_set(
     live_sf_client, db_engine, test_org,
 ):
     """End-to-end Object + PVS + PV + Field + RecordType + Layout
-    + ValidationRule + Profile phases. Detail-table writes,
-    BELONGS_TO + HAS_RELATIONSHIP_TO + INCLUDES_FIELD (property-
-    bearing) + APPLIES_TO + GRANTS_OBJECT_ACCESS (property-
-    bearing) + GRANTS_FIELD_ACCESS (property-bearing) edges. Runs
-    against local Postgres via LIVE_DATABASE_URL."""
+    + ValidationRule + Profile + PermissionSet phases. Detail-table
+    writes, BELONGS_TO + HAS_RELATIONSHIP_TO + INCLUDES_FIELD
+    (property-bearing) + APPLIES_TO + GRANTS_OBJECT_ACCESS
+    (Profile + PermissionSet sources, property-bearing) +
+    GRANTS_FIELD_ACCESS (Profile + PermissionSet sources,
+    property-bearing) + INHERITS_PERMISSION_SET (PSG → member PS,
+    property-less) edges. Runs against local Postgres via
+    LIVE_DATABASE_URL."""
     from primeqa.sync.engine import SyncEngine
 
     engine = SyncEngine(
@@ -1142,6 +1166,187 @@ def test_live_sync_through_profile(
             f"got {profile_queue}"
         )
 
+        # ----- PermissionSet entities + permission_set_details + edges -----
+        # Org-level entity (no parent Object). Sandbox at 71 raw PSes;
+        # phase filters Type='Profile' (18 auto-synth duplicates per
+        # substrate-1 §5) leaving 53 syncable. Regression floor: >=10.
+        permission_set_count = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'PermissionSet'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert permission_set_count >= 10, (
+            f"Expected >=10 PermissionSet entities after "
+            f"Type='Profile' filter (sandbox has 53); "
+            f"got {permission_set_count}"
+        )
+
+        # permission_set_details: 1 row per active PS entity
+        permission_set_details_count = conn.execute(text("""
+            SELECT COUNT(*) FROM permission_set_details psd
+            JOIN entities e ON e.id = psd.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'PermissionSet'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert permission_set_details_count == permission_set_count, (
+            f"permission_set_details rows "
+            f"({permission_set_details_count}) != PermissionSet "
+            f"entity count ({permission_set_count})"
+        )
+
+        # FK integrity: license_type populated for every row.
+        # NOT NULL constraint enforces this at the DB level; this
+        # assertion catches an empty-string regression that would
+        # pass NOT NULL but lose information.
+        bad_ps_details = conn.execute(text("""
+            SELECT COUNT(*) FROM permission_set_details psd
+            JOIN entities child ON child.id = psd.entity_id
+            WHERE child.last_synced_from_org_id = :id
+              AND child.entity_type = 'PermissionSet'
+              AND child.valid_to_seq IS NULL
+              AND (psd.license_type IS NULL
+                   OR psd.license_type = '')
+        """), {"id": test_org}).scalar()
+        assert bad_ps_details == 0, (
+            f"Found {bad_ps_details} permission_set_details rows "
+            f"with NULL/empty license_type"
+        )
+
+        # GRANTS_OBJECT_ACCESS from PermissionSet sources. Sandbox
+        # has 53 syncable PSes × ~50 ops avg = ~2,650 candidate
+        # targets; after silent-skip of unsyncable Objects probably
+        # ~1,500-2,500 written. Regression floor: >=1,000.
+        ps_grants_object_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'GRANTS_OBJECT_ACCESS'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'PermissionSet'
+        """), {"id": test_org}).scalar()
+        assert ps_grants_object_count >= 1000, (
+            f"Expected >=1,000 GRANTS_OBJECT_ACCESS edges from "
+            f"PermissionSet sources (regression floor); "
+            f"got {ps_grants_object_count}"
+        )
+
+        # GRANTS_OBJECT_ACCESS property-bearing invariants: every
+        # edge carries last_seed_hash (non-NULL) and non-empty
+        # properties. Same hallmark as Profile cycle's edges.
+        ps_grants_object_with_hash = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'GRANTS_OBJECT_ACCESS'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'PermissionSet'
+              AND e.last_seed_hash IS NOT NULL
+              AND e.properties != '{}'::jsonb
+        """), {"id": test_org}).scalar()
+        assert ps_grants_object_with_hash == ps_grants_object_count, (
+            f"PS-source GRANTS_OBJECT_ACCESS edges should all "
+            f"carry hash + non-empty properties; got "
+            f"{ps_grants_object_with_hash} of "
+            f"{ps_grants_object_count}"
+        )
+
+        # GRANTS_FIELD_ACCESS from PermissionSet sources. Sandbox
+        # has 53 PSes × ~215 fps avg = ~11,400 candidate targets,
+        # BUT most candidates target managed-package fields
+        # (sfcma__*, CHANNEL_ORDERS__*, sfLma__*, etc.) that
+        # Object phase correctly excludes from syncable scope.
+        # Silent-skip path drops ~95% of PS field grants — only
+        # ~600 resolve to syncable Field external_ids in this
+        # sandbox. Behavior is correct per the §19 design;
+        # observability counter on PhaseResult tracks skip
+        # magnitude. Regression floor set conservatively at 200
+        # to catch a regression to 0 / near-0 while accepting
+        # the live sandbox shape (PermissionSets in customer
+        # orgs commonly grant access to managed-package objects
+        # the platform doesn't include in syncable scope).
+        ps_grants_field_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'GRANTS_FIELD_ACCESS'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'PermissionSet'
+        """), {"id": test_org}).scalar()
+        assert ps_grants_field_count >= 200, (
+            f"Expected >=200 GRANTS_FIELD_ACCESS edges from "
+            f"PermissionSet sources (regression floor; most "
+            f"candidates target managed-package fields that "
+            f"Object phase excludes); got {ps_grants_field_count}"
+        )
+
+        ps_grants_field_with_hash = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'GRANTS_FIELD_ACCESS'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'PermissionSet'
+              AND e.last_seed_hash IS NOT NULL
+              AND e.properties != '{}'::jsonb
+        """), {"id": test_org}).scalar()
+        assert ps_grants_field_with_hash == ps_grants_field_count
+
+        # INHERITS_PERMISSION_SET edges: sandbox has 2 PSGs
+        # (Type='Group': ScaleCenterUsers, SalesWorkspacePSG); each
+        # has ~3-10 members. Regression floor: >=1 (at least one
+        # PSG with at least one member, to confirm the edge path
+        # writes anything at all).
+        inherits_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'INHERITS_PERMISSION_SET'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'PermissionSet'
+        """), {"id": test_org}).scalar()
+        assert inherits_count >= 1, (
+            f"Expected >=1 INHERITS_PERMISSION_SET edge "
+            f"(regression floor; sandbox has 2 PSGs with N members "
+            f"each); got {inherits_count}"
+        )
+
+        # INHERITS is property-less: properties='{}'::jsonb and
+        # last_seed_hash IS NULL — distinct from the property-bearing
+        # GRANTS_* edges. Verifies the registration in _EDGE_SPECS
+        # correctly omitted extract_properties for INHERITS.
+        inherits_without_hash = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'INHERITS_PERMISSION_SET'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'PermissionSet'
+              AND e.last_seed_hash IS NULL
+              AND e.properties = '{}'::jsonb
+        """), {"id": test_org}).scalar()
+        assert inherits_without_hash == inherits_count, (
+            f"INHERITS_PERMISSION_SET edges should be "
+            f"property-less (hash=NULL, properties='{{}}'::jsonb); "
+            f"got {inherits_without_hash} of {inherits_count}"
+        )
+
+        # PermissionSet enrichment queue: 2× entity count
+        permission_set_queue = conn.execute(text("""
+            SELECT COUNT(*) FROM ai_enrichment_queue
+            WHERE entity_type = 'PermissionSet'
+              AND entity_id IN (
+                  SELECT id FROM entities
+                  WHERE last_synced_from_org_id = :id
+                    AND entity_type = 'PermissionSet'
+              )
+        """), {"id": test_org}).scalar()
+        assert permission_set_queue == permission_set_count * 2, (
+            f"Expected {permission_set_count * 2} PermissionSet "
+            f"queue rows; got {permission_set_queue}"
+        )
+
     # ===== Second sync =====
     sync_run_id_2 = engine.run_sync(connected_org_id=test_org)
     assert sync_run_id_2 != sync_run_id_1
@@ -1164,20 +1369,28 @@ def test_live_sync_through_profile(
             f"got {run2.entities_superseded}"
         )
         # Total unchanged = Object + PVS + PV + Field + RT + Layout
-        # + ValidationRule + Profile counts. Each entity's phase-
-        # injected markers round-trip through normalize/hash
-        # identically. Profile is org-level so it has no parent
-        # marker — only the bare Tooling payload round-trips.
+        # + ValidationRule + Profile + PermissionSet counts. Each
+        # entity's phase-injected markers round-trip through
+        # normalize/hash identically. PermissionSet adds two
+        # post-fetch transforms (Type='Profile' filter + ParentId
+        # JOIN + LicenseId resolution + PSG decoration) — all must
+        # be deterministic across syncs for the hash to match. The
+        # pre-sort step in phase_permission_set ensures the joined
+        # child lists are in deterministic order regardless of
+        # SOQL-result ordering.
         expected_unchanged = (
             object_count + pvs_count + pv_count + field_count
             + rt_count + layout_count + vr_count + profile_count
+            + permission_set_count
         )
         assert run2.entities_unchanged == expected_unchanged, (
             f"Second sync should report {expected_unchanged} unchanged "
             f"(Object {object_count} + PVS {pvs_count} + PV "
             f"{pv_count} + Field {field_count} + RT {rt_count} + "
             f"Layout {layout_count} + VR {vr_count} + Profile "
-            f"{profile_count}); got {run2.entities_unchanged}"
+            f"{profile_count} + PermissionSet "
+            f"{permission_set_count}); got "
+            f"{run2.entities_unchanged}"
         )
 
         # Edges: same set-difference logic should yield 0 inserts and
@@ -1503,4 +1716,75 @@ def test_live_sync_through_profile(
             f"GRANTS_FIELD_ACCESS count should remain "
             f"{grants_field_count} after second sync (hash-compare "
             f"supersession should match); got {grants_field_after}"
+        )
+
+        # PermissionSet entity + detail + edge counts stable across
+        # syncs. Critical regression check: PS payload undergoes
+        # multiple post-fetch transforms (Type='Profile' filter,
+        # ParentId JOIN, license resolution, PSG decoration). All
+        # transforms must be deterministic so the entity hash is
+        # stable across syncs. The phase function's pre-sort of
+        # objectPermissions/fieldPermissions by SobjectType/Field
+        # ensures SOQL ordering doesn't affect the hash.
+        permission_set_count_after = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'PermissionSet'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert permission_set_count_after == permission_set_count
+
+        permission_set_details_after = conn.execute(text("""
+            SELECT COUNT(*) FROM permission_set_details psd
+            JOIN entities e ON e.id = psd.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'PermissionSet'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert (
+            permission_set_details_after
+            == permission_set_details_count
+        )
+
+        ps_grants_object_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'GRANTS_OBJECT_ACCESS'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'PermissionSet'
+        """), {"id": test_org}).scalar()
+        assert ps_grants_object_after == ps_grants_object_count, (
+            f"PS GRANTS_OBJECT_ACCESS should remain "
+            f"{ps_grants_object_count} after second sync; "
+            f"got {ps_grants_object_after}"
+        )
+
+        ps_grants_field_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'GRANTS_FIELD_ACCESS'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'PermissionSet'
+        """), {"id": test_org}).scalar()
+        assert ps_grants_field_after == ps_grants_field_count, (
+            f"PS GRANTS_FIELD_ACCESS should remain "
+            f"{ps_grants_field_count} after second sync; "
+            f"got {ps_grants_field_after}"
+        )
+
+        inherits_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'INHERITS_PERMISSION_SET'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'PermissionSet'
+        """), {"id": test_org}).scalar()
+        assert inherits_after == inherits_count, (
+            f"INHERITS_PERMISSION_SET count should remain "
+            f"{inherits_count} after second sync (property-less "
+            f"set-difference supersession is naturally idempotent); "
+            f"got {inherits_after}"
         )

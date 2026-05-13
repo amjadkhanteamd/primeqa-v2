@@ -14,6 +14,11 @@ from primeqa.sync.edge_specs import (
     _layout_belongs_to_targets,
     _layout_includes_field_properties,
     _layout_includes_field_targets,
+    _permission_set_grants_field_access_properties,
+    _permission_set_grants_field_access_targets,
+    _permission_set_grants_object_access_properties,
+    _permission_set_grants_object_access_targets,
+    _permission_set_inherits_permission_set_targets,
     _profile_grants_field_access_properties,
     _profile_grants_field_access_targets,
     _profile_grants_object_access_properties,
@@ -619,3 +624,222 @@ class TestProfileGrantsFieldAccessProperties:
             "Account.Name",
         )
         assert props == {"can_read": False, "can_edit": False}
+
+
+# ----------------------------------------------------------------------
+# PermissionSet edge spec extractors (GRANTS_OBJECT_ACCESS +
+# GRANTS_FIELD_ACCESS via PS-shape input + INHERITS_PERMISSION_SET
+# from _member_ps_names marker)
+# ----------------------------------------------------------------------
+
+
+class TestPermissionSetGrantsObjectAccessTargets:
+    def _ps(self, op_list=()) -> dict:
+        """Build a normalized PermissionSet with objectPermissions
+        list in PS-shape (Data API column names)."""
+        return {
+            "Name": "TestPS",
+            "Type": "Regular",
+            "objectPermissions": list(op_list),
+        }
+
+    def test_extracts_sobject_type_from_each_entry(self) -> None:
+        """Each entry's `SobjectType` is the Object api_name —
+        different field name than Profile's `object` (lowercase)."""
+        targets = _permission_set_grants_object_access_targets(self._ps([
+            {"SobjectType": "Account", "PermissionsRead": True},
+            {"SobjectType": "Contact", "PermissionsRead": True},
+        ]))
+        assert targets == ["Account", "Contact"]
+
+    def test_empty_perms_returns_empty(self) -> None:
+        assert _permission_set_grants_object_access_targets(
+            self._ps([])
+        ) == []
+
+    def test_missing_object_permissions_key_returns_empty(self) -> None:
+        assert _permission_set_grants_object_access_targets({}) == []
+
+    def test_skips_entries_with_missing_sobject_type(self) -> None:
+        """Defensive: entries without SobjectType (malformed payload)
+        are dropped silently — same pattern as Profile extractor."""
+        targets = _permission_set_grants_object_access_targets(self._ps([
+            {"SobjectType": "Account", "PermissionsRead": True},
+            {"PermissionsRead": True},                   # no SobjectType
+            {"SobjectType": "", "PermissionsRead": True},  # empty
+        ]))
+        assert targets == ["Account"]
+
+
+class TestPermissionSetGrantsObjectAccessProperties:
+    def _ps_with(self, op_list) -> dict:
+        return {
+            "objectPermissions": op_list,
+        }
+
+    def test_maps_all_six_permissions_flags(self) -> None:
+        """PS-shape (PermissionsCreate/Read/Edit/Delete/
+        ViewAllRecords/ModifyAllRecords) → schema-shape (can_*).
+        Distinct field-naming from Profile (allowCreate etc) but
+        same schema output."""
+        op = {
+            "SobjectType": "Account",
+            "PermissionsCreate": True,
+            "PermissionsRead": True,
+            "PermissionsEdit": True,
+            "PermissionsDelete": False,
+            "PermissionsViewAllRecords": True,
+            "PermissionsModifyAllRecords": False,
+        }
+        props = _permission_set_grants_object_access_properties(
+            self._ps_with([op]), "Account",
+        )
+        assert props == {
+            "can_create": True,
+            "can_read": True,
+            "can_edit": True,
+            "can_delete": False,
+            "can_view_all": True,
+            "can_modify_all": False,
+        }
+
+    def test_defaults_to_false_for_missing_flags(self) -> None:
+        """Sparse PS payload missing some Permissions* keys —
+        each missing flag defaults to False."""
+        op = {"SobjectType": "Account"}
+        props = _permission_set_grants_object_access_properties(
+            self._ps_with([op]), "Account",
+        )
+        assert props == {
+            "can_create": False,
+            "can_read": False,
+            "can_edit": False,
+            "can_delete": False,
+            "can_view_all": False,
+            "can_modify_all": False,
+        }
+
+    def test_returns_empty_when_target_not_found(self) -> None:
+        """No matching SobjectType → {}. Defensive — should not
+        happen if _targets and _properties are coherent."""
+        props = _permission_set_grants_object_access_properties(
+            self._ps_with([{"SobjectType": "Account"}]), "Contact",
+        )
+        assert props == {}
+
+
+class TestPermissionSetGrantsFieldAccessTargets:
+    def _ps(self, fp_list=()) -> dict:
+        return {
+            "fieldPermissions": list(fp_list),
+        }
+
+    def test_extracts_capitalized_field_key(self) -> None:
+        """PS Data API column is `Field` (capitalized); Profile
+        Metadata uses lowercase `field`. Composite "Object.Field"
+        format same as Field phase external_id."""
+        targets = _permission_set_grants_field_access_targets(self._ps([
+            {"Field": "Account.Industry"},
+            {"Field": "Contact.Phone"},
+        ]))
+        assert targets == ["Account.Industry", "Contact.Phone"]
+
+    def test_empty_perms_returns_empty(self) -> None:
+        assert _permission_set_grants_field_access_targets(
+            self._ps([])
+        ) == []
+
+
+class TestPermissionSetGrantsFieldAccessProperties:
+    def _ps_with(self, fp_list) -> dict:
+        return {"fieldPermissions": fp_list}
+
+    def test_maps_read_and_edit(self) -> None:
+        """PS-shape (PermissionsRead/PermissionsEdit) →
+        schema-shape (can_read/can_edit). Field-level perms have
+        only these two; no create/delete/view_all at field level."""
+        fp = {
+            "Field": "Account.Industry",
+            "PermissionsRead": True,
+            "PermissionsEdit": False,
+        }
+        props = _permission_set_grants_field_access_properties(
+            self._ps_with([fp]), "Account.Industry",
+        )
+        assert props == {"can_read": True, "can_edit": False}
+
+    def test_defaults_to_false(self) -> None:
+        props = _permission_set_grants_field_access_properties(
+            self._ps_with([{"Field": "Account.Name"}]), "Account.Name",
+        )
+        assert props == {"can_read": False, "can_edit": False}
+
+
+class TestPermissionSetInheritsPermissionSetTargets:
+    """INHERITS_PERMISSION_SET: PSG → member PS. Source is a PS
+    decorated with the `_member_ps_names` marker by phase_permission_set
+    (only Type='Group' PSes get the marker)."""
+
+    def test_reads_member_ps_names_marker(self) -> None:
+        """Targets come from _member_ps_names list — the phase-injected
+        marker built by joining PermissionSetGroupComponent rows."""
+        normalized = {
+            "Name": "MyPSG",
+            "Type": "Group",
+            "_member_ps_names": ["MemberA", "MemberB", "MemberC"],
+        }
+        targets = _permission_set_inherits_permission_set_targets(
+            normalized,
+        )
+        assert targets == ["MemberA", "MemberB", "MemberC"]
+
+    def test_returns_empty_when_marker_missing(self) -> None:
+        """Non-Group PSes have no marker → no INHERITS edges. The
+        extractor doesn't filter Type itself; the absence of the
+        marker is the filter."""
+        normalized = {"Name": "Regular PS", "Type": "Regular"}
+        assert _permission_set_inherits_permission_set_targets(
+            normalized,
+        ) == []
+
+    def test_empty_member_list_returns_empty(self) -> None:
+        """Defensive: marker present but list empty (PSG with no
+        components yet) → no edges."""
+        normalized = {
+            "Name": "EmptyPSG",
+            "Type": "Group",
+            "_member_ps_names": [],
+        }
+        assert _permission_set_inherits_permission_set_targets(
+            normalized,
+        ) == []
+
+
+class TestGetEdgeSpecsPermissionSet:
+    def test_returns_three_specs_for_permission_set(self) -> None:
+        """PermissionSet registers exactly 3 edge specs:
+        GRANTS_OBJECT_ACCESS, GRANTS_FIELD_ACCESS (both property-
+        bearing) + INHERITS_PERMISSION_SET (property-less)."""
+        specs = get_edge_specs("PermissionSet")
+        assert len(specs) == 3
+        edge_types = {s.edge_type for s in specs}
+        assert edge_types == {
+            "GRANTS_OBJECT_ACCESS",
+            "GRANTS_FIELD_ACCESS",
+            "INHERITS_PERMISSION_SET",
+        }
+        # GRANTS_* are property-bearing
+        goa = next(s for s in specs
+                  if s.edge_type == "GRANTS_OBJECT_ACCESS")
+        gfa = next(s for s in specs
+                  if s.edge_type == "GRANTS_FIELD_ACCESS")
+        assert goa.extract_properties is not None
+        assert gfa.extract_properties is not None
+        # INHERITS_PERMISSION_SET is property-less
+        inh = next(s for s in specs
+                   if s.edge_type == "INHERITS_PERMISSION_SET")
+        assert inh.extract_properties is None
+        # Target types
+        assert goa.target_entity_type == "Object"
+        assert gfa.target_entity_type == "Field"
+        assert inh.target_entity_type == "PermissionSet"
