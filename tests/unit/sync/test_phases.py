@@ -708,7 +708,10 @@ class TestPhaseRecordType:
         ctx = _stub_ctx_with_mock_sf()
         ctx.sf_client.fetch_record_types.return_value = []
         conn = MagicMock()
-        with patch("primeqa.sync.phases.batched_materialize"):
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value=set(),
+        ), patch("primeqa.sync.phases.batched_materialize"):
             phase_record_type(ctx, conn)
         ctx.sf_client.fetch_record_types.assert_called_once_with()
 
@@ -726,7 +729,10 @@ class TestPhaseRecordType:
             self._ok_rt("Contact.Customer"),
         ]
         conn = MagicMock()
-        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value={"Account", "Contact"},
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
              patch("primeqa.sync.phases.materialize_edges_for_entities"):
             mock_bm.return_value = {
                 "Account.PartnerAccount": "rt-1",
@@ -749,7 +755,10 @@ class TestPhaseRecordType:
             self._ok_rt("sfLma__License__c.Trial"),
         ]
         conn = MagicMock()
-        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value={"sfLma__License__c"},
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
              patch("primeqa.sync.phases.materialize_edges_for_entities"):
             mock_bm.return_value = {"sfLma__License__c.Trial": "rt-1"}
             phase_record_type(ctx, conn)
@@ -768,7 +777,10 @@ class TestPhaseRecordType:
             self._ok_rt("Account.PartnerAccount"),
         ]
         conn = MagicMock()
-        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value={"Account"},
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
              patch(
                  "primeqa.sync.phases.materialize_edges_for_entities",
              ) as mock_edges, \
@@ -798,7 +810,10 @@ class TestPhaseRecordType:
         ctx = _stub_ctx_with_mock_sf()
         ctx.sf_client.fetch_record_types.return_value = []
         conn = MagicMock()
-        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value=set(),
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
              patch(
                  "primeqa.sync.phases.materialize_edges_for_entities",
              ) as mock_edges:
@@ -808,6 +823,79 @@ class TestPhaseRecordType:
         assert result.entity_type == "RecordType"
         assert result.entities_inserted == 0
         assert result.succeeded is True
+
+    def test_phase_record_type_filters_unsyncable_parent(self) -> None:
+        """RTs whose parent Object isn't in the synced Object set
+        are silently dropped (per §18). The filter prevents the
+        detail mapper from raising on unresolvable parent FK."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_record_types.return_value = [
+            self._ok_rt("Account.Customer"),        # parent synced
+            self._ok_rt("sfFma__Internal__c.RT"),   # parent NOT synced
+            self._ok_rt("Contact.Standard"),        # parent synced
+        ]
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value={"Account", "Contact"},
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities"):
+            mock_bm.return_value = {
+                "Account.Customer": "rt-1",
+                "Contact.Standard": "rt-2",
+            }
+            phase_record_type(ctx, conn)
+        # Only Account + Contact RTs survive the filter
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        assert len(payloads) == 2
+        full_names = {p["FullName"] for p in payloads}
+        assert full_names == {"Account.Customer", "Contact.Standard"}
+
+    def test_phase_record_type_proceeds_when_all_parents_syncable(
+        self,
+    ) -> None:
+        """When every RT's parent Object IS in the synced set, no
+        RTs are filtered — the filter is a no-op pass-through."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_record_types.return_value = [
+            self._ok_rt("Account.RT1"),
+            self._ok_rt("Account.RT2"),
+        ]
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value={"Account"},
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities"):
+            mock_bm.return_value = {
+                "Account.RT1": "rt-1",
+                "Account.RT2": "rt-2",
+            }
+            phase_record_type(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        assert len(payloads) == 2
+
+    def test_phase_record_type_all_filtered_no_materialize(self) -> None:
+        """If every fetched RT references an unsyncable Object,
+        filtered_rts is empty → materialize/edges NOT called →
+        all-zero result. No spurious error."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_record_types.return_value = [
+            self._ok_rt("sfFma__Internal__c.RT"),
+            self._ok_rt("OtherInternal__c.Other"),
+        ]
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value={"Account"},  # neither matches
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges:
+            result = phase_record_type(ctx, conn)
+        mock_bm.assert_not_called()
+        mock_edges.assert_not_called()
+        assert result.entities_inserted == 0
 
 
 # ----------------------------------------------------------------------
@@ -1008,7 +1096,10 @@ class TestPhaseValidationRule:
         ctx = _stub_ctx_with_mock_sf()
         ctx.sf_client.fetch_validation_rules.return_value = []
         conn = MagicMock()
-        with patch("primeqa.sync.phases.batched_materialize"):
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value=set(),
+        ), patch("primeqa.sync.phases.batched_materialize"):
             phase_validation_rule(ctx, conn)
         ctx.sf_client.fetch_validation_rules.assert_called_once_with()
 
@@ -1025,7 +1116,10 @@ class TestPhaseValidationRule:
             self._ok_vr("Opportunity.StatusValid"),
         ]
         conn = MagicMock()
-        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value={"Account", "Opportunity"},
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
              patch("primeqa.sync.phases.materialize_edges_for_entities"):
             mock_bm.return_value = {
                 "Account.AmountPositive": "vr-1",
@@ -1046,7 +1140,10 @@ class TestPhaseValidationRule:
             self._ok_vr("sfLma__License__c.MustHaveOwner"),
         ]
         conn = MagicMock()
-        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value={"sfLma__License__c"},
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
              patch("primeqa.sync.phases.materialize_edges_for_entities"):
             mock_bm.return_value = {
                 "sfLma__License__c.MustHaveOwner": "vr-1",
@@ -1067,7 +1164,10 @@ class TestPhaseValidationRule:
             self._ok_vr("Account.AmountPositive"),
         ]
         conn = MagicMock()
-        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value={"Account"},
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
              patch(
                  "primeqa.sync.phases.materialize_edges_for_entities",
              ) as mock_edges, \
@@ -1090,7 +1190,10 @@ class TestPhaseValidationRule:
         ctx = _stub_ctx_with_mock_sf()
         ctx.sf_client.fetch_validation_rules.return_value = []
         conn = MagicMock()
-        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value=set(),
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
              patch(
                  "primeqa.sync.phases.materialize_edges_for_entities",
              ) as mock_edges:
@@ -1100,3 +1203,123 @@ class TestPhaseValidationRule:
         assert result.entity_type == "ValidationRule"
         assert result.entities_inserted == 0
         assert result.succeeded is True
+
+    def test_phase_validation_rule_filters_unsyncable_parent(self) -> None:
+        """VRs whose parent Object isn't in the synced Object set
+        are silently dropped (per §18 — surfaced live by sandbox's
+        sfFma__FeatureParameterBoolean__c VR)."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_validation_rules.return_value = [
+            self._ok_vr("Account.AmountPositive"),       # synced
+            self._ok_vr("sfFma__Internal__c.RuleName"),  # NOT synced
+            self._ok_vr("Opportunity.HasOwner"),         # synced
+        ]
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value={"Account", "Opportunity"},
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities"):
+            mock_bm.return_value = {
+                "Account.AmountPositive": "vr-1",
+                "Opportunity.HasOwner": "vr-2",
+            }
+            phase_validation_rule(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        assert len(payloads) == 2
+        full_names = {p["FullName"] for p in payloads}
+        assert full_names == {
+            "Account.AmountPositive", "Opportunity.HasOwner",
+        }
+
+    def test_phase_validation_rule_proceeds_when_all_parents_syncable(
+        self,
+    ) -> None:
+        """No-op filter pass-through: every VR's parent in synced
+        set → all VRs survive."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_validation_rules.return_value = [
+            self._ok_vr("Account.V1"),
+            self._ok_vr("Account.V2"),
+        ]
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value={"Account"},
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities"):
+            mock_bm.return_value = {
+                "Account.V1": "vr-1", "Account.V2": "vr-2",
+            }
+            phase_validation_rule(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        assert len(payloads) == 2
+
+    def test_phase_validation_rule_all_filtered_no_materialize(self) -> None:
+        """All VRs reference unsyncable parents → empty filtered set
+        → no materialize, no edges, all-zero result."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_validation_rules.return_value = [
+            self._ok_vr("sfFma__Internal__c.RuleA"),
+            self._ok_vr("OtherInternal__c.RuleB"),
+        ]
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value={"Account"},  # neither matches
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges:
+            result = phase_validation_rule(ctx, conn)
+        mock_bm.assert_not_called()
+        mock_edges.assert_not_called()
+        assert result.entities_inserted == 0
+
+
+# ----------------------------------------------------------------------
+# _synced_object_api_names — bulk-fetcher parent-scope helper per §18
+# ----------------------------------------------------------------------
+
+from primeqa.sync.phases import _synced_object_api_names
+
+
+class TestSyncedObjectApiNames:
+    def test_returns_set_of_api_names(self) -> None:
+        """Helper returns a set keyed by sf_api_name from
+        currently-active Object entities for this sync's org."""
+        ctx = _stub_ctx_with_mock_sf()
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = [
+            type("R", (), {"sf_api_name": "Account"})(),
+            type("R", (), {"sf_api_name": "Contact"})(),
+            type("R", (), {"sf_api_name": "MyNS__Custom__c"})(),
+        ]
+        result = _synced_object_api_names(ctx, conn)
+        assert result == {"Account", "Contact", "MyNS__Custom__c"}
+
+    def test_empty_when_no_objects(self) -> None:
+        """Empty entities table → empty set. Bulk-fetcher phases
+        treat empty set as 'filter everything out' which is the
+        correct conservative behavior."""
+        ctx = _stub_ctx_with_mock_sf()
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = []
+        result = _synced_object_api_names(ctx, conn)
+        assert result == set()
+
+    def test_scopes_to_org_and_active(self) -> None:
+        """Query filters by last_synced_from_org_id (current
+        sync's connected_org) AND entity_type='Object' AND
+        valid_to_seq IS NULL. Verifies the SQL contains these
+        scoping conditions."""
+        ctx = _stub_ctx_with_mock_sf()
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = []
+        _synced_object_api_names(ctx, conn)
+        sql_text = str(conn.execute.call_args[0][0])
+        assert "entity_type = 'Object'" in sql_text
+        assert "valid_to_seq IS NULL" in sql_text
+        assert "last_synced_from_org_id = :org_id" in sql_text
+        params = conn.execute.call_args[0][1]
+        assert params["org_id"] == ctx.connected_org_id

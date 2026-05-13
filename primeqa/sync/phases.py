@@ -45,6 +45,40 @@ from primeqa.sync.result import PhaseResult
 PhaseFunction = Callable[[SyncContext, Any], PhaseResult]
 
 
+def _synced_object_api_names(
+    ctx: SyncContext, conn: Any,
+) -> set[str]:
+    """Return the set of Object api_names currently in scope for
+    this sync — i.e., the Objects materialized by Object phase as
+    currently-active entities.
+
+    Used by bulk-fetcher child phases (RecordType, ValidationRule)
+    to filter their fetched payloads against the Object scope
+    BEFORE materialization. Without this filter, payloads
+    referencing Objects that Object phase's syncability rules
+    excluded (managed-package internals, custom settings,
+    deprecated, non-queryable, non-searchable) would reach the
+    detail mapper and fail FK resolution.
+
+    Per-Object-iteration phases (Field, Layout) inherit this
+    filter implicitly — they only fetch children for Objects in
+    the synced set. Bulk-fetcher phases need the explicit filter
+    per corrections-log §18.
+
+    Returns set rather than list for O(1) membership testing in
+    the filter loop. Empty set when Object phase wrote nothing
+    (e.g., on an empty connected_org), which is a defensible
+    state — bulk-fetched payloads all get skipped with WARN logs.
+    """
+    rows = conn.execute(text("""
+        SELECT sf_api_name FROM entities
+        WHERE last_synced_from_org_id = :org_id
+          AND entity_type = 'Object'
+          AND valid_to_seq IS NULL
+    """), {"org_id": ctx.connected_org_id}).fetchall()
+    return {row.sf_api_name for row in rows}
+
+
 def _noop_phase(entity_type: str) -> PhaseFunction:
     """Return a no-op phase function for the given entity_type.
 
@@ -463,26 +497,47 @@ def phase_record_type(ctx: SyncContext, conn: Any) -> PhaseResult:
 
     raw_rts = ctx.sf_client.fetch_record_types()
 
-    # Inject parent Object marker from FullName.
+    # Filter RTs whose parent Object isn't in this sync's syncable
+    # scope (per corrections-log §18). Object phase's syncability
+    # filter (Option C narrowest) excludes managed-package internal
+    # Objects, custom settings, deprecated, non-queryable, non-
+    # searchable. RTs on those Objects come back from Tooling but
+    # can't be materialized — the detail mapper's parent-Object FK
+    # resolution would fail.
+    synced_objects = _synced_object_api_names(ctx, conn)
+    filtered_rts: list[dict[str, Any]] = []
+    skipped_count = 0
     for rt in raw_rts:
         full_name = rt.get("FullName") or ""
-        # Defensive split — RTs without a '.' in FullName would
-        # be malformed at the SF level; we set None so downstream
-        # external_id and detail-FK resolution fail loud rather
-        # than silently mis-parenting.
+        # Defensive split — RTs without a '.' in FullName would be
+        # malformed at the SF level; set parent=None so they fall
+        # into the skip bucket (None won't be in synced_objects).
         if "." in full_name:
-            rt["_parent_object_api_name"] = full_name.split(".", 1)[0]
+            parent_object = full_name.split(".", 1)[0]
         else:
-            rt["_parent_object_api_name"] = None
+            parent_object = None
+        if parent_object not in synced_objects:
+            skipped_count += 1
+            continue
+        rt["_parent_object_api_name"] = parent_object
+        filtered_rts.append(rt)
 
-    if not raw_rts:
+    if skipped_count > 0:
+        logger.info(
+            "phase_record_type: skipped %d RecordTypes whose parent "
+            "Object is not in scope (managed-package internals, "
+            "filtered, or malformed FullName)",
+            skipped_count,
+        )
+
+    if not filtered_rts:
         return result
 
     entity_id_map = batched_materialize(
         ctx=ctx,
         conn=conn,
         entity_type="RecordType",
-        raw_payloads=raw_rts,
+        raw_payloads=filtered_rts,
         result=result,
         return_id_map=True,
     )
@@ -700,31 +755,50 @@ def phase_validation_rule(ctx: SyncContext, conn: Any) -> PhaseResult:
 
     raw_vrs = ctx.sf_client.fetch_validation_rules()
 
-    # Inject parent Object marker from FullName.
+    # Filter VRs whose parent Object isn't in this sync's syncable
+    # scope (per corrections-log §18). Surfaced live: sandbox has
+    # a VR 'FullNameUpdatePrevention' on
+    # sfFma__FeatureParameterBoolean__c, a managed-package internal
+    # Object that Object phase's syncability filter excludes.
+    # Without filtering, the detail mapper's parent-Object FK
+    # resolution fails for any such VR.
+    synced_objects = _synced_object_api_names(ctx, conn)
+    filtered_vrs: list[dict[str, Any]] = []
+    skipped_count = 0
     for vr in raw_vrs:
         full_name = vr.get("FullName") or ""
         if "." in full_name:
-            vr["_parent_object_api_name"] = full_name.split(".", 1)[0]
+            parent_object = full_name.split(".", 1)[0]
         else:
-            # Malformed FullName (shouldn't happen post-P5; defensive).
-            # Setting None will cause external_id construction to fail
-            # loud at the materialize layer.
-            vr["_parent_object_api_name"] = None
+            parent_object = None
+        if parent_object not in synced_objects:
+            skipped_count += 1
+            continue
+        vr["_parent_object_api_name"] = parent_object
+        filtered_vrs.append(vr)
 
-    if not raw_vrs:
+    if skipped_count > 0:
+        logger.info(
+            "phase_validation_rule: skipped %d ValidationRules "
+            "whose parent Object is not in scope (managed-package "
+            "internals, filtered, or malformed FullName)",
+            skipped_count,
+        )
+
+    if not filtered_vrs:
         return result
 
     entity_id_map = batched_materialize(
         ctx=ctx,
         conn=conn,
         entity_type="ValidationRule",
-        raw_payloads=raw_vrs,
+        raw_payloads=filtered_vrs,
         result=result,
         return_id_map=True,
     )
 
     normalized_payloads = [
-        normalize("ValidationRule", p) for p in raw_vrs
+        normalize("ValidationRule", p) for p in filtered_vrs
     ]
     materialize_edges_for_entities(
         ctx=ctx,

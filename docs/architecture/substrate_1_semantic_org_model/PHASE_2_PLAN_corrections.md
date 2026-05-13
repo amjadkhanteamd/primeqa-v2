@@ -771,3 +771,64 @@ needs §10 + design resolution), §16 (ASSIGNED_TO_PROFILE_RT
 needs Profile entities) — each waits for unbuilt
 infrastructure.
 
+## §18: Bulk-fetcher child phases require explicit parent-scope filter
+
+**Date:** 2026-05-12
+**Step:** RecordType + ValidationRule cycles (5 + 7 of 12) — bug
+            surfaced by first live integration test against local
+            Postgres
+**Source:** phase_validation_rule failed with
+            "Cannot resolve parent Object 'sfFma__FeatureParameterBoolean__c'
+            for ValidationRule 'FullNameUpdatePrevention'"
+
+Object phase filters Objects by syncability rules (per design
+doc decision Option C narrowest: queryable AND searchable AND
+NOT deprecated AND NOT customSetting). Managed-package
+internal Objects like sfFma__* (Salesforce internal Feature
+Parameter framework) are excluded.
+
+Child phases that fetch entities via bulk Tooling SOQL
+(no per-Object iteration) must filter their fetched payloads
+against the syncable-Objects set; otherwise their detail
+mappers fail with FK-resolution errors when child entities
+reference filtered-out parents.
+
+Affected phases:
+- phase_record_type (cycle d91e777): latent — sandbox's 5
+  RTs happen to be on standard Objects; bug would trigger
+  on orgs with RTs on managed-package Objects
+- phase_validation_rule (cycle a9f4322): triggered live
+  by the sfFma__FeatureParameterBoolean__c VR
+
+Pattern (Option A — explicit per-phase filter):
+1. Phase function queries entities table for the
+   synced-Object api_name set at phase start (via
+   _synced_object_api_names helper in phases.py)
+2. Filters raw payloads against the set before
+   materialization
+3. Logs the count of skipped entities for visibility
+
+Alternatives considered (and rejected):
+- Softening detail mappers to return None on unresolvable
+  parent: spreads concern across mappers; loses materialize
+  layer's FK-mismatch safety property (would mask real
+  ordering bugs)
+- Materialize layer skip-on-missing-parent hook: hidden
+  behavior; would silently skip legitimate ordering issues
+
+Why this matters for future contractors:
+- Per-Object-iteration phases (Field, Layout) inherit the
+  filter implicitly — they only fetch children for synced
+  Objects
+- Bulk-fetcher child phases (RT, VR, future similar) need
+  explicit filter
+- When adding a new entity type, check whether its fetch
+  pattern is per-parent or bulk; bulk fetchers of child-of-X
+  entities need the explicit X-scope filter
+
+Not applicable to:
+- Org-level entity phases (Profile, PermissionSet, User,
+  FlowDefinition, Flow) — these aren't child-of-Object
+- Per-Object-iteration phases (Field, Layout) — implicit
+  filter
+
