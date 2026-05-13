@@ -105,11 +105,44 @@ from sqlalchemy import create_engine, text
 load_dotenv()
 
 
-REQUIRED_ENV = (
+REQUIRED_SF_ENV = (
     "SF_INSTANCE_URL", "SF_CLIENT_ID", "SF_CLIENT_SECRET",
-    "SF_REFRESH_TOKEN", "DATABASE_URL",
+    "SF_REFRESH_TOKEN",
 )
-HAS_CREDS = all(os.environ.get(k) for k in REQUIRED_ENV)
+
+
+def _get_live_db_url() -> str:
+    """Return the live integration test database URL.
+
+    Prefers LIVE_DATABASE_URL when set; falls back to DATABASE_URL.
+
+    Rationale: Railway's public TCP proxy
+    (switchback.proxy.rlwy.net) exhibits intermittent layer-7
+    connection termination on long-held connections with sustained
+    activity, making it unreliable for the multi-minute sync test
+    suite. LIVE_DATABASE_URL points live tests at a local Postgres
+    while DATABASE_URL can stay pointed at Railway for ad-hoc
+    tooling or production deployments.
+    """
+    url = os.environ.get("LIVE_DATABASE_URL")
+    if url:
+        return url
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise RuntimeError(
+            "Live integration tests require LIVE_DATABASE_URL or "
+            "DATABASE_URL"
+        )
+    return url
+
+
+HAS_CREDS = (
+    all(os.environ.get(k) for k in REQUIRED_SF_ENV)
+    and (
+        os.environ.get("LIVE_DATABASE_URL")
+        or os.environ.get("DATABASE_URL")
+    )
+)
 
 pytestmark = pytest.mark.sandbox
 
@@ -120,7 +153,10 @@ TENANT_ID = 1
 @pytest.fixture
 def live_sf_client():
     if not HAS_CREDS:
-        missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]
+        missing = [k for k in REQUIRED_SF_ENV if not os.environ.get(k)]
+        if not (os.environ.get("LIVE_DATABASE_URL")
+                or os.environ.get("DATABASE_URL")):
+            missing.append("LIVE_DATABASE_URL or DATABASE_URL")
         pytest.skip(f"Required env not configured (missing: {missing})")
     from primeqa.integrations.sf_client import SalesforceClient
     with SalesforceClient(
@@ -135,22 +171,28 @@ def live_sf_client():
 @pytest.fixture
 def db_engine():
     if not HAS_CREDS:
-        pytest.skip("DATABASE_URL not configured")
+        pytest.skip(
+            "LIVE_DATABASE_URL/DATABASE_URL not configured"
+        )
     # pool_pre_ping + pool_recycle + TCP keepalive match
     # primeqa/db.py and primeqa/semantic/connection.py settings.
-    # Railway's proxy drops idle connections after ~15 min:
-    #   - pool_pre_ping catches drops between checkouts (cheap
-    #     SELECT 1 before pool reuse)
-    #   - pool_recycle forces 5-min recycle as belt-and-suspenders
-    #   - TCP keepalive keeps mid-transaction connections alive
-    #     when a phase holds them across multi-minute SQL
-    #     operations (PV phase's _batch_read_existing scanning
-    #     ~500 external_ids is the original surfacing case)
-    # Without keepalive, a held connection idle-closes by the
-    # proxy and the next query fails with OperationalError
-    # after the TCP timeout.
+    # Originally added for Railway's public proxy (drops idle
+    # connections after ~15 min); still appropriate for local
+    # Postgres (keepalive on a loopback socket is a no-op cost-
+    # wise, and pool_pre_ping costs one cheap SELECT 1 per
+    # checkout — harmless either way).
+    #
+    # Database URL selection via _get_live_db_url():
+    # LIVE_DATABASE_URL takes precedence over DATABASE_URL. Lets
+    # developers point live tests at a local Postgres while
+    # DATABASE_URL keeps pointing at Railway for ad-hoc tooling.
+    # Live verification was parked from the Field cycle (3dcda00)
+    # through ValidationRule (a9f4322) because Railway's public
+    # TCP proxy (switchback.proxy.rlwy.net) showed intermittent
+    # layer-7 connection termination on the multi-minute sync
+    # test. Local Postgres unblocks this verification cycle.
     eng = create_engine(
-        os.environ["DATABASE_URL"],
+        _get_live_db_url(),
         pool_pre_ping=True,
         pool_recycle=300,
         connect_args={
