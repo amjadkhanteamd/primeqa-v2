@@ -351,6 +351,91 @@ class TestPhasePicklistValueSet:
         assert len(combined) == 1
         assert combined[0]["_source"] == "StandardValueSet"
 
+    def test_phase_picklist_value_set_populates_svs_metadata_cache(
+        self,
+    ) -> None:
+        """Per corrections-log §9, PVS phase writes each fetched SVS
+        Metadata into ctx.svs_metadata_cache keyed by FullName. The
+        cache is later consumed by phase_picklist_value to skip
+        refetching the 616-record catalog."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_global_value_sets.return_value = []
+        ctx.sf_client.fetch_standard_value_sets.return_value = [
+            {
+                "FullName": "AccountSource",
+                "MasterLabel": "Account Source",
+                "Metadata": {
+                    "standardValue": [
+                        {"valueName": "Web"},
+                        {"valueName": "Phone"},
+                    ],
+                },
+            },
+            {
+                "FullName": "LeadSource",
+                "MasterLabel": "Lead Source",
+                "Metadata": {
+                    "standardValue": [{"valueName": "Web"}],
+                },
+            },
+        ]
+        conn = MagicMock()
+        assert ctx.svs_metadata_cache == {}
+        with patch("primeqa.sync.phases.batched_materialize"):
+            phase_picklist_value_set(ctx, conn)
+        # Cache populated with both SVS records, keyed by FullName,
+        # value is the Metadata sub-tree (not full record).
+        assert set(ctx.svs_metadata_cache.keys()) == {
+            "AccountSource", "LeadSource",
+        }
+        assert ctx.svs_metadata_cache["AccountSource"] == {
+            "standardValue": [
+                {"valueName": "Web"},
+                {"valueName": "Phone"},
+            ],
+        }
+        assert ctx.svs_metadata_cache["LeadSource"] == {
+            "standardValue": [{"valueName": "Web"}],
+        }
+
+    def test_phase_picklist_value_set_does_not_cache_gvs(self) -> None:
+        """The cache is SVS-only per the §9 design — GVS fetch is
+        a single cheap bulk Tooling call, so PV phase happily
+        re-fetches it. Don't pollute the cache with GVS records."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_global_value_sets.return_value = [
+            {
+                "FullName": "MyGVS",
+                "Metadata": {
+                    "customValue": [{"valueName": "Banking"}],
+                },
+            },
+        ]
+        ctx.sf_client.fetch_standard_value_sets.return_value = []
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize"):
+            phase_picklist_value_set(ctx, conn)
+        # SVS empty + GVS skipped → cache stays empty
+        assert ctx.svs_metadata_cache == {}
+
+    def test_phase_picklist_value_set_cache_uses_empty_dict_when_metadata_missing(
+        self,
+    ) -> None:
+        """SVS record with no Metadata key (or Metadata=None) gets
+        stored as {} so PV phase's loop can iterate without None
+        checks."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_global_value_sets.return_value = []
+        ctx.sf_client.fetch_standard_value_sets.return_value = [
+            {"FullName": "NoMetadata"},
+            {"FullName": "NullMetadata", "Metadata": None},
+        ]
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize"):
+            phase_picklist_value_set(ctx, conn)
+        assert ctx.svs_metadata_cache["NoMetadata"] == {}
+        assert ctx.svs_metadata_cache["NullMetadata"] == {}
+
 
 # ----------------------------------------------------------------------
 # phase_picklist_value — third real phase; first to derive children
@@ -361,11 +446,16 @@ from primeqa.sync.phases import phase_picklist_value
 
 
 class TestPhasePicklistValue:
-    def test_phase_picklist_value_calls_both_parent_fetchers(self) -> None:
-        '''No fresh SF call exclusive to PV — values come nested
-        inside GVS + SVS records. Phase re-fetches via the same
-        methods PVS phase used.'''
+    def test_phase_picklist_value_fetches_gvs_always_and_falls_back_to_svs_fetch_when_cache_empty(
+        self,
+    ) -> None:
+        '''Cache-empty path (resumed sync or PV-in-isolation test):
+        PV refetches BOTH parent streams. Per corrections-log §9
+        the normal path consumes ctx.svs_metadata_cache populated
+        by PVS phase; this test exercises the fallback. The GVS
+        path always refetches (cheap bulk call, no cache).'''
         ctx = _stub_ctx_with_mock_sf()
+        assert ctx.svs_metadata_cache == {}  # cache empty
         ctx.sf_client.fetch_global_value_sets.return_value = []
         ctx.sf_client.fetch_standard_value_sets.return_value = []
         conn = MagicMock()
@@ -375,6 +465,80 @@ class TestPhasePicklistValue:
         ctx.sf_client.fetch_standard_value_sets.assert_called_once_with(
             labels=None,
         )
+
+    def test_phase_picklist_value_reads_from_cache_when_populated(
+        self,
+    ) -> None:
+        '''Normal path: PVS phase has populated
+        ctx.svs_metadata_cache; PV reads from cache and does NOT
+        call fetch_standard_value_sets. This is the §9 fix that
+        eliminates the ~6 min SVS catalog refetch.'''
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.svs_metadata_cache = {
+            "AccountType": {
+                "standardValue": [
+                    {"valueName": "Analyst", "label": "Analyst"},
+                    {"valueName": "Customer", "label": "Customer"},
+                ],
+            },
+            "LeadSource": {
+                "standardValue": [
+                    {"valueName": "Web", "label": "Web"},
+                ],
+            },
+        }
+        ctx.sf_client.fetch_global_value_sets.return_value = []
+        conn = MagicMock()
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm:
+            phase_picklist_value(ctx, conn)
+        # GVS still fetched (cheap; no cache for GVS)
+        ctx.sf_client.fetch_global_value_sets.assert_called_once_with()
+        # SVS NOT fetched — cache hit
+        ctx.sf_client.fetch_standard_value_sets.assert_not_called()
+        # Payloads built from cache
+        payloads = mock_bm.call_args.kwargs['raw_payloads']
+        assert len(payloads) == 3
+        parents = {p["_parent_external_id"] for p in payloads}
+        assert parents == {"SVS:AccountType", "SVS:LeadSource"}
+
+    def test_phase_picklist_value_cache_hit_preserves_sort_order_per_parent(
+        self,
+    ) -> None:
+        '''Cache-hit path: _sort_order reflects each value's index
+        within its parent's standardValue list — not a global
+        index across all cached SVSes.'''
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.svs_metadata_cache = {
+            "AccountType": {
+                "standardValue": [
+                    {"valueName": "Analyst"},
+                    {"valueName": "Customer"},
+                ],
+            },
+            "LeadSource": {
+                "standardValue": [
+                    {"valueName": "Web"},
+                    {"valueName": "Phone"},
+                ],
+            },
+        }
+        ctx.sf_client.fetch_global_value_sets.return_value = []
+        conn = MagicMock()
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm:
+            phase_picklist_value(ctx, conn)
+        payloads = mock_bm.call_args.kwargs['raw_payloads']
+        # Each parent's children numbered from 0 within their parent
+        by_parent: dict[str, list[tuple[int, str]]] = {}
+        for p in payloads:
+            by_parent.setdefault(
+                p["_parent_external_id"], [],
+            ).append((p["_sort_order"], p["valueName"]))
+        for parent, entries in by_parent.items():
+            entries.sort()
+            assert entries[0][0] == 0, (
+                f"{parent} first child should have _sort_order=0; "
+                f"got {entries}"
+            )
 
     def test_phase_picklist_value_extracts_gvs_values(self) -> None:
         '''Each GVS's Metadata.customValue entries become

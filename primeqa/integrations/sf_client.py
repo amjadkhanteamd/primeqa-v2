@@ -49,6 +49,68 @@ from .exceptions import (
 from .sf_constants import STANDARD_VALUE_SET_LABELS
 
 
+# ----------------------------------------------------------------------
+# Module-level helpers (no client instance needed)
+# ----------------------------------------------------------------------
+
+
+def extract_picklist_value_payloads_from_metadata(
+    parent_external_id: str,
+    metadata: dict,
+    value_list_key: str,
+) -> list[dict]:
+    """Extract per-value payloads from a value-set Metadata sub-tree.
+
+    A GlobalValueSet record's Metadata contains a `customValue` list;
+    a StandardValueSet record's Metadata contains a `standardValue`
+    list. Both lists hold value dicts with `valueName`, `label`,
+    `isActive`, etc. Used by `phase_picklist_value` to construct PV
+    payloads from either a fresh fetch or `ctx.svs_metadata_cache`
+    (the §9 fix that eliminates SVS Metadata refetch).
+
+    Each yielded payload carries two sync-layer markers required
+    downstream:
+      `_parent_external_id`  — parent PicklistValueSet external_id
+        (SVS:-prefixed for StandardValueSet sources per the §8
+        addendum collision-avoidance contract)
+      `_sort_order`          — value's index in the parent list
+        (Salesforce returns values in display order; no explicit
+        sortOrder field on the value record itself)
+
+    Skips entries that are not dicts (defensive) or are missing
+    `valueName` (placeholder/blank entries the Metadata API
+    occasionally emits — their external_id would be malformed
+    and the detail mapper would fail).
+
+    Args:
+        parent_external_id: PVS external_id, e.g.,
+            'SVS:AccountSource' or 'MyOrg__MyGVS'.
+        metadata: the Metadata sub-tree of a GVS/SVS record
+            (already-extracted; not the full record). Pass
+            `record.get('Metadata') or {}` from the caller.
+        value_list_key: 'customValue' for GVS, 'standardValue'
+            for SVS.
+
+    Returns:
+        list of payload dicts ready for batched_materialize as
+        the PicklistValue raw_payloads input. Empty list if the
+        list_key isn't present or its value is None.
+    """
+    payloads: list[dict] = []
+    values = metadata.get(value_list_key) or []
+    for idx, v in enumerate(values):
+        if not isinstance(v, dict):
+            continue
+        if not v.get("valueName"):
+            continue
+        payloads.append({
+            **v,
+            "_parent_external_id": parent_external_id,
+            "_sort_order": idx,
+        })
+    return payloads
+
+
 SF_API_VERSION = "v66.0"  # Salesforce Spring '26; rotate ~quarterly
 TRANSIENT_STATUS_CODES = {429, 502, 503, 504}
 MAX_RETRIES = 3

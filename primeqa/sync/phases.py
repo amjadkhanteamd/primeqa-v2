@@ -205,6 +205,15 @@ def phase_picklist_value_set(
     SVS iteration uses labels=None (full canonical catalog). A
     future cycle may switch to a discovered-label subset once
     Field phase exposes which SVSes are actually referenced.
+
+    Per corrections-log §9, this phase also POPULATES
+    ctx.svs_metadata_cache as a side effect of its SVS fetch. The
+    PicklistValue phase consumes the cache instead of refetching
+    — a ~6 min wall-clock optimization. The cache is keyed by
+    SVS FullName; the value is the Metadata sub-tree (not the
+    full Tooling record). GVS records are NOT cached: the GVS
+    fetch is a single bulk Tooling call (cheap regardless of N),
+    so refetching in PV phase is acceptable.
     """
     result = PhaseResult(entity_type="PicklistValueSet")
 
@@ -217,6 +226,13 @@ def phase_picklist_value_set(
     raw_svs = ctx.sf_client.fetch_standard_value_sets(labels=None)
     for r in raw_svs:
         r["_source"] = "StandardValueSet"
+        # §9: cache the Metadata sub-tree keyed by FullName so the
+        # PV phase can extract values without refetching. Stored
+        # as `Metadata or {}` so the cached value is always a dict
+        # — keeps the PV-phase loop free of None checks.
+        full_name = r.get("FullName")
+        if full_name:
+            ctx.svs_metadata_cache[full_name] = r.get("Metadata") or {}
 
     combined = list(raw_gvs) + list(raw_svs)
     if combined:
@@ -240,12 +256,15 @@ def phase_picklist_value(ctx: SyncContext, conn: Any) -> PhaseResult:
     relationship — substrate-1's stated rationale is "picklist values
     ARE their attributes; there is no edge structure to lean on".
 
-    No fresh Salesforce call exclusive to this phase: values come
-    nested inside GVS records' Metadata.customValue and SVS records'
-    Metadata.standardValue. PicklistValueSet phase already fetched
-    these in the prior phase — this phase re-fetches via the same
-    sf_client methods (cheap; SF caches describe responses) and
-    extracts the nested values.
+    Values come nested inside GVS records' Metadata.customValue
+    and SVS records' Metadata.standardValue. PicklistValueSet
+    phase already fetched these in the prior phase, and per
+    corrections-log §9 it stashed the SVS Metadata into
+    ctx.svs_metadata_cache. This phase reads from the cache
+    rather than re-fetching the 616-record SVS catalog
+    (~6 min wall-clock saved). GVS is re-fetched via a single
+    bulk Tooling call (cheap regardless of N), so the GVS path
+    is unchanged.
 
     Each value gets two phase-injected markers before
     batched_materialize:
@@ -265,6 +284,12 @@ def phase_picklist_value(ctx: SyncContext, conn: Any) -> PhaseResult:
     supersession. That's the right semantic — display order is
     meaningful metadata.
 
+    Marker injection is performed by
+    extract_picklist_value_payloads_from_metadata
+    (sf_client.py module-level helper). Same function handles both
+    SVS and GVS paths — only the parent_external_id prefix and
+    value_list_key differ.
+
     The detail-table write happens inside batched_materialize via the
     PicklistValue mapper in detail_mappers.py, which uses
     make_parent_resolver(conn, ctx) to look up the parent
@@ -275,52 +300,67 @@ def phase_picklist_value(ctx: SyncContext, conn: Any) -> PhaseResult:
     before batched_materialize chunks them. At ~500 bytes per value
     record, that's ~500KB — well within budget. Production orgs with
     industry clouds enabled might see 5x this; still acceptable.
-    """
-    result = PhaseResult(entity_type="PicklistValue")
 
-    # Re-fetch parents to extract their nested value lists.
-    raw_gvs = ctx.sf_client.fetch_global_value_sets()
-    raw_svs = ctx.sf_client.fetch_standard_value_sets(labels=None)
+    Fallback: if ctx.svs_metadata_cache is empty (PV phase running
+    in isolation — e.g., a test that exercises PV without PVS, or
+    a resumed sync that skipped PVS), this phase falls back to
+    refetching SVS Metadata directly. Logs an INFO so the resumed-
+    sync case is visible; the test-isolation case is rare and
+    acceptable.
+    """
+    from primeqa.integrations.sf_client import (
+        extract_picklist_value_payloads_from_metadata,
+    )
+
+    result = PhaseResult(entity_type="PicklistValue")
 
     pv_payloads: list[dict[str, Any]] = []
 
     # GVS path: parent_external_id is unprefixed (per PVS cycle's
-    # GVS contract). Values live in Metadata.customValue.
+    # GVS contract). Values live in Metadata.customValue. Cheap
+    # to re-fetch (single bulk Tooling call) — no cache needed.
+    raw_gvs = ctx.sf_client.fetch_global_value_sets()
     for gvs in raw_gvs:
-        parent_external_id = gvs["FullName"]
-        meta = gvs.get("Metadata") or {}
-        values = meta.get("customValue") or []
-        for idx, v in enumerate(values):
-            if not isinstance(v, dict):
-                continue
-            if not v.get("valueName"):
-                # Defensive: skip placeholder/blank entries that the
-                # Metadata API occasionally returns; their external_id
-                # would be malformed and the detail mapper would fail.
-                continue
-            pv_payloads.append({
-                **v,
-                "_parent_external_id": parent_external_id,
-                "_sort_order": idx,
-            })
+        pv_payloads.extend(
+            extract_picklist_value_payloads_from_metadata(
+                parent_external_id=gvs["FullName"],
+                metadata=gvs.get("Metadata") or {},
+                value_list_key="customValue",
+            )
+        )
 
-    # SVS path: parent_external_id carries the 'SVS:' prefix per the
-    # PVS cycle's collision-avoidance contract. Values live in
-    # Metadata.standardValue.
-    for svs in raw_svs:
-        parent_external_id = f"SVS:{svs['FullName']}"
-        meta = svs.get("Metadata") or {}
-        values = meta.get("standardValue") or []
-        for idx, v in enumerate(values):
-            if not isinstance(v, dict):
-                continue
-            if not v.get("valueName"):
-                continue
-            pv_payloads.append({
-                **v,
-                "_parent_external_id": parent_external_id,
-                "_sort_order": idx,
-            })
+    # SVS path: parent_external_id carries the 'SVS:' prefix per
+    # the PVS cycle's collision-avoidance contract. Values live in
+    # Metadata.standardValue. Read from
+    # ctx.svs_metadata_cache populated by phase_picklist_value_set.
+    if ctx.svs_metadata_cache:
+        for full_name, metadata in ctx.svs_metadata_cache.items():
+            pv_payloads.extend(
+                extract_picklist_value_payloads_from_metadata(
+                    parent_external_id=f"SVS:{full_name}",
+                    metadata=metadata,
+                    value_list_key="standardValue",
+                )
+            )
+    else:
+        # Defensive fallback for PV-in-isolation (test scenario)
+        # or resumed sync where PVS phase already completed.
+        # Refetches the 616-record catalog (~6 min wall-clock).
+        logger.info(
+            "phase_picklist_value: svs_metadata_cache empty; "
+            "falling back to direct SVS fetch. Expected on "
+            "resumed syncs and isolated tests; should be rare in "
+            "production sync flow."
+        )
+        raw_svs = ctx.sf_client.fetch_standard_value_sets(labels=None)
+        for svs in raw_svs:
+            pv_payloads.extend(
+                extract_picklist_value_payloads_from_metadata(
+                    parent_external_id=f"SVS:{svs['FullName']}",
+                    metadata=svs.get("Metadata") or {},
+                    value_list_key="standardValue",
+                )
+            )
 
     if pv_payloads:
         batched_materialize(

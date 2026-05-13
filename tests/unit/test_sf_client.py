@@ -16,6 +16,7 @@ from primeqa.integrations.sf_client import (
     SF_API_VERSION,
     MAX_RETRIES,
     RETRY_BACKOFF_SEQ,
+    extract_picklist_value_payloads_from_metadata,
 )
 from primeqa.integrations.exceptions import (
     SFAuthError,
@@ -3040,3 +3041,179 @@ class TestFetchLayoutNames:
         # follow-up because done=true)
         assert len(api_calls) == 1
         c.close()
+
+
+# ----------------------------------------------------------------------
+# extract_picklist_value_payloads_from_metadata helper
+# (module-level; supports the §9 SVS-cache PV-phase optimization)
+# ----------------------------------------------------------------------
+
+
+class TestExtractPicklistValuePayloadsFromMetadata:
+    """Helper transforms a value-set Metadata sub-tree into the
+    raw_payloads shape the PicklistValue phase passes to
+    batched_materialize. Used by phase_picklist_value for both the
+    cached SVS path and the GVS / fallback paths (single source of
+    truth for the transform)."""
+
+    def test_extracts_standard_values_with_markers(self) -> None:
+        """SVS path: standardValue list → payloads with SVS-
+        prefixed parent_external_id (caller supplies it pre-
+        prefixed)."""
+        metadata = {
+            "standardValue": [
+                {"valueName": "Web", "label": "Web", "isActive": True},
+                {"valueName": "Phone", "label": "Phone Inquiry",
+                 "isActive": True, "default": True},
+            ],
+        }
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="SVS:AccountSource",
+            metadata=metadata,
+            value_list_key="standardValue",
+        )
+        assert len(result) == 2
+        assert result[0]["_parent_external_id"] == "SVS:AccountSource"
+        assert result[0]["_sort_order"] == 0
+        assert result[0]["valueName"] == "Web"
+        assert result[0]["label"] == "Web"
+        assert result[1]["_parent_external_id"] == "SVS:AccountSource"
+        assert result[1]["_sort_order"] == 1
+        assert result[1]["valueName"] == "Phone"
+        assert result[1]["default"] is True
+
+    def test_extracts_custom_values_with_markers(self) -> None:
+        """GVS path: customValue list → payloads with unprefixed
+        parent_external_id."""
+        metadata = {
+            "customValue": [
+                {"valueName": "Banking", "label": "Banking"},
+                {"valueName": "Tech", "label": "Technology"},
+            ],
+        }
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="MyGVS",
+            metadata=metadata,
+            value_list_key="customValue",
+        )
+        assert len(result) == 2
+        assert result[0]["_parent_external_id"] == "MyGVS"
+        assert result[0]["valueName"] == "Banking"
+
+    def test_empty_metadata_returns_empty(self) -> None:
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="EmptyGVS",
+            metadata={},
+            value_list_key="customValue",
+        )
+        assert result == []
+
+    def test_missing_value_list_key_returns_empty(self) -> None:
+        """Metadata without the requested list key (e.g., SVS
+        Metadata that lacks standardValue) returns []. Common in
+        sandbox SVSes that resolve empty."""
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="SVS:Empty",
+            metadata={"someOtherKey": "value"},
+            value_list_key="standardValue",
+        )
+        assert result == []
+
+    def test_null_value_list_returns_empty(self) -> None:
+        """If the list-key resolves to None (rather than missing
+        entirely), the `or []` guard yields an empty list."""
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="SVS:Nullish",
+            metadata={"standardValue": None},
+            value_list_key="standardValue",
+        )
+        assert result == []
+
+    def test_skips_entries_without_value_name(self) -> None:
+        """Defensive: Metadata API occasionally returns placeholder
+        entries with empty/missing valueName. These are dropped to
+        prevent malformed external_id construction downstream."""
+        metadata = {
+            "standardValue": [
+                {"valueName": "Good", "label": "Good"},
+                {"valueName": "", "label": "Blank"},      # filtered
+                {"label": "NoValueName"},                  # filtered
+            ],
+        }
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="SVS:PartialVS",
+            metadata=metadata,
+            value_list_key="standardValue",
+        )
+        assert len(result) == 1
+        assert result[0]["valueName"] == "Good"
+
+    def test_skips_non_dict_entries(self) -> None:
+        """Defensive: Metadata API occasionally emits string or
+        null entries in the value list. These are dropped."""
+        metadata = {
+            "standardValue": [
+                {"valueName": "Good"},
+                "NotADict",
+                None,
+                42,
+            ],
+        }
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="SVS:Junk",
+            metadata=metadata,
+            value_list_key="standardValue",
+        )
+        assert len(result) == 1
+        assert result[0]["valueName"] == "Good"
+
+    def test_preserves_extra_fields_via_spread(self) -> None:
+        """Every key on the value dict survives the **v spread —
+        substrate-1's normalize layer needs the full shape, not a
+        whitelisted subset."""
+        metadata = {
+            "standardValue": [
+                {
+                    "valueName": "Hot",
+                    "label": "Hot",
+                    "isActive": True,
+                    "default": False,
+                    "description": "Hot lead",
+                    "color": "#ff0000",
+                    "translations": [{"locale": "fr", "value": "Chaud"}],
+                },
+            ],
+        }
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="SVS:LeadSource",
+            metadata=metadata,
+            value_list_key="standardValue",
+        )
+        assert len(result) == 1
+        v = result[0]
+        # Original keys preserved
+        assert v["description"] == "Hot lead"
+        assert v["color"] == "#ff0000"
+        assert v["translations"] == [{"locale": "fr", "value": "Chaud"}]
+        # Markers injected
+        assert v["_parent_external_id"] == "SVS:LeadSource"
+        assert v["_sort_order"] == 0
+
+    def test_sort_order_reflects_input_order(self) -> None:
+        """Salesforce returns values in display order; _sort_order
+        captures that index. The value's position in the list IS
+        the display order."""
+        metadata = {
+            "standardValue": [
+                {"valueName": "A"},
+                {"valueName": "B"},
+                {"valueName": "C"},
+            ],
+        }
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="SVS:ABCs",
+            metadata=metadata,
+            value_list_key="standardValue",
+        )
+        assert [v["_sort_order"] for v in result] == [0, 1, 2]
+        assert [v["valueName"] for v in result] == ["A", "B", "C"]

@@ -475,10 +475,70 @@ Architectural cost:
 - Need to clear cache when sync_run completes to avoid leaking
   between runs
 
-Not implemented now. Deferred until either (a) total sync
+~~Not implemented now. Deferred until either (a) total sync
 wall-clock becomes a customer-visible problem, or (b) we have
 multiple phases with redundant fetches and a uniform solution
-is worth designing.
+is worth designing.~~
+
+**RESOLVED 2026-05-13** — Profile phase audit (corrections-log
+§19) added a second wall-clock pressure point (588KB live test
+wall-clock spent on the §9 re-fetch alone). The optimization
+is now cheap to land — SyncContext is a non-frozen dataclass;
+no scaffolding needed for "uniform caching" since SVS is the
+only re-fetched stream today (GVS is a single bulk Tooling
+call; cheap regardless of N).
+
+### Implementation
+- `primeqa/sync/context.py`:
+  `svs_metadata_cache: dict[str, dict] = field(default_factory=dict)`.
+  Keyed by SVS FullName (e.g., 'AccountSource' →
+  `{standardValue: [...]}`). Per-SyncContext lifetime; no
+  cross-run leakage (a fresh ctx is constructed per
+  sync_run).
+- `primeqa/integrations/sf_client.py`:
+  `extract_picklist_value_payloads_from_metadata(parent_external_id, metadata, value_list_key) → list[dict]`
+  module-level helper. Single source of truth for the
+  value-extraction transform that PV phase used to inline.
+  Accepts either `standardValue` (SVS) or `customValue` (GVS)
+  as `value_list_key`.
+- `primeqa/sync/phases.py`:
+  - `phase_picklist_value_set` now writes each fetched SVS
+    record's Metadata into `ctx.svs_metadata_cache[FullName]`
+    as a side effect of its existing fetch loop. GVS records
+    are NOT cached (no benefit).
+  - `phase_picklist_value` now reads `ctx.svs_metadata_cache`
+    directly when populated, calling the extraction helper
+    per cache entry. When the cache is empty (PV-in-isolation
+    test or resumed sync), falls back to
+    `fetch_standard_value_sets(labels=None)` with an INFO
+    log so the rare case is visible. The GVS path always
+    re-fetches (cheap).
+
+### Wall-clock impact
+- Before: PVS fetches 616 SVS records (~6 min) + PV refetches
+  the same 616 records (~6 min) = ~12 min of redundant SVS
+  fetching per sync. Across both syncs in the live test:
+  ~24 min total SVS fetch time.
+- After: PVS fetches 616 records (~6 min); PV reads from
+  cache (~10-20 sec for ~600-entry dict iteration +
+  materialize). Across both syncs: ~12 min total SVS fetch
+  time.
+- Live integration test wall-clock: ~13:33 (post-Profile,
+  pre-§9) → expected ~10-11 min after §9 (drop of ~2-3 min
+  per sync × 2 syncs).
+
+### Coherence with existing design
+- Phase ordering already explicit via ENTITY_ORDER (no new
+  constraint).
+- Cache is per-SyncContext (one instance per sync_run); no
+  cross-run leakage by construction. No clear-on-completion
+  hook needed.
+- Fallback path keeps PV phase runnable in isolation
+  (test scenarios + future resumed-sync work).
+- Tests at unit level (3 PVS cache-population tests + 2 PV
+  cache-consumption tests + 1 renamed PV fallback test +
+  4 SyncContext cache tests + 9 extraction-helper tests = 19
+  new tests).
 
 ## §10: HAS_PICKLIST_VALUES deferred — REST describe doesn't expose GVS refs
 
