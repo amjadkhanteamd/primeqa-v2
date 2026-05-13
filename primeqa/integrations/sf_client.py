@@ -402,32 +402,43 @@ class SalesforceClient:
         return resp.json()
 
     def fetch_validation_rules(self) -> list[dict]:
-        """Tooling SOQL: SELECT … FROM ValidationRule, with full Metadata.
+        """Tooling SOQL: SELECT … FROM ValidationRule, with FullName + Metadata.
 
         Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
 
         Returned records carry: Id, ValidationName, Active, ErrorMessage,
-        ErrorDisplayField, Description, EntityDefinitionId, and Metadata
-        (with errorConditionFormula, etc.).
+        ErrorDisplayField, Description, EntityDefinitionId, FullName,
+        and Metadata (with errorConditionFormula, etc.).
+
+        Returns FullName as '{Object}.{ValidationName}' per Salesforce's
+        Tooling FullName convention. Use FullName for parent-Object
+        disambiguation and external_id composition.
 
         # Two-phase fetch driven by Salesforce Tooling API constraints:
-        # 1. Cannot select Metadata field on a query returning >1 row
-        #    (Salesforce-documented limit).
+        # 1. Cannot select Metadata OR FullName field on a query
+        #    returning >1 row (Salesforce-documented limit; the two
+        #    fields share this constraint per corrections-log §1).
         # 2. Cannot use EntityDefinition relationship traversal on a
         #    query returning >1000 underlying EntityDefinition rows
         #    (the EXTERNAL_OBJECT_UNSUPPORTED_EXCEPTION subquery limit).
-        # Phase 1 fetches IDs + non-Metadata fields without joining
-        # EntityDefinition (uses EntityDefinitionId direct field instead).
-        # Phase 2 fetches Metadata per-Id one row at a time.
-        # Sync layer (Phase 2 step 4) is responsible for resolving
-        # EntityDefinitionId → Object entity_id via the Object describe
-        # cache built earlier in the same sync run.
+        # Phase 1 fetches IDs + non-Metadata/non-FullName fields without
+        # joining EntityDefinition (uses EntityDefinitionId direct field
+        # instead — which is an opaque 18-char Salesforce Id, NOT the
+        # parent's QualifiedApiName).
+        # Phase 2 fetches FullName + Metadata per-Id one row at a time.
+        # FullName ('{Object}.{ValidationName}') is the canonical
+        # identifier sync uses for external_id composition and parent-
+        # Object api_name extraction (FullName.split('.', 1)[0]).
+        # Same idiom as fetch_record_types Phase 2 — Tooling FullName
+        # carries the parent api_name; sync doesn't need a separate
+        # EntityDefinition lookup.
         # TODO Phase 2 sync layer: consider throttling or batching if a
         # tenant's rule count is large enough to hit API rate limits.
         """
         path = f"/services/data/{self.api_version}/tooling/query/"
 
-        # Phase 1: bulk fetch all rules without Metadata, no EntityDefinition join.
+        # Phase 1: bulk fetch all rules without Metadata/FullName,
+        # no EntityDefinition join.
         phase1_soql = (
             "SELECT Id, ValidationName, Active, ErrorMessage, "
             "ErrorDisplayField, Description, EntityDefinitionId "
@@ -435,17 +446,20 @@ class SalesforceClient:
         )
         records: list[dict] = self._query_all(path, phase1_soql)
 
-        # Phase 2: per-Id Metadata fetch (Salesforce constraint: 1 row max
-        # when selecting Metadata).
+        # Phase 2: per-Id FullName + Metadata fetch (Salesforce
+        # constraint: 1 row max when selecting either field — both
+        # safe in the same 1-row query).
         for rec in records:
             rec_id = rec.get("Id")
             if not rec_id:
                 continue
             phase2_soql = (
-                f"SELECT Id, Metadata FROM ValidationRule WHERE Id = '{rec_id}'"
+                f"SELECT Id, FullName, Metadata FROM ValidationRule "
+                f"WHERE Id = '{rec_id}'"
             )
             phase2_records = self._query_all(path, phase2_soql)
             if phase2_records:
+                rec["FullName"] = phase2_records[0].get("FullName")
                 rec["Metadata"] = phase2_records[0].get("Metadata")
 
         return records

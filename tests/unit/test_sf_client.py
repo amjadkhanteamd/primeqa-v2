@@ -545,14 +545,16 @@ class TestFetchValidationRules:
 
     def test_fetch_validation_rules_returns_records_list(self) -> None:
         """Two-phase fetch: phase 1 returns N records with EntityDefinitionId
-        (NOT EntityDefinition.QualifiedApiName, NOT Metadata).
-        Phase 2 returns 1 record per Id with Metadata. Result merges
-        Metadata onto each phase-1 record alongside EntityDefinitionId."""
+        (NOT EntityDefinition.QualifiedApiName, NOT Metadata, NOT FullName).
+        Phase 2 returns 1 record per Id with FullName + Metadata.
+        Result merges FullName + Metadata onto each phase-1 record
+        alongside EntityDefinitionId."""
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/services/oauth2/token":
                 return _token_response()
             soql = request.url.params.get("q", "")
-            # Phase 1: bulk SELECT (no Metadata) → return 2 records with EntityDefinitionId
+            # Phase 1: bulk SELECT (no Metadata, no FullName) → return
+            # 2 records with EntityDefinitionId
             if "Metadata" not in soql:
                 return httpx.Response(200, json={
                     "records": [
@@ -572,11 +574,12 @@ class TestFetchValidationRules:
                         },
                     ]
                 })
-            # Phase 2: per-Id SELECT Id, Metadata WHERE Id = '...'
+            # Phase 2: per-Id SELECT Id, FullName, Metadata WHERE Id = '...'
             if "03d000000000001" in soql:
                 return httpx.Response(200, json={
                     "records": [{
                         "Id": "03d000000000001",
+                        "FullName": "Account.AmountPositive",
                         "Metadata": {"errorConditionFormula": "Amount <= 0"},
                     }]
                 })
@@ -584,6 +587,7 @@ class TestFetchValidationRules:
                 return httpx.Response(200, json={
                     "records": [{
                         "Id": "03d000000000002",
+                        "FullName": "Opportunity.StatusValid",
                         "Metadata": {"errorConditionFormula": "ISBLANK(Status)"},
                     }]
                 })
@@ -596,14 +600,55 @@ class TestFetchValidationRules:
         # EntityDefinitionId preserved from phase 1
         assert result[0]["EntityDefinitionId"] == "01IF9000001CNEB"
         assert result[1]["EntityDefinitionId"] == "01IF9000001CNEC"
-        # Metadata merged onto phase-1 records from phase 2
+        # FullName + Metadata merged onto phase-1 records from phase 2
+        assert result[0]["FullName"] == "Account.AmountPositive"
+        assert result[1]["FullName"] == "Opportunity.StatusValid"
         assert result[0]["Metadata"] == {"errorConditionFormula": "Amount <= 0"}
         assert result[1]["Metadata"] == {"errorConditionFormula": "ISBLANK(Status)"}
         c.close()
 
+    def test_fetch_validation_rules_phase2_includes_full_name(
+        self,
+    ) -> None:
+        """Phase 2 SOQL must include FullName (post-P5 enhancement).
+        FullName is the canonical '{Object}.{ValidationName}'
+        identifier the sync layer uses for external_id + parent-
+        Object api_name extraction. Both FullName and Metadata
+        share the 1-row constraint (§1) so they can co-fetch in
+        a single SOQL call."""
+        soqls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            soqls_seen.append(soql)
+            if "Metadata" not in soql:
+                return httpx.Response(200, json={
+                    "records": [{"Id": "03d1", "ValidationName": "X"}],
+                })
+            return httpx.Response(200, json={
+                "records": [{
+                    "Id": "03d1",
+                    "FullName": "Account.X",
+                    "Metadata": {},
+                }],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_validation_rules()
+        # Result carries FullName
+        assert result[0]["FullName"] == "Account.X"
+        # Phase 2 SOQL included FullName + Metadata
+        phase2_soqls = [s for s in soqls_seen if "Metadata" in s]
+        assert len(phase2_soqls) == 1
+        assert "FullName" in phase2_soqls[0]
+        c.close()
+
     def test_fetch_validation_rules_soql_phase_split(self) -> None:
-        """Phase 1 SOQL must NOT contain Metadata. Phase 2 SOQL MUST
-        contain Metadata + WHERE Id = '...' filter."""
+        """Phase 1 SOQL must NOT contain Metadata or FullName (both
+        1-row-constrained). Phase 2 SOQL MUST contain Metadata +
+        FullName + WHERE Id = '...' filter."""
         soqls_seen = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -618,7 +663,11 @@ class TestFetchValidationRules:
                 })
             # Phase 2
             return httpx.Response(200, json={
-                "records": [{"Id": "03d000000000001", "Metadata": {}}]
+                "records": [{
+                    "Id": "03d000000000001",
+                    "FullName": "Account.X",
+                    "Metadata": {},
+                }]
             })
 
         c = _make_client(httpx.MockTransport(handler))
@@ -629,15 +678,18 @@ class TestFetchValidationRules:
         phase2_soqls = [s for s in soqls_seen if "Metadata" in s]
 
         assert len(phase1_soqls) == 1, "Exactly one phase-1 bulk query expected"
-        # Phase 1: must NOT contain Metadata, must NOT join EntityDefinition,
-        # must include EntityDefinitionId, must target ValidationRule.
+        # Phase 1: must NOT contain Metadata or FullName (both 1-row-
+        # constrained), must NOT join EntityDefinition, must include
+        # EntityDefinitionId, must target ValidationRule.
         assert "Metadata" not in phase1_soqls[0]
+        assert "FullName" not in phase1_soqls[0]
         assert "EntityDefinition." not in phase1_soqls[0]
         assert "EntityDefinitionId" in phase1_soqls[0]
         assert "ValidationRule" in phase1_soqls[0]
 
         assert len(phase2_soqls) >= 1, "At least one phase-2 per-Id query expected"
         assert "Metadata" in phase2_soqls[0]
+        assert "FullName" in phase2_soqls[0]
         assert "WHERE Id =" in phase2_soqls[0]
         c.close()
 
