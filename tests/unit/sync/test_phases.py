@@ -512,21 +512,30 @@ class TestPhaseField:
         ]
         return ctx, conn
 
-    def test_phase_field_iterates_over_object_entities(self) -> None:
-        """phase_field reads currently-active Object entities from this
-        sync's data and calls fetch_fields_for_object once per Object."""
+    def test_phase_field_bulk_fetches_for_all_objects_in_one_call(
+        self,
+    ) -> None:
+        """phase_field reads currently-active Object entities from
+        this sync's data and calls fetch_fields_for_objects_bulk ONCE
+        with the full list (bulk fetcher chunks at 25 internally —
+        see test_sf_client). Per-Object fetch_fields_for_object is
+        NOT called by phase_field anymore."""
         ctx, conn = self._ctx_with_objects([
             ('obj-acc', 'Account'),
             ('obj-con', 'Contact'),
         ])
-        ctx.sf_client.fetch_fields_for_object.return_value = []
+        ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {}
         with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
              patch('primeqa.sync.phases.materialize_edges_for_entities'):
             phase_field(ctx, conn)
-        # Called once per Object
-        assert ctx.sf_client.fetch_fields_for_object.call_count == 2
-        ctx.sf_client.fetch_fields_for_object.assert_any_call('Account')
-        ctx.sf_client.fetch_fields_for_object.assert_any_call('Contact')
+        # Bulk fetcher called exactly once with the list of all
+        # object API names. Internal chunking is the fetcher's
+        # responsibility (and its own tests cover it).
+        ctx.sf_client.fetch_fields_for_objects_bulk.assert_called_once_with(
+            ['Account', 'Contact'],
+        )
+        # Old per-Object call is no longer used by phase_field.
+        ctx.sf_client.fetch_fields_for_object.assert_not_called()
         # No fields → no materialize
         mock_bm.assert_not_called()
 
@@ -535,12 +544,16 @@ class TestPhaseField:
     ) -> None:
         """Each field payload is tagged with _parent_object_api_name
         before going to batched_materialize. Marker drives both
-        external_id construction and detail-row FK resolution."""
+        external_id construction and detail-row FK resolution. The
+        bulk fetcher's dict-of-lists is flattened with per-Object
+        marker injection."""
         ctx, conn = self._ctx_with_objects([('obj-acc', 'Account')])
-        ctx.sf_client.fetch_fields_for_object.return_value = [
-            {'name': 'Industry', 'type': 'picklist'},
-            {'name': 'Name', 'type': 'string'},
-        ]
+        ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {
+            'Account': [
+                {'name': 'Industry', 'type': 'picklist'},
+                {'name': 'Name', 'type': 'string'},
+            ],
+        }
         with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
              patch('primeqa.sync.phases.materialize_edges_for_entities'):
             mock_bm.return_value = {
@@ -564,10 +577,12 @@ class TestPhaseField:
         extractors see the post-_strip_volatile shape (same view
         substrate-1 uses for derived-edge inference)."""
         ctx, conn = self._ctx_with_objects([('obj-acc', 'Account')])
-        ctx.sf_client.fetch_fields_for_object.return_value = [
-            {'name': 'OwnerId', 'type': 'reference',
-             'referenceTo': ['User']},
-        ]
+        ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {
+            'Account': [
+                {'name': 'OwnerId', 'type': 'reference',
+                 'referenceTo': ['User']},
+            ],
+        }
         with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
              patch(
                  'primeqa.sync.phases.materialize_edges_for_entities',
@@ -587,15 +602,49 @@ class TestPhaseField:
         assert len(kwargs['normalized_payloads']) == 1
         assert kwargs['normalized_payloads'][0]['_normalized'] is True
 
+    def test_phase_field_handles_per_object_failure_silently(
+        self,
+    ) -> None:
+        """If the bulk fetcher omits a key (e.g., Object's describe
+        returned 404 within its batch), the field_payloads list
+        simply has no entries for that Object. The phase doesn't
+        fail; it materializes what it got. Mirrors the lenient
+        fault-tolerance discipline of fetch_standard_value_sets."""
+        ctx, conn = self._ctx_with_objects([
+            ('obj-acc', 'Account'),
+            ('obj-bad', 'Inaccessible__c'),
+        ])
+        # Bulk fetcher returns only Account; Inaccessible__c omitted
+        # (would have been logged at WARN by the fetcher itself)
+        ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {
+            'Account': [{'name': 'Industry', 'type': 'picklist'}],
+        }
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            mock_bm.return_value = {'Account.Industry': 'fld-1'}
+            phase_field(ctx, conn)
+        # Only Account's field got materialized
+        mock_bm.assert_called_once()
+        payloads = mock_bm.call_args.kwargs['raw_payloads']
+        assert len(payloads) == 1
+        assert payloads[0]['name'] == 'Industry'
+
     def test_phase_field_no_objects_no_work(self) -> None:
-        """No Object entities in this sync → no fetches, no
-        materialize, no edges. Defensive against an empty sync run."""
+        """No Object entities in this sync → bulk fetcher receives
+        [] (which short-circuits to {} internally per its own tests)
+        and no materialize / edge work happens."""
         ctx, conn = self._ctx_with_objects([])
+        # Bulk fetcher is called with [] but returns {}
+        ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {}
         with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
              patch(
                  'primeqa.sync.phases.materialize_edges_for_entities',
              ) as mock_edges:
             result = phase_field(ctx, conn)
+        ctx.sf_client.fetch_fields_for_objects_bulk.assert_called_once_with(
+            [],
+        )
+        # Old per-Object fetcher remains unused
         ctx.sf_client.fetch_fields_for_object.assert_not_called()
         mock_bm.assert_not_called()
         mock_edges.assert_not_called()
@@ -607,6 +656,7 @@ class TestPhaseField:
     ) -> None:
         """Result entity_type is 'Field' regardless of work done."""
         ctx, conn = self._ctx_with_objects([])
+        ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {}
         with patch('primeqa.sync.phases.batched_materialize'), \
              patch('primeqa.sync.phases.materialize_edges_for_entities'):
             result = phase_field(ctx, conn)

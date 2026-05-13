@@ -326,6 +326,201 @@ class TestFetchFieldsForObject:
 
 
 # ----------------------------------------------------------------------
+# fetch_fields_for_objects_bulk (composite/batch variant)
+# ----------------------------------------------------------------------
+
+
+def _composite_batch_handler(
+    describes_by_name: dict[str, dict],
+    failed_names: dict[str, int] | None = None,
+):
+    """Build a handler that returns composite/batch responses
+    matching the live Salesforce shape.
+
+    describes_by_name: {sObject_name: describe_dict_with_fields} for
+        sObjects that should return statusCode=200.
+    failed_names: {sObject_name: status_code} for sObjects that
+        should return non-200 (404, 403, etc.) with an error array
+        as result — matches the real "this sObject doesn't exist /
+        you can't access" behavior.
+
+    Captures all POST bodies in a list keyed by request order;
+    accessible via the handler's `posted_bodies` attribute (a list).
+    """
+    failed_names = failed_names or {}
+    posted_bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/services/oauth2/token":
+            return _token_response()
+        # composite/batch is a POST with JSON body
+        body = json.loads(request.content.decode())
+        posted_bodies.append(body)
+        sub_responses = []
+        for sub in body["batchRequests"]:
+            # Sub-request URL format: 'v66.0/sobjects/{name}/describe'
+            # Extract the {name}.
+            url = sub["url"]
+            # url like 'v66.0/sobjects/Account/describe' (or
+            # URL-encoded). We'll match by suffix.
+            parts = url.split("/")
+            # ['v66.0', 'sobjects', 'NAME', 'describe']
+            name = urllib.parse.unquote(parts[2]) if len(parts) >= 4 else ""
+            if name in failed_names:
+                sub_responses.append({
+                    "statusCode": failed_names[name],
+                    "result": [{
+                        "errorCode": "NOT_FOUND",
+                        "message": f"No describe for {name}",
+                    }],
+                })
+            elif name in describes_by_name:
+                sub_responses.append({
+                    "statusCode": 200,
+                    "result": describes_by_name[name],
+                })
+            else:
+                # Unknown name — treat as 404 (defensive)
+                sub_responses.append({
+                    "statusCode": 404,
+                    "result": [{"errorCode": "NOT_FOUND",
+                                 "message": f"Unknown {name}"}],
+                })
+        return httpx.Response(200, json={
+            "hasErrors": any(r["statusCode"] != 200 for r in sub_responses),
+            "results": sub_responses,
+        })
+
+    handler.posted_bodies = posted_bodies  # type: ignore[attr-defined]
+    return handler
+
+
+import urllib.parse
+import json
+
+
+class TestFetchFieldsForObjectsBulk:
+    def test_empty_input_makes_no_api_calls(self) -> None:
+        """Empty list short-circuits to empty dict; no composite/batch
+        request issued."""
+        posted: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            posted.append({"path": request.url.path})
+            return httpx.Response(200, json={"hasErrors": False,
+                                              "results": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_fields_for_objects_bulk([])
+        assert result == {}
+        # No composite/batch hits (token endpoint may be hit during
+        # client construction; filter to composite calls only).
+        assert not any("composite/batch" in p["path"] for p in posted)
+        c.close()
+
+    def test_returns_fields_keyed_by_object_name(self) -> None:
+        """Two-Object batch → result dict has both keys, each value
+        is the describe.fields list."""
+        describes = {
+            "Account": {"fields": [
+                {"name": "Id", "type": "id"},
+                {"name": "Industry", "type": "picklist"},
+            ]},
+            "Contact": {"fields": [
+                {"name": "Id", "type": "id"},
+                {"name": "Email", "type": "email"},
+            ]},
+        }
+        h = _composite_batch_handler(describes)
+        c = _make_client(httpx.MockTransport(h))
+        result = c.fetch_fields_for_objects_bulk(["Account", "Contact"])
+        assert set(result.keys()) == {"Account", "Contact"}
+        assert len(result["Account"]) == 2
+        assert result["Account"][1]["name"] == "Industry"
+        assert result["Contact"][1]["name"] == "Email"
+        c.close()
+
+    def test_single_batch_for_input_under_limit(self) -> None:
+        """≤25 sObjects → exactly 1 composite/batch request issued."""
+        names = [f"Obj_{i}__c" for i in range(20)]
+        describes = {n: {"fields": [{"name": "Id"}]} for n in names}
+        h = _composite_batch_handler(describes)
+        c = _make_client(httpx.MockTransport(h))
+        result = c.fetch_fields_for_objects_bulk(names)
+        # All 20 sObjects landed in the result
+        assert len(result) == 20
+        # Exactly 1 composite/batch POST was issued
+        assert len(h.posted_bodies) == 1
+        # batchRequests has 20 sub-requests
+        assert len(h.posted_bodies[0]["batchRequests"]) == 20
+        c.close()
+
+    def test_chunks_input_over_limit(self) -> None:
+        """146 sObjects → 6 composite batches: 25, 25, 25, 25, 25, 21."""
+        names = [f"Obj_{i}__c" for i in range(146)]
+        describes = {n: {"fields": [{"name": "Id"}]} for n in names}
+        h = _composite_batch_handler(describes)
+        c = _make_client(httpx.MockTransport(h))
+        result = c.fetch_fields_for_objects_bulk(names)
+        # All 146 sObjects accounted for in result
+        assert len(result) == 146
+        # Exactly 6 composite batches
+        assert len(h.posted_bodies) == 6
+        chunk_sizes = [
+            len(body["batchRequests"]) for body in h.posted_bodies
+        ]
+        assert chunk_sizes == [25, 25, 25, 25, 25, 21]
+        c.close()
+
+    def test_omits_failed_objects_from_result(self) -> None:
+        """Per-Object 404 within a batch is silently omitted from
+        the result dict. Other sObjects in the same batch return
+        normally."""
+        describes = {
+            "Account": {"fields": [{"name": "Id"}]},
+            "Contact": {"fields": [{"name": "Id"}]},
+        }
+        # Lead sub-request will return statusCode=404
+        h = _composite_batch_handler(describes, failed_names={"Lead": 404})
+        c = _make_client(httpx.MockTransport(h))
+        result = c.fetch_fields_for_objects_bulk(
+            ["Account", "Lead", "Contact"],
+        )
+        # Lead omitted; Account + Contact present
+        assert set(result.keys()) == {"Account", "Contact"}
+        c.close()
+
+    def test_sub_request_url_format(self) -> None:
+        """Sub-request URL uses api_version-prefixed relative path
+        — Salesforce composite/batch requires this exact form
+        (e.g., 'v66.0/sobjects/Account/describe'). Verifies the
+        survey-confirmed format isn't accidentally dropped."""
+        describes = {"Account": {"fields": []}}
+        h = _composite_batch_handler(describes)
+        c = _make_client(httpx.MockTransport(h))
+        c.fetch_fields_for_objects_bulk(["Account"])
+        assert len(h.posted_bodies) == 1
+        sub_url = h.posted_bodies[0]["batchRequests"][0]["url"]
+        assert sub_url == f"{SF_API_VERSION}/sobjects/Account/describe"
+        c.close()
+
+    def test_url_encodes_object_names(self) -> None:
+        """Custom sObject names with special chars (rare but
+        possible) get URL-encoded in the sub-request URL."""
+        # __c suffix is common; encoding leaves it alone, but the
+        # quote-with-safe='' call ensures any future special chars
+        # would be handled.
+        describes = {"My_Object__c": {"fields": []}}
+        h = _composite_batch_handler(describes)
+        c = _make_client(httpx.MockTransport(h))
+        c.fetch_fields_for_objects_bulk(["My_Object__c"])
+        sub_url = h.posted_bodies[0]["batchRequests"][0]["url"]
+        assert "My_Object__c" in sub_url
+
+
+# ----------------------------------------------------------------------
 # fetch_validation_rules
 # ----------------------------------------------------------------------
 

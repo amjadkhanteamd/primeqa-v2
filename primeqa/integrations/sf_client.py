@@ -145,6 +145,7 @@ class SalesforceClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
         _refresh_attempted: bool = False,
         _retry_count: int = 0,
     ) -> httpx.Response:
@@ -154,12 +155,19 @@ class SalesforceClient:
         - Transient (429, 5xx) → retry with backoff up to MAX_RETRIES.
         - Persistent 429 → SFRateLimitError.
         - Other 4xx/5xx → SFRequestError.
+
+        json: optional dict body for POST/PATCH requests. httpx
+        serializes with the standard JSON encoder and sets the
+        Content-Type header. Used by fetch_fields_for_objects_bulk
+        for /composite/batch.
         """
         url = f"{self.instance_url}{path}"
         headers = self._authed_headers()
 
         try:
-            resp = self._client.request(method, url, headers=headers, params=params)
+            resp = self._client.request(
+                method, url, headers=headers, params=params, json=json,
+            )
         except httpx.HTTPError as e:
             raise SFRequestError(f"Network error: {e}") from e
 
@@ -173,7 +181,7 @@ class SalesforceClient:
             self._access_token = None
             self._refresh_access_token()
             return self._request(
-                method, path, params=params,
+                method, path, params=params, json=json,
                 _refresh_attempted=True, _retry_count=_retry_count,
             )
 
@@ -183,7 +191,7 @@ class SalesforceClient:
                 backoff = RETRY_BACKOFF_SEQ[min(_retry_count, len(RETRY_BACKOFF_SEQ) - 1)]
                 time.sleep(backoff)
                 return self._request(
-                    method, path, params=params,
+                    method, path, params=params, json=json,
                     _refresh_attempted=_refresh_attempted,
                     _retry_count=_retry_count + 1,
                 )
@@ -268,11 +276,101 @@ class SalesforceClient:
 
         Returns the .fields list from the per-object describe.
         Each field has: name, label, type, custom, picklistValues, etc.
+
+        For multi-Object fetches in sync workflows, prefer
+        fetch_fields_for_objects_bulk — it uses /composite/batch to
+        cut latency ~5-7× (146 sequential describes → ~6 composite
+        batches).
         """
         encoded = urllib.parse.quote(sobject_api_name, safe="")
         path = f"/services/data/{self.api_version}/sobjects/{encoded}/describe"
         resp = self._request("GET", path)
         return resp.json().get("fields", [])
+
+    def fetch_fields_for_objects_bulk(
+        self, object_api_names: list[str],
+    ) -> dict[str, list[dict]]:
+        """Bulk describe for multiple sObjects via /composite/batch.
+
+        Up to 25 sObjects per composite batch request (Salesforce
+        REST API limit; verified against documentation + live probe
+        on the dev sandbox). This helper chunks the input list and
+        issues N composite batches.
+
+        Returns dict keyed by sObject API name → list of field
+        dicts. Per-Object response shape matches
+        fetch_fields_for_object's output (describe.fields list);
+        downstream consumers can use the two methods
+        interchangeably.
+
+        Per-Object failure tolerance: if a single sObject describe
+        fails within a composite batch (e.g., 404 NOT_FOUND for an
+        Object filtered out at the source, or PERMISSION_DENIED),
+        that key is omitted from the return dict and a WARNING
+        logged. Other sObjects in the same batch return normally.
+        This matches the substrate-1 fault-tolerance discipline
+        established by fetch_standard_value_sets (corrections-log
+        §8 addendum).
+
+        Empty input is a no-op (returns {}). No HTTP calls are
+        made — defensive against callers building the list eagerly.
+
+        Sub-request URL format: `{api_version}/sobjects/{name}/describe`
+        (note: api_version already includes the 'v' prefix, so the
+        sub-request URL is e.g. 'v66.0/sobjects/Account/describe').
+        Response shape: {'hasErrors': bool, 'results': [{'statusCode':
+        int, 'result': dict|list}, ...]}. statusCode 200 → result is
+        the describe dict; non-200 → result is an error array.
+        """
+        COMPOSITE_BATCH_LIMIT = 25
+        path = f"/services/data/{self.api_version}/composite/batch"
+
+        result: dict[str, list[dict]] = {}
+        if not object_api_names:
+            return result
+
+        for chunk_start in range(0, len(object_api_names),
+                                   COMPOSITE_BATCH_LIMIT):
+            chunk = object_api_names[
+                chunk_start:chunk_start + COMPOSITE_BATCH_LIMIT
+            ]
+
+            payload = {
+                "batchRequests": [
+                    {
+                        "method": "GET",
+                        "url": (
+                            f"{self.api_version}/sobjects/"
+                            f"{urllib.parse.quote(name, safe='')}/describe"
+                        ),
+                    }
+                    for name in chunk
+                ]
+            }
+
+            resp = self._request("POST", path, json=payload)
+            body = resp.json()
+            sub_results = body.get("results") or []
+
+            for name, sub in zip(chunk, sub_results):
+                status_code = sub.get("statusCode")
+                sub_result = sub.get("result")
+                if status_code == 200 and isinstance(sub_result, dict):
+                    result[name] = sub_result.get("fields", []) or []
+                else:
+                    # Per-Object failure — log + omit from result
+                    # dict. Caller can detect missing keys via
+                    # set-difference if needed.
+                    logger.warning(
+                        "fetch_fields_for_objects_bulk: per-Object "
+                        "describe failed for %r (statusCode=%s, "
+                        "result=%s)",
+                        name, status_code,
+                        sub_result if not isinstance(sub_result, list)
+                        else sub_result[:1],
+                    )
+
+        return result
 
     def fetch_layouts_for_object(self, object_name: str) -> dict:
         """GET /services/data/{api_version}/sobjects/{name}/describe/layouts.

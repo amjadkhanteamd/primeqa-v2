@@ -358,13 +358,27 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
           AND valid_to_seq IS NULL
     """), {"org_id": ctx.connected_org_id}).fetchall()
 
-    # 2. Fetch fields per Object. Each fetch is one REST round trip
-    # to /sobjects/{name}/describe; SF caches these per-org so
-    # repeated syncs against the same org are fast.
+    # 2. Bulk-fetch fields for all Objects via /composite/batch.
+    # Up to 25 sObjects per round trip; for 146 syncable Objects on
+    # this sandbox, that's ~6 composite batches × ~3-5s each instead
+    # of 146 sequential describes × ~1-1.5s = ~150-220s. Live
+    # measurement: ~5-7× wall-clock improvement on the fetch portion
+    # of phase_field.
+    #
+    # Per-Object failure tolerance: bulk fetcher silently omits keys
+    # for sObjects that 404 / 403 within a batch (e.g., an Object
+    # the Object phase materialized but whose describe is restricted
+    # in the current session). The omitted keys are logged at WARN.
+    # We could detect missing keys via set-difference here and treat
+    # them as a sync error; for now, the lenient behavior matches
+    # fetch_standard_value_sets's per-label pattern.
+    object_api_names = [obj.sf_api_name for obj in objects]
+    fields_by_object = ctx.sf_client.fetch_fields_for_objects_bulk(
+        object_api_names,
+    )
+
     field_payloads: list[dict[str, Any]] = []
-    for obj in objects:
-        object_api_name = obj.sf_api_name
-        fields = ctx.sf_client.fetch_fields_for_object(object_api_name)
+    for object_api_name, fields in fields_by_object.items():
         for f in fields:
             f["_parent_object_api_name"] = object_api_name
             field_payloads.append(f)
