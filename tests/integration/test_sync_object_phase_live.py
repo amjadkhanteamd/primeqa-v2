@@ -1,11 +1,12 @@
 """Live integration test for Object + PicklistValueSet + PicklistValue
-+ Field phases, including detail-table writes + edges.
++ Field + RecordType phases, including detail-table writes + edges.
 
 End-to-end: SyncEngine.run_sync() runs all 12 phases for a fresh
-connected_org. Object + PicklistValueSet + PicklistValue + Field
-phases materialize entities; other phases are no-ops returning empty
-results. Field phase is the first edge-writing phase — establishes
-the batched edge-write pattern for subsequent cycles.
+connected_org. Object + PicklistValueSet + PicklistValue + Field +
+RecordType phases materialize entities; other phases are no-ops
+returning empty results. Field phase is the first edge-writing phase
+— establishes the batched edge-write pattern; RecordType is the
+second.
 Verifies:
   - entities table populated with Object rows
   - ai_enrichment_queue populated (2 rows per entity: embedding + summary)
@@ -56,6 +57,14 @@ Verifies:
     at a currently-active entity row). Edge counts stable across
     syncs (set-difference semantics for property-less edges is
     naturally idempotent).
+  - RecordType phase: fetches via Tooling+Metadata two-phase
+    (substrate-1 fetch_record_types). Each RT decorated with
+    _parent_object_api_name (split from FullName at first '.').
+    Writes entity + record_type_details + BELONGS_TO → Object
+    edge (the only RT edge this cycle —
+    CONSTRAINS_PICKLIST_VALUES deferred per corrections-log §14
+    pending substrate-1's registry-vs-derivation contradiction
+    resolution alongside §10 fetch_custom_field_metadata).
 
 Cleanup: deletes all rows referencing the test connected_org's id
 (FK-aware: queue → entities → sync_runs back-ref → logical_versions
@@ -199,7 +208,8 @@ def test_org(db_engine):
         # and makes the cleanup robust against future detail-table
         # additions.
         for detail_table in (
-            "field_details", "picklist_value_details", "object_details",
+            "field_details", "record_type_details",
+            "picklist_value_details", "object_details",
         ):
             conn.execute(text(f"""
                 DELETE FROM {detail_table}
@@ -248,12 +258,13 @@ def test_org(db_engine):
         """), {"id": org_id})
 
 
-def test_live_object_pvs_pv_field_sync_with_edges(
+def test_live_sync_through_record_type(
     live_sf_client, db_engine, test_org,
 ):
     """End-to-end Object + PicklistValueSet + PicklistValue + Field
-    phases, detail-table writes, and edges (Field's first edge-writing
-    cycle)."""
+    + RecordType phases. Detail-table writes, BELONGS_TO + HAS_
+    RELATIONSHIP_TO + RT-source BELONGS_TO edges. Live verification
+    parked pending the local-Postgres switch."""
     from primeqa.sync.engine import SyncEngine
 
     engine = SyncEngine(
@@ -593,6 +604,96 @@ def test_live_object_pvs_pv_field_sync_with_edges(
             f"got {field_queue}"
         )
 
+        # ----- RecordType entities + record_type_details + edges -----
+        # Sandbox at survey time has 5 RTs (per
+        # fetch_record_types() probe). Regression floor: ≥1 (every
+        # Object has at least an implicit Master RT in some orgs;
+        # but Tooling SOQL only returns user-defined RTs, so the
+        # floor is sandbox-dependent). Setting >= 1 as a sentinel
+        # that the phase actually ran and materialized SOMETHING.
+        rt_count = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'RecordType'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert rt_count >= 1, (
+            f"Expected >=1 RecordType entity (regression floor); "
+            f"got {rt_count}"
+        )
+
+        # record_type_details: 1 row per active RT entity
+        rt_details = conn.execute(text("""
+            SELECT COUNT(*) FROM record_type_details rtd
+            JOIN entities e ON e.id = rtd.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'RecordType'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert rt_details == rt_count, (
+            f"record_type_details rows ({rt_details}) != "
+            f"RecordType entity count ({rt_count})"
+        )
+
+        # FK integrity: every RT detail row points at a real
+        # Object entity. NOT NULL FK on object_entity_id.
+        bad_rt_details = conn.execute(text("""
+            SELECT COUNT(*) FROM record_type_details rtd
+            JOIN entities child ON child.id = rtd.entity_id
+            LEFT JOIN entities parent ON parent.id = rtd.object_entity_id
+            WHERE child.last_synced_from_org_id = :id
+              AND child.entity_type = 'RecordType'
+              AND child.valid_to_seq IS NULL
+              AND (parent.id IS NULL OR parent.entity_type != 'Object')
+        """), {"id": test_org}).scalar()
+        assert bad_rt_details == 0, (
+            f"Found {bad_rt_details} record_type_details rows with "
+            f"bad object_entity_id FK target — parent_resolver bug"
+        )
+
+        # BELONGS_TO edges from RTs: every RT has exactly one
+        # BELONGS_TO → its parent Object.
+        rt_belongs_to_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'BELONGS_TO'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'RecordType'
+        """), {"id": test_org}).scalar()
+        assert rt_belongs_to_count == rt_count, (
+            f"BELONGS_TO edge count from RecordType sources "
+            f"({rt_belongs_to_count}) != RT count ({rt_count}); "
+            f"every RT should have exactly one BELONGS_TO edge"
+        )
+
+        # No CONSTRAINS_PICKLIST_VALUES edges this cycle (deferred
+        # per §14)
+        cpv_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges
+            WHERE edge_type = 'CONSTRAINS_PICKLIST_VALUES'
+              AND valid_to_seq IS NULL
+        """)).scalar()
+        assert cpv_count == 0, (
+            f"Expected 0 CONSTRAINS_PICKLIST_VALUES edges "
+            f"(deferred per corrections-log §14); got {cpv_count}"
+        )
+
+        # RT enrichment queue: 2× entity count
+        rt_queue = conn.execute(text("""
+            SELECT COUNT(*) FROM ai_enrichment_queue
+            WHERE entity_type = 'RecordType'
+              AND entity_id IN (
+                  SELECT id FROM entities
+                  WHERE last_synced_from_org_id = :id
+                    AND entity_type = 'RecordType'
+              )
+        """), {"id": test_org}).scalar()
+        assert rt_queue == rt_count * 2, (
+            f"Expected {rt_count * 2} RecordType queue rows; "
+            f"got {rt_queue}"
+        )
+
     # ===== Second sync =====
     sync_run_id_2 = engine.run_sync(connected_org_id=test_org)
     assert sync_run_id_2 != sync_run_id_1
@@ -614,17 +715,19 @@ def test_live_object_pvs_pv_field_sync_with_edges(
             f"Second sync should report 0 superseded (hashes match); "
             f"got {run2.entities_superseded}"
         )
-        # Total unchanged = Object + PVS + PV + Field counts (every
-        # entity from sync 1 should have an unchanged-hash match on
-        # sync 2, including Fields whose _parent_object_api_name
-        # marker round-trips through normalize/hash identically).
+        # Total unchanged = Object + PVS + PV + Field + RecordType
+        # counts (every entity from sync 1 should have an
+        # unchanged-hash match on sync 2, including RTs whose
+        # _parent_object_api_name marker round-trips through
+        # normalize/hash identically).
         expected_unchanged = (
             object_count + pvs_count + pv_count + field_count
+            + rt_count
         )
         assert run2.entities_unchanged == expected_unchanged, (
             f"Second sync should report {expected_unchanged} unchanged "
             f"(Object {object_count} + PVS {pvs_count} + PV "
-            f"{pv_count} + Field {field_count}); "
+            f"{pv_count} + Field {field_count} + RT {rt_count}); "
             f"got {run2.entities_unchanged}"
         )
 
@@ -784,4 +887,35 @@ def test_live_object_pvs_pv_field_sync_with_edges(
         assert hrt_after == hrt_count, (
             f"HAS_RELATIONSHIP_TO edge count should remain {hrt_count} "
             f"after second sync; got {hrt_after}"
+        )
+
+        # RecordType entity + detail + edge counts stable across syncs.
+        rt_count_after = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'RecordType'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert rt_count_after == rt_count
+
+        rt_details_after = conn.execute(text("""
+            SELECT COUNT(*) FROM record_type_details rtd
+            JOIN entities e ON e.id = rtd.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'RecordType'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert rt_details_after == rt_details
+
+        rt_belongs_to_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'BELONGS_TO'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'RecordType'
+        """), {"id": test_org}).scalar()
+        assert rt_belongs_to_after == rt_belongs_to_count, (
+            f"RT BELONGS_TO count should remain {rt_belongs_to_count} "
+            f"after second sync; got {rt_belongs_to_after}"
         )

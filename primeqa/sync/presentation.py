@@ -190,11 +190,48 @@ def _to_presentation_field(normalized: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _to_presentation_record_type(normalized: dict[str, Any]) -> dict[str, Any]:
+    """Map normalized RecordType to semantic_text input shape.
+
+    Salesforce Tooling API for RecordType returns camelCase Metadata
+    keys (developerName, active, description, label, picklistValues,
+    ...). Substrate-1's _to_text_record_type input shape (verified
+    against tests/unit/test_semantic_text.py:_record_type_fixture):
+        {name, object_name, label, is_active, description}
+
+    Bridges:
+      name              ← developerName (Salesforce's canonical
+                          per-Object RT identifier, e.g.,
+                          'PartnerAccount')
+      object_name       ← _parent_object_api_name (phase-injected
+                          from FullName parsing — see
+                          phase_record_type)
+      label             ← label (display name shown to users in
+                          record-type pickers)
+      is_active         ← active (defaults True if missing; almost
+                          always present in Tooling Metadata)
+      description       ← description (often None on minimal RTs)
+
+    No `picklistValues` field carried through — the value-allowed-
+    subset is the CONSTRAINS_PICKLIST_VALUES edge's domain
+    (deferred per corrections-log §14). RecordType's semantic_text
+    speaks to identity + scope, not the picklist constraints.
+    """
+    return {
+        "name": normalized.get("developerName"),
+        "object_name": normalized.get("_parent_object_api_name"),
+        "label": normalized.get("label"),
+        "is_active": normalized.get("active", True),
+        "description": normalized.get("description"),
+    }
+
+
 _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "Object": _to_presentation_object,
     "PicklistValueSet": _to_presentation_picklist_value_set,
     "PicklistValue": _to_presentation_picklist_value,
     "Field": _to_presentation_field,
+    "RecordType": _to_presentation_record_type,
     # Other entity types added by their respective phase cycles per
     # PHASE_2_PLAN_corrections.md §7.
 }

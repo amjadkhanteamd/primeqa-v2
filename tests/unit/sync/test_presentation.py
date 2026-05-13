@@ -9,6 +9,7 @@ from primeqa.sync.presentation import (
     _to_presentation_object,
     _to_presentation_picklist_value,
     _to_presentation_picklist_value_set,
+    _to_presentation_record_type,
     to_presentation,
 )
 
@@ -356,3 +357,52 @@ class TestToPresentationField:
         }
         presentation = _to_presentation_field(normalized)
         assert presentation["reference_to"] is None
+
+
+class TestToPresentationRecordType:
+    def test_maps_developer_name_to_name(self) -> None:
+        """Salesforce Tooling Metadata uses 'developerName' as the
+        per-Object RT identifier; semantic_text input expects 'name'.
+        The adapter bridges this rename."""
+        normalized = {
+            "developerName": "PartnerAccount",
+            "label": "Partner Account",
+            "active": True,
+            "description": "Accounts that are channel partners.",
+            "_parent_object_api_name": "Account",
+        }
+        presentation = _to_presentation_record_type(normalized)
+        assert presentation["name"] == "PartnerAccount"
+        assert presentation["label"] == "Partner Account"
+        assert presentation["is_active"] is True
+        assert presentation["description"] == (
+            "Accounts that are channel partners."
+        )
+
+    def test_object_name_comes_from_parent_marker(self) -> None:
+        """object_name in semantic_text input is sourced from the
+        phase-injected _parent_object_api_name marker (parsed from
+        FullName at the phase function); NOT from any field in the
+        raw Tooling response."""
+        normalized = {
+            "developerName": "Trial",
+            "_parent_object_api_name": "MyNS__License__c",
+        }
+        presentation = _to_presentation_record_type(normalized)
+        assert presentation["object_name"] == "MyNS__License__c"
+
+    def test_defaults_active_to_true(self) -> None:
+        """Tooling Metadata.active is almost always present, but if
+        missing the adapter defaults to True. Aligns with the
+        is_master=False default — RTs are assumed live unless
+        explicitly inactive."""
+        normalized = {
+            "developerName": "Default",
+            "_parent_object_api_name": "Account",
+        }
+        presentation = _to_presentation_record_type(normalized)
+        assert presentation["is_active"] is True
+        # Description defaults to None (passes through to
+        # _to_text_record_type which substitutes "no description
+        # provided")
+        assert presentation["description"] is None

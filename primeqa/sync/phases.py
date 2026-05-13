@@ -417,10 +417,90 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
     return result
 
 
+def phase_record_type(ctx: SyncContext, conn: Any) -> PhaseResult:
+    """RecordType phase — per-Object variants for layouts, picklist
+    subsets, and business processes.
+
+    Fifth real phase (5/12). Modest cardinality: sandbox at 5 RTs,
+    production orgs typically 5-200. Fetched via
+    fetch_record_types() — substrate-1's Category-2 (two-phase
+    Tooling+Metadata) fetcher per corrections-log §1. Each RT
+    carries:
+      - Id, Name, IsActive, Description, SobjectType,
+        EntityDefinitionId, BusinessProcessId, NamespacePrefix
+      - FullName (Salesforce canonical identifier;
+        '{Object}.{DeveloperName}' or namespaced variant)
+      - Metadata (active, label, description, businessProcess,
+        compactLayoutAssignment, picklistValues — the per-Field
+        allowed-value subset)
+
+    Parent Object resolution: extract from FullName by splitting at
+    the first '.'. Examples:
+      'Account.PartnerAccount'      → parent 'Account'
+      'MyNS__Account.PartnerAccount' → parent 'MyNS__Account'
+      'sfLma__License__c.Trial'      → parent 'sfLma__License__c'
+
+    Injected as `_parent_object_api_name` marker; survives
+    _strip_volatile to land in the normalized hash and drive
+    BELONGS_TO + detail-table FK resolution downstream.
+
+    CONSTRAINS_PICKLIST_VALUES deferred per corrections-log §14.
+    Substrate-1 has an internal registry-vs-derivation
+    contradiction on the edge's target type (PicklistValueSet vs
+    PicklistValue) that needs resolution alongside §10's
+    fetch_custom_field_metadata. The grants junction table
+    (record_type_picklist_value_grants) also stays empty until
+    that follow-up cycle.
+
+    Memory note: 5-200 RTs × ~5 KB per Metadata blob = trivial
+    (<1 MB).
+    """
+    result = PhaseResult(entity_type="RecordType")
+
+    raw_rts = ctx.sf_client.fetch_record_types()
+
+    # Inject parent Object marker from FullName.
+    for rt in raw_rts:
+        full_name = rt.get("FullName") or ""
+        # Defensive split — RTs without a '.' in FullName would
+        # be malformed at the SF level; we set None so downstream
+        # external_id and detail-FK resolution fail loud rather
+        # than silently mis-parenting.
+        if "." in full_name:
+            rt["_parent_object_api_name"] = full_name.split(".", 1)[0]
+        else:
+            rt["_parent_object_api_name"] = None
+
+    if not raw_rts:
+        return result
+
+    entity_id_map = batched_materialize(
+        ctx=ctx,
+        conn=conn,
+        entity_type="RecordType",
+        raw_payloads=raw_rts,
+        result=result,
+        return_id_map=True,
+    )
+
+    normalized_payloads = [normalize("RecordType", p) for p in raw_rts]
+    materialize_edges_for_entities(
+        ctx=ctx,
+        conn=conn,
+        source_entity_type="RecordType",
+        entity_id_map=entity_id_map,
+        normalized_payloads=normalized_payloads,
+        result=result,
+    )
+
+    return result
+
+
 PHASE_REGISTRY["Object"] = phase_object
 PHASE_REGISTRY["PicklistValueSet"] = phase_picklist_value_set
 PHASE_REGISTRY["PicklistValue"] = phase_picklist_value
 PHASE_REGISTRY["Field"] = phase_field
+PHASE_REGISTRY["RecordType"] = phase_record_type
 
 
 def get_phase_function(entity_type: str) -> PhaseFunction:

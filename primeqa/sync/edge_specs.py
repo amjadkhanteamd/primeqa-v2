@@ -86,6 +86,27 @@ def _field_has_relationship_to_targets(normalized: dict) -> list[str]:
 
 
 # ----------------------------------------------------------------------
+# RecordType edge spec extractors
+# ----------------------------------------------------------------------
+
+
+def _record_type_belongs_to_targets(normalized: dict) -> list[str]:
+    """Every RecordType belongs to exactly one Object — the parent.
+
+    Parent Object is supplied via the `_parent_object_api_name`
+    marker that `phase_record_type` injects on each raw RT payload
+    before normalization. The marker survives `_strip_volatile`
+    and lands in the normalized payload.
+
+    Returns a single-element list or empty (defensive — never
+    expected in normal sync flow but guards against a missing
+    marker from a phase function bug).
+    """
+    parent = normalized.get("_parent_object_api_name")
+    return [parent] if parent else []
+
+
+# ----------------------------------------------------------------------
 # Registry
 # ----------------------------------------------------------------------
 
@@ -105,6 +126,19 @@ _EDGE_SPECS: dict[str, list[EdgeSpec]] = {
         # HAS_PICKLIST_VALUES deferred — requires Tooling-API
         # fetch_custom_field_metadata (REST describe doesn't expose
         # GVS/SVS references). Documented in corrections-log §10.
+    ],
+    "RecordType": [
+        EdgeSpec(
+            target_entity_type="Object",
+            edge_type="BELONGS_TO",
+            extract_target_external_ids=_record_type_belongs_to_targets,
+        ),
+        # CONSTRAINS_PICKLIST_VALUES deferred — both substrate-1's
+        # registry-vs-derivation contradiction (§14) and the §10
+        # GVS/SVS detection block need to be resolved first. Will
+        # land in a future cycle that includes
+        # fetch_custom_field_metadata + record_type_picklist_value_
+        # grants junction-table writes.
     ],
     # Other entity types add their specs here as their phase cycles land.
 }

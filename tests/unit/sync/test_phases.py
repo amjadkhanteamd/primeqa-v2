@@ -52,7 +52,8 @@ class TestPhaseRegistry:
         # Real phase implementations live elsewhere and are tested
         # separately; this test covers only the remaining no-op
         # placeholders.
-        real_phases = {"Object", "PicklistValueSet", "PicklistValue", "Field"}
+        real_phases = {"Object", "PicklistValueSet", "PicklistValue",
+                       "Field", "RecordType"}
         for entity_type, phase_fn in PHASE_REGISTRY.items():
             if entity_type in real_phases:
                 continue
@@ -662,4 +663,147 @@ class TestPhaseField:
             result = phase_field(ctx, conn)
         assert isinstance(result, PhaseResult)
         assert result.entity_type == 'Field'
+        assert result.succeeded is True
+
+
+# ----------------------------------------------------------------------
+# phase_record_type — fifth real phase
+# ----------------------------------------------------------------------
+
+from primeqa.sync.phases import phase_record_type
+
+
+class TestPhaseRecordType:
+    def _ok_rt(self, full_name="Account.PartnerAccount", **overrides):
+        base = {
+            "Id": "012000000000ABC",
+            "FullName": full_name,
+            "Name": "PartnerAccount",
+            "IsActive": True,
+            "Metadata": {
+                "active": True,
+                "label": "Partner Account",
+                "description": "Partner-channel accounts",
+                "developerName": "PartnerAccount",
+            },
+        }
+        # Tooling response shape mixes top-level + Metadata fields.
+        # _to_presentation_record_type reads developerName from the
+        # top of the normalized dict; the substrate-1 normalize
+        # _strip_volatile preserves whatever shape we send. To match
+        # phase_record_type's expectations, surface developerName +
+        # active + label at top level (the way Tooling's flat-record
+        # SELECT actually returns them in real production).
+        base['developerName'] = base['Metadata']['developerName']
+        base['active'] = base['Metadata']['active']
+        base['label'] = base['Metadata']['label']
+        base['description'] = base['Metadata']['description']
+        base.update(overrides)
+        return base
+
+    def test_phase_record_type_calls_fetch_record_types(self) -> None:
+        """phase_record_type delegates Tooling fetching to
+        ctx.sf_client.fetch_record_types()."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_record_types.return_value = []
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize"):
+            phase_record_type(ctx, conn)
+        ctx.sf_client.fetch_record_types.assert_called_once_with()
+
+    def test_phase_record_type_decorates_parent_marker_from_fullname(
+        self,
+    ) -> None:
+        """Each RT's FullName is split at the first '.' to extract
+        the parent Object API name; that name is injected as
+        _parent_object_api_name before materialize. The marker
+        drives both external_id (which uses FullName directly) AND
+        detail-row FK resolution + BELONGS_TO edge target lookup."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_record_types.return_value = [
+            self._ok_rt("Account.PartnerAccount"),
+            self._ok_rt("Contact.Customer"),
+        ]
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities"):
+            mock_bm.return_value = {
+                "Account.PartnerAccount": "rt-1",
+                "Contact.Customer": "rt-2",
+            }
+            phase_record_type(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        assert len(payloads) == 2
+        parent_names = {p["_parent_object_api_name"] for p in payloads}
+        assert parent_names == {"Account", "Contact"}
+
+    def test_phase_record_type_handles_namespaced_fullname(self) -> None:
+        """Namespaced FullName like 'MyNS__Object.RT' splits cleanly:
+        parent_object_api_name = 'MyNS__Object'. Same algorithm
+        (split at first '.') works for both namespaced and
+        non-namespaced; verifying the namespaced case explicitly so
+        regressions are loud."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_record_types.return_value = [
+            self._ok_rt("sfLma__License__c.Trial"),
+        ]
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities"):
+            mock_bm.return_value = {"sfLma__License__c.Trial": "rt-1"}
+            phase_record_type(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        assert payloads[0]["_parent_object_api_name"] == "sfLma__License__c"
+
+    def test_phase_record_type_calls_batched_materialize_and_edges(
+        self,
+    ) -> None:
+        """phase_record_type calls batched_materialize with
+        return_id_map=True and pipes the id_map plus normalized
+        payloads to materialize_edges_for_entities for BELONGS_TO
+        edge writes."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_record_types.return_value = [
+            self._ok_rt("Account.PartnerAccount"),
+        ]
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges, \
+             patch(
+                 "primeqa.sync.phases.normalize",
+                 side_effect=lambda et, p: {**p, "_normalized": True},
+             ):
+            mock_bm.return_value = {"Account.PartnerAccount": "rt-1"}
+            phase_record_type(ctx, conn)
+        # batched_materialize called with return_id_map=True (edges need
+        # the source entity_id_map)
+        assert mock_bm.call_args.kwargs.get("return_id_map") is True
+        assert mock_bm.call_args.kwargs["entity_type"] == "RecordType"
+        # edges hook called with the id_map + normalized payloads
+        mock_edges.assert_called_once()
+        edge_kwargs = mock_edges.call_args.kwargs
+        assert edge_kwargs["source_entity_type"] == "RecordType"
+        assert edge_kwargs["entity_id_map"] == {
+            "Account.PartnerAccount": "rt-1",
+        }
+        assert len(edge_kwargs["normalized_payloads"]) == 1
+        assert edge_kwargs["normalized_payloads"][0]["_normalized"] is True
+
+    def test_phase_record_type_empty_response(self) -> None:
+        """Empty fetch (org with 0 RTs — rare but possible) → no
+        materialize, no edges, all-zero result."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_record_types.return_value = []
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges:
+            result = phase_record_type(ctx, conn)
+        mock_bm.assert_not_called()
+        mock_edges.assert_not_called()
+        assert result.entity_type == "RecordType"
+        assert result.entities_inserted == 0
         assert result.succeeded is True

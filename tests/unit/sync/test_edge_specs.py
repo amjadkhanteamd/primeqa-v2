@@ -11,6 +11,7 @@ from primeqa.sync.edge_specs import (
     EdgeSpec,
     _field_belongs_to_targets,
     _field_has_relationship_to_targets,
+    _record_type_belongs_to_targets,
     get_edge_specs,
 )
 
@@ -77,6 +78,26 @@ class TestFieldHasRelationshipToTargets:
         assert _field_has_relationship_to_targets({"name": "x"}) == []
 
 
+class TestRecordTypeBelongsToTargets:
+    def test_returns_parent_object_when_marker_present(self) -> None:
+        """The phase-injected _parent_object_api_name marker is the
+        sole source of the parent Object reference."""
+        targets = _record_type_belongs_to_targets({
+            "developerName": "PartnerAccount",
+            "_parent_object_api_name": "Account",
+        })
+        assert targets == ["Account"]
+
+    def test_returns_empty_when_marker_missing(self) -> None:
+        """Defensive: missing marker → empty list. Materialize layer
+        skips empty-target edges silently — louder failure happens at
+        external_id construction time (where FullName is required)."""
+        targets = _record_type_belongs_to_targets({
+            "developerName": "PartnerAccount",
+        })
+        assert targets == []
+
+
 class TestGetEdgeSpecs:
     def test_returns_two_specs_for_field(self) -> None:
         """Field has BELONGS_TO + HAS_RELATIONSHIP_TO this cycle.
@@ -92,6 +113,17 @@ class TestGetEdgeSpecs:
         specs = get_edge_specs("Field")
         for spec in specs:
             assert spec.target_entity_type == "Object"
+
+    def test_returns_one_spec_for_record_type(self) -> None:
+        """RecordType has BELONGS_TO only this cycle.
+        CONSTRAINS_PICKLIST_VALUES deferred per corrections-log §14
+        (substrate-1 registry-vs-derivation contradiction) and §10
+        (fetch_custom_field_metadata missing)."""
+        specs = get_edge_specs("RecordType")
+        assert len(specs) == 1
+        spec = specs[0]
+        assert spec.edge_type == "BELONGS_TO"
+        assert spec.target_entity_type == "Object"
 
     def test_returns_empty_for_unregistered_entity_type(self) -> None:
         """Entity types without edges (e.g., Object source, or types

@@ -580,11 +580,35 @@ class TestExtractExternalId:
          {"_parent_external_id": "MyCustomGVS",
           "valueName": "Banking"},
          "MyCustomGVS.Banking"),
+        # RecordType: external_id = Salesforce-provided FullName.
+        # Same canonical-identifier pattern as GVS — no composite
+        # construction needed since the Tooling fetcher hands us
+        # the identifier directly.
+        ("RecordType",
+         {"FullName": "Account.PartnerAccount",
+          "developerName": "PartnerAccount"},
+         "Account.PartnerAccount"),
+        ("RecordType",
+         {"FullName": "MyNS__License__c.Trial"},
+         "MyNS__License__c.Trial"),
     ])
     def test_extract_external_id_known_types(
         self, entity_type: str, raw: dict, expected: str,
     ) -> None:
         assert _extract_external_id(entity_type, raw) == expected
+
+    def test_extract_external_id_record_type_raises_when_fullname_missing(
+        self,
+    ) -> None:
+        """RecordType without FullName → ValueError. Without the
+        Tooling-provided identifier we have no way to compose one
+        (developerName alone isn't unique across Objects)."""
+        with pytest.raises(ValueError) as excinfo:
+            _extract_external_id(
+                "RecordType",
+                {"developerName": "PartnerAccount"},
+            )
+        assert "FullName" in str(excinfo.value)
 
     def test_extract_external_id_unknown_type_raises(self) -> None:
         with pytest.raises(KeyError) as excinfo:

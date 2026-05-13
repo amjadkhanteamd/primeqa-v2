@@ -263,10 +263,68 @@ def _map_field_details(
     }
 
 
+def _map_record_type_details(
+    normalized: dict[str, Any],
+    entity_id: str,
+    parent_resolver: Callable[..., Optional[str]],
+) -> dict[str, Any]:
+    """Map normalized RecordType payload → record_type_details row.
+
+    Hot columns per substrate-1's design (5 total; record_type_
+    details is one of the cleanest detail tables):
+      entity_id           ← caller-supplied
+      object_entity_id    ← parent Object (NOT NULL FK; resolved
+                            from _parent_object_api_name marker)
+      is_active           ← Metadata.active (defaults True)
+      is_master           ← derived: developerName == 'Master'
+                            (Salesforce's implicit/master RT for
+                            every Object; not the same as
+                            "default" — that's a Profile-level
+                            assignment carried elsewhere)
+      created_at          ← DB DEFAULT now()
+
+    Raises ValueError if:
+      - _parent_object_api_name marker is missing (phase function
+        bug — phase_record_type splits FullName to inject it)
+      - parent_resolver returns None (parent Object not
+        materialized — ENTITY_ORDER places Object well before
+        RecordType, so this would signal a serious upstream
+        problem)
+    """
+    parent_marker = normalized.get("_parent_object_api_name")
+    if not parent_marker:
+        raise ValueError(
+            f"RecordType normalized payload missing "
+            f"'_parent_object_api_name' marker; "
+            f"phase_record_type must inject this. "
+            f"Got keys: {sorted(normalized.keys())}"
+        )
+    parent_object_id = parent_resolver(
+        entity_type="Object",
+        external_id=parent_marker,
+    )
+    if parent_object_id is None:
+        raise ValueError(
+            f"Cannot resolve parent Object {parent_marker!r} for "
+            f"RecordType {normalized.get('developerName')!r}. "
+            f"Parent must be materialized before child "
+            f"(ENTITY_ORDER places Object before RecordType)."
+        )
+
+    developer_name = normalized.get("developerName")
+    return {
+        "entity_id": entity_id,
+        "object_entity_id": parent_object_id,
+        "is_active": bool(normalized.get("active", True)),
+        "is_master": developer_name == "Master",
+    }
+
+
 _DETAIL_TABLE_MAPPERS: dict[str, DetailMapper] = {
     "Object": _map_object_details,
     "PicklistValue": _map_picklist_value_details,
     "Field": _map_field_details,
+    "RecordType": _map_record_type_details,
     # Other entity types added by their respective phase cycles.
     # PicklistValueSet intentionally absent — no detail table.
 }

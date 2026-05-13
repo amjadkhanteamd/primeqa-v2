@@ -311,6 +311,20 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
                 f"name={name!r}"
             )
         return f"{parent}.{name}"
+    if entity_type == "RecordType":
+        # Salesforce Tooling provides FullName directly as
+        # '{Object}.{DeveloperName}' (e.g., 'Account.PartnerAccount';
+        # for namespaced/managed-package: 'MyNS__Object.DeveloperName').
+        # Same canonical-identifier pattern as GVS — no composite
+        # construction needed; the fetcher hands us the identifier.
+        full_name = raw.get("FullName")
+        if not full_name:
+            raise ValueError(
+                f"RecordType requires 'FullName' (from Salesforce "
+                f"Tooling Metadata fetch); got raw keys "
+                f"{sorted(raw.keys())}"
+            )
+        return full_name
     raise KeyError(
         f"No external_id extractor for entity_type "
         f"{entity_type!r}. Add to "

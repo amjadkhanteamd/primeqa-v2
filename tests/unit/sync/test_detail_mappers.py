@@ -16,6 +16,7 @@ from primeqa.sync.detail_mappers import (
     _map_field_details,
     _map_object_details,
     _map_picklist_value_details,
+    _map_record_type_details,
     get_detail_mapper,
 )
 
@@ -417,3 +418,108 @@ class TestMapFieldDetails:
         msg = str(excinfo.value)
         assert "MysteryObject" in msg
         assert "ENTITY_ORDER" in msg
+
+
+class TestMapRecordTypeDetails:
+    def _normalized(self, **overrides) -> dict:
+        base = {
+            "developerName": "PartnerAccount",
+            "label": "Partner Account",
+            "active": True,
+            "_parent_object_api_name": "Account",
+        }
+        base.update(overrides)
+        return base
+
+    def test_map_record_type_details_resolves_parent(self) -> None:
+        """The _parent_object_api_name marker drives the
+        object_entity_id FK resolution; resolver gets the standard
+        (entity_type='Object', external_id=...) tuple."""
+        resolver = MagicMock(return_value="obj-account-uuid")
+        row = _map_record_type_details(
+            normalized=self._normalized(),
+            entity_id="rt-partner-uuid",
+            parent_resolver=resolver,
+        )
+        resolver.assert_called_once_with(
+            entity_type="Object", external_id="Account",
+        )
+        assert row["entity_id"] == "rt-partner-uuid"
+        assert row["object_entity_id"] == "obj-account-uuid"
+        assert row["is_active"] is True
+        # developerName != 'Master' → is_master False
+        assert row["is_master"] is False
+
+    def test_map_record_type_details_master_when_developer_name_master(
+        self,
+    ) -> None:
+        """Salesforce's implicit Master RT is detected by
+        developerName == 'Master'. This is the canonical convention
+        for the auto-generated RT every Object has."""
+        row = _map_record_type_details(
+            normalized=self._normalized(
+                developerName="Master", label="Master",
+            ),
+            entity_id="rt-master",
+            parent_resolver=lambda **_: "obj-account",
+        )
+        assert row["is_master"] is True
+
+    def test_map_record_type_details_is_master_false_for_other_names(
+        self,
+    ) -> None:
+        """Any developerName other than the exact string 'Master'
+        yields is_master=False. Even 'master' (lowercase) → False;
+        the convention is case-sensitive."""
+        for dev_name in ("PartnerAccount", "master", "Default", "X"):
+            row = _map_record_type_details(
+                normalized=self._normalized(developerName=dev_name),
+                entity_id="x",
+                parent_resolver=lambda **_: "obj",
+            )
+            assert row["is_master"] is False, (
+                f"developerName={dev_name!r} unexpectedly mapped to "
+                f"is_master=True"
+            )
+
+    def test_map_record_type_details_raises_on_missing_parent_marker(
+        self,
+    ) -> None:
+        """Missing _parent_object_api_name marker → ValueError. Phase
+        function bug detection."""
+        normalized = self._normalized()
+        normalized.pop("_parent_object_api_name")
+        with pytest.raises(ValueError) as excinfo:
+            _map_record_type_details(
+                normalized=normalized, entity_id="x",
+                parent_resolver=lambda **_: "parent",
+            )
+        assert "_parent_object_api_name" in str(excinfo.value)
+
+    def test_map_record_type_details_raises_on_unresolvable_parent(
+        self,
+    ) -> None:
+        """Unresolvable parent Object → ValueError naming the parent.
+        NOT NULL FK column means we MUST fail rather than write NULL."""
+        with pytest.raises(ValueError) as excinfo:
+            _map_record_type_details(
+                normalized=self._normalized(
+                    _parent_object_api_name="GhostObject",
+                ),
+                entity_id="x",
+                parent_resolver=lambda **_: None,
+            )
+        msg = str(excinfo.value)
+        assert "GhostObject" in msg
+        assert "ENTITY_ORDER" in msg
+
+
+class TestGetDetailMapperRecordType:
+    def test_get_detail_mapper_returns_tuple_for_record_type(self) -> None:
+        """RecordType is registered — returns ('record_type_details',
+        mapper)."""
+        result = get_detail_mapper("RecordType")
+        assert result is not None
+        table_name, mapper = result
+        assert table_name == "record_type_details"
+        assert mapper is _map_record_type_details

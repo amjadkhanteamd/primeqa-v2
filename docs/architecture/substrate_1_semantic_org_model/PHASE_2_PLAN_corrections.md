@@ -601,3 +601,57 @@ single-target-by-design (like BELONGS_TO) or multi-target
 reference idx_edges_unique_containment by being added to
 its partial filter; multi-target types should NOT.
 
+## §14: Substrate-1 internal contradiction — CONSTRAINS_PICKLIST_VALUES target type
+
+**Date:** 2026-05-12
+**Step:** RecordType phase (5 of 12) — survey before
+            implementation
+**Source:** Found during survey of substrate-1's edge writers
+            for the RecordType phase
+
+Substrate-1's TIER_1_EDGES registry and runtime derivation
+code disagree on the target entity type for the
+CONSTRAINS_PICKLIST_VALUES edge:
+
+- `primeqa/semantic/edges.py` TIER_1_EDGES registry says:
+    CONSTRAINS_PICKLIST_VALUES
+      source: RecordType
+      target: PicklistValueSet (coarse — one edge per
+                                RT × value set)
+- `primeqa/semantic/derivation.py::_edges_from_record_type_row`
+  writes target_entity_id from a row in
+  record_type_picklist_value_grants, which keys on
+  `picklist_value_entity_id` — i.e., target is a
+  PicklistValue, not a PicklistValueSet (fine — one edge
+  per RT × individual value)
+
+No CHECK constraint enforces target.entity_type matches the
+registry's declared target_entity_types. At runtime, the
+derivation writer's behavior is what actually ships.
+
+Implications:
+1. Sync engine CONSTRAINS_PICKLIST_VALUES writes (deferred —
+   see below) must choose one model and resolve the
+   contradiction.
+2. record_type_picklist_value_grants junction table (PK on
+   RT × PicklistValue) supports fine model; coarse model
+   would use a different schema.
+3. Cardinality differs dramatically: fine model produces
+   ~5-20 edges per RT (one per active picklist value); coarse
+   model produces ~1-5 edges per RT (one per constrained
+   value set). For 5 RTs, that's the difference between
+   ~50-100 edges and ~5-25 edges.
+
+**Resolution deferred.** RecordType phase ships without
+CONSTRAINS_PICKLIST_VALUES until:
+- fetch_custom_field_metadata Tooling fetcher (§10) lands,
+  enabling picklist→value-set identity resolution
+- Substrate-1 design owner picks a model (coarse vs fine)
+  and the contradicting code path is reconciled
+
+Likely resolution path: fine model wins because
+record_type_picklist_value_grants already exists and is
+consistent with derivation.py. The registry's declared
+target should change to PicklistValue. But this is
+substrate-1's decision, not sync's.
+
