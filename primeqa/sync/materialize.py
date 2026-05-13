@@ -342,6 +342,20 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
                 f"resolution); got raw keys {sorted(raw.keys())}"
             )
         return full_name
+    if entity_type == "ValidationRule":
+        # Tooling provides FullName directly as
+        # '{Object}.{ValidationName}' (post-P5 substrate-1 fetcher
+        # enhancement — fetch_validation_rules Phase 2 SOQL now
+        # includes FullName alongside Metadata). Same idiom as
+        # RecordType — the fetcher hands us the identifier.
+        full_name = raw.get("FullName")
+        if not full_name:
+            raise ValueError(
+                f"ValidationRule requires 'FullName' (from "
+                f"Salesforce Tooling Phase 2 fetch post-P5); got "
+                f"raw keys {sorted(raw.keys())}"
+            )
+        return full_name
     raise KeyError(
         f"No external_id extractor for entity_type "
         f"{entity_type!r}. Add to "

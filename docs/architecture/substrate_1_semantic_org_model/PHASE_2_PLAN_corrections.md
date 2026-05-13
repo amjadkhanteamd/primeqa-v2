@@ -734,3 +734,40 @@ another entity type that hasn't been implemented yet, defer
 the edge spec until both ends are real. Avoids speculative
 unused code paths that produce silent zero-edge writes.
 
+## §17: ValidationRule REFERENCES edge deferred — formula parser unbuilt
+
+**Date:** 2026-05-12
+**Step:** ValidationRule phase (7 of 12)
+**Source:** TIER_1_EDGES survey during ValidationRule cycle
+
+TIER_1_EDGES has a third VR-source edge type beyond
+BELONGS_TO and APPLIES_TO:
+  REFERENCES: ValidationRule → Field (property-bearing)
+
+REFERENCES carries ReferencesProperties:
+  reference_type: 'read' | 'priorvalue' | 'ischanged' | 'isnew'
+  is_priorvalue: bool
+  is_ischanged: bool
+  is_isnew: bool
+
+Substrate-1 has a validation_rule_field_refs junction table
+parallel to record_type_picklist_value_grants. Writing
+REFERENCES requires:
+
+1. Salesforce formula language parser (tokenize PRIORVALUE,
+   ISCHANGED, ISNEW, bare field references, dotted
+   relationship traversals like Owner.Name)
+2. Field-name disambiguation (bare 'Amount' implies parent-
+   Object's Amount; 'Account.Industry' is qualified)
+3. Junction-table writer (similar to deferred
+   record_type_picklist_value_grants)
+
+None of these exist today. Building them is its own focused
+cycle.
+
+Deferred. Pattern matches §10 (HAS_PICKLIST_VALUES needs
+fetch_custom_field_metadata), §14 (CONSTRAINS_PICKLIST_VALUES
+needs §10 + design resolution), §16 (ASSIGNED_TO_PROFILE_RT
+needs Profile entities) — each waits for unbuilt
+infrastructure.
+

@@ -601,6 +601,17 @@ class TestExtractExternalId:
         ("Layout",
          {"_layout_full_name": "Contact-Contact (Customer)"},
          "Contact-Contact (Customer)"),
+        # ValidationRule: external_id = Salesforce-provided FullName
+        # (post-P5 fetcher enhancement). Same canonical-identifier
+        # pattern as RecordType — Tooling Phase 2 hands us the
+        # identifier; no composite construction needed.
+        ("ValidationRule",
+         {"FullName": "Account.AmountPositive",
+          "ValidationName": "AmountPositive"},
+         "Account.AmountPositive"),
+        ("ValidationRule",
+         {"FullName": "MyNS__Object.RequiredField"},
+         "MyNS__Object.RequiredField"),
     ])
     def test_extract_external_id_known_types(
         self, entity_type: str, raw: dict, expected: str,
@@ -616,6 +627,19 @@ class TestExtractExternalId:
         with pytest.raises(ValueError) as excinfo:
             _extract_external_id("Layout", {"id": "00h..."})
         assert "_layout_full_name" in str(excinfo.value)
+
+    def test_extract_external_id_validation_rule_raises_when_full_name_missing(
+        self,
+    ) -> None:
+        """ValidationRule without FullName → ValueError. Post-P5
+        substrate-1 fetcher enhancement, FullName is always present
+        in Phase 2 output; missing indicates a deeper failure."""
+        with pytest.raises(ValueError) as excinfo:
+            _extract_external_id(
+                "ValidationRule",
+                {"ValidationName": "AmountPositive"},
+            )
+        assert "FullName" in str(excinfo.value)
 
     def test_extract_external_id_record_type_raises_when_fullname_missing(
         self,

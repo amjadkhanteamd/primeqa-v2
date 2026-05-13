@@ -11,6 +11,7 @@ from primeqa.sync.presentation import (
     _to_presentation_picklist_value,
     _to_presentation_picklist_value_set,
     _to_presentation_record_type,
+    _to_presentation_validation_rule,
     to_presentation,
 )
 
@@ -460,3 +461,62 @@ class TestToPresentationLayout:
         presentation = _to_presentation_layout(layout)
         assert presentation["section_count"] == 0
         assert presentation["section_names"] == []
+
+
+class TestToPresentationValidationRule:
+    def _vr(self) -> dict:
+        return {
+            "Id": "03dF9000000ABC",
+            "ValidationName": "AmountPositive",
+            "Active": True,
+            "ErrorMessage": "Amount must be > 0",
+            "ErrorDisplayField": "Amount",
+            "FullName": "Opportunity.AmountPositive",
+            "Metadata": {
+                "errorConditionFormula": "Amount <= 0",
+                "active": True,
+            },
+            "_parent_object_api_name": "Opportunity",
+        }
+
+    def test_maps_validation_name_to_name(self) -> None:
+        """Tooling 'ValidationName' (PascalCase) maps to semantic_text
+        'name' (snake_case)."""
+        presentation = _to_presentation_validation_rule(self._vr())
+        assert presentation["name"] == "AmountPositive"
+        assert presentation["object_name"] == "Opportunity"
+
+    def test_extracts_formula_from_metadata(self) -> None:
+        """errorConditionFormula lives in Metadata sub-dict (Phase 2
+        Tooling fetch). Adapter pulls it up to top-level
+        'formula_text' for the semantic_text template — the
+        high-signal content per substrate-1's
+        _to_text_validation_rule docstring."""
+        presentation = _to_presentation_validation_rule(self._vr())
+        assert presentation["formula_text"] == "Amount <= 0"
+
+    def test_maps_error_fields(self) -> None:
+        """ErrorMessage + ErrorDisplayField pass through to snake_case
+        equivalents."""
+        presentation = _to_presentation_validation_rule(self._vr())
+        assert presentation["error_message"] == "Amount must be > 0"
+        assert presentation["error_display_field"] == "Amount"
+
+    def test_defaults_active_to_true(self) -> None:
+        """Active is almost always present in Tooling Phase 1 output,
+        but missing → True default (matches substrate-1's convention
+        of treating missing 'active' as 'on')."""
+        vr = self._vr()
+        vr.pop("Active")
+        presentation = _to_presentation_validation_rule(vr)
+        assert presentation["is_active"] is True
+
+    def test_handles_missing_metadata(self) -> None:
+        """If Metadata is None or missing (defensive — would only
+        happen if Phase 2 fetch failed silently), formula_text is
+        None and downstream _to_text_validation_rule substitutes
+        'no formula provided'."""
+        vr = self._vr()
+        vr["Metadata"] = None
+        presentation = _to_presentation_validation_rule(vr)
+        assert presentation["formula_text"] is None

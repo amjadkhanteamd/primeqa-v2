@@ -18,6 +18,7 @@ from primeqa.sync.detail_mappers import (
     _map_object_details,
     _map_picklist_value_details,
     _map_record_type_details,
+    _map_validation_rule_details,
     get_detail_mapper,
 )
 
@@ -610,3 +611,94 @@ class TestGetDetailMapperLayout:
         table_name, mapper = result
         assert table_name == "layout_details"
         assert mapper is _map_layout_details
+
+
+class TestMapValidationRuleDetails:
+    def _normalized(self, **overrides) -> dict:
+        base = {
+            "ValidationName": "AmountPositive",
+            "Active": True,
+            "FullName": "Opportunity.AmountPositive",
+            "Metadata": {"errorConditionFormula": "Amount <= 0"},
+            "_parent_object_api_name": "Opportunity",
+        }
+        base.update(overrides)
+        return base
+
+    def test_resolves_parent_object(self) -> None:
+        """object_entity_id resolved from _parent_object_api_name
+        marker (same idiom as Field/RT/Layout). The mapper writes
+        only 3 columns; AI-enrichment columns stay NULL for Phase 5
+        worker."""
+        resolver = MagicMock(return_value="obj-opp-uuid")
+        row = _map_validation_rule_details(
+            normalized=self._normalized(),
+            entity_id="vr-uuid-1",
+            parent_resolver=resolver,
+        )
+        resolver.assert_called_once_with(
+            entity_type="Object", external_id="Opportunity",
+        )
+        assert row["entity_id"] == "vr-uuid-1"
+        assert row["object_entity_id"] == "obj-opp-uuid"
+        assert row["is_active"] is True
+        # AI-enrichment columns NOT set by mapper (Phase 5 fills)
+        for ai_col in (
+            "plain_english_summary", "summary_model",
+            "summary_prompt_version", "summary_generated_at",
+            "summary_embedding",
+        ):
+            assert ai_col not in row
+
+    def test_defaults_active_to_true(self) -> None:
+        """Missing Active → True default (matches substrate-1's
+        is_active=true DB default + the adapter's convention)."""
+        normalized = self._normalized()
+        normalized.pop("Active")
+        row = _map_validation_rule_details(
+            normalized=normalized, entity_id="x",
+            parent_resolver=lambda **_: "obj",
+        )
+        assert row["is_active"] is True
+
+    def test_passes_active_false_through(self) -> None:
+        """Explicit Active=False stays False — defaulting must not
+        swallow inactive rules."""
+        row = _map_validation_rule_details(
+            normalized=self._normalized(Active=False),
+            entity_id="x",
+            parent_resolver=lambda **_: "obj",
+        )
+        assert row["is_active"] is False
+
+    def test_raises_on_missing_parent_marker(self) -> None:
+        normalized = self._normalized()
+        normalized.pop("_parent_object_api_name")
+        with pytest.raises(ValueError) as excinfo:
+            _map_validation_rule_details(
+                normalized=normalized, entity_id="x",
+                parent_resolver=lambda **_: "obj",
+            )
+        assert "_parent_object_api_name" in str(excinfo.value)
+
+    def test_raises_on_unresolvable_parent(self) -> None:
+        with pytest.raises(ValueError) as excinfo:
+            _map_validation_rule_details(
+                normalized=self._normalized(
+                    _parent_object_api_name="GhostObject",
+                ),
+                entity_id="x",
+                parent_resolver=lambda **_: None,
+            )
+        msg = str(excinfo.value)
+        assert "GhostObject" in msg
+        assert "ENTITY_ORDER" in msg
+
+
+class TestGetDetailMapperValidationRule:
+    def test_returns_tuple_for_validation_rule(self) -> None:
+        result = get_detail_mapper("ValidationRule")
+        assert result is not None
+        table_name, mapper = result
+        assert table_name == "validation_rule_details"
+        assert mapper is _map_validation_rule_details

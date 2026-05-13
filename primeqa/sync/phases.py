@@ -651,12 +651,100 @@ def phase_layout(ctx: SyncContext, conn: Any) -> PhaseResult:
     return result
 
 
+def phase_validation_rule(ctx: SyncContext, conn: Any) -> PhaseResult:
+    """ValidationRule phase — per-Object business-logic rule with
+    error condition formula + error message.
+
+    Seventh real phase (7/12). Pure pattern-application against
+    established infrastructure — closely mirrors phase_record_type
+    (d91e777) since both fetch via Tooling Phase 1 + Phase 2 with
+    FullName as canonical identifier.
+
+    Fetched via fetch_validation_rules (Category 2 two-phase
+    Tooling+Metadata per corrections-log §1). Each VR carries:
+      Phase 1 (top-level): Id, ValidationName, Active,
+        ErrorMessage, ErrorDisplayField, Description,
+        EntityDefinitionId
+      Phase 2 (per-Id): FullName, Metadata
+        (errorConditionFormula, etc.)
+
+    Post-P5 (48efea4): fetch_validation_rules' Phase 2 SOQL was
+    enhanced to include FullName. Prior to P5, the fetcher omitted
+    FullName and sync would have had to resolve EntityDefinitionId
+    (Salesforce Id) → Object api_name via a separate Tooling call.
+    P5's substrate-1 enhancement removes that complication.
+
+    Parent Object resolution: extract from FullName by splitting at
+    the first '.'. Examples:
+      'Account.AmountPositive'         → 'Account'
+      'MyNS__Object.RequiredField'      → 'MyNS__Object'
+
+    Same algorithm as phase_record_type; injected as
+    `_parent_object_api_name` marker.
+
+    Two edge types written this cycle:
+    - BELONGS_TO  → Object (STRUCTURAL containment; property-less)
+    - APPLIES_TO  → Object (BEHAVIOR relationship; property-less)
+    Both target the same parent Object but with distinct edge_types.
+    UNIQUE active index allows both to coexist.
+
+    REFERENCES → Field deferred per corrections-log §17. Substrate-1
+    expects validation_rule_field_refs junction-table rows for that
+    edge, which requires a Salesforce formula parser (PRIORVALUE,
+    ISCHANGED, ISNEW tokenization + field-name disambiguation).
+    Future cycle adds the parser + writer.
+
+    Sandbox cardinality: 61 VRs (per survey).
+    """
+    result = PhaseResult(entity_type="ValidationRule")
+
+    raw_vrs = ctx.sf_client.fetch_validation_rules()
+
+    # Inject parent Object marker from FullName.
+    for vr in raw_vrs:
+        full_name = vr.get("FullName") or ""
+        if "." in full_name:
+            vr["_parent_object_api_name"] = full_name.split(".", 1)[0]
+        else:
+            # Malformed FullName (shouldn't happen post-P5; defensive).
+            # Setting None will cause external_id construction to fail
+            # loud at the materialize layer.
+            vr["_parent_object_api_name"] = None
+
+    if not raw_vrs:
+        return result
+
+    entity_id_map = batched_materialize(
+        ctx=ctx,
+        conn=conn,
+        entity_type="ValidationRule",
+        raw_payloads=raw_vrs,
+        result=result,
+        return_id_map=True,
+    )
+
+    normalized_payloads = [
+        normalize("ValidationRule", p) for p in raw_vrs
+    ]
+    materialize_edges_for_entities(
+        ctx=ctx,
+        conn=conn,
+        source_entity_type="ValidationRule",
+        entity_id_map=entity_id_map,
+        normalized_payloads=normalized_payloads,
+        result=result,
+    )
+
+    return result
+
+
 PHASE_REGISTRY["Object"] = phase_object
 PHASE_REGISTRY["PicklistValueSet"] = phase_picklist_value_set
 PHASE_REGISTRY["PicklistValue"] = phase_picklist_value
 PHASE_REGISTRY["Field"] = phase_field
 PHASE_REGISTRY["RecordType"] = phase_record_type
 PHASE_REGISTRY["Layout"] = phase_layout
+PHASE_REGISTRY["ValidationRule"] = phase_validation_rule
 
 
 def get_phase_function(entity_type: str) -> PhaseFunction:

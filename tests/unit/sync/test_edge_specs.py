@@ -15,6 +15,8 @@ from primeqa.sync.edge_specs import (
     _layout_includes_field_properties,
     _layout_includes_field_targets,
     _record_type_belongs_to_targets,
+    _validation_rule_applies_to_targets,
+    _validation_rule_belongs_to_targets,
     get_edge_specs,
 )
 
@@ -136,6 +138,22 @@ class TestGetEdgeSpecs:
         assert len(specs) == 2
         edge_types = {spec.edge_type for spec in specs}
         assert edge_types == {"BELONGS_TO", "INCLUDES_FIELD"}
+
+    def test_returns_two_specs_for_validation_rule(self) -> None:
+        """ValidationRule has BELONGS_TO + APPLIES_TO this cycle
+        (both → Object, both property-less). REFERENCES → Field
+        deferred per corrections-log §17 (formula parser unbuilt)."""
+        specs = get_edge_specs("ValidationRule")
+        assert len(specs) == 2
+        edge_types = {spec.edge_type for spec in specs}
+        assert edge_types == {"BELONGS_TO", "APPLIES_TO"}
+        # Both target Object
+        for spec in specs:
+            assert spec.target_entity_type == "Object"
+        # Both property-less (REFERENCES is the only property-bearing
+        # VR-source edge and it's deferred)
+        for spec in specs:
+            assert spec.extract_properties is None
 
     def test_layout_includes_field_spec_has_property_extractor(
         self,
@@ -364,3 +382,38 @@ class TestLayoutIncludesFieldProperties:
             layout, "Account.Phone",
         )
         assert props["is_required"] is True
+
+
+# ----------------------------------------------------------------------
+# ValidationRule edge spec extractors
+# ----------------------------------------------------------------------
+
+
+class TestValidationRuleBelongsToTargets:
+    def test_returns_parent_object_when_marker_present(self) -> None:
+        targets = _validation_rule_belongs_to_targets({
+            "ValidationName": "AmountPositive",
+            "_parent_object_api_name": "Account",
+        })
+        assert targets == ["Account"]
+
+    def test_returns_empty_when_marker_missing(self) -> None:
+        targets = _validation_rule_belongs_to_targets({
+            "ValidationName": "X",
+        })
+        assert targets == []
+
+
+class TestValidationRuleAppliesToTargets:
+    def test_returns_parent_object_when_marker_present(self) -> None:
+        """APPLIES_TO targets the same Object as BELONGS_TO; the
+        semantic distinction is in the edge_type, not the target."""
+        targets = _validation_rule_applies_to_targets({
+            "ValidationName": "AmountPositive",
+            "_parent_object_api_name": "Account",
+        })
+        assert targets == ["Account"]
+
+    def test_returns_empty_when_marker_missing(self) -> None:
+        targets = _validation_rule_applies_to_targets({})
+        assert targets == []

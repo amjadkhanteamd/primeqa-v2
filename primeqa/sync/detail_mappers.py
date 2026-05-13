@@ -393,12 +393,70 @@ def _map_layout_details(
     }
 
 
+def _map_validation_rule_details(
+    normalized: dict[str, Any],
+    entity_id: str,
+    parent_resolver: Callable[..., Optional[str]],
+) -> dict[str, Any]:
+    """Map normalized ValidationRule payload → validation_rule_details
+    row.
+
+    Sparse schema (only 3 NOT NULL columns the mapper sets; 5
+    AI-enrichment columns are populated by Phase 5 enrichment worker
+    NOT by sync layer):
+      entity_id            ← caller-supplied
+      object_entity_id     ← parent Object (NOT NULL FK; resolved
+                             from _parent_object_api_name marker)
+      is_active            ← Active (Tooling top-level; defaults
+                             True if missing)
+
+    Detail columns NOT set by this mapper (populated downstream):
+      plain_english_summary   ← Phase 5 enrichment worker
+      summary_model           ← Phase 5
+      summary_prompt_version  ← Phase 5
+      summary_generated_at    ← Phase 5
+      summary_embedding       ← Phase 5 (pgvector)
+
+    The validation rule's formula text + error message LIVE in
+    entities.attributes JSONB via the normalize/_strip_volatile
+    flow — not in detail. Substrate-1's design: the
+    high-signal-for-attribution content stays in the JSONB column
+    where semantic_text generation can read it.
+    """
+    parent_marker = normalized.get("_parent_object_api_name")
+    if not parent_marker:
+        raise ValueError(
+            f"ValidationRule normalized payload missing "
+            f"'_parent_object_api_name' marker; "
+            f"phase_validation_rule must inject this. "
+            f"Got keys: {sorted(normalized.keys())}"
+        )
+    parent_object_id = parent_resolver(
+        entity_type="Object",
+        external_id=parent_marker,
+    )
+    if parent_object_id is None:
+        raise ValueError(
+            f"Cannot resolve parent Object {parent_marker!r} for "
+            f"ValidationRule {normalized.get('ValidationName')!r}. "
+            f"Parent must be materialized before child "
+            f"(ENTITY_ORDER places Object before ValidationRule)."
+        )
+
+    return {
+        "entity_id": entity_id,
+        "object_entity_id": parent_object_id,
+        "is_active": bool(normalized.get("Active", True)),
+    }
+
+
 _DETAIL_TABLE_MAPPERS: dict[str, DetailMapper] = {
     "Object": _map_object_details,
     "PicklistValue": _map_picklist_value_details,
     "Field": _map_field_details,
     "RecordType": _map_record_type_details,
     "Layout": _map_layout_details,
+    "ValidationRule": _map_validation_rule_details,
     # Other entity types added by their respective phase cycles.
     # PicklistValueSet intentionally absent — no detail table.
 }

@@ -271,6 +271,35 @@ def _layout_includes_field_properties(
 
 
 # ----------------------------------------------------------------------
+# ValidationRule edge spec extractors
+# ----------------------------------------------------------------------
+
+
+def _validation_rule_belongs_to_targets(normalized: dict) -> list[str]:
+    """Every VR belongs to one Object (STRUCTURAL containment)."""
+    parent = normalized.get("_parent_object_api_name")
+    return [parent] if parent else []
+
+
+def _validation_rule_applies_to_targets(normalized: dict) -> list[str]:
+    """Every VR applies to one Object (BEHAVIOR relationship).
+
+    Same target as BELONGS_TO for VRs (the parent Object), but distinct
+    edge_type captures the BEHAVIOR category. The active-uniqueness
+    partial index keys on (source, target, edge_type) — different
+    edge_types coexist for the same (source, target) pair.
+
+    Distinct semantic: BELONGS_TO is structural containment ("this VR
+    is OWNED by this Object"); APPLIES_TO is behavioral ("when records
+    of this Object change, this rule fires"). Traversal queries that
+    care about behavior-only impact filter to APPLIES_TO; containment
+    queries filter to BELONGS_TO.
+    """
+    parent = normalized.get("_parent_object_api_name")
+    return [parent] if parent else []
+
+
+# ----------------------------------------------------------------------
 # Registry
 # ----------------------------------------------------------------------
 
@@ -321,6 +350,24 @@ _EDGE_SPECS: dict[str, list[EdgeSpec]] = {
         # pending); pre-wiring would create code paths that silently
         # skip every edge write (resolver returns None for all
         # targets). Wire when Profile phase lands.
+    ],
+    "ValidationRule": [
+        EdgeSpec(
+            target_entity_type="Object",
+            edge_type="BELONGS_TO",
+            extract_target_external_ids=_validation_rule_belongs_to_targets,
+        ),
+        EdgeSpec(
+            target_entity_type="Object",
+            edge_type="APPLIES_TO",
+            extract_target_external_ids=_validation_rule_applies_to_targets,
+        ),
+        # REFERENCES → Field deferred per corrections-log §17.
+        # Requires Salesforce formula parser (PRIORVALUE/ISCHANGED/
+        # ISNEW tokenization + field-name disambiguation) +
+        # validation_rule_field_refs junction-table writer. Same
+        # deferral pattern as CONSTRAINS_PICKLIST_VALUES (§14):
+        # unbuilt infrastructure block.
     ],
     # Other entity types add their specs here as their phase cycles land.
 }

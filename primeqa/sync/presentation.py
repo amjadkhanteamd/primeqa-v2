@@ -272,6 +272,47 @@ def _to_presentation_layout(normalized: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _to_presentation_validation_rule(
+    normalized: dict[str, Any],
+) -> dict[str, Any]:
+    """Map normalized ValidationRule (Tooling Phase 1 + Phase 2) to
+    semantic_text input shape.
+
+    Tooling fetch produces a flat record with fields at two levels:
+      Top-level (Phase 1): Id, ValidationName, Active, ErrorMessage,
+                           ErrorDisplayField, Description,
+                           EntityDefinitionId, FullName (post-P5)
+      Metadata (Phase 2): active, description, errorConditionFormula,
+                          errorDisplayField, errorMessage,
+                          shouldEvaluateOnClient, urls
+
+    Substrate-1's _to_text_validation_rule input shape:
+        {name, object_name, is_active, error_message,
+         formula_text, error_display_field}
+
+    Bridges:
+      name                  ← ValidationName (top-level)
+      object_name           ← _parent_object_api_name (phase-injected
+                              from FullName.split('.', 1)[0])
+      is_active             ← Active (top-level)
+      error_message         ← ErrorMessage (top-level)
+      formula_text          ← Metadata.errorConditionFormula —
+                              the high-signal content per substrate-1's
+                              "most important type for downstream
+                              attribution" note in _to_text_validation_rule
+      error_display_field   ← ErrorDisplayField (top-level)
+    """
+    metadata = normalized.get("Metadata") or {}
+    return {
+        "name": normalized.get("ValidationName"),
+        "object_name": normalized.get("_parent_object_api_name"),
+        "is_active": normalized.get("Active", True),
+        "error_message": normalized.get("ErrorMessage"),
+        "formula_text": metadata.get("errorConditionFormula"),
+        "error_display_field": normalized.get("ErrorDisplayField"),
+    }
+
+
 _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "Object": _to_presentation_object,
     "PicklistValueSet": _to_presentation_picklist_value_set,
@@ -279,6 +320,7 @@ _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] =
     "Field": _to_presentation_field,
     "RecordType": _to_presentation_record_type,
     "Layout": _to_presentation_layout,
+    "ValidationRule": _to_presentation_validation_rule,
     # Other entity types added by their respective phase cycles per
     # PHASE_2_PLAN_corrections.md §7.
 }

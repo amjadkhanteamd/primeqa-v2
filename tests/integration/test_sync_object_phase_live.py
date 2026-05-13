@@ -1,6 +1,6 @@
 """Live integration test for Object + PicklistValueSet + PicklistValue
-+ Field + RecordType + Layout phases, including detail-table writes
-+ edges (property-less + property-bearing).
++ Field + RecordType + Layout + ValidationRule phases, including
+detail-table writes + edges (property-less + property-bearing).
 
 End-to-end: SyncEngine.run_sync() runs all 12 phases for a fresh
 connected_org. Object + PicklistValueSet + PicklistValue + Field +
@@ -76,6 +76,15 @@ Verifies:
     edges.last_seed_hash column added in migration 20260512_0040
     / commit 26584d0). ASSIGNED_TO_PROFILE_RECORDTYPE deferred
     per corrections-log §16.
+  - ValidationRule phase: Tooling Phase 1 + Phase 2 fetch
+    (substrate-1 fetch_validation_rules, with FullName added in
+    Commit 48efea4 / cycle precursor P5). Each VR carries the
+    formula in Metadata.errorConditionFormula. Writes entity +
+    validation_rule_details + BELONGS_TO → Object + APPLIES_TO →
+    Object edges (both property-less, both targeting parent
+    Object with distinct edge_types; UNIQUE active index allows
+    coexistence). REFERENCES → Field deferred per corrections-log
+    §17 (formula parser unbuilt).
 
 Cleanup: deletes all rows referencing the test connected_org's id
 (FK-aware: queue → entities → sync_runs back-ref → logical_versions
@@ -219,7 +228,8 @@ def test_org(db_engine):
         # and makes the cleanup robust against future detail-table
         # additions.
         for detail_table in (
-            "layout_details", "field_details", "record_type_details",
+            "validation_rule_details", "layout_details",
+            "field_details", "record_type_details",
             "picklist_value_details", "object_details",
         ):
             conn.execute(text(f"""
@@ -269,13 +279,14 @@ def test_org(db_engine):
         """), {"id": org_id})
 
 
-def test_live_sync_through_layout(
+def test_live_sync_through_validation_rule(
     live_sf_client, db_engine, test_org,
 ):
     """End-to-end Object + PVS + PV + Field + RecordType + Layout
-    phases. Detail-table writes, BELONGS_TO + HAS_RELATIONSHIP_TO +
-    INCLUDES_FIELD (property-bearing) edges. Live verification
-    parked pending the local-Postgres switch."""
+    + ValidationRule phases. Detail-table writes, BELONGS_TO +
+    HAS_RELATIONSHIP_TO + INCLUDES_FIELD (property-bearing) +
+    APPLIES_TO edges. Live verification parked pending the
+    local-Postgres switch."""
     from primeqa.sync.engine import SyncEngine
 
     engine = SyncEngine(
@@ -828,6 +839,99 @@ def test_live_sync_through_layout(
         """), {"id": test_org}).scalar()
         assert layout_queue == layout_count * 2
 
+        # ----- ValidationRule entities + details + edges -----
+        # Sandbox has 61 VRs per survey. Regression floor: >=1.
+        vr_count = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'ValidationRule'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert vr_count >= 1, (
+            f"Expected >=1 ValidationRule entity (regression "
+            f"floor; sandbox has 61); got {vr_count}"
+        )
+
+        # validation_rule_details: 1 row per active VR
+        vr_details_count = conn.execute(text("""
+            SELECT COUNT(*) FROM validation_rule_details vrd
+            JOIN entities e ON e.id = vrd.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'ValidationRule'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert vr_details_count == vr_count
+
+        # FK integrity: every VR detail row points at a real Object
+        bad_vr_details = conn.execute(text("""
+            SELECT COUNT(*) FROM validation_rule_details vrd
+            JOIN entities child ON child.id = vrd.entity_id
+            LEFT JOIN entities parent
+                ON parent.id = vrd.object_entity_id
+            WHERE child.last_synced_from_org_id = :id
+              AND child.entity_type = 'ValidationRule'
+              AND child.valid_to_seq IS NULL
+              AND (parent.id IS NULL
+                   OR parent.entity_type != 'Object')
+        """), {"id": test_org}).scalar()
+        assert bad_vr_details == 0, (
+            f"Found {bad_vr_details} validation_rule_details rows "
+            f"with bad object_entity_id FK target"
+        )
+
+        # BELONGS_TO edges from VRs: 1 per VR (structural containment)
+        vr_belongs_to_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'BELONGS_TO'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'ValidationRule'
+        """), {"id": test_org}).scalar()
+        assert vr_belongs_to_count == vr_count, (
+            f"BELONGS_TO from VR sources ({vr_belongs_to_count}) "
+            f"!= VR count ({vr_count})"
+        )
+
+        # APPLIES_TO edges from VRs: 1 per VR (behavioral relationship;
+        # distinct edge_type from BELONGS_TO but same target Object)
+        vr_applies_to_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'APPLIES_TO'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'ValidationRule'
+        """), {"id": test_org}).scalar()
+        assert vr_applies_to_count == vr_count, (
+            f"APPLIES_TO from VR sources ({vr_applies_to_count}) "
+            f"!= VR count ({vr_count})"
+        )
+
+        # No REFERENCES edges this cycle (deferred per §17 —
+        # formula parser unbuilt)
+        references_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges
+            WHERE edge_type = 'REFERENCES'
+              AND valid_to_seq IS NULL
+        """)).scalar()
+        assert references_count == 0, (
+            f"Expected 0 REFERENCES edges (deferred per §17); "
+            f"got {references_count}"
+        )
+
+        # VR enrichment queue: 2× count
+        vr_queue = conn.execute(text("""
+            SELECT COUNT(*) FROM ai_enrichment_queue
+            WHERE entity_type = 'ValidationRule'
+              AND entity_id IN (
+                  SELECT id FROM entities
+                  WHERE last_synced_from_org_id = :id
+                    AND entity_type = 'ValidationRule'
+              )
+        """), {"id": test_org}).scalar()
+        assert vr_queue == vr_count * 2
+
     # ===== Second sync =====
     sync_run_id_2 = engine.run_sync(connected_org_id=test_org)
     assert sync_run_id_2 != sync_run_id_1
@@ -850,19 +954,18 @@ def test_live_sync_through_layout(
             f"got {run2.entities_superseded}"
         )
         # Total unchanged = Object + PVS + PV + Field + RT + Layout
-        # counts. Layout's _layout_full_name + _parent_object_api_name +
-        # _layout_type + _layout_name_resolved markers all need to
-        # round-trip through normalize/hash identically for Layout
-        # entities to register unchanged.
+        # + ValidationRule counts. Each entity's phase-injected
+        # markers round-trip through normalize/hash identically.
         expected_unchanged = (
             object_count + pvs_count + pv_count + field_count
-            + rt_count + layout_count
+            + rt_count + layout_count + vr_count
         )
         assert run2.entities_unchanged == expected_unchanged, (
             f"Second sync should report {expected_unchanged} unchanged "
             f"(Object {object_count} + PVS {pvs_count} + PV "
             f"{pv_count} + Field {field_count} + RT {rt_count} + "
-            f"Layout {layout_count}); got {run2.entities_unchanged}"
+            f"Layout {layout_count} + VR {vr_count}); "
+            f"got {run2.entities_unchanged}"
         )
 
         # Edges: same set-difference logic should yield 0 inserts and
@@ -1100,3 +1203,41 @@ def test_live_sync_through_layout(
             f"{includes_field_count} after second sync (hash-compare "
             f"supersession should match); got {includes_field_after}"
         )
+
+        # ValidationRule entity + detail + edge counts stable.
+        vr_count_after = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'ValidationRule'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert vr_count_after == vr_count
+
+        vr_details_after = conn.execute(text("""
+            SELECT COUNT(*) FROM validation_rule_details vrd
+            JOIN entities e ON e.id = vrd.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'ValidationRule'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert vr_details_after == vr_details_count
+
+        vr_belongs_to_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'BELONGS_TO'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'ValidationRule'
+        """), {"id": test_org}).scalar()
+        assert vr_belongs_to_after == vr_belongs_to_count
+
+        vr_applies_to_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'APPLIES_TO'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'ValidationRule'
+        """), {"id": test_org}).scalar()
+        assert vr_applies_to_after == vr_applies_to_count

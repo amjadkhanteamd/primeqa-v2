@@ -53,7 +53,8 @@ class TestPhaseRegistry:
         # separately; this test covers only the remaining no-op
         # placeholders.
         real_phases = {"Object", "PicklistValueSet", "PicklistValue",
-                       "Field", "RecordType", "Layout"}
+                       "Field", "RecordType", "Layout",
+                       "ValidationRule"}
         for entity_type, phase_fn in PHASE_REGISTRY.items():
             if entity_type in real_phases:
                 continue
@@ -975,3 +976,127 @@ class TestPhaseLayout:
         payloads = mock_bm.call_args.kwargs['raw_payloads']
         assert len(payloads) == 1
         assert payloads[0]['_parent_object_api_name'] == 'Account'
+
+
+# ----------------------------------------------------------------------
+# phase_validation_rule — seventh real phase
+# ----------------------------------------------------------------------
+
+from primeqa.sync.phases import phase_validation_rule
+
+
+class TestPhaseValidationRule:
+    def _ok_vr(self, full_name="Account.AmountPositive", **overrides):
+        base = {
+            "Id": "03dF9000000ABC",
+            "FullName": full_name,
+            "ValidationName": "AmountPositive",
+            "Active": True,
+            "ErrorMessage": "Amount must be positive",
+            "ErrorDisplayField": "Amount",
+            "Description": "Ensures amount is non-negative",
+            "EntityDefinitionId": "01IF9000001CNEB",
+            "Metadata": {
+                "errorConditionFormula": "Amount <= 0",
+                "active": True,
+            },
+        }
+        base.update(overrides)
+        return base
+
+    def test_phase_validation_rule_calls_fetch_validation_rules(self) -> None:
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_validation_rules.return_value = []
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize"):
+            phase_validation_rule(ctx, conn)
+        ctx.sf_client.fetch_validation_rules.assert_called_once_with()
+
+    def test_phase_validation_rule_decorates_parent_marker_from_fullname(
+        self,
+    ) -> None:
+        """Each VR's FullName is split at the first '.' to extract
+        the parent Object api_name; that name is injected as
+        _parent_object_api_name before materialize. Same algorithm
+        as phase_record_type."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_validation_rules.return_value = [
+            self._ok_vr("Account.AmountPositive"),
+            self._ok_vr("Opportunity.StatusValid"),
+        ]
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities"):
+            mock_bm.return_value = {
+                "Account.AmountPositive": "vr-1",
+                "Opportunity.StatusValid": "vr-2",
+            }
+            phase_validation_rule(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        parent_names = {p["_parent_object_api_name"] for p in payloads}
+        assert parent_names == {"Account", "Opportunity"}
+
+    def test_phase_validation_rule_handles_namespaced_fullname(
+        self,
+    ) -> None:
+        """Managed-package object: 'MyNS__Object.RuleName' splits
+        cleanly to 'MyNS__Object'."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_validation_rules.return_value = [
+            self._ok_vr("sfLma__License__c.MustHaveOwner"),
+        ]
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities"):
+            mock_bm.return_value = {
+                "sfLma__License__c.MustHaveOwner": "vr-1",
+            }
+            phase_validation_rule(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        assert payloads[0]["_parent_object_api_name"] == "sfLma__License__c"
+
+    def test_phase_validation_rule_calls_batched_materialize_and_edges(
+        self,
+    ) -> None:
+        """Verifies batched_materialize is called with
+        return_id_map=True and materialize_edges_for_entities gets
+        the id_map + normalized payloads for VR-source edges
+        (BELONGS_TO + APPLIES_TO)."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_validation_rules.return_value = [
+            self._ok_vr("Account.AmountPositive"),
+        ]
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges, \
+             patch(
+                 "primeqa.sync.phases.normalize",
+                 side_effect=lambda et, p: {**p, "_normalized": True},
+             ):
+            mock_bm.return_value = {"Account.AmountPositive": "vr-1"}
+            phase_validation_rule(ctx, conn)
+        assert mock_bm.call_args.kwargs.get("return_id_map") is True
+        assert mock_bm.call_args.kwargs["entity_type"] == "ValidationRule"
+        mock_edges.assert_called_once()
+        edge_kwargs = mock_edges.call_args.kwargs
+        assert edge_kwargs["source_entity_type"] == "ValidationRule"
+        assert edge_kwargs["entity_id_map"] == {
+            "Account.AmountPositive": "vr-1",
+        }
+
+    def test_phase_validation_rule_empty_response(self) -> None:
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_validation_rules.return_value = []
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges:
+            result = phase_validation_rule(ctx, conn)
+        mock_bm.assert_not_called()
+        mock_edges.assert_not_called()
+        assert result.entity_type == "ValidationRule"
+        assert result.entities_inserted == 0
+        assert result.succeeded is True
