@@ -450,6 +450,54 @@ def _map_validation_rule_details(
     }
 
 
+def _map_profile_details(
+    normalized: dict[str, Any],
+    entity_id: str,
+    parent_resolver: Callable[..., Optional[str]],
+) -> dict[str, Any]:
+    """Map normalized Profile payload → profile_details row.
+
+    Profile is ORG-LEVEL (not child-of-Object). No parent FK to
+    resolve. parent_resolver is unused by this mapper — kept in
+    signature for registry uniformity.
+
+    Schema (4 hot columns + 5 AI-enrichment cols filled by Phase 5):
+      entity_id            ← caller-supplied
+      is_active            ← always True (Profiles returned by
+                             Tooling are by definition active in
+                             the org; there's no Tooling field
+                             marking a Profile as inactive)
+      is_custom            ← Metadata.custom (boolean; standard
+                             Salesforce Profiles have custom=False;
+                             user-created Profiles have custom=True)
+      user_license_type    ← Metadata.userLicense (NOT NULL, no
+                             DB default — every Profile is tied
+                             to a Salesforce user license tier:
+                             'Salesforce', 'Salesforce Platform',
+                             'Analytics Cloud Integration User',
+                             etc.)
+
+    NOT NULL no-default column: user_license_type. If missing
+    from Metadata (shouldn't happen — every Salesforce Profile
+    has a userLicense), fail loud with a clear message.
+    """
+    metadata = normalized.get("Metadata") or {}
+    user_license = metadata.get("userLicense")
+    if not user_license:
+        raise ValueError(
+            f"Profile normalized payload missing Metadata.userLicense "
+            f"(required by profile_details.user_license_type NOT "
+            f"NULL); Profile name={normalized.get('Name')!r}, keys="
+            f"{sorted(metadata.keys())}"
+        )
+    return {
+        "entity_id": entity_id,
+        "is_active": True,
+        "is_custom": bool(metadata.get("custom", False)),
+        "user_license_type": user_license,
+    }
+
+
 _DETAIL_TABLE_MAPPERS: dict[str, DetailMapper] = {
     "Object": _map_object_details,
     "PicklistValue": _map_picklist_value_details,
@@ -457,6 +505,7 @@ _DETAIL_TABLE_MAPPERS: dict[str, DetailMapper] = {
     "RecordType": _map_record_type_details,
     "Layout": _map_layout_details,
     "ValidationRule": _map_validation_rule_details,
+    "Profile": _map_profile_details,
     # Other entity types added by their respective phase cycles.
     # PicklistValueSet intentionally absent — no detail table.
 }

@@ -54,7 +54,7 @@ class TestPhaseRegistry:
         # placeholders.
         real_phases = {"Object", "PicklistValueSet", "PicklistValue",
                        "Field", "RecordType", "Layout",
-                       "ValidationRule"}
+                       "ValidationRule", "Profile"}
         for entity_type, phase_fn in PHASE_REGISTRY.items():
             if entity_type in real_phases:
                 continue
@@ -1323,3 +1323,128 @@ class TestSyncedObjectApiNames:
         assert "last_synced_from_org_id = :org_id" in sql_text
         params = conn.execute.call_args[0][1]
         assert params["org_id"] == ctx.connected_org_id
+
+
+# ----------------------------------------------------------------------
+# phase_profile — eighth real phase; first org-level entity phase
+# ----------------------------------------------------------------------
+
+from primeqa.sync.phases import phase_profile
+
+
+class TestPhaseProfile:
+    def _ok_profile(self, name="Read Only", **overrides):
+        base = {
+            "Id": "00eF9000000ABC",
+            "Name": name,
+            "Description": None,
+            "FullName": name,
+            "Metadata": {
+                "custom": False,
+                "userLicense": "Salesforce",
+                "objectPermissions": [
+                    {"object": "Account", "allowRead": True},
+                ],
+                "fieldPermissions": [
+                    {"field": "Account.Industry",
+                     "readable": True, "editable": False},
+                ],
+            },
+        }
+        base.update(overrides)
+        return base
+
+    def test_phase_profile_calls_fetch_profiles(self) -> None:
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_profiles.return_value = []
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize"):
+            phase_profile(ctx, conn)
+        ctx.sf_client.fetch_profiles.assert_called_once_with()
+
+    def test_phase_profile_does_not_inject_parent_marker(self) -> None:
+        """Profile is org-level. Unlike RT/VR/Field/Layout phases,
+        phase_profile does NOT inject _parent_object_api_name or
+        any parent marker on payloads — Profile has no parent."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_profiles.return_value = [
+            self._ok_profile("Read Only"),
+            self._ok_profile("System Administrator"),
+        ]
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities"):
+            mock_bm.return_value = {
+                "Read Only": "prof-1",
+                "System Administrator": "prof-2",
+            }
+            phase_profile(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        for p in payloads:
+            assert "_parent_object_api_name" not in p
+
+    def test_phase_profile_calls_batched_materialize_and_edges(
+        self,
+    ) -> None:
+        """phase_profile materializes Profile entities and writes
+        GRANTS_OBJECT_ACCESS + GRANTS_FIELD_ACCESS edges via
+        materialize_edges_for_entities."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_profiles.return_value = [
+            self._ok_profile("Read Only"),
+        ]
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges, \
+             patch(
+                 "primeqa.sync.phases.normalize",
+                 side_effect=lambda et, p: {**p, "_normalized": True},
+             ):
+            mock_bm.return_value = {"Read Only": "prof-1"}
+            phase_profile(ctx, conn)
+        assert mock_bm.call_args.kwargs.get("return_id_map") is True
+        assert mock_bm.call_args.kwargs["entity_type"] == "Profile"
+        mock_edges.assert_called_once()
+        edge_kwargs = mock_edges.call_args.kwargs
+        assert edge_kwargs["source_entity_type"] == "Profile"
+        assert edge_kwargs["entity_id_map"] == {"Read Only": "prof-1"}
+
+    def test_phase_profile_empty_response(self) -> None:
+        """Org with 0 Profiles (impossible in practice but defensive).
+        No materialize, no edges, all-zero result."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_profiles.return_value = []
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges:
+            result = phase_profile(ctx, conn)
+        mock_bm.assert_not_called()
+        mock_edges.assert_not_called()
+        assert result.entity_type == "Profile"
+        assert result.entities_inserted == 0
+        assert result.succeeded is True
+
+    def test_phase_profile_does_not_filter_by_synced_objects(self) -> None:
+        """Profile is org-level (not child-of-Object). §18 parent-
+        filter pattern does NOT apply — phase_profile must NOT
+        call _synced_object_api_names, and must NOT pre-filter
+        payloads. (Edge target resolution skips unsyncable
+        targets at the materialize layer's level instead.)"""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_profiles.return_value = [
+            self._ok_profile("Read Only"),
+        ]
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+        ) as mock_filter, \
+             patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities"):
+            mock_bm.return_value = {"Read Only": "prof-1"}
+            phase_profile(ctx, conn)
+        # Profile phase doesn't need the parent-scope filter
+        mock_filter.assert_not_called()

@@ -17,6 +17,7 @@ from primeqa.sync.detail_mappers import (
     _map_layout_details,
     _map_object_details,
     _map_picklist_value_details,
+    _map_profile_details,
     _map_record_type_details,
     _map_validation_rule_details,
     get_detail_mapper,
@@ -702,3 +703,106 @@ class TestGetDetailMapperValidationRule:
         table_name, mapper = result
         assert table_name == "validation_rule_details"
         assert mapper is _map_validation_rule_details
+
+
+class TestMapProfileDetails:
+    def _normalized(self, **overrides) -> dict:
+        base = {
+            "Id": "00eF9000000ABC",
+            "Name": "Read Only",
+            "FullName": "Read Only",
+            "Metadata": {
+                "custom": False,
+                "userLicense": "Salesforce",
+            },
+        }
+        base.update(overrides)
+        return base
+
+    def test_maps_three_hot_columns(self) -> None:
+        """Profile is org-level (no parent FK to resolve). Mapper
+        writes entity_id + is_active=True (Profiles in Tooling are
+        always 'active' in the org sense) + is_custom from
+        Metadata.custom + user_license_type from Metadata.userLicense."""
+        resolver = MagicMock()  # not called for Profile
+        row = _map_profile_details(
+            normalized=self._normalized(),
+            entity_id="prof-uuid-1",
+            parent_resolver=resolver,
+        )
+        # parent_resolver NOT invoked — Profile has no parent FK
+        resolver.assert_not_called()
+        assert row["entity_id"] == "prof-uuid-1"
+        assert row["is_active"] is True
+        assert row["is_custom"] is False
+        assert row["user_license_type"] == "Salesforce"
+        # AI enrichment columns NOT set by mapper (Phase 5 fills)
+        for ai_col in (
+            "plain_english_summary", "summary_model",
+            "summary_prompt_version", "summary_generated_at",
+            "summary_embedding",
+        ):
+            assert ai_col not in row
+
+    def test_is_custom_from_metadata(self) -> None:
+        """Standard Salesforce Profiles have Metadata.custom=False;
+        user-created Profiles have custom=True. Mapper passes through."""
+        normalized = self._normalized()
+        normalized["Metadata"]["custom"] = True
+        row = _map_profile_details(
+            normalized=normalized, entity_id="x",
+            parent_resolver=lambda **_: None,
+        )
+        assert row["is_custom"] is True
+
+    def test_raises_on_missing_user_license(self) -> None:
+        """user_license_type is NOT NULL no-default. If Metadata
+        omits userLicense, fail loud with a message naming the
+        missing field + the Profile name. (Shouldn't happen — every
+        Salesforce Profile has a userLicense — but defensive.)"""
+        normalized = self._normalized()
+        normalized["Metadata"].pop("userLicense")
+        with pytest.raises(ValueError) as excinfo:
+            _map_profile_details(
+                normalized=normalized, entity_id="x",
+                parent_resolver=lambda **_: None,
+            )
+        assert "userLicense" in str(excinfo.value)
+        assert "user_license_type" in str(excinfo.value)
+
+    def test_raises_on_missing_metadata(self) -> None:
+        """If Metadata is None entirely (Phase 2 fetch failed
+        silently), fail loud — can't construct a valid detail row."""
+        with pytest.raises(ValueError):
+            _map_profile_details(
+                normalized={"Name": "Mystery"},
+                entity_id="x",
+                parent_resolver=lambda **_: None,
+            )
+
+    def test_handles_various_user_license_tiers(self) -> None:
+        """Salesforce has many user license tiers — Salesforce,
+        Salesforce Platform, Analytics Cloud Integration User, etc.
+        Mapper passes through whatever Tooling returns."""
+        for license_tier in [
+            "Salesforce",
+            "Salesforce Platform",
+            "Analytics Cloud Integration User",
+            "Guest License User",
+        ]:
+            normalized = self._normalized()
+            normalized["Metadata"]["userLicense"] = license_tier
+            row = _map_profile_details(
+                normalized=normalized, entity_id="x",
+                parent_resolver=lambda **_: None,
+            )
+            assert row["user_license_type"] == license_tier
+
+
+class TestGetDetailMapperProfile:
+    def test_returns_tuple_for_profile(self) -> None:
+        result = get_detail_mapper("Profile")
+        assert result is not None
+        table_name, mapper = result
+        assert table_name == "profile_details"
+        assert mapper is _map_profile_details

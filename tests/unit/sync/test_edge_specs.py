@@ -14,6 +14,10 @@ from primeqa.sync.edge_specs import (
     _layout_belongs_to_targets,
     _layout_includes_field_properties,
     _layout_includes_field_targets,
+    _profile_grants_field_access_properties,
+    _profile_grants_field_access_targets,
+    _profile_grants_object_access_properties,
+    _profile_grants_object_access_targets,
     _record_type_belongs_to_targets,
     _validation_rule_applies_to_targets,
     _validation_rule_belongs_to_targets,
@@ -154,6 +158,23 @@ class TestGetEdgeSpecs:
         # VR-source edge and it's deferred)
         for spec in specs:
             assert spec.extract_properties is None
+
+    def test_returns_two_specs_for_profile(self) -> None:
+        """Profile has GRANTS_OBJECT_ACCESS + GRANTS_FIELD_ACCESS
+        (both property-bearing, both PERMISSION-category).
+        HAS_PROFILE (User-source) waits for User phase;
+        ASSIGNED_TO_PROFILE_RECORDTYPE (Layout-source) deferred §16."""
+        specs = get_edge_specs("Profile")
+        assert len(specs) == 2
+        by_type = {s.edge_type: s for s in specs}
+        assert set(by_type.keys()) == {
+            "GRANTS_OBJECT_ACCESS", "GRANTS_FIELD_ACCESS",
+        }
+        assert by_type["GRANTS_OBJECT_ACCESS"].target_entity_type == "Object"
+        assert by_type["GRANTS_FIELD_ACCESS"].target_entity_type == "Field"
+        # Both property-bearing — extract_properties wired
+        for spec in specs:
+            assert spec.extract_properties is not None
 
     def test_layout_includes_field_spec_has_property_extractor(
         self,
@@ -417,3 +438,184 @@ class TestValidationRuleAppliesToTargets:
     def test_returns_empty_when_marker_missing(self) -> None:
         targets = _validation_rule_applies_to_targets({})
         assert targets == []
+
+
+# ----------------------------------------------------------------------
+# Profile edge spec extractors (GRANTS_OBJECT_ACCESS + GRANTS_FIELD_ACCESS)
+# ----------------------------------------------------------------------
+
+
+class TestProfileGrantsObjectAccessTargets:
+    def _profile(self, op_list=()) -> dict:
+        return {"Metadata": {"objectPermissions": list(op_list)}}
+
+    def test_extracts_object_names(self) -> None:
+        """Each objectPermissions[].object is an Object api_name —
+        matches Object phase's external_id directly."""
+        targets = _profile_grants_object_access_targets(self._profile([
+            {"object": "Account", "allowRead": True},
+            {"object": "Contact", "allowRead": True, "allowEdit": True},
+            {"object": "MyNS__Custom__c", "allowRead": True},
+        ]))
+        assert targets == ["Account", "Contact", "MyNS__Custom__c"]
+
+    def test_returns_empty_when_no_object_permissions(self) -> None:
+        assert _profile_grants_object_access_targets(self._profile([])) == []
+
+    def test_returns_empty_when_metadata_missing(self) -> None:
+        """Defensive: missing Metadata → empty (no edges to write)."""
+        assert _profile_grants_object_access_targets({}) == []
+
+    def test_skips_entries_missing_object_field(self) -> None:
+        """Salesforce-side data integrity: an objectPermissions entry
+        without 'object' is malformed; skip it rather than crash."""
+        targets = _profile_grants_object_access_targets(self._profile([
+            {"object": "Account", "allowRead": True},
+            {"allowRead": False},  # missing 'object'
+        ]))
+        assert targets == ["Account"]
+
+
+class TestProfileGrantsObjectAccessProperties:
+    def _profile_with(self, op_list) -> dict:
+        return {"Metadata": {"objectPermissions": list(op_list)}}
+
+    def test_maps_all_six_access_flags(self) -> None:
+        """Six Salesforce fields → six GrantsObjectAccessProperties
+        flags. allowCreate→can_create, allowRead→can_read,
+        allowEdit→can_edit, allowDelete→can_delete,
+        viewAllRecords→can_view_all, modifyAllRecords→can_modify_all."""
+        op = {
+            "object": "Account",
+            "allowCreate": True,
+            "allowRead": True,
+            "allowEdit": True,
+            "allowDelete": False,
+            "viewAllRecords": True,
+            "modifyAllRecords": False,
+        }
+        props = _profile_grants_object_access_properties(
+            self._profile_with([op]), "Account",
+        )
+        assert props == {
+            "can_create": True,
+            "can_read": True,
+            "can_edit": True,
+            "can_delete": False,
+            "can_view_all": True,
+            "can_modify_all": False,
+        }
+
+    def test_drops_extra_salesforce_fields(self) -> None:
+        """Extra Salesforce fields (viewAllFields, customizeSetup,
+        deleteSetup, viewSetup) are NOT in the schema; mapper must
+        drop them — otherwise validate_edge_properties would raise
+        (extra='forbid')."""
+        op = {
+            "object": "Account",
+            "allowRead": True,
+            "viewAllFields": True,
+            "customizeSetup": False,
+            "deleteSetup": None,
+            "viewSetup": True,
+        }
+        props = _profile_grants_object_access_properties(
+            self._profile_with([op]), "Account",
+        )
+        assert "viewAllFields" not in props
+        assert "customizeSetup" not in props
+        # Only the 6 schema fields present
+        assert set(props.keys()) == {
+            "can_create", "can_read", "can_edit", "can_delete",
+            "can_view_all", "can_modify_all",
+        }
+
+    def test_defaults_missing_flags_to_false(self) -> None:
+        """Salesforce sometimes omits a flag when its value would be
+        False. Mapper must default missing keys to False (matches
+        the schema's default)."""
+        op = {"object": "Account", "allowRead": True}
+        props = _profile_grants_object_access_properties(
+            self._profile_with([op]), "Account",
+        )
+        assert props["can_read"] is True
+        assert props["can_create"] is False
+        assert props["can_edit"] is False
+        assert props["can_delete"] is False
+        assert props["can_view_all"] is False
+        assert props["can_modify_all"] is False
+
+    def test_returns_empty_when_target_not_found(self) -> None:
+        """Defensive: extractor + properties drift would let the
+        materialize layer ask for a target not in the array. Returns
+        {} rather than raising — caller's mismatch detection
+        responsibility."""
+        props = _profile_grants_object_access_properties(
+            self._profile_with([{"object": "Account"}]), "Contact",
+        )
+        assert props == {}
+
+
+class TestProfileGrantsFieldAccessTargets:
+    def _profile(self, fp_list=()) -> dict:
+        return {"Metadata": {"fieldPermissions": list(fp_list)}}
+
+    def test_extracts_composite_field_external_ids(self) -> None:
+        """fieldPermissions[].field is already in the composite
+        '{Object}.{Field}' format that Field phase uses."""
+        targets = _profile_grants_field_access_targets(self._profile([
+            {"field": "Account.AccountSource", "readable": True},
+            {"field": "Account.Industry", "readable": True,
+             "editable": True},
+            {"field": "Contact.Email", "readable": False},
+        ]))
+        assert targets == [
+            "Account.AccountSource", "Account.Industry",
+            "Contact.Email",
+        ]
+
+    def test_returns_empty_when_no_field_permissions(self) -> None:
+        assert _profile_grants_field_access_targets(
+            self._profile([])
+        ) == []
+
+
+class TestProfileGrantsFieldAccessProperties:
+    def _profile_with(self, fp_list) -> dict:
+        return {"Metadata": {"fieldPermissions": list(fp_list)}}
+
+    def test_maps_readable_and_editable(self) -> None:
+        """readable → can_read, editable → can_edit. Field-level
+        permissions have ONLY these two flags (no create/delete/
+        view-all/modify-all at field level per Salesforce model)."""
+        fp = {
+            "field": "Account.Industry",
+            "readable": True,
+            "editable": False,
+        }
+        props = _profile_grants_field_access_properties(
+            self._profile_with([fp]), "Account.Industry",
+        )
+        assert props == {"can_read": True, "can_edit": False}
+
+    def test_only_two_schema_fields(self) -> None:
+        """Schema is exactly 2 fields. Mapper must not invent
+        can_create/etc on field perms (those would violate
+        GrantsFieldAccessProperties' extra='forbid')."""
+        props = _profile_grants_field_access_properties(
+            self._profile_with([
+                {"field": "Account.Name", "readable": True,
+                 "editable": True},
+            ]),
+            "Account.Name",
+        )
+        assert set(props.keys()) == {"can_read", "can_edit"}
+
+    def test_defaults_to_false(self) -> None:
+        """Missing readable/editable → False. Same convention as
+        object-perm flags."""
+        props = _profile_grants_field_access_properties(
+            self._profile_with([{"field": "Account.Name"}]),
+            "Account.Name",
+        )
+        assert props == {"can_read": False, "can_edit": False}

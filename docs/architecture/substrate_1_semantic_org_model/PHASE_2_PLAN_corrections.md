@@ -832,3 +832,73 @@ Not applicable to:
 - Per-Object-iteration phases (Field, Layout) — implicit
   filter
 
+
+## §19: Edge target-scope filtering — silent skip with observability
+
+Date: 2026-05-13
+Step: Profile phase (8 of 12) — audit during cycle
+Source: Q1+Q2+Q3 audit during Profile cycle live verification
+
+Audit of `phase_profile`'s first live run surfaced that
+`materialize_edges_for_entities` silently skips edges whose
+`target_external_id` doesn't resolve to a materialized
+`entity_id`. This is the documented design across all phases
+(Field's HAS_RELATIONSHIP_TO; Profile's GRANTS_OBJECT_ACCESS,
+GRANTS_FIELD_ACCESS):
+
+- Targets that don't resolve are silently skipped
+- Prevents orphan edges
+- Doesn't fail the whole sync on legitimate scope misses
+  (e.g., managed-package internal Objects filtered by Object
+  phase's syncability rules)
+
+Audit numbers from sandbox live test (18 Profiles):
+- GRANTS_OBJECT_ACCESS: 628 candidate targets → 505 written,
+  123 skipped (~19.6% skip rate)
+- GRANTS_FIELD_ACCESS: 10,582 candidate targets → 10,217
+  written, 365 skipped (~3.4% skip rate)
+- Total: 11,210 candidate → 10,722 written, 488 skipped (~4.4%)
+
+Heaviest skip Profiles in sandbox:
+- Admin: 39 OP + 44 FP = 83
+- System Administrator (non-API): 5 + 65 = 70
+- Analytics Cloud Integration User: 47 + 14 = 61
+
+Skipped targets correspond to managed-package internal entities
+(`sfFma__*`, Analytics Cloud-specific Objects, etc.) that the
+Object phase correctly excludes from syncable scope.
+
+**Resolution this cycle:** add observability to silent skip.
+Skipping behavior preserved (correct for legitimate scope
+cases); `PhaseResult.edges_skipped_by_type` now tracks count per
+`edge_type`; debug-level log emits on each skip with target
+context. No change to entity hashes (Profile entity continues
+to hash full `Metadata`; only edges respect synced scope).
+
+Implementation:
+- `primeqa/sync/result.py`:
+  `edges_skipped_by_type: dict[str, int] = field(default_factory=dict)`
+  + `record_skipped_edge(edge_type)` method
+- `primeqa/sync/materialize.py`:
+  `materialize_edges_for_entities` increments the counter +
+  emits `logger.debug(...)` on each `parent_resolver → None` skip
+
+Cross-cutting fix: applies to every phase using the shared
+materialize path (Field, RecordType, Layout, ValidationRule,
+Profile, future PermissionSet/User/Flow). Profile cycle's
+audit numbers (488 skips at 4.4%) are surfaced automatically
+in any future phase's `PhaseResult` as well.
+
+**Future work tracked:** a more substantive observability cycle
+could distinguish three skip categories:
+1. Target is in known-non-syncable set (managed-package
+   internals filtered by Object phase) — expected, no concern
+2. Target was in syncable set but got superseded mid-run —
+   likely concurrent sync race; warrants warn-level log
+3. Target `external_id` is malformed — sync code bug; warrants
+   error-level log
+
+Current implementation logs all skips at debug level. The
+distinction above requires correlation with synced-set
+membership at the time of skip; cheap to add when needed.
+

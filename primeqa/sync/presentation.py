@@ -313,6 +313,51 @@ def _to_presentation_validation_rule(
     }
 
 
+def _to_presentation_profile(normalized: dict[str, Any]) -> dict[str, Any]:
+    """Map normalized Profile (Tooling Phase 1 + Phase 2) to
+    semantic_text input shape.
+
+    Tooling fetch produces a record with:
+      Top-level (Phase 1): Id, Name, Description, CreatedDate,
+                           LastModifiedDate
+      Phase 2: FullName, Metadata (custom, userLicense,
+                                    objectPermissions[],
+                                    fieldPermissions[],
+                                    userPermissions[], ...)
+
+    Substrate-1's _to_text_profile input shape:
+        {name, license, description, obj_perm_count, field_perm_count}
+
+    Bridges:
+      name              ← Name (Phase 1 top-level; same value as
+                          FullName for standard Profiles)
+      license           ← Metadata.userLicense (the Salesforce
+                          user license tier — Salesforce, Salesforce
+                          Platform, Analytics Cloud Integration
+                          User, etc.)
+      description       ← Description (top-level; None on most
+                          standard Profiles)
+      obj_perm_count    = len(Metadata.objectPermissions)
+      field_perm_count  = len(Metadata.fieldPermissions)
+
+    The COUNTS rather than the full permission arrays appear in
+    semantic_text. The detailed permissions live in
+    GRANTS_OBJECT_ACCESS + GRANTS_FIELD_ACCESS edges. Substrate-1's
+    design: semantic_text speaks to identity + scope summary; the
+    full permission graph lives in the edges layer.
+    """
+    metadata = normalized.get("Metadata") or {}
+    obj_perms = metadata.get("objectPermissions") or []
+    field_perms = metadata.get("fieldPermissions") or []
+    return {
+        "name": normalized.get("Name"),
+        "license": metadata.get("userLicense"),
+        "description": normalized.get("Description"),
+        "obj_perm_count": len(obj_perms),
+        "field_perm_count": len(field_perms),
+    }
+
+
 _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "Object": _to_presentation_object,
     "PicklistValueSet": _to_presentation_picklist_value_set,
@@ -321,6 +366,7 @@ _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] =
     "RecordType": _to_presentation_record_type,
     "Layout": _to_presentation_layout,
     "ValidationRule": _to_presentation_validation_rule,
+    "Profile": _to_presentation_profile,
     # Other entity types added by their respective phase cycles per
     # PHASE_2_PLAN_corrections.md §7.
 }

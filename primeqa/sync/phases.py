@@ -812,6 +812,76 @@ def phase_validation_rule(ctx: SyncContext, conn: Any) -> PhaseResult:
     return result
 
 
+def phase_profile(ctx: SyncContext, conn: Any) -> PhaseResult:
+    """Profile phase — org-level permission templates.
+
+    Eighth real phase (8/12). First org-level entity phase
+    (previous seven were either top-of-hierarchy or child-of-Object).
+    No parent-Object resolution needed — Profile is org-level.
+
+    Fetched via fetch_profiles (Tooling Phase 1 + Phase 2 with
+    FullName + Metadata). Sandbox at 18 standard Profiles; customer
+    orgs typically 30-100. Per-Profile Metadata averages ~278 KB
+    (System Administrator measured at 277 KB).
+
+    Two property-bearing edge types written:
+    - GRANTS_OBJECT_ACCESS → Object (PERMISSION, 6 access flags
+      per GrantsObjectAccessProperties)
+    - GRANTS_FIELD_ACCESS → Field (PERMISSION, 2 access flags
+      per GrantsFieldAccessProperties)
+
+    Cardinality (sandbox estimate):
+    - GRANTS_OBJECT_ACCESS: 18 × ~130 = ~2.3K edges
+    - GRANTS_FIELD_ACCESS: 18 × ~3K avg = ~50K edges
+    - Total: ~52K edges this phase
+    Heavy Profile (System Administrator) likely has 200+ object
+    perms and 5K+ field perms; total scales accordingly.
+
+    §18 parent-scope filter NOT needed at the phase level. Edge
+    target resolution naturally skips fields/objects on filtered-
+    out parent Objects via parent_resolver returning None +
+    existing `if target_id is None: continue` guard. Many such
+    skips expected for sandbox's managed-package Objects (sfFma,
+    sfLma, etc.); they're informational, not errors.
+
+    NOT in this cycle:
+    - ASSIGNED_TO_PROFILE_RECORDTYPE (Layout source per §16):
+      now unblocked (Profile entities exist) but requires
+      Layout-payload layoutAssignments[] survey. Wires up in a
+      subsequent cycle.
+    - HAS_PROFILE (User source): User phase not yet built.
+    """
+    result = PhaseResult(entity_type="Profile")
+
+    raw_profiles = ctx.sf_client.fetch_profiles()
+
+    if not raw_profiles:
+        return result
+
+    entity_id_map = batched_materialize(
+        ctx=ctx,
+        conn=conn,
+        entity_type="Profile",
+        raw_payloads=raw_profiles,
+        result=result,
+        return_id_map=True,
+    )
+
+    normalized_payloads = [
+        normalize("Profile", p) for p in raw_profiles
+    ]
+    materialize_edges_for_entities(
+        ctx=ctx,
+        conn=conn,
+        source_entity_type="Profile",
+        entity_id_map=entity_id_map,
+        normalized_payloads=normalized_payloads,
+        result=result,
+    )
+
+    return result
+
+
 PHASE_REGISTRY["Object"] = phase_object
 PHASE_REGISTRY["PicklistValueSet"] = phase_picklist_value_set
 PHASE_REGISTRY["PicklistValue"] = phase_picklist_value
@@ -819,6 +889,7 @@ PHASE_REGISTRY["Field"] = phase_field
 PHASE_REGISTRY["RecordType"] = phase_record_type
 PHASE_REGISTRY["Layout"] = phase_layout
 PHASE_REGISTRY["ValidationRule"] = phase_validation_rule
+PHASE_REGISTRY["Profile"] = phase_profile
 
 
 def get_phase_function(entity_type: str) -> PhaseFunction:

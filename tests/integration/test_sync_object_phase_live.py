@@ -1,6 +1,7 @@
 """Live integration test for Object + PicklistValueSet + PicklistValue
-+ Field + RecordType + Layout + ValidationRule phases, including
-detail-table writes + edges (property-less + property-bearing).
++ Field + RecordType + Layout + ValidationRule + Profile phases,
+including detail-table writes + edges (property-less + property-
+bearing).
 
 End-to-end: SyncEngine.run_sync() runs all 12 phases for a fresh
 connected_org. Object + PicklistValueSet + PicklistValue + Field +
@@ -85,6 +86,24 @@ Verifies:
     Object with distinct edge_types; UNIQUE active index allows
     coexistence). REFERENCES → Field deferred per corrections-log
     §17 (formula parser unbuilt).
+  - Profile phase: Tooling Phase 1 + Phase 2 fetch
+    (substrate-1 fetch_profiles). Org-level entity (no parent
+    Object); §18 parent-scope filter does NOT apply. Writes
+    entity + profile_details + TWO property-bearing edge types:
+    GRANTS_OBJECT_ACCESS → Object (6 access flags per
+    GrantsObjectAccessProperties: can_create / can_read /
+    can_edit / can_delete / can_view_all / can_modify_all) and
+    GRANTS_FIELD_ACCESS → Field (2 access flags per
+    GrantsFieldAccessProperties: can_read / can_edit). Both
+    edge types route through the property-bearing hash-compare
+    supersession path established in the Layout cycle
+    (commit 258e3f9). Edge targets pointing at unsyncable
+    Objects/Fields (managed-package internals filtered by
+    Object phase's syncability rules) are silently skipped via
+    the materialize layer's `if target_id is None: continue`
+    guard. ASSIGNED_TO_PROFILE_RECORDTYPE (Layout source per
+    §16) deferred to next cycle — needs Layout payload
+    layoutAssignments[] survey.
 
 Cleanup: deletes all rows referencing the test connected_org's id
 (FK-aware: queue → entities → sync_runs back-ref → logical_versions
@@ -270,9 +289,10 @@ def test_org(db_engine):
         # and makes the cleanup robust against future detail-table
         # additions.
         for detail_table in (
-            "validation_rule_details", "layout_details",
-            "field_details", "record_type_details",
-            "picklist_value_details", "object_details",
+            "profile_details", "validation_rule_details",
+            "layout_details", "field_details",
+            "record_type_details", "picklist_value_details",
+            "object_details",
         ):
             conn.execute(text(f"""
                 DELETE FROM {detail_table}
@@ -321,14 +341,15 @@ def test_org(db_engine):
         """), {"id": org_id})
 
 
-def test_live_sync_through_validation_rule(
+def test_live_sync_through_profile(
     live_sf_client, db_engine, test_org,
 ):
     """End-to-end Object + PVS + PV + Field + RecordType + Layout
-    + ValidationRule phases. Detail-table writes, BELONGS_TO +
-    HAS_RELATIONSHIP_TO + INCLUDES_FIELD (property-bearing) +
-    APPLIES_TO edges. Live verification parked pending the
-    local-Postgres switch."""
+    + ValidationRule + Profile phases. Detail-table writes,
+    BELONGS_TO + HAS_RELATIONSHIP_TO + INCLUDES_FIELD (property-
+    bearing) + APPLIES_TO + GRANTS_OBJECT_ACCESS (property-
+    bearing) + GRANTS_FIELD_ACCESS (property-bearing) edges. Runs
+    against local Postgres via LIVE_DATABASE_URL."""
     from primeqa.sync.engine import SyncEngine
 
     engine = SyncEngine(
@@ -974,6 +995,153 @@ def test_live_sync_through_validation_rule(
         """), {"id": test_org}).scalar()
         assert vr_queue == vr_count * 2
 
+        # ----- Profile entities + profile_details + edges -----
+        # Org-level entity (no parent Object). Sandbox at 18
+        # standard Profiles per survey; regression floor: >=1.
+        profile_count = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'Profile'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert profile_count >= 1, (
+            f"Expected >=1 Profile entity (regression floor; "
+            f"sandbox has 18); got {profile_count}"
+        )
+
+        # profile_details: 1 row per active Profile entity
+        profile_details_count = conn.execute(text("""
+            SELECT COUNT(*) FROM profile_details pd
+            JOIN entities e ON e.id = pd.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'Profile'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert profile_details_count == profile_count, (
+            f"profile_details rows ({profile_details_count}) != "
+            f"Profile entity count ({profile_count})"
+        )
+
+        # FK integrity: Profile has no parent Object FK (org-level),
+        # so we just sanity-check that user_license_type is NOT NULL
+        # for every detail row. Catches a regression where mapper
+        # erroneously omits the required column.
+        bad_profile_details = conn.execute(text("""
+            SELECT COUNT(*) FROM profile_details pd
+            JOIN entities child ON child.id = pd.entity_id
+            WHERE child.last_synced_from_org_id = :id
+              AND child.entity_type = 'Profile'
+              AND child.valid_to_seq IS NULL
+              AND (pd.user_license_type IS NULL
+                   OR pd.user_license_type = '')
+        """), {"id": test_org}).scalar()
+        assert bad_profile_details == 0, (
+            f"Found {bad_profile_details} profile_details rows "
+            f"with NULL/empty user_license_type"
+        )
+
+        # GRANTS_OBJECT_ACCESS edges (property-bearing). Sandbox
+        # has 18 Profiles × ~130 syncable Objects each ≈ 2K-3K
+        # edges; regression floor: >=10 (sandbox-conservative).
+        # Many candidates skipped by materialize layer for
+        # managed-package targets.
+        grants_object_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'GRANTS_OBJECT_ACCESS'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Profile'
+        """), {"id": test_org}).scalar()
+        assert grants_object_count >= 10, (
+            f"Expected >=10 GRANTS_OBJECT_ACCESS edges (regression "
+            f"floor); got {grants_object_count}"
+        )
+
+        # Property-bearing edge invariants: every edge carries
+        # last_seed_hash (non-NULL) and properties != '{}'. The
+        # hash + non-empty-properties pair is the hallmark of
+        # property-bearing edges per commit 26584d0.
+        grants_object_with_hash = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'GRANTS_OBJECT_ACCESS'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Profile'
+              AND e.last_seed_hash IS NOT NULL
+              AND e.properties != '{}'::jsonb
+        """), {"id": test_org}).scalar()
+        assert grants_object_with_hash == grants_object_count, (
+            f"GRANTS_OBJECT_ACCESS edges should all carry hash + "
+            f"non-empty properties; got {grants_object_with_hash} "
+            f"of {grants_object_count} with both"
+        )
+
+        # GRANTS_FIELD_ACCESS edges (property-bearing). High-
+        # cardinality: 18 Profiles × ~3K fields each ≈ 50K edges
+        # before materialize-layer filtering. Regression floor:
+        # >=50 (sandbox-conservative; the bulk of field perms
+        # target syncable Objects).
+        grants_field_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'GRANTS_FIELD_ACCESS'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Profile'
+        """), {"id": test_org}).scalar()
+        assert grants_field_count >= 50, (
+            f"Expected >=50 GRANTS_FIELD_ACCESS edges (regression "
+            f"floor); got {grants_field_count}"
+        )
+
+        grants_field_with_hash = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'GRANTS_FIELD_ACCESS'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Profile'
+              AND e.last_seed_hash IS NOT NULL
+              AND e.properties != '{}'::jsonb
+        """), {"id": test_org}).scalar()
+        assert grants_field_with_hash == grants_field_count, (
+            f"GRANTS_FIELD_ACCESS edges should all carry hash + "
+            f"non-empty properties; got {grants_field_with_hash} "
+            f"of {grants_field_count} with both"
+        )
+
+        # No ASSIGNED_TO_PROFILE_RECORDTYPE edges this cycle —
+        # Profile entities exist now (unblocking §16) but Layout
+        # layoutAssignments[] wiring is deferred to the next cycle.
+        # Still 0 — same assertion as the Layout cycle.
+        assigned_count_profile = conn.execute(text("""
+            SELECT COUNT(*) FROM edges
+            WHERE edge_type = 'ASSIGNED_TO_PROFILE_RECORDTYPE'
+              AND valid_to_seq IS NULL
+        """)).scalar()
+        assert assigned_count_profile == 0, (
+            f"Expected 0 ASSIGNED_TO_PROFILE_RECORDTYPE edges "
+            f"(wiring deferred to next cycle); "
+            f"got {assigned_count_profile}"
+        )
+
+        # Profile enrichment queue: 2× entity count
+        profile_queue = conn.execute(text("""
+            SELECT COUNT(*) FROM ai_enrichment_queue
+            WHERE entity_type = 'Profile'
+              AND entity_id IN (
+                  SELECT id FROM entities
+                  WHERE last_synced_from_org_id = :id
+                    AND entity_type = 'Profile'
+              )
+        """), {"id": test_org}).scalar()
+        assert profile_queue == profile_count * 2, (
+            f"Expected {profile_count * 2} Profile queue rows; "
+            f"got {profile_queue}"
+        )
+
     # ===== Second sync =====
     sync_run_id_2 = engine.run_sync(connected_org_id=test_org)
     assert sync_run_id_2 != sync_run_id_1
@@ -996,18 +1164,20 @@ def test_live_sync_through_validation_rule(
             f"got {run2.entities_superseded}"
         )
         # Total unchanged = Object + PVS + PV + Field + RT + Layout
-        # + ValidationRule counts. Each entity's phase-injected
-        # markers round-trip through normalize/hash identically.
+        # + ValidationRule + Profile counts. Each entity's phase-
+        # injected markers round-trip through normalize/hash
+        # identically. Profile is org-level so it has no parent
+        # marker — only the bare Tooling payload round-trips.
         expected_unchanged = (
             object_count + pvs_count + pv_count + field_count
-            + rt_count + layout_count + vr_count
+            + rt_count + layout_count + vr_count + profile_count
         )
         assert run2.entities_unchanged == expected_unchanged, (
             f"Second sync should report {expected_unchanged} unchanged "
             f"(Object {object_count} + PVS {pvs_count} + PV "
             f"{pv_count} + Field {field_count} + RT {rt_count} + "
-            f"Layout {layout_count} + VR {vr_count}); "
-            f"got {run2.entities_unchanged}"
+            f"Layout {layout_count} + VR {vr_count} + Profile "
+            f"{profile_count}); got {run2.entities_unchanged}"
         )
 
         # Edges: same set-difference logic should yield 0 inserts and
@@ -1283,3 +1453,54 @@ def test_live_sync_through_validation_rule(
               AND src.entity_type = 'ValidationRule'
         """), {"id": test_org}).scalar()
         assert vr_applies_to_after == vr_applies_to_count
+
+        # Profile entity + detail + property-bearing edge counts
+        # stable across syncs. The property-bearing INCLUDES_FIELD
+        # path's hash-compare supersession proved naturally idempotent
+        # for Layout (commit 258e3f9); Profile reuses the same
+        # property-bearing infrastructure for GRANTS_OBJECT_ACCESS +
+        # GRANTS_FIELD_ACCESS — same idempotency expected.
+        profile_count_after = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'Profile'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert profile_count_after == profile_count
+
+        profile_details_after = conn.execute(text("""
+            SELECT COUNT(*) FROM profile_details pd
+            JOIN entities e ON e.id = pd.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'Profile'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert profile_details_after == profile_details_count
+
+        grants_object_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'GRANTS_OBJECT_ACCESS'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Profile'
+        """), {"id": test_org}).scalar()
+        assert grants_object_after == grants_object_count, (
+            f"GRANTS_OBJECT_ACCESS count should remain "
+            f"{grants_object_count} after second sync (hash-compare "
+            f"supersession should match); got {grants_object_after}"
+        )
+
+        grants_field_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'GRANTS_FIELD_ACCESS'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Profile'
+        """), {"id": test_org}).scalar()
+        assert grants_field_after == grants_field_count, (
+            f"GRANTS_FIELD_ACCESS count should remain "
+            f"{grants_field_count} after second sync (hash-compare "
+            f"supersession should match); got {grants_field_after}"
+        )

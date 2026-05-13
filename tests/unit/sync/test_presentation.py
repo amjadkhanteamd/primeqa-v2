@@ -10,6 +10,7 @@ from primeqa.sync.presentation import (
     _to_presentation_object,
     _to_presentation_picklist_value,
     _to_presentation_picklist_value_set,
+    _to_presentation_profile,
     _to_presentation_record_type,
     _to_presentation_validation_rule,
     to_presentation,
@@ -520,3 +521,64 @@ class TestToPresentationValidationRule:
         vr["Metadata"] = None
         presentation = _to_presentation_validation_rule(vr)
         assert presentation["formula_text"] is None
+
+
+class TestToPresentationProfile:
+    def _profile(self, **overrides) -> dict:
+        base = {
+            "Id": "00eF9000000ABC",
+            "Name": "Read Only",
+            "Description": "Read-only access across all objects.",
+            "FullName": "Read Only",
+            "Metadata": {
+                "custom": False,
+                "userLicense": "Salesforce",
+                "objectPermissions": [
+                    {"object": "Account"},
+                    {"object": "Contact"},
+                    {"object": "Lead"},
+                ],
+                "fieldPermissions": [
+                    {"field": "Account.Industry"},
+                    {"field": "Account.Name"},
+                ],
+                "userPermissions": [],
+            },
+        }
+        base.update(overrides)
+        return base
+
+    def test_maps_name_license_description(self) -> None:
+        presentation = _to_presentation_profile(self._profile())
+        assert presentation["name"] == "Read Only"
+        assert presentation["license"] == "Salesforce"
+        assert presentation["description"] == (
+            "Read-only access across all objects."
+        )
+
+    def test_counts_object_and_field_permissions(self) -> None:
+        """Substrate-1's _to_text_profile shows counts of permission
+        types, not the full arrays — the detailed permissions live
+        in GRANTS_* edges."""
+        presentation = _to_presentation_profile(self._profile())
+        assert presentation["obj_perm_count"] == 3
+        assert presentation["field_perm_count"] == 2
+
+    def test_zero_counts_when_metadata_missing(self) -> None:
+        """Defensive: missing Metadata → 0 counts. substrate-1's
+        _to_text_profile handles 0 gracefully."""
+        presentation = _to_presentation_profile({
+            "Name": "Empty Profile",
+        })
+        assert presentation["obj_perm_count"] == 0
+        assert presentation["field_perm_count"] == 0
+        assert presentation["license"] is None
+
+    def test_handles_missing_description(self) -> None:
+        """Most standard Profiles have no Description in Tooling.
+        Adapter passes None through; downstream _to_text_profile
+        substitutes 'no description provided'."""
+        profile = self._profile()
+        profile.pop("Description")
+        presentation = _to_presentation_profile(profile)
+        assert presentation["description"] is None

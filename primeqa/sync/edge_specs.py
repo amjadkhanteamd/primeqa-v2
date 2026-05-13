@@ -300,6 +300,136 @@ def _validation_rule_applies_to_targets(normalized: dict) -> list[str]:
 
 
 # ----------------------------------------------------------------------
+# Profile edge spec extractors
+# ----------------------------------------------------------------------
+#
+# Profile permissions come from Tooling Profile.Metadata sub-arrays:
+#   objectPermissions[]:  per-Object CRUD + view-all + modify-all flags
+#   fieldPermissions[]:   per-Field read + edit flags
+#
+# Extractors are paired — _targets and _properties walk the same array
+# and key by the SAME index. The _properties extractor receives the
+# target_external_id from the materialize layer and finds the matching
+# array entry by content (not position) — robust against re-ordering
+# that substrate-1's _normalize_profile does via _sort_list_of_dicts.
+
+
+def _profile_grants_object_access_targets(normalized: dict) -> list[str]:
+    """Extract Object external_ids from Profile.Metadata.objectPermissions.
+
+    Each entry's `object` field IS the Object api_name (e.g.,
+    'Account', 'sfFma__Internal__c'). Matches the Object phase's
+    external_id format directly — no composition needed.
+
+    Targets pointing at unsyncable Objects (managed-package
+    internals, etc.) are filtered out by the materialize layer's
+    `if target_id is None: continue` guard during target
+    resolution. No phase-level filter needed.
+    """
+    metadata = normalized.get("Metadata") or {}
+    perms = metadata.get("objectPermissions") or []
+    targets: list[str] = []
+    for p in perms:
+        if not isinstance(p, dict):
+            continue
+        obj_name = p.get("object")
+        if obj_name:
+            targets.append(obj_name)
+    return targets
+
+
+def _profile_grants_object_access_properties(
+    normalized: dict, target_external_id: str,
+) -> dict:
+    """Locate the objectPermissions entry for target_external_id
+    and return GrantsObjectAccessProperties.
+
+    Mapping (Salesforce field → schema property):
+      allowCreate       → can_create
+      allowRead         → can_read
+      allowEdit         → can_edit
+      allowDelete       → can_delete
+      viewAllRecords    → can_view_all
+      modifyAllRecords  → can_modify_all
+
+    Other fields in the Salesforce payload (viewAllFields,
+    customizeSetup, deleteSetup, viewSetup) are NOT in the schema
+    — they're either record-level concepts not modeled here or
+    legacy Setup-only flags. Dropped.
+
+    Returns {} if target not found (shouldn't happen if _targets
+    and _properties are coherent).
+    """
+    metadata = normalized.get("Metadata") or {}
+    for p in metadata.get("objectPermissions") or []:
+        if not isinstance(p, dict):
+            continue
+        if p.get("object") != target_external_id:
+            continue
+        return {
+            "can_create": bool(p.get("allowCreate", False)),
+            "can_read": bool(p.get("allowRead", False)),
+            "can_edit": bool(p.get("allowEdit", False)),
+            "can_delete": bool(p.get("allowDelete", False)),
+            "can_view_all": bool(p.get("viewAllRecords", False)),
+            "can_modify_all": bool(p.get("modifyAllRecords", False)),
+        }
+    return {}
+
+
+def _profile_grants_field_access_targets(normalized: dict) -> list[str]:
+    """Extract Field external_ids from Profile.Metadata.fieldPermissions.
+
+    Each entry's `field` field is already in the composite
+    "{Object}.{Field}" format that Field phase uses for external_ids.
+    No composition needed.
+
+    Volume: light Profile ~600 field perms; heavy Profile (System
+    Administrator) several thousand. Skipped targets (fields on
+    unsyncable Objects) filtered by materialize layer's target-
+    resolver guard.
+    """
+    metadata = normalized.get("Metadata") or {}
+    perms = metadata.get("fieldPermissions") or []
+    targets: list[str] = []
+    for p in perms:
+        if not isinstance(p, dict):
+            continue
+        field_ref = p.get("field")
+        if field_ref:
+            targets.append(field_ref)
+    return targets
+
+
+def _profile_grants_field_access_properties(
+    normalized: dict, target_external_id: str,
+) -> dict:
+    """Locate the fieldPermissions entry for target_external_id and
+    return GrantsFieldAccessProperties.
+
+    Mapping (Salesforce field → schema property):
+      readable  → can_read
+      editable  → can_edit
+
+    Per substrate-1: field-level permissions are simpler than
+    object-level — only read + edit. Salesforce doesn't have
+    field-level create/delete/view_all/modify_all; those operate
+    at the object level.
+    """
+    metadata = normalized.get("Metadata") or {}
+    for p in metadata.get("fieldPermissions") or []:
+        if not isinstance(p, dict):
+            continue
+        if p.get("field") != target_external_id:
+            continue
+        return {
+            "can_read": bool(p.get("readable", False)),
+            "can_edit": bool(p.get("editable", False)),
+        }
+    return {}
+
+
+# ----------------------------------------------------------------------
 # Registry
 # ----------------------------------------------------------------------
 
@@ -368,6 +498,20 @@ _EDGE_SPECS: dict[str, list[EdgeSpec]] = {
         # validation_rule_field_refs junction-table writer. Same
         # deferral pattern as CONSTRAINS_PICKLIST_VALUES (§14):
         # unbuilt infrastructure block.
+    ],
+    "Profile": [
+        EdgeSpec(
+            target_entity_type="Object",
+            edge_type="GRANTS_OBJECT_ACCESS",
+            extract_target_external_ids=_profile_grants_object_access_targets,
+            extract_properties=_profile_grants_object_access_properties,
+        ),
+        EdgeSpec(
+            target_entity_type="Field",
+            edge_type="GRANTS_FIELD_ACCESS",
+            extract_target_external_ids=_profile_grants_field_access_targets,
+            extract_properties=_profile_grants_field_access_properties,
+        ),
     ],
     # Other entity types add their specs here as their phase cycles land.
 }

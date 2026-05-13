@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
@@ -89,6 +90,8 @@ from primeqa.sync.detail_mappers import get_detail_mapper
 from primeqa.sync.presentation import to_presentation
 from primeqa.sync.result import PhaseResult
 
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CHUNK_SIZE = 500
 
@@ -354,6 +357,19 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
                 f"ValidationRule requires 'FullName' (from "
                 f"Salesforce Tooling Phase 2 fetch post-P5); got "
                 f"raw keys {sorted(raw.keys())}"
+            )
+        return full_name
+    if entity_type == "Profile":
+        # Tooling Profile.FullName is the Profile name itself
+        # (e.g., 'System Administrator', 'Read Only'). Org-level
+        # entity — no composite construction needed. Same pattern
+        # as Tooling-FullName-providing entities (RT, VR).
+        full_name = raw.get("FullName")
+        if not full_name:
+            raise ValueError(
+                f"Profile requires 'FullName' (from Salesforce "
+                f"Tooling Phase 2 fetch); got raw keys "
+                f"{sorted(raw.keys())}"
             )
         return full_name
     raise KeyError(
@@ -1191,12 +1207,19 @@ def materialize_edges_for_entities(
     map.
 
     Targets that don't resolve to a materialized entity_id are
-    silently skipped. This is the right semantics for cases like
-    a Field referenceTo='Quote' where Quote was filtered out by
-    Object phase's syncability filter — we don't want to write a
-    dangling edge, and we also don't want to fail the whole sync.
-    Skipped targets could be logged for diagnostics in a future
-    cycle if customers report missing edges.
+    silently skipped (the edge isn't written). This is the right
+    semantics for cases like a Field referenceTo='Quote' where
+    Quote was filtered out by Object phase's syncability filter
+    — we don't want to write a dangling edge, and we also don't
+    want to fail the whole sync.
+
+    Per corrections-log §19, skips are now OBSERVABLE: each one
+    increments PhaseResult.edges_skipped_by_type[edge_type] and
+    emits a debug-level log. Behavior is unchanged (skip is still
+    the right action for legitimate scope misses); only diagnostics
+    were added. The cross-cutting fix benefits every phase using
+    this materialize path (Field's HAS_RELATIONSHIP_TO,
+    Profile's GRANTS_* edges, etc.).
     """
     from primeqa.sync.edge_specs import get_edge_specs
 
@@ -1235,6 +1258,17 @@ def materialize_edges_for_entities(
                     external_id=target_external_id,
                 )
                 if target_id is None:
+                    # Skip is intentional design (prevents dangling
+                    # edges for managed-package internals etc. per
+                    # corrections-log §19). Record it for
+                    # observability without changing behavior.
+                    result.record_skipped_edge(spec.edge_type)
+                    logger.debug(
+                        "materialize_edges_for_entities: skipping "
+                        "edge %s target %r (target not in synced "
+                        "scope)",
+                        spec.edge_type, target_external_id,
+                    )
                     continue
                 if spec.extract_properties is not None:
                     # Property-bearing edge: call the per-spec

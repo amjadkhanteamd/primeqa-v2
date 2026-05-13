@@ -612,11 +612,32 @@ class TestExtractExternalId:
         ("ValidationRule",
          {"FullName": "MyNS__Object.RequiredField"},
          "MyNS__Object.RequiredField"),
+        # Profile: external_id = Tooling FullName (which equals the
+        # Profile name itself — org-level entity, no composition).
+        ("Profile",
+         {"FullName": "System Administrator", "Name": "System Administrator"},
+         "System Administrator"),
+        ("Profile",
+         {"FullName": "Read Only"},
+         "Read Only"),
     ])
     def test_extract_external_id_known_types(
         self, entity_type: str, raw: dict, expected: str,
     ) -> None:
         assert _extract_external_id(entity_type, raw) == expected
+
+    def test_extract_external_id_profile_raises_when_fullname_missing(
+        self,
+    ) -> None:
+        """Profile without FullName → ValueError. Tooling Phase 2 is
+        the canonical source; if FullName is missing, deeper failure
+        upstream."""
+        with pytest.raises(ValueError) as excinfo:
+            _extract_external_id(
+                "Profile",
+                {"Name": "System Administrator"},
+            )
+        assert "FullName" in str(excinfo.value)
 
     def test_extract_external_id_layout_raises_when_marker_missing(
         self,
@@ -1358,6 +1379,119 @@ class TestMaterializeEdgesForEntities:
         # Only BELONGS_TO survives; HAS_RELATIONSHIP_TO skipped
         assert len(edge_writes) == 1
         assert edge_writes[0][2] == "BELONGS_TO"
+        # Per corrections-log §19, the skip should be observable.
+        assert result.edges_skipped_by_type == {
+            "HAS_RELATIONSHIP_TO": 1,
+        }
+
+    def test_materialize_edges_records_skipped_when_target_unresolvable(
+        self,
+    ) -> None:
+        """Each skip increments
+        PhaseResult.edges_skipped_by_type[edge_type]. Multiple
+        skips on the same edge_type accumulate. Behavior introduced
+        per corrections-log §19 (observability without
+        behavior change)."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="Field")
+        # 3 polymorphic ref fields where the parent Object resolves
+        # but ALL referenceTo targets are unsyncable → 3 skips on
+        # HAS_RELATIONSHIP_TO. BELONGS_TO still writes for each.
+        normalized_payloads = [
+            self._normalized_field(
+                "RefA", reference_to=["UnsyncableA"],
+            ),
+            self._normalized_field(
+                "RefB", reference_to=["UnsyncableB"],
+            ),
+            self._normalized_field(
+                "RefC", reference_to=["UnsyncableC"],
+            ),
+        ]
+        entity_id_map = {
+            "Account.RefA": "fld-a",
+            "Account.RefB": "fld-b",
+            "Account.RefC": "fld-c",
+        }
+
+        def resolver(*, entity_type, external_id):
+            # Only the parent Object resolves; ref targets are None.
+            return {
+                ("Object", "Account"): "obj-account",
+            }.get((entity_type, external_id))
+
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("make_parent_resolver"),
+                return_value=resolver,
+            ))
+            stack.enter_context(patch(
+                _patch_path("batched_materialize_edges"),
+            ))
+            materialize_edges_for_entities(
+                ctx, conn, "Field",
+                entity_id_map=entity_id_map,
+                normalized_payloads=normalized_payloads,
+                result=result,
+            )
+        assert result.edges_skipped_by_type == {
+            "HAS_RELATIONSHIP_TO": 3,
+        }
+
+    def test_materialize_edges_skips_grouped_by_edge_type(self) -> None:
+        """edges_skipped_by_type is a dict grouped by edge_type —
+        different edge_types accumulate in distinct buckets, none
+        leak into each other. Uses two Field payloads whose
+        polymorphic references include one resolvable + one
+        unresolvable each, so HAS_RELATIONSHIP_TO accumulates skip
+        count but BELONGS_TO doesn't."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="Field")
+        normalized_payloads = [
+            self._normalized_field(
+                "WhoId", reference_to=["Contact", "UnmappedTarget"],
+            ),
+            self._normalized_field(
+                "AnotherRef", reference_to=["UnmappedTarget"],
+            ),
+        ]
+        entity_id_map = {
+            "Account.WhoId": "fld-1",
+            "Account.AnotherRef": "fld-2",
+        }
+
+        def resolver(*, entity_type, external_id):
+            return {
+                ("Object", "Account"): "obj-account",
+                ("Object", "Contact"): "obj-contact",
+                # UnmappedTarget unresolvable → 2 skips
+            }.get((entity_type, external_id))
+
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("make_parent_resolver"),
+                return_value=resolver,
+            ))
+            stack.enter_context(patch(
+                _patch_path("batched_materialize_edges"),
+            ))
+            materialize_edges_for_entities(
+                ctx, conn, "Field",
+                entity_id_map=entity_id_map,
+                normalized_payloads=normalized_payloads,
+                result=result,
+            )
+        # 2 skips on HAS_RELATIONSHIP_TO (Account.WhoId →
+        # UnmappedTarget, Account.AnotherRef → UnmappedTarget);
+        # no other edge_type appears in the skip dict.
+        assert result.edges_skipped_by_type == {
+            "HAS_RELATIONSHIP_TO": 2,
+        }
+        assert "BELONGS_TO" not in result.edges_skipped_by_type
 
 
 # ----------------------------------------------------------------------
