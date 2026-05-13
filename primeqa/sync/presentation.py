@@ -226,12 +226,59 @@ def _to_presentation_record_type(normalized: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _to_presentation_layout(normalized: dict[str, Any]) -> dict[str, Any]:
+    """Map normalized Layout (REST describe/layouts shape) to
+    semantic_text input.
+
+    REST per-Object describe/layouts returns layouts with
+    detailLayoutSections / editLayoutSections / etc. The phase
+    function (phase_layout) decorates each with
+    `_parent_object_api_name` + `_layout_full_name` markers (parent
+    Object api name from the iteration; full_name composed from
+    Tooling Layout.Name resolution).
+
+    Substrate-1's _to_text_layout input shape:
+      {name, object_name, section_count, section_names}
+
+    Bridges:
+      name              ← _layout_full_name marker (e.g.,
+                          "Account-Account Layout")
+      object_name       ← _parent_object_api_name marker
+      section_count     = len(detailLayoutSections)
+      section_names     = [section['heading'] for section in
+                          detailLayoutSections]
+                          (substrate-1's _to_text_layout sorts
+                          section_names alphabetically itself; we
+                          pass them in declared order)
+
+    detailLayoutSections is the canonical detail-view section list.
+    editLayoutSections / multirowEditLayoutSections exist on the
+    same payload but mirror detailLayoutSections in section count
+    for typical layouts; we count detail sections as the canonical
+    "section count" for the human-readable summary.
+    """
+    sections = normalized.get("detailLayoutSections") or []
+    section_names: list[str] = []
+    for section in sections:
+        if isinstance(section, dict):
+            heading = section.get("heading")
+            if heading:
+                section_names.append(heading)
+    return {
+        "name": normalized.get("_layout_full_name"),
+        "object_name": normalized.get("_parent_object_api_name"),
+        "section_count": len(sections),
+        "section_names": section_names,
+    }
+
+
 _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "Object": _to_presentation_object,
     "PicklistValueSet": _to_presentation_picklist_value_set,
     "PicklistValue": _to_presentation_picklist_value,
     "Field": _to_presentation_field,
     "RecordType": _to_presentation_record_type,
+    "Layout": _to_presentation_layout,
     # Other entity types added by their respective phase cycles per
     # PHASE_2_PLAN_corrections.md §7.
 }

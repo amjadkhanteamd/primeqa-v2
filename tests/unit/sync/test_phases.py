@@ -53,7 +53,7 @@ class TestPhaseRegistry:
         # separately; this test covers only the remaining no-op
         # placeholders.
         real_phases = {"Object", "PicklistValueSet", "PicklistValue",
-                       "Field", "RecordType"}
+                       "Field", "RecordType", "Layout"}
         for entity_type, phase_fn in PHASE_REGISTRY.items():
             if entity_type in real_phases:
                 continue
@@ -807,3 +807,171 @@ class TestPhaseRecordType:
         assert result.entity_type == "RecordType"
         assert result.entities_inserted == 0
         assert result.succeeded is True
+
+
+# ----------------------------------------------------------------------
+# phase_layout — sixth real phase; first property-bearing edge writer
+# ----------------------------------------------------------------------
+
+from primeqa.sync.phases import phase_layout
+
+
+class TestPhaseLayout:
+    def _ctx_with_objects(self, object_rows):
+        ctx = _stub_ctx_with_mock_sf()
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = [
+            type('R', (), {'id': r[0], 'sf_api_name': r[1]})()
+            for r in object_rows
+        ]
+        return ctx, conn
+
+    def _layout(self, layout_id="00hF900000ABC", sections=()):
+        return {
+            "id": layout_id,
+            "detailLayoutSections": list(sections),
+        }
+
+    def test_phase_layout_fetches_per_object_then_resolves_names(
+        self,
+    ) -> None:
+        """phase_layout calls fetch_layouts_for_object per Object
+        AND fetch_layout_names() once for the Id→Name mapping."""
+        ctx, conn = self._ctx_with_objects([
+            ('obj-acc', 'Account'),
+        ])
+        ctx.sf_client.fetch_layouts_for_object.return_value = {
+            'layouts': [self._layout('00h1')],
+        }
+        ctx.sf_client.fetch_layout_names.return_value = [
+            {'Id': '00h1', 'Name': 'Account Layout',
+             'EntityDefinitionId': 'Account', 'LayoutType': 'Standard'},
+        ]
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            mock_bm.return_value = {'Account-Account Layout': 'l1'}
+            phase_layout(ctx, conn)
+        ctx.sf_client.fetch_layouts_for_object.assert_called_once_with(
+            'Account',
+        )
+        ctx.sf_client.fetch_layout_names.assert_called_once_with()
+
+    def test_phase_layout_decorates_layout_with_markers(self) -> None:
+        """Each layout gets _parent_object_api_name, _layout_full_name,
+        _layout_type, _layout_name_resolved markers injected before
+        batched_materialize."""
+        ctx, conn = self._ctx_with_objects([('obj-acc', 'Account')])
+        ctx.sf_client.fetch_layouts_for_object.return_value = {
+            'layouts': [self._layout('00h1')],
+        }
+        ctx.sf_client.fetch_layout_names.return_value = [
+            {'Id': '00h1', 'Name': 'Account Layout',
+             'EntityDefinitionId': 'Account', 'LayoutType': 'Standard'},
+        ]
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            mock_bm.return_value = {'Account-Account Layout': 'l1'}
+            phase_layout(ctx, conn)
+        payloads = mock_bm.call_args.kwargs['raw_payloads']
+        assert len(payloads) == 1
+        layout = payloads[0]
+        assert layout['_parent_object_api_name'] == 'Account'
+        assert layout['_layout_full_name'] == 'Account-Account Layout'
+        assert layout['_layout_type'] == 'Standard'
+        assert layout['_layout_name_resolved'] == 'Account Layout'
+
+    def test_phase_layout_filters_global_quick_action_list(self) -> None:
+        """LayoutType='GlobalQuickActionList' has EntityDefinitionId='Global'
+        which isn't a real sObject → can't satisfy
+        layout_details.object_entity_id NOT NULL FK. Skip per §15."""
+        ctx, conn = self._ctx_with_objects([('obj-acc', 'Account')])
+        ctx.sf_client.fetch_layouts_for_object.return_value = {
+            'layouts': [
+                self._layout('00h1'),  # will resolve to Standard
+                self._layout('00h2'),  # will resolve to GlobalQuickActionList
+            ],
+        }
+        ctx.sf_client.fetch_layout_names.return_value = [
+            {'Id': '00h1', 'Name': 'Account Layout',
+             'EntityDefinitionId': 'Account', 'LayoutType': 'Standard'},
+            {'Id': '00h2', 'Name': 'Global Quick Action List',
+             'EntityDefinitionId': 'Global',
+             'LayoutType': 'GlobalQuickActionList'},
+        ]
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            mock_bm.return_value = {'Account-Account Layout': 'l1'}
+            phase_layout(ctx, conn)
+        payloads = mock_bm.call_args.kwargs['raw_payloads']
+        # Only the Standard layout survives the filter
+        assert len(payloads) == 1
+        assert payloads[0]['_layout_type'] == 'Standard'
+
+    def test_phase_layout_skips_layouts_missing_from_tooling(self) -> None:
+        """Layout Id appears in REST describe/layouts but NOT in
+        fetch_layout_names() response (e.g., a sandbox-vs-tooling
+        drift) → skip with WARN log. Defensive."""
+        ctx, conn = self._ctx_with_objects([('obj-acc', 'Account')])
+        ctx.sf_client.fetch_layouts_for_object.return_value = {
+            'layouts': [
+                self._layout('00h-resolved'),
+                self._layout('00h-orphan'),
+            ],
+        }
+        ctx.sf_client.fetch_layout_names.return_value = [
+            {'Id': '00h-resolved', 'Name': 'Account Layout',
+             'EntityDefinitionId': 'Account', 'LayoutType': 'Standard'},
+        ]
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            mock_bm.return_value = {'Account-Account Layout': 'l1'}
+            phase_layout(ctx, conn)
+        payloads = mock_bm.call_args.kwargs['raw_payloads']
+        # Only the resolved one survives
+        assert len(payloads) == 1
+        assert payloads[0]['id'] == '00h-resolved'
+
+    def test_phase_layout_empty_object_set_short_circuits(self) -> None:
+        """No syncable Objects → no fetch calls, no materialize, no
+        edges. Defensive."""
+        ctx, conn = self._ctx_with_objects([])
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch(
+                 'primeqa.sync.phases.materialize_edges_for_entities',
+             ) as mock_edges:
+            result = phase_layout(ctx, conn)
+        ctx.sf_client.fetch_layouts_for_object.assert_not_called()
+        ctx.sf_client.fetch_layout_names.assert_not_called()
+        mock_bm.assert_not_called()
+        mock_edges.assert_not_called()
+        assert result.entity_type == 'Layout'
+        assert result.entities_inserted == 0
+
+    def test_phase_layout_tolerates_per_object_fetch_failure(self) -> None:
+        """fetch_layouts_for_object(X) raises (industry-cloud Object
+        with no describe/layouts endpoint) → log warning, continue
+        with the other Objects. Mirrors fetch_standard_value_sets
+        per-label tolerance."""
+        ctx, conn = self._ctx_with_objects([
+            ('obj-acc', 'Account'),
+            ('obj-bad', 'Inaccessible__c'),
+        ])
+
+        def fetch_side_effect(name):
+            if name == 'Inaccessible__c':
+                raise RuntimeError('404 Not Found')
+            return {'layouts': [self._layout('00h1')]}
+
+        ctx.sf_client.fetch_layouts_for_object.side_effect = fetch_side_effect
+        ctx.sf_client.fetch_layout_names.return_value = [
+            {'Id': '00h1', 'Name': 'Account Layout',
+             'EntityDefinitionId': 'Account', 'LayoutType': 'Standard'},
+        ]
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            mock_bm.return_value = {'Account-Account Layout': 'l1'}
+            phase_layout(ctx, conn)
+        # Account's layout survived; Inaccessible__c silently skipped
+        payloads = mock_bm.call_args.kwargs['raw_payloads']
+        assert len(payloads) == 1
+        assert payloads[0]['_parent_object_api_name'] == 'Account'

@@ -20,9 +20,13 @@ The engine calls each phase function inside its own transaction
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
 from sqlalchemy import text
+
+
+logger = logging.getLogger(__name__)
 
 from primeqa.semantic.normalization import normalize
 from primeqa.sync.context import SyncContext
@@ -496,11 +500,163 @@ def phase_record_type(ctx: SyncContext, conn: Any) -> PhaseResult:
     return result
 
 
+def phase_layout(ctx: SyncContext, conn: Any) -> PhaseResult:
+    """Layout phase — per-Object page layouts with field placements.
+
+    Sixth real phase (6/12). First phase to write property-bearing
+    edges (INCLUDES_FIELD with section_name + position + flags).
+
+    Two-step fetch per substrate-1's documented pattern:
+    1. Per-Object REST `/sobjects/{name}/describe/layouts` returns
+       the rich layout structure (detailLayoutSections, layoutRows,
+       layoutItems, layoutComponents) but with Layout Ids only — no
+       names. Substrate-1's `fetch_layouts_for_object` provides this.
+    2. ONE bulk Tooling SOQL `SELECT Id, Name, EntityDefinitionId,
+       LayoutType FROM Layout` resolves Id → Name + LayoutType
+       mapping. Substrate-1's `fetch_layout_names()` provides this.
+
+    The sync layer joins on Layout Id. Per corrections-log §5,
+    substrate-1's fetcher docstring explicitly defers the name-
+    resolution second pass to sync.
+
+    Filtering:
+    - `LayoutType = 'GlobalQuickActionList'`: skip with WARN log
+      (no parent Object — EntityDefinitionId='Global'; can't
+      satisfy layout_details.object_entity_id NOT NULL FK per §15)
+    - Layouts whose Id isn't in the Tooling response: skip with
+      WARN log (Tooling-vs-REST drift; rare but defensive)
+
+    Edges:
+    - BELONGS_TO → Object (property-less, every Layout)
+    - INCLUDES_FIELD → Field (property-bearing — section_name,
+      section_order, row, column, is_required, is_readonly per
+      IncludesFieldProperties schema; one edge per layoutComponent
+      with type='Field')
+    - ASSIGNED_TO_PROFILE_RECORDTYPE → Profile (deferred per
+      corrections-log §16 — Profile entities don't exist yet)
+
+    Sandbox cardinality: 115 layouts in this dev org (per
+    fetch_layout_names() docstring). Each layout has ~5-15
+    sections × 1-10 rows × 1-3 columns × 1-3 components =
+    ~30-100 INCLUDES_FIELD edges per layout → ~3,000-12,000 total.
+    """
+    result = PhaseResult(entity_type="Layout")
+
+    objects = conn.execute(text("""
+        SELECT id, sf_api_name FROM entities
+        WHERE last_synced_from_org_id = :org_id
+          AND entity_type = 'Object'
+          AND valid_to_seq IS NULL
+    """), {"org_id": ctx.connected_org_id}).fetchall()
+
+    # Phase 1: per-Object REST describe/layouts. Accumulate
+    # layout records keyed by parent Object api_name.
+    layouts_by_object: dict[str, list[dict[str, Any]]] = {}
+    for obj in objects:
+        api_name = obj.sf_api_name
+        try:
+            response = ctx.sf_client.fetch_layouts_for_object(api_name)
+        except Exception as e:
+            # Per-Object describe/layouts failure: log + skip.
+            # Industry-cloud Objects (DataKitObject, etc.) sometimes
+            # 404 on this endpoint.
+            logger.warning(
+                "phase_layout: fetch_layouts_for_object(%r) failed: "
+                "%s", api_name, e,
+            )
+            continue
+        layouts = response.get("layouts") or []
+        if layouts:
+            layouts_by_object[api_name] = layouts
+
+    if not layouts_by_object:
+        return result
+
+    # Phase 2: bulk Tooling SOQL resolves Layout.Id → metadata.
+    # ONE call returns ALL layouts; we filter to Ids that appeared
+    # in our REST responses.
+    tooling_records = ctx.sf_client.fetch_layout_names()
+    tooling_by_id: dict[str, dict[str, Any]] = {}
+    for rec in tooling_records:
+        rec_id = rec.get("Id")
+        if rec_id:
+            tooling_by_id[rec_id] = rec
+
+    # Phase 3: decorate each layout with parent + name + type
+    # markers. Filter GlobalQuickActionList; filter unresolved Ids.
+    layout_payloads: list[dict[str, Any]] = []
+    for api_name, layouts in layouts_by_object.items():
+        for layout in layouts:
+            layout_id = layout.get("id")
+            if not layout_id:
+                continue
+            tooling = tooling_by_id.get(layout_id)
+            if not tooling:
+                logger.warning(
+                    "phase_layout: layout id=%r on %r missing from "
+                    "fetch_layout_names() response; skipping",
+                    layout_id, api_name,
+                )
+                continue
+            layout_type = tooling.get("LayoutType") or ""
+            # Skip non-Page-Layout variants per §15
+            if layout_type != "Standard":
+                logger.info(
+                    "phase_layout: skipping layout id=%r "
+                    "(LayoutType=%r; only 'Standard' page layouts "
+                    "supported in this cycle)",
+                    layout_id, layout_type,
+                )
+                continue
+            layout_name = tooling.get("Name") or ""
+            if not layout_name:
+                logger.warning(
+                    "phase_layout: layout id=%r has empty Name; "
+                    "skipping", layout_id,
+                )
+                continue
+            # Inject markers per substrate-1's Layout FullName
+            # convention (HYPHEN separator, not dot — per §15
+            # parking lot in substrate-1's design)
+            layout["_parent_object_api_name"] = api_name
+            layout["_layout_full_name"] = f"{api_name}-{layout_name}"
+            layout["_layout_type"] = layout_type
+            layout["_layout_name_resolved"] = layout_name
+            layout_payloads.append(layout)
+
+    if not layout_payloads:
+        return result
+
+    entity_id_map = batched_materialize(
+        ctx=ctx,
+        conn=conn,
+        entity_type="Layout",
+        raw_payloads=layout_payloads,
+        result=result,
+        return_id_map=True,
+    )
+
+    normalized_payloads = [
+        normalize("Layout", p) for p in layout_payloads
+    ]
+    materialize_edges_for_entities(
+        ctx=ctx,
+        conn=conn,
+        source_entity_type="Layout",
+        entity_id_map=entity_id_map,
+        normalized_payloads=normalized_payloads,
+        result=result,
+    )
+
+    return result
+
+
 PHASE_REGISTRY["Object"] = phase_object
 PHASE_REGISTRY["PicklistValueSet"] = phase_picklist_value_set
 PHASE_REGISTRY["PicklistValue"] = phase_picklist_value
 PHASE_REGISTRY["Field"] = phase_field
 PHASE_REGISTRY["RecordType"] = phase_record_type
+PHASE_REGISTRY["Layout"] = phase_layout
 
 
 def get_phase_function(entity_type: str) -> PhaseFunction:

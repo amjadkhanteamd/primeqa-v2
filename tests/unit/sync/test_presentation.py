@@ -6,6 +6,7 @@ import pytest
 
 from primeqa.sync.presentation import (
     _to_presentation_field,
+    _to_presentation_layout,
     _to_presentation_object,
     _to_presentation_picklist_value,
     _to_presentation_picklist_value_set,
@@ -406,3 +407,56 @@ class TestToPresentationRecordType:
         # _to_text_record_type which substitutes "no description
         # provided")
         assert presentation["description"] is None
+
+
+class TestToPresentationLayout:
+    def _layout(self) -> dict:
+        return {
+            "_parent_object_api_name": "Account",
+            "_layout_full_name": "Account-Account Layout",
+            "detailLayoutSections": [
+                {"heading": "Account Information",
+                 "layoutRows": []},
+                {"heading": "Address Information",
+                 "layoutRows": []},
+                {"heading": "System Information",
+                 "layoutRows": []},
+            ],
+        }
+
+    def test_maps_full_name_to_name(self) -> None:
+        """Composite Layout name '{Object}-{LayoutName}' (HYPHEN
+        separator) is the canonical Layout identifier substrate-1
+        uses. Phase function injects it as _layout_full_name after
+        Tooling resolution."""
+        presentation = _to_presentation_layout(self._layout())
+        assert presentation["name"] == "Account-Account Layout"
+        assert presentation["object_name"] == "Account"
+
+    def test_section_count_from_detail_layout_sections(self) -> None:
+        """section_count counts detailLayoutSections entries —
+        editLayoutSections and other variants are not the canonical
+        section list per substrate-1's semantic_text input shape."""
+        presentation = _to_presentation_layout(self._layout())
+        assert presentation["section_count"] == 3
+
+    def test_section_names_from_heading_field(self) -> None:
+        """section_names is the list of section.heading strings in
+        declared order. Substrate-1's _to_text_layout sorts these
+        alphabetically itself; we don't pre-sort."""
+        presentation = _to_presentation_layout(self._layout())
+        assert presentation["section_names"] == [
+            "Account Information",
+            "Address Information",
+            "System Information",
+        ]
+
+    def test_empty_sections_returns_zero_count(self) -> None:
+        """Layouts with no detailLayoutSections (e.g., quick-action-
+        only) → section_count=0, section_names=[]. Substrate-1's
+        _to_text_layout substitutes 'none listed' for empty lists."""
+        layout = self._layout()
+        layout["detailLayoutSections"] = []
+        presentation = _to_presentation_layout(layout)
+        assert presentation["section_count"] == 0
+        assert presentation["section_names"] == []

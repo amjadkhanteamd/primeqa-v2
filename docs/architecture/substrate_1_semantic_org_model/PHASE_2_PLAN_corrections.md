@@ -655,3 +655,82 @@ consistent with derivation.py. The registry's declared
 target should change to PicklistValue. But this is
 substrate-1's decision, not sync's.
 
+## §15: layout_type sourced from Salesforce, not invented
+
+**Date:** 2026-05-12
+**Step:** Layout phase (6 of 12)
+**Source:** Survey of substrate-1's fetch_layout_names()
+            during Layout phase implementation
+
+Substrate-1's `layout_details.layout_type` column is
+VARCHAR(20) NOT NULL with no DB default. The Layout phase
+sources the value from Salesforce's Tooling Layout.LayoutType
+field, NOT a hardcoded sync-layer convention.
+
+Tooling Layout.LayoutType values verified in this sandbox at
+v66.0:
+- `Standard` — page layouts (returned by REST
+  /sobjects/{name}/describe/layouts; the dominant case)
+- `GlobalQuickActionList` — the special variant backing the
+  global quick-actions menu (EntityDefinitionId='Global'; no
+  parent sObject)
+
+The Layout phase filters out `GlobalQuickActionList`-type
+rows because they have no parent Object to link to via
+`layout_details.object_entity_id` (NOT NULL FK to entities).
+Standard layouts are materialized; quick-action-list layouts
+are skipped with a WARN log per the lenient-tolerance
+pattern (corrections-log §6).
+
+Pattern: when a Salesforce-provided field already populates a
+detail-table column's domain, source the value from Salesforce
+rather than invent a sync-layer enumeration. The substrate-1
+`fetch_layout_names()` docstring documents the LayoutType
+discrimination so consumers (including future phases for
+CompactLayout / SearchLayout if those are added) follow the
+same convention.
+
+Future cycles adding Compact Layout or Search Layout support
+will need different fetchers (different Tooling tables:
+CompactLayout, SearchLayout). Their LayoutType values will
+similarly come from Salesforce — sync layer remains a
+pass-through.
+
+## §16: Layout-source ASSIGNED_TO_PROFILE_RECORDTYPE deferred
+
+**Date:** 2026-05-12
+**Step:** Layout phase (6 of 12)
+**Source:** Survey of TIER_1_EDGES for Layout-source edge types
+
+TIER_1_EDGES has a third Layout-source edge type beyond
+BELONGS_TO and INCLUDES_FIELD:
+  ASSIGNED_TO_PROFILE_RECORDTYPE: Layout → Profile
+                                  (property-bearing, category=CONFIG)
+
+Properties schema (AssignedToProfileRecordtypeProperties):
+  record_type_entity_id: UUID
+  is_default: bool
+
+Deferred this cycle. Profile entities don't exist yet (Profile
+phase pending). Pre-wiring the edge spec would create code
+that silently skips all edge writes (resolver returns None for
+every target). Wait until Profile phase lands; wire then.
+
+The property requires resolving a RecordType entity_id for the
+record_type_entity_id field. RecordType entities DO exist (this
+cycle is post-RT cycle d91e777), so the RT-resolution piece is
+available. The blocker is purely the Profile target.
+
+When Profile phase lands:
+1. Add ASSIGNED_TO_PROFILE_RECORDTYPE spec to Layout's
+   EDGE_SPECS entry
+2. Extractor walks the Tooling Layout-Profile-RT assignments
+   table (likely Tooling ProfileLayout) — fetcher TBD
+3. Properties extractor resolves RT external_id to entity_id
+   via make_parent_resolver
+
+Pattern: when adding a new entity type whose edges target
+another entity type that hasn't been implemented yet, defer
+the edge spec until both ends are real. Avoids speculative
+unused code paths that produce silent zero-edge writes.
+

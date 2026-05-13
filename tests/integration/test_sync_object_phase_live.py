@@ -1,12 +1,13 @@
 """Live integration test for Object + PicklistValueSet + PicklistValue
-+ Field + RecordType phases, including detail-table writes + edges.
++ Field + RecordType + Layout phases, including detail-table writes
++ edges (property-less + property-bearing).
 
 End-to-end: SyncEngine.run_sync() runs all 12 phases for a fresh
 connected_org. Object + PicklistValueSet + PicklistValue + Field +
-RecordType phases materialize entities; other phases are no-ops
-returning empty results. Field phase is the first edge-writing phase
-— establishes the batched edge-write pattern; RecordType is the
-second.
+RecordType + Layout phases materialize entities; other phases are
+no-ops returning empty results. Field is the first edge-writing
+phase; RecordType the second; Layout the third AND the first to
+write property-bearing edges (INCLUDES_FIELD).
 Verifies:
   - entities table populated with Object rows
   - ai_enrichment_queue populated (2 rows per entity: embedding + summary)
@@ -65,6 +66,16 @@ Verifies:
     CONSTRAINS_PICKLIST_VALUES deferred per corrections-log §14
     pending substrate-1's registry-vs-derivation contradiction
     resolution alongside §10 fetch_custom_field_metadata).
+  - Layout phase: REST describe/layouts per Object + ONE bulk
+    Tooling SOQL for Id→Name resolution (fetch_layout_names).
+    Filters GlobalQuickActionList (no parent Object per §15).
+    Writes entity + layout_details + BELONGS_TO → Object +
+    INCLUDES_FIELD → Field edges (the latter property-bearing
+    with section_name/order/row/column/required/readonly per
+    IncludesFieldProperties; hash-based supersession via the
+    edges.last_seed_hash column added in migration 20260512_0040
+    / commit 26584d0). ASSIGNED_TO_PROFILE_RECORDTYPE deferred
+    per corrections-log §16.
 
 Cleanup: deletes all rows referencing the test connected_org's id
 (FK-aware: queue → entities → sync_runs back-ref → logical_versions
@@ -208,7 +219,7 @@ def test_org(db_engine):
         # and makes the cleanup robust against future detail-table
         # additions.
         for detail_table in (
-            "field_details", "record_type_details",
+            "layout_details", "field_details", "record_type_details",
             "picklist_value_details", "object_details",
         ):
             conn.execute(text(f"""
@@ -258,12 +269,12 @@ def test_org(db_engine):
         """), {"id": org_id})
 
 
-def test_live_sync_through_record_type(
+def test_live_sync_through_layout(
     live_sf_client, db_engine, test_org,
 ):
-    """End-to-end Object + PicklistValueSet + PicklistValue + Field
-    + RecordType phases. Detail-table writes, BELONGS_TO + HAS_
-    RELATIONSHIP_TO + RT-source BELONGS_TO edges. Live verification
+    """End-to-end Object + PVS + PV + Field + RecordType + Layout
+    phases. Detail-table writes, BELONGS_TO + HAS_RELATIONSHIP_TO +
+    INCLUDES_FIELD (property-bearing) edges. Live verification
     parked pending the local-Postgres switch."""
     from primeqa.sync.engine import SyncEngine
 
@@ -694,6 +705,129 @@ def test_live_sync_through_record_type(
             f"got {rt_queue}"
         )
 
+        # ----- Layout entities + layout_details + edges -----
+        # Sandbox has ~115 layouts per fetch_layout_names() docstring;
+        # most are 'Standard' LayoutType (some are
+        # GlobalQuickActionList which Layout phase filters per §15).
+        # Regression floor: >=10.
+        layout_count = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'Layout'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert layout_count >= 10, (
+            f"Expected >=10 Layout entities (regression floor); "
+            f"got {layout_count}"
+        )
+
+        # layout_details: 1 row per active Layout entity
+        layout_details_count = conn.execute(text("""
+            SELECT COUNT(*) FROM layout_details ld
+            JOIN entities e ON e.id = ld.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'Layout'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert layout_details_count == layout_count
+
+        # FK integrity: every Layout detail row points at a real
+        # Object entity. layout_type should always be 'Standard'
+        # for this cycle (GlobalQuickActionList filtered per §15).
+        bad_layout_details = conn.execute(text("""
+            SELECT COUNT(*) FROM layout_details ld
+            JOIN entities child ON child.id = ld.entity_id
+            LEFT JOIN entities parent ON parent.id = ld.object_entity_id
+            WHERE child.last_synced_from_org_id = :id
+              AND child.entity_type = 'Layout'
+              AND child.valid_to_seq IS NULL
+              AND (parent.id IS NULL
+                   OR parent.entity_type != 'Object'
+                   OR ld.layout_type != 'Standard')
+        """), {"id": test_org}).scalar()
+        assert bad_layout_details == 0, (
+            f"Found {bad_layout_details} layout_details rows with "
+            f"bad FK target or non-Standard layout_type"
+        )
+
+        # BELONGS_TO edges from Layouts: 1 per Layout
+        layout_belongs_to_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'BELONGS_TO'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Layout'
+        """), {"id": test_org}).scalar()
+        assert layout_belongs_to_count == layout_count, (
+            f"BELONGS_TO edge count from Layout sources "
+            f"({layout_belongs_to_count}) != Layout count "
+            f"({layout_count})"
+        )
+
+        # INCLUDES_FIELD edges (property-bearing). Each Layout has
+        # ~30-100 INCLUDES_FIELD edges (one per layoutComponent
+        # with type='Field'). Regression floor: 100 total. Verifies
+        # both the property-bearing edge write path AND that the
+        # property-bearing supersession is doing inserts on first
+        # sync.
+        includes_field_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'INCLUDES_FIELD'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Layout'
+        """), {"id": test_org}).scalar()
+        assert includes_field_count >= 100, (
+            f"Expected >=100 INCLUDES_FIELD edges (regression "
+            f"floor); got {includes_field_count}"
+        )
+
+        # INCLUDES_FIELD edges carry non-empty properties and
+        # non-NULL last_seed_hash (the hallmark of property-bearing
+        # edges). Property-less edges (BELONGS_TO, etc.) stay at
+        # properties='{}' and last_seed_hash=NULL.
+        includes_field_with_hash = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'INCLUDES_FIELD'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Layout'
+              AND e.last_seed_hash IS NOT NULL
+              AND e.properties != '{}'::jsonb
+        """), {"id": test_org}).scalar()
+        assert includes_field_with_hash == includes_field_count, (
+            f"INCLUDES_FIELD edges should all carry hash + "
+            f"non-empty properties; got {includes_field_with_hash} "
+            f"of {includes_field_count} with both"
+        )
+
+        # No ASSIGNED_TO_PROFILE_RECORDTYPE edges this cycle
+        # (deferred per §16).
+        assigned_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges
+            WHERE edge_type = 'ASSIGNED_TO_PROFILE_RECORDTYPE'
+              AND valid_to_seq IS NULL
+        """)).scalar()
+        assert assigned_count == 0, (
+            f"Expected 0 ASSIGNED_TO_PROFILE_RECORDTYPE edges "
+            f"(deferred per §16); got {assigned_count}"
+        )
+
+        # Layout enrichment queue: 2× count
+        layout_queue = conn.execute(text("""
+            SELECT COUNT(*) FROM ai_enrichment_queue
+            WHERE entity_type = 'Layout'
+              AND entity_id IN (
+                  SELECT id FROM entities
+                  WHERE last_synced_from_org_id = :id
+                    AND entity_type = 'Layout'
+              )
+        """), {"id": test_org}).scalar()
+        assert layout_queue == layout_count * 2
+
     # ===== Second sync =====
     sync_run_id_2 = engine.run_sync(connected_org_id=test_org)
     assert sync_run_id_2 != sync_run_id_1
@@ -715,20 +849,20 @@ def test_live_sync_through_record_type(
             f"Second sync should report 0 superseded (hashes match); "
             f"got {run2.entities_superseded}"
         )
-        # Total unchanged = Object + PVS + PV + Field + RecordType
-        # counts (every entity from sync 1 should have an
-        # unchanged-hash match on sync 2, including RTs whose
-        # _parent_object_api_name marker round-trips through
-        # normalize/hash identically).
+        # Total unchanged = Object + PVS + PV + Field + RT + Layout
+        # counts. Layout's _layout_full_name + _parent_object_api_name +
+        # _layout_type + _layout_name_resolved markers all need to
+        # round-trip through normalize/hash identically for Layout
+        # entities to register unchanged.
         expected_unchanged = (
             object_count + pvs_count + pv_count + field_count
-            + rt_count
+            + rt_count + layout_count
         )
         assert run2.entities_unchanged == expected_unchanged, (
             f"Second sync should report {expected_unchanged} unchanged "
             f"(Object {object_count} + PVS {pvs_count} + PV "
-            f"{pv_count} + Field {field_count} + RT {rt_count}); "
-            f"got {run2.entities_unchanged}"
+            f"{pv_count} + Field {field_count} + RT {rt_count} + "
+            f"Layout {layout_count}); got {run2.entities_unchanged}"
         )
 
         # Edges: same set-difference logic should yield 0 inserts and
@@ -918,4 +1052,51 @@ def test_live_sync_through_record_type(
         assert rt_belongs_to_after == rt_belongs_to_count, (
             f"RT BELONGS_TO count should remain {rt_belongs_to_count} "
             f"after second sync; got {rt_belongs_to_after}"
+        )
+
+        # Layout entity + detail + edge counts stable across syncs.
+        # The property-bearing INCLUDES_FIELD path's hash-compare
+        # supersession should be naturally idempotent: same payload
+        # → same hash → no SCD-Type-2 close-and-replace.
+        layout_count_after = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'Layout'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert layout_count_after == layout_count
+
+        layout_details_after = conn.execute(text("""
+            SELECT COUNT(*) FROM layout_details ld
+            JOIN entities e ON e.id = ld.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'Layout'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert layout_details_after == layout_details_count
+
+        layout_belongs_to_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'BELONGS_TO'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Layout'
+        """), {"id": test_org}).scalar()
+        assert layout_belongs_to_after == layout_belongs_to_count
+
+        # INCLUDES_FIELD count stable — proves property-bearing
+        # supersession is idempotent.
+        includes_field_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'INCLUDES_FIELD'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Layout'
+        """), {"id": test_org}).scalar()
+        assert includes_field_after == includes_field_count, (
+            f"INCLUDES_FIELD count should remain "
+            f"{includes_field_count} after second sync (hash-compare "
+            f"supersession should match); got {includes_field_after}"
         )

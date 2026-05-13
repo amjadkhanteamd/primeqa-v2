@@ -71,6 +71,7 @@ likely other strict-typed columns) need the CAST.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
@@ -323,6 +324,22 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
                 f"RecordType requires 'FullName' (from Salesforce "
                 f"Tooling Metadata fetch); got raw keys "
                 f"{sorted(raw.keys())}"
+            )
+        return full_name
+    if entity_type == "Layout":
+        # Composed external_id: {Object}-{LayoutName} — substrate-1's
+        # Metadata API FullName convention for Layout (HYPHEN
+        # separator, NOT dot, unusual among SF entity types). Phase
+        # function decorates raw payload with _layout_full_name
+        # marker after Tooling Layout.Name resolution
+        # (fetch_layout_names()) since REST describe/layouts only
+        # exposes the Layout Id.
+        full_name = raw.get("_layout_full_name")
+        if not full_name:
+            raise ValueError(
+                f"Layout requires '_layout_full_name' marker "
+                f"(injected by phase_layout after Tooling name "
+                f"resolution); got raw keys {sorted(raw.keys())}"
             )
         return full_name
     raise KeyError(
@@ -670,21 +687,36 @@ def _batch_insert_details(
 
 
 # ----------------------------------------------------------------------
-# Edge writes — property-less edges
+# Edge writes
 # ----------------------------------------------------------------------
 #
-# Identity for property-less edges (TIER_1_EDGES properties_schema=
-# None) is the triple (source_entity_id, target_entity_id, edge_type).
-# Supersession is binary set-difference, not hash-compare:
+# Two supersession paths per corrections-log §11:
 #
-#   incoming_set − existing_active_set → INSERT (new edges)
-#   existing_active_set − incoming_set → close (set valid_to_seq)
-#   intersection                        → no-op (already active)
+# 1. Property-less edges (TIER_1_EDGES properties_schema=None —
+#    BELONGS_TO, HAS_RELATIONSHIP_TO, HAS_PICKLIST_VALUES, HAS_PROFILE).
+#    Identity is (source, target, edge_type). Binary set-difference
+#    bucketing:
+#       incoming_set − existing_active_set → INSERT
+#       existing_active_set − incoming_set → close
+#       intersection                        → no-op
+#    properties is always '{}'::jsonb; last_seed_hash stays NULL.
 #
-# When property-bearing edges land (INCLUDES_FIELD, GRANTS_*, etc.),
-# extend the bucketing with a properties-hash compare for the
-# intersection set — same pattern as entity supersession in
-# bucket_entities(). Documented in corrections-log §11.
+# 2. Property-bearing edges (TIER_1_EDGES properties_schema=non-None
+#    — INCLUDES_FIELD, GRANTS_OBJECT_ACCESS, GRANTS_FIELD_ACCESS,
+#    ASSIGNED_TO_PROFILE_RECORDTYPE, HAS_PERMISSION_SET, TRIGGERS_ON,
+#    REFERENCES, deferred CONSTRAINS_PICKLIST_VALUES). Identity is
+#    still (source, target, edge_type) but properties drive
+#    supersession via SHA-256 hash compare — mirrors entity
+#    supersession's last_seed_hash pattern. Three-bucket sort against
+#    existing {(source, target): {id, hash}}:
+#       in incoming, not in existing       → INSERT new edge
+#       in both, hashes differ             → close old + INSERT new
+#                                              (SCD Type 2 within edges)
+#       in both, hashes match              → no-op
+#       in existing, not in incoming       → close old (superseded)
+#
+# Both paths route through batched_materialize_edges(); per-edge-type
+# branching reads TIER_1_EDGES.properties_schema once per group.
 
 
 def _lookup_edge_category(edge_type: str) -> str:
@@ -698,6 +730,34 @@ def _lookup_edge_category(edge_type: str) -> str:
     """
     from primeqa.semantic.edges import TIER_1_EDGES
     return TIER_1_EDGES[edge_type].category
+
+
+def _edge_type_has_properties(edge_type: str) -> bool:
+    """True iff TIER_1_EDGES[edge_type].properties_schema is non-None.
+
+    Drives the property-less vs property-bearing branch in
+    batched_materialize_edges. Reading from TIER_1_EDGES (rather than
+    hardcoding) keeps substrate-1 as the source of truth.
+    """
+    from primeqa.semantic.edges import TIER_1_EDGES
+    return TIER_1_EDGES[edge_type].properties_schema is not None
+
+
+def _hash_edge_properties(properties: dict[str, Any]) -> str:
+    """SHA-256 hex digest of canonical-JSON edge properties.
+
+    Mirrors substrate-1's hash_normalized for entity supersession
+    (canonical JSON: sorted keys, no whitespace). Property-bearing
+    edges use this hash for the changed-vs-unchanged compare in
+    batched_materialize_edges.
+
+    For property-less edges, callers don't invoke this helper at all;
+    they pass last_seed_hash=None to _batch_insert_new_edges.
+    """
+    canonical = json.dumps(
+        properties, sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _batch_read_existing_edges_for_sources(
@@ -740,21 +800,31 @@ def _batch_insert_new_edges(
     ctx: SyncContext,
     edge_type: str,
     edge_category: str,
-    new_pairs: list[tuple[str, str]],
+    new_rows: list[tuple[str, str, dict[str, Any], Optional[str]]],
 ) -> None:
-    """Multi-row INSERT for new property-less edges.
+    """Multi-row INSERT for new edges (property-less OR property-bearing).
 
-    Columns populated explicitly:
-      source_entity_id, target_entity_id, edge_type, edge_category,
-      valid_from_seq
-    Columns left to DB defaults:
-      id (gen_random_uuid), properties ('{}'::jsonb),
-      valid_to_seq (NULL), tenant_id (current_setting),
-      created_at (NOW())
+    new_rows: list of (source_id, target_id, properties_dict,
+                       last_seed_hash_or_None) tuples.
+
+    For property-less edges:
+      - properties_dict should be {} (validate_edge_properties accepts
+        only {} for these)
+      - last_seed_hash should be None
+
+    For property-bearing edges:
+      - properties_dict is the validated dict from
+        spec.extract_properties (after schema validation)
+      - last_seed_hash is _hash_edge_properties(properties_dict)
+
+    Columns populated explicitly: source_entity_id, target_entity_id,
+      edge_type, edge_category, properties, valid_from_seq,
+      last_seed_hash. DB defaults still fill id, valid_to_seq (NULL),
+      tenant_id, created_at.
 
     Empty input is a no-op (defensive).
     """
-    if not new_pairs:
+    if not new_rows:
         return
     values_clauses: list[str] = []
     params: dict[str, Any] = {
@@ -762,21 +832,85 @@ def _batch_insert_new_edges(
         "edge_category": edge_category,
         "valid_from_seq": ctx.logical_version_seq,
     }
-    for i, (sid, tid) in enumerate(new_pairs):
+    for i, (sid, tid, props, h) in enumerate(new_rows):
         values_clauses.append(
             f"(CAST(:source_{i} AS uuid), CAST(:target_{i} AS uuid), "
-            f":edge_type, :edge_category, :valid_from_seq)"
+            f":edge_type, :edge_category, "
+            f"CAST(:props_{i} AS JSONB), :valid_from_seq, :hash_{i})"
         )
         params[f"source_{i}"] = sid
         params[f"target_{i}"] = tid
+        params[f"props_{i}"] = json.dumps(props or {})
+        params[f"hash_{i}"] = h  # None for property-less
     sql = f"""
         INSERT INTO edges (
             source_entity_id, target_entity_id, edge_type,
-            edge_category, valid_from_seq
+            edge_category, properties, valid_from_seq, last_seed_hash
         )
         VALUES {', '.join(values_clauses)}
     """
     conn.execute(text(sql), params)
+
+
+def _batch_read_existing_edges_with_hash(
+    conn: Any,
+    edge_type: str,
+    source_entity_ids: list[str],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Batched SELECT for property-bearing edge supersession.
+
+    Returns {(source_id, target_id): {'id': edge_id, 'hash': str_or_None}}
+    for currently-active edges of `edge_type` sourced from any of the
+    given entity_ids. The dict form (vs the set form used for
+    property-less) gives the materialize layer the existing hash for
+    compare AND the edge id for SCD-Type-2 close-and-replace.
+    """
+    if not source_entity_ids:
+        return {}
+    rows = conn.execute(text("""
+        SELECT id, source_entity_id, target_entity_id, last_seed_hash
+        FROM edges
+        WHERE edge_type = :edge_type
+          AND source_entity_id = ANY(CAST(:ids AS uuid[]))
+          AND valid_to_seq IS NULL
+    """), {
+        "edge_type": edge_type,
+        "ids": source_entity_ids,
+    }).fetchall()
+    return {
+        (str(r.source_entity_id), str(r.target_entity_id)): {
+            "id": str(r.id),
+            "hash": r.last_seed_hash,
+        }
+        for r in rows
+    }
+
+
+def _batch_close_superseded_edges_by_id(
+    conn: Any,
+    ctx: SyncContext,
+    edge_ids: list[str],
+) -> None:
+    """Multi-row UPDATE: close edges by id (property-bearing path).
+
+    Used when we already have the edge ids from
+    _batch_read_existing_edges_with_hash. Avoids the tuple-IN clause
+    construction in _batch_close_superseded_edges (which is the
+    property-less path's way of identifying edges to close).
+
+    Sets valid_to_seq = ctx.logical_version_seq, same closed-open
+    SCD semantics as the property-less close.
+    """
+    if not edge_ids:
+        return
+    conn.execute(text("""
+        UPDATE edges
+        SET valid_to_seq = :close_seq
+        WHERE id = ANY(CAST(:ids AS uuid[]))
+    """), {
+        "close_seq": ctx.logical_version_seq,
+        "ids": edge_ids,
+    })
 
 
 def _batch_close_superseded_edges(
@@ -822,58 +956,202 @@ def _batch_close_superseded_edges(
     conn.execute(text(sql), params)
 
 
-def batched_materialize_property_less_edges(
+def batched_materialize_edges(
     ctx: SyncContext,
     conn: Any,
-    edge_writes: list[tuple[str, str, str, str]],
+    edge_writes: list[tuple[str, str, str, str, dict[str, Any]]],
     result: PhaseResult,
 ) -> None:
-    """Drive the property-less edge supersession pipeline.
+    """Drive the edge supersession pipeline (both property-less and
+    property-bearing branches).
 
     edge_writes: list of (source_id, target_id, edge_type,
-                          edge_category) tuples — every edge this
-                          sync wants currently active.
+                          edge_category, properties_dict) tuples —
+                          every edge this sync wants currently active.
 
-    Groups by edge_type internally so each edge_type's bucketing
-    happens against a same-edge-type existing-set. Counters
-    accumulated on `result.edges_inserted` / `result.edges_superseded`.
-    Unchanged edges (in both incoming and existing sets) are
-    no-ops — neither counted nor touched.
+    For property-less edge types (TIER_1_EDGES properties_schema=None),
+    properties_dict should be {} (every entry has the same empty dict).
+    For property-bearing edge types, properties_dict is the per-edge
+    validated property dict from spec.extract_properties.
+
+    Groups by edge_type internally; branches per edge_type by checking
+    TIER_1_EDGES.properties_schema:
+    - property-less → set-difference identity bucketing
+      (_batch_read_existing_edges_for_sources, set diff, insert new,
+      close superseded by tuple)
+    - property-bearing → hash-compare three-bucket sort
+      (_batch_read_existing_edges_with_hash returning {(s,t): {id,
+      hash}}; new vs changed vs unchanged vs superseded; insert new,
+      close-and-replace changed, close superseded by id)
+
+    Counters accumulated on `result.edges_inserted` /
+    `result.edges_superseded`. Unchanged edges (identity OR hash
+    match) are no-ops — neither counted nor touched.
     """
     if not edge_writes:
         return
 
-    # Group by edge_type. categories[edge_type] is consistent
-    # because edge_category is derived from edge_type via TIER_1_EDGES.
-    by_type: dict[str, list[tuple[str, str]]] = {}
+    # Group by edge_type. categories[edge_type] is consistent because
+    # edge_category is derived from edge_type via TIER_1_EDGES.
+    by_type: dict[
+        str, list[tuple[str, str, dict[str, Any]]]
+    ] = {}
     categories: dict[str, str] = {}
-    for sid, tid, etype, ecat in edge_writes:
-        by_type.setdefault(etype, []).append((sid, tid))
+    for sid, tid, etype, ecat, props in edge_writes:
+        by_type.setdefault(etype, []).append((sid, tid, props))
         categories[etype] = ecat
 
-    for etype, pairs in by_type.items():
-        incoming_set = set(pairs)
-        source_ids = sorted({sid for sid, _ in pairs})
+    for etype, entries in by_type.items():
+        if _edge_type_has_properties(etype):
+            _materialize_edges_property_bearing(
+                ctx, conn, etype, categories[etype], entries, result,
+            )
+        else:
+            _materialize_edges_property_less(
+                ctx, conn, etype, categories[etype], entries, result,
+            )
 
-        existing_set = _batch_read_existing_edges_for_sources(
-            conn, etype, source_ids,
+
+def _materialize_edges_property_less(
+    ctx: SyncContext,
+    conn: Any,
+    edge_type: str,
+    edge_category: str,
+    entries: list[tuple[str, str, dict[str, Any]]],
+    result: PhaseResult,
+) -> None:
+    """Property-less branch: identity-based set-diff bucketing.
+
+    entries' properties dicts are ignored (should be {} per
+    validate_edge_properties for None-schema edge types). Identity
+    is the (source, target) tuple; supersession is binary
+    set-difference.
+    """
+    incoming_pairs = [(sid, tid) for sid, tid, _ in entries]
+    incoming_set = set(incoming_pairs)
+    source_ids = sorted({sid for sid, _ in incoming_pairs})
+
+    existing_set = _batch_read_existing_edges_for_sources(
+        conn, edge_type, source_ids,
+    )
+
+    new_pairs = incoming_set - existing_set
+    superseded_pairs = existing_set - incoming_set
+    # intersection = unchanged; no-op.
+
+    if new_pairs:
+        new_rows = [(sid, tid, {}, None) for sid, tid in new_pairs]
+        _batch_insert_new_edges(
+            conn, ctx, edge_type, edge_category, new_rows,
         )
+        result.edges_inserted += len(new_pairs)
 
-        new_pairs = incoming_set - existing_set
-        superseded_pairs = existing_set - incoming_set
-        # intersection = unchanged; no-op.
+    if superseded_pairs:
+        _batch_close_superseded_edges(
+            conn, ctx, edge_type, list(superseded_pairs),
+        )
+        result.edges_superseded += len(superseded_pairs)
 
-        if new_pairs:
-            _batch_insert_new_edges(
-                conn, ctx, etype, categories[etype], list(new_pairs),
-            )
-            result.edges_inserted += len(new_pairs)
 
-        if superseded_pairs:
-            _batch_close_superseded_edges(
-                conn, ctx, etype, list(superseded_pairs),
-            )
-            result.edges_superseded += len(superseded_pairs)
+def _materialize_edges_property_bearing(
+    ctx: SyncContext,
+    conn: Any,
+    edge_type: str,
+    edge_category: str,
+    entries: list[tuple[str, str, dict[str, Any]]],
+    result: PhaseResult,
+) -> None:
+    """Property-bearing branch: hash-compare three-bucket bucketing.
+
+    Mirrors entity supersession's bucket_entities pattern but for
+    edges:
+      - new: (source, target) not in existing → INSERT
+      - changed: (source, target) in existing AND hash differs
+        → close-old + INSERT-new (SCD Type 2 within edges)
+      - unchanged: (source, target) in existing AND hash matches
+        → no-op
+      - superseded: (source, target) in existing AND not in incoming
+        → close-old (set valid_to_seq)
+
+    Hash is SHA-256 of canonical-JSON properties (per
+    _hash_edge_properties). Validates properties via TIER_1_EDGES
+    Pydantic schema BEFORE hashing/writing — catches schema drift
+    loudly.
+    """
+    from primeqa.semantic.edges import validate_edge_properties
+
+    # Pre-validate + hash all incoming properties. Drops invalid
+    # property dicts early (validate_edge_properties raises with
+    # field-by-field messages from Pydantic).
+    validated_entries: list[
+        tuple[str, str, dict[str, Any], str]
+    ] = []
+    for sid, tid, props in entries:
+        validated_props = validate_edge_properties(edge_type, props)
+        h = _hash_edge_properties(validated_props)
+        validated_entries.append((sid, tid, validated_props, h))
+
+    incoming_by_pair: dict[
+        tuple[str, str], tuple[dict[str, Any], str]
+    ] = {}
+    for sid, tid, props, h in validated_entries:
+        incoming_by_pair[(sid, tid)] = (props, h)
+
+    source_ids = sorted({sid for sid, _ in incoming_by_pair})
+    existing_by_pair = _batch_read_existing_edges_with_hash(
+        conn, edge_type, source_ids,
+    )
+
+    new_rows: list[
+        tuple[str, str, dict[str, Any], Optional[str]]
+    ] = []
+    changed_old_ids: list[str] = []
+    changed_new_rows: list[
+        tuple[str, str, dict[str, Any], Optional[str]]
+    ] = []
+
+    for (sid, tid), (props, h) in incoming_by_pair.items():
+        existing = existing_by_pair.get((sid, tid))
+        if existing is None:
+            new_rows.append((sid, tid, props, h))
+        elif existing["hash"] == h:
+            # unchanged — no-op
+            continue
+        else:
+            # changed: SCD Type 2 — close old, insert new
+            changed_old_ids.append(existing["id"])
+            changed_new_rows.append((sid, tid, props, h))
+
+    # Superseded: in existing but not in incoming
+    superseded_ids: list[str] = []
+    for pair, ex in existing_by_pair.items():
+        if pair not in incoming_by_pair:
+            superseded_ids.append(ex["id"])
+
+    if new_rows:
+        _batch_insert_new_edges(
+            conn, ctx, edge_type, edge_category, new_rows,
+        )
+        result.edges_inserted += len(new_rows)
+
+    if changed_new_rows:
+        # SCD Type 2 split: close-old-by-id THEN insert-new. Order
+        # matters because the partial UNIQUE index on
+        # (source, target, edge_type) WHERE valid_to_seq IS NULL
+        # would conflict if both old and new were active
+        # simultaneously.
+        _batch_close_superseded_edges_by_id(conn, ctx, changed_old_ids)
+        _batch_insert_new_edges(
+            conn, ctx, edge_type, edge_category, changed_new_rows,
+        )
+        result.edges_superseded += len(changed_new_rows)
+        result.edges_inserted += len(changed_new_rows)
+
+    if superseded_ids:
+        _batch_close_superseded_edges_by_id(
+            conn, ctx, superseded_ids,
+        )
+        result.edges_superseded += len(superseded_ids)
 
 
 def materialize_edges_for_entities(
@@ -913,7 +1191,12 @@ def materialize_edges_for_entities(
         return
 
     parent_resolver = make_parent_resolver(conn, ctx)
-    edge_writes: list[tuple[str, str, str, str]] = []
+    # 5-tuple: (source_id, target_id, edge_type, edge_category,
+    # properties_dict). properties is {} for property-less edges
+    # and the per-edge extracted dict for property-bearing.
+    edge_writes: list[
+        tuple[str, str, str, str, dict[str, Any]]
+    ] = []
 
     for normalized in normalized_payloads:
         source_external_id = _extract_external_id(
@@ -939,12 +1222,21 @@ def materialize_edges_for_entities(
                 )
                 if target_id is None:
                     continue
+                if spec.extract_properties is not None:
+                    # Property-bearing edge: call the per-spec
+                    # properties extractor. The materialize layer
+                    # will validate against TIER_1_EDGES schema
+                    # downstream (in _materialize_edges_property_
+                    # bearing → validate_edge_properties).
+                    props = spec.extract_properties(
+                        normalized, target_external_id,
+                    )
+                else:
+                    props = {}
                 edge_writes.append((
                     source_id, target_id,
-                    spec.edge_type, edge_category,
+                    spec.edge_type, edge_category, props,
                 ))
 
     if edge_writes:
-        batched_materialize_property_less_edges(
-            ctx, conn, edge_writes, result,
-        )
+        batched_materialize_edges(ctx, conn, edge_writes, result)

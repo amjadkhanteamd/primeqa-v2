@@ -591,11 +591,31 @@ class TestExtractExternalId:
         ("RecordType",
          {"FullName": "MyNS__License__c.Trial"},
          "MyNS__License__c.Trial"),
+        # Layout: composite from phase-injected _layout_full_name
+        # marker (Object-Name with HYPHEN separator per substrate-1
+        # Metadata API convention). Phase function sets this after
+        # Tooling Name resolution.
+        ("Layout",
+         {"_layout_full_name": "Account-Account Layout"},
+         "Account-Account Layout"),
+        ("Layout",
+         {"_layout_full_name": "Contact-Contact (Customer)"},
+         "Contact-Contact (Customer)"),
     ])
     def test_extract_external_id_known_types(
         self, entity_type: str, raw: dict, expected: str,
     ) -> None:
         assert _extract_external_id(entity_type, raw) == expected
+
+    def test_extract_external_id_layout_raises_when_marker_missing(
+        self,
+    ) -> None:
+        """Layout without _layout_full_name → ValueError. REST
+        describe/layouts doesn't expose names; the phase function
+        must inject the marker after Tooling resolution."""
+        with pytest.raises(ValueError) as excinfo:
+            _extract_external_id("Layout", {"id": "00h..."})
+        assert "_layout_full_name" in str(excinfo.value)
 
     def test_extract_external_id_record_type_raises_when_fullname_missing(
         self,
@@ -905,7 +925,7 @@ from primeqa.sync.materialize import (
     _batch_insert_new_edges,
     _batch_read_existing_edges_for_sources,
     _lookup_edge_category,
-    batched_materialize_property_less_edges,
+    batched_materialize_edges,
     materialize_edges_for_entities,
 )
 
@@ -961,25 +981,59 @@ class TestBatchInsertNewEdges:
         conn.execute.assert_not_called()
 
     def test_builds_multi_row_insert_with_uuid_casts(self) -> None:
-        """Bound parameters keyed by source_{i}/target_{i}. SQL uses
-        CAST(... AS uuid) form per the materialize module's
-        documented idiom (avoids :: parser ambiguity)."""
+        """Bound parameters keyed by source_{i}/target_{i}/props_{i}/
+        hash_{i}. SQL uses CAST(... AS uuid) for source+target and
+        CAST(... AS JSONB) for properties. Property-less rows pass
+        {} for props and None for hash."""
         conn = MagicMock()
         ctx = _stub_ctx()
-        pairs = [("s1", "t1"), ("s2", "t2")]
+        rows = [
+            ("s1", "t1", {}, None),
+            ("s2", "t2", {}, None),
+        ]
         _batch_insert_new_edges(
-            conn, ctx, "BELONGS_TO", "STRUCTURAL", pairs,
+            conn, ctx, "BELONGS_TO", "STRUCTURAL", rows,
         )
         conn.execute.assert_called_once()
         sql_text = str(conn.execute.call_args[0][0])
         assert "CAST(:source_0 AS uuid)" in sql_text
         assert "CAST(:target_1 AS uuid)" in sql_text
+        assert "CAST(:props_0 AS JSONB)" in sql_text
         params = conn.execute.call_args[0][1]
         assert params["source_0"] == "s1"
         assert params["target_1"] == "t2"
         assert params["edge_type"] == "BELONGS_TO"
         assert params["edge_category"] == "STRUCTURAL"
         assert params["valid_from_seq"] == ctx.logical_version_seq
+        # Property-less: empty JSON object + NULL hash
+        assert params["props_0"] == "{}"
+        assert params["hash_0"] is None
+
+    def test_builds_multi_row_insert_with_properties(self) -> None:
+        """Property-bearing edges: props gets serialized JSON, hash
+        non-None. Hash is opaque (caller computed; we just store it)."""
+        conn = MagicMock()
+        ctx = _stub_ctx()
+        rows = [
+            ("s1", "t1",
+             {"section_name": "Info", "section_order": 0, "row": 0,
+              "column": 0, "is_required": False, "is_readonly": False},
+             "abc123"),
+        ]
+        _batch_insert_new_edges(
+            conn, ctx, "INCLUDES_FIELD", "CONFIG", rows,
+        )
+        conn.execute.assert_called_once()
+        params = conn.execute.call_args[0][1]
+        # JSON-serialized properties dict (key order may vary; just
+        # check the content survives the round-trip)
+        import json as _json
+        decoded = _json.loads(params["props_0"])
+        assert decoded["section_name"] == "Info"
+        assert decoded["row"] == 0
+        assert params["hash_0"] == "abc123"
+        assert params["edge_type"] == "INCLUDES_FIELD"
+        assert params["edge_category"] == "CONFIG"
 
 
 class TestBatchCloseSupersededEdges:
@@ -1007,7 +1061,7 @@ class TestBatchCloseSupersededEdges:
         assert params["edge_type"] == "BELONGS_TO"
 
 
-class TestBatchedMaterializePropertyLessEdges:
+class TestBatchedMaterializeEdgesPropertyLess:
     def _setup(self, existing_pairs, incoming):
         """Common setup: ctx, conn with _batch_read returning
         existing_pairs as a set; existing_pairs is what's currently
@@ -1031,44 +1085,53 @@ class TestBatchedMaterializePropertyLessEdges:
 
     def test_inserts_only_new_pairs(self) -> None:
         """Pairs in incoming but not in existing → INSERT; pairs in
-        both → no-op (unchanged)."""
+        both → no-op (unchanged). Property-less branch uses {} for
+        properties and None for hash (TIER_1_EDGES BELONGS_TO has
+        properties_schema=None)."""
         existing = {("s1", "t1")}
         incoming = [
-            ("s1", "t1", "BELONGS_TO", "STRUCTURAL"),
-            ("s2", "t2", "BELONGS_TO", "STRUCTURAL"),
+            ("s1", "t1", "BELONGS_TO", "STRUCTURAL", {}),
+            ("s2", "t2", "BELONGS_TO", "STRUCTURAL", {}),
         ]
         ctx, conn, result, mock_insert, mock_close, stack = self._setup(
             existing, incoming,
         )
         with stack:
-            batched_materialize_property_less_edges(
+            batched_materialize_edges(
                 ctx, conn, incoming, result,
             )
         mock_insert.assert_called_once()
-        new_pairs = mock_insert.call_args[0][4]
-        assert set(new_pairs) == {("s2", "t2")}
+        # 5-tuple (s, t, props, hash) per row in new_rows
+        new_rows = mock_insert.call_args[0][4]
+        new_pairs = {(r[0], r[1]) for r in new_rows}
+        assert new_pairs == {("s2", "t2")}
+        # Property-less rows carry {} properties + None hash
+        for r in new_rows:
+            assert r[2] == {}
+            assert r[3] is None
         mock_close.assert_not_called()
         assert result.edges_inserted == 1
         assert result.edges_superseded == 0
 
     def test_closes_only_removed_pairs(self) -> None:
         """Pairs in existing but not in incoming → close. Pairs in
-        incoming but not in existing → INSERT."""
+        incoming but not in existing → INSERT. Property-less branch."""
         existing = {("s1", "t1"), ("s2", "t2")}
         incoming = [
-            ("s1", "t1", "BELONGS_TO", "STRUCTURAL"),
-            ("s3", "t3", "BELONGS_TO", "STRUCTURAL"),
+            ("s1", "t1", "BELONGS_TO", "STRUCTURAL", {}),
+            ("s3", "t3", "BELONGS_TO", "STRUCTURAL", {}),
         ]
         ctx, conn, result, mock_insert, mock_close, stack = self._setup(
             existing, incoming,
         )
         with stack:
-            batched_materialize_property_less_edges(
+            batched_materialize_edges(
                 ctx, conn, incoming, result,
             )
-        # New: (s3, t3) only
-        assert set(mock_insert.call_args[0][4]) == {("s3", "t3")}
-        # Superseded: (s2, t2) only
+        # New: (s3, t3) only — extract pairs from 4-tuples
+        new_rows = mock_insert.call_args[0][4]
+        assert {(r[0], r[1]) for r in new_rows} == {("s3", "t3")}
+        # Superseded: (s2, t2) only — close still takes 2-tuples
         assert set(mock_close.call_args[0][3]) == {("s2", "t2")}
         assert result.edges_inserted == 1
         assert result.edges_superseded == 1
@@ -1078,14 +1141,14 @@ class TestBatchedMaterializePropertyLessEdges:
         full → no INSERT, no UPDATE. Idempotency for repeated syncs."""
         existing = {("s1", "t1"), ("s2", "t2")}
         incoming = [
-            ("s1", "t1", "BELONGS_TO", "STRUCTURAL"),
-            ("s2", "t2", "BELONGS_TO", "STRUCTURAL"),
+            ("s1", "t1", "BELONGS_TO", "STRUCTURAL", {}),
+            ("s2", "t2", "BELONGS_TO", "STRUCTURAL", {}),
         ]
         ctx, conn, result, mock_insert, mock_close, stack = self._setup(
             existing, incoming,
         )
         with stack:
-            batched_materialize_property_less_edges(
+            batched_materialize_edges(
                 ctx, conn, incoming, result,
             )
         mock_insert.assert_not_called()
@@ -1095,7 +1158,9 @@ class TestBatchedMaterializePropertyLessEdges:
 
     def test_groups_by_edge_type(self) -> None:
         """Multiple edge_types in incoming → bucketed per edge_type
-        independently; each gets its own existing-set lookup."""
+        independently; each gets its own existing-set lookup.
+        Property-less edges (BELONGS_TO + HAS_RELATIONSHIP_TO) both
+        route through the property-less branch."""
         existing_calls = []
 
         def fake_read(conn, edge_type, source_ids):
@@ -1105,8 +1170,8 @@ class TestBatchedMaterializePropertyLessEdges:
         ctx = _stub_ctx()
         result = PhaseResult(entity_type="Field")
         incoming = [
-            ("s1", "t1", "BELONGS_TO", "STRUCTURAL"),
-            ("s1", "tref", "HAS_RELATIONSHIP_TO", "STRUCTURAL"),
+            ("s1", "t1", "BELONGS_TO", "STRUCTURAL", {}),
+            ("s1", "tref", "HAS_RELATIONSHIP_TO", "STRUCTURAL", {}),
         ]
         from contextlib import ExitStack
         with ExitStack() as stack:
@@ -1117,7 +1182,7 @@ class TestBatchedMaterializePropertyLessEdges:
             stack.enter_context(patch(
                 _patch_path("_batch_insert_new_edges"),
             ))
-            batched_materialize_property_less_edges(
+            batched_materialize_edges(
                 ctx, conn, incoming, result,
             )
         # Both edge_types' existing sets were independently queried
@@ -1136,14 +1201,14 @@ class TestMaterializeEdgesForEntities:
     def test_no_edges_when_no_specs_for_entity_type(self) -> None:
         """If get_edge_specs returns [] for the source entity_type,
         no edge work happens at all (no parent_resolver creation,
-        no batched_materialize_property_less_edges call)."""
+        no batched_materialize_edges call)."""
         ctx = _stub_ctx()
         conn = MagicMock()
         result = PhaseResult(entity_type="Object")
         from contextlib import ExitStack
         with ExitStack() as stack:
             mock_bm = stack.enter_context(patch(
-                _patch_path("batched_materialize_property_less_edges"),
+                _patch_path("batched_materialize_edges"),
             ))
             materialize_edges_for_entities(
                 ctx, conn, "Object",
@@ -1175,7 +1240,7 @@ class TestMaterializeEdgesForEntities:
                 return_value=lambda **_kw: "obj-account",
             ))
             mock_bm = stack.enter_context(patch(
-                _patch_path("batched_materialize_property_less_edges"),
+                _patch_path("batched_materialize_edges"),
             ))
             materialize_edges_for_entities(
                 ctx, conn, "Field",
@@ -1215,7 +1280,7 @@ class TestMaterializeEdgesForEntities:
                 return_value=resolver,
             ))
             mock_bm = stack.enter_context(patch(
-                _patch_path("batched_materialize_property_less_edges"),
+                _patch_path("batched_materialize_edges"),
             ))
             materialize_edges_for_entities(
                 ctx, conn, "Field",
@@ -1257,7 +1322,7 @@ class TestMaterializeEdgesForEntities:
                 return_value=resolver,
             ))
             mock_bm = stack.enter_context(patch(
-                _patch_path("batched_materialize_property_less_edges"),
+                _patch_path("batched_materialize_edges"),
             ))
             materialize_edges_for_entities(
                 ctx, conn, "Field",
@@ -1323,3 +1388,257 @@ class TestBatchedMaterializeReturnIdMap:
                 return_id_map=True,
             )
         assert ret == {"Account": "entity-uuid-1"}
+
+
+# ----------------------------------------------------------------------
+# Hash + property-bearing edge supersession
+# ----------------------------------------------------------------------
+
+from primeqa.sync.materialize import (
+    _batch_read_existing_edges_with_hash,
+    _edge_type_has_properties,
+    _hash_edge_properties,
+)
+
+
+class TestHashEdgeProperties:
+    def test_canonical_json_sorted_keys(self) -> None:
+        """Hash is deterministic regardless of key order — same
+        properties dict with different insertion order yields same
+        hash."""
+        h1 = _hash_edge_properties(
+            {"a": 1, "b": 2, "c": 3},
+        )
+        h2 = _hash_edge_properties(
+            {"c": 3, "a": 1, "b": 2},
+        )
+        assert h1 == h2
+
+    def test_different_properties_yield_different_hashes(self) -> None:
+        h1 = _hash_edge_properties({"section_order": 0, "row": 0})
+        h2 = _hash_edge_properties({"section_order": 1, "row": 0})
+        assert h1 != h2
+
+    def test_empty_dict_has_deterministic_hash(self) -> None:
+        """Empty properties (property-less edges in practice never
+        call this, but defensive) → consistent hex digest."""
+        h = _hash_edge_properties({})
+        assert isinstance(h, str)
+        assert len(h) == 64  # SHA-256 hex digest length
+
+    def test_hash_is_64_char_hex(self) -> None:
+        """SHA-256 always produces 64 lowercase hex chars."""
+        h = _hash_edge_properties({"foo": "bar"})
+        assert len(h) == 64
+        assert all(c in "0123456789abcdef" for c in h)
+
+
+class TestEdgeTypeHasProperties:
+    def test_belongs_to_is_property_less(self) -> None:
+        """BELONGS_TO has properties_schema=None in TIER_1_EDGES."""
+        assert _edge_type_has_properties("BELONGS_TO") is False
+
+    def test_has_relationship_to_is_property_less(self) -> None:
+        assert _edge_type_has_properties("HAS_RELATIONSHIP_TO") is False
+
+    def test_includes_field_is_property_bearing(self) -> None:
+        """INCLUDES_FIELD has IncludesFieldProperties schema."""
+        assert _edge_type_has_properties("INCLUDES_FIELD") is True
+
+
+class TestBatchReadExistingEdgesWithHash:
+    def test_empty_sources_returns_empty_dict(self) -> None:
+        """Defensive empty-input check."""
+        conn = MagicMock()
+        result = _batch_read_existing_edges_with_hash(
+            conn, "INCLUDES_FIELD", [],
+        )
+        assert result == {}
+        conn.execute.assert_not_called()
+
+    def test_returns_dict_keyed_by_source_target(self) -> None:
+        """Returns {(source_id, target_id): {id, hash}} for each
+        active edge — the dict form lets the materialize layer do
+        the hash-compare three-bucket sort."""
+        conn = MagicMock()
+        row1 = type("R", (), {
+            "id": "e1", "source_entity_id": "s1",
+            "target_entity_id": "t1", "last_seed_hash": "h1",
+        })()
+        row2 = type("R", (), {
+            "id": "e2", "source_entity_id": "s2",
+            "target_entity_id": "t2", "last_seed_hash": "h2",
+        })()
+        conn.execute.return_value.fetchall.return_value = [row1, row2]
+        result = _batch_read_existing_edges_with_hash(
+            conn, "INCLUDES_FIELD", ["s1", "s2"],
+        )
+        assert result == {
+            ("s1", "t1"): {"id": "e1", "hash": "h1"},
+            ("s2", "t2"): {"id": "e2", "hash": "h2"},
+        }
+
+
+class TestBatchedMaterializeEdgesPropertyBearing:
+    """Cover the property-bearing branch via batched_materialize_edges
+    dispatch. Uses INCLUDES_FIELD (real property-bearing edge type)
+    so TIER_1_EDGES lookup routes correctly."""
+
+    def _valid_props(self, **overrides) -> dict:
+        base = {
+            "section_name": "Info", "section_order": 0,
+            "row": 0, "column": 0,
+            "is_required": False, "is_readonly": False,
+        }
+        base.update(overrides)
+        return base
+
+    def test_all_new_takes_new_path(self) -> None:
+        """Property-bearing edge type with empty existing → all
+        incoming → new bucket → batched insert called once with
+        property-bearing rows (props + hash). No close call."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="Layout")
+        incoming = [
+            ("s1", "t1", "INCLUDES_FIELD", "CONFIG",
+             self._valid_props()),
+        ]
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("_batch_read_existing_edges_with_hash"),
+                return_value={},  # all new
+            ))
+            mock_insert = stack.enter_context(patch(
+                _patch_path("_batch_insert_new_edges"),
+            ))
+            mock_close = stack.enter_context(patch(
+                _patch_path("_batch_close_superseded_edges_by_id"),
+            ))
+            batched_materialize_edges(ctx, conn, incoming, result)
+        mock_insert.assert_called_once()
+        rows = mock_insert.call_args[0][4]
+        assert len(rows) == 1
+        # Row tuple: (source, target, props, hash)
+        assert rows[0][0] == "s1"
+        assert rows[0][1] == "t1"
+        # Properties round-tripped through Pydantic schema validation
+        assert rows[0][2]["section_name"] == "Info"
+        # Hash is non-None (property-bearing → computed)
+        assert rows[0][3] is not None
+        assert len(rows[0][3]) == 64  # SHA-256 hex
+        mock_close.assert_not_called()
+        assert result.edges_inserted == 1
+        assert result.edges_superseded == 0
+
+    def test_changed_hash_triggers_close_and_insert(self) -> None:
+        """Existing edge's hash differs from incoming → SCD Type 2:
+        close old by id, insert new. Counters: 1 inserted + 1
+        superseded."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="Layout")
+        # Incoming properties (will hash to X)
+        new_props = self._valid_props(row=1)
+        incoming = [
+            ("s1", "t1", "INCLUDES_FIELD", "CONFIG", new_props),
+        ]
+        # Existing has a different hash ("old_hash")
+        existing = {
+            ("s1", "t1"): {"id": "edge-old", "hash": "old_hash"},
+        }
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("_batch_read_existing_edges_with_hash"),
+                return_value=existing,
+            ))
+            mock_insert = stack.enter_context(patch(
+                _patch_path("_batch_insert_new_edges"),
+            ))
+            mock_close = stack.enter_context(patch(
+                _patch_path("_batch_close_superseded_edges_by_id"),
+            ))
+            batched_materialize_edges(ctx, conn, incoming, result)
+        # Both close and insert called
+        mock_close.assert_called_once()
+        assert mock_close.call_args[0][2] == ["edge-old"]
+        mock_insert.assert_called_once()
+        new_rows = mock_insert.call_args[0][4]
+        assert len(new_rows) == 1
+        assert new_rows[0][2]["row"] == 1  # the new props
+        # Both counters incremented (SCD-type-2: old superseded,
+        # new inserted)
+        assert result.edges_inserted == 1
+        assert result.edges_superseded == 1
+
+    def test_unchanged_hash_is_noop(self) -> None:
+        """Existing edge's hash matches incoming → no-op. Neither
+        close nor insert called for this pair."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="Layout")
+        props = self._valid_props()
+        # Compute the hash that the actual code will compute
+        computed_hash = _hash_edge_properties(props)
+        incoming = [
+            ("s1", "t1", "INCLUDES_FIELD", "CONFIG", props),
+        ]
+        existing = {
+            ("s1", "t1"): {"id": "edge-1", "hash": computed_hash},
+        }
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("_batch_read_existing_edges_with_hash"),
+                return_value=existing,
+            ))
+            mock_insert = stack.enter_context(patch(
+                _patch_path("_batch_insert_new_edges"),
+            ))
+            mock_close = stack.enter_context(patch(
+                _patch_path("_batch_close_superseded_edges_by_id"),
+            ))
+            batched_materialize_edges(ctx, conn, incoming, result)
+        mock_insert.assert_not_called()
+        mock_close.assert_not_called()
+        assert result.edges_inserted == 0
+        assert result.edges_superseded == 0
+
+    def test_superseded_pair_closes_existing(self) -> None:
+        """Pair in existing but not in incoming → close (set
+        valid_to_seq). No insert; counter records supersession."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="Layout")
+        # Incoming has one pair, existing has TWO
+        incoming = [
+            ("s1", "t1", "INCLUDES_FIELD", "CONFIG",
+             self._valid_props()),
+        ]
+        props_hash = _hash_edge_properties(self._valid_props())
+        existing = {
+            ("s1", "t1"): {"id": "edge-keep", "hash": props_hash},
+            ("s1", "t-removed"): {"id": "edge-stale",
+                                   "hash": "old_hash"},
+        }
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("_batch_read_existing_edges_with_hash"),
+                return_value=existing,
+            ))
+            mock_insert = stack.enter_context(patch(
+                _patch_path("_batch_insert_new_edges"),
+            ))
+            mock_close = stack.enter_context(patch(
+                _patch_path("_batch_close_superseded_edges_by_id"),
+            ))
+            batched_materialize_edges(ctx, conn, incoming, result)
+        # No INSERT (the incoming pair is unchanged); one close for
+        # the stale pair only
+        mock_insert.assert_not_called()
+        mock_close.assert_called_once()
+        assert mock_close.call_args[0][2] == ["edge-stale"]
+        assert result.edges_superseded == 1

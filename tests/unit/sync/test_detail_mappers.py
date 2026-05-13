@@ -14,6 +14,7 @@ import pytest
 
 from primeqa.sync.detail_mappers import (
     _map_field_details,
+    _map_layout_details,
     _map_object_details,
     _map_picklist_value_details,
     _map_record_type_details,
@@ -523,3 +524,89 @@ class TestGetDetailMapperRecordType:
         table_name, mapper = result
         assert table_name == "record_type_details"
         assert mapper is _map_record_type_details
+
+
+class TestMapLayoutDetails:
+    def _normalized(self, **overrides) -> dict:
+        base = {
+            "_parent_object_api_name": "Account",
+            "_layout_full_name": "Account-Account Layout",
+            "_layout_type": "Standard",
+            "_layout_name_resolved": "Account Layout",
+            "detailLayoutSections": [],  # not needed by mapper
+        }
+        base.update(overrides)
+        return base
+
+    def test_resolves_parent_object(self) -> None:
+        """object_entity_id resolved from _parent_object_api_name."""
+        resolver = MagicMock(return_value="obj-account-uuid")
+        row = _map_layout_details(
+            normalized=self._normalized(),
+            entity_id="layout-uuid-1",
+            parent_resolver=resolver,
+        )
+        resolver.assert_called_once_with(
+            entity_type="Object", external_id="Account",
+        )
+        assert row["entity_id"] == "layout-uuid-1"
+        assert row["object_entity_id"] == "obj-account-uuid"
+        assert row["layout_type"] == "Standard"
+        assert row["layout_api_name"] == "Account Layout"
+        assert row["is_active"] is True
+
+    def test_raises_on_missing_parent_marker(self) -> None:
+        normalized = self._normalized()
+        normalized.pop("_parent_object_api_name")
+        with pytest.raises(ValueError) as excinfo:
+            _map_layout_details(
+                normalized=normalized, entity_id="x",
+                parent_resolver=lambda **_: "parent",
+            )
+        assert "_parent_object_api_name" in str(excinfo.value)
+
+    def test_raises_on_unresolvable_parent(self) -> None:
+        with pytest.raises(ValueError) as excinfo:
+            _map_layout_details(
+                normalized=self._normalized(
+                    _parent_object_api_name="GhostObject",
+                ),
+                entity_id="x",
+                parent_resolver=lambda **_: None,
+            )
+        msg = str(excinfo.value)
+        assert "GhostObject" in msg
+        assert "ENTITY_ORDER" in msg
+
+    def test_raises_on_missing_layout_type_marker(self) -> None:
+        """_layout_type comes from Salesforce Tooling Layout.LayoutType
+        (per §15). If missing, phase function bug."""
+        normalized = self._normalized()
+        normalized.pop("_layout_type")
+        with pytest.raises(ValueError) as excinfo:
+            _map_layout_details(
+                normalized=normalized, entity_id="x",
+                parent_resolver=lambda **_: "obj",
+            )
+        assert "_layout_type" in str(excinfo.value)
+
+    def test_raises_on_missing_name_resolved_marker(self) -> None:
+        """layout_api_name is NOT NULL no-default; mapper requires
+        the resolved name from Tooling."""
+        normalized = self._normalized()
+        normalized.pop("_layout_name_resolved")
+        with pytest.raises(ValueError) as excinfo:
+            _map_layout_details(
+                normalized=normalized, entity_id="x",
+                parent_resolver=lambda **_: "obj",
+            )
+        assert "_layout_name_resolved" in str(excinfo.value)
+
+
+class TestGetDetailMapperLayout:
+    def test_returns_tuple_for_layout(self) -> None:
+        result = get_detail_mapper("Layout")
+        assert result is not None
+        table_name, mapper = result
+        assert table_name == "layout_details"
+        assert mapper is _map_layout_details

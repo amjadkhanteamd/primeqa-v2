@@ -22,8 +22,8 @@ value or a safe default for unregistered types.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable
+from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ class EdgeSpec:
         target_entity_type: which entity_type the edge points at
             (e.g., 'Object' for Field.BELONGS_TO)
         edge_type: the TIER_1_EDGES key (e.g., 'BELONGS_TO',
-            'HAS_RELATIONSHIP_TO')
+            'HAS_RELATIONSHIP_TO', 'INCLUDES_FIELD')
         extract_target_external_ids: callable that receives the source
             entity's normalized payload and returns a list of target
             external_ids. Returning an empty list means "this source
@@ -42,10 +42,22 @@ class EdgeSpec:
             spec conditional edges (e.g., HAS_RELATIONSHIP_TO only
             applies to reference-typed Fields, which is encoded by
             the extractor returning [] for non-reference fields).
+        extract_properties: optional callable for property-bearing
+            edges. Receives (normalized, target_external_id) and
+            returns the properties dict for that source→target edge.
+            None for property-less edges (BELONGS_TO,
+            HAS_RELATIONSHIP_TO, HAS_PICKLIST_VALUES, HAS_PROFILE) —
+            the materialize layer treats absence as "properties = {}"
+            and routes through the identity-based supersession path.
+            Required for edges whose TIER_1_EDGES entry has a non-
+            None properties_schema (INCLUDES_FIELD,
+            GRANTS_OBJECT_ACCESS, etc.) — these route through the
+            hash-based supersession path.
     """
     target_entity_type: str
     edge_type: str
     extract_target_external_ids: Callable[[dict], list[str]]
+    extract_properties: Optional[Callable[[dict, str], dict]] = None
 
 
 # ----------------------------------------------------------------------
@@ -107,6 +119,158 @@ def _record_type_belongs_to_targets(normalized: dict) -> list[str]:
 
 
 # ----------------------------------------------------------------------
+# Layout edge spec extractors
+# ----------------------------------------------------------------------
+
+
+def _layout_belongs_to_targets(normalized: dict) -> list[str]:
+    """Every Layout belongs to exactly one Object — the parent.
+
+    Same pattern as Field/RecordType: parent Object is supplied via
+    the `_parent_object_api_name` marker that phase_layout injects.
+    """
+    parent = normalized.get("_parent_object_api_name")
+    return [parent] if parent else []
+
+
+def _layout_includes_field_targets(normalized: dict) -> list[str]:
+    """Extract Field external_ids referenced by this Layout.
+
+    Salesforce REST `/sobjects/{name}/describe/layouts` returns
+    layouts as a nested structure:
+      layouts[i]
+        .detailLayoutSections[j]
+          .layoutRows[k]
+            .layoutItems[l]
+              .layoutComponents[m]
+                .type == 'Field'
+                .value == field API name (bare, e.g., 'Phone')
+
+    To match the Field phase's composite external_id pattern
+    ({Object}.{name}), we compose target external_ids using the
+    parent Object marker. Skips:
+    - items with `placeholder: true` (empty layout cells; no field)
+    - components with `type != 'Field'` (e.g., 'Separator',
+      'EmptySpace', custom-component blocks)
+    - components without a `value` (defensive)
+
+    A layoutItem can have MULTIPLE components (compound name fields
+    showing FirstName + LastName + Salutation, address fields, etc.).
+    Each component yields one INCLUDES_FIELD edge.
+
+    Returns a flat list of composite Field external_ids ready for
+    target lookup via parent_resolver.
+    """
+    parent_object = normalized.get("_parent_object_api_name")
+    if not parent_object:
+        return []
+
+    targets: list[str] = []
+    sections = normalized.get("detailLayoutSections") or []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        for row in section.get("layoutRows") or []:
+            if not isinstance(row, dict):
+                continue
+            for item in row.get("layoutItems") or []:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("placeholder"):
+                    continue
+                for component in item.get("layoutComponents") or []:
+                    if not isinstance(component, dict):
+                        continue
+                    if component.get("type") != "Field":
+                        continue
+                    field_name = component.get("value")
+                    if field_name:
+                        targets.append(f"{parent_object}.{field_name}")
+    return targets
+
+
+def _layout_includes_field_properties(
+    normalized: dict, target_external_id: str,
+) -> dict:
+    """Locate the layoutItem matching target_external_id and return
+    its IncludesFieldProperties.
+
+    Iterates the same nested structure as
+    _layout_includes_field_targets but captures section/row/column
+    position + flags. Returns the property dict matching
+    substrate-1's IncludesFieldProperties schema:
+      section_name: section.heading (must be non-empty per schema's
+                    min_length=1 — falls back to "(unnamed)" if
+                    blank to satisfy validation)
+      section_order: index in detailLayoutSections
+      row: index in layoutRows
+      column: index in layoutItems within a row
+      is_required: item.required OR uiBehavior=='Required'
+      is_readonly: NOT item.editableForUpdate OR uiBehavior=='ReadOnly'
+
+    Returns {} if target isn't found (shouldn't happen if _targets
+    and _properties are coherent; defensive guard for unexpected
+    payload shapes).
+
+    For compound fields (multiple components per item), all
+    components share the same item position. Each component's edge
+    gets identical properties — the section/row/column tracks the
+    item, not the per-component sub-position.
+    """
+    parent_object = normalized.get("_parent_object_api_name")
+    # target_external_id is "{parent_object}.{field_name}"; we just
+    # need the field_name half for matching.
+    target_field = target_external_id.split(".", 1)[-1]
+
+    sections = normalized.get("detailLayoutSections") or []
+    for section_idx, section in enumerate(sections):
+        if not isinstance(section, dict):
+            continue
+        heading = section.get("heading") or "(unnamed)"
+        # Schema requires min_length=1; ensure we never pass empty.
+        if not heading:
+            heading = "(unnamed)"
+        for row_idx, row in enumerate(section.get("layoutRows") or []):
+            if not isinstance(row, dict):
+                continue
+            for col_idx, item in enumerate(row.get("layoutItems") or []):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("placeholder"):
+                    continue
+                for component in item.get("layoutComponents") or []:
+                    if not isinstance(component, dict):
+                        continue
+                    if component.get("type") != "Field":
+                        continue
+                    if component.get("value") != target_field:
+                        continue
+                    ui_behavior = item.get("uiBehavior")
+                    is_required = (
+                        bool(item.get("required", False))
+                        or ui_behavior == "Required"
+                    )
+                    # editableForUpdate=True means writable; absent
+                    # defaults to True. is_readonly = NOT writable.
+                    is_readonly = (
+                        not bool(item.get("editableForUpdate", True))
+                        or ui_behavior == "ReadOnly"
+                    )
+                    # Substrate-1's schema caps column at 0-3 (4-column
+                    # max). Clamp defensively if a layout exceeds it
+                    # (should never happen in practice).
+                    return {
+                        "section_name": heading,
+                        "section_order": section_idx,
+                        "row": row_idx,
+                        "column": min(col_idx, 3),
+                        "is_required": is_required,
+                        "is_readonly": is_readonly,
+                    }
+    return {}
+
+
+# ----------------------------------------------------------------------
 # Registry
 # ----------------------------------------------------------------------
 
@@ -139,6 +303,24 @@ _EDGE_SPECS: dict[str, list[EdgeSpec]] = {
         # land in a future cycle that includes
         # fetch_custom_field_metadata + record_type_picklist_value_
         # grants junction-table writes.
+    ],
+    "Layout": [
+        EdgeSpec(
+            target_entity_type="Object",
+            edge_type="BELONGS_TO",
+            extract_target_external_ids=_layout_belongs_to_targets,
+        ),
+        EdgeSpec(
+            target_entity_type="Field",
+            edge_type="INCLUDES_FIELD",
+            extract_target_external_ids=_layout_includes_field_targets,
+            extract_properties=_layout_includes_field_properties,
+        ),
+        # ASSIGNED_TO_PROFILE_RECORDTYPE deferred per corrections-log
+        # §16 — Profile entities don't exist yet (Profile phase
+        # pending); pre-wiring would create code paths that silently
+        # skip every edge write (resolver returns None for all
+        # targets). Wire when Profile phase lands.
     ],
     # Other entity types add their specs here as their phase cycles land.
 }

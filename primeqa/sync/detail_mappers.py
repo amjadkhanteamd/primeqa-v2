@@ -320,11 +320,85 @@ def _map_record_type_details(
     }
 
 
+def _map_layout_details(
+    normalized: dict[str, Any],
+    entity_id: str,
+    parent_resolver: Callable[..., Optional[str]],
+) -> dict[str, Any]:
+    """Map normalized Layout payload → layout_details row.
+
+    Hot columns per substrate-1's design (5 total, mirroring
+    record_type_details + 2 extras):
+      entity_id           ← caller-supplied
+      object_entity_id    ← parent Object (NOT NULL FK; resolved
+                            from _parent_object_api_name marker)
+      layout_type         ← _layout_type marker (Salesforce-
+                            provided via Tooling Layout.LayoutType;
+                            per §15)
+      layout_api_name     ← _layout_name_resolved marker (Layout.Name
+                            from Tooling SOQL second-pass; NOT NULL
+                            no-default)
+      is_active           ← always True (Salesforce doesn't expose
+                            an inactive-layout concept via REST
+                            describe/layouts; all returned layouts
+                            are active by definition)
+
+    Required markers (set by phase_layout):
+    - _parent_object_api_name: parent Object QualifiedApiName
+    - _layout_type: from Tooling Layout.LayoutType
+      (e.g., "Standard")
+    - _layout_name_resolved: from Tooling Layout.Name
+      (e.g., "Account Layout")
+    """
+    parent_marker = normalized.get("_parent_object_api_name")
+    if not parent_marker:
+        raise ValueError(
+            f"Layout normalized payload missing "
+            f"'_parent_object_api_name' marker; phase_layout must "
+            f"inject this. Got keys: {sorted(normalized.keys())}"
+        )
+    parent_object_id = parent_resolver(
+        entity_type="Object",
+        external_id=parent_marker,
+    )
+    if parent_object_id is None:
+        raise ValueError(
+            f"Cannot resolve parent Object {parent_marker!r} for "
+            f"Layout {normalized.get('_layout_full_name')!r}. "
+            f"Parent must be materialized before child "
+            f"(ENTITY_ORDER places Object before Layout)."
+        )
+
+    layout_type = normalized.get("_layout_type")
+    layout_name = normalized.get("_layout_name_resolved")
+    if not layout_type:
+        raise ValueError(
+            f"Layout requires '_layout_type' marker (Salesforce "
+            f"Tooling Layout.LayoutType value per §15); got "
+            f"keys: {sorted(normalized.keys())}"
+        )
+    if not layout_name:
+        raise ValueError(
+            f"Layout requires '_layout_name_resolved' marker "
+            f"(Tooling Layout.Name from fetch_layout_names()); "
+            f"got keys: {sorted(normalized.keys())}"
+        )
+
+    return {
+        "entity_id": entity_id,
+        "object_entity_id": parent_object_id,
+        "layout_type": layout_type,
+        "layout_api_name": layout_name,
+        "is_active": True,
+    }
+
+
 _DETAIL_TABLE_MAPPERS: dict[str, DetailMapper] = {
     "Object": _map_object_details,
     "PicklistValue": _map_picklist_value_details,
     "Field": _map_field_details,
     "RecordType": _map_record_type_details,
+    "Layout": _map_layout_details,
     # Other entity types added by their respective phase cycles.
     # PicklistValueSet intentionally absent — no detail table.
 }
