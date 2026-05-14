@@ -192,10 +192,24 @@ def _map_field_details(
                                       — the edge resolution would
                                       also skip it, keeping data
                                       consistent.
-      picklist_value_set_entity_id  ← always NULL this cycle. GVS
-                                      reference detection requires
-                                      Tooling+Metadata API
-                                      (corrections-log §10); deferred.
+      picklist_value_set_entity_id  ← resolved from the
+                                      _value_set_external_id marker
+                                      phase_field injects on
+                                      GVS-backed custom picklist
+                                      fields (corrections-log §10).
+                                      NULL for non-picklist fields,
+                                      inline-picklist fields, and
+                                      standard picklist fields (the
+                                      marker is only set when the
+                                      Tooling CustomField
+                                      Metadata.valueSet.valueSetName
+                                      is populated). Resolver returns
+                                      None if the PicklistValueSet
+                                      isn't in the synced set — that's
+                                      OK, the column is nullable and
+                                      the HAS_PICKLIST_VALUES edge
+                                      would skip it too, keeping data
+                                      consistent.
 
     All booleans + INT length/precision/scale come from the raw
     describe per substrate-1's column-naming convention:
@@ -244,11 +258,24 @@ def _map_field_details(
             external_id=ref_to_list[0],
         )
 
+    # Picklist value-set (§10): phase_field injects
+    # _value_set_external_id (the GlobalValueSet FullName, which is
+    # also the PicklistValueSet external_id) for GVS-backed custom
+    # picklist fields. Resolve it to the PVS entity_id. None for any
+    # field without the marker; None too if the PVS isn't synced.
+    value_set_external_id = normalized.get("_value_set_external_id")
+    picklist_value_set_id: Optional[str] = None
+    if value_set_external_id:
+        picklist_value_set_id = parent_resolver(
+            entity_type="PicklistValueSet",
+            external_id=value_set_external_id,
+        )
+
     return {
         "entity_id": entity_id,
         "object_entity_id": parent_object_id,
         "references_object_entity_id": references_object_id,
-        "picklist_value_set_entity_id": None,
+        "picklist_value_set_entity_id": picklist_value_set_id,
         "field_type": normalized.get("type"),
         "is_custom": bool(normalized.get("custom", False)),
         "is_unique": bool(normalized.get("unique", False)),

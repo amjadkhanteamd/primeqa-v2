@@ -10,6 +10,7 @@ from __future__ import annotations
 from primeqa.sync.edge_specs import (
     EdgeSpec,
     _field_belongs_to_targets,
+    _field_has_picklist_values_targets,
     _field_has_relationship_to_targets,
     _flow_triggers_on_properties,
     _flow_triggers_on_targets,
@@ -28,6 +29,7 @@ from primeqa.sync.edge_specs import (
     _profile_grants_object_access_properties,
     _profile_grants_object_access_targets,
     _record_type_belongs_to_targets,
+    _record_type_constrains_picklist_values_targets,
     _user_has_permission_set_properties,
     _user_has_permission_set_targets,
     _user_has_profile_targets,
@@ -99,6 +101,47 @@ class TestFieldHasRelationshipToTargets:
         assert _field_has_relationship_to_targets({"name": "x"}) == []
 
 
+class TestFieldHasPicklistValuesTargets:
+    def test_returns_pvs_external_id_when_marker_present(self) -> None:
+        """The phase-injected _value_set_external_id marker (the GVS
+        FullName == PicklistValueSet external_id) is the sole source
+        of the HAS_PICKLIST_VALUES target."""
+        targets = _field_has_picklist_values_targets({
+            "name": "Tier__c",
+            "type": "picklist",
+            "_parent_object_api_name": "Account",
+            "_value_set_external_id": "TierGlobalValueSet",
+        })
+        assert targets == ["TierGlobalValueSet"]
+
+    def test_returns_empty_when_marker_absent(self) -> None:
+        """No marker → no edge. Covers non-picklist fields,
+        inline-picklist fields (valueSetName None → phase_field never
+        sets the marker), and standard picklist fields (§22)."""
+        assert _field_has_picklist_values_targets({
+            "name": "Industry",
+            "type": "picklist",
+            "_parent_object_api_name": "Account",
+        }) == []
+
+    def test_returns_empty_when_marker_is_empty_string(self) -> None:
+        """Defensive: an empty-string marker is falsy → no edge (an
+        empty external_id would never resolve anyway)."""
+        assert _field_has_picklist_values_targets({
+            "name": "X__c",
+            "_value_set_external_id": "",
+        }) == []
+
+    def test_single_target_only(self) -> None:
+        """A picklist field has exactly one value-set — the extractor
+        returns a single-element list, never multiple."""
+        targets = _field_has_picklist_values_targets({
+            "_value_set_external_id": "MyNamespace__SharedSet",
+        })
+        assert len(targets) == 1
+        assert targets == ["MyNamespace__SharedSet"]
+
+
 class TestRecordTypeBelongsToTargets:
     def test_returns_parent_object_when_marker_present(self) -> None:
         """The phase-injected _parent_object_api_name marker is the
@@ -119,32 +162,89 @@ class TestRecordTypeBelongsToTargets:
         assert targets == []
 
 
+class TestRecordTypeConstrainsPicklistValuesTargets:
+    def test_returns_marker_list_verbatim(self) -> None:
+        """The phase-injected _constrained_picklist_values marker (a
+        list of PicklistValue composite external_ids, already
+        resolved + scope-filtered by phase_record_type) is returned
+        as-is."""
+        targets = _record_type_constrains_picklist_values_targets({
+            "developerName": "Enterprise",
+            "_parent_object_api_name": "Account",
+            "_constrained_picklist_values": [
+                "TierGVS.Gold", "TierGVS.Platinum",
+            ],
+        })
+        assert targets == ["TierGVS.Gold", "TierGVS.Platinum"]
+
+    def test_returns_empty_when_marker_absent(self) -> None:
+        """An RT that constrains no picklist (or whose constrained
+        fields are all out of scope) has no marker → no edges."""
+        assert _record_type_constrains_picklist_values_targets({
+            "developerName": "Master",
+            "_parent_object_api_name": "Account",
+        }) == []
+
+    def test_returns_empty_when_marker_is_empty_list(self) -> None:
+        """An empty marker list → empty targets (no edges)."""
+        assert _record_type_constrains_picklist_values_targets({
+            "_constrained_picklist_values": [],
+        }) == []
+
+    def test_returns_new_list_not_marker_reference(self) -> None:
+        """Extractor returns a copy — mutating the result must not
+        corrupt the payload's marker."""
+        payload = {"_constrained_picklist_values": ["GVS.A"]}
+        targets = _record_type_constrains_picklist_values_targets(payload)
+        targets.append("GVS.B")
+        assert payload["_constrained_picklist_values"] == ["GVS.A"]
+
+
 class TestGetEdgeSpecs:
-    def test_returns_two_specs_for_field(self) -> None:
-        """Field has BELONGS_TO + HAS_RELATIONSHIP_TO this cycle.
-        HAS_PICKLIST_VALUES deferred per corrections-log §10."""
+    def test_returns_three_specs_for_field(self) -> None:
+        """Field has BELONGS_TO + HAS_RELATIONSHIP_TO +
+        HAS_PICKLIST_VALUES. The third was wired in the §10+§14
+        cycle (Tooling CustomField Metadata exposes the value-set
+        reference REST describe omits)."""
         specs = get_edge_specs("Field")
-        assert len(specs) == 2
+        assert len(specs) == 3
         edge_types = {spec.edge_type for spec in specs}
-        assert edge_types == {"BELONGS_TO", "HAS_RELATIONSHIP_TO"}
+        assert edge_types == {
+            "BELONGS_TO", "HAS_RELATIONSHIP_TO", "HAS_PICKLIST_VALUES",
+        }
 
-    def test_field_specs_target_object_for_both_edges(self) -> None:
-        """Both Field edges this cycle point at Object — BELONGS_TO
-        to parent, HAS_RELATIONSHIP_TO to reference target."""
-        specs = get_edge_specs("Field")
-        for spec in specs:
-            assert spec.target_entity_type == "Object"
+    def test_field_edge_targets(self) -> None:
+        """BELONGS_TO + HAS_RELATIONSHIP_TO → Object;
+        HAS_PICKLIST_VALUES → PicklistValueSet. All three are
+        property-less (no extract_properties) and carry no junction
+        table."""
+        by_type = {s.edge_type: s for s in get_edge_specs("Field")}
+        assert by_type["BELONGS_TO"].target_entity_type == "Object"
+        assert by_type["HAS_RELATIONSHIP_TO"].target_entity_type == "Object"
+        hpv = by_type["HAS_PICKLIST_VALUES"]
+        assert hpv.target_entity_type == "PicklistValueSet"
+        assert hpv.extract_properties is None
+        assert hpv.junction_table is None
 
-    def test_returns_one_spec_for_record_type(self) -> None:
-        """RecordType has BELONGS_TO only this cycle.
-        CONSTRAINS_PICKLIST_VALUES deferred per corrections-log §14
-        (substrate-1 registry-vs-derivation contradiction) and §10
-        (fetch_custom_field_metadata missing)."""
+    def test_returns_two_specs_for_record_type(self) -> None:
+        """RecordType has BELONGS_TO + CONSTRAINS_PICKLIST_VALUES.
+        The second was wired in the §10+§14 cycle — fine model
+        (RT → PicklistValue) per decision 2A, with a junction-table
+        mirror into record_type_picklist_value_grants."""
         specs = get_edge_specs("RecordType")
-        assert len(specs) == 1
-        spec = specs[0]
-        assert spec.edge_type == "BELONGS_TO"
-        assert spec.target_entity_type == "Object"
+        assert len(specs) == 2
+        by_type = {s.edge_type: s for s in specs}
+        assert set(by_type) == {
+            "BELONGS_TO", "CONSTRAINS_PICKLIST_VALUES",
+        }
+        assert by_type["BELONGS_TO"].target_entity_type == "Object"
+        cpv = by_type["CONSTRAINS_PICKLIST_VALUES"]
+        assert cpv.target_entity_type == "PicklistValue"
+        # property-less, but carries a junction-table mirror
+        assert cpv.extract_properties is None
+        assert cpv.junction_table == "record_type_picklist_value_grants"
+        assert cpv.junction_source_column == "record_type_entity_id"
+        assert cpv.junction_target_column == "picklist_value_entity_id"
 
     def test_returns_three_specs_for_layout(self) -> None:
         """Layout has BELONGS_TO + INCLUDES_FIELD +

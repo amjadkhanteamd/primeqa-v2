@@ -406,16 +406,32 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
          - HAS_RELATIONSHIP_TO → each referenceTo target Object
            (none for non-reference fields, one for standard refs,
            N for polymorphic refs)
+         - HAS_PICKLIST_VALUES → PicklistValueSet (only for
+           GVS-backed custom picklist fields — see §10 below)
 
-      HAS_PICKLIST_VALUES → PicklistValueSet is deferred per
-      corrections-log §10 (REST describe doesn't expose value-set
-      references; would require a separate Tooling-API fetcher).
+    HAS_PICKLIST_VALUES resolution (§10): REST describe doesn't
+    expose a picklist field's value-set reference. For each custom
+    picklist field, the Tooling CustomField Metadata.valueSet.
+    valueSetName carries the GlobalValueSet FullName when the field
+    is GVS-backed. phase_field resolves this via two precursor
+    fetchers — fetch_custom_field_id_map (one bulk Tooling SOQL,
+    (object, field) → CustomField Id) + fetch_custom_field_metadata
+    (per-Id Metadata, called only for picklist-typed custom fields
+    per the 1B filter) — and decorates the field payload with a
+    `_value_set_external_id` marker. _map_field_details reads the
+    same marker into field_details.picklist_value_set_entity_id;
+    the HAS_PICKLIST_VALUES edge extractor reads it for the edge.
+    Inline-picklist fields (valueSetName None) and standard picklist
+    fields (SVS detection deferred per §22) get no marker → no edge.
 
     High-cardinality phase: 146 Objects × ~30-150 fields each
     ≈ 4500-15000 Field entities + ≈ same BELONGS_TO + ~500-1500
     HAS_RELATIONSHIP_TO. Wall-clock cost is dominated by the
     per-Object REST describe calls (~0.5-1s each → ~75-150s for
-    the fetch phase) + the materialization writes.
+    the fetch phase) + the materialization writes. The §10
+    Tooling fetches add one bulk SOQL plus one per-Id call per
+    custom picklist field (the 1B filter keeps that to the ~50-100
+    custom picklist fields, not all ~500+ custom fields).
 
     Memory: all field payloads accumulated in memory before
     batched_materialize chunks them at 500-row boundaries. At
@@ -455,10 +471,49 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
         object_api_names,
     )
 
+    # 2b. Resolve custom picklist fields' value-set references (§10).
+    # REST describe doesn't expose value-set refs; the Tooling
+    # CustomField Metadata does. Build the (object, field) →
+    # CustomField Id map once (one bulk SOQL), filter to picklist-
+    # typed fields that join to a CustomField row, then per-Id
+    # Metadata-fetch only those (1B filter — skips the ~90% of
+    # custom fields that aren't picklists). Standard picklist fields
+    # don't appear in CustomField → no cf_id → skipped here (their
+    # SVS links are deferred per corrections-log §22).
+    cf_id_map = ctx.sf_client.fetch_custom_field_id_map()
+    field_to_cf_id: dict[tuple[str, str], str] = {}
+    for object_api_name, fields in fields_by_object.items():
+        for f in fields:
+            if f.get("type") not in ("picklist", "multipicklist"):
+                continue
+            cf_id = cf_id_map.get((object_api_name, f.get("name")))
+            if cf_id is not None:
+                field_to_cf_id[(object_api_name, f.get("name"))] = cf_id
+    cf_metadata = ctx.sf_client.fetch_custom_field_metadata(
+        list(field_to_cf_id.values()),
+    )
+
+    # 2c. Decorate each field payload: _parent_object_api_name
+    # (always; drives BELONGS_TO + detail-table FK) and, for
+    # GVS-backed custom picklist fields, _value_set_external_id (the
+    # GlobalValueSet FullName == the PicklistValueSet external_id).
+    # Both markers survive _strip_volatile and land in the
+    # normalized payload for the detail mapper + edge extractor.
     field_payloads: list[dict[str, Any]] = []
     for object_api_name, fields in fields_by_object.items():
         for f in fields:
             f["_parent_object_api_name"] = object_api_name
+            cf_id = field_to_cf_id.get((object_api_name, f.get("name")))
+            if cf_id is not None:
+                value_set = (
+                    (cf_metadata.get(cf_id) or {}).get("valueSet") or {}
+                )
+                value_set_name = value_set.get("valueSetName")
+                if value_set_name:
+                    # GVS-backed: the value-set is a shared
+                    # GlobalValueSet. Inline picklists have
+                    # valueSetName None → no marker → no edge.
+                    f["_value_set_external_id"] = value_set_name
             field_payloads.append(f)
 
     if not field_payloads:
@@ -522,13 +577,23 @@ def phase_record_type(ctx: SyncContext, conn: Any) -> PhaseResult:
     _strip_volatile to land in the normalized hash and drive
     BELONGS_TO + detail-table FK resolution downstream.
 
-    CONSTRAINS_PICKLIST_VALUES deferred per corrections-log §14.
-    Substrate-1 has an internal registry-vs-derivation
-    contradiction on the edge's target type (PicklistValueSet vs
-    PicklistValue) that needs resolution alongside §10's
-    fetch_custom_field_metadata. The grants junction table
-    (record_type_picklist_value_grants) also stays empty until
-    that follow-up cycle.
+    CONSTRAINS_PICKLIST_VALUES (§14, wired in the §10+§14 cycle):
+    one edge per (RecordType, allowed PicklistValue) — the fine
+    model (decision 2A). Sourced from each RT's
+    Metadata.picklistValues. _decorate_record_types_with_picklist_
+    constraints resolves every (picklist field, value) to a
+    PicklistValue composite external_id via the field →
+    PicklistValueSet map (_build_record_type_field_to_pvs_map,
+    which reads field_details.picklist_value_set_entity_id
+    populated by phase_field earlier this sync_run) and injects the
+    _constrained_picklist_values marker. The marker is injected
+    AFTER batched_materialize — it's edge-extraction input that
+    depends on cross-entity Field→PicklistValueSet state, not
+    RecordType entity state, so it stays out of the RecordType
+    hash (same decoupling rationale as §16's
+    _decorate_layouts_with_profile_assignments). Each edge is also
+    mirrored into record_type_picklist_value_grants via the
+    EdgeSpec.junction_table path.
 
     Memory note: 5-200 RTs × ~5 KB per Metadata blob = trivial
     (<1 MB).
@@ -582,7 +647,23 @@ def phase_record_type(ctx: SyncContext, conn: Any) -> PhaseResult:
         return_id_map=True,
     )
 
-    normalized_payloads = [normalize("RecordType", p) for p in raw_rts]
+    # §14: decorate each RT with the _constrained_picklist_values
+    # marker (CONSTRAINS_PICKLIST_VALUES edge-extraction input).
+    # AFTER batched_materialize so the marker stays out of the
+    # RecordType entity hash — same post-materialize decoration
+    # timing as §16's Layout / ProfileLayout wiring.
+    field_to_pvs_map = _build_record_type_field_to_pvs_map(ctx, conn)
+    _decorate_record_types_with_picklist_constraints(
+        filtered_rts, field_to_pvs_map,
+    )
+
+    # normalized_payloads from filtered_rts (the materialized set,
+    # now carrying the _constrained_picklist_values marker) — RTs
+    # whose parent Object is out of scope were never materialized,
+    # so they have no entity_id and would be skipped anyway.
+    normalized_payloads = [
+        normalize("RecordType", p) for p in filtered_rts
+    ]
     materialize_edges_for_entities(
         ctx=ctx,
         conn=conn,
@@ -593,6 +674,136 @@ def phase_record_type(ctx: SyncContext, conn: Any) -> PhaseResult:
     )
 
     return result
+
+
+def _build_record_type_field_to_pvs_map(
+    ctx: SyncContext, conn: Any,
+) -> dict[str, str]:
+    """Map {Field external_id → PicklistValueSet external_id} for this
+    org's currently-active picklist Field entities.
+
+    Built from `field_details.picklist_value_set_entity_id` — which
+    phase_field populates earlier in the same sync_run (ENTITY_ORDER
+    places Field before RecordType) for GVS-backed custom picklist
+    fields — joined to the entities table on both sides to recover
+    the Field's and the PicklistValueSet's external_ids
+    (entities.sf_api_name).
+
+    phase_record_type uses this to resolve a
+    RecordType.Metadata.picklistValues[].picklist value (a field API
+    name) to the PicklistValueSet whose PicklistValue children are
+    keyed under '{pvs_external_id}.{valueName}'. A field absent from
+    this map has no synced PicklistValueSet (inline picklist,
+    standard picklist per §22, or unsynced) — its RecordType
+    constraint entries are out of §14 scope.
+
+    Both the Field and the PicklistValueSet rows are filtered to
+    valid_to_seq IS NULL (currently-active versions only).
+    """
+    rows = conn.execute(text("""
+        SELECT fe.sf_api_name AS field_external_id,
+               pe.sf_api_name AS pvs_external_id
+        FROM entities fe
+        JOIN field_details fd ON fd.entity_id = fe.id
+        JOIN entities pe ON pe.id = fd.picklist_value_set_entity_id
+        WHERE fe.last_synced_from_org_id = :org_id
+          AND fe.entity_type = 'Field'
+          AND fe.valid_to_seq IS NULL
+          AND fd.picklist_value_set_entity_id IS NOT NULL
+          AND pe.valid_to_seq IS NULL
+    """), {"org_id": ctx.connected_org_id}).fetchall()
+    return {
+        row.field_external_id: row.pvs_external_id for row in rows
+    }
+
+
+def _decorate_record_types_with_picklist_constraints(
+    record_types: list[dict[str, Any]],
+    field_to_pvs_map: dict[str, str],
+) -> None:
+    """Inject the `_constrained_picklist_values` marker on each RT.
+
+    Walks each RT's Metadata.picklistValues — a list of
+    RecordTypePicklistValue entries shaped (per the Salesforce
+    Metadata API contract) as
+        {picklist: <field API name>,
+         values: [{fullName: <valueName>, default: bool}, ...]}
+    — and, for every entry whose picklist field resolves to a
+    PicklistValueSet in `field_to_pvs_map`, emits one PicklistValue
+    composite external_id ('{pvs_external_id}.{valueName}') per
+    value. The collected list lands on the RT payload as
+    `_constrained_picklist_values`; the CONSTRAINS_PICKLIST_VALUES
+    edge extractor reads it verbatim.
+
+    Scope (§14, decision 2A — fine RT → PicklistValue model): an
+    entry is in scope only when its picklist field has a synced
+    PicklistValueSet. Inline-picklist and standard-picklist fields
+    have no PicklistValueSet entity to anchor the PicklistValue
+    external_ids — their constraint entries are skipped and
+    INFO-logged. Scope clarification, not deferral — same shape as
+    §16's NULL-RecordTypeId skip and §21's record-trigger scoping.
+
+    Defensive key access: the inner RecordTypePicklistValue
+    structure could not be live-verified — 0/5 sandbox RTs have a
+    non-empty picklistValues (confirmed on two API surfaces:
+    Tooling RecordType.Metadata and REST describe/layouts
+    recordTypeMappings). The parser follows the documented
+    Metadata-API key names (picklist / values / fullName) but also
+    tolerates the plausible Tooling-JSON variants
+    (picklistName / value / valueName) so a key-spelling difference
+    can't silently zero out the edge in a populated org.
+
+    Mutates `record_types` in place; injects the marker only on RTs
+    that have at least one in-scope grant (RTs with none are left
+    unmarked → the extractor returns []).
+    """
+    grants_emitted = 0
+    entries_skipped = 0
+    for rt in record_types:
+        parent_object = rt.get("_parent_object_api_name")
+        metadata = rt.get("Metadata") or {}
+        picklist_values = metadata.get("picklistValues") or []
+        constraints: list[str] = []
+        for entry in picklist_values:
+            if not isinstance(entry, dict):
+                continue
+            field_name = entry.get("picklist") or entry.get("picklistName")
+            if not field_name or not parent_object:
+                entries_skipped += 1
+                continue
+            field_external_id = f"{parent_object}.{field_name}"
+            pvs_external_id = field_to_pvs_map.get(field_external_id)
+            if not pvs_external_id:
+                # Field has no synced PicklistValueSet — inline /
+                # standard (§22) / unsynced. Out of §14 scope.
+                entries_skipped += 1
+                continue
+            for value in entry.get("values") or []:
+                if not isinstance(value, dict):
+                    continue
+                value_name = (
+                    value.get("fullName")
+                    or value.get("value")
+                    or value.get("valueName")
+                )
+                if not value_name:
+                    continue
+                constraints.append(
+                    f"{pvs_external_id}.{value_name}"
+                )
+                grants_emitted += 1
+        if constraints:
+            rt["_constrained_picklist_values"] = constraints
+
+    if grants_emitted or entries_skipped:
+        logger.info(
+            "phase_record_type: picklist constraints — %d "
+            "PicklistValue grants in scope; %d picklistValues "
+            "entries skipped (picklist field has no synced "
+            "PicklistValueSet — inline / standard / unsynced, out "
+            "of §14 scope)",
+            grants_emitted, entries_skipped,
+        )
 
 
 def phase_layout(ctx: SyncContext, conn: Any) -> PhaseResult:

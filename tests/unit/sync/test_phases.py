@@ -669,7 +669,11 @@ from primeqa.sync.phases import phase_field
 class TestPhaseField:
     def _ctx_with_objects(self, object_rows):
         """Set up ctx + conn where the Object SELECT returns the given
-        rows. Each row is a (id, sf_api_name) namedtuple-style."""
+        rows. Each row is a (id, sf_api_name) namedtuple-style.
+
+        The §10 Tooling fetchers (fetch_custom_field_id_map /
+        fetch_custom_field_metadata) default to empty — tests that
+        exercise the picklist-value-set decoration override them."""
         ctx = _stub_ctx_with_mock_sf()
         conn = MagicMock()
         # The Object SELECT inside phase_field
@@ -677,6 +681,10 @@ class TestPhaseField:
             type('R', (), {'id': r[0], 'sf_api_name': r[1]})()
             for r in object_rows
         ]
+        # §10 defaults: no custom fields / no metadata. Tests for the
+        # _value_set_external_id decoration set these explicitly.
+        ctx.sf_client.fetch_custom_field_id_map.return_value = {}
+        ctx.sf_client.fetch_custom_field_metadata.return_value = {}
         return ctx, conn
 
     def test_phase_field_bulk_fetches_for_all_objects_in_one_call(
@@ -830,6 +838,136 @@ class TestPhaseField:
         assert isinstance(result, PhaseResult)
         assert result.entity_type == 'Field'
         assert result.succeeded is True
+
+    def test_phase_field_decorates_gvs_backed_picklist(self) -> None:
+        """§10: a custom picklist field that joins to a CustomField Id
+        AND whose Tooling Metadata.valueSet.valueSetName is populated
+        gets the _value_set_external_id marker (the GVS FullName)."""
+        ctx, conn = self._ctx_with_objects([('obj-acc', 'Account')])
+        ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {
+            'Account': [
+                {'name': 'Tier__c', 'type': 'picklist'},
+                {'name': 'Name', 'type': 'string'},
+            ],
+        }
+        ctx.sf_client.fetch_custom_field_id_map.return_value = {
+            ('Account', 'Tier__c'): '00N_tier',
+        }
+        ctx.sf_client.fetch_custom_field_metadata.return_value = {
+            '00N_tier': {'valueSet': {'valueSetName': 'TierGVS'}},
+        }
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            mock_bm.return_value = {
+                'Account.Tier__c': 'fld-1', 'Account.Name': 'fld-2',
+            }
+            phase_field(ctx, conn)
+        payloads = {
+            p['name']: p
+            for p in mock_bm.call_args.kwargs['raw_payloads']
+        }
+        assert payloads['Tier__c']['_value_set_external_id'] == 'TierGVS'
+        # The non-picklist field gets no marker.
+        assert '_value_set_external_id' not in payloads['Name']
+        # Metadata fetched only for the picklist custom field's Id.
+        ctx.sf_client.fetch_custom_field_metadata.assert_called_once_with(
+            ['00N_tier'],
+        )
+
+    def test_phase_field_no_marker_for_inline_picklist(self) -> None:
+        """§10: a custom picklist field whose Metadata.valueSet.
+        valueSetName is None (inline value set) gets NO marker — there
+        is no shared PicklistValueSet entity to point at."""
+        ctx, conn = self._ctx_with_objects([('obj-acc', 'Account')])
+        ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {
+            'Account': [{'name': 'Stage__c', 'type': 'picklist'}],
+        }
+        ctx.sf_client.fetch_custom_field_id_map.return_value = {
+            ('Account', 'Stage__c'): '00N_stage',
+        }
+        ctx.sf_client.fetch_custom_field_metadata.return_value = {
+            '00N_stage': {'valueSet': {'valueSetName': None,
+                                       'valueSetDefinition': {'value': []}}},
+        }
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            mock_bm.return_value = {'Account.Stage__c': 'fld-1'}
+            phase_field(ctx, conn)
+        payload = mock_bm.call_args.kwargs['raw_payloads'][0]
+        assert '_value_set_external_id' not in payload
+
+    def test_phase_field_standard_picklist_not_fetched(self) -> None:
+        """§10 (1B filter): a standard picklist field doesn't appear in
+        the CustomField id map → no cf_id → not Metadata-fetched, no
+        marker. Standard-field → SVS detection is deferred per §22."""
+        ctx, conn = self._ctx_with_objects([('obj-acc', 'Account')])
+        ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {
+            'Account': [{'name': 'Industry', 'type': 'picklist'}],
+        }
+        # Industry is standard — absent from the CustomField id map.
+        ctx.sf_client.fetch_custom_field_id_map.return_value = {}
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            mock_bm.return_value = {'Account.Industry': 'fld-1'}
+            phase_field(ctx, conn)
+        payload = mock_bm.call_args.kwargs['raw_payloads'][0]
+        assert '_value_set_external_id' not in payload
+        # 1B filter: no picklist custom field Ids → fetch with [].
+        ctx.sf_client.fetch_custom_field_metadata.assert_called_once_with([])
+
+    def test_phase_field_non_picklist_custom_field_not_fetched(
+        self,
+    ) -> None:
+        """§10 (1B filter): a custom field that IS in the id map but
+        isn't picklist-typed (e.g. a text custom field) is not
+        Metadata-fetched — the filter keys on describe field['type']."""
+        ctx, conn = self._ctx_with_objects([('obj-acc', 'Account')])
+        ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {
+            'Account': [
+                {'name': 'Notes__c', 'type': 'textarea'},
+                {'name': 'Tier__c', 'type': 'picklist'},
+            ],
+        }
+        ctx.sf_client.fetch_custom_field_id_map.return_value = {
+            ('Account', 'Notes__c'): '00N_notes',
+            ('Account', 'Tier__c'): '00N_tier',
+        }
+        ctx.sf_client.fetch_custom_field_metadata.return_value = {}
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'):
+            mock_bm.return_value = {
+                'Account.Notes__c': 'fld-1', 'Account.Tier__c': 'fld-2',
+            }
+            phase_field(ctx, conn)
+        # Only the picklist custom field's Id is Metadata-fetched.
+        ctx.sf_client.fetch_custom_field_metadata.assert_called_once_with(
+            ['00N_tier'],
+        )
+
+    def test_phase_field_marker_survives_into_edge_normalization(
+        self,
+    ) -> None:
+        """The _value_set_external_id marker is present on the payload
+        fed to normalize() for the edge writer — phase_field decorates
+        before both batched_materialize and the edge re-normalize."""
+        ctx, conn = self._ctx_with_objects([('obj-acc', 'Account')])
+        ctx.sf_client.fetch_fields_for_objects_bulk.return_value = {
+            'Account': [{'name': 'Tier__c', 'type': 'picklist'}],
+        }
+        ctx.sf_client.fetch_custom_field_id_map.return_value = {
+            ('Account', 'Tier__c'): '00N_tier',
+        }
+        ctx.sf_client.fetch_custom_field_metadata.return_value = {
+            '00N_tier': {'valueSet': {'valueSetName': 'TierGVS'}},
+        }
+        seen = []
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch('primeqa.sync.phases.materialize_edges_for_entities'), \
+             patch('primeqa.sync.phases.normalize',
+                   side_effect=lambda et, p: seen.append(p) or p):
+            mock_bm.return_value = {'Account.Tier__c': 'fld-1'}
+            phase_field(ctx, conn)
+        assert seen and seen[0]['_value_set_external_id'] == 'TierGVS'
 
 
 # ----------------------------------------------------------------------
@@ -1061,6 +1199,218 @@ class TestPhaseRecordType:
         mock_bm.assert_not_called()
         mock_edges.assert_not_called()
         assert result.entities_inserted == 0
+
+    def test_phase_record_type_decorates_constrained_picklist_values(
+        self,
+    ) -> None:
+        """§14: an RT whose Metadata.picklistValues entry resolves
+        against the field→PVS map gets the _constrained_picklist_
+        values marker, and it flows into the normalized payloads fed
+        to the edge writer."""
+        ctx = _stub_ctx_with_mock_sf()
+        rt = self._ok_rt("Account.Enterprise")
+        rt["Metadata"]["picklistValues"] = [
+            {"picklist": "Tier__c", "values": [
+                {"fullName": "Gold", "default": True},
+                {"fullName": "Platinum", "default": False},
+            ]},
+        ]
+        ctx.sf_client.fetch_record_types.return_value = [rt]
+        conn = MagicMock()
+        seen = []
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value={"Account"},
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ), \
+             patch(
+                 "primeqa.sync.phases._build_record_type_field_to_pvs_map",
+                 return_value={"Account.Tier__c": "TierGVS"},
+             ), \
+             patch("primeqa.sync.phases.normalize",
+                   side_effect=lambda et, p: seen.append(p) or p):
+            mock_bm.return_value = {"Account.Enterprise": "rt-1"}
+            phase_record_type(ctx, conn)
+        # Marker injected AFTER batched_materialize — the payload fed
+        # to batched_materialize had NO marker (kept out of the hash);
+        # the payload fed to normalize (edge path) HAS it.
+        assert seen and seen[0]["_constrained_picklist_values"] == [
+            "TierGVS.Gold", "TierGVS.Platinum",
+        ]
+
+    def test_phase_record_type_normalizes_filtered_not_raw(self) -> None:
+        """normalized_payloads is built from filtered_rts (the
+        materialized set), not raw_rts — an out-of-scope RT never
+        reaches the edge writer's normalize step."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_record_types.return_value = [
+            self._ok_rt("Account.InScope"),
+            self._ok_rt("Internal__c.OutOfScope"),
+        ]
+        conn = MagicMock()
+        seen = []
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+            return_value={"Account"},
+        ), patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities"), \
+             patch(
+                 "primeqa.sync.phases._build_record_type_field_to_pvs_map",
+                 return_value={},
+             ), patch("primeqa.sync.phases.normalize",
+                      side_effect=lambda et, p: seen.append(p) or p):
+            mock_bm.return_value = {"Account.InScope": "rt-1"}
+            phase_record_type(ctx, conn)
+        # Only the in-scope RT was normalized for the edge path.
+        assert len(seen) == 1
+        assert seen[0]["FullName"] == "Account.InScope"
+
+
+class TestBuildRecordTypeFieldToPvsMap:
+    def test_builds_map_from_joined_rows(self) -> None:
+        """The join over entities + field_details + entities yields
+        {field external_id → PicklistValueSet external_id}."""
+        from primeqa.sync.phases import (
+            _build_record_type_field_to_pvs_map,
+        )
+        ctx = _stub_ctx_with_mock_sf()
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = [
+            type("R", (), {
+                "field_external_id": "Account.Tier__c",
+                "pvs_external_id": "TierGVS",
+            })(),
+            type("R", (), {
+                "field_external_id": "Contact.Level__c",
+                "pvs_external_id": "MyNS__LevelGVS",
+            })(),
+        ]
+        result = _build_record_type_field_to_pvs_map(ctx, conn)
+        assert result == {
+            "Account.Tier__c": "TierGVS",
+            "Contact.Level__c": "MyNS__LevelGVS",
+        }
+        # query is org-scoped
+        params = conn.execute.call_args[0][1]
+        assert params["org_id"] == ctx.connected_org_id
+
+    def test_empty_when_no_picklist_fields(self) -> None:
+        """No Field rows carry picklist_value_set_entity_id → {}."""
+        from primeqa.sync.phases import (
+            _build_record_type_field_to_pvs_map,
+        )
+        ctx = _stub_ctx_with_mock_sf()
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = []
+        assert _build_record_type_field_to_pvs_map(ctx, conn) == {}
+
+
+class TestDecorateRecordTypesWithPicklistConstraints:
+    def _decorate(self, record_types, field_to_pvs_map):
+        from primeqa.sync.phases import (
+            _decorate_record_types_with_picklist_constraints,
+        )
+        _decorate_record_types_with_picklist_constraints(
+            record_types, field_to_pvs_map,
+        )
+        return record_types
+
+    def test_resolves_in_scope_entry_to_pv_external_ids(self) -> None:
+        """An entry whose picklist field is in the map → one
+        PicklistValue composite external_id per value."""
+        rts = [{
+            "_parent_object_api_name": "Account",
+            "Metadata": {"picklistValues": [
+                {"picklist": "Tier__c", "values": [
+                    {"fullName": "Gold"}, {"fullName": "Platinum"},
+                ]},
+            ]},
+        }]
+        self._decorate(rts, {"Account.Tier__c": "TierGVS"})
+        assert rts[0]["_constrained_picklist_values"] == [
+            "TierGVS.Gold", "TierGVS.Platinum",
+        ]
+
+    def test_skips_entry_whose_field_has_no_synced_pvs(self) -> None:
+        """An entry whose picklist field is absent from the map
+        (inline / standard / unsynced) is skipped — no marker when
+        every entry is out of scope."""
+        rts = [{
+            "_parent_object_api_name": "Account",
+            "Metadata": {"picklistValues": [
+                {"picklist": "Industry", "values": [
+                    {"fullName": "Banking"},
+                ]},
+            ]},
+        }]
+        self._decorate(rts, {})  # Industry not in map
+        assert "_constrained_picklist_values" not in rts[0]
+
+    def test_partial_scope_keeps_only_resolved_entries(self) -> None:
+        """When some entries resolve and others don't, the marker
+        carries only the in-scope grants."""
+        rts = [{
+            "_parent_object_api_name": "Account",
+            "Metadata": {"picklistValues": [
+                {"picklist": "Tier__c", "values": [{"fullName": "Gold"}]},
+                {"picklist": "Industry", "values": [{"fullName": "Tech"}]},
+            ]},
+        }]
+        self._decorate(rts, {"Account.Tier__c": "TierGVS"})
+        assert rts[0]["_constrained_picklist_values"] == ["TierGVS.Gold"]
+
+    def test_empty_picklist_values_no_marker(self) -> None:
+        """An RT with Metadata.picklistValues == [] (the common case
+        in this sandbox — 0/5 RTs constrain anything) gets no marker."""
+        rts = [{
+            "_parent_object_api_name": "Account",
+            "Metadata": {"picklistValues": []},
+        }]
+        self._decorate(rts, {"Account.Tier__c": "TierGVS"})
+        assert "_constrained_picklist_values" not in rts[0]
+
+    def test_missing_metadata_no_marker(self) -> None:
+        """Defensive: an RT with no Metadata key at all → no crash,
+        no marker."""
+        rts = [{"_parent_object_api_name": "Account"}]
+        self._decorate(rts, {"Account.Tier__c": "TierGVS"})
+        assert "_constrained_picklist_values" not in rts[0]
+
+    def test_tolerates_picklistname_and_value_key_variants(self) -> None:
+        """Defensive key access: the inner RecordTypePicklistValue
+        shape couldn't be live-verified, so the parser also accepts
+        the plausible Tooling-JSON variants picklistName / valueName /
+        value alongside the documented picklist / fullName."""
+        rts = [{
+            "_parent_object_api_name": "Account",
+            "Metadata": {"picklistValues": [
+                {"picklistName": "Tier__c", "values": [
+                    {"valueName": "Gold"}, {"value": "Silver"},
+                ]},
+            ]},
+        }]
+        self._decorate(rts, {"Account.Tier__c": "TierGVS"})
+        assert rts[0]["_constrained_picklist_values"] == [
+            "TierGVS.Gold", "TierGVS.Silver",
+        ]
+
+    def test_skips_malformed_entries_and_values(self) -> None:
+        """Non-dict entries / values, and entries with no field name
+        or no value name, are skipped without crashing."""
+        rts = [{
+            "_parent_object_api_name": "Account",
+            "Metadata": {"picklistValues": [
+                "not-a-dict",
+                {"picklist": "", "values": [{"fullName": "X"}]},
+                {"picklist": "Tier__c", "values": [
+                    "not-a-dict", {"fullName": ""}, {"fullName": "Gold"},
+                ]},
+            ]},
+        }]
+        self._decorate(rts, {"Account.Tier__c": "TierGVS"})
+        assert rts[0]["_constrained_picklist_values"] == ["TierGVS.Gold"]
 
 
 # ----------------------------------------------------------------------

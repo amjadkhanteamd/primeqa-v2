@@ -1044,6 +1044,8 @@ class TestBatchInsertDetails:
 
 from primeqa.sync.materialize import (
     _batch_close_superseded_edges,
+    _batch_delete_junction_rows,
+    _batch_insert_junction_rows,
     _batch_insert_new_edges,
     _batch_read_existing_edges_for_sources,
     _lookup_edge_category,
@@ -1181,6 +1183,174 @@ class TestBatchCloseSupersededEdges:
         params = conn.execute.call_args[0][1]
         assert params["close_seq"] == ctx.logical_version_seq
         assert params["edge_type"] == "BELONGS_TO"
+
+
+_RT_PVG_JUNCTION = (
+    "record_type_picklist_value_grants",
+    "record_type_entity_id",
+    "picklist_value_entity_id",
+)
+
+
+class TestBatchInsertJunctionRows:
+    def test_empty_pairs_is_noop(self) -> None:
+        """Defensive empty-input check — no malformed VALUES list."""
+        conn = MagicMock()
+        _batch_insert_junction_rows(conn, _RT_PVG_JUNCTION, [])
+        conn.execute.assert_not_called()
+
+    def test_builds_multi_row_insert_on_conflict_do_nothing(self) -> None:
+        """Multi-row INSERT into the junction table with the
+        code-constant table/column names interpolated, the row
+        values parameter-bound + UUID-cast, and ON CONFLICT DO
+        NOTHING for re-sync idempotency."""
+        conn = MagicMock()
+        pairs = [("rt1", "pv1"), ("rt2", "pv2")]
+        _batch_insert_junction_rows(conn, _RT_PVG_JUNCTION, pairs)
+        conn.execute.assert_called_once()
+        sql_text = str(conn.execute.call_args[0][0])
+        assert (
+            "INSERT INTO record_type_picklist_value_grants "
+            "(record_type_entity_id, picklist_value_entity_id)"
+        ) in sql_text
+        assert "ON CONFLICT DO NOTHING" in sql_text
+        assert "CAST(:source_0 AS uuid)" in sql_text
+        assert "CAST(:target_1 AS uuid)" in sql_text
+        params = conn.execute.call_args[0][1]
+        assert params["source_0"] == "rt1"
+        assert params["target_0"] == "pv1"
+        assert params["source_1"] == "rt2"
+        assert params["target_1"] == "pv2"
+
+
+class TestBatchDeleteJunctionRows:
+    def test_empty_pairs_is_noop(self) -> None:
+        conn = MagicMock()
+        _batch_delete_junction_rows(conn, _RT_PVG_JUNCTION, [])
+        conn.execute.assert_not_called()
+
+    def test_builds_tuple_in_delete(self) -> None:
+        """DELETE uses Postgres tuple-IN on the two junction columns
+        with explicit UUID casts; values stay parameter-bound."""
+        conn = MagicMock()
+        pairs = [("rt1", "pv1"), ("rt2", "pv2")]
+        _batch_delete_junction_rows(conn, _RT_PVG_JUNCTION, pairs)
+        conn.execute.assert_called_once()
+        sql_text = str(conn.execute.call_args[0][0])
+        assert "DELETE FROM record_type_picklist_value_grants" in sql_text
+        assert (
+            "(record_type_entity_id, picklist_value_entity_id) IN"
+        ) in sql_text
+        assert "CAST(:source_0 AS uuid)" in sql_text
+        params = conn.execute.call_args[0][1]
+        assert params["source_0"] == "rt1"
+        assert params["target_1"] == "pv2"
+
+
+class TestBatchedMaterializeEdgesJunction:
+    """The junction-mirror path: a property-less edge_type with a
+    junction entry gets every new edge INSERTed into the junction
+    table and every superseded edge DELETEd from it."""
+
+    def _run(self, existing_pairs, incoming, junctions):
+        from contextlib import ExitStack
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="RecordType")
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("_batch_read_existing_edges_for_sources"),
+                return_value=existing_pairs,
+            ))
+            stack.enter_context(patch(
+                _patch_path("_batch_insert_new_edges"),
+            ))
+            stack.enter_context(patch(
+                _patch_path("_batch_close_superseded_edges"),
+            ))
+            mock_jins = stack.enter_context(patch(
+                _patch_path("_batch_insert_junction_rows"),
+            ))
+            mock_jdel = stack.enter_context(patch(
+                _patch_path("_batch_delete_junction_rows"),
+            ))
+            batched_materialize_edges(
+                ctx, conn, incoming, result, junctions=junctions,
+            )
+        return mock_jins, mock_jdel, result
+
+    def test_new_edges_mirror_into_junction(self) -> None:
+        """New (source, target) pairs → _batch_insert_junction_rows
+        called with exactly the new pairs."""
+        existing = {("rt1", "pv1")}
+        incoming = [
+            ("rt1", "pv1", "CONSTRAINS_PICKLIST_VALUES", "CONFIG", {}),
+            ("rt1", "pv2", "CONSTRAINS_PICKLIST_VALUES", "CONFIG", {}),
+        ]
+        junctions = {"CONSTRAINS_PICKLIST_VALUES": _RT_PVG_JUNCTION}
+        mock_jins, mock_jdel, _ = self._run(existing, incoming, junctions)
+        mock_jins.assert_called_once()
+        assert mock_jins.call_args[0][1] == _RT_PVG_JUNCTION
+        assert set(mock_jins.call_args[0][2]) == {("rt1", "pv2")}
+        mock_jdel.assert_not_called()
+
+    def test_superseded_edges_delete_from_junction(self) -> None:
+        """Pairs in existing but not incoming → _batch_delete_junction_
+        rows called with exactly the superseded pairs."""
+        existing = {("rt1", "pv1"), ("rt1", "pv2")}
+        incoming = [
+            ("rt1", "pv1", "CONSTRAINS_PICKLIST_VALUES", "CONFIG", {}),
+        ]
+        junctions = {"CONSTRAINS_PICKLIST_VALUES": _RT_PVG_JUNCTION}
+        mock_jins, mock_jdel, _ = self._run(existing, incoming, junctions)
+        mock_jdel.assert_called_once()
+        assert set(mock_jdel.call_args[0][2]) == {("rt1", "pv2")}
+        mock_jins.assert_not_called()
+
+    def test_unchanged_edges_touch_neither_junction_helper(self) -> None:
+        """Incoming == existing → unchanged set is full → no edge
+        write and no junction write. Re-sync idempotency: the
+        junction row written on the first sync just persists."""
+        existing = {("rt1", "pv1"), ("rt1", "pv2")}
+        incoming = [
+            ("rt1", "pv1", "CONSTRAINS_PICKLIST_VALUES", "CONFIG", {}),
+            ("rt1", "pv2", "CONSTRAINS_PICKLIST_VALUES", "CONFIG", {}),
+        ]
+        junctions = {"CONSTRAINS_PICKLIST_VALUES": _RT_PVG_JUNCTION}
+        mock_jins, mock_jdel, _ = self._run(existing, incoming, junctions)
+        mock_jins.assert_not_called()
+        mock_jdel.assert_not_called()
+
+    def test_no_junction_when_edge_type_not_in_map(self) -> None:
+        """A property-less edge_type with no junction entry never
+        touches the junction helpers — BELONGS_TO is unaffected."""
+        existing = set()
+        incoming = [("s1", "t1", "BELONGS_TO", "STRUCTURAL", {})]
+        # junctions map present but keyed on a different edge_type
+        junctions = {"CONSTRAINS_PICKLIST_VALUES": _RT_PVG_JUNCTION}
+        mock_jins, mock_jdel, _ = self._run(existing, incoming, junctions)
+        mock_jins.assert_not_called()
+        mock_jdel.assert_not_called()
+
+    def test_property_bearing_edge_with_junction_raises(self) -> None:
+        """Junction-table writes are implemented only on the
+        property-less path. A junction declared on a property-bearing
+        edge_type raises NotImplementedError rather than silently
+        dropping the junction write."""
+        import pytest
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="Layout")
+        incoming = [
+            ("l1", "f1", "INCLUDES_FIELD", "CONFIG",
+             {"section_name": "Info", "section_order": 0, "row": 0,
+              "column": 0, "is_required": False, "is_readonly": False}),
+        ]
+        junctions = {"INCLUDES_FIELD": _RT_PVG_JUNCTION}
+        with pytest.raises(NotImplementedError, match="property-bearing"):
+            batched_materialize_edges(
+                ctx, conn, incoming, result, junctions=junctions,
+            )
 
 
 class TestBatchedMaterializeEdgesPropertyLess:
@@ -1569,6 +1739,201 @@ class TestMaterializeEdgesForEntities:
             "HAS_RELATIONSHIP_TO": 2,
         }
         assert "BELONGS_TO" not in result.edges_skipped_by_type
+
+    def test_writes_has_picklist_values_edge_from_marker(self) -> None:
+        """A Field carrying the _value_set_external_id marker
+        produces a HAS_PICKLIST_VALUES edge → PicklistValueSet
+        (§10). Fields without the marker produce only BELONGS_TO."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="Field")
+        gvs_field = self._normalized_field("Tier__c")
+        gvs_field["_value_set_external_id"] = "TierGVS"
+        plain_field = self._normalized_field("Name")
+        entity_id_map = {
+            "Account.Tier__c": "fld-tier",
+            "Account.Name": "fld-name",
+        }
+
+        def resolver(*, entity_type, external_id):
+            return {
+                ("Object", "Account"): "obj-account",
+                ("PicklistValueSet", "TierGVS"): "pvs-tier",
+            }.get((entity_type, external_id))
+
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("make_parent_resolver"),
+                return_value=resolver,
+            ))
+            mock_bm = stack.enter_context(patch(
+                _patch_path("batched_materialize_edges"),
+            ))
+            materialize_edges_for_entities(
+                ctx, conn, "Field",
+                entity_id_map=entity_id_map,
+                normalized_payloads=[gvs_field, plain_field],
+                result=result,
+            )
+        edge_writes = mock_bm.call_args[0][2]
+        hpv = [e for e in edge_writes if e[2] == "HAS_PICKLIST_VALUES"]
+        # Only the GVS-backed field gets the edge.
+        assert len(hpv) == 1
+        assert hpv[0][0] == "fld-tier"   # source
+        assert hpv[0][1] == "pvs-tier"   # target
+        assert hpv[0][4] == {}           # property-less
+        # No junctions for Field — HAS_PICKLIST_VALUES carries none.
+        assert mock_bm.call_args.kwargs.get("junctions") == {}
+
+    def test_record_type_constrains_edges_and_junction_map(self) -> None:
+        """A RecordType carrying _constrained_picklist_values produces
+        CONSTRAINS_PICKLIST_VALUES edges → PicklistValue, and
+        materialize_edges_for_entities passes a junctions map keyed on
+        that edge_type through to batched_materialize_edges (§14)."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="RecordType")
+        rt = {
+            "FullName": "Account.Enterprise",
+            "developerName": "Enterprise",
+            "_parent_object_api_name": "Account",
+            "_constrained_picklist_values": ["TierGVS.Gold", "TierGVS.Plat"],
+        }
+        entity_id_map = {"Account.Enterprise": "rt-ent"}
+
+        def resolver(*, entity_type, external_id):
+            return {
+                ("Object", "Account"): "obj-account",
+                ("PicklistValue", "TierGVS.Gold"): "pv-gold",
+                ("PicklistValue", "TierGVS.Plat"): "pv-plat",
+            }.get((entity_type, external_id))
+
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("make_parent_resolver"),
+                return_value=resolver,
+            ))
+            mock_bm = stack.enter_context(patch(
+                _patch_path("batched_materialize_edges"),
+            ))
+            materialize_edges_for_entities(
+                ctx, conn, "RecordType",
+                entity_id_map=entity_id_map,
+                normalized_payloads=[rt],
+                result=result,
+            )
+        edge_writes = mock_bm.call_args[0][2]
+        cpv = [e for e in edge_writes
+               if e[2] == "CONSTRAINS_PICKLIST_VALUES"]
+        assert len(cpv) == 2
+        assert {e[1] for e in cpv} == {"pv-gold", "pv-plat"}
+        assert all(e[0] == "rt-ent" for e in cpv)
+        # junctions map carries the RT→PVG mirror spec.
+        junctions = mock_bm.call_args.kwargs.get("junctions")
+        assert junctions == {
+            "CONSTRAINS_PICKLIST_VALUES": (
+                "record_type_picklist_value_grants",
+                "record_type_entity_id",
+                "picklist_value_entity_id",
+            ),
+        }
+
+    def test_has_picklist_values_skip_counted_when_pvs_unresolvable(
+        self,
+    ) -> None:
+        """§10 skip-counter integrity: a Field carries
+        _value_set_external_id but the PicklistValueSet isn't in the
+        synced set → the edge is skipped and counted under
+        HAS_PICKLIST_VALUES in edges_skipped_by_type. No edge_write
+        tuple is emitted for it."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="Field")
+        field = self._normalized_field("Tier__c")
+        field["_value_set_external_id"] = "UnsyncedGVS"
+        entity_id_map = {"Account.Tier__c": "fld-tier"}
+
+        def resolver(*, entity_type, external_id):
+            # Account resolves; UnsyncedGVS does not.
+            return {("Object", "Account"): "obj-account"}.get(
+                (entity_type, external_id),
+            )
+
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("make_parent_resolver"),
+                return_value=resolver,
+            ))
+            mock_bm = stack.enter_context(patch(
+                _patch_path("batched_materialize_edges"),
+            ))
+            materialize_edges_for_entities(
+                ctx, conn, "Field",
+                entity_id_map=entity_id_map,
+                normalized_payloads=[field],
+                result=result,
+            )
+        assert result.edges_skipped_by_type.get(
+            "HAS_PICKLIST_VALUES",
+        ) == 1
+        edge_writes = mock_bm.call_args[0][2]
+        assert not [
+            e for e in edge_writes if e[2] == "HAS_PICKLIST_VALUES"
+        ]
+
+    def test_constrains_skip_counted_when_pv_unresolvable(self) -> None:
+        """§14 skip-counter integrity: a RecordType lists a
+        PicklistValue external_id that doesn't resolve to a synced
+        entity → the edge is skipped and counted under
+        CONSTRAINS_PICKLIST_VALUES. The resolvable value still
+        produces its edge."""
+        ctx = _stub_ctx()
+        conn = MagicMock()
+        result = PhaseResult(entity_type="RecordType")
+        rt = {
+            "FullName": "Account.Enterprise",
+            "developerName": "Enterprise",
+            "_parent_object_api_name": "Account",
+            "_constrained_picklist_values": [
+                "TierGVS.Gold", "TierGVS.Unsynced",
+            ],
+        }
+        entity_id_map = {"Account.Enterprise": "rt-ent"}
+
+        def resolver(*, entity_type, external_id):
+            return {
+                ("Object", "Account"): "obj-account",
+                ("PicklistValue", "TierGVS.Gold"): "pv-gold",
+                # TierGVS.Unsynced → None
+            }.get((entity_type, external_id))
+
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                _patch_path("make_parent_resolver"),
+                return_value=resolver,
+            ))
+            mock_bm = stack.enter_context(patch(
+                _patch_path("batched_materialize_edges"),
+            ))
+            materialize_edges_for_entities(
+                ctx, conn, "RecordType",
+                entity_id_map=entity_id_map,
+                normalized_payloads=[rt],
+                result=result,
+            )
+        assert result.edges_skipped_by_type.get(
+            "CONSTRAINS_PICKLIST_VALUES",
+        ) == 1
+        edge_writes = mock_bm.call_args[0][2]
+        cpv = [e for e in edge_writes
+               if e[2] == "CONSTRAINS_PICKLIST_VALUES"]
+        # Only the resolvable value produced an edge.
+        assert len(cpv) == 1
+        assert cpv[0][1] == "pv-gold"
 
 
 # ----------------------------------------------------------------------

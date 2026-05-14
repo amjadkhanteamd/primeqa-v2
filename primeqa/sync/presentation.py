@@ -213,9 +213,10 @@ def _to_presentation_record_type(normalized: dict[str, Any]) -> dict[str, Any]:
       description       ← description (often None on minimal RTs)
 
     No `picklistValues` field carried through — the value-allowed-
-    subset is the CONSTRAINS_PICKLIST_VALUES edge's domain
-    (deferred per corrections-log §14). RecordType's semantic_text
-    speaks to identity + scope, not the picklist constraints.
+    subset is the CONSTRAINS_PICKLIST_VALUES edge's domain (wired in
+    the §10+§14 cycle; see phase_record_type). RecordType's
+    semantic_text speaks to identity + scope, not the picklist
+    constraints.
     """
     return {
         "name": normalized.get("developerName"),

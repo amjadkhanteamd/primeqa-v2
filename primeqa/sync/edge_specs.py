@@ -53,11 +53,26 @@ class EdgeSpec:
             None properties_schema (INCLUDES_FIELD,
             GRANTS_OBJECT_ACCESS, etc.) — these route through the
             hash-based supersession path.
+        junction_table / junction_source_column /
+        junction_target_column: optional. When all three are set, the
+            materialize layer mirrors every (source, target) edge of
+            this type into a hot reference / junction table — INSERT
+            ... ON CONFLICT DO NOTHING on new edges, DELETE on
+            superseded edges. Used by CONSTRAINS_PICKLIST_VALUES to
+            keep record_type_picklist_value_grants in sync with the
+            edge set (the junction row is a denormalization of the
+            edge under the §14 fine model). All three must be set
+            together or all None; the junction write path is
+            currently supported only for property-less edges (see
+            batched_materialize_edges).
     """
     target_entity_type: str
     edge_type: str
     extract_target_external_ids: Callable[[dict], list[str]]
     extract_properties: Optional[Callable[[dict, str], dict]] = None
+    junction_table: Optional[str] = None
+    junction_source_column: Optional[str] = None
+    junction_target_column: Optional[str] = None
 
 
 # ----------------------------------------------------------------------
@@ -97,6 +112,33 @@ def _field_has_relationship_to_targets(normalized: dict) -> list[str]:
     return list(ref_to)
 
 
+def _field_has_picklist_values_targets(normalized: dict) -> list[str]:
+    """Field → PicklistValueSet when the field is a picklist whose
+    value-set is a named (GVS-backed) set.
+
+    `phase_field` decorates each field payload with a
+    `_value_set_external_id` marker when the field's Tooling
+    CustomField Metadata.valueSet.valueSetName is populated — i.e.
+    the picklist draws on a GlobalValueSet (the PicklistValueSet
+    external_id is that GVS FullName, unprefixed). The marker
+    survives `_strip_volatile` (not in _VOLATILE_KEYS) and lands in
+    the normalized payload.
+
+    Fields with no marker get no edge:
+      - non-picklist fields (the marker is never set)
+      - inline-picklist fields (valueSetName is None → no shared
+        PicklistValueSet entity exists to point at — same scope
+        boundary §10 documents)
+      - standard picklist fields (SVS detection deferred per §22)
+
+    Returns a single-element list or empty. One PicklistValueSet
+    per picklist field — cardinality is 1:1, matching
+    field_details.picklist_value_set_entity_id.
+    """
+    vse = normalized.get("_value_set_external_id")
+    return [vse] if vse else []
+
+
 # ----------------------------------------------------------------------
 # RecordType edge spec extractors
 # ----------------------------------------------------------------------
@@ -116,6 +158,37 @@ def _record_type_belongs_to_targets(normalized: dict) -> list[str]:
     """
     parent = normalized.get("_parent_object_api_name")
     return [parent] if parent else []
+
+
+def _record_type_constrains_picklist_values_targets(
+    normalized: dict,
+) -> list[str]:
+    """RecordType → PicklistValue, one edge per allowed value.
+
+    Fine model (§14, decision 2A): each edge points at an individual
+    PicklistValue the RecordType permits — NOT at the whole
+    PicklistValueSet. Matches derivation.py and the
+    record_type_picklist_value_grants junction schema.
+
+    `phase_record_type` decorates each RT payload with a
+    `_constrained_picklist_values` marker: a list of PicklistValue
+    composite external_ids ("{pvs_external_id}.{valueName}"), already
+    resolved and scope-filtered in-phase. The marker survives
+    `_strip_volatile` and lands in the normalized payload.
+
+    An RT with no marker (or an empty one) gets no edges — the common
+    case in orgs whose RecordTypes don't constrain any picklist, and
+    the only case for RTs whose constrained fields are inline
+    picklists (no PicklistValue entities exist to point at).
+
+    Returns the marker list verbatim — phase_record_type owns
+    construction, ordering, and scope filtering so the extractor
+    stays a pure read (mirrors the §16 ASSIGNED_TO_PROFILE_RECORDTYPE
+    pattern where the phase pre-resolves and the extractor just
+    reads).
+    """
+    constraints = normalized.get("_constrained_picklist_values") or []
+    return list(constraints)
 
 
 # ----------------------------------------------------------------------
@@ -839,9 +912,22 @@ _EDGE_SPECS: dict[str, list[EdgeSpec]] = {
             edge_type="HAS_RELATIONSHIP_TO",
             extract_target_external_ids=_field_has_relationship_to_targets,
         ),
-        # HAS_PICKLIST_VALUES deferred — requires Tooling-API
-        # fetch_custom_field_metadata (REST describe doesn't expose
-        # GVS/SVS references). Documented in corrections-log §10.
+        EdgeSpec(
+            target_entity_type="PicklistValueSet",
+            edge_type="HAS_PICKLIST_VALUES",
+            extract_target_external_ids=_field_has_picklist_values_targets,
+            # property-less per TIER_1_EDGES; no junction table —
+            # the 1:1 link is also carried on
+            # field_details.picklist_value_set_entity_id (detail
+            # column), which _map_field_details populates from the
+            # same _value_set_external_id marker.
+        ),
+        # HAS_PICKLIST_VALUES wired in the §10+§14 cycle. Sourced
+        # from Tooling CustomField Metadata.valueSet.valueSetName
+        # (REST describe doesn't expose GVS references); phase_field
+        # decorates each picklist field's payload with the resolved
+        # _value_set_external_id marker. Standard-field → SVS links
+        # are out of scope (deferred per corrections-log §22).
     ],
     "RecordType": [
         EdgeSpec(
@@ -849,12 +935,29 @@ _EDGE_SPECS: dict[str, list[EdgeSpec]] = {
             edge_type="BELONGS_TO",
             extract_target_external_ids=_record_type_belongs_to_targets,
         ),
-        # CONSTRAINS_PICKLIST_VALUES deferred — both substrate-1's
-        # registry-vs-derivation contradiction (§14) and the §10
-        # GVS/SVS detection block need to be resolved first. Will
-        # land in a future cycle that includes
-        # fetch_custom_field_metadata + record_type_picklist_value_
-        # grants junction-table writes.
+        EdgeSpec(
+            target_entity_type="PicklistValue",
+            edge_type="CONSTRAINS_PICKLIST_VALUES",
+            extract_target_external_ids=(
+                _record_type_constrains_picklist_values_targets
+            ),
+            # property-less per TIER_1_EDGES. Junction-table mirror:
+            # every edge is also written to
+            # record_type_picklist_value_grants (the junction row is
+            # a denormalization of the edge under the §14 fine
+            # model — same (source, target) pair).
+            junction_table="record_type_picklist_value_grants",
+            junction_source_column="record_type_entity_id",
+            junction_target_column="picklist_value_entity_id",
+        ),
+        # CONSTRAINS_PICKLIST_VALUES wired in the §10+§14 cycle.
+        # Fine model (RT → PicklistValue) per §14 decision 2A; the
+        # substrate-1 registry target was corrected PicklistValueSet
+        # → PicklistValue to match. Sourced from RecordType
+        # Metadata.picklistValues; phase_record_type resolves each
+        # (picklist field, value) to a PicklistValue external_id via
+        # the field → PicklistValueSet map and decorates the RT
+        # payload with the _constrained_picklist_values marker.
     ],
     "Layout": [
         EdgeSpec(

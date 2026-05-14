@@ -50,12 +50,15 @@ Verifies:
     (no spurious supersession from _parent_external_id / _sort_order
     round-tripping through normalize/hash).
   - Field phase: per-Object REST describe + entity + field_details +
-    BELONGS_TO + HAS_RELATIONSHIP_TO edges. ~146 Objects × ~30-150
-    fields each → several thousand Field entities. Every Field has
-    exactly one BELONGS_TO edge to its parent Object; reference fields
-    add one HAS_RELATIONSHIP_TO edge per target. HAS_PICKLIST_VALUES
-    deferred per corrections-log §10 (REST describe doesn't expose
-    GVS references).
+    BELONGS_TO + HAS_RELATIONSHIP_TO + HAS_PICKLIST_VALUES edges.
+    ~146 Objects × ~30-150 fields each → several thousand Field
+    entities. Every Field has exactly one BELONGS_TO edge to its
+    parent Object; reference fields add one HAS_RELATIONSHIP_TO edge
+    per target. HAS_PICKLIST_VALUES → PicklistValueSet was wired in
+    the §10+§14 cycle — sourced from Tooling CustomField
+    Metadata.valueSet.valueSetName for GVS-backed custom picklist
+    fields; this sandbox has 0 GlobalValueSets so it resolves to 0
+    edges here (forward-looking infrastructure, >= 0 floor).
   - Edge integrity: zero orphan edges (every source + target points
     at a currently-active entity row). Edge counts stable across
     syncs (set-difference semantics for property-less edges is
@@ -63,11 +66,15 @@ Verifies:
   - RecordType phase: fetches via Tooling+Metadata two-phase
     (substrate-1 fetch_record_types). Each RT decorated with
     _parent_object_api_name (split from FullName at first '.').
-    Writes entity + record_type_details + BELONGS_TO → Object
-    edge (the only RT edge this cycle —
-    CONSTRAINS_PICKLIST_VALUES deferred per corrections-log §14
-    pending substrate-1's registry-vs-derivation contradiction
-    resolution alongside §10 fetch_custom_field_metadata).
+    Writes entity + record_type_details + BELONGS_TO → Object +
+    CONSTRAINS_PICKLIST_VALUES → PicklistValue edges. The latter
+    was wired in the §10+§14 cycle (fine model per §14 decision
+    2A; the substrate-1 registry target was corrected
+    PicklistValueSet → PicklistValue). Each CONSTRAINS_PICKLIST_
+    VALUES edge is also mirrored into the
+    record_type_picklist_value_grants junction table. This sandbox
+    has 0/5 RecordTypes with a non-empty Metadata.picklistValues,
+    so it resolves to 0 edges + 0 junction rows here (>= 0 floor).
   - Layout phase: REST describe/layouts per Object + ONE bulk
     Tooling SOQL for Id→Name resolution (fetch_layout_names).
     Filters GlobalQuickActionList (no parent Object per §15).
@@ -715,15 +722,62 @@ def test_live_sync_full(
             f"floor); got {hrt_count}"
         )
 
-        # No HAS_PICKLIST_VALUES edges this cycle (deferred per §10).
+        # HAS_PICKLIST_VALUES edges (Field → PicklistValueSet,
+        # property-less). Wired in the §10+§14 cycle. Floor: >= 0 —
+        # an edge is written only for a GVS-backed custom picklist
+        # field (Tooling CustomField Metadata.valueSet.valueSetName
+        # populated) whose GlobalValueSet resolves to a synced
+        # PicklistValueSet entity. This sandbox has 0 GlobalValueSets
+        # so the count is 0; the wiring is unit-tested and
+        # correctness-complete (§10 RESOLUTION).
         hpv_count = conn.execute(text("""
-            SELECT COUNT(*) FROM edges
-            WHERE edge_type = 'HAS_PICKLIST_VALUES'
-              AND valid_to_seq IS NULL
-        """)).scalar()
-        assert hpv_count == 0, (
-            f"Expected 0 HAS_PICKLIST_VALUES edges (deferred per "
-            f"corrections-log §10); got {hpv_count}"
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'HAS_PICKLIST_VALUES'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Field'
+        """), {"id": test_org}).scalar()
+        assert hpv_count >= 0  # sentinel — see §10 RESOLUTION note
+
+        # Detail/edge consistency invariant: every Field whose
+        # field_details.picklist_value_set_entity_id is populated has
+        # exactly one HAS_PICKLIST_VALUES edge, and vice versa — both
+        # are resolved from the same _value_set_external_id marker
+        # through parent_resolver, so the counts must match. Trivially
+        # 0 == 0 in this sandbox; a real invariant in a GVS-bearing
+        # org.
+        fields_with_pvs_detail = conn.execute(text("""
+            SELECT COUNT(*) FROM field_details fd
+            JOIN entities e ON e.id = fd.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'Field'
+              AND e.valid_to_seq IS NULL
+              AND fd.picklist_value_set_entity_id IS NOT NULL
+        """), {"id": test_org}).scalar()
+        assert fields_with_pvs_detail == hpv_count, (
+            f"field_details.picklist_value_set_entity_id count "
+            f"({fields_with_pvs_detail}) must equal HAS_PICKLIST_"
+            f"VALUES edge count ({hpv_count}) — both derive from the "
+            f"same _value_set_external_id marker"
+        )
+
+        # HAS_PICKLIST_VALUES is property-less: empty properties +
+        # NULL hash (trivially satisfied at count 0).
+        hpv_propertyless = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'HAS_PICKLIST_VALUES'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Field'
+              AND e.properties = '{}'::jsonb
+              AND e.last_seed_hash IS NULL
+        """), {"id": test_org}).scalar()
+        assert hpv_propertyless == hpv_count, (
+            f"HAS_PICKLIST_VALUES edges must be property-less "
+            f"({{}} + NULL hash); got {hpv_propertyless} of "
+            f"{hpv_count}"
         )
 
         # No orphan edges — every source + target points at a
@@ -824,16 +878,77 @@ def test_live_sync_full(
             f"every RT should have exactly one BELONGS_TO edge"
         )
 
-        # No CONSTRAINS_PICKLIST_VALUES edges this cycle (deferred
-        # per §14)
+        # CONSTRAINS_PICKLIST_VALUES edges (RecordType → PicklistValue,
+        # property-less, fine model per §14 decision 2A). Wired in the
+        # §10+§14 cycle. Floor: >= 0 — an edge is written only for an
+        # RT whose Metadata.picklistValues entry resolves against a
+        # GVS-backed picklist field. This sandbox has 0/5 RecordTypes
+        # with a non-empty picklistValues (confirmed on two API
+        # surfaces), so the count is 0; the wiring is unit-tested and
+        # correctness-complete (§14 RESOLUTION).
         cpv_count = conn.execute(text("""
-            SELECT COUNT(*) FROM edges
-            WHERE edge_type = 'CONSTRAINS_PICKLIST_VALUES'
-              AND valid_to_seq IS NULL
-        """)).scalar()
-        assert cpv_count == 0, (
-            f"Expected 0 CONSTRAINS_PICKLIST_VALUES edges "
-            f"(deferred per corrections-log §14); got {cpv_count}"
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'CONSTRAINS_PICKLIST_VALUES'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'RecordType'
+        """), {"id": test_org}).scalar()
+        assert cpv_count >= 0  # sentinel — see §14 RESOLUTION note
+
+        # CONSTRAINS_PICKLIST_VALUES is property-less: empty
+        # properties + NULL hash (trivially satisfied at count 0).
+        cpv_propertyless = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'CONSTRAINS_PICKLIST_VALUES'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'RecordType'
+              AND e.properties = '{}'::jsonb
+              AND e.last_seed_hash IS NULL
+        """), {"id": test_org}).scalar()
+        assert cpv_propertyless == cpv_count, (
+            f"CONSTRAINS_PICKLIST_VALUES edges must be property-less "
+            f"({{}} + NULL hash); got {cpv_propertyless} of {cpv_count}"
+        )
+
+        # Junction-table mirror invariant: every CONSTRAINS_PICKLIST_
+        # VALUES edge has a matching record_type_picklist_value_grants
+        # row on the SAME (source, target) pair, and the row counts
+        # are equal — the junction row is a denormalization of the
+        # edge under the §14 fine model. Trivially 0 == 0 here; a real
+        # invariant once an org constrains picklists.
+        rt_pvg_count = conn.execute(text("""
+            SELECT COUNT(*) FROM record_type_picklist_value_grants g
+            JOIN entities rt ON rt.id = g.record_type_entity_id
+            WHERE rt.last_synced_from_org_id = :id
+        """), {"id": test_org}).scalar()
+        assert rt_pvg_count == cpv_count, (
+            f"record_type_picklist_value_grants row count "
+            f"({rt_pvg_count}) must equal CONSTRAINS_PICKLIST_VALUES "
+            f"edge count ({cpv_count}) — the junction mirrors the edge"
+        )
+        # Every junction row's (RT, PV) pair has its edge, and every
+        # edge's pair has its junction row — exact pair-level mirror,
+        # not just equal counts.
+        cpv_junction_mismatch = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'CONSTRAINS_PICKLIST_VALUES'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'RecordType'
+              AND NOT EXISTS (
+                  SELECT 1 FROM record_type_picklist_value_grants g
+                  WHERE g.record_type_entity_id = e.source_entity_id
+                    AND g.picklist_value_entity_id = e.target_entity_id
+              )
+        """), {"id": test_org}).scalar()
+        assert cpv_junction_mismatch == 0, (
+            f"Found {cpv_junction_mismatch} CONSTRAINS_PICKLIST_VALUES "
+            f"edges with no matching record_type_picklist_value_grants "
+            f"row — junction mirror is out of sync with the edge set"
         )
 
         # RT enrichment queue: 2× entity count
@@ -1981,6 +2096,67 @@ def test_live_sync_full(
         assert atprt_after == atprt_count, (
             f"ASSIGNED_TO_PROFILE_RECORDTYPE count should remain "
             f"{atprt_count} after second sync; got {atprt_after}"
+        )
+
+        # §10: HAS_PICKLIST_VALUES count + the field_details column
+        # count stable across syncs. Property-less set-difference
+        # supersession is naturally idempotent (incoming == existing
+        # → unchanged set is full → no writes); the
+        # _value_set_external_id decoration transform is deterministic.
+        hpv_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'HAS_PICKLIST_VALUES'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Field'
+        """), {"id": test_org}).scalar()
+        assert hpv_after == hpv_count, (
+            f"HAS_PICKLIST_VALUES count should remain {hpv_count} "
+            f"after second sync (property-less set-difference is "
+            f"naturally idempotent); got {hpv_after}"
+        )
+        fields_with_pvs_detail_after = conn.execute(text("""
+            SELECT COUNT(*) FROM field_details fd
+            JOIN entities e ON e.id = fd.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'Field'
+              AND e.valid_to_seq IS NULL
+              AND fd.picklist_value_set_entity_id IS NOT NULL
+        """), {"id": test_org}).scalar()
+        assert fields_with_pvs_detail_after == fields_with_pvs_detail, (
+            f"field_details.picklist_value_set_entity_id count should "
+            f"remain {fields_with_pvs_detail} after second sync; got "
+            f"{fields_with_pvs_detail_after}"
+        )
+
+        # §14: CONSTRAINS_PICKLIST_VALUES edge count + the
+        # record_type_picklist_value_grants junction row count stable
+        # across syncs. The junction-mirror path writes only on new /
+        # superseded edges; an unchanged edge set touches neither the
+        # edge nor the junction row (the junction row persists), so
+        # the second sync is a no-op on both.
+        cpv_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'CONSTRAINS_PICKLIST_VALUES'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'RecordType'
+        """), {"id": test_org}).scalar()
+        assert cpv_after == cpv_count, (
+            f"CONSTRAINS_PICKLIST_VALUES count should remain "
+            f"{cpv_count} after second sync; got {cpv_after}"
+        )
+        rt_pvg_after = conn.execute(text("""
+            SELECT COUNT(*) FROM record_type_picklist_value_grants g
+            JOIN entities rt ON rt.id = g.record_type_entity_id
+            WHERE rt.last_synced_from_org_id = :id
+        """), {"id": test_org}).scalar()
+        assert rt_pvg_after == rt_pvg_count, (
+            f"record_type_picklist_value_grants count should remain "
+            f"{rt_pvg_count} after second sync (junction mirror is "
+            f"idempotent on an unchanged edge set); got {rt_pvg_after}"
         )
 
         # ValidationRule entity + detail + edge counts stable.

@@ -312,8 +312,9 @@ class TestMapFieldDetails:
         assert row["entity_id"] == "fld-industry-uuid"
         assert row["object_entity_id"] == "obj-account-uuid"
         assert row["field_type"] == "picklist"
-        # No referenceTo → null FK column, picklist_value_set
-        # always null this cycle
+        # No referenceTo → null FK column. No _value_set_external_id
+        # marker → picklist_value_set_entity_id is NULL (this Field
+        # isn't a GVS-backed custom picklist).
         assert row["references_object_entity_id"] is None
         assert row["picklist_value_set_entity_id"] is None
         # Hot booleans + INTs from normalized
@@ -424,6 +425,66 @@ class TestMapFieldDetails:
         msg = str(excinfo.value)
         assert "MysteryObject" in msg
         assert "ENTITY_ORDER" in msg
+
+    def test_map_field_details_resolves_picklist_value_set(self) -> None:
+        """A field carrying the _value_set_external_id marker (§10:
+        a GVS-backed custom picklist) resolves
+        picklist_value_set_entity_id from that marker via
+        parent_resolver with entity_type='PicklistValueSet'."""
+        def resolver(*, entity_type, external_id):
+            return {
+                ("Object", "Account"): "obj-account",
+                ("PicklistValueSet", "TierGVS"): "pvs-tier-uuid",
+            }.get((entity_type, external_id))
+        row = _map_field_details(
+            normalized=self._normalized(
+                name="Tier__c", custom=True,
+                _value_set_external_id="TierGVS",
+            ),
+            entity_id="fld-tier",
+            parent_resolver=resolver,
+        )
+        assert row["picklist_value_set_entity_id"] == "pvs-tier-uuid"
+
+    def test_map_field_details_picklist_value_set_null_without_marker(
+        self,
+    ) -> None:
+        """No _value_set_external_id marker → picklist_value_set_
+        entity_id is NULL, and parent_resolver is never asked to
+        resolve a PicklistValueSet. Covers non-picklist, inline-
+        picklist, and standard-picklist fields."""
+        resolver = MagicMock(return_value="obj-account-uuid")
+        row = _map_field_details(
+            normalized=self._normalized(name="Industry"),
+            entity_id="fld-industry",
+            parent_resolver=resolver,
+        )
+        assert row["picklist_value_set_entity_id"] is None
+        # resolver was called for the parent Object, never for a PVS
+        for c in resolver.call_args_list:
+            assert c.kwargs.get("entity_type") != "PicklistValueSet"
+
+    def test_map_field_details_picklist_value_set_null_when_pvs_unsynced(
+        self,
+    ) -> None:
+        """Marker present but the PicklistValueSet isn't in the synced
+        set (resolver returns None) → column stays NULL. Nullable
+        column; the HAS_PICKLIST_VALUES edge would skip it too,
+        keeping detail + edge consistent."""
+        def resolver(*, entity_type, external_id):
+            return {
+                ("Object", "Account"): "obj-account",
+                # TierGVS not synced → resolver returns None
+            }.get((entity_type, external_id))
+        row = _map_field_details(
+            normalized=self._normalized(
+                name="Tier__c", custom=True,
+                _value_set_external_id="TierGVS",
+            ),
+            entity_id="fld-tier",
+            parent_resolver=resolver,
+        )
+        assert row["picklist_value_set_entity_id"] is None
 
 
 class TestMapRecordTypeDetails:

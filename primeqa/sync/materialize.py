@@ -1031,11 +1031,77 @@ def _batch_close_superseded_edges(
     conn.execute(text(sql), params)
 
 
+def _batch_insert_junction_rows(
+    conn: Any,
+    junction: tuple[str, str, str],
+    pairs: list[tuple[str, str]],
+) -> None:
+    """Multi-row INSERT into an edge's junction / hot-reference table.
+
+    `junction` is (table_name, source_column, target_column) — all
+    three are code-defined constants from EdgeSpec (never user
+    input), so they're safe to interpolate into the statement; the
+    row values stay parameter-bound with explicit UUID casts.
+
+    ON CONFLICT DO NOTHING makes the write idempotent across re-syncs:
+    a junction row already present (PK is the (source, target) pair)
+    is left untouched. Empty input is a no-op.
+    """
+    if not pairs:
+        return
+    table, source_col, target_col = junction
+    values_clauses: list[str] = []
+    params: dict[str, Any] = {}
+    for i, (sid, tid) in enumerate(pairs):
+        values_clauses.append(
+            f"(CAST(:source_{i} AS uuid), CAST(:target_{i} AS uuid))"
+        )
+        params[f"source_{i}"] = sid
+        params[f"target_{i}"] = tid
+    sql = f"""
+        INSERT INTO {table} ({source_col}, {target_col})
+        VALUES {', '.join(values_clauses)}
+        ON CONFLICT DO NOTHING
+    """
+    conn.execute(text(sql), params)
+
+
+def _batch_delete_junction_rows(
+    conn: Any,
+    junction: tuple[str, str, str],
+    pairs: list[tuple[str, str]],
+) -> None:
+    """Multi-row DELETE from an edge's junction / hot-reference table.
+
+    Called when the corresponding edges are superseded — keeps the
+    junction table a faithful mirror of the currently-active edge
+    set. Same trusted-constant table/column + parameter-bound values
+    split as _batch_insert_junction_rows. Empty input is a no-op.
+    """
+    if not pairs:
+        return
+    table, source_col, target_col = junction
+    pair_clauses: list[str] = []
+    params: dict[str, Any] = {}
+    for i, (sid, tid) in enumerate(pairs):
+        pair_clauses.append(
+            f"(CAST(:source_{i} AS uuid), CAST(:target_{i} AS uuid))"
+        )
+        params[f"source_{i}"] = sid
+        params[f"target_{i}"] = tid
+    sql = f"""
+        DELETE FROM {table}
+        WHERE ({source_col}, {target_col}) IN ({', '.join(pair_clauses)})
+    """
+    conn.execute(text(sql), params)
+
+
 def batched_materialize_edges(
     ctx: SyncContext,
     conn: Any,
     edge_writes: list[tuple[str, str, str, str, dict[str, Any]]],
     result: PhaseResult,
+    junctions: Optional[dict[str, tuple[str, str, str]]] = None,
 ) -> None:
     """Drive the edge supersession pipeline (both property-less and
     property-bearing branches).
@@ -1062,9 +1128,21 @@ def batched_materialize_edges(
     Counters accumulated on `result.edges_inserted` /
     `result.edges_superseded`. Unchanged edges (identity OR hash
     match) are no-ops — neither counted nor touched.
+
+    junctions: optional {edge_type: (table, source_col, target_col)}.
+    When an edge_type has a junction entry, every new edge is also
+    INSERTed into that hot-reference / junction table and every
+    superseded edge is DELETEd from it — keeping the junction a
+    faithful mirror of the active edge set. Junction writes are
+    currently supported only on the property-less path (the §14
+    fine-model CONSTRAINS_PICKLIST_VALUES case); a junction on a
+    property-bearing edge_type raises NotImplementedError rather
+    than silently dropping the junction write.
     """
     if not edge_writes:
         return
+
+    junctions = junctions or {}
 
     # Group by edge_type. categories[edge_type] is consistent because
     # edge_category is derived from edge_type via TIER_1_EDGES.
@@ -1077,13 +1155,23 @@ def batched_materialize_edges(
         categories[etype] = ecat
 
     for etype, entries in by_type.items():
+        junction = junctions.get(etype)
         if _edge_type_has_properties(etype):
+            if junction is not None:
+                raise NotImplementedError(
+                    f"junction-table writes are not supported for "
+                    f"property-bearing edge type {etype!r}; the "
+                    f"junction-mirror path is implemented only for "
+                    f"property-less edges (see "
+                    f"_materialize_edges_property_less)"
+                )
             _materialize_edges_property_bearing(
                 ctx, conn, etype, categories[etype], entries, result,
             )
         else:
             _materialize_edges_property_less(
                 ctx, conn, etype, categories[etype], entries, result,
+                junction=junction,
             )
 
 
@@ -1094,6 +1182,7 @@ def _materialize_edges_property_less(
     edge_category: str,
     entries: list[tuple[str, str, dict[str, Any]]],
     result: PhaseResult,
+    junction: Optional[tuple[str, str, str]] = None,
 ) -> None:
     """Property-less branch: identity-based set-diff bucketing.
 
@@ -1101,6 +1190,13 @@ def _materialize_edges_property_less(
     validate_edge_properties for None-schema edge types). Identity
     is the (source, target) tuple; supersession is binary
     set-difference.
+
+    junction: optional (table, source_col, target_col). When set,
+    the new/superseded buckets are mirrored into that junction table
+    — INSERT ... ON CONFLICT DO NOTHING for new pairs, DELETE for
+    superseded pairs. Unchanged pairs (the set intersection) touch
+    neither the edge nor the junction, so the junction row written
+    on the first sync simply persists — idempotent across re-syncs.
     """
     incoming_pairs = [(sid, tid) for sid, tid, _ in entries]
     incoming_set = set(incoming_pairs)
@@ -1115,17 +1211,23 @@ def _materialize_edges_property_less(
     # intersection = unchanged; no-op.
 
     if new_pairs:
-        new_rows = [(sid, tid, {}, None) for sid, tid in new_pairs]
+        new_pairs_list = list(new_pairs)
+        new_rows = [(sid, tid, {}, None) for sid, tid in new_pairs_list]
         _batch_insert_new_edges(
             conn, ctx, edge_type, edge_category, new_rows,
         )
-        result.edges_inserted += len(new_pairs)
+        result.edges_inserted += len(new_pairs_list)
+        if junction is not None:
+            _batch_insert_junction_rows(conn, junction, new_pairs_list)
 
     if superseded_pairs:
+        superseded_list = list(superseded_pairs)
         _batch_close_superseded_edges(
-            conn, ctx, edge_type, list(superseded_pairs),
+            conn, ctx, edge_type, superseded_list,
         )
-        result.edges_superseded += len(superseded_pairs)
+        result.edges_superseded += len(superseded_list)
+        if junction is not None:
+            _batch_delete_junction_rows(conn, junction, superseded_list)
 
 
 def _materialize_edges_property_bearing(
@@ -1265,6 +1367,13 @@ def materialize_edges_for_entities(
     were added. The cross-cutting fix benefits every phase using
     this materialize path (Field's HAS_RELATIONSHIP_TO,
     Profile's GRANTS_* edges, etc.).
+
+    Edge specs that declare a junction_table (CONSTRAINS_PICKLIST_
+    VALUES → record_type_picklist_value_grants) get their edges
+    mirrored into that hot-reference table — collected here into a
+    {edge_type: (table, source_col, target_col)} map and passed
+    through to batched_materialize_edges, which performs the mirror
+    INSERT/DELETE alongside the edge writes.
     """
     from primeqa.sync.edge_specs import get_edge_specs
 
@@ -1279,6 +1388,19 @@ def materialize_edges_for_entities(
     edge_writes: list[
         tuple[str, str, str, str, dict[str, Any]]
     ] = []
+
+    # Edge types whose EdgeSpec declares a junction table — the
+    # materialize layer mirrors their edges into that hot-reference
+    # table. Built once from the specs; passed through to
+    # batched_materialize_edges.
+    junctions: dict[str, tuple[str, str, str]] = {}
+    for spec in specs:
+        if spec.junction_table is not None:
+            junctions[spec.edge_type] = (
+                spec.junction_table,
+                spec.junction_source_column,
+                spec.junction_target_column,
+            )
 
     for normalized in normalized_payloads:
         source_external_id = _extract_external_id(
@@ -1332,4 +1454,6 @@ def materialize_edges_for_entities(
                 ))
 
     if edge_writes:
-        batched_materialize_edges(ctx, conn, edge_writes, result)
+        batched_materialize_edges(
+            ctx, conn, edge_writes, result, junctions=junctions,
+        )

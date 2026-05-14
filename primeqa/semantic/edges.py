@@ -304,7 +304,15 @@ TIER_1_EDGES: dict[str, EdgeTypeMetadata] = {
     "CONSTRAINS_PICKLIST_VALUES": EdgeTypeMetadata(
         category="CONFIG",
         source_entity_types=("RecordType",),
-        target_entity_types=("PicklistValueSet",),
+        # Fine model: one edge per (RecordType, allowed PicklistValue).
+        # Corrected from PicklistValueSet → PicklistValue per
+        # corrections-log §14 — the registry previously declared the
+        # coarse target while derivation.py::_edges_from_record_type_row
+        # and the record_type_picklist_value_grants junction schema
+        # (PK on record_type_entity_id, picklist_value_entity_id) both
+        # already used the fine PicklistValue target. The §10+§14 cycle
+        # picked the fine model (2A) and reconciled the registry to it.
+        target_entity_types=("PicklistValue",),
         properties_schema=None,
         derived_from_column=True,
     ),

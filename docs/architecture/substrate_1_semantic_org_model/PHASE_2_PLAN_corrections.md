@@ -543,6 +543,8 @@ call; cheap regardless of N).
 ## §10: HAS_PICKLIST_VALUES deferred — REST describe doesn't expose GVS refs
 
 **Date:** 2026-05-12
+**Status: RESOLVED 2026-05-14** (§10+§14 cycle — see RESOLUTION
+block at the end of this entry)
 **Step:** Field phase (4 of 12) — first edge-writing phase
 **Source:** Field phase live probe of standard picklist fields
             (Account.Industry, Account.AccountSource) showed no
@@ -580,6 +582,60 @@ for Salesforce metadata but is incomplete for several
 cross-entity relationship details. When the sync needs a piece
 of metadata that REST doesn't expose, expect a Category-2
 Tooling+Metadata fetcher to be the answer.
+
+### §10 RESOLUTION (2026-05-14)
+
+Implemented via the §10+§14 cycle on phase-2-substrate-1-sync.
+Two commits: a precursor (P7) adding the Tooling fetchers, then
+the main commit wiring HAS_PICKLIST_VALUES + §14.
+
+**Data source.** Custom picklist fields expose their value-set
+reference via Tooling `CustomField.Metadata.valueSet.
+valueSetName` (the GlobalValueSet FullName when GVS-backed;
+None for inline value sets). REST describe doesn't expose it.
+Two precursor fetchers (commit P7):
+- `fetch_custom_field_metadata(field_ids)` — per-Id Tooling
+  Metadata fetch. Bulk paths were live-probed and rejected:
+  bulk `SELECT Id, FullName, Metadata` → HTTP 400 (the §4.2
+  1-row constraint); `/composite/batch` with Tooling
+  sub-requests → HTTP 200 but silently nulls FullName +
+  Metadata. Per-Id is the only working path.
+- `fetch_custom_field_id_map()` — one bulk Tooling SOQL
+  `(object, field) → CustomField Id`. Needed because REST
+  describe field payloads (phase_field's enumeration source)
+  carry no Tooling CustomField Id; the survey's assumption that
+  they did was wrong (probe-corrected).
+
+**phase_field wiring.** A picklist-typed-field filter (decision
+1B) keeps the per-Id Metadata fetch to the ~picklist subset of
+custom fields, not all ~500+. For GVS-backed picklist fields,
+phase_field decorates the payload with a `_value_set_external_id`
+marker (the GVS FullName == the PicklistValueSet external_id).
+The marker drives both `field_details.picklist_value_set_
+entity_id` (via `_map_field_details`) and the HAS_PICKLIST_VALUES
+edge (via the edge_specs extractor). Injected BEFORE
+batched_materialize — unlike §16's edge-only marker — because
+it's genuine Field entity state (it feeds the detail row), so
+it correctly belongs in the entity hash.
+
+**Standard-field → SVS scope.** Standard picklist fields
+reference StandardValueSets, but no API exposes that linkage
+(REST describe shows inline values only; FieldDefinition Tooling
+queries → HTTP 400 in v66.0). Detecting it requires
+content-matching field values against each SVS — deferred per
+§22 (decision 3B). §10's realized scope is GVS-backed custom
+picklist fields.
+
+**Live verification.** This sandbox has 0 GlobalValueSets, so
+HAS_PICKLIST_VALUES resolves to 0 edges — `field_details.
+picklist_value_set_entity_id` stays NULL for every Field
+because no custom picklist field is GVS-backed. The wiring is
+unit-tested end to end (fetcher → phase_field decoration →
+detail mapper → edge extractor) and materializes edges
+automatically the moment an org with GlobalValueSets is synced.
+The §10+§14 cycle's value in this sandbox is forward-looking
+infrastructure; the live test exercises the empty path + the
+>= 0 floor + idempotency.
 
 ## §11: Edge supersession semantics — property-less edges use identity-based diff
 
@@ -664,6 +720,8 @@ its partial filter; multi-target types should NOT.
 ## §14: Substrate-1 internal contradiction — CONSTRAINS_PICKLIST_VALUES target type
 
 **Date:** 2026-05-12
+**Status: RESOLVED 2026-05-14** (§10+§14 cycle — see RESOLUTION
+block at the end of this entry)
 **Step:** RecordType phase (5 of 12) — survey before
             implementation
 **Source:** Found during survey of substrate-1's edge writers
@@ -714,6 +772,84 @@ record_type_picklist_value_grants already exists and is
 consistent with derivation.py. The registry's declared
 target should change to PicklistValue. But this is
 substrate-1's decision, not sync's.
+
+### §14 RESOLUTION (2026-05-14)
+
+Implemented via the §10+§14 cycle on phase-2-substrate-1-sync
+(same main commit as §10 — the two share the §10 picklist →
+value-set resolution).
+
+**Model: fine (decision 2A).** The contradiction is resolved in
+favor of the fine model — one edge per (RecordType, allowed
+PicklistValue) — as the "likely resolution path" above
+predicted. It's the 2-of-3 majority (derivation.py +
+the record_type_picklist_value_grants junction schema both
+already use PicklistValue) and it unifies the edge and the
+junction row into one write path. **The substrate-1 registry
+was corrected**: `TIER_1_EDGES["CONSTRAINS_PICKLIST_VALUES"].
+target_entity_types` changed `("PicklistValueSet",)` →
+`("PicklistValue",)`. No test asserted the old target, and
+derivation.py + test_derivation_per_source.py already expected
+PicklistValue, so the correction only removed a latent
+inconsistency.
+
+**Junction-table mirror.** EdgeSpec gained three optional
+fields — `junction_table` / `junction_source_column` /
+`junction_target_column`. When set (only
+CONSTRAINS_PICKLIST_VALUES today), the materialize layer mirrors
+every edge into that hot-reference table: INSERT ... ON CONFLICT
+DO NOTHING on new edges, DELETE on superseded edges. Under the
+fine model the junction row `(record_type_entity_id,
+picklist_value_entity_id)` IS a denormalization of the edge
+`(source, target)` pair — one extractor feeds both. The
+junction-mirror path is implemented only for property-less
+edges; a junction on a property-bearing edge_type raises
+NotImplementedError rather than silently dropping the write.
+
+**phase_record_type wiring.** `_build_record_type_field_to_pvs_
+map` reads `field_details.picklist_value_set_entity_id`
+(populated by phase_field earlier this sync_run per
+ENTITY_ORDER) into a `{field external_id → PicklistValueSet
+external_id}` map. `_decorate_record_types_with_picklist_
+constraints` walks each RT's `Metadata.picklistValues`, resolves
+each (picklist field, value) to a PicklistValue composite
+external_id (`{pvs_external_id}.{valueName}`), and injects the
+`_constrained_picklist_values` marker. The marker is injected
+AFTER batched_materialize (like §16's Layout decoration) — it's
+edge-extraction input that depends on cross-entity
+Field→PicklistValueSet state, so it stays out of the RecordType
+entity hash.
+
+**Scope.** A picklistValues entry is in scope only when its
+picklist field resolves to a synced PicklistValueSet.
+Inline-picklist and standard-picklist fields have no
+PicklistValueSet entity to anchor the PicklistValue
+external_ids → their constraint entries are skipped and
+INFO-logged. Scope clarification, not deferral — same shape as
+§16's NULL-RecordTypeId skip and §21's record-trigger scoping.
+
+**Inner-structure caveat.** The `RecordTypePicklistValue` inner
+shape (`picklist` / `values` / `fullName`) could NOT be
+live-verified: 0/5 sandbox RTs have a non-empty picklistValues,
+confirmed on two independent API surfaces (Tooling
+`RecordType.Metadata.picklistValues` = [] for all 5; REST
+`describe/layouts` `recordTypeMappings.picklistsForRecordType` =
+0 entries across Account / Case / Lead / Opportunity /
+sfLma__License__c). The OUTER key `picklistValues` IS confirmed
+present on every RT's Metadata. The parser follows the
+documented Salesforce Metadata API `RecordTypePicklistValue`
+key names but defensively tolerates the plausible Tooling-JSON
+variants (`picklistName`, `value` / `valueName`) so a
+key-spelling difference can't silently zero out the edge in a
+populated org.
+
+**Live verification.** §14 resolves to 0 edges + 0
+record_type_picklist_value_grants rows in this sandbox (no RT
+constrains any picklist anywhere in the org). The live test
+asserts the >= 0 floor, edge-count == junction-row-count
+invariant, and second-sync idempotency; the materialization
+logic is unit-tested with controlled fixtures across the
+extractor, the decoration helper, and the junction-write path.
 
 ## §15: layout_type sourced from Salesforce, not invented
 
@@ -1200,4 +1336,62 @@ therefore zero TRIGGERS_ON edges materialize. The implementation
 is correctness-complete and unit-tested across the record-trigger
 types — a future org with record-triggered flows produces
 TRIGGERS_ON edges automatically without code change.
+
+## §22: HAS_PICKLIST_VALUES standard-field → SVS detection deferred
+
+Date: 2026-05-14
+Step: §10+§14 cycle — survey (decision 3B)
+Source: §10+§14 survey of value-set reference detection
+
+This is a SCOPE CLARIFICATION entry, not an open contradiction.
+Distinct from the §10/§14 deferrals (now RESOLVED) — it carves
+out one piece of HAS_PICKLIST_VALUES that stays deferred because
+no API exposes the data, not because infrastructure is unbuilt.
+
+§10's HAS_PICKLIST_VALUES wiring resolves a picklist field to
+its PicklistValueSet via the Tooling `CustomField.Metadata.
+valueSet.valueSetName` — which only exists for **custom**
+picklist fields, and only carries a value when the field is
+**GlobalValueSet-backed**. That leaves two field classes outside
+§10's realized scope:
+
+- **Inline-picklist custom fields** — `valueSetName` is None;
+  the values are inline-defined, not a shared PicklistValueSet
+  entity. There is genuinely no PicklistValueSet to point at, so
+  no HAS_PICKLIST_VALUES edge is correct (not a deferral — a
+  true absence).
+- **Standard picklist fields** (e.g. `Account.Industry`,
+  `Lead.LeadSource`) — these reference StandardValueSets, which
+  DO materialize as PicklistValueSet entities (external_id
+  `SVS:{FullName}`). But no single Salesforce API exposes the
+  field → StandardValueSet linkage:
+  - REST sObject describe exposes inline `picklistValues` only,
+    no value-set reference (the original §10 finding)
+  - Standard fields don't appear in the Tooling `CustomField`
+    object at all
+  - Tooling `FieldDefinition` queries with an entity filter
+    returned HTTP 400 in v66.0 (live-probed)
+
+**Known approach (deferred):** detect standard-field → SVS
+links by **content-matching** — comparing a standard picklist
+field's describe `picklistValues` value-name set against each
+StandardValueSet's value list (exact match, or a
+subset/overlap threshold to tolerate admin value edits). This
+is a heuristic with real fragility (an admin who removes one
+value from a field breaks exact-match), and bundling it would
+have inflated the §10+§14 cycle. Decision 3B: ship §10 as the
+clean GVS-backed-custom-field wiring and defer standard-field
+SVS detection to its own focused cycle.
+
+**Sandbox impact:** this sandbox has 95 StandardValueSets and 0
+GlobalValueSets, so with standard fields deferred, §10
+materializes 0 HAS_PICKLIST_VALUES edges here. The deferral is
+the entire reason §10's live edge count is 0 rather than ~N
+(one per standard picklist field) in this org — documented so a
+future reader doesn't mistake the 0 for a bug.
+
+**Pattern:** when a relationship is real in Salesforce but no
+API exposes it directly, a content-matching heuristic is the
+fallback — but heuristics earn their own cycle with their own
+fragility analysis, not a rider on an unrelated wiring cycle.
 
