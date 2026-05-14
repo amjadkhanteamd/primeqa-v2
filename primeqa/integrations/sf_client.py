@@ -1283,3 +1283,53 @@ class SalesforceClient:
             "FROM Layout"
         )
         return self._query_all(path, soql)
+
+    def fetch_profile_layouts(self) -> list[dict]:
+        """Tooling SOQL: SELECT … FROM ProfileLayout. Bulk, single-phase.
+
+        Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
+
+        Returned records carry: Id, ProfileId, LayoutId, RecordTypeId.
+        RecordTypeId may be NULL — those rows are Profile→Layout
+        assignments with no explicit RecordType (the layout a Profile
+        sees by default when no record type applies). The sync layer
+        scopes ASSIGNED_TO_PROFILE_RECORDTYPE edges to RT-bound
+        assignments only (corrections-log §16 resolution), so NULL-RT
+        rows are filtered there — but the fetch returns them verbatim
+        per the transparent-transport-boundary principle.
+
+        # ProfileLayout is the canonical Salesforce source for
+        # per-(Profile, Layout, RecordType) assignments. Discovered
+        # during the §16-resolution cycle: the originally-anticipated
+        # sources don't expose this data —
+        # - REST describe/layouts (fetch_layouts_for_object) returns
+        #   recordTypeMappings (RecordType ↔ Layout) but carries no
+        #   Profile reference at all.
+        # - Tooling Profile.Metadata (fetch_profiles) OMITS
+        #   layoutAssignments — it's a Metadata-API-retrieve-only
+        #   field; the Tooling API's Profile.Metadata exposes
+        #   recordTypeVisibilities / applicationVisibilities /
+        #   tabVisibilities / pageAccesses but not layoutAssignments.
+        #
+        # ProfileLayout is a Tooling-only sObject — the Data API
+        # rejects it (HTTP 400, verified live). Bulk-queryable in a
+        # single SOQL; NO per-Profile iteration needed. _query_all
+        # walks the 2000-row pagination boundary.
+        #
+        # Sandbox at ~3,131 ProfileLayout rows (18 profiles ×
+        # ~174 layouts). Customer orgs scale by profile count ×
+        # layout count; large orgs (100 profiles × 500 layouts)
+        # could see ~50K rows — sizeable but a single paginated
+        # bulk query, well within sync budget.
+        #
+        # Substrate-1 fetcher enhancement, parallel to prior cycles'
+        # P5 (VR FullName). The Layout phase consumes these rows to
+        # populate ASSIGNED_TO_PROFILE_RECORDTYPE edges (Layout →
+        # Profile, property-bearing with RecordType info).
+        """
+        path = f"/services/data/{self.api_version}/tooling/query/"
+        soql = (
+            "SELECT Id, ProfileId, LayoutId, RecordTypeId "
+            "FROM ProfileLayout"
+        )
+        return self._query_all(path, soql)

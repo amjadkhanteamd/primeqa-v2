@@ -3247,6 +3247,157 @@ class TestFetchLayoutNames:
 
 
 # ----------------------------------------------------------------------
+# fetch_profile_layouts (P6 precursor for the §16-resolution cycle —
+# ProfileLayout is the canonical source for per-(Profile, Layout,
+# RecordType) assignments)
+# ----------------------------------------------------------------------
+
+class TestFetchProfileLayouts:
+    def test_fetch_profile_layouts_uses_tooling_endpoint(self) -> None:
+        """ProfileLayout is a Tooling-only sObject — the query goes
+        through /tooling/query/, not the Data API /query/."""
+        urls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_profile_layouts()
+        assert any(
+            f"/services/data/{SF_API_VERSION}/tooling/query" in p
+            for p in urls_seen
+        )
+        # NOT the Data API
+        assert not any(
+            p == f"/services/data/{SF_API_VERSION}/query/"
+            for p in urls_seen
+        )
+        c.close()
+
+    def test_fetch_profile_layouts_returns_records_list(self) -> None:
+        """Returns ProfileLayout rows verbatim:
+        {Id, ProfileId, LayoutId, RecordTypeId}. RecordTypeId may
+        be NULL — those are default Profile→Layout assignments with
+        no explicit RecordType; the fetch passes them through (the
+        sync layer filters per §16 resolution)."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={
+                "totalSize": 3,
+                "done": True,
+                "records": [
+                    {"Id": "01GF900002XkSPBMA3",
+                     "ProfileId": "00eF9000001e6qNIAQ",
+                     "LayoutId": "00hF900000CBOs9IAH",
+                     "RecordTypeId": "012F90000009abcAAA"},
+                    {"Id": "01GF900002XkSPCMA3",
+                     "ProfileId": "00eF9000001e6qNIAQ",
+                     "LayoutId": "00hF900000CBOsAIAX",
+                     # NULL RecordTypeId — default assignment
+                     "RecordTypeId": None},
+                    {"Id": "01GF900002XkSPDMA3",
+                     "ProfileId": "00eF9000001e6qSIAQ",
+                     "LayoutId": "00hF900000CBOs9IAH",
+                     "RecordTypeId": "012F90000009xyzAAA"},
+                ],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_profile_layouts()
+        assert len(result) == 3
+        # Field shape preserved
+        assert result[0]["ProfileId"] == "00eF9000001e6qNIAQ"
+        assert result[0]["LayoutId"] == "00hF900000CBOs9IAH"
+        assert result[0]["RecordTypeId"] == "012F90000009abcAAA"
+        # NULL RecordTypeId passed through verbatim
+        assert result[1]["RecordTypeId"] is None
+        c.close()
+
+    def test_fetch_profile_layouts_soql_field_set(self) -> None:
+        """Regression guard. SOQL selects exactly the 4 spec'd
+        fields; FROM ProfileLayout; no WHERE (bulk enumeration)."""
+        soqls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soqls_seen.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_profile_layouts()
+        assert len(soqls_seen) == 1
+        soql = soqls_seen[0]
+        for field in ("Id", "ProfileId", "LayoutId", "RecordTypeId"):
+            assert field in soql, f"missing expected field {field!r}"
+        assert "FROM ProfileLayout" in soql
+        assert "FIELDS(STANDARD)" not in soql.upper()
+        assert "WHERE" not in soql
+        c.close()
+
+    def test_fetch_profile_layouts_paginates(self) -> None:
+        """ProfileLayout commonly exceeds the 2000-row boundary
+        (sandbox ~3,131 rows). _query_all walks the
+        nextRecordsUrl cursor chain."""
+        api_calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            api_calls.append(request.url.path)
+            # First call: done=False with a cursor; second: done=True
+            if len(api_calls) == 1:
+                return httpx.Response(200, json={
+                    "totalSize": 4,
+                    "done": False,
+                    "nextRecordsUrl": (
+                        f"/services/data/{SF_API_VERSION}"
+                        f"/tooling/query/01gXXXcursor"
+                    ),
+                    "records": [
+                        {"Id": f"01GF{i}", "ProfileId": "00eA",
+                         "LayoutId": f"00h{i}", "RecordTypeId": None}
+                        for i in range(2)
+                    ],
+                })
+            return httpx.Response(200, json={
+                "totalSize": 4,
+                "done": True,
+                "records": [
+                    {"Id": f"01GF{i}", "ProfileId": "00eA",
+                     "LayoutId": f"00h{i}", "RecordTypeId": None}
+                    for i in range(2, 4)
+                ],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_profile_layouts()
+        # Both pages aggregated
+        assert len(result) == 4
+        assert len(api_calls) == 2
+        c.close()
+
+    def test_fetch_profile_layouts_empty_result(self) -> None:
+        """Org with no ProfileLayout rows → empty list (an org
+        with no custom layouts/profiles is degenerate but valid)."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={
+                "totalSize": 0, "done": True, "records": [],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_profile_layouts()
+        assert result == []
+        c.close()
+
+
+# ----------------------------------------------------------------------
 # extract_picklist_value_payloads_from_metadata helper
 # (module-level; supports the §9 SVS-cache PV-phase optimization)
 # ----------------------------------------------------------------------
