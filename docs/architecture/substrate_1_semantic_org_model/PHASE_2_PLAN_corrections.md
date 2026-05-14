@@ -759,6 +759,8 @@ pass-through.
 ## §16: Layout-source ASSIGNED_TO_PROFILE_RECORDTYPE deferred
 
 **Date:** 2026-05-12
+**Status: RESOLVED 2026-05-14** (§16-resolution cycle — see
+RESOLUTION block at the end of this entry)
 **Step:** Layout phase (6 of 12)
 **Source:** Survey of TIER_1_EDGES for Layout-source edge types
 
@@ -793,6 +795,92 @@ Pattern: when adding a new entity type whose edges target
 another entity type that hasn't been implemented yet, defer
 the edge spec until both ends are real. Avoids speculative
 unused code paths that produce silent zero-edge writes.
+
+### §16 RESOLUTION (2026-05-14)
+
+Implemented via the §16-resolution cycle on
+phase-2-substrate-1-sync. Two commits:
+- **Precursor (P6)** — `fetch_profile_layouts` substrate-1
+  Tooling fetcher (commit 98f8f8c)
+- **Main** — phase_layout wiring +
+  ASSIGNED_TO_PROFILE_RECORDTYPE edge_spec
+
+**Data source.** Tooling `ProfileLayout` sObject (~3,131 rows
+in sandbox: 18 profiles × ~174 layouts). Bulk-queryable in a
+single SOQL — no per-Profile iteration.
+
+The originally-anticipated sources DON'T expose this data
+(corrected the §16 deferral note's "fetcher TBD" / "Tooling
+ProfileLayout — fetcher TBD"):
+- REST `describe/layouts` (`fetch_layouts_for_object`) returns
+  `recordTypeMappings` (RecordType ↔ Layout) but carries NO
+  Profile reference.
+- Tooling `Profile.Metadata` (`fetch_profiles`) OMITS
+  `layoutAssignments` — it's a Metadata-API-retrieve-only
+  field. Live probe: 0/18 sandbox profiles had it.
+
+`ProfileLayout` is the canonical bulk source; it's Tooling-only
+(the Data API rejects it, HTTP 400).
+
+**Design decisions:**
+
+1. **NULL-RecordTypeId rows skipped.** `ProfileLayout` rows
+   with `RecordTypeId=NULL` are legitimate Salesforce metadata
+   (Profile X uses Layout Y by default when no RecordType
+   applies). But `AssignedToProfileRecordtypeProperties.
+   record_type_entity_id` is REQUIRED (not Optional) — the edge
+   type is, by name and schema, scoped to RT-bound assignments.
+   `_decorate_layouts_with_profile_assignments` filters NULL-RT
+   rows out (with an INFO-logged count). If consumers later
+   need "Profile uses Layout X as default for Object Y," that's
+   a different edge type — out of scope for §16. Scope
+   clarification, not deferral (same shape as §21's TRIGGERS_ON
+   record-trigger scoping).
+
+2. **`is_default` cross-referenced from `recordTypeMappings`.**
+   `ProfileLayout`'s bulk SOQL doesn't expose a default flag.
+   The "default" semantics live in
+   `recordTypeMappings[].defaultRecordTypeMapping` (from
+   `describe/layouts`, which phase_layout already fetches).
+   phase_layout builds an `(LayoutId, RecordTypeId) → is_default`
+   map from data already in memory — no extra round-trip.
+
+3. **Profile + RecordType resolution via the entities table.**
+   phase_layout reads `attributes->>'Id'` on synced `Profile`
+   and `RecordType` entity rows to build:
+   - `profile_id → profile external_id` (the edge's target;
+     resolved to a Profile entity by the materialize layer's
+     parent_resolver)
+   - `recordtype_id → recordtype entity_id` UUID (the required
+     `record_type_entity_id` property — a forward reference
+     pre-resolved in-phase, since the edge_specs extractor has
+     no parent_resolver; same pattern as the User cycle's
+     `assigned_by_user_entity_id`).
+   Mirrors the User cycle's entities-table-derived maps. No new
+   ID-resolution fetcher needed.
+
+**Decoration timing.** The `_profile_layout_assignments` marker
+is injected AFTER `batched_materialize` (not before, like the
+other phases' markers). It is edge-extraction input, NOT Layout
+entity state — keeping it out of the Layout's `attributes`
+JSONB decouples the Layout entity hash from ProfileLayout /
+RecordType-entity-id churn. `normalized_payloads` (computed
+after decoration) carries it for edge extraction only.
+
+**Cardinality.** ~3,131 ProfileLayout rows; the actual edge
+count after filtering (Profile ∈ synced AND RecordType
+non-NULL AND RecordType ∈ synced) is modest — possibly small
+or zero if the sandbox's user-defined RecordTypes don't
+intersect the ProfileLayout rows. Like Profile's
+GRANTS_FIELD_ACCESS, most ProfileLayout rows silently skip
+(non-synced layouts/RTs, or NULL-RT). The integration test's
+regression floor is `>= 0`.
+
+**Retracts** the deferral note's "fetcher TBD" and
+"Properties extractor resolves RT external_id to entity_id via
+make_parent_resolver" — the extractor has no parent_resolver;
+the resolution happens in-phase, and the fetcher is the new
+`fetch_profile_layouts` (not a make_parent_resolver call).
 
 ## §17: ValidationRule REFERENCES edge deferred — formula parser unbuilt
 

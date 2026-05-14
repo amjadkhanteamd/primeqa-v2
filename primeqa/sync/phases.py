@@ -731,6 +731,20 @@ def phase_layout(ctx: SyncContext, conn: Any) -> PhaseResult:
         return_id_map=True,
     )
 
+    # ASSIGNED_TO_PROFILE_RECORDTYPE decoration (corrections-log
+    # §16 resolution). Decorate each Layout payload with the
+    # `_profile_layout_assignments` marker AFTER batched_materialize
+    # — the marker is edge-extraction input, NOT Layout entity
+    # state, so it must not land in the Layout's attributes JSONB
+    # (that would couple the Layout entity hash to ProfileLayout /
+    # RecordType-entity-id churn). batched_materialize already
+    # normalized+hashed the un-decorated payloads; the
+    # normalized_payloads computed below picks up the marker for
+    # edge extraction only.
+    _decorate_layouts_with_profile_assignments(
+        ctx, conn, layout_payloads,
+    )
+
     normalized_payloads = [
         normalize("Layout", p) for p in layout_payloads
     ]
@@ -744,6 +758,150 @@ def phase_layout(ctx: SyncContext, conn: Any) -> PhaseResult:
     )
 
     return result
+
+
+def _decorate_layouts_with_profile_assignments(
+    ctx: SyncContext,
+    conn: Any,
+    layout_payloads: list[dict[str, Any]],
+) -> None:
+    """Decorate each Layout payload with `_profile_layout_assignments`
+    — the resolved, in-scope (Profile, RecordType, is_default)
+    assignments that drive ASSIGNED_TO_PROFILE_RECORDTYPE edges.
+
+    Per corrections-log §16 resolution. Builds three resolution
+    maps, fetches ProfileLayout rows, groups them by LayoutId, and
+    writes a filtered assignment list onto each layout payload:
+
+      _profile_layout_assignments: [
+        {profile_name, record_type_entity_id, is_default}, ...
+      ]
+
+    An assignment is INCLUDED only when ALL hold:
+      - the ProfileLayout row has a non-NULL RecordTypeId
+        (NULL-RT rows are out of scope — the schema's
+        record_type_entity_id is required; §16-resolution
+        Decision 1A)
+      - the Profile resolves to a synced Profile entity
+      - the RecordType resolves to a synced RecordType entity
+      - (the LayoutId match is implicit — grouped by LayoutId)
+
+    Resolution maps:
+      profile_id_to_name        — Profile SF Id → Profile
+        external_id (sf_api_name), from synced Profile entities
+      recordtype_id_to_entity_id— RecordType SF Id → RecordType
+        entity_id UUID, from synced RecordType entities (the
+        required-UUID forward reference, pre-resolved here since
+        the edge_specs extractor has no parent_resolver)
+      is_default_map            — (LayoutId, RecordTypeId) → bool,
+        cross-referenced from the describe/layouts
+        recordTypeMappings[].defaultRecordTypeMapping flag that
+        each layout payload already carries (§16-resolution
+        Decision 2A — reuses data phase_layout already fetched)
+
+    Mutates layout_payloads in place. Every payload ends up with
+    a `_profile_layout_assignments` key (possibly an empty list).
+    """
+    # Map 1: Profile SF Id → external_id, from synced Profile
+    # entities (materialized by an earlier phase per ENTITY_ORDER).
+    profile_id_to_name: dict[str, str] = {}
+    for row in conn.execute(text("""
+        SELECT attributes->>'Id' AS sf_id, sf_api_name
+        FROM entities
+        WHERE entity_type = 'Profile'
+          AND last_synced_from_org_id = :org_id
+          AND valid_to_seq IS NULL
+    """), {"org_id": ctx.connected_org_id}).fetchall():
+        if row.sf_id and row.sf_api_name:
+            profile_id_to_name[row.sf_id] = row.sf_api_name
+
+    # Map 2: RecordType SF Id → entity_id UUID, from synced
+    # RecordType entities. This is the required-UUID forward
+    # reference for AssignedToProfileRecordtypeProperties.
+    recordtype_id_to_entity_id: dict[str, str] = {}
+    for row in conn.execute(text("""
+        SELECT attributes->>'Id' AS sf_id, id
+        FROM entities
+        WHERE entity_type = 'RecordType'
+          AND last_synced_from_org_id = :org_id
+          AND valid_to_seq IS NULL
+    """), {"org_id": ctx.connected_org_id}).fetchall():
+        if row.sf_id and row.id:
+            recordtype_id_to_entity_id[row.sf_id] = str(row.id)
+
+    # Map 3: (LayoutId, RecordTypeId) → is_default, cross-
+    # referenced from the recordTypeMappings each layout payload
+    # already carries (from the describe/layouts response).
+    is_default_map: dict[tuple[str, str], bool] = {}
+    for layout_payload in layout_payloads:
+        layout_id = layout_payload.get("id")
+        for rtm in layout_payload.get("recordTypeMappings") or []:
+            if not isinstance(rtm, dict):
+                continue
+            rt_id = rtm.get("recordTypeId")
+            if layout_id and rt_id:
+                is_default_map[(layout_id, rt_id)] = bool(
+                    rtm.get("defaultRecordTypeMapping", False)
+                )
+
+    # Fetch ProfileLayout rows (P6 fetcher) and group by LayoutId.
+    profile_layouts = ctx.sf_client.fetch_profile_layouts()
+    pl_by_layout_id: dict[str, list[dict[str, Any]]] = {}
+    for pl in profile_layouts:
+        if not isinstance(pl, dict):
+            continue
+        layout_id = pl.get("LayoutId")
+        if layout_id:
+            pl_by_layout_id.setdefault(layout_id, []).append(pl)
+
+    # Decorate each layout payload with its in-scope assignments.
+    skipped_null_rt = 0
+    skipped_unresolved = 0
+    for layout_payload in layout_payloads:
+        layout_id = layout_payload.get("id")
+        assignments: list[dict[str, Any]] = []
+        for pl in pl_by_layout_id.get(layout_id, []):
+            profile_id = pl.get("ProfileId")
+            rt_id = pl.get("RecordTypeId")
+
+            # Decision 1A: NULL-RecordTypeId rows are out of scope
+            # — AssignedToProfileRecordtypeProperties.record_type_
+            # entity_id is required (§16 resolution).
+            if not rt_id:
+                skipped_null_rt += 1
+                continue
+
+            profile_name = profile_id_to_name.get(profile_id)
+            rt_entity_id = recordtype_id_to_entity_id.get(rt_id)
+            if not profile_name or not rt_entity_id:
+                # Profile or RecordType not in synced scope —
+                # silently skip (managed-package internals etc.).
+                skipped_unresolved += 1
+                continue
+
+            assignments.append({
+                "profile_name": profile_name,
+                "record_type_entity_id": rt_entity_id,
+                "is_default": is_default_map.get(
+                    (layout_id, rt_id), False,
+                ),
+            })
+        layout_payload["_profile_layout_assignments"] = assignments
+
+    if skipped_null_rt > 0:
+        logger.info(
+            "phase_layout: %d ProfileLayout rows with NULL "
+            "RecordTypeId skipped (out of scope for "
+            "ASSIGNED_TO_PROFILE_RECORDTYPE per corrections-log "
+            "§16 resolution — the edge type is RT-bound)",
+            skipped_null_rt,
+        )
+    if skipped_unresolved > 0:
+        logger.info(
+            "phase_layout: %d ProfileLayout rows skipped (Profile "
+            "or RecordType not in synced scope)",
+            skipped_unresolved,
+        )
 
 
 def phase_validation_rule(ctx: SyncContext, conn: Any) -> PhaseResult:

@@ -13,6 +13,8 @@ from primeqa.sync.edge_specs import (
     _field_has_relationship_to_targets,
     _flow_triggers_on_properties,
     _flow_triggers_on_targets,
+    _layout_assigned_to_profile_recordtype_properties,
+    _layout_assigned_to_profile_recordtype_targets,
     _layout_belongs_to_targets,
     _layout_includes_field_properties,
     _layout_includes_field_targets,
@@ -144,14 +146,22 @@ class TestGetEdgeSpecs:
         assert spec.edge_type == "BELONGS_TO"
         assert spec.target_entity_type == "Object"
 
-    def test_returns_two_specs_for_layout(self) -> None:
-        """Layout has BELONGS_TO + INCLUDES_FIELD this cycle.
-        ASSIGNED_TO_PROFILE_RECORDTYPE deferred per §16 (Profile
-        entities don't exist yet)."""
+    def test_returns_three_specs_for_layout(self) -> None:
+        """Layout has BELONGS_TO + INCLUDES_FIELD +
+        ASSIGNED_TO_PROFILE_RECORDTYPE. The third was wired in the
+        §16-resolution cycle (Profile + RecordType entities now
+        exist; sourced from Tooling ProfileLayout)."""
         specs = get_edge_specs("Layout")
-        assert len(specs) == 2
-        edge_types = {spec.edge_type for spec in specs}
-        assert edge_types == {"BELONGS_TO", "INCLUDES_FIELD"}
+        assert len(specs) == 3
+        by_type = {spec.edge_type: spec for spec in specs}
+        assert set(by_type) == {
+            "BELONGS_TO", "INCLUDES_FIELD",
+            "ASSIGNED_TO_PROFILE_RECORDTYPE",
+        }
+        atprt = by_type["ASSIGNED_TO_PROFILE_RECORDTYPE"]
+        assert atprt.target_entity_type == "Profile"
+        # property-bearing — AssignedToProfileRecordtypeProperties
+        assert atprt.extract_properties is not None
 
     def test_returns_two_specs_for_validation_rule(self) -> None:
         """ValidationRule has BELONGS_TO + APPLIES_TO this cycle
@@ -413,6 +423,137 @@ class TestLayoutIncludesFieldProperties:
             layout, "Account.Phone",
         )
         assert props["is_required"] is True
+
+
+# ----------------------------------------------------------------------
+# Layout ASSIGNED_TO_PROFILE_RECORDTYPE edge spec extractors
+# (§16-resolution cycle — sourced from Tooling ProfileLayout via the
+# phase-decorated _profile_layout_assignments marker)
+# ----------------------------------------------------------------------
+
+
+class TestLayoutAssignedToProfileRecordtypeTargets:
+    def _layout(self, assignments=()) -> dict:
+        """Build a normalized Layout payload with the
+        phase-decorated _profile_layout_assignments marker."""
+        return {
+            "_layout_full_name": "Account-Account Layout",
+            "_profile_layout_assignments": list(assignments),
+        }
+
+    def test_returns_profile_names_from_marker(self) -> None:
+        """Targets come from each assignment's profile_name —
+        phase_layout pre-filters the marker to in-scope
+        (resolvable Profile + non-NULL resolvable RecordType)
+        assignments."""
+        targets = _layout_assigned_to_profile_recordtype_targets(
+            self._layout([
+                {"profile_name": "Admin",
+                 "record_type_entity_id": "rt-uuid-1",
+                 "is_default": True},
+                {"profile_name": "Standard",
+                 "record_type_entity_id": "rt-uuid-2",
+                 "is_default": False},
+            ])
+        )
+        assert targets == ["Admin", "Standard"]
+
+    def test_returns_empty_when_no_assignments(self) -> None:
+        """A Layout with no in-scope ProfileLayout assignments —
+        common (most layouts on managed-package objects, or with
+        only NULL-RT assignments)."""
+        assert _layout_assigned_to_profile_recordtype_targets(
+            self._layout([])
+        ) == []
+
+    def test_returns_empty_when_marker_missing(self) -> None:
+        """Defensive: marker absent entirely (shouldn't happen —
+        phase_layout always sets it, possibly to [])."""
+        assert _layout_assigned_to_profile_recordtype_targets(
+            {"_layout_full_name": "X"}
+        ) == []
+
+    def test_skips_entries_with_missing_profile_name(self) -> None:
+        """Defensive: an assignment dict missing profile_name is
+        dropped."""
+        targets = _layout_assigned_to_profile_recordtype_targets(
+            self._layout([
+                {"profile_name": "Admin",
+                 "record_type_entity_id": "rt-1"},
+                {"record_type_entity_id": "rt-2"},  # no profile_name
+            ])
+        )
+        assert targets == ["Admin"]
+
+
+class TestLayoutAssignedToProfileRecordtypeProperties:
+    def _layout(self, assignments) -> dict:
+        return {"_profile_layout_assignments": assignments}
+
+    def test_returns_record_type_entity_id_and_is_default(
+        self,
+    ) -> None:
+        """AssignedToProfileRecordtypeProperties: required
+        record_type_entity_id (UUID, pre-resolved by phase_layout)
+        + is_default bool."""
+        props = _layout_assigned_to_profile_recordtype_properties(
+            self._layout([
+                {"profile_name": "Admin",
+                 "record_type_entity_id": "rt-uuid-abc",
+                 "is_default": True},
+            ]),
+            "Admin",
+        )
+        assert props == {
+            "record_type_entity_id": "rt-uuid-abc",
+            "is_default": True,
+        }
+
+    def test_is_default_defaults_to_false(self) -> None:
+        """An assignment with no is_default key → False."""
+        props = _layout_assigned_to_profile_recordtype_properties(
+            self._layout([
+                {"profile_name": "Standard",
+                 "record_type_entity_id": "rt-uuid-xyz"},
+            ]),
+            "Standard",
+        )
+        assert props == {
+            "record_type_entity_id": "rt-uuid-xyz",
+            "is_default": False,
+        }
+
+    def test_locates_correct_assignment_among_many(self) -> None:
+        """Multiple Profile assignments on one Layout — match by
+        profile_name returns the matching entry's properties."""
+        layout = self._layout([
+            {"profile_name": "Admin",
+             "record_type_entity_id": "rt-admin",
+             "is_default": True},
+            {"profile_name": "Standard",
+             "record_type_entity_id": "rt-std",
+             "is_default": False},
+        ])
+        props = _layout_assigned_to_profile_recordtype_properties(
+            layout, "Standard",
+        )
+        assert props == {
+            "record_type_entity_id": "rt-std",
+            "is_default": False,
+        }
+
+    def test_returns_empty_when_target_not_found(self) -> None:
+        """No assignment matches the target Profile → {} (defensive
+        — shouldn't happen if _targets and _properties are
+        coherent)."""
+        props = _layout_assigned_to_profile_recordtype_properties(
+            self._layout([
+                {"profile_name": "Admin",
+                 "record_type_entity_id": "rt-1"},
+            ]),
+            "Standard",
+        )
+        assert props == {}
 
 
 # ----------------------------------------------------------------------

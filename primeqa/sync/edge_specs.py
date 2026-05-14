@@ -270,6 +270,74 @@ def _layout_includes_field_properties(
     return {}
 
 
+def _layout_assigned_to_profile_recordtype_targets(
+    normalized: dict,
+) -> list[str]:
+    """Extract Profile external_ids from the phase-decorated
+    `_profile_layout_assignments` marker.
+
+    phase_layout joins ProfileLayout rows to each Layout payload
+    and decorates `_profile_layout_assignments` with the
+    fully-resolved, in-scope assignments — each entry already
+    filtered to:
+      - the Profile resolves to a synced Profile entity
+        (profile_name is the Profile's external_id)
+      - the RecordType is non-NULL AND resolves to a synced
+        RecordType entity (record_type_entity_id is its UUID)
+      - the assignment belongs to THIS Layout
+    NULL-RecordTypeId ProfileLayout rows are filtered out at the
+    phase level (corrections-log §16 resolution — the edge type
+    is scoped to RT-bound assignments).
+
+    Returns the profile_name of each assignment as the edge's
+    target external_id. The materialize layer resolves each to a
+    Profile entity_id via parent_resolver.
+    """
+    assignments = normalized.get("_profile_layout_assignments") or []
+    targets: list[str] = []
+    for a in assignments:
+        if not isinstance(a, dict):
+            continue
+        name = a.get("profile_name")
+        if name:
+            targets.append(name)
+    return targets
+
+
+def _layout_assigned_to_profile_recordtype_properties(
+    normalized: dict, target_external_id: str,
+) -> dict:
+    """Return AssignedToProfileRecordtypeProperties for the
+    (target Profile, current Layout) assignment.
+
+    Schema (AssignedToProfileRecordtypeProperties):
+      record_type_entity_id  — REQUIRED UUID. The RecordType this
+        layout is assigned for. Pre-resolved by phase_layout (the
+        edge_specs extractor has no parent_resolver, so the UUID
+        forward reference is resolved upstream — same pattern as
+        the User cycle's assigned_by_user_entity_id).
+      is_default             — bool. Cross-referenced by
+        phase_layout against the describe/layouts
+        recordTypeMappings[].defaultRecordTypeMapping flag for
+        the (LayoutId, RecordTypeId) pair.
+
+    Returns {} if no assignment matches target_external_id
+    (shouldn't happen if _targets and _properties are coherent;
+    defensive).
+    """
+    assignments = normalized.get("_profile_layout_assignments") or []
+    for a in assignments:
+        if not isinstance(a, dict):
+            continue
+        if a.get("profile_name") != target_external_id:
+            continue
+        return {
+            "record_type_entity_id": a.get("record_type_entity_id"),
+            "is_default": bool(a.get("is_default", False)),
+        }
+    return {}
+
+
 # ----------------------------------------------------------------------
 # ValidationRule edge spec extractors
 # ----------------------------------------------------------------------
@@ -800,11 +868,17 @@ _EDGE_SPECS: dict[str, list[EdgeSpec]] = {
             extract_target_external_ids=_layout_includes_field_targets,
             extract_properties=_layout_includes_field_properties,
         ),
-        # ASSIGNED_TO_PROFILE_RECORDTYPE deferred per corrections-log
-        # §16 — Profile entities don't exist yet (Profile phase
-        # pending); pre-wiring would create code paths that silently
-        # skip every edge write (resolver returns None for all
-        # targets). Wire when Profile phase lands.
+        EdgeSpec(
+            target_entity_type="Profile",
+            edge_type="ASSIGNED_TO_PROFILE_RECORDTYPE",
+            extract_target_external_ids=_layout_assigned_to_profile_recordtype_targets,
+            extract_properties=_layout_assigned_to_profile_recordtype_properties,
+        ),
+        # ASSIGNED_TO_PROFILE_RECORDTYPE wired in the §16-resolution
+        # cycle (Profile + RecordType entities now exist). Sourced
+        # from Tooling ProfileLayout via the P6 fetch_profile_layouts
+        # fetcher; phase_layout decorates each Layout payload with
+        # the resolved, in-scope _profile_layout_assignments marker.
     ],
     "ValidationRule": [
         EdgeSpec(

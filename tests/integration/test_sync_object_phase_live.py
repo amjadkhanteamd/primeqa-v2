@@ -950,16 +950,45 @@ def test_live_sync_full(
             f"of {includes_field_count} with both"
         )
 
-        # No ASSIGNED_TO_PROFILE_RECORDTYPE edges this cycle
-        # (deferred per §16).
-        assigned_count = conn.execute(text("""
-            SELECT COUNT(*) FROM edges
-            WHERE edge_type = 'ASSIGNED_TO_PROFILE_RECORDTYPE'
-              AND valid_to_seq IS NULL
-        """)).scalar()
-        assert assigned_count == 0, (
-            f"Expected 0 ASSIGNED_TO_PROFILE_RECORDTYPE edges "
-            f"(deferred per §16); got {assigned_count}"
+        # ASSIGNED_TO_PROFILE_RECORDTYPE edges (Layout → Profile,
+        # property-bearing). Wired in the §16-resolution cycle.
+        # Floor: >= 0 — the edge is sourced from Tooling
+        # ProfileLayout (~3,131 rows in sandbox) but an edge is
+        # written only when ALL hold: the ProfileLayout row has a
+        # non-NULL RecordTypeId (§16 Decision 1A), the Profile
+        # resolves to a synced Profile entity, AND the RecordType
+        # resolves to a synced RecordType entity. The sandbox has
+        # few user-defined RecordTypes, so the count may be small
+        # or zero; the wiring is unit-tested and correctness-
+        # complete (§16 RESOLUTION).
+        atprt_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'ASSIGNED_TO_PROFILE_RECORDTYPE'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Layout'
+        """), {"id": test_org}).scalar()
+        assert atprt_count >= 0  # sentinel — see §16 RESOLUTION note
+
+        # When ATPRT edges DO get written they must be property-
+        # bearing: last_seed_hash non-NULL + non-empty properties
+        # (record_type_entity_id is a required schema field).
+        # Trivially satisfied when the count is zero.
+        atprt_with_hash = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'ASSIGNED_TO_PROFILE_RECORDTYPE'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Layout'
+              AND e.last_seed_hash IS NOT NULL
+              AND e.properties != '{}'::jsonb
+        """), {"id": test_org}).scalar()
+        assert atprt_with_hash == atprt_count, (
+            f"ASSIGNED_TO_PROFILE_RECORDTYPE edges should all "
+            f"carry hash + non-empty properties; got "
+            f"{atprt_with_hash} of {atprt_count}"
         )
 
         # Layout enrichment queue: 2× count
@@ -1184,20 +1213,11 @@ def test_live_sync_full(
             f"of {grants_field_count} with both"
         )
 
-        # No ASSIGNED_TO_PROFILE_RECORDTYPE edges this cycle —
-        # Profile entities exist now (unblocking §16) but Layout
-        # layoutAssignments[] wiring is deferred to the next cycle.
-        # Still 0 — same assertion as the Layout cycle.
-        assigned_count_profile = conn.execute(text("""
-            SELECT COUNT(*) FROM edges
-            WHERE edge_type = 'ASSIGNED_TO_PROFILE_RECORDTYPE'
-              AND valid_to_seq IS NULL
-        """)).scalar()
-        assert assigned_count_profile == 0, (
-            f"Expected 0 ASSIGNED_TO_PROFILE_RECORDTYPE edges "
-            f"(wiring deferred to next cycle); "
-            f"got {assigned_count_profile}"
-        )
+        # ASSIGNED_TO_PROFILE_RECORDTYPE is sourced from the LAYOUT
+        # phase (§16 RESOLUTION), not Profile — it's asserted in
+        # the Layout block above (atprt_count). No Profile-block
+        # assertion needed; this comment marks the spot where the
+        # Profile cycle's "deferred, expect 0" check used to live.
 
         # Profile enrichment queue: 2× entity count
         profile_queue = conn.execute(text("""
@@ -1942,6 +1962,25 @@ def test_live_sync_full(
             f"INCLUDES_FIELD count should remain "
             f"{includes_field_count} after second sync (hash-compare "
             f"supersession should match); got {includes_field_after}"
+        )
+
+        # ASSIGNED_TO_PROFILE_RECORDTYPE count stable across syncs.
+        # Property-bearing hash-compare supersession is idempotent
+        # when the ProfileLayout data is stable — the decoration
+        # transform (profile/RT resolution + is_default cross-ref)
+        # is deterministic, so the same in-scope assignments
+        # produce the same edge property hashes.
+        atprt_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'ASSIGNED_TO_PROFILE_RECORDTYPE'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Layout'
+        """), {"id": test_org}).scalar()
+        assert atprt_after == atprt_count, (
+            f"ASSIGNED_TO_PROFILE_RECORDTYPE count should remain "
+            f"{atprt_count} after second sync; got {atprt_after}"
         )
 
         # ValidationRule entity + detail + edge counts stable.

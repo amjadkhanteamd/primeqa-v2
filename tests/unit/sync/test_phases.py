@@ -1071,13 +1071,61 @@ from primeqa.sync.phases import phase_layout
 
 
 class TestPhaseLayout:
-    def _ctx_with_objects(self, object_rows):
+    def _ctx_with_objects(
+        self, object_rows, profile_rows=None,
+        recordtype_rows=None, profile_layouts=None,
+    ):
+        """Build (ctx, conn) for phase_layout tests.
+
+        phase_layout issues THREE entities-table queries:
+          - the Object-scope query at phase start
+            (entity_type='Object'; rows expose .id + .sf_api_name)
+          - the Profile Id→name query inside
+            _decorate_layouts_with_profile_assignments
+            (entity_type='Profile'; rows expose .sf_id + .sf_api_name)
+          - the RecordType Id→entity_id query
+            (entity_type='RecordType'; rows expose .sf_id + .id)
+        The conn mock dispatches fetchall() by the entity_type
+        literal in the SQL.
+
+        object_rows:     list[(entity_id, sf_api_name)]
+        profile_rows:    list[(sf_id, sf_api_name)]    — Profile entities
+        recordtype_rows: list[(sf_id, entity_id)]       — RecordType entities
+        profile_layouts: list[dict] returned by
+                         ctx.sf_client.fetch_profile_layouts()
+        """
         ctx = _stub_ctx_with_mock_sf()
-        conn = MagicMock()
-        conn.execute.return_value.fetchall.return_value = [
+        ctx.sf_client.fetch_profile_layouts.return_value = (
+            profile_layouts or []
+        )
+
+        obj_result = [
             type('R', (), {'id': r[0], 'sf_api_name': r[1]})()
             for r in object_rows
         ]
+        prof_result = [
+            type('R', (), {'sf_id': r[0], 'sf_api_name': r[1]})()
+            for r in (profile_rows or [])
+        ]
+        rt_result = [
+            type('R', (), {'sf_id': r[0], 'id': r[1]})()
+            for r in (recordtype_rows or [])
+        ]
+
+        def _execute_side_effect(stmt, params=None):
+            sql = str(stmt)
+            r = MagicMock()
+            if "entity_type = 'Profile'" in sql:
+                r.fetchall.return_value = prof_result
+            elif "entity_type = 'RecordType'" in sql:
+                r.fetchall.return_value = rt_result
+            else:
+                # Default: the Object-scope query (and any other).
+                r.fetchall.return_value = obj_result
+            return r
+
+        conn = MagicMock()
+        conn.execute.side_effect = _execute_side_effect
         return ctx, conn
 
     def _layout(self, layout_id="00hF900000ABC", sections=()):
@@ -1229,6 +1277,235 @@ class TestPhaseLayout:
         payloads = mock_bm.call_args.kwargs['raw_payloads']
         assert len(payloads) == 1
         assert payloads[0]['_parent_object_api_name'] == 'Account'
+
+    # ----- ASSIGNED_TO_PROFILE_RECORDTYPE decoration (§16 resolution) -----
+
+    def _layout_with_rtm(self, layout_id, rtm=()):
+        """A describe/layouts layout payload that also carries the
+        recordTypeMappings the is_default cross-reference reads."""
+        return {
+            "id": layout_id,
+            "detailLayoutSections": [],
+            "recordTypeMappings": list(rtm),
+        }
+
+    def test_phase_layout_decorates_profile_layout_assignments(
+        self,
+    ) -> None:
+        """phase_layout fetches ProfileLayout rows and decorates
+        each Layout payload with _profile_layout_assignments —
+        resolved (profile_name, record_type_entity_id, is_default)
+        triples. The marker is injected AFTER batched_materialize
+        (edge-extraction input, not Layout entity state), so it
+        lands in normalized_payloads but NOT raw_payloads."""
+        ctx, conn = self._ctx_with_objects(
+            [('obj-acc', 'Account')],
+            profile_rows=[('00eAdmin', 'Admin')],
+            recordtype_rows=[('012rtA', 'rt-entity-uuid-A')],
+            profile_layouts=[
+                {"Id": "01G1", "ProfileId": "00eAdmin",
+                 "LayoutId": "00h1", "RecordTypeId": "012rtA"},
+            ],
+        )
+        ctx.sf_client.fetch_layouts_for_object.return_value = {
+            'layouts': [self._layout_with_rtm("00h1", rtm=[
+                {"recordTypeId": "012rtA",
+                 "defaultRecordTypeMapping": True},
+            ])],
+        }
+        ctx.sf_client.fetch_layout_names.return_value = [
+            {'Id': '00h1', 'Name': 'Account Layout',
+             'EntityDefinitionId': 'Account', 'LayoutType': 'Standard'},
+        ]
+        captured = {}
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch(
+                 'primeqa.sync.phases.materialize_edges_for_entities',
+             ) as mock_edges, \
+             patch(
+                 'primeqa.sync.phases.normalize',
+                 side_effect=lambda et, p: dict(p),
+             ):
+            mock_bm.return_value = {'Account-Account Layout': 'l1'}
+            phase_layout(ctx, conn)
+        ctx.sf_client.fetch_profile_layouts.assert_called_once_with()
+        # The marker is NOT on raw_payloads (decorated AFTER
+        # batched_materialize — keeps the Layout entity hash
+        # decoupled from ProfileLayout churn).
+        raw = mock_bm.call_args.kwargs['raw_payloads'][0]
+        # batched_materialize ran before decoration — but since the
+        # same dict object is mutated in place afterwards, we check
+        # the edge path instead: normalized_payloads carries it.
+        norm = mock_edges.call_args.kwargs['normalized_payloads'][0]
+        assert norm['_profile_layout_assignments'] == [
+            {"profile_name": "Admin",
+             "record_type_entity_id": "rt-entity-uuid-A",
+             "is_default": True},
+        ]
+
+    def test_phase_layout_skips_null_recordtype_assignments(
+        self,
+    ) -> None:
+        """ProfileLayout rows with RecordTypeId=NULL are out of
+        scope (§16 Decision 1A — the schema's record_type_entity_id
+        is required). They're filtered out of the decoration."""
+        ctx, conn = self._ctx_with_objects(
+            [('obj-acc', 'Account')],
+            profile_rows=[('00eAdmin', 'Admin')],
+            recordtype_rows=[('012rtA', 'rt-entity-A')],
+            profile_layouts=[
+                {"Id": "01G1", "ProfileId": "00eAdmin",
+                 "LayoutId": "00h1", "RecordTypeId": "012rtA"},
+                {"Id": "01G2", "ProfileId": "00eAdmin",
+                 "LayoutId": "00h1", "RecordTypeId": None},  # NULL-RT
+            ],
+        )
+        ctx.sf_client.fetch_layouts_for_object.return_value = {
+            'layouts': [self._layout_with_rtm("00h1")],
+        }
+        ctx.sf_client.fetch_layout_names.return_value = [
+            {'Id': '00h1', 'Name': 'Account Layout',
+             'EntityDefinitionId': 'Account', 'LayoutType': 'Standard'},
+        ]
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch(
+                 'primeqa.sync.phases.materialize_edges_for_entities',
+             ) as mock_edges, \
+             patch(
+                 'primeqa.sync.phases.normalize',
+                 side_effect=lambda et, p: dict(p),
+             ):
+            mock_bm.return_value = {'Account-Account Layout': 'l1'}
+            phase_layout(ctx, conn)
+        norm = mock_edges.call_args.kwargs['normalized_payloads'][0]
+        # Only the RT-bound assignment survives; NULL-RT dropped
+        assert len(norm['_profile_layout_assignments']) == 1
+        assert norm['_profile_layout_assignments'][0][
+            'record_type_entity_id'] == 'rt-entity-A'
+
+    def test_phase_layout_skips_unresolved_profile_or_recordtype(
+        self,
+    ) -> None:
+        """ProfileLayout rows whose Profile or RecordType isn't in
+        the synced entity set are silently skipped (managed-package
+        internals etc.)."""
+        ctx, conn = self._ctx_with_objects(
+            [('obj-acc', 'Account')],
+            profile_rows=[('00eAdmin', 'Admin')],  # only Admin synced
+            recordtype_rows=[('012rtA', 'rt-entity-A')],  # only rtA synced
+            profile_layouts=[
+                # resolvable
+                {"Id": "01G1", "ProfileId": "00eAdmin",
+                 "LayoutId": "00h1", "RecordTypeId": "012rtA"},
+                # Profile not synced
+                {"Id": "01G2", "ProfileId": "00eUNSYNCED",
+                 "LayoutId": "00h1", "RecordTypeId": "012rtA"},
+                # RecordType not synced
+                {"Id": "01G3", "ProfileId": "00eAdmin",
+                 "LayoutId": "00h1", "RecordTypeId": "012UNSYNCED"},
+            ],
+        )
+        ctx.sf_client.fetch_layouts_for_object.return_value = {
+            'layouts': [self._layout_with_rtm("00h1")],
+        }
+        ctx.sf_client.fetch_layout_names.return_value = [
+            {'Id': '00h1', 'Name': 'Account Layout',
+             'EntityDefinitionId': 'Account', 'LayoutType': 'Standard'},
+        ]
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch(
+                 'primeqa.sync.phases.materialize_edges_for_entities',
+             ) as mock_edges, \
+             patch(
+                 'primeqa.sync.phases.normalize',
+                 side_effect=lambda et, p: dict(p),
+             ):
+            mock_bm.return_value = {'Account-Account Layout': 'l1'}
+            phase_layout(ctx, conn)
+        norm = mock_edges.call_args.kwargs['normalized_payloads'][0]
+        # Only the fully-resolvable assignment survives
+        assert len(norm['_profile_layout_assignments']) == 1
+        assert norm['_profile_layout_assignments'][0][
+            'profile_name'] == 'Admin'
+
+    def test_phase_layout_is_default_from_recordtype_mappings(
+        self,
+    ) -> None:
+        """is_default is cross-referenced from the describe/layouts
+        recordTypeMappings[].defaultRecordTypeMapping flag for the
+        (LayoutId, RecordTypeId) pair (§16 Decision 2A)."""
+        ctx, conn = self._ctx_with_objects(
+            [('obj-acc', 'Account')],
+            profile_rows=[('00eAdmin', 'Admin'),
+                          ('00eStd', 'Standard')],
+            recordtype_rows=[('012rtA', 'rt-A'), ('012rtB', 'rt-B')],
+            profile_layouts=[
+                {"Id": "01G1", "ProfileId": "00eAdmin",
+                 "LayoutId": "00h1", "RecordTypeId": "012rtA"},
+                {"Id": "01G2", "ProfileId": "00eStd",
+                 "LayoutId": "00h1", "RecordTypeId": "012rtB"},
+            ],
+        )
+        ctx.sf_client.fetch_layouts_for_object.return_value = {
+            'layouts': [self._layout_with_rtm("00h1", rtm=[
+                {"recordTypeId": "012rtA",
+                 "defaultRecordTypeMapping": True},
+                {"recordTypeId": "012rtB",
+                 "defaultRecordTypeMapping": False},
+            ])],
+        }
+        ctx.sf_client.fetch_layout_names.return_value = [
+            {'Id': '00h1', 'Name': 'Account Layout',
+             'EntityDefinitionId': 'Account', 'LayoutType': 'Standard'},
+        ]
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch(
+                 'primeqa.sync.phases.materialize_edges_for_entities',
+             ) as mock_edges, \
+             patch(
+                 'primeqa.sync.phases.normalize',
+                 side_effect=lambda et, p: dict(p),
+             ):
+            mock_bm.return_value = {'Account-Account Layout': 'l1'}
+            phase_layout(ctx, conn)
+        norm = mock_edges.call_args.kwargs['normalized_payloads'][0]
+        by_profile = {
+            a['profile_name']: a
+            for a in norm['_profile_layout_assignments']
+        }
+        # rtA mapping is default; rtB is not
+        assert by_profile['Admin']['is_default'] is True
+        assert by_profile['Standard']['is_default'] is False
+
+    def test_phase_layout_empty_profile_layouts_yields_empty_marker(
+        self,
+    ) -> None:
+        """When fetch_profile_layouts returns nothing, every Layout
+        still gets a _profile_layout_assignments key (empty list) —
+        the edge extractor then produces no ATPRT edges."""
+        ctx, conn = self._ctx_with_objects(
+            [('obj-acc', 'Account')],
+            profile_layouts=[],
+        )
+        ctx.sf_client.fetch_layouts_for_object.return_value = {
+            'layouts': [self._layout_with_rtm("00h1")],
+        }
+        ctx.sf_client.fetch_layout_names.return_value = [
+            {'Id': '00h1', 'Name': 'Account Layout',
+             'EntityDefinitionId': 'Account', 'LayoutType': 'Standard'},
+        ]
+        with patch('primeqa.sync.phases.batched_materialize') as mock_bm, \
+             patch(
+                 'primeqa.sync.phases.materialize_edges_for_entities',
+             ) as mock_edges, \
+             patch(
+                 'primeqa.sync.phases.normalize',
+                 side_effect=lambda et, p: dict(p),
+             ):
+            mock_bm.return_value = {'Account-Account Layout': 'l1'}
+            phase_layout(ctx, conn)
+        norm = mock_edges.call_args.kwargs['normalized_payloads'][0]
+        assert norm['_profile_layout_assignments'] == []
 
 
 # ----------------------------------------------------------------------
