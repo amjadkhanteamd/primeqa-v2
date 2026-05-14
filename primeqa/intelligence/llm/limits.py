@@ -14,17 +14,32 @@ per tenant later).
 
 Queries use the idx_llm_usage_tenant_ts index; even at millions of rows
 they return in well under 10ms.
+
+Embedding calls (\u00a723 enrichment worker): embeddings go through the
+Voyage API, not the message gateway / `llm_call()`. To bring them
+under the SAME per-tenant windows, the enrichment worker calls
+`check()` before an embedding batch and `record_embedding_usage()`
+after \u2014 the latter writes one llm_usage_log row per batch with
+task=EMBEDDING_TASK, so `check()`'s call-count windows count it with
+zero change to `check()` itself. The daily-spend window is naturally
+a no-op for embeddings (cost_usd=0.0; Voyage cost accounting is a
+later concern).
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from primeqa.intelligence.llm.router import TenantPolicy
 
 log = logging.getLogger(__name__)
+
+# Task name embedding calls log under in llm_usage_log. Shared between
+# record_embedding_usage() (below) and the dashboard so both agree on
+# the row's identity. Distinct from any message-gateway task name.
+EMBEDDING_TASK = "embedding_generation"
 
 
 @dataclass
@@ -220,6 +235,51 @@ def check(tenant_id: int, limits: TenantLimits) -> LimitCheckResult:
         sess.close()
 
     return LimitCheckResult(allowed=True)
+
+
+def record_embedding_usage(
+    tenant_id: int,
+    *,
+    batch_size: int,
+    model: str,
+    latency_ms: Optional[int] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Log one embedding batch to llm_usage_log so `check()`'s
+    per-tenant call-count windows count it.
+
+    Embeddings don't flow through `llm_call()` — they hit the Voyage
+    API directly from the enrichment worker — so without this they'd
+    be invisible to the rate-limit windows. One row per BATCH (not
+    per text): a batch of up to 128 texts is one Voyage API call and
+    counts as one call against the minute/hour windows.
+
+    `cost_usd` is recorded as 0.0 — Voyage cost accounting isn't wired
+    yet, and for v1 the call-count windows are what gate embeddings;
+    the daily-spend window is a deliberate no-op here.
+
+    Thin wrapper over `usage.record` (the same writer the gateway
+    uses) — lives in limits.py because "make embedding calls show up
+    in the rate-limit count" is a rate-limit concern. Fire-and-forget:
+    never raises into the worker; returns the row id or None.
+    """
+    from primeqa.intelligence.llm import usage
+
+    ctx: Dict[str, Any] = {"batch_size": int(batch_size)}
+    if context:
+        ctx.update(context)
+    return usage.record(
+        tenant_id=tenant_id,
+        task=EMBEDDING_TASK,
+        model=model,
+        prompt_version=model,  # embeddings have no prompt — tag = model
+        input_tokens=0,
+        output_tokens=0,
+        cost_usd=0.0,
+        latency_ms=latency_ms,
+        status="ok",
+        context=ctx,
+    )
 
 
 def current_usage(tenant_id: int, limits: TenantLimits, *, db=None) -> UsageSnapshot:

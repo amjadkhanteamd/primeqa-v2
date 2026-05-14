@@ -116,6 +116,19 @@ _CHAINS: Dict[str, Dict[str, List[str]]] = {
         COMPLEXITY_LOW: [HAIKU],
         "default":      [HAIKU],
     },
+
+    # §23 enrichment worker — per-entity-type plain-English summaries
+    # (Flow, ValidationRule). Haiku-class summarisation, like
+    # story_view. NO fallback: a failed summary is re-queued by the
+    # enrichment worker (failed_retryable), not escalated to Opus.
+    "entity_summary_flow": {
+        COMPLEXITY_LOW: [HAIKU],
+        "default":      [HAIKU],
+    },
+    "entity_summary_validation_rule": {
+        COMPLEXITY_LOW: [HAIKU],
+        "default":      [HAIKU],
+    },
 }
 
 

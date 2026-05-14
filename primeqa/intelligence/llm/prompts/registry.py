@@ -15,6 +15,8 @@ from primeqa.intelligence.llm.prompts import (
     agent_fix,
     connection_test,
     story_view,
+    entity_summary_flow,
+    entity_summary_validation_rule,
 )
 
 
@@ -26,6 +28,10 @@ _REGISTRY: Dict[str, object] = {
     "connection_test":        connection_test,
     # Migration 048 — BA-facing story-view summarisation, Haiku, best-effort
     "story_view_generation":  story_view,
+    # §23 enrichment worker — per-entity-type plain-English summaries,
+    # Haiku, best-effort. Summary scope is Flow + ValidationRule for v1.
+    "entity_summary_flow":             entity_summary_flow,
+    "entity_summary_validation_rule":  entity_summary_validation_rule,
 }
 
 
