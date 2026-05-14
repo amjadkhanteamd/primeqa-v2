@@ -55,7 +55,7 @@ class TestPhaseRegistry:
         real_phases = {"Object", "PicklistValueSet", "PicklistValue",
                        "Field", "RecordType", "Layout",
                        "ValidationRule", "Profile",
-                       "PermissionSet", "User"}
+                       "PermissionSet", "User", "Flow"}
         for entity_type, phase_fn in PHASE_REGISTRY.items():
             if entity_type in real_phases:
                 continue
@@ -2521,4 +2521,249 @@ class TestPhaseUser:
              patch("primeqa.sync.phases.materialize_edges_for_entities"):
             mock_bm.return_value = {}
             phase_user(ctx, conn)
+        mock_filter.assert_not_called()
+
+
+# ----------------------------------------------------------------------
+# phase_flow — the final entity phase (11/11). Coordinates
+# fetch_flow_definitions (parent context) + fetch_flow_versions
+# (version data); composes Flow entities keyed by DeveloperName
+# with the active version's payload.
+# ----------------------------------------------------------------------
+
+
+from primeqa.sync.phases import phase_flow
+
+
+class TestPhaseFlow:
+    def _fd(self, fd_id="300A", developer_name="My_Flow",
+            active_version_id="301A", latest_version_id="301A",
+            manageable_state="unmanaged"):
+        """Build a FlowDefinition record."""
+        return {
+            "Id": fd_id,
+            "DeveloperName": developer_name,
+            "ActiveVersionId": active_version_id,
+            "LatestVersionId": latest_version_id,
+            "ManageableState": manageable_state,
+        }
+
+    def _version(self, version_id="301A", definition_id="300A",
+                 version_number=1, status="Active",
+                 process_type="AutoLaunchedFlow", metadata=None):
+        """Build a Flow version record."""
+        return {
+            "Id": version_id,
+            "DefinitionId": definition_id,
+            "VersionNumber": version_number,
+            "Status": status,
+            "ProcessType": process_type,
+            "Metadata": metadata if metadata is not None else {},
+        }
+
+    def test_phase_flow_calls_both_fetchers(self) -> None:
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_flow_definitions.return_value = []
+        ctx.sf_client.fetch_flow_versions.return_value = []
+        conn = MagicMock()
+        with patch("primeqa.sync.phases.batched_materialize"):
+            phase_flow(ctx, conn)
+        ctx.sf_client.fetch_flow_definitions.assert_called_once_with()
+        # fetch_flow_versions is only called when there ARE
+        # FlowDefinitions — here there are none, so it short-circuits.
+        ctx.sf_client.fetch_flow_versions.assert_not_called()
+
+    def test_phase_flow_empty_definitions_returns_zero(self) -> None:
+        """Org with no FlowDefinitions → no materialize, all-zero
+        result."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_flow_definitions.return_value = []
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges:
+            result = phase_flow(ctx, conn)
+        mock_bm.assert_not_called()
+        mock_edges.assert_not_called()
+        assert result.entity_type == "Flow"
+        assert result.entities_inserted == 0
+        assert result.succeeded is True
+
+    def test_phase_flow_picks_active_version_by_active_version_id(
+        self,
+    ) -> None:
+        """The chosen version is the one whose Id ==
+        FlowDefinition.ActiveVersionId. _is_active marker True."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_flow_definitions.return_value = [
+            self._fd(fd_id="300A", developer_name="My_Flow",
+                     active_version_id="301A_v2"),
+        ]
+        ctx.sf_client.fetch_flow_versions.return_value = [
+            self._version(version_id="301A_v1", definition_id="300A",
+                          version_number=1, status="Obsolete"),
+            self._version(version_id="301A_v2", definition_id="300A",
+                          version_number=2, status="Active"),
+        ]
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {"My_Flow": "flow-1"}
+            phase_flow(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        assert len(payloads) == 1
+        p = payloads[0]
+        # The v2 (active) version was chosen
+        assert p["Id"] == "301A_v2"
+        assert p["VersionNumber"] == 2
+        # Decorated with FD's stable identity markers
+        assert p["_developer_name"] == "My_Flow"
+        assert p["_is_active"] is True
+        assert p["_manageable_state"] == "unmanaged"
+
+    def test_phase_flow_falls_back_to_latest_when_no_active(
+        self,
+    ) -> None:
+        """FlowDefinition with no ActiveVersionId (deactivated
+        flow) → fall back to LatestVersionId; _is_active=False."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_flow_definitions.return_value = [
+            self._fd(fd_id="300B", developer_name="Deactivated_Flow",
+                     active_version_id=None,
+                     latest_version_id="301B_v3"),
+        ]
+        ctx.sf_client.fetch_flow_versions.return_value = [
+            self._version(version_id="301B_v2", definition_id="300B",
+                          version_number=2, status="Obsolete"),
+            self._version(version_id="301B_v3", definition_id="300B",
+                          version_number=3, status="Draft"),
+        ]
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {"Deactivated_Flow": "flow-2"}
+            phase_flow(ctx, conn)
+        p = mock_bm.call_args.kwargs["raw_payloads"][0]
+        # Latest version chosen (v3)
+        assert p["Id"] == "301B_v3"
+        # Marked NOT active (no running version)
+        assert p["_is_active"] is False
+
+    def test_phase_flow_skips_definition_with_no_versions(
+        self,
+    ) -> None:
+        """A FlowDefinition with zero fetched versions is skipped
+        with a warning — no Flow entity materialized for it."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_flow_definitions.return_value = [
+            self._fd(fd_id="300C", developer_name="Has_Version",
+                     active_version_id="301C"),
+            self._fd(fd_id="300D", developer_name="No_Versions",
+                     active_version_id=None,
+                     latest_version_id=None),
+        ]
+        ctx.sf_client.fetch_flow_versions.return_value = [
+            self._version(version_id="301C", definition_id="300C"),
+            # nothing for 300D
+        ]
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {"Has_Version": "flow-3"}
+            phase_flow(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        names = [p["_developer_name"] for p in payloads]
+        # Has_Version materialized; No_Versions skipped
+        assert names == ["Has_Version"]
+
+    def test_phase_flow_groups_versions_by_definition_id(self) -> None:
+        """Versions are grouped by DefinitionId; a version for a
+        different FD doesn't leak into another FD's lookup."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_flow_definitions.return_value = [
+            self._fd(fd_id="300E", developer_name="Flow_E",
+                     active_version_id="301E"),
+            self._fd(fd_id="300F", developer_name="Flow_F",
+                     active_version_id="301F"),
+        ]
+        ctx.sf_client.fetch_flow_versions.return_value = [
+            self._version(version_id="301E", definition_id="300E",
+                          version_number=5),
+            self._version(version_id="301F", definition_id="300F",
+                          version_number=9),
+        ]
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ):
+            mock_bm.return_value = {"Flow_E": "e", "Flow_F": "f"}
+            phase_flow(ctx, conn)
+        payloads = mock_bm.call_args.kwargs["raw_payloads"]
+        by_name = {p["_developer_name"]: p for p in payloads}
+        assert by_name["Flow_E"]["VersionNumber"] == 5
+        assert by_name["Flow_F"]["VersionNumber"] == 9
+
+    def test_phase_flow_calls_materialize_and_edges(self) -> None:
+        """phase_flow materializes with return_id_map=True then
+        writes TRIGGERS_ON edges via materialize_edges_for_entities."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_flow_definitions.return_value = [
+            self._fd(),
+        ]
+        ctx.sf_client.fetch_flow_versions.return_value = [
+            self._version(),
+        ]
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases.batched_materialize",
+        ) as mock_bm, \
+             patch(
+                 "primeqa.sync.phases.materialize_edges_for_entities",
+             ) as mock_edges, \
+             patch(
+                 "primeqa.sync.phases.normalize",
+                 side_effect=lambda et, p: {**p, "_norm": True},
+             ):
+            mock_bm.return_value = {"My_Flow": "flow-id"}
+            phase_flow(ctx, conn)
+        assert mock_bm.call_args.kwargs.get("return_id_map") is True
+        assert mock_bm.call_args.kwargs["entity_type"] == "Flow"
+        mock_edges.assert_called_once()
+        edge_kwargs = mock_edges.call_args.kwargs
+        assert edge_kwargs["source_entity_type"] == "Flow"
+        assert edge_kwargs["entity_id_map"] == {"My_Flow": "flow-id"}
+
+    def test_phase_flow_does_not_filter_by_synced_objects(self) -> None:
+        """Flow is org-level; §18 parent-filter pattern does NOT
+        apply. TRIGGERS_ON target Object resolution skips
+        unsyncable targets via the §19 observability counter."""
+        ctx = _stub_ctx_with_mock_sf()
+        ctx.sf_client.fetch_flow_definitions.return_value = [self._fd()]
+        ctx.sf_client.fetch_flow_versions.return_value = [self._version()]
+        conn = MagicMock()
+        with patch(
+            "primeqa.sync.phases._synced_object_api_names",
+        ) as mock_filter, \
+             patch("primeqa.sync.phases.batched_materialize") as mock_bm, \
+             patch("primeqa.sync.phases.materialize_edges_for_entities"):
+            mock_bm.return_value = {}
+            phase_flow(ctx, conn)
         mock_filter.assert_not_called()

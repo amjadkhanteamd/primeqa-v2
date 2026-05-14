@@ -1450,6 +1450,160 @@ def phase_user(ctx: SyncContext, conn: Any) -> PhaseResult:
     return result
 
 
+def phase_flow(ctx: SyncContext, conn: Any) -> PhaseResult:
+    """Flow phase — the final entity-materializing phase (11/11).
+
+    Per corrections-log §20, FlowDefinition is NOT a materialized
+    entity: a single Flow entity is keyed by the stable
+    DeveloperName, and version history is carried by substrate-1's
+    bitemporal supersession (each new active-version deployment
+    supersedes the prior Flow record). This phase therefore
+    COORDINATES two fetchers:
+
+      fetch_flow_definitions() — parent context: DeveloperName
+        (stable identity / external_id), ActiveVersionId,
+        LatestVersionId, ManageableState.
+      fetch_flow_versions() — version-level rows (all versions,
+        any Status), each carrying DefinitionId + the full flow
+        graph in Metadata.
+
+    Coordination:
+      1. Group flow versions by DefinitionId.
+      2. For each FlowDefinition, pick the representative version:
+         - the version whose Id == FlowDefinition.ActiveVersionId
+           (the running version) → is_active=True
+         - if the FD has no ActiveVersionId (a deactivated flow),
+           fall back to LatestVersionId, then to any available
+           version → is_active=False
+      3. Decorate the chosen version's payload with the FD's
+         stable identity markers (_developer_name, _is_active,
+         _manageable_state) and materialize it as the Flow entity.
+
+    Sandbox cardinality (probe 2026-05-14): 13 FlowDefinitions,
+    all with ActiveVersionId; 14 flow versions (13 Active +
+    1 Obsolete); all ProcessType=AutoLaunchedFlow.
+
+    Edges: TRIGGERS_ON → Object (property-bearing). Scoped to
+    record-triggered flows only per substrate-1's
+    TriggersOnProperties design — autolaunched / screen /
+    platform-event / scheduled flows produce no TRIGGERS_ON edge
+    (corrections-log §21, a scope clarification, not a deferral).
+    This sandbox has zero record-triggered flows → zero
+    TRIGGERS_ON edges; the edge path is unit-tested and
+    materializes correctly the moment a record-triggered-flow
+    org is synced.
+
+    No §18 entity-level parent filter — Flow is org-level. The
+    TRIGGERS_ON edge's target Object resolution silently skips
+    unsyncable targets via the materialize layer's §19 counter.
+    """
+    result = PhaseResult(entity_type="Flow")
+
+    flow_definitions = ctx.sf_client.fetch_flow_definitions()
+    if not flow_definitions:
+        return result
+    flow_versions = ctx.sf_client.fetch_flow_versions()
+
+    # Group versions by DefinitionId for active-version lookup.
+    versions_by_fd_id: dict[str, list[dict[str, Any]]] = {}
+    for v in flow_versions:
+        if not isinstance(v, dict):
+            continue
+        fd_id = v.get("DefinitionId")
+        if fd_id:
+            versions_by_fd_id.setdefault(fd_id, []).append(v)
+
+    flow_payloads: list[dict[str, Any]] = []
+    skipped_no_versions = 0
+    for fd in flow_definitions:
+        fd_id = fd.get("Id")
+        developer_name = fd.get("DeveloperName")
+        active_version_id = fd.get("ActiveVersionId")
+        fd_versions = versions_by_fd_id.get(fd_id, [])
+
+        # Pick the representative version: active first, then
+        # latest, then any. is_active reflects whether the FD has
+        # a running version.
+        chosen_version: dict[str, Any] | None = None
+        is_active = True
+        if active_version_id:
+            chosen_version = next(
+                (v for v in fd_versions
+                 if v.get("Id") == active_version_id),
+                None,
+            )
+        if chosen_version is None:
+            # Deactivated flow (no ActiveVersionId) or the active
+            # version row wasn't in the fetched set. Fall back to
+            # LatestVersionId, then to any available version.
+            is_active = False
+            latest_id = fd.get("LatestVersionId")
+            if latest_id:
+                chosen_version = next(
+                    (v for v in fd_versions
+                     if v.get("Id") == latest_id),
+                    None,
+                )
+            if chosen_version is None and fd_versions:
+                chosen_version = fd_versions[0]
+
+        if chosen_version is None:
+            # A FlowDefinition with zero fetched versions — a
+            # degenerate state. Skip with a warning rather than
+            # materialize a Flow entity with no version data.
+            skipped_no_versions += 1
+            logger.warning(
+                "phase_flow: FlowDefinition %r (Id=%r) has no "
+                "versions in the fetched set; skipping",
+                developer_name, fd_id,
+            )
+            continue
+
+        # Compose the Flow payload: the chosen version's full
+        # record + the FlowDefinition's stable-identity markers.
+        # dict(...) copies so we don't mutate the version row
+        # (it could be shared if a FD's active == latest, though
+        # in practice each FD picks one distinct version).
+        flow_record = dict(chosen_version)
+        flow_record["_developer_name"] = developer_name
+        flow_record["_is_active"] = is_active
+        flow_record["_manageable_state"] = fd.get("ManageableState")
+        flow_payloads.append(flow_record)
+
+    if skipped_no_versions > 0:
+        logger.info(
+            "phase_flow: skipped %d FlowDefinitions with no "
+            "versions available in the fetched set",
+            skipped_no_versions,
+        )
+
+    if not flow_payloads:
+        return result
+
+    entity_id_map = batched_materialize(
+        ctx=ctx,
+        conn=conn,
+        entity_type="Flow",
+        raw_payloads=flow_payloads,
+        result=result,
+        return_id_map=True,
+    )
+
+    normalized_payloads = [
+        normalize("Flow", p) for p in flow_payloads
+    ]
+    materialize_edges_for_entities(
+        ctx=ctx,
+        conn=conn,
+        source_entity_type="Flow",
+        entity_id_map=entity_id_map,
+        normalized_payloads=normalized_payloads,
+        result=result,
+    )
+
+    return result
+
+
 PHASE_REGISTRY["Object"] = phase_object
 PHASE_REGISTRY["PicklistValueSet"] = phase_picklist_value_set
 PHASE_REGISTRY["PicklistValue"] = phase_picklist_value
@@ -1460,6 +1614,7 @@ PHASE_REGISTRY["ValidationRule"] = phase_validation_rule
 PHASE_REGISTRY["Profile"] = phase_profile
 PHASE_REGISTRY["PermissionSet"] = phase_permission_set
 PHASE_REGISTRY["User"] = phase_user
+PHASE_REGISTRY["Flow"] = phase_flow
 
 
 def get_phase_function(entity_type: str) -> PhaseFunction:

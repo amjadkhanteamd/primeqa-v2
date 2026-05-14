@@ -14,6 +14,7 @@ import pytest
 
 from primeqa.sync.detail_mappers import (
     _map_field_details,
+    _map_flow_details,
     _map_layout_details,
     _map_object_details,
     _map_permission_set_details,
@@ -1030,3 +1031,156 @@ class TestGetDetailMapperUser:
         table_name, mapper = result
         assert table_name == "user_details"
         assert mapper is _map_user_details
+
+
+class TestMapFlowDetails:
+    """Maps a phase-decorated flow-VERSION record → flow_details
+    row. flow_type is NOT NULL no-default; triggers_on_object_entity_id
+    + trigger_type are nullable and populated ONLY for
+    record-triggered flows (§21 scope)."""
+
+    def _normalized(self, *, trigger_type=None, obj=None,
+                    process_type_meta="AutoLaunchedFlow",
+                    process_type_top=None, is_active=True,
+                    version_number=3, filter_formula=None) -> dict:
+        start: dict = {}
+        if trigger_type is not None:
+            start["triggerType"] = trigger_type
+        if obj is not None:
+            start["object"] = obj
+        if filter_formula is not None:
+            start["filterFormula"] = filter_formula
+        metadata: dict = {"start": start}
+        if process_type_meta is not None:
+            metadata["processType"] = process_type_meta
+        payload: dict = {
+            "_developer_name": "MyFlow",
+            "_is_active": is_active,
+            "VersionNumber": version_number,
+            "Metadata": metadata,
+        }
+        if process_type_top is not None:
+            payload["ProcessType"] = process_type_top
+        return payload
+
+    def test_autolaunched_flow_minimal_row(self) -> None:
+        """Autolaunched flow → flow_type set, trigger fields None,
+        parent_resolver NOT invoked (no record trigger)."""
+        resolver = MagicMock()
+        row = _map_flow_details(
+            normalized=self._normalized(),
+            entity_id="flow-uuid-001",
+            parent_resolver=resolver,
+        )
+        assert row == {
+            "entity_id": "flow-uuid-001",
+            "triggers_on_object_entity_id": None,
+            "flow_type": "AutoLaunchedFlow",
+            "trigger_type": None,
+            "is_active": True,
+            "version_number": 3,
+        }
+        resolver.assert_not_called()
+
+    def test_record_triggered_flow_resolves_object_fk(self) -> None:
+        """Record-triggered flow → triggers_on_object_entity_id
+        resolved via parent_resolver(Object, …); trigger_type
+        mapped to schema value."""
+        resolver = MagicMock(return_value="obj-account-uuid")
+        row = _map_flow_details(
+            normalized=self._normalized(
+                trigger_type="RecordAfterSave", obj="Account",
+                process_type_meta="Flow",
+            ),
+            entity_id="flow-uuid-002",
+            parent_resolver=resolver,
+        )
+        assert row["triggers_on_object_entity_id"] == "obj-account-uuid"
+        assert row["trigger_type"] == "AfterSave"
+        assert row["flow_type"] == "Flow"
+        resolver.assert_called_once_with(
+            entity_type="Object", external_id="Account",
+        )
+
+    def test_record_triggered_flow_unsyncable_target_leaves_fk_null(
+        self,
+    ) -> None:
+        """Record-triggered flow whose target Object isn't in the
+        synced set (parent_resolver returns None) → FK stays NULL,
+        trigger_type still populated. Consistent with the edge's
+        silent-skip behavior."""
+        row = _map_flow_details(
+            normalized=self._normalized(
+                trigger_type="RecordBeforeSave",
+                obj="sfFma__Internal__c",
+            ),
+            entity_id="x",
+            parent_resolver=lambda **_: None,
+        )
+        assert row["triggers_on_object_entity_id"] is None
+        assert row["trigger_type"] == "BeforeSave"
+
+    def test_platform_event_flow_no_trigger_resolution(self) -> None:
+        """PlatformEvent flow → trigger fields None, resolver NOT
+        called even though Metadata.start.object is set (§21
+        scope: PlatformEvent is out of TRIGGERS_ON scope)."""
+        resolver = MagicMock()
+        row = _map_flow_details(
+            normalized=self._normalized(
+                trigger_type="PlatformEvent",
+                obj="MHolt__Org_Expiry_Notification__e",
+            ),
+            entity_id="x",
+            parent_resolver=resolver,
+        )
+        assert row["triggers_on_object_entity_id"] is None
+        assert row["trigger_type"] is None
+        resolver.assert_not_called()
+
+    def test_flow_type_falls_back_to_top_level_process_type(
+        self,
+    ) -> None:
+        """Metadata.processType absent → fall back to top-level
+        ProcessType column."""
+        row = _map_flow_details(
+            normalized=self._normalized(
+                process_type_meta=None,
+                process_type_top="AutoLaunchedFlow",
+            ),
+            entity_id="x",
+            parent_resolver=lambda **_: None,
+        )
+        assert row["flow_type"] == "AutoLaunchedFlow"
+
+    def test_raises_when_flow_type_missing(self) -> None:
+        """flow_type is NOT NULL no-default. Neither
+        Metadata.processType nor top-level ProcessType present →
+        fail loud."""
+        with pytest.raises(ValueError) as excinfo:
+            _map_flow_details(
+                normalized=self._normalized(
+                    process_type_meta=None, process_type_top=None,
+                ),
+                entity_id="x",
+                parent_resolver=lambda **_: None,
+            )
+        assert "flow_type" in str(excinfo.value)
+
+    def test_is_active_false_for_deactivated_flow(self) -> None:
+        """_is_active=False (FlowDefinition with no ActiveVersionId
+        → phase_flow fell back to LatestVersionId) passes through."""
+        row = _map_flow_details(
+            normalized=self._normalized(is_active=False),
+            entity_id="x",
+            parent_resolver=lambda **_: None,
+        )
+        assert row["is_active"] is False
+
+
+class TestGetDetailMapperFlow:
+    def test_returns_tuple_for_flow(self) -> None:
+        result = get_detail_mapper("Flow")
+        assert result is not None
+        table_name, mapper = result
+        assert table_name == "flow_details"
+        assert mapper is _map_flow_details

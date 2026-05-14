@@ -645,6 +645,19 @@ class TestExtractExternalId:
           "Username": "autoproc@00dip0000008mzpmai",
           "UserType": "AutomatedProcess"},
          "autoproc@00dip0000008mzpmai"),
+        # Flow: external_id = the parent FlowDefinition's
+        # DeveloperName, injected by phase_flow as the
+        # _developer_name marker (per §20: one Flow entity per
+        # stable DeveloperName, versioning via bitemporal
+        # supersession — NOT per-version FullName).
+        ("Flow",
+         {"Id": "301F90000000abc", "DefinitionId": "300F900000xyz",
+          "VersionNumber": 3, "_developer_name": "My_Record_Flow"},
+         "My_Record_Flow"),
+        ("Flow",
+         {"Id": "301F90000000def", "VersionNumber": 1,
+          "_developer_name": "MHolt__Org_Expiration_Notification"},
+         "MHolt__Org_Expiration_Notification"),
     ])
     def test_extract_external_id_known_types(
         self, entity_type: str, raw: dict, expected: str,
@@ -688,6 +701,20 @@ class TestExtractExternalId:
                 {"Id": "005F900000000001", "UserType": "Standard"},
             )
         assert "Username" in str(excinfo.value)
+
+    def test_extract_external_id_flow_raises_when_marker_missing(
+        self,
+    ) -> None:
+        """Flow without the _developer_name marker → ValueError.
+        phase_flow must decorate each flow-version payload with
+        _developer_name from the parent FlowDefinition before
+        materialize; a missing marker means a phase-function bug."""
+        with pytest.raises(ValueError) as excinfo:
+            _extract_external_id(
+                "Flow",
+                {"Id": "301F90000000abc", "VersionNumber": 3},
+            )
+        assert "_developer_name" in str(excinfo.value)
 
     def test_extract_external_id_layout_raises_when_marker_missing(
         self,

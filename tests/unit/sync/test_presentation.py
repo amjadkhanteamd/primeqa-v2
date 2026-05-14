@@ -6,6 +6,7 @@ import pytest
 
 from primeqa.sync.presentation import (
     _to_presentation_field,
+    _to_presentation_flow,
     _to_presentation_layout,
     _to_presentation_object,
     _to_presentation_permission_set,
@@ -718,3 +719,100 @@ class TestToPresentationUser:
         u = self._user(Email=None)
         presentation = _to_presentation_user(u)
         assert presentation["email"] is None
+
+
+class TestToPresentationFlow:
+    """Maps a phase-decorated flow-VERSION record → substrate-1's
+    _to_text_flow input shape {name, process_type, is_active,
+    description, triggers_on_object, trigger_type}. The trigger
+    fields are populated ONLY for record-triggered flows (§21
+    scope), consistent with the TRIGGERS_ON edge + detail mapper."""
+
+    def _flow(self, *, trigger_type=None, obj=None,
+              process_type_meta="AutoLaunchedFlow",
+              process_type_top=None, description="A test flow",
+              is_active=True, developer_name="MyFlow",
+              filter_formula=None) -> dict:
+        start: dict = {}
+        if trigger_type is not None:
+            start["triggerType"] = trigger_type
+        if obj is not None:
+            start["object"] = obj
+        if filter_formula is not None:
+            start["filterFormula"] = filter_formula
+        metadata: dict = {"start": start}
+        if process_type_meta is not None:
+            metadata["processType"] = process_type_meta
+        if description is not None:
+            metadata["description"] = description
+        payload: dict = {
+            "_developer_name": developer_name,
+            "_is_active": is_active,
+            "_manageable_state": "unmanaged",
+            "VersionNumber": 3,
+            "Metadata": metadata,
+        }
+        if process_type_top is not None:
+            payload["ProcessType"] = process_type_top
+        return payload
+
+    def test_autolaunched_flow_no_trigger_fields(self) -> None:
+        """Autolaunched flow → triggers_on_object + trigger_type
+        both None (no record trigger)."""
+        presentation = _to_presentation_flow(self._flow())
+        assert presentation == {
+            "name": "MyFlow",
+            "process_type": "AutoLaunchedFlow",
+            "is_active": True,
+            "description": "A test flow",
+            "triggers_on_object": None,
+            "trigger_type": None,
+        }
+
+    def test_record_triggered_flow_populates_trigger_fields(
+        self,
+    ) -> None:
+        """Record-triggered flow → triggers_on_object from
+        Metadata.start.object, trigger_type mapped to the schema
+        value."""
+        presentation = _to_presentation_flow(self._flow(
+            trigger_type="RecordAfterSave", obj="Account",
+            process_type_meta="Flow",
+        ))
+        assert presentation["triggers_on_object"] == "Account"
+        assert presentation["trigger_type"] == "AfterSave"
+        assert presentation["process_type"] == "Flow"
+
+    def test_platform_event_flow_no_trigger_fields(self) -> None:
+        """PlatformEvent flow → trigger fields stay None even
+        though Metadata.start.object is set (it's a `__e` Platform
+        Event, out of TRIGGERS_ON scope per §21)."""
+        presentation = _to_presentation_flow(self._flow(
+            trigger_type="PlatformEvent",
+            obj="MHolt__Org_Expiry_Notification__e",
+        ))
+        assert presentation["triggers_on_object"] is None
+        assert presentation["trigger_type"] is None
+
+    def test_process_type_falls_back_to_top_level(self) -> None:
+        """When Metadata.processType is absent, fall back to the
+        top-level ProcessType column."""
+        presentation = _to_presentation_flow(self._flow(
+            process_type_meta=None,
+            process_type_top="AutoLaunchedFlow",
+        ))
+        assert presentation["process_type"] == "AutoLaunchedFlow"
+
+    def test_handles_missing_metadata_start(self) -> None:
+        """Defensive: a flow payload with no Metadata.start —
+        trigger fields None, doesn't crash."""
+        payload = {
+            "_developer_name": "BareFlow",
+            "_is_active": False,
+            "Metadata": {"processType": "AutoLaunchedFlow"},
+        }
+        presentation = _to_presentation_flow(payload)
+        assert presentation["triggers_on_object"] is None
+        assert presentation["trigger_type"] is None
+        assert presentation["is_active"] is False
+        assert presentation["name"] == "BareFlow"

@@ -11,6 +11,8 @@ from primeqa.sync.edge_specs import (
     EdgeSpec,
     _field_belongs_to_targets,
     _field_has_relationship_to_targets,
+    _flow_triggers_on_properties,
+    _flow_triggers_on_targets,
     _layout_belongs_to_targets,
     _layout_includes_field_properties,
     _layout_includes_field_targets,
@@ -1028,3 +1030,149 @@ class TestGetEdgeSpecsUser:
         # HAS_PERMISSION_SET: property-bearing
         assert hps.extract_properties is not None
         assert hps.target_entity_type == "PermissionSet"
+
+
+# ----------------------------------------------------------------------
+# Flow edge spec extractors (TRIGGERS_ON — record-triggered flows
+# only, per substrate-1's TriggersOnProperties design / §21)
+# ----------------------------------------------------------------------
+
+
+class TestFlowTriggersOnTargets:
+    def _flow(self, trigger_type=None, obj=None, extra_start=None) -> dict:
+        """Build a normalized Flow payload with a Metadata.start."""
+        start: dict = {}
+        if trigger_type is not None:
+            start["triggerType"] = trigger_type
+        if obj is not None:
+            start["object"] = obj
+        if extra_start:
+            start.update(extra_start)
+        return {"_developer_name": "MyFlow", "Metadata": {"start": start}}
+
+    def test_returns_object_for_record_before_save(self) -> None:
+        targets = _flow_triggers_on_targets(self._flow(
+            trigger_type="RecordBeforeSave", obj="Account",
+        ))
+        assert targets == ["Account"]
+
+    def test_returns_object_for_record_after_save(self) -> None:
+        targets = _flow_triggers_on_targets(self._flow(
+            trigger_type="RecordAfterSave", obj="Contact",
+        ))
+        assert targets == ["Contact"]
+
+    def test_returns_object_for_record_delete_types(self) -> None:
+        for raw in ("RecordBeforeDelete", "RecordAfterDelete"):
+            targets = _flow_triggers_on_targets(self._flow(
+                trigger_type=raw, obj="Lead",
+            ))
+            assert targets == ["Lead"], f"failed for {raw}"
+
+    def test_returns_empty_for_platform_event(self) -> None:
+        """PlatformEvent flows are out of scope per §21 — the
+        start.object is a Platform Event (`__e`), not a syncable
+        Object, and 'PlatformEvent' isn't a record-trigger type."""
+        targets = _flow_triggers_on_targets(self._flow(
+            trigger_type="PlatformEvent",
+            obj="MHolt__Org_Expiry_Notification__e",
+        ))
+        assert targets == []
+
+    def test_returns_empty_for_scheduled(self) -> None:
+        """Scheduled flows have no object target."""
+        targets = _flow_triggers_on_targets(self._flow(
+            trigger_type="Scheduled",
+        ))
+        assert targets == []
+
+    def test_returns_empty_for_autolaunched_no_trigger_type(
+        self,
+    ) -> None:
+        """Autolaunched / screen flows have no triggerType in the
+        record-trigger set (often no triggerType at all)."""
+        targets = _flow_triggers_on_targets(self._flow())
+        assert targets == []
+
+    def test_returns_empty_for_missing_metadata(self) -> None:
+        """Defensive: a Flow payload with no Metadata key at all."""
+        assert _flow_triggers_on_targets({"_developer_name": "X"}) == []
+
+    def test_returns_empty_for_null_metadata(self) -> None:
+        assert _flow_triggers_on_targets({"Metadata": None}) == []
+
+    def test_returns_empty_when_record_trigger_but_no_object(
+        self,
+    ) -> None:
+        """Defensive: record-trigger type set but start.object
+        missing (malformed payload) → no edge."""
+        targets = _flow_triggers_on_targets(self._flow(
+            trigger_type="RecordAfterSave",
+        ))
+        assert targets == []
+
+
+class TestFlowTriggersOnProperties:
+    def _flow(self, trigger_type, obj="Account", filter_formula=None) -> dict:
+        start: dict = {"triggerType": trigger_type, "object": obj}
+        if filter_formula is not None:
+            start["filterFormula"] = filter_formula
+        return {"Metadata": {"start": start}}
+
+    def test_maps_each_record_trigger_type(self) -> None:
+        """Salesforce raw triggerType → TriggersOnProperties schema
+        value (the four the trigger_type_known validator allows)."""
+        cases = {
+            "RecordBeforeSave": "BeforeSave",
+            "RecordAfterSave": "AfterSave",
+            "RecordBeforeDelete": "BeforeDelete",
+            "RecordAfterDelete": "AfterDelete",
+        }
+        for raw, expected in cases.items():
+            props = _flow_triggers_on_properties(
+                self._flow(raw), "Account",
+            )
+            assert props == {"trigger_type": expected}, (
+                f"failed for {raw}"
+            )
+
+    def test_includes_condition_text_when_filter_formula_present(
+        self,
+    ) -> None:
+        """Metadata.start.filterFormula → condition_text
+        (optional). Tier 1 stores the entry-condition formula
+        raw; Tier 2 parses it."""
+        props = _flow_triggers_on_properties(
+            self._flow(
+                "RecordAfterSave",
+                filter_formula="ISCHANGED(Status)",
+            ),
+            "Account",
+        )
+        assert props == {
+            "trigger_type": "AfterSave",
+            "condition_text": "ISCHANGED(Status)",
+        }
+
+    def test_omits_condition_text_when_no_filter_formula(self) -> None:
+        """No filterFormula → condition_text omitted (Pydantic
+        Optional field defaults to None on the JSONB column)."""
+        props = _flow_triggers_on_properties(
+            self._flow("RecordBeforeSave"), "Account",
+        )
+        assert "condition_text" not in props
+        assert props == {"trigger_type": "BeforeSave"}
+
+
+class TestGetEdgeSpecsFlow:
+    def test_returns_one_spec_for_flow(self) -> None:
+        """Flow registers exactly 1 edge spec: TRIGGERS_ON
+        (property-bearing, → Object). Scoped to record-triggered
+        flows per §21."""
+        specs = get_edge_specs("Flow")
+        assert len(specs) == 1
+        spec = specs[0]
+        assert spec.edge_type == "TRIGGERS_ON"
+        assert spec.target_entity_type == "Object"
+        # property-bearing — TriggersOnProperties
+        assert spec.extract_properties is not None

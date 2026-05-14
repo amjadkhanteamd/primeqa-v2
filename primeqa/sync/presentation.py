@@ -435,6 +435,69 @@ def _to_presentation_user(normalized: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _to_presentation_flow(normalized: dict[str, Any]) -> dict[str, Any]:
+    """Map normalized Flow (a phase-decorated flow-version record)
+    to semantic_text input shape.
+
+    The Flow payload (post-phase-decoration) is a flow-VERSION
+    record (Id, DefinitionId, VersionNumber, ProcessType,
+    Status, Metadata, …) decorated by phase_flow with:
+      _developer_name    — the stable identity from the parent
+                           FlowDefinition (the Flow entity's
+                           external_id)
+      _is_active         — True when this version is the
+                           FlowDefinition's ActiveVersion
+      _manageable_state  — from the parent FlowDefinition
+
+    Substrate-1's _to_text_flow input shape:
+      {name, process_type, is_active, description,
+       triggers_on_object, trigger_type}
+
+    Bridges:
+      name              ← _developer_name marker
+      process_type      ← Metadata.processType, falling back to
+                          the top-level ProcessType column
+      is_active         ← _is_active marker
+      description       ← Metadata.description (the version's
+                          own description; flow versions have
+                          no top-level Description column)
+      triggers_on_object← Metadata.start.object — ONLY when the
+                          flow is record-triggered (triggerType
+                          in the record-trigger set). Platform-
+                          event / scheduled flows leave this
+                          None, consistent with the TRIGGERS_ON
+                          edge scope (corrections-log §21).
+      trigger_type      ← mapped record-trigger type (BeforeSave
+                          / AfterSave / …) — None for non-record
+                          triggers
+    """
+    from primeqa.sync.edge_specs import _RECORD_TRIGGER_TYPE_MAP
+
+    metadata = normalized.get("Metadata") or {}
+    start = metadata.get("start") or {}
+    trigger_type_raw = start.get("triggerType")
+    # Only surface trigger info for record-triggered flows — keeps
+    # the presentation consistent with TRIGGERS_ON edge scope.
+    if trigger_type_raw in _RECORD_TRIGGER_TYPE_MAP:
+        triggers_on_object = start.get("object")
+        trigger_type = _RECORD_TRIGGER_TYPE_MAP[trigger_type_raw]
+    else:
+        triggers_on_object = None
+        trigger_type = None
+
+    return {
+        "name": normalized.get("_developer_name"),
+        "process_type": (
+            metadata.get("processType")
+            or normalized.get("ProcessType")
+        ),
+        "is_active": normalized.get("_is_active"),
+        "description": metadata.get("description"),
+        "triggers_on_object": triggers_on_object,
+        "trigger_type": trigger_type,
+    }
+
+
 _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "Object": _to_presentation_object,
     "PicklistValueSet": _to_presentation_picklist_value_set,
@@ -446,6 +509,7 @@ _PRESENTATION_FUNCTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] =
     "Profile": _to_presentation_profile,
     "PermissionSet": _to_presentation_permission_set,
     "User": _to_presentation_user,
+    "Flow": _to_presentation_flow,
     # Other entity types added by their respective phase cycles per
     # PHASE_2_PLAN_corrections.md §7.
 }

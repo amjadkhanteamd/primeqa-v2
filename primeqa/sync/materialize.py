@@ -399,6 +399,24 @@ def _extract_external_id(entity_type: str, raw: dict[str, Any]) -> str:
                 f"{sorted(raw.keys())}"
             )
         return username
+    if entity_type == "Flow":
+        # Flow's external_id is the parent FlowDefinition's
+        # DeveloperName — the STABLE identity across versions
+        # (per corrections-log §20: Flow versioning is handled
+        # via bitemporal supersession on a single Flow entity
+        # keyed by DeveloperName, not by per-version FullName).
+        # phase_flow decorates each flow-version payload with the
+        # `_developer_name` marker after the FlowDefinition →
+        # version coordination join.
+        developer_name = raw.get("_developer_name")
+        if not developer_name:
+            raise ValueError(
+                f"Flow requires the '_developer_name' marker "
+                f"(injected by phase_flow from the parent "
+                f"FlowDefinition's DeveloperName); got raw keys "
+                f"{sorted(raw.keys())}"
+            )
+        return developer_name
     raise KeyError(
         f"No external_id extractor for entity_type "
         f"{entity_type!r}. Add to "

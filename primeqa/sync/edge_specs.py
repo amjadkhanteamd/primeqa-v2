@@ -673,6 +673,88 @@ def _user_has_permission_set_properties(
 
 
 # ----------------------------------------------------------------------
+# Flow edge spec extractors (TRIGGERS_ON — record-triggered flows only)
+# ----------------------------------------------------------------------
+#
+# TRIGGERS_ON is property-bearing (TriggersOnProperties: trigger_type
+# required + condition_text optional). Substrate-1's schema scopes
+# trigger_type to the four RECORD-trigger types only; autolaunched,
+# screen, platform-event, and scheduled flows produce no TRIGGERS_ON
+# edge (per corrections-log §21 — a scope clarification, not a
+# deferral). The extractors gate on _RECORD_TRIGGER_TYPE_MAP so a
+# non-record trigger_type never reaches the Pydantic schema's
+# validator.
+
+# Salesforce raw Metadata.start.triggerType → TriggersOnProperties
+# schema value. The schema's trigger_type_known validator allows
+# exactly these four targets.
+_RECORD_TRIGGER_TYPE_MAP = {
+    "RecordBeforeSave": "BeforeSave",
+    "RecordAfterSave": "AfterSave",
+    "RecordBeforeDelete": "BeforeDelete",
+    "RecordAfterDelete": "AfterDelete",
+}
+
+
+def _flow_triggers_on_targets(normalized: dict) -> list[str]:
+    """Extract the record-trigger Object target for a Flow.
+
+    A record-triggered Flow's Metadata.start carries:
+      triggerType  — 'RecordBeforeSave' / 'RecordAfterSave' /
+                     'RecordBeforeDelete' / 'RecordAfterDelete'
+      object       — the SObject api name the flow triggers on
+
+    Returns [object_api_name] when the Flow is record-triggered;
+    [] otherwise. Autolaunched / screen flows have no
+    Metadata.start.triggerType in the record-trigger set;
+    platform-event flows carry triggerType='PlatformEvent'
+    (object is a `__e` Platform Event, not a syncable Object);
+    scheduled flows carry triggerType='Scheduled' (no object).
+    All of those correctly produce no TRIGGERS_ON edge — they're
+    out of scope per substrate-1's TriggersOnProperties design
+    (corrections-log §21), not silently skipped.
+
+    Defensive against missing Metadata / start (returns []).
+    """
+    start = (normalized.get("Metadata") or {}).get("start") or {}
+    trigger_type_raw = start.get("triggerType")
+    if trigger_type_raw not in _RECORD_TRIGGER_TYPE_MAP:
+        return []
+    target_object = start.get("object")
+    return [target_object] if target_object else []
+
+
+def _flow_triggers_on_properties(
+    normalized: dict, target_external_id: str,
+) -> dict:
+    """Return TriggersOnProperties for a record-triggered Flow.
+
+    Only reached when _flow_triggers_on_targets returned a target
+    — i.e., Metadata.start.triggerType IS one of the four
+    record-trigger types — so the mapped trigger_type is always
+    a valid schema value here.
+
+    Mapping (Salesforce raw → schema):
+      Metadata.start.triggerType    → trigger_type
+        (via _RECORD_TRIGGER_TYPE_MAP: RecordBeforeSave→BeforeSave,
+         RecordAfterSave→AfterSave, RecordBeforeDelete→BeforeDelete,
+         RecordAfterDelete→AfterDelete)
+      Metadata.start.filterFormula  → condition_text (optional;
+        the flow's entry-condition formula text. Tier 1 stores it
+        raw; Tier 2 parses it. Omitted from the returned dict when
+        absent — Pydantic defaults the Optional field to None.)
+    """
+    start = (normalized.get("Metadata") or {}).get("start") or {}
+    trigger_type_raw = start.get("triggerType")
+    trigger_type = _RECORD_TRIGGER_TYPE_MAP.get(trigger_type_raw)
+    result: dict = {"trigger_type": trigger_type}
+    condition_text = start.get("filterFormula")
+    if condition_text:
+        result["condition_text"] = condition_text
+    return result
+
+
+# ----------------------------------------------------------------------
 # Registry
 # ----------------------------------------------------------------------
 
@@ -792,6 +874,18 @@ _EDGE_SPECS: dict[str, list[EdgeSpec]] = {
             extract_target_external_ids=_user_has_permission_set_targets,
             extract_properties=_user_has_permission_set_properties,
         ),
+    ],
+    "Flow": [
+        EdgeSpec(
+            target_entity_type="Object",
+            edge_type="TRIGGERS_ON",
+            extract_target_external_ids=_flow_triggers_on_targets,
+            extract_properties=_flow_triggers_on_properties,
+        ),
+        # TRIGGERS_ON only — scoped to record-triggered flows per
+        # substrate-1's TriggersOnProperties design (corrections-
+        # log §21). Platform-event / scheduled / autolaunched /
+        # screen flows produce no edge.
     ],
     # Other entity types add their specs here as their phase cycles land.
 }

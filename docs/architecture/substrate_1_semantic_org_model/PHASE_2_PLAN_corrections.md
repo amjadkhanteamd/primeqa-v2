@@ -1043,3 +1043,73 @@ not 12. The Flow phase (next cycle) is the last entity phase;
 enrichment (design doc §9 step 4) runs as a separate stage
 after the structural phases, not as an ENTITY_ORDER member.
 
+
+## §21: TRIGGERS_ON scope — record triggers only per substrate-1 design
+
+Date: 2026-05-14
+Step: Flow phase (final entity phase, 11/11) — survey
+Source: Live probe of sandbox flows surfaced PlatformEvent-
+        triggered flows that fall outside TRIGGERS_ON's
+        property schema
+
+This is a SCOPE CLARIFICATION entry, not a deferral. Distinct
+from §10, §14, §16, §17 (deferred for unbuilt
+infrastructure / entities / parsers) — TRIGGERS_ON is fully
+implemented within substrate-1's defined scope.
+
+Substrate-1's TriggersOnProperties schema allows only
+record-trigger types via its `trigger_type_known` validator:
+
+    BeforeSave, AfterSave, BeforeDelete, AfterDelete
+
+Per its docstring: "Autolaunched and screen flows have no
+trigger_type — they don't produce TRIGGERS_ON edges in the
+first place."
+
+Salesforce supports additional trigger paradigms beyond
+record triggers:
+
+- Platform Events — Metadata.start.triggerType='PlatformEvent';
+  the start.object is a Platform Event (api name ends `__e`),
+  which is not `queryable AND searchable` and is therefore
+  excluded by Object phase's `_is_syncable_object` filter
+- Scheduled triggers — time-based, no object target
+- Data Cloud Segments, DataGraphs — other non-record targets
+
+These are deliberately out of scope for TRIGGERS_ON per
+substrate-1's design intent. Future cycles can extend support
+via either:
+
+  Option 1: Extend TriggersOnProperties' allowed set AND extend
+            the Object entity to include Platform Events (relax
+            the `queryable AND searchable` filter for the `__e`
+            suffix).
+  Option 2: Add new edge types (TRIGGERS_ON_PLATFORM_EVENT,
+            TRIGGERS_ON_SCHEDULE, …) with type-specific target
+            entity types.
+
+Either option is a focused substrate-1 enhancement cycle.
+
+**Implementation in this cycle:** edge_specs.py defines
+`_RECORD_TRIGGER_TYPE_MAP` (the four record-trigger types).
+`_flow_triggers_on_targets` returns an empty list when
+`Metadata.start.triggerType` is not in that map — PlatformEvent /
+Scheduled / Autolaunched / Screen flows produce no TRIGGERS_ON
+edge. They are correctly OUT OF SCOPE, not silently skipped:
+the extractor never feeds a non-record trigger_type to the
+Pydantic schema's validator, so no validation error can arise.
+The presentation adapter (`_to_presentation_flow`) and detail
+mapper (`_map_flow_details`) apply the identical record-trigger
+gate, so `flow_details.trigger_type` /
+`triggers_on_object_entity_id` and the semantic_text trigger
+fields stay consistent with the edge.
+
+**Sandbox observation:** this sandbox has 13 FlowDefinitions and
+14 Flow versions, all ProcessType=AutoLaunchedFlow. Of the 2
+flows with a `Metadata.start.object`, both are
+PlatformEvent-triggered. Zero record-triggered flows exist;
+therefore zero TRIGGERS_ON edges materialize. The implementation
+is correctness-complete and unit-tested across the record-trigger
+types — a future org with record-triggered flows produces
+TRIGGERS_ON edges automatically without code change.
+

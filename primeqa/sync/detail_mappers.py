@@ -621,6 +621,99 @@ def _map_user_details(
     }
 
 
+def _map_flow_details(
+    normalized: dict[str, Any],
+    entity_id: str,
+    parent_resolver: Callable[..., Optional[str]],
+) -> dict[str, Any]:
+    """Map normalized Flow (phase-decorated flow-version record)
+    → flow_details row.
+
+    The Flow payload is a flow-VERSION record decorated by
+    phase_flow with `_developer_name`, `_is_active`,
+    `_manageable_state`.
+
+    Columns the mapper sets:
+      entity_id                    ← caller-supplied
+      triggers_on_object_entity_id ← resolved via parent_resolver
+                                     from Metadata.start.object,
+                                     ONLY for record-triggered
+                                     flows. Nullable FK — left
+                                     None for autolaunched /
+                                     screen / platform-event /
+                                     scheduled flows, AND for
+                                     record-triggered flows whose
+                                     target Object isn't in the
+                                     synced set (e.g., a managed-
+                                     package Object Object phase
+                                     filtered out).
+      flow_type                    ← Metadata.processType, falling
+                                     back to the top-level
+                                     ProcessType column
+                                     (NOT NULL no-default —
+                                     e.g., 'AutoLaunchedFlow',
+                                     'Flow', 'Workflow')
+      trigger_type                 ← mapped record-trigger type
+                                     (nullable; None for non-
+                                     record triggers)
+      is_active                    ← _is_active marker (whether
+                                     this version is its
+                                     FlowDefinition's ActiveVersion)
+      version_number               ← VersionNumber (nullable int)
+
+    NOT set by this mapper (Tier 2 / Phase 5 enrichment own them):
+      parsed_logic, interpreted_at_capability_level,
+      plain_english_summary, summary_* — left to DB defaults / NULL.
+
+    Raises ValueError if flow_type can't be determined — it's a
+    NOT NULL no-default column and every Flow version carries a
+    ProcessType (top-level or in Metadata).
+    """
+    from primeqa.sync.edge_specs import _RECORD_TRIGGER_TYPE_MAP
+
+    metadata = normalized.get("Metadata") or {}
+    start = metadata.get("start") or {}
+
+    flow_type = (
+        metadata.get("processType")
+        or normalized.get("ProcessType")
+    )
+    if not flow_type:
+        raise ValueError(
+            f"Flow requires a process type for the NOT NULL "
+            f"flow_details.flow_type column; neither "
+            f"Metadata.processType nor top-level ProcessType "
+            f"present. developer_name="
+            f"{normalized.get('_developer_name')!r}"
+        )
+
+    # Record-trigger gate — same scope as the TRIGGERS_ON edge
+    # and the presentation adapter (corrections-log §21).
+    trigger_type_raw = start.get("triggerType")
+    triggers_on_object_entity_id: Optional[str] = None
+    trigger_type: Optional[str] = None
+    if trigger_type_raw in _RECORD_TRIGGER_TYPE_MAP:
+        trigger_type = _RECORD_TRIGGER_TYPE_MAP[trigger_type_raw]
+        target_object = start.get("object")
+        if target_object:
+            # Resolver returns None when the target Object isn't
+            # in the synced set — column stays NULL, consistent
+            # with the edge's silent-skip behavior.
+            triggers_on_object_entity_id = parent_resolver(
+                entity_type="Object",
+                external_id=target_object,
+            )
+
+    return {
+        "entity_id": entity_id,
+        "triggers_on_object_entity_id": triggers_on_object_entity_id,
+        "flow_type": flow_type,
+        "trigger_type": trigger_type,
+        "is_active": bool(normalized.get("_is_active", True)),
+        "version_number": normalized.get("VersionNumber"),
+    }
+
+
 _DETAIL_TABLE_MAPPERS: dict[str, DetailMapper] = {
     "Object": _map_object_details,
     "PicklistValue": _map_picklist_value_details,
@@ -631,6 +724,7 @@ _DETAIL_TABLE_MAPPERS: dict[str, DetailMapper] = {
     "Profile": _map_profile_details,
     "PermissionSet": _map_permission_set_details,
     "User": _map_user_details,
+    "Flow": _map_flow_details,
     # Other entity types added by their respective phase cycles.
     # PicklistValueSet intentionally absent — no detail table.
 }

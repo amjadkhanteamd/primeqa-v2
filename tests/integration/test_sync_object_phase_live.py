@@ -1,7 +1,8 @@
-"""Live integration test for Object + PicklistValueSet + PicklistValue
-+ Field + RecordType + Layout + ValidationRule + Profile +
-PermissionSet + User phases, including detail-table writes + edges
-(property-less + property-bearing).
+"""Live integration test for the FULL structural sync — all 11
+entity-materializing phases: Object + PicklistValueSet +
+PicklistValue + Field + RecordType + Layout + ValidationRule +
+Profile + PermissionSet + User + Flow — including detail-table
+writes + edges (property-less + property-bearing).
 
 End-to-end: SyncEngine.run_sync() runs all 12 phases for a fresh
 connected_org. Object + PicklistValueSet + PicklistValue + Field +
@@ -126,27 +127,46 @@ Verifies:
         sourced from `_member_ps_names` marker on PSGs only;
         non-Group PSes have no marker → no edge written)
   - User phase: Category 4 fetcher (substrate-1 fetch_users
-    extended this cycle to 3-key dict: users + direct
-    PermissionSetAssignments [PermissionSetGroupId IS NULL
-    filter — PSG-derived memberships flow via
-    INHERITS_PERMISSION_SET edges from the PermissionSet
-    cycle] + Profile Id→Name map). Org-level entity. TWO-PASS
-    materialization: pass 1 inserts User entities + captures
-    Username → entity_id; pass 2 builds the User.Id →
-    entity_id map and resolves
-    HasPermissionSetProperties.assigned_by_user_entity_id
-    (forward reference to the assigner User's entity_id from
-    PSA.CreatedById) on each assignment entry before edge
-    write. Writes entity + user_details (NOT NULL FK to
-    Profile entity via _profile_name marker; NOT NULL
-    user_type) + TWO edge types:
-      - HAS_PROFILE → Profile (property-less; every User has
-        exactly one Profile via User.ProfileId)
+    returns a 2-key dict: users + PermissionSetAssignments).
+    Org-level entity. Profile + PermissionSet Id→external_id
+    maps are built by phase_user from the entities table (not
+    SOQL — sidesteps the Tooling-vs-Data API Profile-name
+    asymmetry). TWO-PASS materialization: pass 1 inserts User
+    entities + captures Username → entity_id; pass 2 builds
+    the User.Id → entity_id map. Users whose ProfileId isn't
+    in the synced Profile set are filtered (Salesforce hides
+    some system profiles). Writes entity + user_details (NOT
+    NULL FK to Profile entity; NOT NULL user_type) + TWO edge
+    types:
+      - HAS_PROFILE → Profile (property-less; every synced
+        User has exactly one Profile)
       - HAS_PERMISSION_SET → PermissionSet (property-bearing;
-        HasPermissionSetProperties = {assigned_at,
-        assigned_by_user_entity_id, expiration_date} —
-        all Optional; assigned_by_user_entity_id None when
-        assigner is outside the synced User set)
+        HasPermissionSetProperties; direct PSAs only —
+        PSG-derived flow via INHERITS_PERMISSION_SET)
+  - Flow phase: the final entity phase (11/11). Coordinates
+    TWO fetchers — fetch_flow_definitions (parent context:
+    DeveloperName / ActiveVersionId / ManageableState) +
+    fetch_flow_versions (version-level rows with the full
+    flow graph in Metadata). Per corrections-log §20,
+    FlowDefinition is NOT a separate entity: one Flow entity
+    per stable DeveloperName, versioning via bitemporal
+    supersession. phase_flow groups versions by DefinitionId,
+    picks each FD's active version (Id == ActiveVersionId;
+    falls back to LatestVersionId with is_active=False for
+    deactivated flows), and materializes the Flow entity
+    keyed by DeveloperName. Writes entity + flow_details
+    (NOT NULL flow_type from ProcessType; nullable
+    triggers_on_object_entity_id + trigger_type) + ONE edge
+    type:
+      - TRIGGERS_ON → Object (property-bearing,
+        TriggersOnProperties = {trigger_type, condition_text}).
+        Scoped to record-triggered flows ONLY per substrate-1's
+        TriggersOnProperties design (corrections-log §21) —
+        autolaunched / screen / platform-event / scheduled
+        flows produce no TRIGGERS_ON edge. This sandbox has
+        zero record-triggered flows (all AutoLaunchedFlow), so
+        zero TRIGGERS_ON edges materialize; the edge path is
+        unit-tested and correctness-complete.
 
 Cleanup: deletes all rows referencing the test connected_org's id
 (FK-aware: queue → entities → sync_runs back-ref → logical_versions
@@ -332,11 +352,11 @@ def test_org(db_engine):
         # and makes the cleanup robust against future detail-table
         # additions.
         for detail_table in (
-            "user_details", "permission_set_details",
-            "profile_details", "validation_rule_details",
-            "layout_details", "field_details",
-            "record_type_details", "picklist_value_details",
-            "object_details",
+            "flow_details", "user_details",
+            "permission_set_details", "profile_details",
+            "validation_rule_details", "layout_details",
+            "field_details", "record_type_details",
+            "picklist_value_details", "object_details",
         ):
             conn.execute(text(f"""
                 DELETE FROM {detail_table}
@@ -385,20 +405,23 @@ def test_org(db_engine):
         """), {"id": org_id})
 
 
-def test_live_sync_through_user(
+def test_live_sync_full(
     live_sf_client, db_engine, test_org,
 ):
-    """End-to-end Object + PVS + PV + Field + RecordType + Layout
-    + ValidationRule + Profile + PermissionSet + User phases.
-    Detail-table writes, BELONGS_TO + HAS_RELATIONSHIP_TO +
+    """End-to-end FULL structural sync — all 11
+    entity-materializing phases (Object through Flow), the
+    11/11 milestone. Detail-table writes + every edge type
+    implemented to date: BELONGS_TO + HAS_RELATIONSHIP_TO +
     INCLUDES_FIELD (property-bearing) + APPLIES_TO +
     GRANTS_OBJECT_ACCESS (Profile + PermissionSet sources,
     property-bearing) + GRANTS_FIELD_ACCESS (Profile +
     PermissionSet sources, property-bearing) +
     INHERITS_PERMISSION_SET (PSG → member PS, property-less) +
     HAS_PROFILE (User → Profile, property-less) +
-    HAS_PERMISSION_SET (User → PermissionSet, property-bearing)
-    edges. Runs against local Postgres via LIVE_DATABASE_URL."""
+    HAS_PERMISSION_SET (User → PermissionSet, property-bearing) +
+    TRIGGERS_ON (Flow → Object, property-bearing; record-trigger
+    scoped per §21). Runs against local Postgres via
+    LIVE_DATABASE_URL."""
     from primeqa.sync.engine import SyncEngine
 
     engine = SyncEngine(
@@ -1512,6 +1535,135 @@ def test_live_sync_through_user(
             f"got {user_queue}"
         )
 
+        # ----- Flow entities + flow_details + edges -----
+        # The final entity phase (11/11). Sandbox has 13
+        # FlowDefinitions, all with an ActiveVersionId → 13 Flow
+        # entities (one per stable DeveloperName per §20).
+        # Regression floor: >=5.
+        flow_count = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'Flow'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert flow_count >= 5, (
+            f"Expected >=5 Flow entities (regression floor; "
+            f"sandbox has 13 FlowDefinitions); got {flow_count}"
+        )
+
+        # flow_details: 1 row per active Flow entity
+        flow_details_count = conn.execute(text("""
+            SELECT COUNT(*) FROM flow_details fd
+            JOIN entities e ON e.id = fd.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'Flow'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert flow_details_count == flow_count, (
+            f"flow_details rows ({flow_details_count}) != Flow "
+            f"entity count ({flow_count})"
+        )
+
+        # FK integrity: flow_type is NOT NULL no-default — every
+        # row must have it. triggers_on_object_entity_id is
+        # nullable (only record-triggered flows whose target
+        # Object is synced get it), so NULLs there are fine; but
+        # any non-NULL value must point at a real Object entity.
+        bad_flow_details = conn.execute(text("""
+            SELECT COUNT(*) FROM flow_details fd
+            JOIN entities child ON child.id = fd.entity_id
+            LEFT JOIN entities tgt
+                ON tgt.id = fd.triggers_on_object_entity_id
+            WHERE child.last_synced_from_org_id = :id
+              AND child.entity_type = 'Flow'
+              AND child.valid_to_seq IS NULL
+              AND (
+                fd.flow_type IS NULL
+                OR fd.flow_type = ''
+                OR (fd.triggers_on_object_entity_id IS NOT NULL
+                    AND (tgt.id IS NULL
+                         OR tgt.entity_type != 'Object'))
+              )
+        """), {"id": test_org}).scalar()
+        assert bad_flow_details == 0, (
+            f"Found {bad_flow_details} flow_details rows with "
+            f"NULL/empty flow_type or bad "
+            f"triggers_on_object_entity_id FK target"
+        )
+
+        # TRIGGERS_ON edges. Floor: >= 0 per §21 — TRIGGERS_ON is
+        # scoped to record-triggered flows; this sandbox has zero
+        # record-triggered flows (all AutoLaunchedFlow; the 2
+        # with a start.object are PlatformEvent-triggered, out of
+        # scope). The edge path is unit-tested and
+        # correctness-complete; a future org with record-triggered
+        # flows produces TRIGGERS_ON edges automatically.
+        triggers_on_count = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'TRIGGERS_ON'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Flow'
+        """), {"id": test_org}).scalar()
+        assert triggers_on_count >= 0  # sentinel — see §21 note
+
+        # Any TRIGGERS_ON edges that DO get written must be
+        # property-bearing (carry last_seed_hash + non-empty
+        # properties — trigger_type is a required schema field).
+        # Trivially satisfied when the count is zero.
+        triggers_on_with_hash = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'TRIGGERS_ON'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Flow'
+              AND e.last_seed_hash IS NOT NULL
+              AND e.properties != '{}'::jsonb
+        """), {"id": test_org}).scalar()
+        assert triggers_on_with_hash == triggers_on_count, (
+            f"TRIGGERS_ON edges should all carry hash + non-empty "
+            f"properties; got {triggers_on_with_hash} of "
+            f"{triggers_on_count}"
+        )
+
+        # Flow enrichment queue: 2× entity count
+        flow_queue = conn.execute(text("""
+            SELECT COUNT(*) FROM ai_enrichment_queue
+            WHERE entity_type = 'Flow'
+              AND entity_id IN (
+                  SELECT id FROM entities
+                  WHERE last_synced_from_org_id = :id
+                    AND entity_type = 'Flow'
+              )
+        """), {"id": test_org}).scalar()
+        assert flow_queue == flow_count * 2, (
+            f"Expected {flow_count * 2} Flow queue rows; "
+            f"got {flow_queue}"
+        )
+
+        # ----- Full-sync milestone: all 11 entity types present -----
+        # The 11/11 milestone. Every entity-materializing phase
+        # wrote at least one active entity row for this org.
+        entity_type_counts = dict(conn.execute(text("""
+            SELECT entity_type, COUNT(*)
+            FROM entities
+            WHERE last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+            GROUP BY entity_type
+        """), {"id": test_org}).fetchall())
+        expected_entity_types = {
+            "Object", "PicklistValueSet", "PicklistValue", "Field",
+            "RecordType", "Layout", "ValidationRule", "Profile",
+            "PermissionSet", "User", "Flow",
+        }
+        assert set(entity_type_counts.keys()) == expected_entity_types, (
+            f"Full sync should materialize exactly the 11 "
+            f"entity-materializing phases' types; got "
+            f"{sorted(entity_type_counts.keys())}"
+        )
+
     # ===== Second sync =====
     sync_run_id_2 = engine.run_sync(connected_org_id=test_org)
     assert sync_run_id_2 != sync_run_id_1
@@ -1533,18 +1685,18 @@ def test_live_sync_through_user(
             f"Second sync should report 0 superseded (hashes match); "
             f"got {run2.entities_superseded}"
         )
-        # Total unchanged = Object + PVS + PV + Field + RT + Layout
-        # + ValidationRule + Profile + PermissionSet + User counts.
-        # Each entity's phase-injected markers round-trip through
-        # normalize/hash identically. User adds two post-fetch
-        # transforms (profile-name resolution + PSA join with
-        # two-pass assigner resolution) — both deterministic
-        # across syncs (profile_id_to_name is stable; PSA list is
-        # pre-sorted by PermissionSet.Name) so the hash is stable.
+        # Total unchanged = all 11 entity-materializing phases'
+        # counts (Object → Flow). Each entity's phase-injected
+        # markers round-trip through normalize/hash identically.
+        # Flow adds a coordination transform (FlowDefinition →
+        # active-version join) — deterministic across syncs since
+        # ActiveVersionId is stable, so the chosen version + its
+        # decoration (_developer_name / _is_active /
+        # _manageable_state) hash identically.
         expected_unchanged = (
             object_count + pvs_count + pv_count + field_count
             + rt_count + layout_count + vr_count + profile_count
-            + permission_set_count + user_count
+            + permission_set_count + user_count + flow_count
         )
         assert run2.entities_unchanged == expected_unchanged, (
             f"Second sync should report {expected_unchanged} unchanged "
@@ -1552,8 +1704,8 @@ def test_live_sync_through_user(
             f"{pv_count} + Field {field_count} + RT {rt_count} + "
             f"Layout {layout_count} + VR {vr_count} + Profile "
             f"{profile_count} + PermissionSet "
-            f"{permission_set_count} + User {user_count}); got "
-            f"{run2.entities_unchanged}"
+            f"{permission_set_count} + User {user_count} + Flow "
+            f"{flow_count}); got {run2.entities_unchanged}"
         )
 
         # Edges: same set-difference logic should yield 0 inserts and
@@ -2006,4 +2158,41 @@ def test_live_sync_through_user(
             f"(property-bearing hash-compare supersession "
             f"matches when assignment metadata is stable); "
             f"got {has_permission_set_after}"
+        )
+
+        # Flow entity + detail + edge counts stable across syncs.
+        # Critical regression check: the Flow payload undergoes a
+        # coordination transform (FlowDefinition active-version
+        # join + _developer_name / _is_active / _manageable_state
+        # decoration). ActiveVersionId is stable across syncs, so
+        # the same version is chosen + decorated identically →
+        # entity hash stable → no spurious supersession.
+        flow_count_after = conn.execute(text("""
+            SELECT COUNT(*) FROM entities
+            WHERE entity_type = 'Flow'
+              AND last_synced_from_org_id = :id
+              AND valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert flow_count_after == flow_count
+
+        flow_details_after = conn.execute(text("""
+            SELECT COUNT(*) FROM flow_details fd
+            JOIN entities e ON e.id = fd.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.entity_type = 'Flow'
+              AND e.valid_to_seq IS NULL
+        """), {"id": test_org}).scalar()
+        assert flow_details_after == flow_details_count
+
+        triggers_on_after = conn.execute(text("""
+            SELECT COUNT(*) FROM edges e
+            JOIN entities src ON src.id = e.source_entity_id
+            WHERE e.edge_type = 'TRIGGERS_ON'
+              AND e.valid_to_seq IS NULL
+              AND src.last_synced_from_org_id = :id
+              AND src.entity_type = 'Flow'
+        """), {"id": test_org}).scalar()
+        assert triggers_on_after == triggers_on_count, (
+            f"TRIGGERS_ON count should remain {triggers_on_count} "
+            f"after second sync; got {triggers_on_after}"
         )
