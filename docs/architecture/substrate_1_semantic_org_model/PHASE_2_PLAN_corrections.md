@@ -888,7 +888,7 @@ Why this matters for future contractors:
 
 Not applicable to:
 - Org-level entity phases (Profile, PermissionSet, User,
-  FlowDefinition, Flow) — these aren't child-of-Object
+  Flow) — these aren't child-of-Object
 - Per-Object-iteration phases (Field, Layout) — implicit
   filter
 
@@ -961,4 +961,85 @@ could distinguish three skip categories:
 Current implementation logs all skips at debug level. The
 distinction above requires correlation with synced-set
 membership at the time of skip; cheap to add when needed.
+
+
+## §20: FlowDefinition is NOT a materialized entity — resolves substrate-1 design contradiction
+
+Date: 2026-05-14
+Step: FlowDefinition cycle (would-be 11 of 12) — survey phase
+Source: Survey for FlowDefinition phase surfaced design-level
+        contradiction between SPEC.md §9 and ENTITY_ORDER
+
+Substrate-1 had an internal contradiction about whether
+FlowDefinition is a Tier-1 entity:
+
+- SPEC.md §9: "10 Tier-1 entity types" (Flow is in the list;
+  FlowDefinition is not)
+- TIER_1_ENTITIES, _NORMALIZERS, _TO_TEXT, TIER_1_EDGES: no
+  FlowDefinition (matches SPEC.md)
+- DB schema: no flow_definition_details table (matches SPEC.md)
+- But: ENTITY_ORDER listed 12 entries including FlowDefinition
+- And: the earlier corrections-log entry ("Cross-cutting drift:
+  normalization.py and ENTITY_ORDER", 2026-05-12) tracked
+  "extend normalization.py / semantic_text.py / presentation
+  with flow_definition functions... Tracked as a pre-requisite
+  for the FlowDefinition phase cycle."
+
+**Resolution: SPEC.md wins. FlowDefinition is NOT a materialized
+entity.**
+
+Rationale:
+
+1. SPEC.md §9's "10 Tier-1 entity types" is design-locked
+   authoritative spec. The four substrate-1 registries
+   (TIER_1_ENTITIES, _NORMALIZERS, _TO_TEXT, TIER_1_EDGES) and
+   the DB schema all already match it — only ENTITY_ORDER and
+   the design-doc's hardcoded-order snippet had drifted.
+2. Substrate-1's bitemporal supersession IS the native
+   versioning mechanism for Flow's versioning needs:
+   - Flow entity keyed by DeveloperName (stable identity)
+   - Each new version deployment → supersedes the prior Flow
+     record with new attributes (api_version, manageable_state,
+     is_active, version_number, etc.)
+   - Entity history IS version history
+   - diff-window queries surface flow-level changes natively
+3. Modeling FlowDefinition + Flow as separate entities would
+   replicate versioning semantics on top of the bitemporal
+   layer that already provides them.
+4. Consumer query patterns work with the Flow-as-supersession
+   model (existence, diff, activation state, version history).
+
+ENTITY_ORDER corrected from 12 → 11 entries. The 11 are all
+entity-materializing phases: the 10 Tier-1 detail-table entity
+types per SPEC §9 (Object, Field, RecordType, Layout,
+ValidationRule, Flow, Profile, PermissionSet, User,
+PicklistValue) PLUS PicklistValueSet — an entity-materializing
+phase that intentionally has no detail table (its full shape
+lives in entities.attributes JSONB; see the Object-cycle
+corrections-log entry). FlowDefinition removed from ENTITY_ORDER
+(and therefore from the PHASE_REGISTRY comprehension that builds
+no-op phases from it).
+
+fetch_flow_definitions remains as a substrate-1 Tooling fetcher
+— it provides parent context (DeveloperName, ActiveVersionId,
+ManageableState) that the Flow phase consumes to:
+- Identify which Flow version is active
+- Decorate Flow records with stable identity (DeveloperName
+  from FlowDefinition rather than per-version FullName)
+- Set Flow's manageable_state attribute correctly
+
+**Retracts:** the earlier "Cross-cutting drift" entry's
+resolution that FlowDefinition needs entity plumbing
+(_normalize_flow_definition, _to_text_flow_definition, a
+TIER_1_ENTITIES entry, a flow_definition_details table). That
+resolution was written from the sync-layer side without
+reconciling against SPEC.md §9. No such plumbing will be added;
+the drift is resolved by removing FlowDefinition from
+ENTITY_ORDER, not by promoting it to an entity.
+
+**Implication for phase count:** the structural-sync phase
+sequence is 11 entity-materializing phases (Object → Flow),
+not 12. The Flow phase (next cycle) is the last entity phase;
+enrichment (design doc §9 step 4) runs as a separate stage
+after the structural phases, not as an ENTITY_ORDER member.
 

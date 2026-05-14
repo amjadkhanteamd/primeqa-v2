@@ -32,6 +32,25 @@ from primeqa.sync.exceptions import EntityOrderViolation
 logger = logging.getLogger(__name__)
 
 
+# ENTITY_ORDER: 11 entity-materializing phases. The 10 Tier-1
+# detail-table entity types per SPEC §9 (Object, Field, RecordType,
+# Layout, ValidationRule, Flow, Profile, PermissionSet, User,
+# PicklistValue) PLUS PicklistValueSet — an entity-materializing
+# phase that intentionally has no detail table (its full shape
+# lives in entities.attributes JSONB; see the Object-cycle
+# corrections-log entry).
+#
+# FlowDefinition is NOT modeled as a separate entity. Substrate-1's
+# bitemporal supersession IS the native versioning mechanism for
+# Flow: the Flow entity is keyed by stable identity (DeveloperName),
+# and each new version deployment supersedes the prior Flow record
+# with updated attributes — entity history IS version history.
+# FlowDefinition exists only as fetch-time parent context that the
+# Flow phase consumes (DeveloperName, ActiveVersionId,
+# ManageableState). fetch_flow_definitions() remains as a
+# substrate-1 Tooling fetcher; it just isn't a phase. See
+# corrections-log §20 (resolves the SPEC.md §9 vs. ENTITY_ORDER
+# contradiction).
 ENTITY_ORDER: tuple[str, ...] = (
     "Object",
     "PicklistValueSet",
@@ -43,7 +62,6 @@ ENTITY_ORDER: tuple[str, ...] = (
     "Profile",
     "PermissionSet",
     "User",
-    "FlowDefinition",
     "Flow",
 )
 

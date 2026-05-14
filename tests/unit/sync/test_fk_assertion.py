@@ -8,8 +8,56 @@ import pytest
 
 from primeqa.sync.exceptions import EntityOrderViolation
 from primeqa.sync.fk_assertion import (
+    ENTITY_ORDER,
     assert_entity_order_respects_schema_fks,
 )
+
+
+class TestEntityOrderComposition:
+    """Locks the ENTITY_ORDER membership decisions that survey
+    cycles resolved — so future drift fails loudly here."""
+
+    def test_entity_order_omits_flow_definition_per_spec_section_9(
+        self,
+    ) -> None:
+        """FlowDefinition is NOT in ENTITY_ORDER. SPEC.md §9 lists
+        exactly 10 Tier-1 entity types and Flow is the
+        flow-related one — FlowDefinition is not an entity.
+        Substrate-1's bitemporal supersession provides Flow's
+        versioning natively (each version deployment supersedes
+        the prior Flow record). fetch_flow_definitions() remains
+        a Tooling fetcher supplying fetch-time parent context to
+        the Flow phase, but FlowDefinition is not itself a phase.
+        See corrections-log §20."""
+        assert "FlowDefinition" not in ENTITY_ORDER
+        # Flow IS a phase — it's the last entity-materializing
+        # phase, and the flow-related Tier-1 entity per SPEC §9.
+        assert "Flow" in ENTITY_ORDER
+
+    def test_entity_order_is_eleven_entity_materializing_phases(
+        self,
+    ) -> None:
+        """ENTITY_ORDER is 11 entries: the 10 SPEC §9 Tier-1
+        detail-table entity types PLUS PicklistValueSet (an
+        entity-materializing phase that intentionally has no
+        detail table — its shape lives in entities.attributes
+        JSONB per the Object-cycle corrections). Catches an
+        accidental re-addition of FlowDefinition or any other
+        non-entity phase."""
+        assert ENTITY_ORDER == (
+            "Object",
+            "PicklistValueSet",
+            "PicklistValue",
+            "Field",
+            "RecordType",
+            "Layout",
+            "ValidationRule",
+            "Profile",
+            "PermissionSet",
+            "User",
+            "Flow",
+        )
+        assert len(ENTITY_ORDER) == 11
 
 
 class TestFKAssertion:

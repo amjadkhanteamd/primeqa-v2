@@ -205,13 +205,22 @@ ENTITY_ORDER = (
     "Profile",
     "PermissionSet",
     "User",
-    "FlowDefinition",
     "Flow",
 )
 ```
 
 Per D-037. This order is operationally clear and explicit; reading
 sync code immediately reveals what's happening.
+
+> **Correction (2026-05-14, corrections-log §20):** ENTITY_ORDER
+> originally listed a 12th entry, `FlowDefinition`, between `User`
+> and `Flow`. FlowDefinition is NOT a materialized entity — SPEC.md
+> §9 lists exactly 10 Tier-1 entity types and Flow is the
+> flow-related one. Substrate-1's bitemporal supersession provides
+> Flow's versioning natively (each version deployment supersedes
+> the prior Flow record). `fetch_flow_definitions()` remains as a
+> Tooling fetcher supplying fetch-time parent context to the Flow
+> phase; it is not itself a phase. ENTITY_ORDER is now 11 entries.
 
 ### FK-topological-sort assertion
 
