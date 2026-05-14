@@ -3571,3 +3571,254 @@ class TestExtractPicklistValuePayloadsFromMetadata:
         )
         assert [v["_sort_order"] for v in result] == [0, 1, 2]
         assert [v["valueName"] for v in result] == ["A", "B", "C"]
+
+
+# ----------------------------------------------------------------------
+# fetch_custom_field_id_map (§10/§14 precursor — P7)
+# ----------------------------------------------------------------------
+
+class TestFetchCustomFieldIdMap:
+    def test_uses_tooling_endpoint(self) -> None:
+        urls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_custom_field_id_map()
+        assert any(
+            f"/services/data/{SF_API_VERSION}/tooling/query" in p
+            for p in urls_seen
+        )
+        c.close()
+
+    def test_builds_object_field_to_id_map_with_namespace(self) -> None:
+        """Key construction reconstructs the fully-qualified field API
+        name as REST describe reports it: namespaced fields →
+        '{ns}__{DeveloperName}__c'."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={"records": [
+                {
+                    "Id": "00NF900000HAN9JMAX",
+                    "DeveloperName": "Currency",
+                    "NamespacePrefix": "sfcma",
+                    "EntityDefinition": {
+                        "QualifiedApiName": "sfcma__PaymentIntent__c",
+                    },
+                },
+            ]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_custom_field_id_map()
+        assert result == {
+            ("sfcma__PaymentIntent__c", "sfcma__Currency__c"):
+                "00NF900000HAN9JMAX",
+        }
+        c.close()
+
+    def test_builds_key_without_namespace_when_prefix_null(self) -> None:
+        """Unmanaged custom field: NamespacePrefix is None →
+        '{DeveloperName}__c'."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={"records": [
+                {
+                    "Id": "00NIp000001jZGwMAM",
+                    "DeveloperName": "Lost_Reason",
+                    "NamespacePrefix": None,
+                    "EntityDefinition": {
+                        "QualifiedApiName": "Opportunity",
+                    },
+                },
+            ]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_custom_field_id_map()
+        assert result == {
+            ("Opportunity", "Lost_Reason__c"): "00NIp000001jZGwMAM",
+        }
+        c.close()
+
+    def test_skips_rows_with_null_entity_definition_or_name(self) -> None:
+        """Orphaned / inaccessible CustomField rows (null
+        EntityDefinition or missing DeveloperName) can't join to a
+        describe field — they're skipped, not crashed on."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={"records": [
+                {  # good row
+                    "Id": "00N1",
+                    "DeveloperName": "Status",
+                    "NamespacePrefix": None,
+                    "EntityDefinition": {"QualifiedApiName": "Account"},
+                },
+                {  # null EntityDefinition → skip
+                    "Id": "00N2",
+                    "DeveloperName": "Orphan",
+                    "NamespacePrefix": None,
+                    "EntityDefinition": None,
+                },
+                {  # missing DeveloperName → skip
+                    "Id": "00N3",
+                    "DeveloperName": None,
+                    "NamespacePrefix": None,
+                    "EntityDefinition": {"QualifiedApiName": "Account"},
+                },
+            ]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_custom_field_id_map()
+        assert result == {("Account", "Status__c"): "00N1"}
+        c.close()
+
+    def test_empty_org_returns_empty_map(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        assert c.fetch_custom_field_id_map() == {}
+        c.close()
+
+
+# ----------------------------------------------------------------------
+# fetch_custom_field_metadata (§10/§14 precursor — P7)
+# ----------------------------------------------------------------------
+
+class TestFetchCustomFieldMetadata:
+    def test_empty_input_makes_no_http_calls(self) -> None:
+        """Empty field_ids → {} with zero HTTP calls (not even token
+        refresh, since no request is issued)."""
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        assert c.fetch_custom_field_metadata([]) == {}
+        assert calls == []
+        c.close()
+
+    def test_sequential_per_id_fetches(self) -> None:
+        """One Tooling query per Id — N Ids → N per-Id SOQL calls,
+        each a WHERE Id = '...' single-row query."""
+        soqls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            soqls_seen.append(soql)
+            return httpx.Response(200, json={"records": [
+                {"Id": "x", "FullName": "Account.X__c", "Metadata": {}},
+            ]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_custom_field_metadata(["00N1", "00N2", "00N3"])
+        assert len(soqls_seen) == 3
+        for sid, soql in zip(["00N1", "00N2", "00N3"], soqls_seen):
+            assert f"WHERE Id = '{sid}'" in soql
+            assert "Metadata" in soql
+        c.close()
+
+    def test_returns_metadata_payload_keyed_by_id(self) -> None:
+        """Result dict maps each input Id → that field's Metadata
+        payload (the Metadata sub-object, not the whole record)."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "00N_picklist" in soql:
+                return httpx.Response(200, json={"records": [{
+                    "Id": "00N_picklist",
+                    "FullName": "Account.Tier__c",
+                    "Metadata": {
+                        "type": "Picklist",
+                        "valueSet": {
+                            "valueSetName": "TierGVS",
+                            "restricted": True,
+                        },
+                    },
+                }]})
+            return httpx.Response(200, json={"records": [{
+                "Id": "00N_text",
+                "FullName": "Account.Note__c",
+                "Metadata": {"type": "Text", "valueSet": None},
+            }]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_custom_field_metadata(["00N_picklist", "00N_text"])
+        assert set(result.keys()) == {"00N_picklist", "00N_text"}
+        assert result["00N_picklist"]["valueSet"]["valueSetName"] == "TierGVS"
+        assert result["00N_text"]["valueSet"] is None
+        c.close()
+
+    def test_missing_metadata_key_yields_empty_dict(self) -> None:
+        """A record with no Metadata key → {} for that Id (never
+        None — keeps callers from None-guarding every lookup)."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={"records": [
+                {"Id": "00N1", "FullName": "Account.X__c"},
+            ]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_custom_field_metadata(["00N1"])
+        assert result == {"00N1": {}}
+        c.close()
+
+    def test_per_id_failure_logs_and_continues(self) -> None:
+        """An SFRequestError on one Id (e.g. HTTP 400) is caught,
+        logged, and skipped — the remaining Ids still return."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "00N_bad" in soql:
+                return httpx.Response(400, json=[{
+                    "errorCode": "INVALID_FIELD",
+                    "message": "boom",
+                }])
+            return httpx.Response(200, json={"records": [{
+                "Id": "ok", "FullName": "Account.Ok__c",
+                "Metadata": {"type": "Picklist"},
+            }]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_custom_field_metadata(
+            ["00N_good1", "00N_bad", "00N_good2"],
+        )
+        # Bad Id skipped; the two good Ids still resolved.
+        assert set(result.keys()) == {"00N_good1", "00N_good2"}
+        c.close()
+
+    def test_empty_records_response_omits_id(self) -> None:
+        """A query returning zero records (Id no longer exists) →
+        that Id is simply absent from the result, no crash."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "00N_gone" in soql:
+                return httpx.Response(200, json={"records": []})
+            return httpx.Response(200, json={"records": [{
+                "Id": "00N_here", "FullName": "Account.Here__c",
+                "Metadata": {"type": "Picklist"},
+            }]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_custom_field_metadata(["00N_gone", "00N_here"])
+        assert set(result.keys()) == {"00N_here"}
+        c.close()

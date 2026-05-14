@@ -579,6 +579,131 @@ class SalesforceClient:
 
         return records
 
+    def fetch_custom_field_id_map(self) -> dict[tuple[str, str], str]:
+        """Tooling SOQL: build a (object api name, field api name) → CustomField Id map.
+
+        Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
+
+        REST sObject describe — the source phase_field uses to enumerate
+        fields — does NOT expose the Tooling CustomField Id. To fetch a
+        custom picklist field's value-set reference (see
+        fetch_custom_field_metadata) the sync layer must first resolve
+        each describe field to its CustomField Id. This helper provides
+        that lookup as a single bulk query.
+
+        SOQL: SELECT Id, DeveloperName, NamespacePrefix,
+              EntityDefinition.QualifiedApiName FROM CustomField
+
+        The EntityDefinition relationship traversal works here because
+        CustomField → EntityDefinition is a single-hop parent reference
+        (not the >1000-row subquery shape that fetch_validation_rules
+        avoids); live-probed against the dev sandbox.
+
+        Key construction:
+          object api name ← EntityDefinition.QualifiedApiName
+                            (e.g. 'Account', 'sfcma__Subscription__c')
+          field api name  ← f"{NamespacePrefix}__{DeveloperName}__c" when
+                            NamespacePrefix is set, else f"{DeveloperName}__c"
+                            — reconstructs the fully-qualified API name as
+                            it appears in REST describe's field['name']
+                            (live-verified: 42/42 match on
+                            sfcma__Subscription__c).
+
+        Rows whose EntityDefinition is null (orphaned / inaccessible) or
+        whose DeveloperName is missing are skipped — they can't be joined
+        to a describe field anyway.
+
+        Returns dict keyed by (object_api_name, field_api_name) → CustomField
+        Id (the 18-char '00N…' Tooling Id). Empty org → {}.
+        """
+        path = f"/services/data/{self.api_version}/tooling/query/"
+        soql = (
+            "SELECT Id, DeveloperName, NamespacePrefix, "
+            "EntityDefinition.QualifiedApiName FROM CustomField"
+        )
+        records = self._query_all(path, soql)
+
+        id_map: dict[tuple[str, str], str] = {}
+        for rec in records:
+            cf_id = rec.get("Id")
+            developer_name = rec.get("DeveloperName")
+            entity_def = rec.get("EntityDefinition") or {}
+            object_api_name = entity_def.get("QualifiedApiName")
+            if not cf_id or not developer_name or not object_api_name:
+                # Orphaned / inaccessible CustomField row — can't be
+                # joined to a describe field, so it's not useful here.
+                continue
+            namespace = rec.get("NamespacePrefix")
+            if namespace:
+                field_api_name = f"{namespace}__{developer_name}__c"
+            else:
+                field_api_name = f"{developer_name}__c"
+            id_map[(object_api_name, field_api_name)] = cf_id
+
+        return id_map
+
+    def fetch_custom_field_metadata(
+        self, field_ids: list[str],
+    ) -> dict[str, dict]:
+        """Tooling SOQL: per-Id Metadata fetch for CustomFields.
+
+        Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
+
+        Returns dict keyed by CustomField Id → that field's Metadata
+        payload. For picklist-typed fields, Metadata.valueSet has the
+        shape:
+          {valueSetName: str | None,   # GVS FullName when GVS-backed,
+                                       # None for an inline value set
+           restricted: bool,
+           valueSetDefinition: {value: [...]} | None,  # inline values
+           controllingField: str | None,
+           valueSettings: [...]}
+        Non-picklist fields have Metadata.valueSet = None.
+
+        Per the corrections-log §1 one-row-per-Tooling-Metadata
+        constraint, fetched sequentially one Id at a time — same idiom
+        as fetch_validation_rules / fetch_record_types Phase 2. Bulk
+        paths were live-probed and rejected:
+          - Bulk SOQL (Id, FullName, Metadata) → HTTP 400 (the §1
+            constraint)
+          - /composite/batch with Tooling sub-requests → HTTP 200 but
+            silently nulls FullName + Metadata
+        Per-Id direct query is the only working approach.
+
+        Caller is expected to filter field_ids to picklist-typed
+        fields (via the REST describe field['type']) before calling, so
+        the sequential fetch only runs for fields whose valueSet is
+        meaningful — avoids ~90% wasted round trips on non-picklist
+        custom fields whose valueSet would be None.
+
+        Per-field failure tolerance: an SFRequestError on one Id logs a
+        WARNING and is skipped; other Ids return normally. Empty input
+        is a no-op (returns {}, no HTTP calls).
+        """
+        result: dict[str, dict] = {}
+        if not field_ids:
+            return result
+
+        path = f"/services/data/{self.api_version}/tooling/query/"
+        for field_id in field_ids:
+            soql = (
+                f"SELECT Id, FullName, Metadata FROM CustomField "
+                f"WHERE Id = '{field_id}'"
+            )
+            try:
+                records = self._query_all(path, soql)
+            except SFRequestError as e:
+                logger.warning(
+                    "fetch_custom_field_metadata: failed for %s: %s",
+                    field_id, e,
+                )
+                # Per-field tolerance — continue with the rest.
+                continue
+            if records:
+                result[field_id] = records[0].get("Metadata") or {}
+
+        return result
+
     def fetch_global_value_sets(self) -> list[dict]:
         """Tooling SOQL: SELECT … FROM GlobalValueSet, with FullName + Metadata.
 
