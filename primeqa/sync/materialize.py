@@ -235,13 +235,17 @@ def _materialize_chunk(
             )
 
     # 5. Batched UPSERT to enrichment queue for new + changed.
+    # Every entity gets an embedding row; only SUMMARY_ENABLED_ENTITY_
+    # TYPES get a summary row — so summaries_queued is only bumped for
+    # those types (was previously over-counted for all 11 types).
     entity_ids_needing_enrichment = new_entity_ids + changed_new_ids
     if entity_ids_needing_enrichment:
         _batch_upsert_queue(
             conn, entity_type, entity_ids_needing_enrichment, now,
         )
         result.embeddings_queued += len(entity_ids_needing_enrichment)
-        result.summaries_queued += len(entity_ids_needing_enrichment)
+        if entity_type in SUMMARY_ENABLED_ENTITY_TYPES:
+            result.summaries_queued += len(entity_ids_needing_enrichment)
 
     # 6. (Optional) Build {external_id: entity_id} for callers
     # that need to construct edges from this chunk's entities.
@@ -661,6 +665,17 @@ def _batch_touch_existing(
     """), {"now": now, "ids": entity_ids})
 
 
+# Entity types that get a `summary` enrichment row enqueued. Only
+# flow_details and validation_rule_details carry the summary_text +
+# summary_embedding storage (P8 migration 20260514_0010), so summary
+# enrichment is scoped to these two for v1 — every other entity type
+# gets embedding-only enrichment. The §23 enrichment worker filters
+# the queue on the same set; this constant is the single source of
+# truth. `embedding` is always enqueued (entities.embedding exists
+# for every entity type).
+SUMMARY_ENABLED_ENTITY_TYPES = frozenset({"Flow", "ValidationRule"})
+
+
 def _batch_upsert_queue(
     conn: Any,
     entity_type: str,
@@ -669,14 +684,24 @@ def _batch_upsert_queue(
 ) -> None:
     """Multi-row UPSERT to ai_enrichment_queue.
 
-    Two queue rows per entity (embedding + summary). ON CONFLICT
-    (entity_type, entity_id, primitive_type) DO UPDATE resets
-    status='pending' + attempts=0 + clears prior timestamps —
+    Always enqueues an `embedding` row per entity. Enqueues a
+    `summary` row too — but ONLY for entity types in
+    SUMMARY_ENABLED_ENTITY_TYPES (Flow, ValidationRule); the other
+    nine entity types have no summary_text storage, so a summary row
+    for them would be a permanently-unfulfillable orphan.
+
+    ON CONFLICT (entity_type, entity_id, primitive_type) DO UPDATE
+    resets status='pending' + attempts=0 + clears prior timestamps —
     re-enables enrichment for previously-failed_permanent rows
     on new structural change.
     """
     if not entity_ids:
         return
+
+    # embedding for everything; summary only for the enabled types.
+    primitives = ["embedding"]
+    if entity_type in SUMMARY_ENABLED_ENTITY_TYPES:
+        primitives.append("summary")
 
     values_clauses: list[str] = []
     params: dict[str, Any] = {
@@ -684,7 +709,7 @@ def _batch_upsert_queue(
         "entity_type": entity_type,
     }
     for i, eid in enumerate(entity_ids):
-        for j, primitive in enumerate(("embedding", "summary")):
+        for j, primitive in enumerate(primitives):
             key = f"{i}_{j}"
             values_clauses.append(
                 f"(:entity_type, :eid_{key}, :prim_{key}, "

@@ -481,7 +481,10 @@ def test_live_sync_full(
         # (Object + PicklistValueSet); the PVS-vs-Object split is
         # verified below in the PicklistValueSet block.
 
-        # ai_enrichment_queue — 2 rows per entity (embedding + summary)
+        # ai_enrichment_queue — per §23, every entity gets an
+        # `embedding` row; only Flow + ValidationRule
+        # (SUMMARY_ENABLED_ENTITY_TYPES) get a `summary` row. Object
+        # is not summary-enabled → 1 row per Object, embedding only.
         queue_count = conn.execute(text("""
             SELECT COUNT(*) FROM ai_enrichment_queue
             WHERE entity_type = 'Object'
@@ -492,9 +495,27 @@ def test_live_sync_full(
               )
               AND status = 'pending'
         """), {"id": test_org}).scalar()
-        assert queue_count == object_count * 2, (
-            f"Expected 2× queue rows per entity ({object_count}×2="
-            f"{object_count * 2}); got {queue_count}"
+        assert queue_count == object_count, (
+            f"Expected 1 queue row per Object (embedding only — "
+            f"Object is not summary-enabled per §23); got "
+            f"{queue_count} for {object_count} Objects"
+        )
+        # Positively lock the §23 filter from the non-summary side:
+        # Object gets embedding rows, ZERO summary rows.
+        obj_primitives = dict(conn.execute(text("""
+            SELECT primitive_type, COUNT(*) FROM ai_enrichment_queue
+            WHERE entity_type = 'Object'
+              AND entity_id IN (
+                  SELECT id FROM entities
+                  WHERE last_synced_from_org_id = :id
+                    AND entity_type = 'Object'
+              )
+            GROUP BY primitive_type
+        """), {"id": test_org}).fetchall())
+        assert obj_primitives.get("embedding", 0) == object_count
+        assert obj_primitives.get("summary", 0) == 0, (
+            f"Object must get NO summary rows (§23 filter); got "
+            f"{obj_primitives.get('summary', 0)}"
         )
 
         # logical_versions row allocated for this sync
@@ -540,8 +561,9 @@ def test_live_sync_full(
             f"(sandbox has 0 GVSes); got {svs_count} prefixed"
         )
 
-        # Queue rows = 2× entity count for PicklistValueSet
-        # (embedding + summary primitives per entity).
+        # Queue rows = 1× entity count for PicklistValueSet —
+        # embedding only; PicklistValueSet is not summary-enabled
+        # (§23 SUMMARY_ENABLED_ENTITY_TYPES = {Flow, ValidationRule}).
         pvs_queue = conn.execute(text("""
             SELECT COUNT(*) FROM ai_enrichment_queue
             WHERE entity_type = 'PicklistValueSet'
@@ -551,9 +573,9 @@ def test_live_sync_full(
                     AND entity_type = 'PicklistValueSet'
               )
         """), {"id": test_org}).scalar()
-        assert pvs_queue == pvs_count * 2, (
-            f"Expected {pvs_count * 2} PicklistValueSet queue rows "
-            f"(2× entity count); got {pvs_queue}"
+        assert pvs_queue == pvs_count, (
+            f"Expected {pvs_count} PicklistValueSet queue rows "
+            f"(embedding only — not summary-enabled); got {pvs_queue}"
         )
 
         # ----- PicklistValue entities + picklist_value_details -----
@@ -606,7 +628,8 @@ def test_live_sync_full(
             f"orphan or wrong-type parent FK — parent_resolver bug"
         )
 
-        # PV enrichment queue: 2× entity count
+        # PV enrichment queue: 1× entity count — embedding only
+        # (PicklistValue is not summary-enabled per §23).
         pv_queue = conn.execute(text("""
             SELECT COUNT(*) FROM ai_enrichment_queue
             WHERE entity_type = 'PicklistValue'
@@ -616,9 +639,9 @@ def test_live_sync_full(
                     AND entity_type = 'PicklistValue'
               )
         """), {"id": test_org}).scalar()
-        assert pv_queue == pv_count * 2, (
-            f"Expected {pv_count * 2} PicklistValue queue rows; "
-            f"got {pv_queue}"
+        assert pv_queue == pv_count, (
+            f"Expected {pv_count} PicklistValue queue rows "
+            f"(embedding only); got {pv_queue}"
         )
 
         # ----- Object detail-table retrofit -----
@@ -800,7 +823,8 @@ def test_live_sync_full(
             f"target points at superseded/missing entity)"
         )
 
-        # Field enrichment queue
+        # Field enrichment queue: 1× entity count — embedding only
+        # (Field is not summary-enabled per §23).
         field_queue = conn.execute(text("""
             SELECT COUNT(*) FROM ai_enrichment_queue
             WHERE entity_type = 'Field'
@@ -810,9 +834,9 @@ def test_live_sync_full(
                     AND entity_type = 'Field'
               )
         """), {"id": test_org}).scalar()
-        assert field_queue == field_count * 2, (
-            f"Expected {field_count * 2} Field queue rows; "
-            f"got {field_queue}"
+        assert field_queue == field_count, (
+            f"Expected {field_count} Field queue rows "
+            f"(embedding only); got {field_queue}"
         )
 
         # ----- RecordType entities + record_type_details + edges -----
@@ -951,7 +975,8 @@ def test_live_sync_full(
             f"row — junction mirror is out of sync with the edge set"
         )
 
-        # RT enrichment queue: 2× entity count
+        # RT enrichment queue: 1× entity count — embedding only
+        # (RecordType is not summary-enabled per §23).
         rt_queue = conn.execute(text("""
             SELECT COUNT(*) FROM ai_enrichment_queue
             WHERE entity_type = 'RecordType'
@@ -961,9 +986,9 @@ def test_live_sync_full(
                     AND entity_type = 'RecordType'
               )
         """), {"id": test_org}).scalar()
-        assert rt_queue == rt_count * 2, (
-            f"Expected {rt_count * 2} RecordType queue rows; "
-            f"got {rt_queue}"
+        assert rt_queue == rt_count, (
+            f"Expected {rt_count} RecordType queue rows "
+            f"(embedding only); got {rt_queue}"
         )
 
         # ----- Layout entities + layout_details + edges -----
@@ -1106,7 +1131,8 @@ def test_live_sync_full(
             f"{atprt_with_hash} of {atprt_count}"
         )
 
-        # Layout enrichment queue: 2× count
+        # Layout enrichment queue: 1× count — embedding only
+        # (Layout is not summary-enabled per §23).
         layout_queue = conn.execute(text("""
             SELECT COUNT(*) FROM ai_enrichment_queue
             WHERE entity_type = 'Layout'
@@ -1116,7 +1142,10 @@ def test_live_sync_full(
                     AND entity_type = 'Layout'
               )
         """), {"id": test_org}).scalar()
-        assert layout_queue == layout_count * 2
+        assert layout_queue == layout_count, (
+            f"Expected {layout_count} Layout queue rows "
+            f"(embedding only); got {layout_queue}"
+        )
 
         # ----- ValidationRule entities + details + edges -----
         # Sandbox has 61 VRs per survey. Regression floor: >=1.
@@ -1199,7 +1228,9 @@ def test_live_sync_full(
             f"got {references_count}"
         )
 
-        # VR enrichment queue: 2× count
+        # VR enrichment queue: 2× count — embedding + summary.
+        # ValidationRule IS summary-enabled (§23
+        # SUMMARY_ENABLED_ENTITY_TYPES), so it gets both primitives.
         vr_queue = conn.execute(text("""
             SELECT COUNT(*) FROM ai_enrichment_queue
             WHERE entity_type = 'ValidationRule'
@@ -1209,7 +1240,11 @@ def test_live_sync_full(
                     AND entity_type = 'ValidationRule'
               )
         """), {"id": test_org}).scalar()
-        assert vr_queue == vr_count * 2
+        assert vr_queue == vr_count * 2, (
+            f"Expected {vr_count * 2} ValidationRule queue rows "
+            f"(embedding + summary — summary-enabled per §23); "
+            f"got {vr_queue}"
+        )
 
         # ----- Profile entities + profile_details + edges -----
         # Org-level entity (no parent Object). Sandbox at 18
@@ -1334,7 +1369,8 @@ def test_live_sync_full(
         # assertion needed; this comment marks the spot where the
         # Profile cycle's "deferred, expect 0" check used to live.
 
-        # Profile enrichment queue: 2× entity count
+        # Profile enrichment queue: 1× entity count — embedding only
+        # (Profile is not summary-enabled per §23).
         profile_queue = conn.execute(text("""
             SELECT COUNT(*) FROM ai_enrichment_queue
             WHERE entity_type = 'Profile'
@@ -1344,9 +1380,9 @@ def test_live_sync_full(
                     AND entity_type = 'Profile'
               )
         """), {"id": test_org}).scalar()
-        assert profile_queue == profile_count * 2, (
-            f"Expected {profile_count * 2} Profile queue rows; "
-            f"got {profile_queue}"
+        assert profile_queue == profile_count, (
+            f"Expected {profile_count} Profile queue rows "
+            f"(embedding only); got {profile_queue}"
         )
 
         # ----- PermissionSet entities + permission_set_details + edges -----
@@ -1515,7 +1551,8 @@ def test_live_sync_full(
             f"got {inherits_without_hash} of {inherits_count}"
         )
 
-        # PermissionSet enrichment queue: 2× entity count
+        # PermissionSet enrichment queue: 1× entity count — embedding
+        # only (PermissionSet is not summary-enabled per §23).
         permission_set_queue = conn.execute(text("""
             SELECT COUNT(*) FROM ai_enrichment_queue
             WHERE entity_type = 'PermissionSet'
@@ -1525,9 +1562,9 @@ def test_live_sync_full(
                     AND entity_type = 'PermissionSet'
               )
         """), {"id": test_org}).scalar()
-        assert permission_set_queue == permission_set_count * 2, (
-            f"Expected {permission_set_count * 2} PermissionSet "
-            f"queue rows; got {permission_set_queue}"
+        assert permission_set_queue == permission_set_count, (
+            f"Expected {permission_set_count} PermissionSet queue rows "
+            f"(embedding only); got {permission_set_queue}"
         )
 
         # ----- User entities + user_details + edges -----
@@ -1655,7 +1692,8 @@ def test_live_sync_full(
             f"{has_permission_set_count}"
         )
 
-        # User enrichment queue: 2× entity count
+        # User enrichment queue: 1× entity count — embedding only
+        # (User is not summary-enabled per §23).
         user_queue = conn.execute(text("""
             SELECT COUNT(*) FROM ai_enrichment_queue
             WHERE entity_type = 'User'
@@ -1665,9 +1703,9 @@ def test_live_sync_full(
                     AND entity_type = 'User'
               )
         """), {"id": test_org}).scalar()
-        assert user_queue == user_count * 2, (
-            f"Expected {user_count * 2} User queue rows; "
-            f"got {user_queue}"
+        assert user_queue == user_count, (
+            f"Expected {user_count} User queue rows "
+            f"(embedding only); got {user_queue}"
         )
 
         # ----- Flow entities + flow_details + edges -----
@@ -1763,7 +1801,9 @@ def test_live_sync_full(
             f"{triggers_on_count}"
         )
 
-        # Flow enrichment queue: 2× entity count
+        # Flow enrichment queue: 2× entity count — embedding +
+        # summary. Flow IS summary-enabled (§23
+        # SUMMARY_ENABLED_ENTITY_TYPES), so it gets both primitives.
         flow_queue = conn.execute(text("""
             SELECT COUNT(*) FROM ai_enrichment_queue
             WHERE entity_type = 'Flow'
@@ -1774,8 +1814,25 @@ def test_live_sync_full(
               )
         """), {"id": test_org}).scalar()
         assert flow_queue == flow_count * 2, (
-            f"Expected {flow_count * 2} Flow queue rows; "
-            f"got {flow_queue}"
+            f"Expected {flow_count * 2} Flow queue rows (embedding + "
+            f"summary — summary-enabled per §23); got {flow_queue}"
+        )
+        # Positively lock the §23 filter from the summary-enabled
+        # side: Flow gets BOTH an embedding and a summary row.
+        flow_primitives = dict(conn.execute(text("""
+            SELECT primitive_type, COUNT(*) FROM ai_enrichment_queue
+            WHERE entity_type = 'Flow'
+              AND entity_id IN (
+                  SELECT id FROM entities
+                  WHERE last_synced_from_org_id = :id
+                    AND entity_type = 'Flow'
+              )
+            GROUP BY primitive_type
+        """), {"id": test_org}).fetchall())
+        assert flow_primitives.get("embedding", 0) == flow_count
+        assert flow_primitives.get("summary", 0) == flow_count, (
+            f"Flow must get a summary row per entity (§23 — Flow is "
+            f"summary-enabled); got {flow_primitives.get('summary', 0)}"
         )
 
         # ----- Full-sync milestone: all 11 entity types present -----

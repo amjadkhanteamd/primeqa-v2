@@ -534,6 +534,465 @@ def process_run(run, ctx):
                 return
 
 
+# ----------------------------------------------------------------------
+# §23 enrichment queue worker
+# ----------------------------------------------------------------------
+#
+# The substrate-1 sync engine enqueues ai_enrichment_queue rows —
+# `embedding` for every entity, `summary` for Flow + ValidationRule
+# (SUMMARY_ENABLED_ENTITY_TYPES). enrichment_tick drains that queue:
+# embeddings via the Voyage API (batched, up to 128/call), summaries
+# via the Anthropic LLM gateway (per-row, Haiku). It's the 4th
+# worker_tick item, called every poll interval.
+#
+# ai_enrichment_queue lives in the TENANT schema (no tenant_id
+# column), so the worker discovers tenant_<N> schemas and runs each
+# subtick scoped to one tenant — SET search_path + SET app.tenant_id
+# (the latter required: entities carries a tenant_id CHECK assertion
+# that re-validates on UPDATE).
+#
+# Bounded per tick: <=128 embedding rows + <=5 summary rows PER
+# TENANT. The poll loop keeps calling, so a large backlog drains over
+# many ticks without any single tick running long enough to starve
+# the pipeline / metadata / generation ticks.
+
+from typing import Optional
+
+from sqlalchemy import text as _sa_text
+
+from primeqa.intelligence.embeddings import (
+    EMBEDDING_MODEL_TAG,
+    VoyageError,
+    embed_batch,
+)
+from primeqa.intelligence.llm.limits import record_embedding_usage
+
+EMBEDDING_BATCH_LIMIT = 128       # Voyage's per-request input cap
+SUMMARY_BATCH_LIMIT = 5           # per-row LLM calls — keep ticks short
+STALL_THRESHOLD_MINUTES = 10      # in_progress older than this -> reaped
+ENRICHMENT_MAX_ATTEMPTS = 5       # retryable failures past this -> permanent
+
+
+def _discover_tenant_schemas(session) -> list:
+    """Return [(schema_name, tenant_id), ...] for every tenant_<N>
+    schema in the database.
+
+    Discovered from information_schema rather than shared.tenants so
+    the worker doesn't depend on that registry being in sync with the
+    actual schemas — and so it works in the test DB, where
+    shared.tenants is empty but the tenant_1 schema is fully
+    populated.
+    """
+    rows = session.execute(_sa_text("""
+        SELECT schema_name FROM information_schema.schemata
+        WHERE schema_name ~ '^tenant_[0-9]+$'
+        ORDER BY schema_name
+    """)).fetchall()
+    out = []
+    for (name,) in rows:
+        try:
+            out.append((name, int(name[len("tenant_"):])))
+        except ValueError:
+            continue
+    return out
+
+
+def _set_tenant_context(session, schema_name: str, tenant_id: int) -> None:
+    """Scope the session to one tenant: search_path for unqualified
+    table resolution + app.tenant_id for the entities tenant CHECK
+    assertion. Session-level SET — persists until the session closes
+    (the worker opens a fresh session per tenant)."""
+    session.execute(_sa_text(f'SET search_path TO "{schema_name}", public'))
+    session.execute(
+        _sa_text("SET app.tenant_id = :tid"), {"tid": str(tenant_id)},
+    )
+
+
+def _reap_stalled(session, primitive_type: str) -> None:
+    """Return in_progress rows stuck > STALL_THRESHOLD_MINUTES to
+    pending so a crashed/killed worker's claims aren't lost forever.
+    Covered by the ai_enrichment_queue_stalled_idx partial index."""
+    session.execute(_sa_text("""
+        UPDATE ai_enrichment_queue
+        SET status = 'pending', started_at = NULL
+        WHERE primitive_type = :pt
+          AND status = 'in_progress'
+          AND started_at < NOW() - make_interval(mins => :mins)
+    """), {"pt": primitive_type, "mins": STALL_THRESHOLD_MINUTES})
+    session.commit()
+
+
+def _claim_batch(session, primitive_type: str, limit: int,
+                 entity_types: Optional[list] = None) -> list:
+    """Atomically claim up to `limit` pending/failed_retryable rows of
+    `primitive_type` — FOR UPDATE SKIP LOCKED, safe across concurrent
+    workers. Flips them to in_progress, stamps started_at, clears
+    completed_at (a re-claimed failed_retryable row had it set), bumps
+    attempts. Returns the claimed rows as dicts.
+
+    Claims `failed_retryable` alongside `pending` so transient
+    failures get re-tried on a later tick; the attempts counter +
+    _mark_failed's ENRICHMENT_MAX_ATTEMPTS cap stops infinite retry.
+    Optional entity_types filter — the summary subtick passes
+    Flow+ValidationRule defensively.
+    """
+    et_filter = ""
+    params = {"pt": primitive_type, "lim": limit}
+    if entity_types:
+        et_filter = "AND entity_type = ANY(:ets)"
+        params["ets"] = list(entity_types)
+    rows = session.execute(_sa_text(f"""
+        UPDATE ai_enrichment_queue
+        SET status = 'in_progress',
+            started_at = NOW(),
+            completed_at = NULL,
+            attempts = attempts + 1
+        WHERE id IN (
+            SELECT id FROM ai_enrichment_queue
+            WHERE status IN ('pending', 'failed_retryable')
+              AND primitive_type = :pt
+              {et_filter}
+            ORDER BY enqueued_at
+            LIMIT :lim
+            FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id, entity_type, entity_id, attempts
+    """), params).fetchall()
+    session.commit()
+    return [
+        {"queue_id": r[0], "entity_type": r[1],
+         "entity_id": str(r[2]), "attempts": r[3]}
+        for r in rows
+    ]
+
+
+def _mark_succeeded(session, queue_id) -> None:
+    session.execute(_sa_text("""
+        UPDATE ai_enrichment_queue
+        SET status = 'succeeded', completed_at = NOW(), error_text = NULL
+        WHERE id = :id
+    """), {"id": queue_id})
+
+
+def _mark_failed(session, queue_id, retryable: bool, err: str,
+                 attempts: int) -> None:
+    """Mark a claimed row failed. A retryable failure becomes
+    failed_retryable (re-tried on a later tick) UNLESS attempts have
+    hit ENRICHMENT_MAX_ATTEMPTS, at which point it's failed_permanent.
+    A non-retryable failure is failed_permanent immediately."""
+    if retryable and attempts < ENRICHMENT_MAX_ATTEMPTS:
+        status = "failed_retryable"
+    else:
+        status = "failed_permanent"
+    session.execute(_sa_text("""
+        UPDATE ai_enrichment_queue
+        SET status = :st, completed_at = NOW(), error_text = :err
+        WHERE id = :id
+    """), {"st": status, "err": (err or "")[:2000], "id": queue_id})
+
+
+def _vec_literal(vec) -> str:
+    """pgvector text form '[v1,v2,...]' — no spaces (SQLAlchemy text()
+    chokes on '::' so callers CAST(:lit AS vector))."""
+    return "[" + ",".join(str(float(x)) for x in vec) + "]"
+
+
+def _write_embedding(session, entity_id: str, vec) -> None:
+    """Write the embedding to entities.embedding for the exact entity
+    version that was enqueued. The entities tenant CHECK assertion
+    re-validates on this UPDATE — _set_tenant_context must have run."""
+    session.execute(_sa_text("""
+        UPDATE entities
+        SET embedding = CAST(:vec AS vector),
+            embedding_model = :model,
+            embedding_generated_at = NOW()
+        WHERE id = :id
+    """), {"vec": _vec_literal(vec), "model": EMBEDDING_MODEL_TAG,
+           "id": entity_id})
+
+
+def _write_summary(session, entity_type: str, entity_id: str,
+                   summary_text: str, summary_vec, model: str,
+                   prompt_version: str) -> None:
+    """Write summary_text + summary_embedding + summary_model +
+    summary_prompt_version + summary_generated_at to the detail table.
+    `table` is a fixed map from a CHECK-constrained entity_type — not
+    user input — so the f-string interpolation is safe."""
+    table = ("flow_details" if entity_type == "Flow"
+             else "validation_rule_details")
+    session.execute(_sa_text(f"""
+        UPDATE {table}
+        SET summary_text = :txt,
+            summary_embedding = CAST(:vec AS vector),
+            summary_model = :model,
+            summary_prompt_version = :pv,
+            summary_generated_at = NOW()
+        WHERE entity_id = :id
+    """), {"txt": summary_text, "vec": _vec_literal(summary_vec),
+           "model": model, "pv": prompt_version, "id": entity_id})
+
+
+def _fetch_semantic_texts(session, entity_ids: list) -> dict:
+    """Batch-read entities.semantic_text for the claimed entity_ids.
+    Returns {entity_id(str): semantic_text}."""
+    if not entity_ids:
+        return {}
+    rows = session.execute(_sa_text("""
+        SELECT id, semantic_text FROM entities
+        WHERE id = ANY(CAST(:ids AS uuid[]))
+    """), {"ids": entity_ids}).fetchall()
+    return {str(eid): st for (eid, st) in rows}
+
+
+def _fetch_summary_context(session, entity_type: str,
+                           entity_id: str) -> Optional[dict]:
+    """Assemble the prompt context for one entity, or None if the
+    entity / detail row isn't found.
+
+    Pulls sf_api_name + semantic_text + the attributes JSONB + detail-
+    table columns, mapped to the keys the entity_summary_{flow,
+    validation_rule} prompts expect. Those prompts are defensive
+    (every key optional), so a sparse context still yields a usable
+    summary.
+    """
+    if entity_type == "Flow":
+        row = session.execute(_sa_text("""
+            SELECT e.sf_api_name, e.semantic_text, e.attributes,
+                   fd.flow_type, fd.trigger_type, fd.is_active,
+                   obj.sf_api_name AS trigger_obj
+            FROM entities e
+            JOIN flow_details fd ON fd.entity_id = e.id
+            LEFT JOIN entities obj
+                ON obj.id = fd.triggers_on_object_entity_id
+            WHERE e.id = :id
+        """), {"id": entity_id}).fetchone()
+        if row is None:
+            return None
+        attrs = row[2] or {}
+        meta = attrs.get("Metadata") or {}
+        return {
+            "name": row[0],
+            "semantic_text": row[1],
+            "process_type": row[3],
+            "trigger_type": row[4],
+            "is_active": row[5],
+            "triggers_on_object": row[6],
+            "description": meta.get("description") or attrs.get("description"),
+        }
+    if entity_type == "ValidationRule":
+        row = session.execute(_sa_text("""
+            SELECT e.sf_api_name, e.semantic_text, e.attributes,
+                   obj.sf_api_name AS obj_name
+            FROM entities e
+            JOIN validation_rule_details vrd ON vrd.entity_id = e.id
+            LEFT JOIN entities obj ON obj.id = vrd.object_entity_id
+            WHERE e.id = :id
+        """), {"id": entity_id}).fetchone()
+        if row is None:
+            return None
+        attrs = row[2] or {}
+        meta = attrs.get("Metadata") or {}
+        return {
+            "name": row[0],
+            "semantic_text": row[1],
+            "object": row[3],
+            "error_message": meta.get("errorMessage"),
+            "formula_text": meta.get("errorConditionFormula"),
+            "error_display_field": meta.get("errorDisplayField"),
+        }
+    return None
+
+
+def _embedding_subtick(session, tenant_id: int) -> bool:
+    """Claim a batch of embedding rows for one tenant, embed via the
+    Voyage API, write entities.embedding, mark the queue rows.
+    Returns True iff any rows were claimed."""
+    _reap_stalled(session, "embedding")
+    claimed = _claim_batch(session, "embedding", EMBEDDING_BATCH_LIMIT)
+    if not claimed:
+        return False
+
+    texts_by_id = _fetch_semantic_texts(
+        session, [r["entity_id"] for r in claimed],
+    )
+
+    # Partition: rows with usable semantic_text get embedded; rows with
+    # NULL/blank text are a no-op success — defensive against a sync
+    # bug that left semantic_text empty (re-running the sync is the
+    # fix, not a permanent enrichment failure).
+    embeddable = []
+    for r in claimed:
+        st = texts_by_id.get(r["entity_id"])
+        if st and st.strip():
+            embeddable.append((r, st))
+        else:
+            _mark_succeeded(session, r["queue_id"])
+
+    if not embeddable:
+        session.commit()
+        return True
+
+    try:
+        vectors = embed_batch(
+            [t for (_, t) in embeddable], input_type="document",
+        )
+    except VoyageError as e:
+        for (r, _) in embeddable:
+            _mark_failed(session, r["queue_id"], e.retryable,
+                         str(e), r["attempts"])
+        session.commit()
+        return True
+
+    if len(vectors) != len(embeddable):
+        # Voyage should return one vector per input — treat a count
+        # mismatch as a transient anomaly worth a retry.
+        for (r, _) in embeddable:
+            _mark_failed(session, r["queue_id"], True,
+                         f"Voyage returned {len(vectors)} vectors for "
+                         f"{len(embeddable)} inputs", r["attempts"])
+        session.commit()
+        return True
+
+    for (r, _), vec in zip(embeddable, vectors):
+        _write_embedding(session, r["entity_id"], vec)
+        _mark_succeeded(session, r["queue_id"])
+    session.commit()
+
+    # Rate-limit accounting — one llm_usage_log row per Voyage batch.
+    try:
+        record_embedding_usage(
+            tenant_id, batch_size=len(embeddable),
+            model=EMBEDDING_MODEL_TAG,
+            context={"primitive": "embedding"},
+        )
+    except Exception as e:
+        log.warning("record_embedding_usage failed (tenant %s): %s",
+                    tenant_id, e)
+    return True
+
+
+def _summary_subtick(session, tenant_id: int) -> bool:
+    """Claim a small batch of summary rows for one tenant, generate a
+    plain-English summary via the LLM gateway, embed it, write the
+    detail-table summary_* fields. Returns True iff any rows claimed."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        # No key -> can't summarise. Leave rows pending (don't claim);
+        # log so the gap is visible.
+        log.warning("enrichment summary subtick: ANTHROPIC_API_KEY not "
+                    "set; skipping summary enrichment")
+        return False
+
+    _reap_stalled(session, "summary")
+    claimed = _claim_batch(session, "summary", SUMMARY_BATCH_LIMIT,
+                           entity_types=["Flow", "ValidationRule"])
+    if not claimed:
+        return False
+
+    from primeqa.intelligence.llm.gateway import llm_call, LLMError
+
+    for r in claimed:
+        et = r["entity_type"]
+        context = _fetch_summary_context(session, et, r["entity_id"])
+        if context is None:
+            _mark_failed(session, r["queue_id"], False,
+                         "entity / detail row not found", r["attempts"])
+            continue
+
+        task = ("entity_summary_validation_rule"
+                if et == "ValidationRule" else "entity_summary_flow")
+        try:
+            resp = llm_call(task=task, tenant_id=tenant_id,
+                            api_key=api_key, context=context)
+        except LLMError as e:
+            # LLMError carries .status, not .retryable. Auth + content
+            # errors are terminal; everything else (rate_limited,
+            # provider_error, quota_exceeded) is worth a retry.
+            retryable = e.status not in ("auth_error", "content_error")
+            _mark_failed(session, r["queue_id"], retryable,
+                         f"{e.status}: {e.message}", r["attempts"])
+            continue
+        except Exception as e:
+            _mark_failed(session, r["queue_id"], True,
+                         f"{type(e).__name__}: {e}", r["attempts"])
+            continue
+
+        summary_text = (resp.parsed_content or "").strip()
+        if not summary_text:
+            _mark_failed(session, r["queue_id"], True,
+                         "LLM returned an empty summary", r["attempts"])
+            continue
+
+        # Embed the generated summary -> detail-table summary_embedding.
+        try:
+            summary_vec = embed_batch(
+                [summary_text], input_type="document",
+            )[0]
+        except VoyageError as e:
+            _mark_failed(session, r["queue_id"], e.retryable,
+                         f"summary embedding failed: {e}",
+                         r["attempts"])
+            continue
+
+        _write_summary(session, et, r["entity_id"], summary_text,
+                       summary_vec, model=resp.model,
+                       prompt_version=resp.prompt_version)
+        _mark_succeeded(session, r["queue_id"])
+
+    session.commit()
+    return True
+
+
+def enrichment_tick(db_factory=None) -> bool:
+    """Drain a bounded slice of ai_enrichment_queue across all tenants.
+
+    For each tenant_<N> schema: open a short-lived session scoped to
+    that tenant (search_path + app.tenant_id), run the embedding
+    subtick then the summary subtick. Bounded per tenant per tick so a
+    big backlog drains over many ticks without starving the other
+    worker_tick items.
+
+    Returns True iff ANY tenant did work — lets a caller distinguish
+    "queue had work" from "queue drained" (the integration test loops
+    on this).
+
+    `db_factory()` returns a fresh Session. Defaults to the worker's
+    SessionLocal; the integration test injects a factory bound to the
+    live test engine.
+    """
+    if db_factory is None:
+        from primeqa.db import SessionLocal
+        db_factory = SessionLocal
+
+    # Tenant discovery is a public-schema query — run it before any
+    # per-tenant search_path is set.
+    disc = db_factory()
+    try:
+        tenants = _discover_tenant_schemas(disc)
+    finally:
+        disc.close()
+
+    did_work = False
+    for schema_name, tenant_id in tenants:
+        session = db_factory()
+        try:
+            _set_tenant_context(session, schema_name, tenant_id)
+            if _embedding_subtick(session, tenant_id):
+                did_work = True
+            if _summary_subtick(session, tenant_id):
+                did_work = True
+        except Exception as e:
+            log.warning("enrichment_tick: tenant %s failed: %s",
+                        schema_name, e)
+            try:
+                session.rollback()
+            except Exception:
+                pass
+        finally:
+            session.close()
+    return did_work
+
+
 def worker_tick(ctx):
     """Single poll iteration: drive pipeline runs AND metadata syncs."""
     # 1) Pipeline runs (existing)
@@ -575,6 +1034,19 @@ def worker_tick(ctx):
             process_job(gen_job, db_factory=SessionLocal)
     except Exception as e:
         log.warning("generation worker tick failed: %s", e)
+
+    # 4) Enrichment queue (§23). Drains ai_enrichment_queue across all
+    # tenant schemas — embeddings via the Voyage API (batched up to
+    # 128/call), summaries via the Anthropic gateway (per-row Haiku).
+    # Bounded per tenant per tick (<=128 embeddings + <=5 summaries)
+    # so a large backlog drains over many ticks without starving the
+    # ticks above. Own short-lived per-tenant sessions, like
+    # process_job — never touches ctx["db"].
+    try:
+        from primeqa.db import SessionLocal
+        enrichment_tick(db_factory=SessionLocal)
+    except Exception as e:
+        log.warning("enrichment worker tick failed: %s", e)
 
 
 def run_worker():

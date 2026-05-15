@@ -1395,3 +1395,96 @@ API exposes it directly, a content-matching heuristic is the
 fallback — but heuristics earn their own cycle with their own
 fragility analysis, not a rider on an unrelated wiring cycle.
 
+## §23: Enrichment queue worker — RESOLVED
+
+Date: 2026-05-14
+Step: design doc §9 step 4 (enrichment queue worker) — the final
+      Phase 2 sync-layer step
+
+Implementation: P8 precursor (commit 3aa2b8f) + main commit (this
+cycle). The worker consumes ai_enrichment_queue and populates
+entities.embedding + the Flow / ValidationRule detail-table
+summary_* fields.
+
+Substantive decisions made during the cycle:
+
+1. **Embedding provider — Voyage AI, after three environment
+   walls.** The cycle hit three blockers in sequence before
+   landing on Voyage: (a) no OpenAI key + no per-tenant LLM-
+   credential storage; (b) a pivot to a local sentence-
+   transformers model failed because PyTorch has no Python 3.14
+   wheels; (c) the Python-3.11 downgrade still didn't help —
+   PyTorch dropped Intel-macOS (x86_64) wheels after torch 2.2.2,
+   and 2.2.2 conflicts with the project's NumPy 2.x +
+   transformers 5.x. Voyage AI's HTTP API (model voyage-3, 1024
+   dim) runs identically on the Intel-Mac dev box, Linux/Railway,
+   and CI — the only option that preserves local↔prod parity on
+   this hardware. Full rationale + alternatives in D-049. The
+   Python venv was rebuilt 3.14 → 3.11.15 along the way to match
+   the project's declared runtime (`.python-version`, Dockerfile,
+   nixpacks all say 3.11) — an incidental but correct alignment.
+
+2. **Summary scope: Flow + ValidationRule for v1.** Only
+   flow_details and validation_rule_details carry summary_text +
+   summary_embedding storage (summary_text added in P8 migration
+   20260514_0010). The sync engine's SUMMARY_ENABLED_ENTITY_TYPES
+   = {Flow, ValidationRule} constant (materialize.py) gates which
+   entity types enqueue a `summary` primitive; `embedding` is
+   enqueued for all 11 entity types. The other nine types get
+   embedding-only enrichment until a future cycle adds summary
+   storage + prompts for them.
+
+3. **Cleanup migration 20260514_0020.** Before the sync-engine
+   filter shipped, the sync enqueued `summary` rows for all 11
+   entity types — ~5,800 of which (everything but Flow + VR) had
+   no storage destination. The cleanup migration DELETEs those
+   orphans; it's idempotent (0 rows on a schema provisioned after
+   the filter).
+
+4. **Worker structure.** enrichment_tick is the 4th worker_tick
+   item. ai_enrichment_queue lives in the TENANT schema (no
+   tenant_id column), so the worker discovers tenant_<N> schemas
+   from information_schema (not shared.tenants — which can be out
+   of sync, and is empty in the test DB) and runs each subtick
+   scoped to one tenant via SET search_path + SET app.tenant_id
+   (the latter required — entities carries a tenant_id CHECK
+   assertion that re-validates on the embedding UPDATE). Bounded
+   per tenant per tick: ≤128 embedding rows (one Voyage batch) +
+   ≤5 summary rows (per-row Haiku calls). The poll loop drains a
+   large backlog over many ticks without any single tick
+   starving the pipeline / metadata / generation ticks.
+
+5. **Failure handling.** Retryable failures (Voyage 429/5xx/
+   network, LLM rate_limited/provider_error) → failed_retryable,
+   re-claimed on a later tick; non-retryable (Voyage 4xx-auth,
+   LLM auth_error/content_error, entity-not-found) →
+   failed_permanent. The attempts counter caps retries at
+   ENRICHMENT_MAX_ATTEMPTS=5. in_progress rows stuck > 10 min are
+   reaped back to pending (covered by the stalled_idx partial
+   index).
+
+6. **Empty semantic_text is a no-op success.** An entity whose
+   semantic_text is NULL/blank is marked succeeded without an
+   embed call — defensive against a sync bug that left
+   semantic_text empty; re-running the sync is the fix, not a
+   permanent enrichment failure.
+
+7. **The summary path also embeds.** Each generated summary's
+   text gets its own 1024-dim embedding via the Voyage client,
+   written to {flow,validation_rule}_details.summary_embedding
+   alongside summary_text + summary_model + summary_prompt_version
+   + summary_generated_at.
+
+Live verification: test_live_sync_full (the sync still passes,
+queue now carries embedding rows for all types + summary rows
+only for Flow + ValidationRule) + test_live_enrichment (the
+worker drains the queue; entities.embedding populated for every
+active entity; Flow + VR summaries fully populated; zero
+failed_permanent; a second tick after the drain is a no-op).
+
+Phase 2 sync layer status: structurally COMPLETE. All 11
+entity-materialization phases live-verified; all wireable
+TIER_1_EDGES types implemented except §17 REFERENCES (needs a
+Salesforce formula parser — its own cycle); enrichment worker
+RESOLVED here.
+

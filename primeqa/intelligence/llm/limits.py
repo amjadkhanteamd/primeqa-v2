@@ -128,6 +128,21 @@ def load_tenant_config(tenant_id: int, *, db=None, return_row: bool = False):
     from primeqa.core.models import TenantAgentSettings
     from primeqa.intelligence.llm import tiers
 
+    def _starter_defaults():
+        """Starter-tier limits + default policy — the value returned
+        both for a tenant with no settings row AND (fail-open) when
+        the settings table can't be read at all."""
+        resolved = tiers.resolve_limits(tiers.TIER_STARTER)
+        result = (
+            TenantLimits(
+                max_per_minute=resolved["max_per_minute"],
+                max_per_hour=resolved["max_per_hour"],
+                max_spend_per_day_usd=resolved["max_spend_per_day_usd"],
+            ),
+            TenantPolicy(),
+        )
+        return (*result, None) if return_row else result
+
     owns_session = db is None
     sess = db if db is not None else Session(bind=engine)
     try:
@@ -136,16 +151,7 @@ def load_tenant_config(tenant_id: int, *, db=None, return_row: bool = False):
         ).first()
         if not row:
             # No settings row → starter tier, no overrides.
-            resolved = tiers.resolve_limits(tiers.TIER_STARTER)
-            result = (
-                TenantLimits(
-                    max_per_minute=resolved["max_per_minute"],
-                    max_per_hour=resolved["max_per_hour"],
-                    max_spend_per_day_usd=resolved["max_spend_per_day_usd"],
-                ),
-                TenantPolicy(),
-            )
-            return (*result, None) if return_row else result
+            return _starter_defaults()
 
         tier = getattr(row, "llm_tier", None) or tiers.TIER_STARTER
         resolved = tiers.resolve_limits(
@@ -169,9 +175,26 @@ def load_tenant_config(tenant_id: int, *, db=None, return_row: bool = False):
             ),
         )
         return (*result, row) if return_row else result
+    except Exception as e:
+        # Fail OPEN: the rate-limit/tier layer is governance, not the
+        # work itself — if tenant_agent_settings can't be read (table
+        # absent, no engine bound, transient DB error) the LLM call
+        # should still proceed under conservative starter limits
+        # rather than crash. Mirrors usage.record's "never raise into
+        # the caller" discipline. Relevant for the substrate-1
+        # enrichment worker, whose tenant DB carries the entities but
+        # not the primeqa-app gateway tables.
+        log.warning(
+            "load_tenant_config: read failed (tenant=%s): %s — "
+            "falling back to starter defaults", tenant_id, e,
+        )
+        return _starter_defaults()
     finally:
         if owns_session:
-            sess.close()
+            try:
+                sess.close()
+            except Exception:
+                pass
 
 
 def check(tenant_id: int, limits: TenantLimits) -> LimitCheckResult:
@@ -231,8 +254,24 @@ def check(tenant_id: int, limits: TenantLimits) -> LimitCheckResult:
                         f"${float(spend):.4f} of ${limits.max_spend_per_day_usd:.2f}"
                     ),
                 )
+    except Exception as e:
+        # Fail OPEN — same discipline as load_tenant_config above. The
+        # rate-limit windows are governance, not the work itself; if
+        # llm_usage_log can't be read (table absent, no engine bound,
+        # transient DB error) the call proceeds rather than crashing.
+        # The substrate-1 enrichment worker runs against a tenant DB
+        # that carries the entities but not the primeqa-app gateway
+        # tables.
+        log.warning(
+            "limits.check: read failed (tenant=%s): %s — allowing call",
+            tenant_id, e,
+        )
+        return LimitCheckResult(allowed=True)
     finally:
-        sess.close()
+        try:
+            sess.close()
+        except Exception:
+            pass
 
     return LimitCheckResult(allowed=True)
 

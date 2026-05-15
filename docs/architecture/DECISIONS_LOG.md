@@ -1184,4 +1184,36 @@ The `is_seed_source` flag itself was removed when sync architecture simplified t
 
 ---
 
+## D-049 — Embedding provider: Voyage AI `voyage-3` via raw httpx, 1024 dim
+
+**Status:** Locked
+**Date:** 2026-05-14
+**Phase:** 2 (§23 enrichment-worker cycle)
+**Supersedes:** the informal "D-043" — OpenAI `text-embedding-3-small` @ 1536 dim, never formally ratified, only ever a parenthetical "currently…" in `PRIMEQA_PRODUCT_DEFINITION.md`.
+
+**Decision.** The §23 enrichment worker generates embeddings via the Voyage AI API — model `voyage-3`, 1024 dimensions — over raw `httpx` HTTP calls. No vendor SDK; the client (`primeqa/intelligence/embeddings.py`) matches the `sf_client.py` pattern. The API key is read from the `VOYAGE_API_KEY` environment variable. `entities.embedding` and the detail-table `summary_embedding` columns are sized `vector(1024)` (migration `20260514_0010`, down from the 1536 the never-ratified OpenAI choice implied).
+
+**Rationale.**
+
+1. **Environment portability — the deciding factor.** A local `sentence-transformers` model (the highest-quality, zero-API-cost option) is not installable on the Intel-macOS dev box: PyTorch dropped x86_64-macOS wheels after `torch 2.2.2`, and `torch 2.2.2` is itself incompatible with the project's NumPy 2.x and `transformers` 5.x. An HTTP embedding API runs *identically* on the Intel-Mac dev box, on Linux/Railway production, and in CI — preserving the "what you verify locally is what ships" parity (CLAUDE.md working agreement) that a local PyTorch model would break on this hardware.
+
+2. **Quality.** `voyage-3` is competitive with state-of-the-art retrieval embedding models on public benchmarks, and Voyage is Anthropic's recommended embedding partner — a coherent pairing with the Anthropic LLM gateway already in production.
+
+3. **Operational simplicity.** No ~1 GB model weights to ship, no PyTorch dependency, no ~2 GB worker memory footprint, no GPU question. The worker container stays small. Raw `httpx` (already a dependency) — no SDK to track.
+
+4. **Cost.** Negligible at the scale we expect — a ~5,900-entity sandbox sync embeds for roughly $0.02; a 50K-entity org for ~$1-2 per full sync. Embeddings remain "sub-cent per entity."
+
+**Alternatives considered.**
+
+- *OpenAI `text-embedding-3-small`* (the informal D-043) — needs a vendor account unrelated to the Anthropic ecosystem, and the project has no per-tenant LLM-credential storage to hold the key.
+- *Local `sentence-transformers` + Snowflake `arctic-embed-l-v2.0`* — best quality, zero external API; rejected because PyTorch wheels are unavailable on the Intel-macOS dev environment, which would break local↔prod parity.
+- *`model2vec`* (torch-free local, static embeddings) — installs cleanly everywhere, but static embeddings are a meaningful retrieval-quality step down and the dimension drops to ~256.
+- *Pinning an old PyTorch stack* (`torch 2.2.2` + `numpy<2` + `transformers<5`) — would hold production back to a 2024-era dependency set to accommodate one Intel dev box; the wrong trade.
+
+**Consequences.** A `VOYAGE_API_KEY` must be provisioned in every environment that runs the enrichment worker (documented in `.env.example`). Embedding calls don't flow through the message gateway's `llm_call()`, so `limits.record_embedding_usage()` logs one `llm_usage_log` row per Voyage batch to keep embeddings visible to the per-tenant rate-limit windows. Voyage's free tier (3 RPM / 10K TPM) is enough for development; production needs at least the first paid tier. If PrimeQA moves to Apple-Silicon dev hardware a local `sentence-transformers` model becomes viable again and this decision is worth revisiting; likewise if Anthropic ships a first-party embedding API, or if a downstream substrate surfaces retrieval-quality issues that point at the model choice.
+
+**Cross-references.** D-046 (semantic_text is the deterministic embedding input); D-048 (graceful fallback for AI-primitive failures); `PHASE_2_PLAN_corrections.md` §23; P8 precursor commit `3aa2b8f`.
+
+---
+
 *End of Phase 2 additions.*

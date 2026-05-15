@@ -16,6 +16,8 @@ from unittest.mock import MagicMock, call, patch
 from primeqa.sync.context import SyncContext
 from primeqa.sync.materialize import (
     DEFAULT_CHUNK_SIZE,
+    SUMMARY_ENABLED_ENTITY_TYPES,
+    _batch_upsert_queue,
     batched_materialize,
 )
 from primeqa.sync.result import PhaseResult
@@ -407,7 +409,9 @@ class TestBatchedMaterializeChunking:
         assert result.entities_superseded == 0
         assert result.entities_unchanged == 0
         assert result.embeddings_queued == 1100
-        assert result.summaries_queued == 1100
+        # "Object" is not in SUMMARY_ENABLED_ENTITY_TYPES — every
+        # entity gets an embedding row, none get a summary row.
+        assert result.summaries_queued == 0
 
 
 class TestBatchedMaterializeSupersession:
@@ -527,9 +531,93 @@ class TestBatchedMaterializeQueueReEnqueue:
         mock_upsert.assert_called_once()
         upsert_ids = mock_upsert.call_args.args[2]
         assert sorted(upsert_ids) == ["new-A", "new-C"]
-        # embeddings + summaries each queued for both
+        # "Object" is not summary-enabled: embedding queued for both,
+        # summary for neither (summaries_queued only bumps for
+        # SUMMARY_ENABLED_ENTITY_TYPES).
         assert result.embeddings_queued == 2
-        assert result.summaries_queued == 2
+        assert result.summaries_queued == 0
+
+
+class TestBatchUpsertQueue:
+    """_batch_upsert_queue (§23): always enqueues an `embedding` row
+    per entity; enqueues a `summary` row only for
+    SUMMARY_ENABLED_ENTITY_TYPES (Flow, ValidationRule)."""
+    import datetime as _dt
+    _NOW = _dt.datetime(2026, 5, 14, tzinfo=_dt.timezone.utc)
+
+    def _primitives_in_call(self, conn):
+        """Extract the set of primitive_type values from the params of
+        the single conn.execute call."""
+        params = conn.execute.call_args[0][1]
+        return sorted(
+            v for k, v in params.items() if k.startswith("prim_")
+        )
+
+    def test_empty_entity_ids_is_noop(self) -> None:
+        conn = MagicMock()
+        _batch_upsert_queue(conn, "Object", [], self._NOW)
+        conn.execute.assert_not_called()
+
+    def test_non_summary_type_enqueues_embedding_only(self) -> None:
+        """Object (not summary-enabled): one embedding row per entity,
+        zero summary rows."""
+        conn = MagicMock()
+        _batch_upsert_queue(conn, "Object", ["e1", "e2"], self._NOW)
+        conn.execute.assert_called_once()
+        prims = self._primitives_in_call(conn)
+        assert prims == ["embedding", "embedding"]
+        assert "summary" not in prims
+
+    def test_flow_enqueues_embedding_and_summary(self) -> None:
+        conn = MagicMock()
+        _batch_upsert_queue(conn, "Flow", ["f1"], self._NOW)
+        prims = self._primitives_in_call(conn)
+        assert prims == ["embedding", "summary"]
+
+    def test_validation_rule_enqueues_embedding_and_summary(self) -> None:
+        conn = MagicMock()
+        _batch_upsert_queue(conn, "ValidationRule", ["vr1"], self._NOW)
+        prims = self._primitives_in_call(conn)
+        assert prims == ["embedding", "summary"]
+
+    def test_all_eleven_entity_types_get_embedding(self) -> None:
+        """Every Tier-1 entity type enqueues an embedding row; only the
+        two summary-enabled types additionally enqueue a summary row."""
+        all_types = [
+            "Object", "PicklistValueSet", "PicklistValue", "Field",
+            "RecordType", "Layout", "ValidationRule", "Profile",
+            "PermissionSet", "User", "Flow",
+        ]
+        for et in all_types:
+            conn = MagicMock()
+            _batch_upsert_queue(conn, et, ["x1"], self._NOW)
+            prims = self._primitives_in_call(conn)
+            assert "embedding" in prims, f"{et}: no embedding row"
+            if et in SUMMARY_ENABLED_ENTITY_TYPES:
+                assert "summary" in prims, f"{et}: missing summary row"
+            else:
+                assert "summary" not in prims, (
+                    f"{et}: should NOT get a summary row"
+                )
+
+    def test_summary_enabled_set_is_flow_and_validation_rule(self) -> None:
+        assert SUMMARY_ENABLED_ENTITY_TYPES == frozenset(
+            {"Flow", "ValidationRule"}
+        )
+
+    def test_upsert_sql_keeps_on_conflict_idempotency(self) -> None:
+        """The ON CONFLICT (entity_type, entity_id, primitive_type)
+        DO UPDATE clause is preserved — re-enqueue on a structural
+        change resets the row to pending."""
+        conn = MagicMock()
+        _batch_upsert_queue(conn, "Flow", ["f1"], self._NOW)
+        sql = str(conn.execute.call_args[0][0])
+        assert (
+            "ON CONFLICT (entity_type, entity_id, primitive_type)" in sql
+        )
+        assert "DO UPDATE SET" in sql
+        assert "status = 'pending'" in sql
+        assert "attempts = 0" in sql
 
 
 # ----------------------------------------------------------------------
