@@ -1214,6 +1214,60 @@ The `is_seed_source` flag itself was removed when sync architecture simplified t
 
 **Cross-references.** D-046 (semantic_text is the deterministic embedding input); D-048 (graceful fallback for AI-primitive failures); `PHASE_2_PLAN_corrections.md` §23; P8 precursor commit `3aa2b8f`.
 
+> **Note on prior informal D-043.** The pre-D-049 choice of OpenAI
+> `text-embedding-3-small` (1536 dim) was recorded in
+> `docs/architecture/substrate_1_semantic_org_model/PHASE_2_PLAN.md:468`
+> as informal D-043, not in this DECISIONS_LOG. PHASE_2_PLAN is a
+> locked planning artifact and is not edited; this D-049 entry
+> supersedes the planning-time choice. See
+> `PHASE_2_PLAN_corrections.md` §23 for the resolution narrative.
+
+---
+
+## D-050 — 8-substrate model is architectural authority; PRIMEQA_PRODUCT_DEFINITION's 4-substrate framing is product narrative
+
+**Date:** 2026-05-14
+**Substrates affected:** [all]
+**Status:** active
+
+**Decision.** Per D-001, PrimeQA's architecture is decomposed into 8
+substrates: S1 Semantic Org Model, S2 Test Representation, S3
+Generation Engine, S4 Execution Engine, S5 Knowledge System, S6
+Observation and Interpretation, S7 Conversation and Control, S8
+Evolution Engine. This 8-substrate framing is authoritative for all
+architectural decisions, substrate spec naming, and phase planning.
+
+`PRIMEQA_PRODUCT_DEFINITION.md` previously used a 4-substrate framing
+that collapsed S2+S3 into "Test Generation" and omitted S5, S7, S8.
+That framing was a product narrative written without a DECISIONS_LOG
+entry overriding D-001. It is reconciled in this cycle:
+PRODUCT_DEFINITION updated to use 8-substrate framing throughout.
+
+**Rationale.** Two competing substrate framings caused real confusion
+at Phase 3 (Substrate 2 — Test Representation) design kickoff.
+PLATFORM_VISION's 8-substrate decomposition is the more architecturally
+precise framing — Test Representation as data structure separate from
+Generation Engine as AI pipeline is a meaningful split. Forcing both
+docs to use the same framing eliminates ambiguity for current and
+future contributors.
+
+**Alternatives considered.**
+
+- *Override D-001 to adopt 4-substrate model* — rejected;
+  PLATFORM_VISION's decomposition is the more precise framing and
+  overriding D-001 would compress architectural distinctions that
+  matter (S2 data structure vs S3 generation, S5 knowledge
+  cross-cutting).
+- *Keep both framings and document the mapping* — rejected as ongoing
+  drift surface; pick one and use it.
+
+**References.**
+
+- D-001 (original 8-substrate decision)
+- `PLATFORM_VISION.md` §"The Eight Substrates"
+- `PRIMEQA_PRODUCT_DEFINITION.md` (after this commit's updates)
+- `docs/CONVENTIONS.md` §"Documentation authority"
+
 ---
 
 *End of Phase 2 additions.*

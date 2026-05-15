@@ -1,0 +1,153 @@
+# PrimeQA Documentation and Working Conventions
+
+## Phase numbering
+
+Four legitimate phase-numbering schemes coexist. Each describes a
+different thing. Use the one appropriate to your context; qualify on
+first reference per section if ambiguous.
+
+### Product roadmap phases
+
+Per `PRIMEQA_PRODUCT_DEFINITION.md` §6.3. The customer-visible product
+evolution.
+
+- Product-Phase 1: Substrate 1 foundation (shipped)
+- Product-Phase 2: Substrate 1 sync layer (shipped)
+- Product-Phase 3: Substrate 2 (Test Representation) design [next]
+- Product-Phase 4: Substrate 3 (Generation Engine)
+- Product-Phase 5: Substrate 4 (Execution Engine)
+- Product-Phase 6: Substrate 6 (Observation and Interpretation) — v1 product moment
+- Product-Phase 7+: Hardening, Substrate 5 / 7 / 8, multi-tenant, etc.
+
+### Substrate 1 12-week engineering phases
+
+Per D-024. Internal engineering phases for shipping S1.
+
+- S1-Phase 0: scaffolding (shipped)
+- S1-Phase 1: edges, derivation, etc. (shipped)
+- S1-Phase 2: sync engine (shipped)
+- S1-Phase 3: query class
+- S1-Phase 4: cutover (replaces v2 `meta_*`)
+- S1-Phase 5: hardening
+
+### Architecture 4 rollout phases (legacy)
+
+Per `docs/architecture/archive/ARCHITECTURE_4_NOTE.md`. Paused per
+D-003. Referenced for institutional context only.
+
+### v2 prompt-sequence numbering (legacy)
+
+In `CLAUDE.md` and related files, "Prompt 7", "Prompt 11", etc. refer
+to numbered prompts in v2's engineering history. These are not phases.
+v2 runtime context only.
+
+## Branch conventions
+
+Two patterns coexist depending on what you're working on:
+
+- **v2 runtime work** (Flask routes, HTMX templates, `meta_*` tables,
+  v2 generation/execution): commit directly to `main`. Iteration is
+  fast; `main` is the integration surface.
+- **Substrate work** (substrate_1_semantic_org_model and future
+  substrates): work on feature branches named
+  `phase-N-substrate-M` (e.g., `phase-2-substrate-1-sync`). Merge to
+  `main` at phase completion. Discipline is HOLD-and-show before
+  commits; per-cycle gates.
+
+## Working agreement (substrate work)
+
+### HOLD-and-show before commits
+
+Implementation work proceeds in cycles:
+
+1. **Survey before implementing.** Probe the actual code surface; do
+   not assume function signatures, return shapes, or behavior from a
+   context block alone.
+2. **Live-probe before assuming.** Use a real SOQL/DB/API probe to
+   verify behavior, especially for external systems (Salesforce,
+   Voyage, Anthropic) and substrate-1 schema constraints.
+3. **HOLD with full report before committing.** Show diffs, test
+   results, deviations from spec, cost estimates where applicable.
+4. **User reviews and gives explicit GO.** Verbatim commit messages.
+5. **Push to feature branch.** Merge to `main` at phase completion
+   via PR.
+
+### Pre-flight schema verification
+
+Before running expensive integration tests (>5 min wall-clock),
+pre-flight schema-verify any non-trivial queries in new test code via
+direct `psql` against current DB state. Cheap to do (~1 second per
+query); prevents 10+ minute discovery of column-name typos or schema
+mismatches.
+
+Example pattern:
+
+```bash
+psql "$LIVE_DATABASE_URL" -c "
+  SELECT column_name FROM information_schema.columns
+  WHERE table_schema = 'tenant_1'
+    AND table_name = 'entities'
+    AND column_name IN ('sf_api_name', 'external_id');
+"
+```
+
+This pattern was added to CONVENTIONS after §23 attempt 3 discovered
+a column-name typo in test telemetry only after a 10-minute
+integration test run.
+
+### Test fixture patterns
+
+- **`load_dotenv(override=True)` in test fixtures.** Default
+  `load_dotenv()` respects existing env vars including empty strings
+  that may be set by parent shells (e.g., Claude Code's own env).
+  Tests own their environment; `override=True` ensures `.env` values
+  are applied.
+- **Cross-domain SQLAlchemy model registration.** Tests that use
+  `Base.metadata` across domains must import all relevant model
+  modules before any `create_all` or metadata-dependent operation:
+
+  ```python
+  from primeqa.core import models  # noqa: F401
+  from primeqa.test_management import models  # noqa: F401
+  from primeqa.execution import models  # noqa: F401
+  from primeqa.intelligence import models  # noqa: F401
+  ```
+
+  The `noqa: F401` is intentional — these imports register tables in
+  `Base.metadata` even if the module is otherwise unused.
+
+### Migration apply pattern
+
+Substrate-1's alembic env has two branch chains (`shared`, `tenant`).
+Use:
+
+```bash
+alembic -x mode=tenant -x tenant_id=N upgrade tenant@head
+```
+
+Not bare `upgrade head` (ambiguous head selection — fails with
+"Multiple head revisions").
+
+For PostgreSQL on macOS Homebrew:
+
+- `pg_ctl start` may need `LC_ALL=C` to avoid "postmaster became
+  multithreaded during startup" errors
+- `alembic upgrade` needs `LC_ALL=en_US.UTF-8` for UTF-8 handling
+
+## Documentation authority
+
+- **`PLATFORM_VISION.md`** is the architectural authority for
+  substrate decomposition per D-001 / D-050.
+- **`PRIMEQA_PRODUCT_DEFINITION.md`** describes the product built on
+  this architecture.
+- **`DECISIONS_LOG.md`** is append-only; decisions are not edited in
+  place, only superseded by later decisions.
+- **`EVOLUTION.md`** (per substrate) is append-only.
+- **`PHASE_N_PLAN.md`** documents are locked planning artifacts;
+  corrections tracked in `PHASE_N_PLAN_corrections.md`.
+- **Substrate specs** (`docs/architecture/substrate_N_*/SPEC.md`) are
+  authoritative for that substrate's design.
+
+When in doubt: PLATFORM_VISION wins on architecture, PRODUCT_DEFINITION
+wins on product narrative, specific substrate spec wins on that
+substrate's behavior.

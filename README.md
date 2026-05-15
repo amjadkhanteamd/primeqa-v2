@@ -73,8 +73,11 @@ tenant, excluded from the 20-user cap).
 - `PROJECT_STATE.md` — current build progress, database tables, endpoints, pages
 - `docs/design/run-experience.md` — R1–R7 design doc with Q1–Q14 decision ledger
 - `docs/design/system-validation.md` — self-validation step grammar + canonical suite roadmap
-- `PRIMEQA_ARCHITECTURE_SPEC_v2.2.md` — original architecture spec
-- `PRIMEQA_BUILD_PLAN.md` — original build plan
+- `PRIMEQA_ARCHITECTURE_SPEC_v2.2.md` — original architecture spec (legacy; still operational; see `docs/architecture/PLATFORM_VISION.md` for the current substrate-based architecture)
+- `docs/archive/build_plans/PRIMEQA_BUILD_PLAN.md` — original build plan (archived 2026-05-14; v2 build complete)
+- `docs/architecture/PLATFORM_VISION.md` — current 8-substrate architecture
+- `docs/product/PRIMEQA_PRODUCT_DEFINITION.md` — current product description
+- `docs/CONVENTIONS.md` — phase numbering, branch conventions, substrate working agreement
 
 ## Local dev
 ```bash

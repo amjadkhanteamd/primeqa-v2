@@ -4,6 +4,15 @@
 **Last substantive revision:** 2026-04-24
 **Version:** 1.0
 
+> **Architectural authority.** Per D-001, the platform is architected
+> as 8 substrates. This document is the authoritative source for
+> substrate decomposition.
+>
+> For the product description built on this architecture, see
+> `docs/product/PRIMEQA_PRODUCT_DEFINITION.md`. If the two disagree
+> on substrate naming or scope, this document is authoritative (per
+> D-050).
+
 ## What PrimeQA Is
 
 PrimeQA is to QA what Claude Code is to developers.

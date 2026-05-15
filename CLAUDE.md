@@ -1,12 +1,23 @@
 # CLAUDE.md — PrimeQA v2
 
-## Working agreement
+## Branch conventions
 
-**Always commit directly to `main`. Do not create feature branches for this codebase.**
+Two patterns coexist depending on what you're working on:
+
+- **v2 runtime work** (Flask routes, HTMX templates, `meta_*` tables, v2 generation/execution): commit directly to `main`. Iteration is fast; `main` is the integration surface.
+- **Substrate work** (substrate_1_semantic_org_model and future substrates): feature branches named `phase-N-substrate-M` (e.g. `phase-2-substrate-1-sync`). Merge to `main` at phase completion. HOLD-and-show discipline before commits.
+
+See `docs/CONVENTIONS.md` for the full working agreement.
+
+## Working agreement (v2 runtime work)
+
+**For v2 runtime work: always commit directly to `main`. Do not create feature branches for this codebase.**
 
 Why: Railway auto-deploys on push-to-main. Feature branches on this repo create a disconnect where the branch ships green locally but production keeps running the old code because the merge never happens. Commit-then-push-main is the canonical workflow — every commit goes through the same continuous-deploy path, so what you verified locally is what ships. No exceptions: even when the work is big enough that a branch feels safer, the right answer is a clean commit on `main` (or a series of small commits) so deploy state stays synchronised with source state.
 
 If you find yourself on a worktree pointing at a non-`main` branch, the correct next step is to switch to the `main` worktree (or create one) and commit there directly.
+
+(Substrate work follows a different pattern — feature branches per phase, HOLD-and-show before commits. See `docs/CONVENTIONS.md`.)
 
 ## What is this project?
 PrimeQA is a **Release Intelligence System** for Salesforce. It connects to

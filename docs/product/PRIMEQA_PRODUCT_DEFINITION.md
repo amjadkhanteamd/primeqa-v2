@@ -5,6 +5,16 @@
 **Date:** 2026-04-30
 **Version:** 1.0 (initial)
 
+> **This document describes PrimeQA as a product.** The underlying
+> architectural decomposition into 8 substrates is in
+> `docs/architecture/PLATFORM_VISION.md`, which is the architectural
+> authority per D-001.
+>
+> Substrate numbering in this document follows PLATFORM_VISION's
+> 8-substrate model. If you came from an earlier version of this doc
+> that used 4-substrate numbering, see D-050 in
+> `docs/architecture/DECISIONS_LOG.md` for the reconciliation.
+
 ---
 
 ## How to read this document
@@ -181,40 +191,34 @@ In practice, customers will often run both: Provar for large stable regression s
 
 ## 4. How PrimeQA works
 
-### 4.1 The four-substrate architecture
+### 4.1 The eight-substrate architecture
 
-PrimeQA is built on four substrates, each with a distinct responsibility, each loosely coupled to the others through clean interfaces.
+PrimeQA is built on eight substrates, each with a distinct responsibility, loosely coupled to the others through clean interfaces. This framing is authoritative per `docs/architecture/PLATFORM_VISION.md` and D-001 / D-050. The v1 product moment is built on S1 + S2 + S3 + S4 + S6; the remaining three substrates (S5, S7, S8) are part of the architectural foundation but ship later.
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  Substrate 4 — Attribution + Explanation                     │
-│  Maps execution traces to semantic model entities.           │
-│  Generates QA-readable explanations. Confidence-scored.      │
-└──────────────────────────────────────────────────────────────┘
-                            ▲
-                            │
-┌──────────────────────────────────────────────────────────────┐
-│  Substrate 3 — Test Execution                                │
-│  Drives Salesforce via UI + API. Captures rich traces.       │
-│  Observation only. No interpretation.                        │
-└──────────────────────────────────────────────────────────────┘
-                            ▲
-                            │
-┌──────────────────────────────────────────────────────────────┐
-│  Substrate 2 — Test Generation                               │
-│  Bulk-generates test cases from JIRA tickets, grounded in    │
-│  Substrate 1. Review-gated. Iterative refinement.            │
-└──────────────────────────────────────────────────────────────┘
-                            ▲
-                            │
-┌──────────────────────────────────────────────────────────────┐
-│  Substrate 1 — Semantic Org Model                            │
-│  Bitemporal entity graph of Salesforce metadata.             │
-│  Embeddings for retrieval. Lightweight LLM summaries.        │
-└──────────────────────────────────────────────────────────────┘
+              Substrate 7 — Conversation and Control
+                              │
+                              ▼
+            Substrate 6 — Observation and Interpretation
+                ▲                              ▲
+                │                              │
+       Substrate 4 — Execution     ◀─── Substrate 8 — Evolution
+                ▲                              │
+                │                              ▼
+       Substrate 3 — Generation    ◀─── Substrate 5 — Knowledge
+                ▲                              │
+                │                              ▼
+                └────────► Substrate 1 — Semantic Org Model
+                                              ▲
+                                              │
+                  Substrate 2 — Test Representation ─┐
+                              ▲                      │
+                              └──────────────────────┘
 ```
 
-Each substrate is described in detail below, including its responsibilities, its interfaces, and what it deliberately does not do.
+Read the graph as: every higher substrate depends on substrates below. Substrate 1 (semantic org model) is foundational — referenced directly by Generation, Execution, Evolution, Interpretation, and Knowledge. Substrate 2 (test representation) is also foundational and referenced by Generation, Execution, Interpretation, Evolution. Substrate 5 (knowledge) is cross-cutting — it shapes generation, gets signals from execution and user feedback, and feeds interpretation. Substrate 7 (conversation) sits on top and touches every other substrate as a user-facing surface.
+
+Each substrate is described below, including its responsibilities, its interfaces, and what it deliberately does not do. The deeply-built v1 substrates (S1, S2, S3, S4, S6) get full treatments; the foundational-but-deferred substrates (S5, S7, S8) get brief sections so readers know they exist and how they fit.
 
 ### 4.2 Substrate 1 — Semantic Org Model
 
@@ -232,11 +236,21 @@ The model is enriched at sync time with two AI-derived layers:
 
 The substrate explicitly does not use AI for structural facts. The list of fields on an object, their types, their relationships — these come from Salesforce's describe and tooling APIs, parsed deterministically, written through Pydantic-validated boundaries. AI cannot invent a field, change a type, or alter a value. This is an architectural rule (see §4.7).
 
-The substrate exposes a clean query interface (a planned materialized view in Phase 2) that downstream substrates consume. Substrate 2 retrieves entities relevant to a JIRA ticket's content. Substrate 4 retrieves the entity for a given Salesforce error. Both consumers see the same model.
+The substrate exposes a clean query interface (a planned materialized view in Phase 2) that downstream substrates consume. Substrate 3 (Generation) retrieves entities relevant to a JIRA ticket's content. Substrate 6 (Observation and Interpretation) retrieves the entity for a given Salesforce error. Both consumers see the same model.
 
-### 4.3 Substrate 2 — Test Generation
+### 4.3 Substrate 2 — Test Representation
 
-**Responsibility:** Produce structured, reviewable test cases from natural-language requirements (JIRA tickets), grounded in Substrate 1.
+**Responsibility:** Be the canonical data structure for a test case — executable, human-readable, evolvable.
+
+A test case in PrimeQA is more than "JSON with steps." It captures test intent, coverage (which entities in the model the test touches), relationships to org entities (the validation rule it exercises, the flow it triggers), execution history (which runs it was part of, what their results were), assumptions about org state, and provenance (which JIRA ticket generated it, which prompt version, which Domain Pack shaped it).
+
+Tests are stored as structured records in PrimeQA's database. Generation history, edit history, and execution history are all first-class — they are what enable Substrate 6 (Observation and Interpretation) to explain failures by mapping them back to the originating intent. The representation is what Substrate 3 (Generation) produces and what Substrate 4 (Execution) consumes; the two substrates can evolve independently because they meet at this stable contract.
+
+The substrate is designed to represent tests across the full range of QA archetypes (data-behavior, configuration, permission, UI, integration) using a single common representation, not five different ones. The initial product covers one archetype; the representation must not foreclose the others.
+
+### 4.4 Substrate 3 — Generation Engine
+
+**Responsibility:** Produce test cases in Substrate 2's representation from natural-language requirements (JIRA tickets), grounded in Substrate 1.
 
 Generation is **user-driven**, not background-driven. The engineer selects one or more JIRA tickets, either individually or as a sprint batch, and explicitly asks PrimeQA to generate tests. The system does not generate tests automatically when JIRA tickets land. Background generation creates noise, erodes trust, and produces output the engineer never asked for.
 
@@ -251,17 +265,15 @@ The internal flow for generation is approximately:
 1. Engineer selects JIRA tickets in PrimeQA's UI.
 2. PrimeQA fetches ticket descriptions (via JIRA integration).
 3. For each ticket, PrimeQA embeds the ticket content and retrieves the most semantically relevant entities from Substrate 1 (objects, fields, validation rules, flows, etc. that the ticket likely concerns).
-4. The retrieved entities, ticket content, and a structured prompt are sent to an LLM (Anthropic Claude Sonnet for this work, given quality matters more than cost here).
-5. The LLM generates a structured test case that references real entity IDs from the retrieved set. Schema enforcement at the boundary prevents the LLM from inventing entity references.
+4. The retrieved entities, ticket content, and a structured prompt are sent to an LLM (Anthropic Claude Sonnet for this work, given quality matters more than cost here). Knowledge from Substrate 5 (Domain Packs, system rules, learned tenant facts) shapes the prompt.
+5. The LLM generates a test case in Substrate 2's representation, referencing real entity IDs from the retrieved set. Schema enforcement at the boundary prevents the LLM from inventing entity references.
 6. The generated test is presented in PrimeQA's UI for engineer review.
 
 The schema-enforcement step is critical. The LLM's output is constrained to reference only entities that exist in the model. If the LLM produces a test step that references a field that does not exist, that step fails validation and is not shown to the engineer. This is the architectural defense against hallucinated tests.
 
-Tests are stored as structured records in PrimeQA's database. They have generation history (which JIRA, which prompt version), edit history (engineer modifications), and execution history (which runs they were part of, what their results were). This richness is what enables Substrate 4 to do its job.
+### 4.5 Substrate 4 — Execution Engine
 
-### 4.4 Substrate 3 — Test Execution
-
-**Responsibility:** Run approved tests against Salesforce orgs and capture rich, structured traces of what happened.
+**Responsibility:** Run approved tests (in Substrate 2's representation) against Salesforce orgs and capture rich, structured traces of what happened.
 
 Execution uses a **hybrid UI plus API model**. The UI path is essential because many Salesforce behaviors — validation rules firing, flows triggering, layout constraints, lightning component behavior — only fully manifest through the UI. It is what the end user actually experiences, and it is what tests must validate. The API path is used where it makes execution faster and cleaner: data setup, deterministic state checks, backend validation. The mix is per-test-step, chosen for fidelity to what is being tested.
 
@@ -276,39 +288,63 @@ The execution layer captures, for every test run:
 - Screenshots at failure points
 - Metadata about the test, the org, the model version at the time of execution
 
-This trace is structured and machine-readable. It is not for human consumption directly. The engineer never sees raw traces. Substrate 4 consumes them.
+This trace is structured and machine-readable. It is not for human consumption directly. The engineer never sees raw traces. Substrate 6 (Observation and Interpretation) consumes them.
 
-The principle is: **capture everything, explain selectively.** The richness of the trace is what enables intelligence later. Simplification happens in the explanation layer (Substrate 4), not at execution. Execution is where truth is preserved.
+The principle is: **capture everything, explain selectively.** The richness of the trace is what enables intelligence later. Simplification happens in the explanation layer (Substrate 6), not at execution. Execution is where truth is preserved.
 
 The execution environment is **hybrid cloud-and-agent**. By default, tests run from PrimeQA's cloud infrastructure for ease of onboarding and scalability. For enterprise customers with strict security or data residency requirements, a customer-hosted agent runs tests within their own environment, with traces shipped back to PrimeQA's cloud for storage and analysis. The hybrid model is deferred build (cloud first, agent when an enterprise customer requires it).
 
-### 4.5 Substrate 4 — Attribution and Explanation
+### 4.6 Substrate 5 — Knowledge System
+
+**Responsibility:** Persist and improve the knowledge that shapes generation and execution — Domain Packs (prescriptive patterns), system rules (proscriptive rules), per-tenant learned facts, cross-tenant patterns (within strict isolation boundaries), and user feedback signals that tune future generations.
+
+The substrate is what makes PrimeQA get smarter the more it is used. Domain Packs ship with PrimeQA today as the early manifestation of this substrate; learned facts and cross-tenant patterns are deferred to a later phase. The architectural commitment is that knowledge is data, not configuration: it accumulates, evolves, and is queryable.
+
+S5 is cross-cutting. Generation (S3) reads from it; execution (S4) and user feedback write signals back into it (what worked, what didn't); interpretation (S6) can consult it for context. It does not have a primary user-facing surface — it shows up through the quality of generation, the relevance of explanations, and the accuracy of suggested fixes.
+
+### 4.7 Substrate 6 — Observation and Interpretation
 
 **Responsibility:** Convert execution traces into clean, grounded, QA-readable explanations of what happened. This is where the v1 product moment lives.
 
 The flow is approximately:
 
-1. Test fails. Substrate 3 produces a structured trace including the raw Salesforce response.
-2. Attribution layer extracts the salient signal from the trace: the error message, the failing step, the fields involved, the operation context.
-3. Attribution maps the signal to entities in Substrate 1's model. A validation rule error message is matched (by exact text and by semantic similarity using embeddings) to the validation rule entity that produced it. A flow exception is matched to the flow. A "field does not exist" error is mapped to the missing field entity (or the absence thereof in the target org).
-4. Attribution correlates with change history. The matched entity's recent supersession history (from Substrate 1's bitemporal model) is examined. If the entity was introduced or modified recently, the correlation is noted.
+1. Test fails. Substrate 4 produces a structured trace including the raw Salesforce response.
+2. Interpretation extracts the salient signal from the trace: the error message, the failing step, the fields involved, the operation context.
+3. Interpretation maps the signal to entities in Substrate 1's model. A validation rule error message is matched (by exact text and by semantic similarity using embeddings) to the validation rule entity that produced it. A flow exception is matched to the flow. A "field does not exist" error is mapped to the missing field entity (or the absence thereof in the target org).
+4. Interpretation correlates with change history. The matched entity's recent supersession history (from Substrate 1's bitemporal model) is examined. If the entity was introduced or modified recently, the correlation is noted.
 5. JIRA correlation, where available, links the recent metadata change to a specific JIRA ticket. (See §5.5 on the JIRA correlation strategy and its limitations.)
-6. The structured attribution record (matched entity, change context, JIRA link, confidence score) is fed to an LLM (Anthropic Claude Sonnet) to produce a clean QA-readable explanation. The LLM's output is constrained: it can describe the matched entity, reference its content, summarize the change context, and explain the implication. It cannot invent entities or claims that are not in the structured input.
+6. The structured record (matched entity, change context, JIRA link, confidence score) is fed to an LLM (Anthropic Claude Sonnet) to produce a clean QA-readable explanation. The LLM's output is constrained: it can describe the matched entity, reference its content, summarize the change context, and explain the implication. It cannot invent entities or claims that are not in the structured input.
 7. The explanation is presented in PrimeQA's UI alongside the structured evidence chain.
 
-When attribution cannot confidently match a failure to a specific entity, the system says so honestly. The explanation reads: "Failure occurred during save operation. Unable to map to a specific rule. See raw error." This is better than hallucinating an explanation. The architectural rule (§4.7) is precision over completeness, and graceful fallback over confident wrongness.
+When the substrate cannot confidently match a failure to a specific entity, the system says so honestly. The explanation reads: "Failure occurred during save operation. Unable to map to a specific rule. See raw error." This is better than hallucinating an explanation. The architectural rule (§4.11) is precision over completeness, and graceful fallback over confident wrongness.
 
-The attribution layer also performs **failure clustering**. When multiple tests in a run fail with the same root cause (the same validation rule, for example), the failures are grouped. Priya in the scene saw "3 other tests failing for the same reason." This is the clustering output. It dramatically reduces the engineer's investigation surface.
+The interpretation layer also performs **failure clustering**. When multiple tests in a run fail with the same root cause (the same validation rule, for example), the failures are grouped. Priya in the scene saw "3 other tests failing for the same reason." This is the clustering output. It dramatically reduces the engineer's investigation surface.
 
-### 4.6 The Priya scene retraced through architecture
+### 4.8 Substrate 7 — Conversation and Control
+
+**Responsibility:** Be the natural-language layer through which users interact with PrimeQA. Not a chatbot bolted onto a dashboard, but a surface integrated throughout — generation, debugging, and coverage exploration are all conversational where conversation is the natural shape of the interaction.
+
+Example questions S7 must answer well: "Why is our regression coverage dropping?" "What's at risk if we deploy this package?" "Show me tests for the new approval process." "Did yesterday's failures have a common cause?"
+
+S7 is deferred for v1. The initial product is structured-UI-first; conversational interactions are an enhancement on top. The architectural commitment is that the substrate exists in the design — the data model (S1), the test representation (S2), the failure attribution (S6) — so that when S7 ships, it has grounded answers to query against rather than free-floating LLM hallucinations.
+
+### 4.9 Substrate 8 — Evolution Engine
+
+**Responsibility:** Maintain tests as the org evolves so engineers don't have to. Field renamed → references in affected tests update. New required field added → affected tests adjust. Validation rule changed → tests re-verified against the new rule. Flow deactivated → dependent tests flagged for review.
+
+This is the maintenance burden Provar dumps on customers; PrimeQA automates it. The substrate sits between S1 (which detects org changes via its bitemporal model) and S2 (which it rewrites). Depending on the change type, S8 may act autonomously (rename propagation), propose changes for review (semantic adjustments), or flag for human attention (deactivation cascades). The autonomy gradient is a S8 design question, not yet resolved (see Q-006 in `docs/architecture/OPEN_QUESTIONS.md`).
+
+S8 is deferred for v1. The architectural commitment is that S1 makes change detection feasible (bitemporal model) and S2 makes tests rewritable (rich representation); when S8 ships, it has the substrates it needs.
+
+### 4.10 The Priya scene retraced through architecture
 
 To make the architecture concrete, here is the Priya scene mapped to the substrates that produce each part of her experience.
 
-Priya runs a regression suite of 120 tests. Each test was previously generated by Substrate 2 from a JIRA ticket, reviewed and approved by Priya, and stored in PrimeQA's database. Substrate 3 executes all 120 tests against the QA sandbox, capturing rich traces for each.
+Priya runs a regression suite of 120 tests. Each test was previously generated by Substrate 3 from a JIRA ticket, in Substrate 2's representation, reviewed and approved by Priya, and stored in PrimeQA's database. Substrate 4 executes all 120 tests against the QA sandbox, capturing rich traces for each.
 
-Four tests fail. For each failure, Substrate 4's attribution layer:
+Four tests fail. For each failure, Substrate 6's interpretation layer:
 
-- Extracts the raw error from the Substrate 3 trace ("FIELD_CUSTOM_VALIDATION_EXCEPTION: Amount must be populated when Stage = Closed Won").
+- Extracts the raw error from the Substrate 4 trace ("FIELD_CUSTOM_VALIDATION_EXCEPTION: Amount must be populated when Stage = Closed Won").
 - Performs exact-text and semantic-similarity matching against Substrate 1's validation rule entities.
 - Identifies the specific validation rule (let's call it `Opportunity.Amount_Required_On_Close`).
 - Examines the rule's bitemporal history in Substrate 1 and finds it was inserted with `valid_from_seq` matching today's morning sync.
@@ -321,7 +357,7 @@ Priya sees the explanation in seconds. She trusts it because she can click throu
 
 This is what the architecture is for.
 
-### 4.7 Locked architectural rules
+### 4.11 Locked architectural rules
 
 These rules are non-negotiable foundations. Every design decision is evaluated against them. They appear elsewhere in the document; they are consolidated here for reference.
 
@@ -382,7 +418,7 @@ We do not try to match these in v1. We accept that:
 
 - Our execution engine handles common patterns reliably and falls back gracefully on edge cases. Coverage expands incrementally as data accumulates.
 - We do not ship CI/CD integrations in v1. They are post-v1 work.
-- We do not try to be the test data generation tool. Customers manage test data themselves; PrimeQA helps them understand when test data setup is the cause of a failure (a Substrate 4 capability), but does not generate test data automatically.
+- We do not try to be the test data generation tool. Customers manage test data themselves; PrimeQA helps them understand when test data setup is the cause of a failure (a Substrate 6 capability), but does not generate test data automatically.
 - Our enterprise sales motion takes years to build. v1 lands with mid-market and progressive enterprise customers; broad enterprise adoption is a multi-year journey.
 
 The architectural sidestep is that we do not need to win on execution depth. We win on the failure-comprehension layer that Provar and Copado do not own. Customers can keep Provar for their stable regression suites; PrimeQA earns its keep on sprint-level testing and the moment-of-failure understanding.
@@ -405,7 +441,7 @@ These are real burdens. They are not blockers. The Priya scene's value is large 
 
 Some product capabilities depend on resolving questions that are still open.
 
-**Test data generation.** Test data setup is the hidden pain in QA work — engineers spend significant time creating Account-Opportunity-related-record chains in the right state. PrimeQA's v1 does not generate test data automatically. It captures and explains failures that happen because of test data issues (e.g., "test failed because Amount was null; the test data did not set Amount"). Whether to add test data generation as a Substrate 2 extension or a separate substrate is a v2-or-later question.
+**Test data generation.** Test data setup is the hidden pain in QA work — engineers spend significant time creating Account-Opportunity-related-record chains in the right state. PrimeQA's v1 does not generate test data automatically. It captures and explains failures that happen because of test data issues (e.g., "test failed because Amount was null; the test data did not set Amount"). Whether to add test data generation as a Substrate 3 extension or a separate substrate is a v2-or-later question.
 
 **JIRA correlation strategy.** The Priya scene's "introduced via JIRA SQ-211" requires linking a metadata change in Substrate 1's bitemporal history to a JIRA ticket. Possible strategies: (a) the customer's deployment process tags Salesforce metadata with JIRA ticket IDs, (b) PrimeQA correlates by timing (the rule deployed at 2pm, ticket SQ-211 was merged at 1:55pm), (c) PrimeQA reads JIRA descriptions and matches to metadata semantically via LLM. (a) is most reliable but requires customer process; (b) is opportunistic; (c) is expensive and unreliable. We will likely build (a)+(b) hybrid for v1: prefer customer-tagged links where available, fall back to timing-based correlation otherwise, and degrade gracefully (omit the JIRA link in the explanation) when neither is available.
 
@@ -435,15 +471,17 @@ The product reaches v1 — the Priya scene end-to-end, working reliably for a cu
 
 **Phase 1 (complete).** Substrate 1 foundation. Schema, edges, derivation, tests. Done.
 
-**Phase 2 (next).** Substrate 1 sync. Pulls Salesforce metadata into the model. Adds embeddings and lightweight LLM summaries for retrieval. Builds the materialized view. Phase 2 is detailed in `PHASE_2_PLAN.md` once that document is rewritten to align with this product definition.
+**Phase 2 (complete).** Substrate 1 sync. Pulls Salesforce metadata into the model. Adds embeddings (Voyage `voyage-3`, 1024 dim, per D-049) and lightweight LLM summaries (Claude Haiku 4.5, for Flow and ValidationRule per D-044) for retrieval. Builds the materialized-view query interface. Details in `docs/architecture/substrate_1_semantic_org_model/PHASE_2_PLAN.md` (locked planning artifact) and `PHASE_2_PLAN_corrections.md` (implementation divergences §1–§23).
 
-**Phase 3.** Substrate 2 build. Test generation from JIRA tickets, grounded in Substrate 1. Web UI for review and approval. Schema-enforced LLM output to prevent hallucinated entity references. Iterative refinement loop.
+**Phase 3 (next).** Substrate 2 (Test Representation) design. The rich data structure for a test case — intent, coverage, relationships to org entities, execution history, provenance — designed to span all QA archetypes with a single representation.
 
-**Phase 4.** Substrate 3 build. Hybrid UI-plus-API execution engine. Rich structured trace capture. Cloud-hosted execution environment.
+**Phase 4.** Substrate 3 (Generation Engine). JIRA → test cases in Substrate 2's representation, grounded in Substrate 1. Web UI for review and approval. Schema-enforced LLM output to prevent hallucinated entity references. Iterative refinement loop. Knowledge from Substrate 5 (Domain Packs, system rules) shapes the prompt.
 
-**Phase 5.** Substrate 4 build. Attribution layer. Confidence-scored entity mapping. Failure clustering. LLM-mediated explanation generation. Web UI for failure investigation. **This is the v1 product moment.**
+**Phase 5.** Substrate 4 (Execution Engine). Hybrid UI-plus-API execution. Rich structured trace capture. Cloud-hosted execution environment.
 
-**Phase 6 and beyond.** Hardening (OAuth encryption, security review). Multi-tenant orchestration. Customer-hosted execution agent. CI/CD integrations. Broader intelligence (test prioritization, coverage analysis, flakiness detection). Multi-release support when a customer drives it. Test data generation if it earns its place.
+**Phase 6.** Substrate 6 (Observation and Interpretation). Attribution layer. Confidence-scored entity mapping. Failure clustering. LLM-mediated explanation generation. Web UI for failure investigation. **This is the v1 product moment.**
+
+**Phase 7 and beyond.** Hardening (OAuth encryption, security review). The architectural foundation of Substrate 5 (Knowledge System) formalized — learned tenant facts, cross-tenant patterns, user feedback signals — beyond today's Domain Packs. Substrate 7 (Conversation and Control) for natural-language interactions. Substrate 8 (Evolution Engine) for autonomous test maintenance as the org evolves. Multi-tenant orchestration. Customer-hosted execution agent. CI/CD integrations. Broader intelligence (test prioritization, coverage analysis, flakiness detection). Multi-release support when a customer drives it. Test data generation if it earns its place.
 
 Each phase is detailed in its own phase plan document (`PHASE_N_PLAN.md`) at the time the phase begins. Phase plans are derived from this product document, not the other way around.
 
@@ -486,7 +524,7 @@ v1 establishes the failure-comprehension layer. v2 and beyond expand the surface
 
 **Pre-deployment impact analysis.** Given a JIRA ticket about to be merged, predict which tests will be affected and surface them for the developer to review. This is post-failure attribution run in reverse, against not-yet-deployed metadata changes.
 
-**Test maintenance intelligence.** When the org evolves (fields renamed, validation rules adjusted), automatically flag tests whose references are now broken and suggest updates. This is Substrate 4 applied to the model's own change history rather than to live failures.
+**Test maintenance intelligence.** When the org evolves (fields renamed, validation rules adjusted), automatically flag tests whose references are now broken and suggest updates. This is Substrate 8 (Evolution Engine) — applying the change-detection capabilities of S1's bitemporal model to S2's test representation, rather than running interpretation against live failures.
 
 **Coverage analysis.** Given the org's metadata graph and the test inventory, identify gaps — entities or behaviors that no test exercises. Produce recommendations.
 
@@ -502,7 +540,7 @@ These are real product opportunities. They are not v1. They are surfaced here so
 
 ## Appendix A — Glossary of key terms
 
-**Substrate.** A loosely-coupled architectural layer with a distinct responsibility and clean interfaces. PrimeQA is built on four substrates.
+**Substrate.** A loosely-coupled architectural layer with a distinct responsibility and clean interfaces. PrimeQA is built on eight substrates (per `docs/architecture/PLATFORM_VISION.md` and D-001 / D-050). The v1 product moment is built on S1 + S2 + S3 + S4 + S6; S5 (Knowledge), S7 (Conversation), and S8 (Evolution) are part of the architectural foundation but ship later.
 
 **Bitemporal.** A data model where every row tracks both the time range it represents and (implicitly via supersession) the time range it was current truth. Allows history reconstruction.
 
@@ -516,9 +554,9 @@ These are real product opportunities. They are not v1. They are surfaced here so
 
 **Schema-enforced LLM output.** The pattern of constraining LLM outputs to validated schemas at the boundary between the LLM and the rest of the system. Prevents hallucinated references from entering downstream substrates.
 
-**Trace.** The structured record produced by Substrate 3 during execution. Captures every action, every response, every state change, every error.
+**Trace.** The structured record produced by Substrate 4 (Execution Engine) during execution. Captures every action, every response, every state change, every error. Consumed by Substrate 6 (Observation and Interpretation).
 
-**v1 product moment.** The point in the build at which the Priya scene works end-to-end. Reached at the end of Phase 5.
+**v1 product moment.** The point in the build at which the Priya scene works end-to-end. Reached at the end of Phase 6.
 
 ---
 
