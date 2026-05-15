@@ -2,9 +2,10 @@
 
 > **Status: ALL SIX PHASES SHIPPED.** Commits: R1 `9045dfc`, R2 `aaa47d1`,
 > R3 `4ede25c`, R4 `452eb33`, R5 `479e483`, R6 `82d0a1e`. 46 new tests
-> across R1–R6, all passing. See PROJECT_STATE.md for the live feature
-> matrix and known follow-ups (executor→agent dispatch wiring, email
-> provider, per-category meta retry without new meta_version).
+> across R1–R6, all passing. See
+> `docs/archive/project_state/PROJECT_STATE.md` for the historical
+> project state (snapshot from 2026-04-24). Current state lives in
+> `CLAUDE.md` and per-substrate `EVOLUTION.md` files.
 
 ## Context
 

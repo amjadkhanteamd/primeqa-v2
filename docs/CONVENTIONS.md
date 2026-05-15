@@ -116,6 +116,31 @@ integration test run.
   The `noqa: F401` is intentional — these imports register tables in
   `Base.metadata` even if the module is otherwise unused.
 
+### Dual migration systems
+
+The repository contains two parallel migration systems covering
+different schema domains:
+
+- **`migrations/`** — numbered `.sql` files (001 through 049+),
+  applied via `psql`. Canonical migration system for v2 runtime
+  tables (`test_cases`, `test_case_versions`, `requirements`,
+  `generation_batches`, `llm_usage_log`, etc.).
+- **`alembic/`** — Python migrations under `versions/shared/` and
+  `versions/tenant/`. Canonical migration system for substrate-1
+  (semantic org model) tables: `entities`, `edges`,
+  `logical_versions`, detail tables, `ai_enrichment_queue`, etc.
+
+Both systems are active and target different schema domains. When
+making schema changes, choose the system appropriate to the table
+domain:
+
+- v2 runtime table change → new numbered `.sql` in `migrations/`
+- substrate-1 table change → new alembic revision
+
+The dual-system pattern is intentional. When v2 sunsets after
+Phase 4 cutover, `migrations/` becomes a candidate for archive
+(see `PARKING_LOT.md`).
+
 ### Migration apply pattern
 
 Substrate-1's alembic env has two branch chains (`shared`, `tenant`).

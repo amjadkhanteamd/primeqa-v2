@@ -11,6 +11,40 @@ The v2 architecture build plan. Directs implementation of numbered
 steps against `PRIMEQA_ARCHITECTURE_SPEC_v2.2.md`. v2 is built; plan
 is complete; archived 2026-05-14.
 
+### `project_state/PROJECT_STATE.md`
+
+Project-wide snapshot from 2026-04-24. Current project state lives
+in `CLAUDE.md` and per-substrate `EVOLUTION.md` files. Archived
+2026-05-15.
+
+### `qa_reports/DEMO_PREP_REPORT.md`
+
+2026-04-23 overnight demo prep status snapshot. Archived 2026-05-15.
+
+### `qa_reports/QA_REPORT.md`
+
+2026-04-22 QA sweep — 72 checks, 0 P0/P1 failures, 68 PASS.
+Superseded by subsequent code changes. Archived 2026-05-15.
+
+### `qa_reports/QA_REPORT_2026-04-20.md`
+
+Earlier QA sweep (2026-04-20). Self-declared archived in
+`QA_REPORT.md`'s header. Archived 2026-05-15.
+
+### `codebase_maps/CODEBASE_MAP.md`
+
+Historical project map from 2026-04-20. Current structure is in
+`CLAUDE.md` and per-substrate docs. Archived 2026-05-15 as a
+snapshot (regeneratable if a future snapshot is ever needed).
+
+### `qa_sweeps/qa/`
+
+Playwright-based QA automation from the demo-prep era (2026-04-23).
+Contains `browser.py`, `report.py`, `run_sweep.py`, `test_01_auth`
+through `test_11_api`, `screenshots/` and `demo_screenshots/`.
+Active test location is the top-level `tests/` directory. Archived
+2026-05-15.
+
 ## Not currently archived (transitional)
 
 The following remain at their current locations with legacy headers
