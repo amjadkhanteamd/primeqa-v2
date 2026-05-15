@@ -1488,3 +1488,73 @@ TIER_1_EDGES types implemented except §17 REFERENCES (needs a
 Salesforce formula parser — its own cycle); enrichment worker
 RESOLVED here.
 
+## §24: Feature readiness signaling — RESOLVED
+
+Date: 2026-05-15
+Step: design doc §9 step 5 (feature readiness signaling) — the
+      final Phase 2 substrate-1 step before merge-to-main
+      preparation.
+
+Scope: `connected_orgs.ai_enrichment_status` lifecycle,
+`sync_runs` terminal-state transitions, `sync_runs` enrichment
+counters.
+
+Implementation: `primeqa/sync/readiness.py` module with pure
+functions (`compute_org_status`, `apply_org_status`,
+`increment_run_counters`, `maybe_finalize_run`); harness in
+`primeqa/worker.py:enrichment_tick`. Subticks refactored to
+return a `TickResult` dataclass with per-org succeeded /
+failed_retryable / failed_permanent deltas. No schema changes
+(all columns from migration `20260512_0010` are now wired —
+`ai_enrichment_status` was previously stuck at `structural_only`
+because the worker side never advanced it).
+
+Eligibility refinement: `complete` status respects
+`SUMMARY_ENABLED_ENTITY_TYPES = {Flow, ValidationRule}` (the
+§23 sync-engine filter). Orgs with zero Flow + zero
+ValidationRule reach `complete` once embeddings drain — there's
+no summary work to wait on.
+
+Terminal classification: `sync_runs.status='success'` if zero
+`failed_permanent` rows at finalization; `'partial_success'` if
+one or more. `failed_retryable` does NOT count toward
+`partial_success` — those rows aren't terminal and `compute_
+org_status` puts them in the non-terminal bucket which blocks
+the `complete` transition while any are present. A defensive
+WARNING is logged if a `failed_retryable` row is observed at
+finalization time (indicates a worker bug, not a partial
+outcome — unreachable by construction but logged for
+observability).
+
+Bonus robustness fix discovered during T2 attempt 1:
+SQLAlchemy releases connections to the pool on
+`session.commit()`; `pool_recycle=300` + LIFO pool behavior
+means a different connection may be returned for subsequent
+operations. `_set_tenant_context`'s session-level `SET
+search_path` didn't survive this swap. §23 was accidentally
+correct due to fewer commits per tick + LIFO pool typically
+returning the same connection. §24's added commits exposed
+the latent issue. Fix: `_set_tenant_context` now installs an
+`after_begin` event listener that re-applies `SET search_path`
++ `SET app.tenant_id` on every transaction the session begins.
+Production-relevant: `pool_recycle=300` is identical in prod;
+this fix pre-empts the same class of bug in production
+paths.
+
+Live verification: T2 attempt 2 (with the connection-swap fix)
+passed in 11:00. Full lifecycle observed end-to-end:
+`none → structural_only → partial → complete`, with the
+sync_run advancing to `phase='done'`, `status='success'`,
+`completed_at=NOW()`, and counters
+`embeddings_generated=5865`, `summaries_generated=63`,
+`summaries_failed=0`. Sample summaries (Flow
+`BillingReminder_Notification_Flow`, ValidationRule
+`CHANNEL_ORDERS__Customer__c.CHANNEL_ORDERS__Country_2_letter_code`)
+read as expected. Total Anthropic spend $0.033336; Voyage
+batches 46 (`cost_usd=0.0` per design).
+
+Phase 2 sync layer status update: §23 + §24 RESOLVED.
+Remaining toward merge-to-main: §17 REFERENCES (own focused
+cycle, formula parser), formal end-to-end test scenarios
+(§9 step 6), PR to main.
+

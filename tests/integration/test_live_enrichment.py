@@ -157,6 +157,38 @@ def test_live_enrichment_after_sync(
     sync_run_id = engine.run_sync(connected_org_id=test_org)
     assert sync_run_id is not None
 
+    # ===== §24 lifecycle: structural-only state before drain =====
+    # The engine sets ai_enrichment_status='structural_only' at the
+    # end of the structural phase. The worker hasn't touched anything
+    # yet, so the sync_run is still in (phase='enrichment',
+    # status='running', completed_at IS NULL).
+    with db_engine.begin() as conn:
+        _scope(conn)
+        row = conn.execute(text("""
+            SELECT co.ai_enrichment_status,
+                   sr.phase, sr.status, sr.completed_at,
+                   sr.embeddings_generated, sr.summaries_generated,
+                   sr.summaries_failed
+            FROM connected_orgs co
+            JOIN sync_runs sr ON sr.id = co.last_sync_run_id
+            WHERE co.id = :id
+        """), {"id": test_org}).fetchone()
+        assert row.ai_enrichment_status == 'structural_only', (
+            f"expected structural_only after engine.run_sync, "
+            f"got {row.ai_enrichment_status}"
+        )
+        assert row.phase == 'enrichment'
+        assert row.status == 'running'
+        assert row.completed_at is None
+        assert row.embeddings_generated == 0
+        assert row.summaries_generated == 0
+        assert row.summaries_failed == 0
+        print(
+            f"[lifecycle] Pre-drain: "
+            f"ai_enrichment_status={row.ai_enrichment_status} "
+            f"phase={row.phase} status={row.status}"
+        )
+
     # ===== Verify the queue state the sync produced =====
     with db_engine.begin() as conn:
         _scope(conn)
@@ -199,13 +231,108 @@ def test_live_enrichment_after_sync(
     def _factory():
         return Session(bind=db_engine)
 
-    ticks_used = 0
-    for ticks_used in range(1, MAX_TICKS + 1):
+    # ----- First tick separately, then verify §24 partial-state -----
+    # After at least one tick of real work, ai_enrichment_status
+    # should advance off 'structural_only'. With ~5928 queue rows and
+    # a 128 embedding cap + 5 summary cap per tick, one tick won't
+    # drain everything → expect 'partial'. If we see 'complete' the
+    # queue or filter state is unexpected — warn loudly but don't
+    # fail (single-tick drain is a meaningful diagnostic signal).
+    first_did_work = enrichment_tick(db_factory=_factory)
+    assert first_did_work is True, (
+        "first enrichment_tick reported no work — queue is empty"
+    )
+    with db_engine.begin() as conn:
+        _scope(conn)
+        row = conn.execute(text("""
+            SELECT co.ai_enrichment_status,
+                   sr.embeddings_generated, sr.summaries_generated,
+                   sr.summaries_failed, sr.status
+            FROM connected_orgs co
+            JOIN sync_runs sr ON sr.id = co.last_sync_run_id
+            WHERE co.id = :id
+        """), {"id": test_org}).fetchone()
+        first_status = row.ai_enrichment_status
+        print(
+            f"[lifecycle] After tick 1: "
+            f"ai_enrichment_status={first_status} "
+            f"sync_run.status={row.status} "
+            f"counters(emb/sum/failed)="
+            f"{row.embeddings_generated}/{row.summaries_generated}"
+            f"/{row.summaries_failed}"
+        )
+        assert first_status in ('partial', 'complete'), (
+            f"Expected partial or complete after first tick, "
+            f"got {first_status}"
+        )
+        if first_status == 'complete':
+            print(
+                "[lifecycle] WARNING: drained in single tick — "
+                "queue or filter state may be unexpected"
+            )
+        # Counters should be non-zero (we did real embedding work)
+        assert row.embeddings_generated > 0, (
+            "expected non-zero embeddings_generated after first tick"
+        )
+
+    # ----- Continue draining from tick 2 onwards -----
+    ticks_used = 1
+    for ticks_used in range(2, MAX_TICKS + 1):
         if not enrichment_tick(db_factory=_factory):
             break
     else:
         pytest.fail(
             f"enrichment_tick still finding work after {MAX_TICKS} ticks"
+        )
+
+    # ===== §24 lifecycle: post-drain complete-state =====
+    # After full drain, ai_enrichment_status='complete'; the sync_run
+    # reaches its terminal state (phase='done', status='success',
+    # completed_at set); enrichment counters match queue successes.
+    with db_engine.begin() as conn:
+        _scope(conn)
+        row = conn.execute(text("""
+            SELECT co.ai_enrichment_status,
+                   sr.phase, sr.status, sr.completed_at,
+                   sr.embeddings_generated, sr.summaries_generated,
+                   sr.summaries_failed
+            FROM connected_orgs co
+            JOIN sync_runs sr ON sr.id = co.last_sync_run_id
+            WHERE co.id = :id
+        """), {"id": test_org}).fetchone()
+        assert row.ai_enrichment_status == 'complete', (
+            f"expected complete post-drain, "
+            f"got {row.ai_enrichment_status}"
+        )
+        assert row.phase == 'done', (
+            f"expected sync_run.phase=done, got {row.phase}"
+        )
+        assert row.status == 'success', (
+            f"expected sync_run.status=success "
+            f"(zero failed_permanent), got {row.status}"
+        )
+        assert row.completed_at is not None, (
+            "sync_run.completed_at should be set after finalization"
+        )
+        # Counters should match the queue successes counted below.
+        assert row.embeddings_generated > 5000, (
+            f"expected >5000 embeddings_generated, "
+            f"got {row.embeddings_generated}"
+        )
+        assert row.summaries_generated > 0, (
+            f"expected >0 summaries_generated, "
+            f"got {row.summaries_generated}"
+        )
+        assert row.summaries_failed == 0, (
+            f"expected zero summaries_failed, got {row.summaries_failed}"
+        )
+        print(
+            f"[lifecycle] Post-drain: "
+            f"ai_enrichment_status={row.ai_enrichment_status} "
+            f"phase={row.phase} status={row.status} "
+            f"counters(emb/sum/failed)="
+            f"{row.embeddings_generated}/{row.summaries_generated}"
+            f"/{row.summaries_failed}"
         )
 
     # ===== Verify the worker's results =====
@@ -323,8 +450,29 @@ def test_live_enrichment_after_sync(
     with db_engine.begin() as conn:
         _scope(conn)
 
-        print("\n===== §23 ENRICHMENT REPORT =====")
+        print("\n===== §23 + §24 ENRICHMENT REPORT =====")
         print(f"ticks_used (incl. final no-op): {ticks_used}")
+
+        # §24 readiness state snapshot
+        readiness_row = conn.execute(text("""
+            SELECT co.ai_enrichment_status,
+                   sr.phase, sr.status, sr.completed_at,
+                   sr.embeddings_generated, sr.summaries_generated,
+                   sr.summaries_failed
+            FROM connected_orgs co
+            JOIN sync_runs sr ON sr.id = co.last_sync_run_id
+            WHERE co.id = :id
+        """), {"id": test_org}).fetchone()
+        print(
+            f"ai_enrichment_status: {readiness_row.ai_enrichment_status}\n"
+            f"sync_run.phase: {readiness_row.phase}\n"
+            f"sync_run.status: {readiness_row.status}\n"
+            f"sync_run.completed_at: {readiness_row.completed_at}\n"
+            f"counters: embeddings_generated="
+            f"{readiness_row.embeddings_generated} "
+            f"summaries_generated={readiness_row.summaries_generated} "
+            f"summaries_failed={readiness_row.summaries_failed}"
+        )
 
         breakdown = conn.execute(text("""
             SELECT entity_type, primitive_type, status, COUNT(*)

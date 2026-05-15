@@ -131,12 +131,14 @@ class TestClaimBatch:
 # ----------------------------------------------------------------------
 
 class TestEmbeddingSubtick:
-    def test_empty_queue_returns_false(self) -> None:
+    def test_empty_queue_returns_no_work(self) -> None:
         session = mock.MagicMock()
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
             s.enter_context(_patch("_claim_batch")).return_value = []
-            assert worker._embedding_subtick(session, tenant_id=1) is False
+            result = worker._embedding_subtick(session, tenant_id=1)
+        assert result.did_work is False
+        assert result.claimed == 0
 
     def test_happy_path_embeds_writes_marks_records_usage(self) -> None:
         session = mock.MagicMock()
@@ -147,6 +149,10 @@ class TestEmbeddingSubtick:
             s.enter_context(_patch("_fetch_semantic_texts")).return_value = {
                 "e1": "text one", "e2": "text two",
             }
+            s.enter_context(_patch("_fetch_org_ids")).return_value = {
+                "e1": "00000000-0000-0000-0000-00000000000a",
+                "e2": "00000000-0000-0000-0000-00000000000a",
+            }
             mock_embed = s.enter_context(_patch("embed_batch"))
             mock_embed.return_value = [[0.1] * 1024, [0.2] * 1024]
             mock_write = s.enter_context(_patch("_write_embedding"))
@@ -156,7 +162,10 @@ class TestEmbeddingSubtick:
 
             result = worker._embedding_subtick(session, tenant_id=7)
 
-        assert result is True
+        assert result.did_work is True
+        assert result.claimed == 2
+        assert result.succeeded_for(
+            "00000000-0000-0000-0000-00000000000a") == 2
         mock_embed.assert_called_once_with(["text one", "text two"],
                                            input_type="document")
         assert mock_write.call_count == 2
@@ -177,6 +186,9 @@ class TestEmbeddingSubtick:
             s.enter_context(_patch("_claim_batch")).return_value = claimed
             s.enter_context(_patch("_fetch_semantic_texts")).return_value = {
                 "e1": "real text", "e2": "   ",  # e2 blank
+            }
+            s.enter_context(_patch("_fetch_org_ids")).return_value = {
+                "e1": "org-a", "e2": "org-a",
             }
             mock_embed = s.enter_context(_patch("embed_batch"))
             mock_embed.return_value = [[0.1] * 1024]
@@ -203,10 +215,14 @@ class TestEmbeddingSubtick:
             s.enter_context(_patch("_fetch_semantic_texts")).return_value = {
                 "e1": None,
             }
+            s.enter_context(_patch("_fetch_org_ids")).return_value = {
+                "e1": "org-a",
+            }
             mock_embed = s.enter_context(_patch("embed_batch"))
             mock_ok = s.enter_context(_patch("_mark_succeeded"))
             result = worker._embedding_subtick(session, tenant_id=1)
-        assert result is True  # rows were claimed
+        assert result.did_work is True  # rows were claimed
+        assert result.claimed == 1
         mock_embed.assert_not_called()
         mock_ok.assert_called_once()
 
@@ -274,22 +290,25 @@ class TestEmbeddingSubtick:
 # ----------------------------------------------------------------------
 
 class TestSummarySubtick:
-    def test_no_anthropic_key_returns_false_without_claiming(
+    def test_no_anthropic_key_returns_no_work_without_claiming(
         self, monkeypatch,
     ) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         session = mock.MagicMock()
         with _patch("_claim_batch") as mock_claim:
-            assert worker._summary_subtick(session, tenant_id=1) is False
+            result = worker._summary_subtick(session, tenant_id=1)
+        assert result.did_work is False
         mock_claim.assert_not_called()
 
-    def test_empty_queue_returns_false(self, monkeypatch) -> None:
+    def test_empty_queue_returns_no_work(self, monkeypatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
         session = mock.MagicMock()
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
             s.enter_context(_patch("_claim_batch")).return_value = []
-            assert worker._summary_subtick(session, tenant_id=1) is False
+            result = worker._summary_subtick(session, tenant_id=1)
+        assert result.did_work is False
+        assert result.claimed == 0
 
     def test_happy_path_calls_llm_embeds_writes_marks(
         self, monkeypatch,
@@ -315,7 +334,8 @@ class TestSummarySubtick:
             mock_write = s.enter_context(_patch("_write_summary"))
             mock_ok = s.enter_context(_patch("_mark_succeeded"))
             result = worker._summary_subtick(session, tenant_id=4)
-        assert result is True
+        assert result.did_work is True
+        assert result.claimed == 1
         mock_write.assert_called_once()
         # _write_summary(session, entity_type, entity_id, text, vec, ...)
         assert mock_write.call_args[0][1] == "Flow"
@@ -436,10 +456,18 @@ class TestEnrichmentTick:
                 ("tenant_1", 1), ("tenant_2", 2),
             ]
             s.enter_context(_patch("_set_tenant_context"))
+            # Patch readiness so we don't try to hit a real DB for the
+            # signaling wiring — this test only verifies subtick fanout.
+            s.enter_context(mock.patch.object(worker.readiness,
+                                              "increment_run_counters"))
+            s.enter_context(mock.patch.object(worker.readiness,
+                                              "apply_org_status"))
+            s.enter_context(mock.patch.object(worker.readiness,
+                                              "maybe_finalize_run"))
             mock_emb = s.enter_context(_patch("_embedding_subtick"))
-            mock_emb.return_value = False
+            mock_emb.return_value = worker.TickResult(claimed=0)
             mock_sum = s.enter_context(_patch("_summary_subtick"))
-            mock_sum.return_value = False
+            mock_sum.return_value = worker.TickResult(claimed=0)
             result = worker.enrichment_tick(db_factory=factory)
         assert result is False  # no tenant did work
         # discovery session + one per tenant
@@ -455,8 +483,18 @@ class TestEnrichmentTick:
                 ("tenant_1", 1),
             ]
             s.enter_context(_patch("_set_tenant_context"))
-            s.enter_context(_patch("_embedding_subtick")).return_value = True
-            s.enter_context(_patch("_summary_subtick")).return_value = False
+            s.enter_context(mock.patch.object(worker.readiness,
+                                              "increment_run_counters"))
+            s.enter_context(mock.patch.object(worker.readiness,
+                                              "apply_org_status"))
+            s.enter_context(mock.patch.object(worker.readiness,
+                                              "maybe_finalize_run"))
+            s.enter_context(_patch("_embedding_subtick")).return_value = (
+                worker.TickResult(claimed=10)
+            )
+            s.enter_context(_patch("_summary_subtick")).return_value = (
+                worker.TickResult(claimed=0)
+            )
             assert worker.enrichment_tick(db_factory=factory) is True
 
     def test_tenant_failure_isolated_others_continue(self) -> None:
@@ -470,10 +508,21 @@ class TestEnrichmentTick:
                 ("tenant_1", 1), ("tenant_2", 2),
             ]
             s.enter_context(_patch("_set_tenant_context"))
+            s.enter_context(mock.patch.object(worker.readiness,
+                                              "increment_run_counters"))
+            s.enter_context(mock.patch.object(worker.readiness,
+                                              "apply_org_status"))
+            s.enter_context(mock.patch.object(worker.readiness,
+                                              "maybe_finalize_run"))
             mock_emb = s.enter_context(_patch("_embedding_subtick"))
-            # tenant_1 raises; tenant_2 returns True
-            mock_emb.side_effect = [RuntimeError("boom"), True]
-            s.enter_context(_patch("_summary_subtick")).return_value = False
+            # tenant_1 raises; tenant_2 returns a working TickResult
+            mock_emb.side_effect = [
+                RuntimeError("boom"),
+                worker.TickResult(claimed=3),
+            ]
+            s.enter_context(_patch("_summary_subtick")).return_value = (
+                worker.TickResult(claimed=0)
+            )
             result = worker.enrichment_tick(db_factory=factory)
         assert result is True  # tenant_2 still did work
         assert mock_emb.call_count == 2  # both attempted

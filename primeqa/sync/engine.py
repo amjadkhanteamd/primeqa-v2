@@ -13,10 +13,11 @@ Responsibilities:
     structural phases. (status='partial_success' is reserved for the
     enrichment worker — structural-only failure produces 'failure'.)
   - Sets connected_orgs.ai_enrichment_status='structural_only' on
-    successful structural completion
+    successful structural completion (the worker further advances
+    this through 'partial' and 'complete' per §24 / readiness.py)
 
 Does NOT run AI enrichment — that's a separate process per design
-doc §6. See primeqa/sync/enrichment.py (future) for that worker.
+doc §6, implemented in primeqa/worker.py:enrichment_tick (§23).
 """
 from __future__ import annotations
 
@@ -374,10 +375,12 @@ class SyncEngine:
         the enrichment worker on its own completion, per design
         doc §6 + §2 state machine.
 
-        For the current skeleton (no enrichment worker yet), this
-        leaves the sync_run in (phase=enrichment, status=running) —
-        which is the intended intermediate state. Tests for the
-        full success path verify this intermediate state explicitly.
+        After this call, the enrichment worker
+        (``primeqa.worker.enrichment_tick``) picks up the queue,
+        drains it, and finalizes the sync_run to ``phase='done'`` +
+        ``status='success'`` / ``'partial_success'`` once enrichment
+        is complete — see
+        ``primeqa.sync.readiness.maybe_finalize_run`` (§24).
         """
         with self._connect() as conn:
             conn.execute(text("""

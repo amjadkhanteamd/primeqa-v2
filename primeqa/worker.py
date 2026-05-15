@@ -556,7 +556,8 @@ def process_run(run, ctx):
 # many ticks without any single tick running long enough to starve
 # the pipeline / metadata / generation ticks.
 
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Set
 
 from sqlalchemy import text as _sa_text
 
@@ -566,11 +567,70 @@ from primeqa.intelligence.embeddings import (
     embed_batch,
 )
 from primeqa.intelligence.llm.limits import record_embedding_usage
+from primeqa.sync import readiness
 
 EMBEDDING_BATCH_LIMIT = 128       # Voyage's per-request input cap
 SUMMARY_BATCH_LIMIT = 5           # per-row LLM calls — keep ticks short
 STALL_THRESHOLD_MINUTES = 10      # in_progress older than this -> reaped
 ENRICHMENT_MAX_ATTEMPTS = 5       # retryable failures past this -> permanent
+
+
+# ----------------------------------------------------------------------
+# §24 — TickResult: per-tick outcome breakdown
+# ----------------------------------------------------------------------
+
+@dataclass
+class OrgDelta:
+    """Per-org tally of queue-row outcomes for a single tick."""
+    succeeded: int = 0
+    failed_retryable: int = 0
+    failed_permanent: int = 0
+
+
+@dataclass
+class TickResult:
+    """Outcome of a single subtick (embedding or summary).
+
+    ``claimed`` is the total rows claimed at the start of the tick;
+    ``per_org`` accumulates per-org outcome counts as the subtick
+    processes each row. ``per_org`` is keyed by
+    ``str(connected_orgs.id)`` — the uuid stringified so the same
+    key shape works whether the worker pulled the id from a fetch
+    or threaded it through claim metadata.
+    """
+    claimed: int = 0
+    per_org: Dict[str, OrgDelta] = field(default_factory=dict)
+
+    def credit(
+        self,
+        org_id: Optional[str],
+        *,
+        succeeded: int = 0,
+        failed_retryable: int = 0,
+        failed_permanent: int = 0,
+    ) -> None:
+        """Add to the per-org tally. A NULL ``org_id`` is dropped
+        on the floor (caller has already logged the gap)."""
+        if org_id is None:
+            return
+        d = self.per_org.setdefault(org_id, OrgDelta())
+        d.succeeded += succeeded
+        d.failed_retryable += failed_retryable
+        d.failed_permanent += failed_permanent
+
+    @property
+    def did_work(self) -> bool:
+        return self.claimed > 0
+
+    @property
+    def affected_orgs(self) -> Set[str]:
+        return set(self.per_org)
+
+    def succeeded_for(self, org_id: str) -> int:
+        return self.per_org.get(org_id, OrgDelta()).succeeded
+
+    def failed_permanent_for(self, org_id: str) -> int:
+        return self.per_org.get(org_id, OrgDelta()).failed_permanent
 
 
 def _discover_tenant_schemas(session) -> list:
@@ -600,12 +660,42 @@ def _discover_tenant_schemas(session) -> list:
 def _set_tenant_context(session, schema_name: str, tenant_id: int) -> None:
     """Scope the session to one tenant: search_path for unqualified
     table resolution + app.tenant_id for the entities tenant CHECK
-    assertion. Session-level SET — persists until the session closes
-    (the worker opens a fresh session per tenant)."""
+    assertion.
+
+    Issues SET on the current transaction's connection AND installs a
+    SQLAlchemy ``after_begin`` event listener that re-applies SET on
+    every subsequent transaction this session begins. The listener
+    matters because SQLAlchemy releases the connection back to the
+    pool on ``session.commit()``; the next ``session.execute()`` may
+    check out a different (or recycled) connection that doesn't carry
+    the previous SET — even within a single ``enrichment_tick``
+    iteration, the per-tick worker session crosses several transaction
+    boundaries (``_reap_stalled`` commits, ``_claim_batch`` commits,
+    the main subtick commits, the readiness section commits). Per-
+    transaction re-application makes the tenant context resilient to
+    connection-pool swaps + ``pool_recycle`` resets.
+    """
+    from sqlalchemy import event
+
     session.execute(_sa_text(f'SET search_path TO "{schema_name}", public'))
     session.execute(
         _sa_text("SET app.tenant_id = :tid"), {"tid": str(tenant_id)},
     )
+
+    # One listener per session — _tenant_context_listener_installed is
+    # a sentinel so repeat _set_tenant_context calls on the same
+    # session don't stack listeners.
+    if getattr(session, "_tenant_context_listener_installed", False):
+        return
+    session._tenant_context_listener_installed = True
+
+    _schema = schema_name
+    _tid = str(tenant_id)
+
+    @event.listens_for(session, "after_begin")
+    def _reapply_tenant_context(_session, _trans, conn):
+        conn.execute(_sa_text(f'SET search_path TO "{_schema}", public'))
+        conn.execute(_sa_text(f"SET app.tenant_id = '{_tid}'"))
 
 
 def _reap_stalled(session, primitive_type: str) -> None:
@@ -675,11 +765,15 @@ def _mark_succeeded(session, queue_id) -> None:
 
 
 def _mark_failed(session, queue_id, retryable: bool, err: str,
-                 attempts: int) -> None:
+                 attempts: int) -> str:
     """Mark a claimed row failed. A retryable failure becomes
     failed_retryable (re-tried on a later tick) UNLESS attempts have
     hit ENRICHMENT_MAX_ATTEMPTS, at which point it's failed_permanent.
-    A non-retryable failure is failed_permanent immediately."""
+    A non-retryable failure is failed_permanent immediately.
+
+    Returns the status string written (``'failed_retryable'`` or
+    ``'failed_permanent'``) so the subtick can credit the right
+    TickResult counter without re-deriving the classification."""
     if retryable and attempts < ENRICHMENT_MAX_ATTEMPTS:
         status = "failed_retryable"
     else:
@@ -689,6 +783,7 @@ def _mark_failed(session, queue_id, retryable: bool, err: str,
         SET status = :st, completed_at = NOW(), error_text = :err
         WHERE id = :id
     """), {"st": status, "err": (err or "")[:2000], "id": queue_id})
+    return status
 
 
 def _vec_literal(vec) -> str:
@@ -742,6 +837,44 @@ def _fetch_semantic_texts(session, entity_ids: list) -> dict:
         WHERE id = ANY(CAST(:ids AS uuid[]))
     """), {"ids": entity_ids}).fetchall()
     return {str(eid): st for (eid, st) in rows}
+
+
+def _fetch_org_ids(session, entity_ids: list) -> Dict[str, Optional[str]]:
+    """Batch-read ``entities.last_synced_from_org_id`` for the claimed
+    entity_ids. Returns ``{entity_id(str): org_id(str) | None}``.
+
+    The org_id is needed to credit per-org TickResult deltas to the
+    right ``sync_runs`` row (queue rows have no direct sync_run
+    linkage; the transitive ``entity → connected_org → sync_run``
+    chain is the only path).
+
+    An entity row with a NULL ``last_synced_from_org_id`` shouldn't
+    normally exist (the structural materializer always stamps it).
+    If we see one, log at WARNING and let the caller drop the row's
+    delta on the floor — better than a crash, better than crediting
+    an arbitrary run.
+    """
+    if not entity_ids:
+        return {}
+    rows = session.execute(_sa_text("""
+        SELECT id, last_synced_from_org_id FROM entities
+        WHERE id = ANY(CAST(:ids AS uuid[]))
+    """), {"ids": entity_ids}).fetchall()
+    out: Dict[str, Optional[str]] = {}
+    for eid, org_id in rows:
+        eid_s = str(eid)
+        if org_id is None:
+            log.warning(
+                "_fetch_org_ids: entity_id=%s has no last_synced_from_org_id; "
+                "succeeded queue row will not be credited to any sync_run. "
+                "This indicates an entity materialized outside the normal "
+                "sync flow.",
+                eid_s,
+            )
+            out[eid_s] = None
+        else:
+            out[eid_s] = str(org_id)
+    return out
 
 
 def _fetch_summary_context(session, entity_type: str,
@@ -803,18 +936,24 @@ def _fetch_summary_context(session, entity_type: str,
     return None
 
 
-def _embedding_subtick(session, tenant_id: int) -> bool:
+def _embedding_subtick(session, tenant_id: int) -> TickResult:
     """Claim a batch of embedding rows for one tenant, embed via the
     Voyage API, write entities.embedding, mark the queue rows.
-    Returns True iff any rows were claimed."""
+
+    Returns a :class:`TickResult` with ``claimed`` count and a per-org
+    breakdown of ``succeeded`` / ``failed_retryable`` /
+    ``failed_permanent`` for the readiness wiring downstream.
+    """
+    result = TickResult()
     _reap_stalled(session, "embedding")
     claimed = _claim_batch(session, "embedding", EMBEDDING_BATCH_LIMIT)
+    result.claimed = len(claimed)
     if not claimed:
-        return False
+        return result
 
-    texts_by_id = _fetch_semantic_texts(
-        session, [r["entity_id"] for r in claimed],
-    )
+    entity_ids = [r["entity_id"] for r in claimed]
+    texts_by_id = _fetch_semantic_texts(session, entity_ids)
+    org_by_id = _fetch_org_ids(session, entity_ids)
 
     # Partition: rows with usable semantic_text get embedded; rows with
     # NULL/blank text are a no-op success — defensive against a sync
@@ -827,35 +966,47 @@ def _embedding_subtick(session, tenant_id: int) -> bool:
             embeddable.append((r, st))
         else:
             _mark_succeeded(session, r["queue_id"])
+            result.credit(org_by_id.get(r["entity_id"]), succeeded=1)
 
     if not embeddable:
         session.commit()
-        return True
+        return result
+
+    def _credit_fail(rows, retryable: bool, err: str):
+        for (rr, _) in rows:
+            status = _mark_failed(session, rr["queue_id"], retryable,
+                                  err, rr["attempts"])
+            if status == "failed_retryable":
+                result.credit(org_by_id.get(rr["entity_id"]),
+                              failed_retryable=1)
+            else:
+                result.credit(org_by_id.get(rr["entity_id"]),
+                              failed_permanent=1)
 
     try:
         vectors = embed_batch(
             [t for (_, t) in embeddable], input_type="document",
         )
     except VoyageError as e:
-        for (r, _) in embeddable:
-            _mark_failed(session, r["queue_id"], e.retryable,
-                         str(e), r["attempts"])
+        _credit_fail(embeddable, e.retryable, str(e))
         session.commit()
-        return True
+        return result
 
     if len(vectors) != len(embeddable):
         # Voyage should return one vector per input — treat a count
         # mismatch as a transient anomaly worth a retry.
-        for (r, _) in embeddable:
-            _mark_failed(session, r["queue_id"], True,
-                         f"Voyage returned {len(vectors)} vectors for "
-                         f"{len(embeddable)} inputs", r["attempts"])
+        _credit_fail(
+            embeddable, True,
+            f"Voyage returned {len(vectors)} vectors for "
+            f"{len(embeddable)} inputs",
+        )
         session.commit()
-        return True
+        return result
 
     for (r, _), vec in zip(embeddable, vectors):
         _write_embedding(session, r["entity_id"], vec)
         _mark_succeeded(session, r["queue_id"])
+        result.credit(org_by_id.get(r["entity_id"]), succeeded=1)
     session.commit()
 
     # Rate-limit accounting — one llm_usage_log row per Voyage batch.
@@ -868,26 +1019,45 @@ def _embedding_subtick(session, tenant_id: int) -> bool:
     except Exception as e:
         log.warning("record_embedding_usage failed (tenant %s): %s",
                     tenant_id, e)
-    return True
+    return result
 
 
-def _summary_subtick(session, tenant_id: int) -> bool:
+def _summary_subtick(session, tenant_id: int) -> TickResult:
     """Claim a small batch of summary rows for one tenant, generate a
     plain-English summary via the LLM gateway, embed it, write the
-    detail-table summary_* fields. Returns True iff any rows claimed."""
+    detail-table summary_* fields.
+
+    Returns a :class:`TickResult` with ``claimed`` count and a per-org
+    breakdown of ``succeeded`` / ``failed_retryable`` /
+    ``failed_permanent`` for the readiness wiring downstream.
+    """
+    result = TickResult()
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         # No key -> can't summarise. Leave rows pending (don't claim);
         # log so the gap is visible.
         log.warning("enrichment summary subtick: ANTHROPIC_API_KEY not "
                     "set; skipping summary enrichment")
-        return False
+        return result
 
     _reap_stalled(session, "summary")
     claimed = _claim_batch(session, "summary", SUMMARY_BATCH_LIMIT,
                            entity_types=["Flow", "ValidationRule"])
+    result.claimed = len(claimed)
     if not claimed:
-        return False
+        return result
+
+    org_by_id = _fetch_org_ids(session, [r["entity_id"] for r in claimed])
+
+    def _credit_fail(r, retryable: bool, err: str):
+        status = _mark_failed(session, r["queue_id"], retryable,
+                              err, r["attempts"])
+        if status == "failed_retryable":
+            result.credit(org_by_id.get(r["entity_id"]),
+                          failed_retryable=1)
+        else:
+            result.credit(org_by_id.get(r["entity_id"]),
+                          failed_permanent=1)
 
     from primeqa.intelligence.llm.gateway import llm_call, LLMError
 
@@ -895,8 +1065,7 @@ def _summary_subtick(session, tenant_id: int) -> bool:
         et = r["entity_type"]
         context = _fetch_summary_context(session, et, r["entity_id"])
         if context is None:
-            _mark_failed(session, r["queue_id"], False,
-                         "entity / detail row not found", r["attempts"])
+            _credit_fail(r, False, "entity / detail row not found")
             continue
 
         task = ("entity_summary_validation_rule"
@@ -909,18 +1078,15 @@ def _summary_subtick(session, tenant_id: int) -> bool:
             # errors are terminal; everything else (rate_limited,
             # provider_error, quota_exceeded) is worth a retry.
             retryable = e.status not in ("auth_error", "content_error")
-            _mark_failed(session, r["queue_id"], retryable,
-                         f"{e.status}: {e.message}", r["attempts"])
+            _credit_fail(r, retryable, f"{e.status}: {e.message}")
             continue
         except Exception as e:
-            _mark_failed(session, r["queue_id"], True,
-                         f"{type(e).__name__}: {e}", r["attempts"])
+            _credit_fail(r, True, f"{type(e).__name__}: {e}")
             continue
 
         summary_text = (resp.parsed_content or "").strip()
         if not summary_text:
-            _mark_failed(session, r["queue_id"], True,
-                         "LLM returned an empty summary", r["attempts"])
+            _credit_fail(r, True, "LLM returned an empty summary")
             continue
 
         # Embed the generated summary -> detail-table summary_embedding.
@@ -929,18 +1095,17 @@ def _summary_subtick(session, tenant_id: int) -> bool:
                 [summary_text], input_type="document",
             )[0]
         except VoyageError as e:
-            _mark_failed(session, r["queue_id"], e.retryable,
-                         f"summary embedding failed: {e}",
-                         r["attempts"])
+            _credit_fail(r, e.retryable, f"summary embedding failed: {e}")
             continue
 
         _write_summary(session, et, r["entity_id"], summary_text,
                        summary_vec, model=resp.model,
                        prompt_version=resp.prompt_version)
         _mark_succeeded(session, r["queue_id"])
+        result.credit(org_by_id.get(r["entity_id"]), succeeded=1)
 
     session.commit()
-    return True
+    return result
 
 
 def enrichment_tick(db_factory=None) -> bool:
@@ -977,10 +1142,35 @@ def enrichment_tick(db_factory=None) -> bool:
         session = db_factory()
         try:
             _set_tenant_context(session, schema_name, tenant_id)
-            if _embedding_subtick(session, tenant_id):
+            emb_result = _embedding_subtick(session, tenant_id)
+            sum_result = _summary_subtick(session, tenant_id)
+            if emb_result.did_work or sum_result.did_work:
                 did_work = True
-            if _summary_subtick(session, tenant_id):
-                did_work = True
+
+            # §24 — feature readiness wiring. For each org touched by
+            # this tick, credit the active sync_run's enrichment
+            # counters, recompute connected_orgs.ai_enrichment_status,
+            # and finalize the run if it reached 'complete'.
+            #
+            # Orgs are unioned across both subticks so an org touched
+            # only by embeddings still gets its readiness recomputed
+            # in case the summary side has nothing pending (e.g., an
+            # org with zero Flow + zero VR — embedding completion is
+            # sufficient to reach 'complete').
+            affected = emb_result.affected_orgs | sum_result.affected_orgs
+            for org_id in affected:
+                readiness.increment_run_counters(
+                    session, org_id,
+                    embeddings_delta=emb_result.succeeded_for(org_id),
+                    summaries_delta=sum_result.succeeded_for(org_id),
+                    summaries_failed_delta=(
+                        sum_result.failed_permanent_for(org_id)
+                    ),
+                )
+                readiness.apply_org_status(session, org_id)
+                readiness.maybe_finalize_run(session, org_id)
+            if affected:
+                session.commit()
         except Exception as e:
             log.warning("enrichment_tick: tenant %s failed: %s",
                         schema_name, e)
