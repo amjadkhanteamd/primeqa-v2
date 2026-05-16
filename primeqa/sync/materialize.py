@@ -196,7 +196,7 @@ def _materialize_chunk(
         result.entities_superseded += len(buckets.changed)
 
     if buckets.unchanged_ids:
-        _batch_touch_existing(conn, buckets.unchanged_ids, now)
+        _batch_touch_existing(conn, ctx, buckets.unchanged_ids, now)
         result.entities_unchanged += len(buckets.unchanged_ids)
 
     # 4b. Detail-table rows for new + changed entities.
@@ -513,22 +513,33 @@ def _batch_read_existing(
 ) -> dict[str, dict[str, Any]]:
     """Batched SELECT — one query, returns dict keyed by external_id.
 
-    Filters: WHERE last_synced_from_org_id = ctx.connected_org_id
-              AND entity_type = :entity_type
+    Tenant-scoped (via the tenant_<N> schema search_path); finds
+    currently-active entities of the requested type regardless of
+    which org most recently sourced them. This is D-030's
+    "single canonical model across orgs" (§26) — when org B syncs
+    the same metadata as org A previously did, the hash check
+    finds the existing rows and the bucketing routes to
+    'unchanged' (or 'changed' if metadata diverged) rather than
+    inserting duplicates.
+
+    Filters: WHERE entity_type = :entity_type
               AND sf_api_name = ANY(:external_ids)
               AND valid_to_seq IS NULL  -- currently-active only
+
+    `ctx` is retained in the signature (not used for filtering
+    here) so the caller side stays uniform with the other
+    materialize helpers + so a future per-org override scope
+    could re-add it without a signature break.
     """
     if not external_ids:
         return {}
     rows = conn.execute(text("""
         SELECT id, sf_api_name, last_seed_hash
         FROM entities
-        WHERE last_synced_from_org_id = :org_id
-          AND entity_type = :entity_type
+        WHERE entity_type = :entity_type
           AND sf_api_name = ANY(:external_ids)
           AND valid_to_seq IS NULL
     """), {
-        "org_id": ctx.connected_org_id,
         "entity_type": entity_type,
         "external_ids": external_ids,
     }).fetchall()
@@ -562,6 +573,17 @@ def _batch_insert_new_entities(
     to satisfy entities_tenant_assertion CHECK. attributes is
     JSON-serialized and cast to JSONB to satisfy
     entities_attributes_is_object CHECK.
+
+    §26: sf_id is extracted from the normalized data
+    (``e.normalized["Id"]``) when present, otherwise NULL. The
+    schema's partial UNIQUE index
+    ``idx_entities_unique_active ON (sf_id) WHERE valid_to_seq
+    IS NULL AND sf_id IS NOT NULL`` is the defense-in-depth
+    invariant for D-030's "one canonical entity per sf_id".
+    Synthetic-ID entity types (PicklistValueSet's SVS-prefixed
+    external_ids, PicklistValue's composite keys) have no SF Id
+    and insert with NULL — outside the partial index, as
+    designed.
     """
     if not entities:
         return []
@@ -576,13 +598,20 @@ def _batch_insert_new_entities(
             or e.external_id
         )
         values_clauses.append(
-            f"(:et_{i}, NULL, :sapn_{i}, :dn_{i}, "
+            f"(:et_{i}, :sfid_{i}, :sapn_{i}, :dn_{i}, "
             f"CAST(:attr_{i} AS JSONB), :vfs_{i}, NULL, "
             f"current_setting('app.tenant_id')::INT, "
             f":created_at, :last_synced_at, 'sync', "
             f":lsh_{i}, :org_id, :st_{i})"
         )
         params[f"et_{i}"] = entity_type
+        # §26: extract sf_id from normalized data; filter Salesforce's
+        # placeholder Id to NULL so the partial UNIQUE index only
+        # protects real-Id rows. See SALESFORCE_NULL_ID constant.
+        sfid = e.normalized.get("Id")
+        if sfid == SALESFORCE_NULL_ID:
+            sfid = None
+        params[f"sfid_{i}"] = sfid
         params[f"sapn_{i}"] = e.external_id
         params[f"dn_{i}"] = display_name
         params[f"attr_{i}"] = json.dumps(e.normalized)
@@ -644,14 +673,26 @@ def _batch_close_superseded(
 
 def _batch_touch_existing(
     conn: Any,
+    ctx: SyncContext,
     entity_ids: list[str],
     now: datetime,
 ) -> None:
     """Multi-row UPDATE: refresh last_synced_at for unchanged
-    entities.
+    entities AND stamp last_synced_from_org_id with the current
+    sync's org (D-030 "most recently sourced from" semantic; §26).
 
     Preserves all other fields including AI primitives. Per
     design doc §5: unchanged entities don't re-trigger enrichment.
+
+    Per D-030: when org B syncs the same metadata org A previously
+    materialized, the entity's last_synced_from_org_id mutates to
+    org B (reflecting "most recently sourced from this org");
+    last_seed_hash and AI primitives are preserved (the canonical
+    metadata hasn't changed). Downstream phase queries that filter
+    `WHERE last_synced_from_org_id = :org_id` absorb this naturally
+    because every entity touched during the running sync now
+    carries the running sync's org id (HOLD #A classification (a)
+    review of the 8 phases.py + 4 readiness.py filter sites).
     """
     if not entity_ids:
         return
@@ -660,9 +701,14 @@ def _batch_touch_existing(
     # asymmetry below.
     conn.execute(text("""
         UPDATE entities
-        SET last_synced_at = :now
+        SET last_synced_at = :now,
+            last_synced_from_org_id = :org_id
         WHERE id = ANY(CAST(:ids AS uuid[]))
-    """), {"now": now, "ids": entity_ids})
+    """), {
+        "now": now,
+        "ids": entity_ids,
+        "org_id": ctx.connected_org_id,
+    })
 
 
 # Entity types that get a `summary` enrichment row enqueued. Only
@@ -674,6 +720,20 @@ def _batch_touch_existing(
 # truth. `embedding` is always enqueued (entities.embedding exists
 # for every entity type).
 SUMMARY_ENABLED_ENTITY_TYPES = frozenset({"Flow", "ValidationRule"})
+
+
+# Salesforce's well-known placeholder Id for metadata records
+# that aren't fully customizable in the org. Uncustomized
+# StandardValueSets return Id="000000000000000AAA" rather than
+# a real Tooling Id; the same pattern can occur for other entity
+# types that wrap platform metadata. These entities have no
+# meaningful SF Id and should not occupy the
+# idx_entities_unique_active partial UNIQUE index (which exists
+# to enforce D-030's single-canonical-entity invariant for rows
+# with real SF Ids). When new entity types are added, check
+# whether they can return this placeholder. See §26 corrections-
+# log entry for the discovery context.
+SALESFORCE_NULL_ID = "000000000000000AAA"
 
 
 def _batch_upsert_queue(

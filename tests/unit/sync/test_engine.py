@@ -497,3 +497,156 @@ class TestResumeFromUnknownPhase:
             engine.run_sync(connected_org_id="org-1")
         assert "DeprecatedPhase" in str(excinfo.value)
         assert "ENTITY_ORDER" in str(excinfo.value)
+
+
+class TestMarkSyncRunStructuralCompleteAdvancesReadiness:
+    """§26: ``_mark_sync_run_structural_complete`` advances
+    readiness for EVERY org in the tenant whose ``sync_run`` is
+    still ``'running'`` after seeding
+    ``ai_enrichment_status='structural_only'``.
+
+    Single-org case: exactly one running run → one iteration →
+    behaviorally identical to the single-org pre-§26 single
+    call.
+
+    Multi-org case: D-030's touch path can shift entity
+    attribution across orgs. When sync B completes and rotates
+    ``last_synced_from_org_id`` to org B, org A's sync_run
+    (still 'running') loses its queue-row credits. Without this
+    loop, org A's sync_run stays 'running' indefinitely.
+
+    Both readiness functions are idempotent.
+    """
+
+    @staticmethod
+    def _mk_conn(running_orgs):
+        """Return a mock_conn whose .execute() emits:
+          - call 0 (UPDATE sync_runs): generic result
+          - call 1 (UPDATE connected_orgs): generic result
+          - call 2 (SELECT running orgs): result whose fetchall()
+            returns a list of namespace-like rows with an .org_id
+            attribute matching ``running_orgs``.
+        """
+        conn = MagicMock()
+        select_result = MagicMock()
+        select_result.fetchall.return_value = [
+            MagicMock(org_id=oid) for oid in running_orgs
+        ]
+        # First 2 executes return generic MagicMock; 3rd returns
+        # the configured select_result.
+        conn.execute.side_effect = [
+            MagicMock(),         # UPDATE sync_runs
+            MagicMock(),         # UPDATE connected_orgs
+            select_result,       # SELECT running orgs
+        ]
+        return conn
+
+    def _setup_engine_with_conn(self, mock_conn):
+        engine = _make_engine()
+        engine._connect = MagicMock()
+        engine._connect.return_value.__enter__.return_value = mock_conn
+        engine._connect.return_value.__exit__.return_value = False
+        return engine
+
+    def test_single_org_advances_just_that_org(self) -> None:
+        """Single-org case: SELECT returns one running org → both
+        readiness functions called exactly once."""
+        mock_conn = self._mk_conn(running_orgs=["org-a"])
+        engine = self._setup_engine_with_conn(mock_conn)
+
+        with patch(
+            "primeqa.sync.readiness.apply_org_status"
+        ) as apply_mock, patch(
+            "primeqa.sync.readiness.maybe_finalize_run"
+        ) as finalize_mock:
+            engine._mark_sync_run_structural_complete(
+                sync_run_id="run-1", connected_org_id="org-a",
+            )
+
+        apply_mock.assert_called_once()
+        finalize_mock.assert_called_once()
+        assert apply_mock.call_args.args[0] is mock_conn
+        assert apply_mock.call_args.args[1] == "org-a"
+        assert finalize_mock.call_args.args[0] is mock_conn
+        assert finalize_mock.call_args.args[1] == "org-a"
+
+    def test_multi_org_advances_every_running_org(self) -> None:
+        """§26 multi-org closure: when SELECT returns multiple
+        running orgs (e.g., org A's sync_run is still 'running'
+        when org B completes structural and touches entities to
+        org B), readiness is advanced for EACH. Captures the
+        D-030 cross-org attribution shift."""
+        mock_conn = self._mk_conn(running_orgs=["org-a", "org-b"])
+        engine = self._setup_engine_with_conn(mock_conn)
+
+        with patch(
+            "primeqa.sync.readiness.apply_org_status"
+        ) as apply_mock, patch(
+            "primeqa.sync.readiness.maybe_finalize_run"
+        ) as finalize_mock:
+            # The "current" sync is org-b (this is the call that
+            # completed structural for org B). Engine should
+            # advance both org-a and org-b.
+            engine._mark_sync_run_structural_complete(
+                sync_run_id="run-b", connected_org_id="org-b",
+            )
+
+        assert apply_mock.call_count == 2
+        assert finalize_mock.call_count == 2
+        called_orgs_apply = {
+            c.args[1] for c in apply_mock.call_args_list
+        }
+        called_orgs_finalize = {
+            c.args[1] for c in finalize_mock.call_args_list
+        }
+        assert called_orgs_apply == {"org-a", "org-b"}
+        assert called_orgs_finalize == {"org-a", "org-b"}
+
+    def test_zero_running_orgs_calls_nothing(self) -> None:
+        """Defensive: if no orgs have running sync_runs
+        (race/edge), neither readiness function fires.
+        Structural seed UPDATEs still emit normally."""
+        mock_conn = self._mk_conn(running_orgs=[])
+        engine = self._setup_engine_with_conn(mock_conn)
+
+        with patch(
+            "primeqa.sync.readiness.apply_org_status"
+        ) as apply_mock, patch(
+            "primeqa.sync.readiness.maybe_finalize_run"
+        ) as finalize_mock:
+            engine._mark_sync_run_structural_complete(
+                sync_run_id="run-1", connected_org_id="org-a",
+            )
+
+        apply_mock.assert_not_called()
+        finalize_mock.assert_not_called()
+
+    def test_structural_complete_emits_expected_updates(self) -> None:
+        """Sanity: the two pre-existing UPDATE statements are
+        still emitted in the same order with the same parameters,
+        plus the §26 multi-org SELECT. Catches a regression where
+        the §26 readiness wiring accidentally drops or reorders
+        the seed updates."""
+        mock_conn = self._mk_conn(running_orgs=[])
+        engine = self._setup_engine_with_conn(mock_conn)
+
+        with patch("primeqa.sync.readiness.apply_org_status"), \
+             patch("primeqa.sync.readiness.maybe_finalize_run"):
+            engine._mark_sync_run_structural_complete(
+                sync_run_id="run-1", connected_org_id="org-a",
+            )
+
+        # 3 executes now: UPDATE sync_runs / UPDATE connected_orgs
+        # / SELECT running orgs.
+        assert mock_conn.execute.call_count == 3
+        sync_runs_call = mock_conn.execute.call_args_list[0]
+        orgs_call = mock_conn.execute.call_args_list[1]
+        select_call = mock_conn.execute.call_args_list[2]
+        assert "UPDATE sync_runs" in str(sync_runs_call.args[0])
+        assert sync_runs_call.args[1] == {"id": "run-1"}
+        assert "UPDATE connected_orgs" in str(orgs_call.args[0])
+        assert orgs_call.args[1] == {
+            "run_id": "run-1", "id": "org-a",
+        }
+        assert "SELECT" in str(select_call.args[0])
+        assert "sr.status = 'running'" in str(select_call.args[0])

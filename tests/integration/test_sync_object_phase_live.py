@@ -428,7 +428,16 @@ def test_live_sync_full(
     HAS_PERMISSION_SET (User → PermissionSet, property-bearing) +
     TRIGGERS_ON (Flow → Object, property-bearing; record-trigger
     scoped per §21). Runs against local Postgres via
-    LIVE_DATABASE_URL."""
+    LIVE_DATABASE_URL.
+
+    Note (§25 cycle, 2026-05-15): the canonical narrative-level
+    scenario surface lives in
+    ``tests/integration/test_e2e_sync_scenarios.py``. This file
+    remains the deep per-phase / per-entity-type / per-edge
+    verifier — the scenarios file delegates to the same fixtures
+    but asserts at the lifecycle level only. Both cover the same
+    live run; this deep-verifier is preserved for debugging when
+    a scenario fails and fine-grained inspection is needed."""
     from primeqa.sync.engine import SyncEngine
 
     engine = SyncEngine(

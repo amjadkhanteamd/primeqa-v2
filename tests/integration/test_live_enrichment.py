@@ -144,7 +144,18 @@ def test_live_enrichment_after_sync(
     live_sf_client, db_engine, test_org, gateway_tables,
 ):
     """Full sync → drain ai_enrichment_queue via enrichment_tick →
-    verify entities.embedding + Flow/VR summary_* are populated."""
+    verify entities.embedding + Flow/VR summary_* are populated.
+
+    Note (§25 cycle, 2026-05-15): the canonical narrative-level
+    scenario surface lives in
+    ``tests/integration/test_e2e_sync_scenarios.py``. This file
+    remains the deep enrichment-pipeline verifier (queue lifecycle
+    inspection, embedding dim asserts, sample summary capture,
+    §24 lifecycle assertion details) — the scenarios file
+    delegates to the same fixtures but asserts at the scenario
+    level only. Both cover the same live run; this deep-verifier
+    is preserved for debugging when a scenario fails and
+    fine-grained inspection is needed."""
     from primeqa.sync.engine import SyncEngine
     from primeqa.worker import enrichment_tick
 

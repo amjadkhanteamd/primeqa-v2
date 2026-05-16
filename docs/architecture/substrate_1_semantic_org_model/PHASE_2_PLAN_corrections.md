@@ -1558,3 +1558,167 @@ Remaining toward merge-to-main: §17 REFERENCES (own focused
 cycle, formula parser), formal end-to-end test scenarios
 (§9 step 6), PR to main.
 
+## §25: End-to-end test scenarios formalized (§9 step 6) — RESOLVED
+
+Date: 2026-05-15 / 2026-05-16
+Step: design doc §9 step 6 (integration testing against the dev
+      sandbox — full sync end-to-end, observed sync_run
+      lifecycle, observed enrichment progression).
+
+The spec for §9 step 6 was minimal (one sentence). The literal
+spec was already met by `test_live_sync_full` +
+`test_live_enrichment` before this cycle. The cycle's value is
+in **formalization** — converting implicit ad-hoc verification
+into named pytest scenarios with clear assertions — and **gap
+closure** — adding a multi-org scenario that surfaced the §26
+divergence.
+
+Implementation: new file
+`tests/integration/test_e2e_sync_scenarios.py` with 3 scenario
+functions across 2 pytest test cases:
+
+- `test_scenario_full_sync_lifecycle_and_idempotent_resync` —
+  scenarios 1 + 2 combined (scenario 2's idempotent re-sync
+  depends on scenario 1's terminal state). Verifies the full
+  sync lifecycle (all 11 phases, all four `ai_enrichment_status`
+  transitions, every active entity has an embedding, every Flow
+  + ValidationRule has a summary, counter math reconciles) +
+  §5 hash-based change detection on second sync (entities_
+  inserted=0, entities_superseded=0, entities_unchanged>0).
+- `test_scenario_multi_org_sync` — scenario 3 (NEW). Two
+  `connected_orgs` rows under tenant_1 pointing at the same
+  sandbox; verifies per-org readiness isolation; surfaced the
+  D-030 divergence resolved in §26.
+
+Existing `test_live_sync_full` + `test_live_enrichment_after_
+sync` are preserved as the deep per-phase / per-entity-type /
+per-edge verifiers; the scenarios file delegates to the same
+fixtures but asserts at the narrative / lifecycle level only.
+Legacy-path docstrings added to both pointing readers at the
+canonical scenarios surface.
+
+Cadence: on-demand or nightly, not per-PR. Suite wall-clock
+~30-35 min per full run. Cost ~$0.033 Anthropic + ~$0.04 Voyage
+(estimated; Voyage `cost_usd=0.0` per design).
+
+Scenarios deferred to PARKING_LOT with named revisit triggers:
+partial-sync resume, bitemporal historical query, error-
+recovery, worker restart mid-drain, cross-tenant isolation
+(P-010 through P-014). Each carries unit-test or design-
+invariant coverage that makes e2e formalization marginal at
+this stage. P-016 surfaced separately: `limits._starter_defaults`
+rate-limit tightness causing intermittent rate_limited summary
+calls under burst (observed §25 attempt 1; recurred sporadically
+across §26 attempts; not blocking — summaries_failed=0).
+
+CONVENTIONS.md updated with the e2e cadence rule. PARKING_LOT
+extended with P-010 through P-014 + P-016.
+
+## §26: D-030 multi-org shared-model — RESOLVED
+
+Date: 2026-05-16
+Step: D-030 reconciliation (locked 2026-04-28). Triggered by
+      §25 scenario 3's empirical discovery of per-org entity
+      duplication.
+
+Background: D-030 prescribes "single canonical model across
+orgs; subsequent syncs update the model in place." §25
+scenario 3 observed the explicitly-rejected alternative —
+per-org duplication (Org B inserted 5865 entities on the same
+sandbox as Org A; total active entities = 11,730 = 2 × 5865).
+The implementation diverged from the locked decision.
+
+Root cause: `_batch_read_existing` in
+`primeqa/sync/materialize.py` filtered the existing-entity
+lookup by `last_synced_from_org_id = :org_id`, preventing
+cross-org recognition. Org B's lookup returned empty → all
+entities routed to the `new` bucket → duplicates inserted.
+
+Secondary: `_batch_touch_existing` only updated
+`last_synced_at`, leaving `last_synced_from_org_id` immutable.
+This treated the column as ownership ("this entity belongs to
+this org") rather than D-030's prescribed
+"most-recently-sourced-from" semantic.
+
+Defense-in-depth: the schema's `idx_entities_unique_active`
+partial UNIQUE index `(sf_id) WHERE valid_to_seq IS NULL AND
+sf_id IS NOT NULL` correctly encoded D-030's invariant, but
+was non-functional because `_batch_insert_new_entities`
+hardcoded `sf_id = NULL` on every insert. The schema's
+defense-in-depth was a no-op.
+
+Fix (code-only; no schema changes):
+
+- `materialize.py` `_batch_read_existing`: drop the org-id
+  filter; tenant-scope via the `tenant_<N>` schema search_path.
+- `materialize.py` `_batch_touch_existing`: add `SET
+  last_synced_from_org_id = :org_id` so unchanged entities
+  reflect "most recently synced from" semantic. The 8 phase
+  filter sites in `phases.py` (HOLD #A classification (a))
+  absorb naturally because the touch path propagates the
+  current org's id to every entity touched during the
+  running sync.
+- `materialize.py` `_batch_insert_new_entities`: extract
+  `sf_id` from `normalized["Id"]` instead of hardcoded NULL,
+  activating the schema's UNIQUE index as defense-in-depth.
+- `materialize.py` `SALESFORCE_NULL_ID = "000000000000000AAA"`:
+  Salesforce's placeholder Id for non-customizable metadata
+  (uncustomized SVSes return this). Filtered to NULL at
+  insert so these rows stay outside the partial UNIQUE index
+  — the index defends entities with real SF Ids only.
+- `engine.py` `_mark_sync_run_structural_complete`: after
+  marking the phase transition, advance readiness
+  (`apply_org_status` + `maybe_finalize_run`) for every org
+  in the tenant whose `sync_run` is still `'running'`. D-030's
+  touch path can shift queue-row attribution across orgs;
+  without this loop, an earlier sync's run stays `'running'`
+  indefinitely once its entities are re-attributed away.
+  Single-org case: one iteration, behaviorally identical to
+  pre-§26. Multi-org case: closes the cross-org sync_run
+  finalization gap (which is the §24 "old run stays running"
+  documented limit, now resolved here for the cross-org
+  case).
+
+Cross-org sync_run finalization fix bundled (discovered during
+live verification, scenario 3): the multi-org variant captures
+both the current sync's org and any siblings whose attribution
+shifted. Behaviorally identical in single-org world (one
+running, one iteration).
+
+phases.py + readiness.py review: 8 + 4 sites filtering by
+`last_synced_from_org_id = :org_id`, all classification (a)
+harmless (HOLD #A). The touch path's mutation propagates the
+current org's id forward, so downstream queries that filter
+by "this org's entities" continue to return the correct set
+during the active sync.
+
+Verified via §25 scenario 3 with prescriptive assertions
+post-fix:
+
+- Org A: ai_enrichment_status=complete, phase=done,
+  status=success, entities_inserted=5865, entities_unchanged=0
+- Org B: ai_enrichment_status=complete, phase=done,
+  status=success, entities_inserted=0, entities_unchanged=5865
+- Total active entities = 5865 (single canonical model — not
+  2× per pre-§26 behavior)
+- Entity attribution: org A=0, org B=5865 (touch path mutated
+  to most-recently-synced)
+- Queue rows: 5928, all attributed via org B's entities, zero
+  orphans
+
+Wall-clock §26 closure run: 29:14 (under estimate). Cost
+$0.033151 Anthropic ($0.005865 Flow + $0.027286 VR; 50/50 VR
+OK with no rate_limited retries this attempt), Voyage 46
+batches at logged $0.
+
+PARKING_LOT P-015 ("D-030 multi-org shared-model
+reconciliation") is fully closed by this commit, not parked.
+Other entries (P-010 through P-014, P-016) carry forward as
+planned.
+
+Cross-references: D-030 (locked); §23 enrichment worker; §24
+feature readiness signaling (whose cross-org finalization gap
+is closed here); §25 e2e scenarios (whose scenario 3 surfaced
+the divergence); P-016 (`_starter_defaults` rate-limit
+tightness, separate carry-forward).
+

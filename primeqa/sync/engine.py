@@ -381,7 +381,34 @@ class SyncEngine:
         ``status='success'`` / ``'partial_success'`` once enrichment
         is complete — see
         ``primeqa.sync.readiness.maybe_finalize_run`` (§24).
+
+        §26: after seeding ``ai_enrichment_status='structural_only'``,
+        call ``readiness.apply_org_status`` + ``maybe_finalize_run``
+        for every org in the tenant whose ``sync_run`` is still
+        ``'running'``. Single-org case: exactly one running run →
+        one iteration → behaviorally identical to single-org
+        pre-§26. Multi-org case: catches the D-030 cross-org
+        attribution shift.
+
+        D-030's touch path can shift entity attribution across
+        orgs. When sync B completes and rotates
+        ``last_synced_from_org_id`` to org B, org A's sync_run
+        (still 'running') loses its queue-row credits. Without
+        this loop, org A's sync_run stays 'running' indefinitely
+        (the worker's readiness wiring only advances orgs whose
+        entities it touches).
+
+        Concurrency safety: ``compute_org_status`` returns
+        ``'none'`` for ``phase='structural'`` (sync still
+        in-flight), so syncs in progress are correctly excluded
+        from finalization. ``sr.status='running'`` matches both
+        ``phase='structural'`` (early) and ``phase='enrichment'``
+        (post-this-call) running runs; the per-run check via
+        ``compute_org_status`` filters correctly.
         """
+        from primeqa.sync import readiness  # local import: avoid
+        # an engine→readiness import cycle at module load time.
+
         with self._connect() as conn:
             conn.execute(text("""
                 UPDATE sync_runs
@@ -394,6 +421,22 @@ class SyncEngine:
                     last_sync_run_id = :run_id
                 WHERE id = :id
             """), {"run_id": sync_run_id, "id": connected_org_id})
+
+            # §26: readiness functions accept session-like with
+            # .execute(); a SQLAlchemy connection works the same
+            # way (both apply_org_status and maybe_finalize_run
+            # only call .execute() + .scalar() / .fetchone() /
+            # .rowcount). Operates in the existing transaction;
+            # commit on context exit.
+            running_orgs = conn.execute(text("""
+                SELECT co.id::text AS org_id
+                FROM connected_orgs co
+                JOIN sync_runs sr ON sr.id = co.last_sync_run_id
+                WHERE sr.status = 'running'
+            """)).fetchall()
+            for row in running_orgs:
+                readiness.apply_org_status(conn, row.org_id)
+                readiness.maybe_finalize_run(conn, row.org_id)
 
     def _mark_sync_run_failed(
         self,

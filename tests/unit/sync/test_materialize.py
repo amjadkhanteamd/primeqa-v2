@@ -204,7 +204,8 @@ class TestBatchedMaterializeAllUnchanged:
 
         # Touch called once with all 3 existing IDs
         mock_touch.assert_called_once()
-        touch_ids = mock_touch.call_args.args[1]
+        # §26: _batch_touch_existing signature is (conn, ctx, ids, now)
+        touch_ids = mock_touch.call_args.args[2]
         assert sorted(touch_ids) == sorted(["old-0", "old-1", "old-2"])
         # No insert, no upsert
         mock_insert.assert_not_called()
@@ -293,7 +294,8 @@ class TestBatchedMaterializeMixedBuckets:
         assert close_ids == ["old-changed"]
         # touch called once with the unchanged id
         mock_touch.assert_called_once()
-        touch_ids = mock_touch.call_args.args[1]
+        # §26: _batch_touch_existing signature is (conn, ctx, ids, now)
+        touch_ids = mock_touch.call_args.args[2]
         assert touch_ids == ["old-same"]
         # upsert called once with new + changed_new ids
         mock_upsert.assert_called_once()
@@ -1097,7 +1099,95 @@ class TestMaterializeChunkDetailRows:
         assert entity_ids == {"new-uuid-contact", "new-uuid-account"}
 
 
-from primeqa.sync.materialize import _batch_insert_details
+from primeqa.sync.batching import EntityForWrite
+from primeqa.sync.materialize import (
+    _batch_insert_details,
+    _batch_insert_new_entities,
+)
+
+
+class TestBatchInsertNewEntitiesSfIdFilter:
+    """§26: ``_batch_insert_new_entities`` extracts ``sf_id`` from
+    ``EntityForWrite.normalized["Id"]`` and filters Salesforce's
+    placeholder Id (``000000000000000AAA``) to NULL. This keeps
+    placeholder-Id rows outside the ``idx_entities_unique_active``
+    partial UNIQUE index — the index defends only entities with
+    real SF Ids, which is its design intent."""
+
+    def _entity(self, **normalized) -> EntityForWrite:
+        return EntityForWrite(
+            external_id=normalized.get("external_id", "ext-1"),
+            normalized=normalized,
+            presentation={"label": "X", "name": "X"},
+            semantic_text="text",
+            hash_normalized="h",
+        )
+
+    def _params(self, conn) -> dict:
+        """Return the bound-params dict from the (only) execute call."""
+        conn.execute.assert_called_once()
+        return conn.execute.call_args[0][1]
+
+    def test_real_id_is_preserved(self) -> None:
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = []
+        ctx = _stub_ctx()
+        _batch_insert_new_entities(
+            conn, ctx, "Object",
+            entities=[self._entity(Id="001D000000abcDEF")],
+            now=MagicMock(),
+        )
+        assert self._params(conn)["sfid_0"] == "001D000000abcDEF"
+
+    def test_placeholder_id_becomes_null(self) -> None:
+        """The Salesforce placeholder Id '000000000000000AAA' is
+        filtered to None (NULL in SQL), keeping the row outside
+        the partial UNIQUE index."""
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = []
+        ctx = _stub_ctx()
+        _batch_insert_new_entities(
+            conn, ctx, "PicklistValueSet",
+            entities=[self._entity(Id="000000000000000AAA")],
+            now=MagicMock(),
+        )
+        assert self._params(conn)["sfid_0"] is None
+
+    def test_missing_id_is_null(self) -> None:
+        """Entity types without an SF Id (e.g., PicklistValue
+        composite keys) extract to None, same as the placeholder
+        path. Outside the partial UNIQUE index."""
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = []
+        ctx = _stub_ctx()
+        _batch_insert_new_entities(
+            conn, ctx, "PicklistValue",
+            entities=[self._entity()],  # no Id key
+            now=MagicMock(),
+        )
+        assert self._params(conn)["sfid_0"] is None
+
+    def test_mixed_batch_filters_per_row(self) -> None:
+        """A batch mixing real, placeholder, and missing Ids
+        applies the filter row-by-row."""
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = []
+        ctx = _stub_ctx()
+        _batch_insert_new_entities(
+            conn, ctx, "ValidationRule",
+            entities=[
+                self._entity(external_id="ext-a",
+                             Id="03dD000000aaaAAA"),
+                self._entity(external_id="ext-b",
+                             Id="000000000000000AAA"),
+                self._entity(external_id="ext-c"),  # no Id
+            ],
+            now=MagicMock(),
+        )
+        params = self._params(conn)
+        assert params["sfid_0"] == "03dD000000aaaAAA"
+        assert params["sfid_1"] is None
+        assert params["sfid_2"] is None
 
 
 class TestBatchInsertDetails:

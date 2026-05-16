@@ -95,6 +95,35 @@ This pattern was added to CONVENTIONS after §23 attempt 3 discovered
 a column-name typo in test telemetry only after a 10-minute
 integration test run.
 
+### E2E test scenarios cadence
+
+`tests/integration/test_e2e_sync_scenarios.py` is the canonical
+formal-scenarios surface for Phase 2 substrate-1 sync layer
+(per §25 + §26 corrections-log).
+
+**Cadence: on-demand or nightly. NOT per-PR.**
+
+- Suite wall-clock: ~30-35 min per full run.
+- Suite cost: ~$0.07 per run (~$0.033 Anthropic + ~$0.04
+  Voyage estimated; Voyage `cost_usd=0.0` per design — embedding
+  token-accounting deferred).
+
+When to run:
+
+- Before merging substrate-1 work to `main`.
+- Before customer-facing release of substrate-1 capabilities.
+- Nightly in CI if a nightly schedule is configured.
+- On-demand when investigating a sync-layer issue.
+
+The deep per-phase / per-entity-type / per-edge live tests
+(`test_sync_object_phase_live.py`, `test_live_enrichment.py`)
+are debugging-grade and run on the same on-demand cadence.
+
+Deferred scenarios catalog (see PARKING_LOT P-010 through
+P-014): partial-sync resume, bitemporal historical query,
+error-recovery, worker restart mid-drain, cross-tenant
+isolation. Each has named revisit triggers.
+
 ### Test fixture patterns
 
 - **`load_dotenv(override=True)` in test fixtures.** Default
