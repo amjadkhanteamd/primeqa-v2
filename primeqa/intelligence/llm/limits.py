@@ -14,17 +14,32 @@ per tenant later).
 
 Queries use the idx_llm_usage_tenant_ts index; even at millions of rows
 they return in well under 10ms.
+
+Embedding calls (\u00a723 enrichment worker): embeddings go through the
+Voyage API, not the message gateway / `llm_call()`. To bring them
+under the SAME per-tenant windows, the enrichment worker calls
+`check()` before an embedding batch and `record_embedding_usage()`
+after \u2014 the latter writes one llm_usage_log row per batch with
+task=EMBEDDING_TASK, so `check()`'s call-count windows count it with
+zero change to `check()` itself. The daily-spend window is naturally
+a no-op for embeddings (cost_usd=0.0; Voyage cost accounting is a
+later concern).
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from primeqa.intelligence.llm.router import TenantPolicy
 
 log = logging.getLogger(__name__)
+
+# Task name embedding calls log under in llm_usage_log. Shared between
+# record_embedding_usage() (below) and the dashboard so both agree on
+# the row's identity. Distinct from any message-gateway task name.
+EMBEDDING_TASK = "embedding_generation"
 
 
 @dataclass
@@ -113,6 +128,21 @@ def load_tenant_config(tenant_id: int, *, db=None, return_row: bool = False):
     from primeqa.core.models import TenantAgentSettings
     from primeqa.intelligence.llm import tiers
 
+    def _starter_defaults():
+        """Starter-tier limits + default policy — the value returned
+        both for a tenant with no settings row AND (fail-open) when
+        the settings table can't be read at all."""
+        resolved = tiers.resolve_limits(tiers.TIER_STARTER)
+        result = (
+            TenantLimits(
+                max_per_minute=resolved["max_per_minute"],
+                max_per_hour=resolved["max_per_hour"],
+                max_spend_per_day_usd=resolved["max_spend_per_day_usd"],
+            ),
+            TenantPolicy(),
+        )
+        return (*result, None) if return_row else result
+
     owns_session = db is None
     sess = db if db is not None else Session(bind=engine)
     try:
@@ -121,16 +151,7 @@ def load_tenant_config(tenant_id: int, *, db=None, return_row: bool = False):
         ).first()
         if not row:
             # No settings row → starter tier, no overrides.
-            resolved = tiers.resolve_limits(tiers.TIER_STARTER)
-            result = (
-                TenantLimits(
-                    max_per_minute=resolved["max_per_minute"],
-                    max_per_hour=resolved["max_per_hour"],
-                    max_spend_per_day_usd=resolved["max_spend_per_day_usd"],
-                ),
-                TenantPolicy(),
-            )
-            return (*result, None) if return_row else result
+            return _starter_defaults()
 
         tier = getattr(row, "llm_tier", None) or tiers.TIER_STARTER
         resolved = tiers.resolve_limits(
@@ -154,9 +175,26 @@ def load_tenant_config(tenant_id: int, *, db=None, return_row: bool = False):
             ),
         )
         return (*result, row) if return_row else result
+    except Exception as e:
+        # Fail OPEN: the rate-limit/tier layer is governance, not the
+        # work itself — if tenant_agent_settings can't be read (table
+        # absent, no engine bound, transient DB error) the LLM call
+        # should still proceed under conservative starter limits
+        # rather than crash. Mirrors usage.record's "never raise into
+        # the caller" discipline. Relevant for the substrate-1
+        # enrichment worker, whose tenant DB carries the entities but
+        # not the primeqa-app gateway tables.
+        log.warning(
+            "load_tenant_config: read failed (tenant=%s): %s — "
+            "falling back to starter defaults", tenant_id, e,
+        )
+        return _starter_defaults()
     finally:
         if owns_session:
-            sess.close()
+            try:
+                sess.close()
+            except Exception:
+                pass
 
 
 def check(tenant_id: int, limits: TenantLimits) -> LimitCheckResult:
@@ -216,10 +254,71 @@ def check(tenant_id: int, limits: TenantLimits) -> LimitCheckResult:
                         f"${float(spend):.4f} of ${limits.max_spend_per_day_usd:.2f}"
                     ),
                 )
+    except Exception as e:
+        # Fail OPEN — same discipline as load_tenant_config above. The
+        # rate-limit windows are governance, not the work itself; if
+        # llm_usage_log can't be read (table absent, no engine bound,
+        # transient DB error) the call proceeds rather than crashing.
+        # The substrate-1 enrichment worker runs against a tenant DB
+        # that carries the entities but not the primeqa-app gateway
+        # tables.
+        log.warning(
+            "limits.check: read failed (tenant=%s): %s — allowing call",
+            tenant_id, e,
+        )
+        return LimitCheckResult(allowed=True)
     finally:
-        sess.close()
+        try:
+            sess.close()
+        except Exception:
+            pass
 
     return LimitCheckResult(allowed=True)
+
+
+def record_embedding_usage(
+    tenant_id: int,
+    *,
+    batch_size: int,
+    model: str,
+    latency_ms: Optional[int] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Log one embedding batch to llm_usage_log so `check()`'s
+    per-tenant call-count windows count it.
+
+    Embeddings don't flow through `llm_call()` — they hit the Voyage
+    API directly from the enrichment worker — so without this they'd
+    be invisible to the rate-limit windows. One row per BATCH (not
+    per text): a batch of up to 128 texts is one Voyage API call and
+    counts as one call against the minute/hour windows.
+
+    `cost_usd` is recorded as 0.0 — Voyage cost accounting isn't wired
+    yet, and for v1 the call-count windows are what gate embeddings;
+    the daily-spend window is a deliberate no-op here.
+
+    Thin wrapper over `usage.record` (the same writer the gateway
+    uses) — lives in limits.py because "make embedding calls show up
+    in the rate-limit count" is a rate-limit concern. Fire-and-forget:
+    never raises into the worker; returns the row id or None.
+    """
+    from primeqa.intelligence.llm import usage
+
+    ctx: Dict[str, Any] = {"batch_size": int(batch_size)}
+    if context:
+        ctx.update(context)
+    return usage.record(
+        tenant_id=tenant_id,
+        task=EMBEDDING_TASK,
+        model=model,
+        prompt_version=model,  # embeddings have no prompt — tag = model
+        input_tokens=0,
+        output_tokens=0,
+        cost_usd=0.0,
+        latency_ms=latency_ms,
+        status="ok",
+        context=ctx,
+    )
 
 
 def current_usage(tenant_id: int, limits: TenantLimits, *, db=None) -> UsageSnapshot:

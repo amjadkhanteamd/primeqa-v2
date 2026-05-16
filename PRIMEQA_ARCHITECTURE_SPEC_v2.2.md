@@ -1,5 +1,19 @@
 # PrimeQA Architecture Specification v2.2
 
+> **Status:** LEGACY — original v2 architecture specification.
+> Describes the v2 Flask/HTMX runtime which is still operational.
+> Will be superseded by substrate-based architecture after Phase 4
+> cutover.
+>
+> For current architecture: see `docs/architecture/PLATFORM_VISION.md`
+> (8 substrates) and the per-substrate specs in `docs/architecture/`.
+>
+> For current product description: see
+> `docs/product/PRIMEQA_PRODUCT_DEFINITION.md`.
+>
+> Retained at this location because v2 is operationally running.
+> Will be moved to `docs/archive/` after Phase 4 cutover.
+
 ## Overview
 
 This document defines the complete database schema, system architecture, and execution model for PrimeQA's multi-user, multi-environment Salesforce test management platform.

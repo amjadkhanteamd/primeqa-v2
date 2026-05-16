@@ -16,6 +16,7 @@ from primeqa.integrations.sf_client import (
     SF_API_VERSION,
     MAX_RETRIES,
     RETRY_BACKOFF_SEQ,
+    extract_picklist_value_payloads_from_metadata,
 )
 from primeqa.integrations.exceptions import (
     SFAuthError,
@@ -326,6 +327,201 @@ class TestFetchFieldsForObject:
 
 
 # ----------------------------------------------------------------------
+# fetch_fields_for_objects_bulk (composite/batch variant)
+# ----------------------------------------------------------------------
+
+
+def _composite_batch_handler(
+    describes_by_name: dict[str, dict],
+    failed_names: dict[str, int] | None = None,
+):
+    """Build a handler that returns composite/batch responses
+    matching the live Salesforce shape.
+
+    describes_by_name: {sObject_name: describe_dict_with_fields} for
+        sObjects that should return statusCode=200.
+    failed_names: {sObject_name: status_code} for sObjects that
+        should return non-200 (404, 403, etc.) with an error array
+        as result — matches the real "this sObject doesn't exist /
+        you can't access" behavior.
+
+    Captures all POST bodies in a list keyed by request order;
+    accessible via the handler's `posted_bodies` attribute (a list).
+    """
+    failed_names = failed_names or {}
+    posted_bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/services/oauth2/token":
+            return _token_response()
+        # composite/batch is a POST with JSON body
+        body = json.loads(request.content.decode())
+        posted_bodies.append(body)
+        sub_responses = []
+        for sub in body["batchRequests"]:
+            # Sub-request URL format: 'v66.0/sobjects/{name}/describe'
+            # Extract the {name}.
+            url = sub["url"]
+            # url like 'v66.0/sobjects/Account/describe' (or
+            # URL-encoded). We'll match by suffix.
+            parts = url.split("/")
+            # ['v66.0', 'sobjects', 'NAME', 'describe']
+            name = urllib.parse.unquote(parts[2]) if len(parts) >= 4 else ""
+            if name in failed_names:
+                sub_responses.append({
+                    "statusCode": failed_names[name],
+                    "result": [{
+                        "errorCode": "NOT_FOUND",
+                        "message": f"No describe for {name}",
+                    }],
+                })
+            elif name in describes_by_name:
+                sub_responses.append({
+                    "statusCode": 200,
+                    "result": describes_by_name[name],
+                })
+            else:
+                # Unknown name — treat as 404 (defensive)
+                sub_responses.append({
+                    "statusCode": 404,
+                    "result": [{"errorCode": "NOT_FOUND",
+                                 "message": f"Unknown {name}"}],
+                })
+        return httpx.Response(200, json={
+            "hasErrors": any(r["statusCode"] != 200 for r in sub_responses),
+            "results": sub_responses,
+        })
+
+    handler.posted_bodies = posted_bodies  # type: ignore[attr-defined]
+    return handler
+
+
+import urllib.parse
+import json
+
+
+class TestFetchFieldsForObjectsBulk:
+    def test_empty_input_makes_no_api_calls(self) -> None:
+        """Empty list short-circuits to empty dict; no composite/batch
+        request issued."""
+        posted: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            posted.append({"path": request.url.path})
+            return httpx.Response(200, json={"hasErrors": False,
+                                              "results": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_fields_for_objects_bulk([])
+        assert result == {}
+        # No composite/batch hits (token endpoint may be hit during
+        # client construction; filter to composite calls only).
+        assert not any("composite/batch" in p["path"] for p in posted)
+        c.close()
+
+    def test_returns_fields_keyed_by_object_name(self) -> None:
+        """Two-Object batch → result dict has both keys, each value
+        is the describe.fields list."""
+        describes = {
+            "Account": {"fields": [
+                {"name": "Id", "type": "id"},
+                {"name": "Industry", "type": "picklist"},
+            ]},
+            "Contact": {"fields": [
+                {"name": "Id", "type": "id"},
+                {"name": "Email", "type": "email"},
+            ]},
+        }
+        h = _composite_batch_handler(describes)
+        c = _make_client(httpx.MockTransport(h))
+        result = c.fetch_fields_for_objects_bulk(["Account", "Contact"])
+        assert set(result.keys()) == {"Account", "Contact"}
+        assert len(result["Account"]) == 2
+        assert result["Account"][1]["name"] == "Industry"
+        assert result["Contact"][1]["name"] == "Email"
+        c.close()
+
+    def test_single_batch_for_input_under_limit(self) -> None:
+        """≤25 sObjects → exactly 1 composite/batch request issued."""
+        names = [f"Obj_{i}__c" for i in range(20)]
+        describes = {n: {"fields": [{"name": "Id"}]} for n in names}
+        h = _composite_batch_handler(describes)
+        c = _make_client(httpx.MockTransport(h))
+        result = c.fetch_fields_for_objects_bulk(names)
+        # All 20 sObjects landed in the result
+        assert len(result) == 20
+        # Exactly 1 composite/batch POST was issued
+        assert len(h.posted_bodies) == 1
+        # batchRequests has 20 sub-requests
+        assert len(h.posted_bodies[0]["batchRequests"]) == 20
+        c.close()
+
+    def test_chunks_input_over_limit(self) -> None:
+        """146 sObjects → 6 composite batches: 25, 25, 25, 25, 25, 21."""
+        names = [f"Obj_{i}__c" for i in range(146)]
+        describes = {n: {"fields": [{"name": "Id"}]} for n in names}
+        h = _composite_batch_handler(describes)
+        c = _make_client(httpx.MockTransport(h))
+        result = c.fetch_fields_for_objects_bulk(names)
+        # All 146 sObjects accounted for in result
+        assert len(result) == 146
+        # Exactly 6 composite batches
+        assert len(h.posted_bodies) == 6
+        chunk_sizes = [
+            len(body["batchRequests"]) for body in h.posted_bodies
+        ]
+        assert chunk_sizes == [25, 25, 25, 25, 25, 21]
+        c.close()
+
+    def test_omits_failed_objects_from_result(self) -> None:
+        """Per-Object 404 within a batch is silently omitted from
+        the result dict. Other sObjects in the same batch return
+        normally."""
+        describes = {
+            "Account": {"fields": [{"name": "Id"}]},
+            "Contact": {"fields": [{"name": "Id"}]},
+        }
+        # Lead sub-request will return statusCode=404
+        h = _composite_batch_handler(describes, failed_names={"Lead": 404})
+        c = _make_client(httpx.MockTransport(h))
+        result = c.fetch_fields_for_objects_bulk(
+            ["Account", "Lead", "Contact"],
+        )
+        # Lead omitted; Account + Contact present
+        assert set(result.keys()) == {"Account", "Contact"}
+        c.close()
+
+    def test_sub_request_url_format(self) -> None:
+        """Sub-request URL uses api_version-prefixed relative path
+        — Salesforce composite/batch requires this exact form
+        (e.g., 'v66.0/sobjects/Account/describe'). Verifies the
+        survey-confirmed format isn't accidentally dropped."""
+        describes = {"Account": {"fields": []}}
+        h = _composite_batch_handler(describes)
+        c = _make_client(httpx.MockTransport(h))
+        c.fetch_fields_for_objects_bulk(["Account"])
+        assert len(h.posted_bodies) == 1
+        sub_url = h.posted_bodies[0]["batchRequests"][0]["url"]
+        assert sub_url == f"{SF_API_VERSION}/sobjects/Account/describe"
+        c.close()
+
+    def test_url_encodes_object_names(self) -> None:
+        """Custom sObject names with special chars (rare but
+        possible) get URL-encoded in the sub-request URL."""
+        # __c suffix is common; encoding leaves it alone, but the
+        # quote-with-safe='' call ensures any future special chars
+        # would be handled.
+        describes = {"My_Object__c": {"fields": []}}
+        h = _composite_batch_handler(describes)
+        c = _make_client(httpx.MockTransport(h))
+        c.fetch_fields_for_objects_bulk(["My_Object__c"])
+        sub_url = h.posted_bodies[0]["batchRequests"][0]["url"]
+        assert "My_Object__c" in sub_url
+
+
+# ----------------------------------------------------------------------
 # fetch_validation_rules
 # ----------------------------------------------------------------------
 
@@ -350,14 +546,16 @@ class TestFetchValidationRules:
 
     def test_fetch_validation_rules_returns_records_list(self) -> None:
         """Two-phase fetch: phase 1 returns N records with EntityDefinitionId
-        (NOT EntityDefinition.QualifiedApiName, NOT Metadata).
-        Phase 2 returns 1 record per Id with Metadata. Result merges
-        Metadata onto each phase-1 record alongside EntityDefinitionId."""
+        (NOT EntityDefinition.QualifiedApiName, NOT Metadata, NOT FullName).
+        Phase 2 returns 1 record per Id with FullName + Metadata.
+        Result merges FullName + Metadata onto each phase-1 record
+        alongside EntityDefinitionId."""
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/services/oauth2/token":
                 return _token_response()
             soql = request.url.params.get("q", "")
-            # Phase 1: bulk SELECT (no Metadata) → return 2 records with EntityDefinitionId
+            # Phase 1: bulk SELECT (no Metadata, no FullName) → return
+            # 2 records with EntityDefinitionId
             if "Metadata" not in soql:
                 return httpx.Response(200, json={
                     "records": [
@@ -377,11 +575,12 @@ class TestFetchValidationRules:
                         },
                     ]
                 })
-            # Phase 2: per-Id SELECT Id, Metadata WHERE Id = '...'
+            # Phase 2: per-Id SELECT Id, FullName, Metadata WHERE Id = '...'
             if "03d000000000001" in soql:
                 return httpx.Response(200, json={
                     "records": [{
                         "Id": "03d000000000001",
+                        "FullName": "Account.AmountPositive",
                         "Metadata": {"errorConditionFormula": "Amount <= 0"},
                     }]
                 })
@@ -389,6 +588,7 @@ class TestFetchValidationRules:
                 return httpx.Response(200, json={
                     "records": [{
                         "Id": "03d000000000002",
+                        "FullName": "Opportunity.StatusValid",
                         "Metadata": {"errorConditionFormula": "ISBLANK(Status)"},
                     }]
                 })
@@ -401,14 +601,55 @@ class TestFetchValidationRules:
         # EntityDefinitionId preserved from phase 1
         assert result[0]["EntityDefinitionId"] == "01IF9000001CNEB"
         assert result[1]["EntityDefinitionId"] == "01IF9000001CNEC"
-        # Metadata merged onto phase-1 records from phase 2
+        # FullName + Metadata merged onto phase-1 records from phase 2
+        assert result[0]["FullName"] == "Account.AmountPositive"
+        assert result[1]["FullName"] == "Opportunity.StatusValid"
         assert result[0]["Metadata"] == {"errorConditionFormula": "Amount <= 0"}
         assert result[1]["Metadata"] == {"errorConditionFormula": "ISBLANK(Status)"}
         c.close()
 
+    def test_fetch_validation_rules_phase2_includes_full_name(
+        self,
+    ) -> None:
+        """Phase 2 SOQL must include FullName (post-P5 enhancement).
+        FullName is the canonical '{Object}.{ValidationName}'
+        identifier the sync layer uses for external_id + parent-
+        Object api_name extraction. Both FullName and Metadata
+        share the 1-row constraint (§1) so they can co-fetch in
+        a single SOQL call."""
+        soqls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            soqls_seen.append(soql)
+            if "Metadata" not in soql:
+                return httpx.Response(200, json={
+                    "records": [{"Id": "03d1", "ValidationName": "X"}],
+                })
+            return httpx.Response(200, json={
+                "records": [{
+                    "Id": "03d1",
+                    "FullName": "Account.X",
+                    "Metadata": {},
+                }],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_validation_rules()
+        # Result carries FullName
+        assert result[0]["FullName"] == "Account.X"
+        # Phase 2 SOQL included FullName + Metadata
+        phase2_soqls = [s for s in soqls_seen if "Metadata" in s]
+        assert len(phase2_soqls) == 1
+        assert "FullName" in phase2_soqls[0]
+        c.close()
+
     def test_fetch_validation_rules_soql_phase_split(self) -> None:
-        """Phase 1 SOQL must NOT contain Metadata. Phase 2 SOQL MUST
-        contain Metadata + WHERE Id = '...' filter."""
+        """Phase 1 SOQL must NOT contain Metadata or FullName (both
+        1-row-constrained). Phase 2 SOQL MUST contain Metadata +
+        FullName + WHERE Id = '...' filter."""
         soqls_seen = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -423,7 +664,11 @@ class TestFetchValidationRules:
                 })
             # Phase 2
             return httpx.Response(200, json={
-                "records": [{"Id": "03d000000000001", "Metadata": {}}]
+                "records": [{
+                    "Id": "03d000000000001",
+                    "FullName": "Account.X",
+                    "Metadata": {},
+                }]
             })
 
         c = _make_client(httpx.MockTransport(handler))
@@ -434,15 +679,18 @@ class TestFetchValidationRules:
         phase2_soqls = [s for s in soqls_seen if "Metadata" in s]
 
         assert len(phase1_soqls) == 1, "Exactly one phase-1 bulk query expected"
-        # Phase 1: must NOT contain Metadata, must NOT join EntityDefinition,
-        # must include EntityDefinitionId, must target ValidationRule.
+        # Phase 1: must NOT contain Metadata or FullName (both 1-row-
+        # constrained), must NOT join EntityDefinition, must include
+        # EntityDefinitionId, must target ValidationRule.
         assert "Metadata" not in phase1_soqls[0]
+        assert "FullName" not in phase1_soqls[0]
         assert "EntityDefinition." not in phase1_soqls[0]
         assert "EntityDefinitionId" in phase1_soqls[0]
         assert "ValidationRule" in phase1_soqls[0]
 
         assert len(phase2_soqls) >= 1, "At least one phase-2 per-Id query expected"
         assert "Metadata" in phase2_soqls[0]
+        assert "FullName" in phase2_soqls[0]
         assert "WHERE Id =" in phase2_soqls[0]
         c.close()
 
@@ -1349,6 +1597,79 @@ class TestFetchStandardValueSets:
         assert len(api_calls) == len(labels) == 5
         c.close()
 
+    def test_fetch_standard_value_sets_tolerates_per_label_500(self) -> None:
+        """Industry-cloud SVSes return HTTP 500 in orgs where the
+        corresponding cloud is not enabled (~32% of catalog in a
+        no-cloud sandbox). A single label's failure must not abort
+        the iteration; the consumer should still receive the
+        subset the org supports. Per corrections-log §6 category 3
+        + §8 addendum."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            # Healthy labels return populated records
+            if "MasterLabel = 'AccountType'" in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "0VS000000000001",
+                        "MasterLabel": "AccountType",
+                        "FullName": "AccountType",
+                        "Metadata": {"standardValue": []},
+                    }],
+                })
+            if "MasterLabel = 'Industry'" in soql:
+                return httpx.Response(200, json={
+                    "records": [{
+                        "Id": "0VS000000000002",
+                        "MasterLabel": "Industry",
+                        "FullName": "Industry",
+                        "Metadata": {"standardValue": []},
+                    }],
+                })
+            # Industry-cloud-style label returns persistent 500
+            # (HTTP 500 is not in TRANSIENT_STATUS_CODES, so it
+            # raises SFRequestError immediately).
+            return httpx.Response(500, json={"errorCode": "UNKNOWN",
+                                              "message": "cloud not enabled"})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_standard_value_sets(
+            labels=["AccountType", "HealthCloudFoo", "Industry",
+                    "PublicSectorBar"],
+        )
+        # Only the 2 healthy labels surface; the 2 failed labels
+        # are skipped (no exception bubbles).
+        assert len(result) == 2
+        assert {r["MasterLabel"] for r in result} == {
+            "AccountType", "Industry",
+        }
+        c.close()
+
+    def test_fetch_standard_value_sets_auth_error_still_aborts(
+        self,
+    ) -> None:
+        """SFAuthError signals an infrastructure/credential issue
+        that should still abort the iteration — the per-label
+        try/except deliberately does NOT swallow it."""
+        from primeqa.integrations.exceptions import SFAuthError
+        call_count = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                # First token call OK; subsequent refresh attempt
+                # (after 401) also returns 401 → SFAuthError.
+                if call_count["n"] == 0:
+                    call_count["n"] += 1
+                    return _token_response()
+                return httpx.Response(400, json={"error": "invalid_grant"})
+            return httpx.Response(401, json={"error": "expired"})
+
+        c = _make_client(httpx.MockTransport(handler))
+        with pytest.raises(SFAuthError):
+            c.fetch_standard_value_sets(labels=["AccountType", "Industry"])
+        c.close()
+
 
 # ----------------------------------------------------------------------
 # fetch_profiles (2C-extended Method 4, Profile half — Category 2)
@@ -1608,15 +1929,32 @@ class TestFetchPermissionSets:
         assert len(data_hits) >= 1
         c.close()
 
-    def test_fetch_permission_sets_returns_three_key_dict(self) -> None:
-        """Result must be a dict with exactly the three keys
-        permission_sets / object_permissions / field_permissions,
-        each a list — Category 4 structured-dict precedent matching
-        fetch_layouts_for_object."""
+    def test_fetch_permission_sets_returns_five_key_dict(self) -> None:
+        """Result must be a dict with exactly five keys —
+        permission_sets / object_permissions / field_permissions /
+        psg_components / license_id_to_label — matching the
+        Category 4 structured-dict precedent. Cycle 9 (PermissionSet
+        phase) extended the original three-key shape to support
+        INHERITS_PERMISSION_SET edges and license_type resolution."""
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/services/oauth2/token":
                 return _token_response()
             soql = request.url.params.get("q", "")
+            if "FROM PermissionSetGroupComponent" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "0PCxxxx",
+                         "PermissionSetGroupId": "0PSyyyy",
+                         "PermissionSetId": "0PSzzzz"},
+                    ],
+                })
+            if "FROM PermissionSetLicense" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "0PLxxxx",
+                         "MasterLabel": "Salesforce Platform"},
+                    ],
+                })
             if "FROM PermissionSet" in soql:
                 return httpx.Response(200, json={
                     "records": [
@@ -1656,18 +1994,27 @@ class TestFetchPermissionSets:
             "permission_sets",
             "object_permissions",
             "field_permissions",
+            "psg_components",
+            "license_id_to_label",
         }
         assert isinstance(result["permission_sets"], list)
         assert isinstance(result["object_permissions"], list)
         assert isinstance(result["field_permissions"], list)
+        assert isinstance(result["psg_components"], list)
+        assert isinstance(result["license_id_to_label"], dict)
         assert len(result["permission_sets"]) == 1
         assert len(result["object_permissions"]) == 1
         assert len(result["field_permissions"]) == 1
+        assert len(result["psg_components"]) == 1
+        assert result["license_id_to_label"] == {
+            "0PLxxxx": "Salesforce Platform",
+        }
         c.close()
 
-    def test_fetch_permission_sets_makes_three_calls(self) -> None:
-        """Exactly three SOQL queries: parent + ObjectPermissions
-        + FieldPermissions. No N+1, no per-PS iteration."""
+    def test_fetch_permission_sets_makes_five_calls(self) -> None:
+        """Exactly five SOQL queries: parent + ObjectPermissions
+        + FieldPermissions + PermissionSetGroupComponent +
+        PermissionSetLicense. No N+1, no per-PS iteration."""
         api_calls = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -1678,7 +2025,7 @@ class TestFetchPermissionSets:
 
         c = _make_client(httpx.MockTransport(handler))
         c.fetch_permission_sets()
-        assert len(api_calls) == 3
+        assert len(api_calls) == 5
         c.close()
 
     def test_fetch_permission_sets_parent_query_uses_fields_standard(self) -> None:
@@ -1695,10 +2042,15 @@ class TestFetchPermissionSets:
 
         c = _make_client(httpx.MockTransport(handler))
         c.fetch_permission_sets()
-        # Find the parent query (the one against PermissionSet, not the
-        # child entities)
-        parent_soqls = [s for s in soqls_seen
-                        if "FROM PermissionSet" in s]
+        # Find the parent query (the FROM PermissionSet one — NOT the
+        # child entities PermissionSetGroupComponent / PermissionSetLicense
+        # which also match "FROM PermissionSet" as a prefix).
+        parent_soqls = [
+            s for s in soqls_seen
+            if "FROM PermissionSet " in s + " "
+            and "FROM PermissionSetGroupComponent" not in s
+            and "FROM PermissionSetLicense" not in s
+        ]
         assert len(parent_soqls) == 1
         parent = parent_soqls[0]
         # FIELDS(STANDARD) is the canonical wide-SELECT shorthand
@@ -1776,7 +2128,8 @@ class TestFetchPermissionSets:
             if request.url.path == "/services/oauth2/token":
                 return _token_response()
             soql = request.url.params.get("q", "")
-            if "FROM PermissionSet" in soql:
+            if "FROM PermissionSet" in soql and "Component" not in soql \
+               and "License" not in soql:
                 return httpx.Response(200, json={
                     "records": [
                         {"Id": "0PS000000000001", "Name": "Custom",
@@ -1795,6 +2148,114 @@ class TestFetchPermissionSets:
         assert len(result["permission_sets"]) == 3
         types = {r["Type"] for r in result["permission_sets"]}
         assert types == {"Regular", "Profile", "Standard"}
+        c.close()
+
+    def test_fetch_permission_sets_psg_components_query_shape(
+        self,
+    ) -> None:
+        """PermissionSetGroupComponent query SELECTs Id +
+        PermissionSetGroupId + PermissionSetId. Entity-wide (no WHERE).
+        Goes through Data API (not Tooling)."""
+        seen: list[tuple[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            seen.append((request.url.path,
+                         request.url.params.get("q", "")))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_permission_sets()
+        psg_calls = [
+            (path, q) for (path, q) in seen
+            if "FROM PermissionSetGroupComponent" in q
+        ]
+        assert len(psg_calls) == 1
+        psg_path, psg_q = psg_calls[0]
+        assert psg_path == f"/services/data/{SF_API_VERSION}/query/"
+        assert "PermissionSetGroupId" in psg_q
+        assert "PermissionSetId" in psg_q
+        assert "WHERE" not in psg_q
+        c.close()
+
+    def test_fetch_permission_sets_license_query_shape_and_map(
+        self,
+    ) -> None:
+        """PermissionSetLicense query SELECTs Id + MasterLabel. The
+        fetcher transforms the rows into an Id → MasterLabel dict
+        (not a list) so downstream callers can do O(1) lookups."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "FROM PermissionSetLicense" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "0PL_AAA",
+                         "MasterLabel": "Salesforce"},
+                        {"Id": "0PL_BBB",
+                         "MasterLabel": "Salesforce Platform"},
+                    ],
+                })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_permission_sets()
+        assert result["license_id_to_label"] == {
+            "0PL_AAA": "Salesforce",
+            "0PL_BBB": "Salesforce Platform",
+        }
+        c.close()
+
+    def test_fetch_permission_sets_license_query_failure_returns_empty_map(
+        self,
+    ) -> None:
+        """Fault tolerance: if PermissionSetLicense is inaccessible
+        (returns 400/403), the fetcher logs a warning and returns an
+        empty license_id_to_label map. Downstream mapper falls back
+        to the '(no license)' sentinel — sync continues."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "FROM PermissionSetLicense" in soql:
+                # Simulate org-level access denial
+                return httpx.Response(403, json={
+                    "errorCode": "FORBIDDEN",
+                    "message": "no access to PermissionSetLicense",
+                })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_permission_sets()
+        # Empty map on failure; other 4 keys present and well-formed
+        assert result["license_id_to_label"] == {}
+        assert "permission_sets" in result
+        assert "psg_components" in result
+        c.close()
+
+    def test_fetch_permission_sets_psg_components_failure_returns_empty(
+        self,
+    ) -> None:
+        """Fault tolerance for PSG: if PermissionSetGroupComponent
+        is inaccessible, the fetcher logs and returns an empty
+        psg_components list. INHERITS_PERMISSION_SET edges become
+        empty for this sync; everything else continues."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "FROM PermissionSetGroupComponent" in soql:
+                return httpx.Response(400, json={
+                    "errorCode": "INVALID_TYPE",
+                    "message": "PSG feature not enabled",
+                })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_permission_sets()
+        assert result["psg_components"] == []
         c.close()
 
 
@@ -1929,9 +2390,10 @@ class TestFetchUsers:
         c.close()
 
     def test_fetch_users_soql_field_set(self) -> None:
-        """Regression guard against scope creep. SOQL must SELECT
-        exactly the 12 spec'd fields and nothing else (no
-        FIELDS(STANDARD), no Phone/Address/etc)."""
+        """Regression guard against scope creep on the User SOQL.
+        User query (the first of two SOQLs) must SELECT exactly
+        the 12 spec'd fields and nothing else (no FIELDS(STANDARD),
+        no Phone/Address/etc)."""
         soqls_seen: list[str] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -1942,8 +2404,17 @@ class TestFetchUsers:
 
         c = _make_client(httpx.MockTransport(handler))
         c.fetch_users()
-        assert len(soqls_seen) == 1
-        soql = soqls_seen[0]
+        # 2 SOQLs: User + PSA. Profile + PermissionSet Id→external_id
+        # maps are built by phase_user from the entities table.
+        assert len(soqls_seen) == 2
+        user_soqls = [
+            s for s in soqls_seen
+            if "FROM User" in s
+            and "FROM UserRole" not in s
+            and "FROM PermissionSetAssignment" not in s
+        ]
+        assert len(user_soqls) == 1
+        soql = user_soqls[0]
 
         # All 12 expected fields present
         expected_fields = (
@@ -1954,7 +2425,6 @@ class TestFetchUsers:
         for field in expected_fields:
             assert field in soql, f"missing expected field {field!r}"
 
-        # FROM User
         assert "FROM User" in soql
 
         # Scope-creep guards: NOT FIELDS(STANDARD), NOT pulling
@@ -1973,147 +2443,201 @@ class TestFetchUsers:
         assert "UserLicenseId" not in soql
         c.close()
 
-    def test_fetch_users_returns_records_list(self) -> None:
-        """Mixed UserType records flow through unchanged."""
+    def test_fetch_users_returns_two_key_dict(self) -> None:
+        """Category 4 result is a 2-key dict. Profile +
+        PermissionSet Id→external_id maps are built by phase_user
+        from the entities table — sidesteps the Salesforce SOQL
+        Tooling-vs-Data API name asymmetry on Profile (live test
+        caught that Tooling Profile.FullName like 'Admin'
+        differs from Data API Profile.Name like 'System
+        Administrator')."""
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/services/oauth2/token":
                 return _token_response()
-            return httpx.Response(200, json={
-                "totalSize": 3,
-                "done": True,
-                "records": [
-                    {
-                        "Id": "005F900000000001",
-                        "Username": "alice@example.com",
-                        "Email": "alice@example.com",
-                        "Name": "Alice Test",
-                        "Alias": "atest",
-                        "IsActive": True,
-                        "UserType": "Standard",
-                        "ProfileId": "00eF9000001e6qNIAQ",
-                        "UserRoleId": None,
-                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastModifiedDate": "2026-04-01T00:00:00.000+0000",
-                        "LastLoginDate": "2026-05-01T00:00:00.000+0000",
-                    },
-                    {
-                        "Id": "005F900000000002",
-                        "Username": "autoproc",
-                        "Email": "autoproc@example.com",
-                        "Name": "Automated Process",
-                        "Alias": "autop",
-                        "IsActive": True,
-                        "UserType": "AutomatedProcess",
-                        "ProfileId": "00eF9000001e6qOIAQ",
-                        "UserRoleId": None,
-                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastLoginDate": None,
-                    },
-                    {
-                        "Id": "005F900000000003",
-                        "Username": "csn",
-                        "Email": "csn@example.com",
-                        "Name": "Chatter External",
-                        "Alias": "cext",
-                        "IsActive": True,
-                        "UserType": "CsnOnly",
-                        "ProfileId": "00eF9000001e6qPIAQ",
-                        "UserRoleId": None,
-                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastLoginDate": None,
-                    },
-                ],
-            })
+            soql = request.url.params.get("q", "")
+            if "FROM PermissionSetAssignment" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "0Pa001", "AssigneeId": "005U001",
+                         "PermissionSetId": "0PS001",
+                         "PermissionSetGroupId": None,
+                         "ExpirationDate": None,
+                         "SystemModstamp": (
+                             "2026-01-01T00:00:00.000+0000"
+                         )},
+                    ],
+                })
+            if "FROM User" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "005U001",
+                         "Username": "alice@example.com",
+                         "UserType": "Standard",
+                         "ProfileId": "00eA",
+                         "IsActive": True},
+                    ],
+                })
+            return httpx.Response(200, json={"records": []})
 
         c = _make_client(httpx.MockTransport(handler))
         result = c.fetch_users()
-        assert len(result) == 3
-        # Field shape preserved
-        assert result[0]["Id"] == "005F900000000001"
-        assert result[0]["UserType"] == "Standard"
-        assert result[0]["ProfileId"] == "00eF9000001e6qNIAQ"
-        assert result[1]["UserType"] == "AutomatedProcess"
-        assert result[2]["UserType"] == "CsnOnly"
+        assert isinstance(result, dict)
+        assert set(result.keys()) == {
+            "users",
+            "permission_set_assignments",
+        }
+        assert isinstance(result["users"], list)
+        assert isinstance(result["permission_set_assignments"], list)
+        # Users
+        assert len(result["users"]) == 1
+        # PSAs (no PermissionSet.Name nested — that came from a
+        # related-query the v66.0 SOQL declined)
+        assert len(result["permission_set_assignments"]) == 1
+        psa = result["permission_set_assignments"][0]
+        assert psa["AssigneeId"] == "005U001"
+        assert psa["PermissionSetId"] == "0PS001"
+        c.close()
+
+    def test_fetch_users_makes_two_calls(self) -> None:
+        """User cycle scopes fetch_users to exactly 2 SOQLs:
+        User + PermissionSetAssignment. Profile + PermissionSet
+        Id→external_id resolution happens in phase_user against
+        the entities table."""
+        api_calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            api_calls.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_users()
+        assert len(api_calls) == 2
+        c.close()
+
+    def test_fetch_users_psa_soql_shape(self) -> None:
+        """PSA SOQL includes the 6 spec'd fields + uses SystemModstamp
+        as the assigned_at proxy (CreatedById/CreatedDate restricted
+        on PSA in v66.0). NO WHERE filter — PSG filtering happens
+        in phase_user's Python code."""
+        soqls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soqls_seen.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_users()
+        psa_soqls = [
+            s for s in soqls_seen
+            if "FROM PermissionSetAssignment" in s
+        ]
+        assert len(psa_soqls) == 1
+        psa = psa_soqls[0]
+        # Required field set
+        for f in ("AssigneeId", "PermissionSetId",
+                  "PermissionSetGroupId", "ExpirationDate",
+                  "SystemModstamp"):
+            assert f in psa, f"missing PSA field {f!r}"
+        # PermissionSet.Name related-query NOT used (HTTP 400 in
+        # v66.0 — see fetch_users docstring)
+        assert "PermissionSet.Name" not in psa
+        # CreatedById/CreatedDate NOT used (HTTP 400 in v66.0)
+        assert "CreatedById" not in psa
+        assert "CreatedDate" not in psa
+        # No WHERE filter — PSG filtering moved to Python
+        assert "WHERE" not in psa
+        c.close()
+
+    def test_fetch_users_psa_failure_returns_empty_list(self) -> None:
+        """Fault tolerance: if PermissionSetAssignment query fails
+        (rare; integration user without PSA read access), the
+        fetcher logs and returns empty list; User entities still
+        materialize via the User query. HAS_PERMISSION_SET edges
+        become 0 for this sync."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "FROM PermissionSetAssignment" in soql:
+                return httpx.Response(403, json={
+                    "errorCode": "FORBIDDEN",
+                    "message": "no access",
+                })
+            if "FROM User" in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "005U001", "Username": "alice",
+                         "ProfileId": "00eA", "UserType": "Standard"},
+                    ],
+                })
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_users()
+        # Empty list on PSA failure; users still populated
+        assert result["permission_set_assignments"] == []
+        assert len(result["users"]) == 1
         c.close()
 
     def test_fetch_users_returns_inactive_users(self) -> None:
         """No fetch-time IsActive filter — sync-layer concern.
-        Both active and inactive users appear in result."""
+        Both active and inactive users appear in users list."""
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/services/oauth2/token":
                 return _token_response()
-            return httpx.Response(200, json={
-                "totalSize": 2,
-                "done": True,
-                "records": [
-                    {
-                        "Id": "005F900000000001",
-                        "Username": "active",
-                        "IsActive": True,
-                        "UserType": "Standard",
-                        "ProfileId": "00eF9000001e6qNIAQ",
-                        "UserRoleId": None,
-                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastLoginDate": None,
-                    },
-                    {
-                        "Id": "005F900000000002",
-                        "Username": "inactive",
-                        "IsActive": False,
-                        "UserType": "Standard",
-                        "ProfileId": "00eF9000001e6qNIAQ",
-                        "UserRoleId": None,
-                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastLoginDate": None,
-                    },
-                ],
-            })
+            soql = request.url.params.get("q", "")
+            if "FROM User" in soql and "Permission" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": "005U001", "Username": "active",
+                         "IsActive": True, "UserType": "Standard",
+                         "ProfileId": "00eA"},
+                        {"Id": "005U002", "Username": "inactive",
+                         "IsActive": False, "UserType": "Standard",
+                         "ProfileId": "00eA"},
+                    ],
+                })
+            return httpx.Response(200, json={"records": []})
 
         c = _make_client(httpx.MockTransport(handler))
         result = c.fetch_users()
-        assert len(result) == 2
-        active_states = {r["IsActive"] for r in result}
+        users = result["users"]
+        assert len(users) == 2
+        active_states = {r["IsActive"] for r in users}
         assert active_states == {True, False}  # both kept
         c.close()
 
     def test_fetch_users_returns_synthetic_user_types(self) -> None:
         """Platform-synthetic UserTypes (AutomatedProcess,
-        CloudIntegrationUser, etc.) appear in fetch result.
-        Filtering them is a sync-layer policy decision per
-        transparent-transport-boundary principle."""
+        CloudIntegrationUser, etc.) appear in fetch result's
+        users list. Filtering them is a sync-layer policy
+        decision per transparent-transport-boundary principle."""
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/services/oauth2/token":
                 return _token_response()
-            return httpx.Response(200, json={
-                "totalSize": 3,
-                "done": True,
-                "records": [
-                    {
-                        "Id": f"005F90000000000{i}",
-                        "Username": utype,
-                        "IsActive": True,
-                        "UserType": utype,
-                        "ProfileId": "00eF9000001e6qNIAQ",
-                        "UserRoleId": None,
-                        "CreatedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastModifiedDate": "2026-01-01T00:00:00.000+0000",
-                        "LastLoginDate": None,
-                    }
-                    for i, utype in enumerate(
-                        ["Standard", "AutomatedProcess",
-                         "CloudIntegrationUser"], start=1
-                    )
-                ],
-            })
+            soql = request.url.params.get("q", "")
+            if "FROM User" in soql and "Permission" not in soql:
+                return httpx.Response(200, json={
+                    "records": [
+                        {"Id": f"005U00{i}",
+                         "Username": utype,
+                         "IsActive": True, "UserType": utype,
+                         "ProfileId": "00eA"}
+                        for i, utype in enumerate(
+                            ["Standard", "AutomatedProcess",
+                             "CloudIntegrationUser"], start=1,
+                        )
+                    ],
+                })
+            return httpx.Response(200, json={"records": []})
 
         c = _make_client(httpx.MockTransport(handler))
         result = c.fetch_users()
-        assert len(result) == 3
-        utypes = {r["UserType"] for r in result}
+        utypes = {r["UserType"] for r in result["users"]}
         assert utypes == {
             "Standard",
             "AutomatedProcess",
@@ -2719,4 +3243,582 @@ class TestFetchLayoutNames:
         # Single SOQL call (no phase-2 iteration, no pagination
         # follow-up because done=true)
         assert len(api_calls) == 1
+        c.close()
+
+
+# ----------------------------------------------------------------------
+# fetch_profile_layouts (P6 precursor for the §16-resolution cycle —
+# ProfileLayout is the canonical source for per-(Profile, Layout,
+# RecordType) assignments)
+# ----------------------------------------------------------------------
+
+class TestFetchProfileLayouts:
+    def test_fetch_profile_layouts_uses_tooling_endpoint(self) -> None:
+        """ProfileLayout is a Tooling-only sObject — the query goes
+        through /tooling/query/, not the Data API /query/."""
+        urls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_profile_layouts()
+        assert any(
+            f"/services/data/{SF_API_VERSION}/tooling/query" in p
+            for p in urls_seen
+        )
+        # NOT the Data API
+        assert not any(
+            p == f"/services/data/{SF_API_VERSION}/query/"
+            for p in urls_seen
+        )
+        c.close()
+
+    def test_fetch_profile_layouts_returns_records_list(self) -> None:
+        """Returns ProfileLayout rows verbatim:
+        {Id, ProfileId, LayoutId, RecordTypeId}. RecordTypeId may
+        be NULL — those are default Profile→Layout assignments with
+        no explicit RecordType; the fetch passes them through (the
+        sync layer filters per §16 resolution)."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={
+                "totalSize": 3,
+                "done": True,
+                "records": [
+                    {"Id": "01GF900002XkSPBMA3",
+                     "ProfileId": "00eF9000001e6qNIAQ",
+                     "LayoutId": "00hF900000CBOs9IAH",
+                     "RecordTypeId": "012F90000009abcAAA"},
+                    {"Id": "01GF900002XkSPCMA3",
+                     "ProfileId": "00eF9000001e6qNIAQ",
+                     "LayoutId": "00hF900000CBOsAIAX",
+                     # NULL RecordTypeId — default assignment
+                     "RecordTypeId": None},
+                    {"Id": "01GF900002XkSPDMA3",
+                     "ProfileId": "00eF9000001e6qSIAQ",
+                     "LayoutId": "00hF900000CBOs9IAH",
+                     "RecordTypeId": "012F90000009xyzAAA"},
+                ],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_profile_layouts()
+        assert len(result) == 3
+        # Field shape preserved
+        assert result[0]["ProfileId"] == "00eF9000001e6qNIAQ"
+        assert result[0]["LayoutId"] == "00hF900000CBOs9IAH"
+        assert result[0]["RecordTypeId"] == "012F90000009abcAAA"
+        # NULL RecordTypeId passed through verbatim
+        assert result[1]["RecordTypeId"] is None
+        c.close()
+
+    def test_fetch_profile_layouts_soql_field_set(self) -> None:
+        """Regression guard. SOQL selects exactly the 4 spec'd
+        fields; FROM ProfileLayout; no WHERE (bulk enumeration)."""
+        soqls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soqls_seen.append(request.url.params.get("q", ""))
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_profile_layouts()
+        assert len(soqls_seen) == 1
+        soql = soqls_seen[0]
+        for field in ("Id", "ProfileId", "LayoutId", "RecordTypeId"):
+            assert field in soql, f"missing expected field {field!r}"
+        assert "FROM ProfileLayout" in soql
+        assert "FIELDS(STANDARD)" not in soql.upper()
+        assert "WHERE" not in soql
+        c.close()
+
+    def test_fetch_profile_layouts_paginates(self) -> None:
+        """ProfileLayout commonly exceeds the 2000-row boundary
+        (sandbox ~3,131 rows). _query_all walks the
+        nextRecordsUrl cursor chain."""
+        api_calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            api_calls.append(request.url.path)
+            # First call: done=False with a cursor; second: done=True
+            if len(api_calls) == 1:
+                return httpx.Response(200, json={
+                    "totalSize": 4,
+                    "done": False,
+                    "nextRecordsUrl": (
+                        f"/services/data/{SF_API_VERSION}"
+                        f"/tooling/query/01gXXXcursor"
+                    ),
+                    "records": [
+                        {"Id": f"01GF{i}", "ProfileId": "00eA",
+                         "LayoutId": f"00h{i}", "RecordTypeId": None}
+                        for i in range(2)
+                    ],
+                })
+            return httpx.Response(200, json={
+                "totalSize": 4,
+                "done": True,
+                "records": [
+                    {"Id": f"01GF{i}", "ProfileId": "00eA",
+                     "LayoutId": f"00h{i}", "RecordTypeId": None}
+                    for i in range(2, 4)
+                ],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_profile_layouts()
+        # Both pages aggregated
+        assert len(result) == 4
+        assert len(api_calls) == 2
+        c.close()
+
+    def test_fetch_profile_layouts_empty_result(self) -> None:
+        """Org with no ProfileLayout rows → empty list (an org
+        with no custom layouts/profiles is degenerate but valid)."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={
+                "totalSize": 0, "done": True, "records": [],
+            })
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_profile_layouts()
+        assert result == []
+        c.close()
+
+
+# ----------------------------------------------------------------------
+# extract_picklist_value_payloads_from_metadata helper
+# (module-level; supports the §9 SVS-cache PV-phase optimization)
+# ----------------------------------------------------------------------
+
+
+class TestExtractPicklistValuePayloadsFromMetadata:
+    """Helper transforms a value-set Metadata sub-tree into the
+    raw_payloads shape the PicklistValue phase passes to
+    batched_materialize. Used by phase_picklist_value for both the
+    cached SVS path and the GVS / fallback paths (single source of
+    truth for the transform)."""
+
+    def test_extracts_standard_values_with_markers(self) -> None:
+        """SVS path: standardValue list → payloads with SVS-
+        prefixed parent_external_id (caller supplies it pre-
+        prefixed)."""
+        metadata = {
+            "standardValue": [
+                {"valueName": "Web", "label": "Web", "isActive": True},
+                {"valueName": "Phone", "label": "Phone Inquiry",
+                 "isActive": True, "default": True},
+            ],
+        }
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="SVS:AccountSource",
+            metadata=metadata,
+            value_list_key="standardValue",
+        )
+        assert len(result) == 2
+        assert result[0]["_parent_external_id"] == "SVS:AccountSource"
+        assert result[0]["_sort_order"] == 0
+        assert result[0]["valueName"] == "Web"
+        assert result[0]["label"] == "Web"
+        assert result[1]["_parent_external_id"] == "SVS:AccountSource"
+        assert result[1]["_sort_order"] == 1
+        assert result[1]["valueName"] == "Phone"
+        assert result[1]["default"] is True
+
+    def test_extracts_custom_values_with_markers(self) -> None:
+        """GVS path: customValue list → payloads with unprefixed
+        parent_external_id."""
+        metadata = {
+            "customValue": [
+                {"valueName": "Banking", "label": "Banking"},
+                {"valueName": "Tech", "label": "Technology"},
+            ],
+        }
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="MyGVS",
+            metadata=metadata,
+            value_list_key="customValue",
+        )
+        assert len(result) == 2
+        assert result[0]["_parent_external_id"] == "MyGVS"
+        assert result[0]["valueName"] == "Banking"
+
+    def test_empty_metadata_returns_empty(self) -> None:
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="EmptyGVS",
+            metadata={},
+            value_list_key="customValue",
+        )
+        assert result == []
+
+    def test_missing_value_list_key_returns_empty(self) -> None:
+        """Metadata without the requested list key (e.g., SVS
+        Metadata that lacks standardValue) returns []. Common in
+        sandbox SVSes that resolve empty."""
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="SVS:Empty",
+            metadata={"someOtherKey": "value"},
+            value_list_key="standardValue",
+        )
+        assert result == []
+
+    def test_null_value_list_returns_empty(self) -> None:
+        """If the list-key resolves to None (rather than missing
+        entirely), the `or []` guard yields an empty list."""
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="SVS:Nullish",
+            metadata={"standardValue": None},
+            value_list_key="standardValue",
+        )
+        assert result == []
+
+    def test_skips_entries_without_value_name(self) -> None:
+        """Defensive: Metadata API occasionally returns placeholder
+        entries with empty/missing valueName. These are dropped to
+        prevent malformed external_id construction downstream."""
+        metadata = {
+            "standardValue": [
+                {"valueName": "Good", "label": "Good"},
+                {"valueName": "", "label": "Blank"},      # filtered
+                {"label": "NoValueName"},                  # filtered
+            ],
+        }
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="SVS:PartialVS",
+            metadata=metadata,
+            value_list_key="standardValue",
+        )
+        assert len(result) == 1
+        assert result[0]["valueName"] == "Good"
+
+    def test_skips_non_dict_entries(self) -> None:
+        """Defensive: Metadata API occasionally emits string or
+        null entries in the value list. These are dropped."""
+        metadata = {
+            "standardValue": [
+                {"valueName": "Good"},
+                "NotADict",
+                None,
+                42,
+            ],
+        }
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="SVS:Junk",
+            metadata=metadata,
+            value_list_key="standardValue",
+        )
+        assert len(result) == 1
+        assert result[0]["valueName"] == "Good"
+
+    def test_preserves_extra_fields_via_spread(self) -> None:
+        """Every key on the value dict survives the **v spread —
+        substrate-1's normalize layer needs the full shape, not a
+        whitelisted subset."""
+        metadata = {
+            "standardValue": [
+                {
+                    "valueName": "Hot",
+                    "label": "Hot",
+                    "isActive": True,
+                    "default": False,
+                    "description": "Hot lead",
+                    "color": "#ff0000",
+                    "translations": [{"locale": "fr", "value": "Chaud"}],
+                },
+            ],
+        }
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="SVS:LeadSource",
+            metadata=metadata,
+            value_list_key="standardValue",
+        )
+        assert len(result) == 1
+        v = result[0]
+        # Original keys preserved
+        assert v["description"] == "Hot lead"
+        assert v["color"] == "#ff0000"
+        assert v["translations"] == [{"locale": "fr", "value": "Chaud"}]
+        # Markers injected
+        assert v["_parent_external_id"] == "SVS:LeadSource"
+        assert v["_sort_order"] == 0
+
+    def test_sort_order_reflects_input_order(self) -> None:
+        """Salesforce returns values in display order; _sort_order
+        captures that index. The value's position in the list IS
+        the display order."""
+        metadata = {
+            "standardValue": [
+                {"valueName": "A"},
+                {"valueName": "B"},
+                {"valueName": "C"},
+            ],
+        }
+        result = extract_picklist_value_payloads_from_metadata(
+            parent_external_id="SVS:ABCs",
+            metadata=metadata,
+            value_list_key="standardValue",
+        )
+        assert [v["_sort_order"] for v in result] == [0, 1, 2]
+        assert [v["valueName"] for v in result] == ["A", "B", "C"]
+
+
+# ----------------------------------------------------------------------
+# fetch_custom_field_id_map (§10/§14 precursor — P7)
+# ----------------------------------------------------------------------
+
+class TestFetchCustomFieldIdMap:
+    def test_uses_tooling_endpoint(self) -> None:
+        urls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            urls_seen.append(request.url.path)
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_custom_field_id_map()
+        assert any(
+            f"/services/data/{SF_API_VERSION}/tooling/query" in p
+            for p in urls_seen
+        )
+        c.close()
+
+    def test_builds_object_field_to_id_map_with_namespace(self) -> None:
+        """Key construction reconstructs the fully-qualified field API
+        name as REST describe reports it: namespaced fields →
+        '{ns}__{DeveloperName}__c'."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={"records": [
+                {
+                    "Id": "00NF900000HAN9JMAX",
+                    "DeveloperName": "Currency",
+                    "NamespacePrefix": "sfcma",
+                    "EntityDefinition": {
+                        "QualifiedApiName": "sfcma__PaymentIntent__c",
+                    },
+                },
+            ]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_custom_field_id_map()
+        assert result == {
+            ("sfcma__PaymentIntent__c", "sfcma__Currency__c"):
+                "00NF900000HAN9JMAX",
+        }
+        c.close()
+
+    def test_builds_key_without_namespace_when_prefix_null(self) -> None:
+        """Unmanaged custom field: NamespacePrefix is None →
+        '{DeveloperName}__c'."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={"records": [
+                {
+                    "Id": "00NIp000001jZGwMAM",
+                    "DeveloperName": "Lost_Reason",
+                    "NamespacePrefix": None,
+                    "EntityDefinition": {
+                        "QualifiedApiName": "Opportunity",
+                    },
+                },
+            ]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_custom_field_id_map()
+        assert result == {
+            ("Opportunity", "Lost_Reason__c"): "00NIp000001jZGwMAM",
+        }
+        c.close()
+
+    def test_skips_rows_with_null_entity_definition_or_name(self) -> None:
+        """Orphaned / inaccessible CustomField rows (null
+        EntityDefinition or missing DeveloperName) can't join to a
+        describe field — they're skipped, not crashed on."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={"records": [
+                {  # good row
+                    "Id": "00N1",
+                    "DeveloperName": "Status",
+                    "NamespacePrefix": None,
+                    "EntityDefinition": {"QualifiedApiName": "Account"},
+                },
+                {  # null EntityDefinition → skip
+                    "Id": "00N2",
+                    "DeveloperName": "Orphan",
+                    "NamespacePrefix": None,
+                    "EntityDefinition": None,
+                },
+                {  # missing DeveloperName → skip
+                    "Id": "00N3",
+                    "DeveloperName": None,
+                    "NamespacePrefix": None,
+                    "EntityDefinition": {"QualifiedApiName": "Account"},
+                },
+            ]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_custom_field_id_map()
+        assert result == {("Account", "Status__c"): "00N1"}
+        c.close()
+
+    def test_empty_org_returns_empty_map(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        assert c.fetch_custom_field_id_map() == {}
+        c.close()
+
+
+# ----------------------------------------------------------------------
+# fetch_custom_field_metadata (§10/§14 precursor — P7)
+# ----------------------------------------------------------------------
+
+class TestFetchCustomFieldMetadata:
+    def test_empty_input_makes_no_http_calls(self) -> None:
+        """Empty field_ids → {} with zero HTTP calls (not even token
+        refresh, since no request is issued)."""
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={"records": []})
+
+        c = _make_client(httpx.MockTransport(handler))
+        assert c.fetch_custom_field_metadata([]) == {}
+        assert calls == []
+        c.close()
+
+    def test_sequential_per_id_fetches(self) -> None:
+        """One Tooling query per Id — N Ids → N per-Id SOQL calls,
+        each a WHERE Id = '...' single-row query."""
+        soqls_seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            soqls_seen.append(soql)
+            return httpx.Response(200, json={"records": [
+                {"Id": "x", "FullName": "Account.X__c", "Metadata": {}},
+            ]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        c.fetch_custom_field_metadata(["00N1", "00N2", "00N3"])
+        assert len(soqls_seen) == 3
+        for sid, soql in zip(["00N1", "00N2", "00N3"], soqls_seen):
+            assert f"WHERE Id = '{sid}'" in soql
+            assert "Metadata" in soql
+        c.close()
+
+    def test_returns_metadata_payload_keyed_by_id(self) -> None:
+        """Result dict maps each input Id → that field's Metadata
+        payload (the Metadata sub-object, not the whole record)."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "00N_picklist" in soql:
+                return httpx.Response(200, json={"records": [{
+                    "Id": "00N_picklist",
+                    "FullName": "Account.Tier__c",
+                    "Metadata": {
+                        "type": "Picklist",
+                        "valueSet": {
+                            "valueSetName": "TierGVS",
+                            "restricted": True,
+                        },
+                    },
+                }]})
+            return httpx.Response(200, json={"records": [{
+                "Id": "00N_text",
+                "FullName": "Account.Note__c",
+                "Metadata": {"type": "Text", "valueSet": None},
+            }]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_custom_field_metadata(["00N_picklist", "00N_text"])
+        assert set(result.keys()) == {"00N_picklist", "00N_text"}
+        assert result["00N_picklist"]["valueSet"]["valueSetName"] == "TierGVS"
+        assert result["00N_text"]["valueSet"] is None
+        c.close()
+
+    def test_missing_metadata_key_yields_empty_dict(self) -> None:
+        """A record with no Metadata key → {} for that Id (never
+        None — keeps callers from None-guarding every lookup)."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            return httpx.Response(200, json={"records": [
+                {"Id": "00N1", "FullName": "Account.X__c"},
+            ]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_custom_field_metadata(["00N1"])
+        assert result == {"00N1": {}}
+        c.close()
+
+    def test_per_id_failure_logs_and_continues(self) -> None:
+        """An SFRequestError on one Id (e.g. HTTP 400) is caught,
+        logged, and skipped — the remaining Ids still return."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "00N_bad" in soql:
+                return httpx.Response(400, json=[{
+                    "errorCode": "INVALID_FIELD",
+                    "message": "boom",
+                }])
+            return httpx.Response(200, json={"records": [{
+                "Id": "ok", "FullName": "Account.Ok__c",
+                "Metadata": {"type": "Picklist"},
+            }]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_custom_field_metadata(
+            ["00N_good1", "00N_bad", "00N_good2"],
+        )
+        # Bad Id skipped; the two good Ids still resolved.
+        assert set(result.keys()) == {"00N_good1", "00N_good2"}
+        c.close()
+
+    def test_empty_records_response_omits_id(self) -> None:
+        """A query returning zero records (Id no longer exists) →
+        that Id is simply absent from the result, no crash."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/services/oauth2/token":
+                return _token_response()
+            soql = request.url.params.get("q", "")
+            if "00N_gone" in soql:
+                return httpx.Response(200, json={"records": []})
+            return httpx.Response(200, json={"records": [{
+                "Id": "00N_here", "FullName": "Account.Here__c",
+                "Metadata": {"type": "Picklist"},
+            }]})
+
+        c = _make_client(httpx.MockTransport(handler))
+        result = c.fetch_custom_field_metadata(["00N_gone", "00N_here"])
+        assert set(result.keys()) == {"00N_here"}
         c.close()

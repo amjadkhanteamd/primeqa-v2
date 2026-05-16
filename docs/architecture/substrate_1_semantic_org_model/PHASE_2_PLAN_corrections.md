@@ -353,3 +353,1372 @@ sandbox row counts well below 2000 (max was 71 PermissionSets,
 the cap (2606 ObjectPermissions, 11258 FieldPermissions) and
 surfaced the bug. Other fetch methods would have hit the same
 bug on production-scale orgs without this fix.
+
+## Cross-cutting drift: normalization.py and ENTITY_ORDER
+
+**Date:** 2026-05-12
+**Step:** 2C-extended Method 5 (FlowDefinition) introduced
+            FlowDefinition as a 12th entity type; normalization.py
+            still has 11 normalizers
+**Source:** Discovered during Phase 2 step 4 Object phase
+            survey — materialize helper would route through
+            get_normalize_function('FlowDefinition') and find
+            no entry
+
+Substrate-1's primeqa/semantic/normalization.py has type-specific
+normalize functions for 11 entity types: Object, Field,
+ValidationRule, RecordType, Layout, GlobalValueSet,
+StandardValueSet, Profile, PermissionSet, User, Flow.
+
+2C-extended Method 5 (commit bac9e8d) added FlowDefinition as a
+separate entity type in ENTITY_ORDER (since it has distinct
+semantics from Flow versions — FlowDefinition is the named flow;
+Flow rows are versions). FlowDefinition wasn't added to
+normalization.py at that time because the normalization module
+was a substrate-1 artifact and FlowDefinition was a fetch-method-
+level addition.
+
+**Resolution:** When the FlowDefinition phase is implemented
+(per PHASE_2_STEP_4_SYNC_DESIGN.md §9 step 3), extend
+primeqa/semantic/normalization.py with a normalize_flow_definition
+function following the established per-type pattern. Same for
+semantic_text.py's _to_text_* router and the presentation module's
+per-type adapter (introduced in this design step). Tracked as
+a pre-requisite for the FlowDefinition phase cycle.
+
+**Pattern: normalize / semantic_text / presentation as parallel
+registries.** When adding new entity types to ENTITY_ORDER,
+extend all three modules consistently. The materialize helper's
+router lookups (get_normalize_function, get_semantic_text_function,
+to_presentation) raise KeyError on missing types; this would
+surface at the entity type's first sync but fails too late
+to be a clean error path. The discipline is: add ENTITY_ORDER
+entry + normalize entry + semantic_text entry + presentation
+entry in the same commit. A future test
+test_normalize_registry_matches_entity_order codifies the
+consistency check.
+
+## PicklistValueSet entity_type unifies GlobalValueSet + StandardValueSet
+
+**Date:** 2026-05-12
+**Step:** Phase 2 step 4 PicklistValueSet phase implementation
+**Source:** Discovered during PicklistValueSet phase survey —
+            substrate-1's _to_text_picklist_value_set reads an
+            `is_global_value_set` boolean and the fixture
+            demonstrates the both-sources-under-one-entity-type
+            pattern
+
+Substrate-1 unifies two Salesforce sObject types under one
+entity_type='PicklistValueSet':
+- GlobalValueSet records (fetched via fetch_global_value_sets,
+  Tooling+Metadata): is_global_value_set=True
+- StandardValueSet records (fetched via fetch_standard_value_sets,
+  hardcoded 616-entry catalog + per-label Metadata fetch):
+  is_global_value_set=False
+
+The unified design lets downstream consumers (Field phase,
+attribution queries) treat picklist value sources uniformly —
+Field's "values come from value set X" reference resolves
+regardless of whether X is global or standard.
+
+**Implementation sequencing:**
+- This cycle: GVS source only (sandbox has 0 GVSes, exercises
+  empty path)
+- Subsequent cycle: SVS source via fetch_standard_value_sets
+  iteration over sf_constants.STANDARD_VALUE_SET_LABELS catalog
+- Both sources materialize under entity_type='PicklistValueSet'
+  via the same batched_materialize pipeline
+
+Pattern: when one substrate-1 entity_type covers multiple
+Salesforce source streams, each source has its own fetch +
+phase-step but shares the materialize chain (normalize +
+presentation + semantic_text). The phase function for a unified
+entity_type may need to call multiple fetch methods and
+combine streams before calling batched_materialize.
+
+## §8 addendum (SVS source implementation)
+
+SVS records inherit the same FullName-keyed identifier shape
+as GVS records. To prevent collisions between a customer-
+named GVS (e.g., `'Industry'`) and the SVS catalog entry of
+the same name, SVS external_ids are namespaced with `SVS:`
+prefix at materialization. GVS external_ids remain
+unprefixed (preserving the prior cycle's contract).
+
+The `_source` marker added to raw payloads at the phase
+function survives _strip_volatile and contributes to the
+normalized hash — a record's source is part of its identity.
+One-time GVS supersession on first-sync-after-this-cycle is
+expected and harmless.
+
+## §9: SVS-catalog re-fetch in PicklistValue phase
+
+**Date:** 2026-05-12
+**Step:** PicklistValue phase implementation (cycle 3 of 12)
+**Source:** Live test wall-clock observation — PicklistValue
+            phase re-fetches both GVS and SVS streams to extract
+            nested values, redundant with PicklistValueSet phase's
+            earlier fetch of the same data
+
+PicklistValue values come nested inside the GVS/SVS records that
+PicklistValueSet phase already fetched. Re-fetching in
+phase_picklist_value is ~7 min wall-clock on this sandbox (the
+616-entry SVS catalog with per-label Metadata fetch).
+
+Possible optimization: thread parent records from PicklistValueSet
+phase into PicklistValue phase via SyncContext caching.
+
+Architectural cost:
+- SyncContext gains per-entity-type caching
+- Phase ordering becomes explicit (currently any phase can run
+  independently with its own fetches)
+- Need to clear cache when sync_run completes to avoid leaking
+  between runs
+
+~~Not implemented now. Deferred until either (a) total sync
+wall-clock becomes a customer-visible problem, or (b) we have
+multiple phases with redundant fetches and a uniform solution
+is worth designing.~~
+
+**RESOLVED 2026-05-13** — Profile phase audit (corrections-log
+§19) added a second wall-clock pressure point (588KB live test
+wall-clock spent on the §9 re-fetch alone). The optimization
+is now cheap to land — SyncContext is a non-frozen dataclass;
+no scaffolding needed for "uniform caching" since SVS is the
+only re-fetched stream today (GVS is a single bulk Tooling
+call; cheap regardless of N).
+
+### Implementation
+- `primeqa/sync/context.py`:
+  `svs_metadata_cache: dict[str, dict] = field(default_factory=dict)`.
+  Keyed by SVS FullName (e.g., 'AccountSource' →
+  `{standardValue: [...]}`). Per-SyncContext lifetime; no
+  cross-run leakage (a fresh ctx is constructed per
+  sync_run).
+- `primeqa/integrations/sf_client.py`:
+  `extract_picklist_value_payloads_from_metadata(parent_external_id, metadata, value_list_key) → list[dict]`
+  module-level helper. Single source of truth for the
+  value-extraction transform that PV phase used to inline.
+  Accepts either `standardValue` (SVS) or `customValue` (GVS)
+  as `value_list_key`.
+- `primeqa/sync/phases.py`:
+  - `phase_picklist_value_set` now writes each fetched SVS
+    record's Metadata into `ctx.svs_metadata_cache[FullName]`
+    as a side effect of its existing fetch loop. GVS records
+    are NOT cached (no benefit).
+  - `phase_picklist_value` now reads `ctx.svs_metadata_cache`
+    directly when populated, calling the extraction helper
+    per cache entry. When the cache is empty (PV-in-isolation
+    test or resumed sync), falls back to
+    `fetch_standard_value_sets(labels=None)` with an INFO
+    log so the rare case is visible. The GVS path always
+    re-fetches (cheap).
+
+### Wall-clock impact
+- Before: PVS fetches 616 SVS records (~6 min) + PV refetches
+  the same 616 records (~6 min) = ~12 min of redundant SVS
+  fetching per sync. Across both syncs in the live test:
+  ~24 min total SVS fetch time.
+- After: PVS fetches 616 records (~6 min); PV reads from
+  cache (~10-20 sec for ~600-entry dict iteration +
+  materialize). Across both syncs: ~12 min total SVS fetch
+  time.
+- Live integration test wall-clock: ~13:33 (post-Profile,
+  pre-§9) → expected ~10-11 min after §9 (drop of ~2-3 min
+  per sync × 2 syncs).
+
+### Coherence with existing design
+- Phase ordering already explicit via ENTITY_ORDER (no new
+  constraint).
+- Cache is per-SyncContext (one instance per sync_run); no
+  cross-run leakage by construction. No clear-on-completion
+  hook needed.
+- Fallback path keeps PV phase runnable in isolation
+  (test scenarios + future resumed-sync work).
+- Tests at unit level (3 PVS cache-population tests + 2 PV
+  cache-consumption tests + 1 renamed PV fallback test +
+  4 SyncContext cache tests + 9 extraction-helper tests = 19
+  new tests).
+
+## §10: HAS_PICKLIST_VALUES deferred — REST describe doesn't expose GVS refs
+
+**Date:** 2026-05-12
+**Status: RESOLVED 2026-05-14** (§10+§14 cycle — see RESOLUTION
+block at the end of this entry)
+**Step:** Field phase (4 of 12) — first edge-writing phase
+**Source:** Field phase live probe of standard picklist fields
+            (Account.Industry, Account.AccountSource) showed no
+            valueSet/valueSetName key in REST describe response
+
+Substrate-1's TIER_1_EDGES has HAS_PICKLIST_VALUES (Field →
+PicklistValueSet), but the REST sObject describe endpoint
+(fetch_fields_for_object) does NOT expose value-set references.
+Standard picklist fields expose inline picklistValues only;
+global-value-set-referencing fields expose the same inline view.
+
+Detecting GVS references requires the Tooling API path:
+  SELECT Id, Metadata FROM CustomField WHERE Id = '...'
+per the §1 Metadata 1-row constraint. The CustomField record's
+Metadata.valueSet.valueSetName carries the GVS FullName.
+
+Substrate-1 does not have fetch_custom_field_metadata today.
+Adding it is a Category-2 (two-phase Tooling+Metadata) fetcher
+similar to fetch_validation_rules.
+
+Additionally, standard-value-set references (e.g., Account.
+AccountSource → SVS:AccountSource) are not directly exposed by
+any single API; detection would require content-matching field
+picklistValues against each SVS's standardValue list.
+
+**Resolution:** HAS_PICKLIST_VALUES deferred to a dedicated
+cycle that adds fetch_custom_field_metadata. Sandbox has 0
+GVSes, so the deferral has zero observable test impact today;
+field_details.picklist_value_set_entity_id stays NULL for all
+Field rows until that cycle lands. Schema accommodates the
+future fill (column already nullable).
+
+**Pattern for future cycles:** REST describe is the "fast path"
+for Salesforce metadata but is incomplete for several
+cross-entity relationship details. When the sync needs a piece
+of metadata that REST doesn't expose, expect a Category-2
+Tooling+Metadata fetcher to be the answer.
+
+### §10 RESOLUTION (2026-05-14)
+
+Implemented via the §10+§14 cycle on phase-2-substrate-1-sync.
+Two commits: a precursor (P7) adding the Tooling fetchers, then
+the main commit wiring HAS_PICKLIST_VALUES + §14.
+
+**Data source.** Custom picklist fields expose their value-set
+reference via Tooling `CustomField.Metadata.valueSet.
+valueSetName` (the GlobalValueSet FullName when GVS-backed;
+None for inline value sets). REST describe doesn't expose it.
+Two precursor fetchers (commit P7):
+- `fetch_custom_field_metadata(field_ids)` — per-Id Tooling
+  Metadata fetch. Bulk paths were live-probed and rejected:
+  bulk `SELECT Id, FullName, Metadata` → HTTP 400 (the §4.2
+  1-row constraint); `/composite/batch` with Tooling
+  sub-requests → HTTP 200 but silently nulls FullName +
+  Metadata. Per-Id is the only working path.
+- `fetch_custom_field_id_map()` — one bulk Tooling SOQL
+  `(object, field) → CustomField Id`. Needed because REST
+  describe field payloads (phase_field's enumeration source)
+  carry no Tooling CustomField Id; the survey's assumption that
+  they did was wrong (probe-corrected).
+
+**phase_field wiring.** A picklist-typed-field filter (decision
+1B) keeps the per-Id Metadata fetch to the ~picklist subset of
+custom fields, not all ~500+. For GVS-backed picklist fields,
+phase_field decorates the payload with a `_value_set_external_id`
+marker (the GVS FullName == the PicklistValueSet external_id).
+The marker drives both `field_details.picklist_value_set_
+entity_id` (via `_map_field_details`) and the HAS_PICKLIST_VALUES
+edge (via the edge_specs extractor). Injected BEFORE
+batched_materialize — unlike §16's edge-only marker — because
+it's genuine Field entity state (it feeds the detail row), so
+it correctly belongs in the entity hash.
+
+**Standard-field → SVS scope.** Standard picklist fields
+reference StandardValueSets, but no API exposes that linkage
+(REST describe shows inline values only; FieldDefinition Tooling
+queries → HTTP 400 in v66.0). Detecting it requires
+content-matching field values against each SVS — deferred per
+§22 (decision 3B). §10's realized scope is GVS-backed custom
+picklist fields.
+
+**Live verification.** This sandbox has 0 GlobalValueSets, so
+HAS_PICKLIST_VALUES resolves to 0 edges — `field_details.
+picklist_value_set_entity_id` stays NULL for every Field
+because no custom picklist field is GVS-backed. The wiring is
+unit-tested end to end (fetcher → phase_field decoration →
+detail mapper → edge extractor) and materializes edges
+automatically the moment an org with GlobalValueSets is synced.
+The §10+§14 cycle's value in this sandbox is forward-looking
+infrastructure; the live test exercises the empty path + the
+>= 0 floor + idempotency.
+
+## §11: Edge supersession semantics — property-less edges use identity-based diff
+
+**Date:** 2026-05-12
+**Step:** Field phase (4 of 12) — first edge-writing phase
+**Source:** Survey of TIER_1_EDGES revealed BELONGS_TO,
+            HAS_PICKLIST_VALUES, HAS_RELATIONSHIP_TO all have
+            properties_schema=None; substrate-1's
+            validate_edge_properties accepts only empty dict
+            for these.
+
+Substrate-1's TIER_1_EDGES has both:
+- Property-less edge types (BELONGS_TO, HAS_RELATIONSHIP_TO,
+  HAS_PICKLIST_VALUES, HAS_PROFILE per the validate function
+  docstring) — properties_schema=None; the edge accepts only {}
+- Property-bearing edge types (INCLUDES_FIELD with positional
+  field-order metadata, GRANTS_OBJECT_ACCESS with permission
+  flags, etc.) — properties_schema defines required fields
+
+For property-less edges, edge identity is the tuple
+(source_id, target_id, edge_type). There is no per-edge
+properties dict to hash. Supersession is binary:
+- In incoming sync set, not in existing-active set → INSERT
+- In existing-active set, not in incoming set → close
+  (valid_to_seq = current logical_version_seq - 1)
+- In both sets → no-op (unchanged)
+
+No properties_hash column needed; sync_engine doesn't compute
+hashes for these edges. Set-difference is sufficient.
+
+When property-bearing edge types land in their respective phase
+cycles (Layout for INCLUDES_FIELD; Profile / PermissionSet for
+GRANTS_*), the supersession algorithm extends with hash-compare
+semantics for the properties dict, mirroring entity supersession.
+At that point, adding a last_seed_hash column to the edges table
+may make sense; for now, deferred per YAGNI (the column doesn't
+benefit any current edge type and would just be unused weight).
+
+## §12: Edges containment-unique index narrowed to BELONGS_TO
+
+**Date:** 2026-05-12
+**Step:** Field phase (3 of 12) — first phase to write
+            multi-target STRUCTURAL edges
+**Source:** Live test failed with UniqueViolation on
+            idx_edges_unique_containment when Field phase
+            attempted to write multiple HAS_RELATIONSHIP_TO
+            edges from a single polymorphic-reference Field
+            (Task.WhoId → [Contact, Lead], Lead.OwnerId →
+            [User, Group], etc.)
+
+Substrate-1's migration `20260427_0020_phase1_edges.py`
+created idx_edges_unique_containment with partial filter
+`WHERE edge_category = 'STRUCTURAL'`. The accompanying
+comment stated the intent: "Prevents duplicate BELONGS_TO
+entries for the same source at the same version."
+
+The filter over-generalized. Both BELONGS_TO and
+HAS_RELATIONSHIP_TO are STRUCTURAL category in
+TIER_1_EDGES. The original intent (one-parent-per-child
+containment uniqueness for BELONGS_TO specifically) wasn't
+captured precisely in the filter.
+
+HAS_RELATIONSHIP_TO is multi-target by design: polymorphic
+references in Salesforce (WhoId → Contact|Lead, etc.) need
+multiple edges from one source Field at one valid_from_seq.
+
+**Resolution:** Migration 20260512_0030 narrows the filter
+to `WHERE edge_type = 'BELONGS_TO'`. Active-edge uniqueness
+for all edge types remains enforced by
+idx_edges_unique_active_non_references (keys on
+source_entity_id, edge_type, target_entity_id — which
+correctly distinguishes multi-target edges by their
+distinct target_entity_id values).
+
+**Pattern for future cycles:** When adding new STRUCTURAL
+edge types to TIER_1_EDGES, verify whether the new type is
+single-target-by-design (like BELONGS_TO) or multi-target
+(like HAS_RELATIONSHIP_TO). Single-target types should
+reference idx_edges_unique_containment by being added to
+its partial filter; multi-target types should NOT.
+
+## §14: Substrate-1 internal contradiction — CONSTRAINS_PICKLIST_VALUES target type
+
+**Date:** 2026-05-12
+**Status: RESOLVED 2026-05-14** (§10+§14 cycle — see RESOLUTION
+block at the end of this entry)
+**Step:** RecordType phase (5 of 12) — survey before
+            implementation
+**Source:** Found during survey of substrate-1's edge writers
+            for the RecordType phase
+
+Substrate-1's TIER_1_EDGES registry and runtime derivation
+code disagree on the target entity type for the
+CONSTRAINS_PICKLIST_VALUES edge:
+
+- `primeqa/semantic/edges.py` TIER_1_EDGES registry says:
+    CONSTRAINS_PICKLIST_VALUES
+      source: RecordType
+      target: PicklistValueSet (coarse — one edge per
+                                RT × value set)
+- `primeqa/semantic/derivation.py::_edges_from_record_type_row`
+  writes target_entity_id from a row in
+  record_type_picklist_value_grants, which keys on
+  `picklist_value_entity_id` — i.e., target is a
+  PicklistValue, not a PicklistValueSet (fine — one edge
+  per RT × individual value)
+
+No CHECK constraint enforces target.entity_type matches the
+registry's declared target_entity_types. At runtime, the
+derivation writer's behavior is what actually ships.
+
+Implications:
+1. Sync engine CONSTRAINS_PICKLIST_VALUES writes (deferred —
+   see below) must choose one model and resolve the
+   contradiction.
+2. record_type_picklist_value_grants junction table (PK on
+   RT × PicklistValue) supports fine model; coarse model
+   would use a different schema.
+3. Cardinality differs dramatically: fine model produces
+   ~5-20 edges per RT (one per active picklist value); coarse
+   model produces ~1-5 edges per RT (one per constrained
+   value set). For 5 RTs, that's the difference between
+   ~50-100 edges and ~5-25 edges.
+
+**Resolution deferred.** RecordType phase ships without
+CONSTRAINS_PICKLIST_VALUES until:
+- fetch_custom_field_metadata Tooling fetcher (§10) lands,
+  enabling picklist→value-set identity resolution
+- Substrate-1 design owner picks a model (coarse vs fine)
+  and the contradicting code path is reconciled
+
+Likely resolution path: fine model wins because
+record_type_picklist_value_grants already exists and is
+consistent with derivation.py. The registry's declared
+target should change to PicklistValue. But this is
+substrate-1's decision, not sync's.
+
+### §14 RESOLUTION (2026-05-14)
+
+Implemented via the §10+§14 cycle on phase-2-substrate-1-sync
+(same main commit as §10 — the two share the §10 picklist →
+value-set resolution).
+
+**Model: fine (decision 2A).** The contradiction is resolved in
+favor of the fine model — one edge per (RecordType, allowed
+PicklistValue) — as the "likely resolution path" above
+predicted. It's the 2-of-3 majority (derivation.py +
+the record_type_picklist_value_grants junction schema both
+already use PicklistValue) and it unifies the edge and the
+junction row into one write path. **The substrate-1 registry
+was corrected**: `TIER_1_EDGES["CONSTRAINS_PICKLIST_VALUES"].
+target_entity_types` changed `("PicklistValueSet",)` →
+`("PicklistValue",)`. No test asserted the old target, and
+derivation.py + test_derivation_per_source.py already expected
+PicklistValue, so the correction only removed a latent
+inconsistency.
+
+**Junction-table mirror.** EdgeSpec gained three optional
+fields — `junction_table` / `junction_source_column` /
+`junction_target_column`. When set (only
+CONSTRAINS_PICKLIST_VALUES today), the materialize layer mirrors
+every edge into that hot-reference table: INSERT ... ON CONFLICT
+DO NOTHING on new edges, DELETE on superseded edges. Under the
+fine model the junction row `(record_type_entity_id,
+picklist_value_entity_id)` IS a denormalization of the edge
+`(source, target)` pair — one extractor feeds both. The
+junction-mirror path is implemented only for property-less
+edges; a junction on a property-bearing edge_type raises
+NotImplementedError rather than silently dropping the write.
+
+**phase_record_type wiring.** `_build_record_type_field_to_pvs_
+map` reads `field_details.picklist_value_set_entity_id`
+(populated by phase_field earlier this sync_run per
+ENTITY_ORDER) into a `{field external_id → PicklistValueSet
+external_id}` map. `_decorate_record_types_with_picklist_
+constraints` walks each RT's `Metadata.picklistValues`, resolves
+each (picklist field, value) to a PicklistValue composite
+external_id (`{pvs_external_id}.{valueName}`), and injects the
+`_constrained_picklist_values` marker. The marker is injected
+AFTER batched_materialize (like §16's Layout decoration) — it's
+edge-extraction input that depends on cross-entity
+Field→PicklistValueSet state, so it stays out of the RecordType
+entity hash.
+
+**Scope.** A picklistValues entry is in scope only when its
+picklist field resolves to a synced PicklistValueSet.
+Inline-picklist and standard-picklist fields have no
+PicklistValueSet entity to anchor the PicklistValue
+external_ids → their constraint entries are skipped and
+INFO-logged. Scope clarification, not deferral — same shape as
+§16's NULL-RecordTypeId skip and §21's record-trigger scoping.
+
+**Inner-structure caveat.** The `RecordTypePicklistValue` inner
+shape (`picklist` / `values` / `fullName`) could NOT be
+live-verified: 0/5 sandbox RTs have a non-empty picklistValues,
+confirmed on two independent API surfaces (Tooling
+`RecordType.Metadata.picklistValues` = [] for all 5; REST
+`describe/layouts` `recordTypeMappings.picklistsForRecordType` =
+0 entries across Account / Case / Lead / Opportunity /
+sfLma__License__c). The OUTER key `picklistValues` IS confirmed
+present on every RT's Metadata. The parser follows the
+documented Salesforce Metadata API `RecordTypePicklistValue`
+key names but defensively tolerates the plausible Tooling-JSON
+variants (`picklistName`, `value` / `valueName`) so a
+key-spelling difference can't silently zero out the edge in a
+populated org.
+
+**Live verification.** §14 resolves to 0 edges + 0
+record_type_picklist_value_grants rows in this sandbox (no RT
+constrains any picklist anywhere in the org). The live test
+asserts the >= 0 floor, edge-count == junction-row-count
+invariant, and second-sync idempotency; the materialization
+logic is unit-tested with controlled fixtures across the
+extractor, the decoration helper, and the junction-write path.
+
+## §15: layout_type sourced from Salesforce, not invented
+
+**Date:** 2026-05-12
+**Step:** Layout phase (6 of 12)
+**Source:** Survey of substrate-1's fetch_layout_names()
+            during Layout phase implementation
+
+Substrate-1's `layout_details.layout_type` column is
+VARCHAR(20) NOT NULL with no DB default. The Layout phase
+sources the value from Salesforce's Tooling Layout.LayoutType
+field, NOT a hardcoded sync-layer convention.
+
+Tooling Layout.LayoutType values verified in this sandbox at
+v66.0:
+- `Standard` — page layouts (returned by REST
+  /sobjects/{name}/describe/layouts; the dominant case)
+- `GlobalQuickActionList` — the special variant backing the
+  global quick-actions menu (EntityDefinitionId='Global'; no
+  parent sObject)
+
+The Layout phase filters out `GlobalQuickActionList`-type
+rows because they have no parent Object to link to via
+`layout_details.object_entity_id` (NOT NULL FK to entities).
+Standard layouts are materialized; quick-action-list layouts
+are skipped with a WARN log per the lenient-tolerance
+pattern (corrections-log §6).
+
+Pattern: when a Salesforce-provided field already populates a
+detail-table column's domain, source the value from Salesforce
+rather than invent a sync-layer enumeration. The substrate-1
+`fetch_layout_names()` docstring documents the LayoutType
+discrimination so consumers (including future phases for
+CompactLayout / SearchLayout if those are added) follow the
+same convention.
+
+Future cycles adding Compact Layout or Search Layout support
+will need different fetchers (different Tooling tables:
+CompactLayout, SearchLayout). Their LayoutType values will
+similarly come from Salesforce — sync layer remains a
+pass-through.
+
+## §16: Layout-source ASSIGNED_TO_PROFILE_RECORDTYPE deferred
+
+**Date:** 2026-05-12
+**Status: RESOLVED 2026-05-14** (§16-resolution cycle — see
+RESOLUTION block at the end of this entry)
+**Step:** Layout phase (6 of 12)
+**Source:** Survey of TIER_1_EDGES for Layout-source edge types
+
+TIER_1_EDGES has a third Layout-source edge type beyond
+BELONGS_TO and INCLUDES_FIELD:
+  ASSIGNED_TO_PROFILE_RECORDTYPE: Layout → Profile
+                                  (property-bearing, category=CONFIG)
+
+Properties schema (AssignedToProfileRecordtypeProperties):
+  record_type_entity_id: UUID
+  is_default: bool
+
+Deferred this cycle. Profile entities don't exist yet (Profile
+phase pending). Pre-wiring the edge spec would create code
+that silently skips all edge writes (resolver returns None for
+every target). Wait until Profile phase lands; wire then.
+
+The property requires resolving a RecordType entity_id for the
+record_type_entity_id field. RecordType entities DO exist (this
+cycle is post-RT cycle d91e777), so the RT-resolution piece is
+available. The blocker is purely the Profile target.
+
+When Profile phase lands:
+1. Add ASSIGNED_TO_PROFILE_RECORDTYPE spec to Layout's
+   EDGE_SPECS entry
+2. Extractor walks the Tooling Layout-Profile-RT assignments
+   table (likely Tooling ProfileLayout) — fetcher TBD
+3. Properties extractor resolves RT external_id to entity_id
+   via make_parent_resolver
+
+Pattern: when adding a new entity type whose edges target
+another entity type that hasn't been implemented yet, defer
+the edge spec until both ends are real. Avoids speculative
+unused code paths that produce silent zero-edge writes.
+
+### §16 RESOLUTION (2026-05-14)
+
+Implemented via the §16-resolution cycle on
+phase-2-substrate-1-sync. Two commits:
+- **Precursor (P6)** — `fetch_profile_layouts` substrate-1
+  Tooling fetcher (commit 98f8f8c)
+- **Main** — phase_layout wiring +
+  ASSIGNED_TO_PROFILE_RECORDTYPE edge_spec
+
+**Data source.** Tooling `ProfileLayout` sObject (~3,131 rows
+in sandbox: 18 profiles × ~174 layouts). Bulk-queryable in a
+single SOQL — no per-Profile iteration.
+
+The originally-anticipated sources DON'T expose this data
+(corrected the §16 deferral note's "fetcher TBD" / "Tooling
+ProfileLayout — fetcher TBD"):
+- REST `describe/layouts` (`fetch_layouts_for_object`) returns
+  `recordTypeMappings` (RecordType ↔ Layout) but carries NO
+  Profile reference.
+- Tooling `Profile.Metadata` (`fetch_profiles`) OMITS
+  `layoutAssignments` — it's a Metadata-API-retrieve-only
+  field. Live probe: 0/18 sandbox profiles had it.
+
+`ProfileLayout` is the canonical bulk source; it's Tooling-only
+(the Data API rejects it, HTTP 400).
+
+**Design decisions:**
+
+1. **NULL-RecordTypeId rows skipped.** `ProfileLayout` rows
+   with `RecordTypeId=NULL` are legitimate Salesforce metadata
+   (Profile X uses Layout Y by default when no RecordType
+   applies). But `AssignedToProfileRecordtypeProperties.
+   record_type_entity_id` is REQUIRED (not Optional) — the edge
+   type is, by name and schema, scoped to RT-bound assignments.
+   `_decorate_layouts_with_profile_assignments` filters NULL-RT
+   rows out (with an INFO-logged count). If consumers later
+   need "Profile uses Layout X as default for Object Y," that's
+   a different edge type — out of scope for §16. Scope
+   clarification, not deferral (same shape as §21's TRIGGERS_ON
+   record-trigger scoping).
+
+2. **`is_default` cross-referenced from `recordTypeMappings`.**
+   `ProfileLayout`'s bulk SOQL doesn't expose a default flag.
+   The "default" semantics live in
+   `recordTypeMappings[].defaultRecordTypeMapping` (from
+   `describe/layouts`, which phase_layout already fetches).
+   phase_layout builds an `(LayoutId, RecordTypeId) → is_default`
+   map from data already in memory — no extra round-trip.
+
+3. **Profile + RecordType resolution via the entities table.**
+   phase_layout reads `attributes->>'Id'` on synced `Profile`
+   and `RecordType` entity rows to build:
+   - `profile_id → profile external_id` (the edge's target;
+     resolved to a Profile entity by the materialize layer's
+     parent_resolver)
+   - `recordtype_id → recordtype entity_id` UUID (the required
+     `record_type_entity_id` property — a forward reference
+     pre-resolved in-phase, since the edge_specs extractor has
+     no parent_resolver; same pattern as the User cycle's
+     `assigned_by_user_entity_id`).
+   Mirrors the User cycle's entities-table-derived maps. No new
+   ID-resolution fetcher needed.
+
+**Decoration timing.** The `_profile_layout_assignments` marker
+is injected AFTER `batched_materialize` (not before, like the
+other phases' markers). It is edge-extraction input, NOT Layout
+entity state — keeping it out of the Layout's `attributes`
+JSONB decouples the Layout entity hash from ProfileLayout /
+RecordType-entity-id churn. `normalized_payloads` (computed
+after decoration) carries it for edge extraction only.
+
+**Cardinality.** ~3,131 ProfileLayout rows; the actual edge
+count after filtering (Profile ∈ synced AND RecordType
+non-NULL AND RecordType ∈ synced) is modest — possibly small
+or zero if the sandbox's user-defined RecordTypes don't
+intersect the ProfileLayout rows. Like Profile's
+GRANTS_FIELD_ACCESS, most ProfileLayout rows silently skip
+(non-synced layouts/RTs, or NULL-RT). The integration test's
+regression floor is `>= 0`.
+
+**Retracts** the deferral note's "fetcher TBD" and
+"Properties extractor resolves RT external_id to entity_id via
+make_parent_resolver" — the extractor has no parent_resolver;
+the resolution happens in-phase, and the fetcher is the new
+`fetch_profile_layouts` (not a make_parent_resolver call).
+
+## §17: ValidationRule REFERENCES edge deferred — formula parser unbuilt
+
+**Date:** 2026-05-12
+**Step:** ValidationRule phase (7 of 12)
+**Source:** TIER_1_EDGES survey during ValidationRule cycle
+
+TIER_1_EDGES has a third VR-source edge type beyond
+BELONGS_TO and APPLIES_TO:
+  REFERENCES: ValidationRule → Field (property-bearing)
+
+REFERENCES carries ReferencesProperties:
+  reference_type: 'read' | 'priorvalue' | 'ischanged' | 'isnew'
+  is_priorvalue: bool
+  is_ischanged: bool
+  is_isnew: bool
+
+Substrate-1 has a validation_rule_field_refs junction table
+parallel to record_type_picklist_value_grants. Writing
+REFERENCES requires:
+
+1. Salesforce formula language parser (tokenize PRIORVALUE,
+   ISCHANGED, ISNEW, bare field references, dotted
+   relationship traversals like Owner.Name)
+2. Field-name disambiguation (bare 'Amount' implies parent-
+   Object's Amount; 'Account.Industry' is qualified)
+3. Junction-table writer (similar to deferred
+   record_type_picklist_value_grants)
+
+None of these exist today. Building them is its own focused
+cycle.
+
+Deferred. Pattern matches §10 (HAS_PICKLIST_VALUES needs
+fetch_custom_field_metadata), §14 (CONSTRAINS_PICKLIST_VALUES
+needs §10 + design resolution), §16 (ASSIGNED_TO_PROFILE_RT
+needs Profile entities) — each waits for unbuilt
+infrastructure.
+
+## §18: Bulk-fetcher child phases require explicit parent-scope filter
+
+**Date:** 2026-05-12
+**Step:** RecordType + ValidationRule cycles (5 + 7 of 12) — bug
+            surfaced by first live integration test against local
+            Postgres
+**Source:** phase_validation_rule failed with
+            "Cannot resolve parent Object 'sfFma__FeatureParameterBoolean__c'
+            for ValidationRule 'FullNameUpdatePrevention'"
+
+Object phase filters Objects by syncability rules (per design
+doc decision Option C narrowest: queryable AND searchable AND
+NOT deprecated AND NOT customSetting). Managed-package
+internal Objects like sfFma__* (Salesforce internal Feature
+Parameter framework) are excluded.
+
+Child phases that fetch entities via bulk Tooling SOQL
+(no per-Object iteration) must filter their fetched payloads
+against the syncable-Objects set; otherwise their detail
+mappers fail with FK-resolution errors when child entities
+reference filtered-out parents.
+
+Affected phases:
+- phase_record_type (cycle d91e777): latent — sandbox's 5
+  RTs happen to be on standard Objects; bug would trigger
+  on orgs with RTs on managed-package Objects
+- phase_validation_rule (cycle a9f4322): triggered live
+  by the sfFma__FeatureParameterBoolean__c VR
+
+Pattern (Option A — explicit per-phase filter):
+1. Phase function queries entities table for the
+   synced-Object api_name set at phase start (via
+   _synced_object_api_names helper in phases.py)
+2. Filters raw payloads against the set before
+   materialization
+3. Logs the count of skipped entities for visibility
+
+Alternatives considered (and rejected):
+- Softening detail mappers to return None on unresolvable
+  parent: spreads concern across mappers; loses materialize
+  layer's FK-mismatch safety property (would mask real
+  ordering bugs)
+- Materialize layer skip-on-missing-parent hook: hidden
+  behavior; would silently skip legitimate ordering issues
+
+Why this matters for future contractors:
+- Per-Object-iteration phases (Field, Layout) inherit the
+  filter implicitly — they only fetch children for synced
+  Objects
+- Bulk-fetcher child phases (RT, VR, future similar) need
+  explicit filter
+- When adding a new entity type, check whether its fetch
+  pattern is per-parent or bulk; bulk fetchers of child-of-X
+  entities need the explicit X-scope filter
+
+Not applicable to:
+- Org-level entity phases (Profile, PermissionSet, User,
+  Flow) — these aren't child-of-Object
+- Per-Object-iteration phases (Field, Layout) — implicit
+  filter
+
+
+## §19: Edge target-scope filtering — silent skip with observability
+
+Date: 2026-05-13
+Step: Profile phase (8 of 12) — audit during cycle
+Source: Q1+Q2+Q3 audit during Profile cycle live verification
+
+Audit of `phase_profile`'s first live run surfaced that
+`materialize_edges_for_entities` silently skips edges whose
+`target_external_id` doesn't resolve to a materialized
+`entity_id`. This is the documented design across all phases
+(Field's HAS_RELATIONSHIP_TO; Profile's GRANTS_OBJECT_ACCESS,
+GRANTS_FIELD_ACCESS):
+
+- Targets that don't resolve are silently skipped
+- Prevents orphan edges
+- Doesn't fail the whole sync on legitimate scope misses
+  (e.g., managed-package internal Objects filtered by Object
+  phase's syncability rules)
+
+Audit numbers from sandbox live test (18 Profiles):
+- GRANTS_OBJECT_ACCESS: 628 candidate targets → 505 written,
+  123 skipped (~19.6% skip rate)
+- GRANTS_FIELD_ACCESS: 10,582 candidate targets → 10,217
+  written, 365 skipped (~3.4% skip rate)
+- Total: 11,210 candidate → 10,722 written, 488 skipped (~4.4%)
+
+Heaviest skip Profiles in sandbox:
+- Admin: 39 OP + 44 FP = 83
+- System Administrator (non-API): 5 + 65 = 70
+- Analytics Cloud Integration User: 47 + 14 = 61
+
+Skipped targets correspond to managed-package internal entities
+(`sfFma__*`, Analytics Cloud-specific Objects, etc.) that the
+Object phase correctly excludes from syncable scope.
+
+**Resolution this cycle:** add observability to silent skip.
+Skipping behavior preserved (correct for legitimate scope
+cases); `PhaseResult.edges_skipped_by_type` now tracks count per
+`edge_type`; debug-level log emits on each skip with target
+context. No change to entity hashes (Profile entity continues
+to hash full `Metadata`; only edges respect synced scope).
+
+Implementation:
+- `primeqa/sync/result.py`:
+  `edges_skipped_by_type: dict[str, int] = field(default_factory=dict)`
+  + `record_skipped_edge(edge_type)` method
+- `primeqa/sync/materialize.py`:
+  `materialize_edges_for_entities` increments the counter +
+  emits `logger.debug(...)` on each `parent_resolver → None` skip
+
+Cross-cutting fix: applies to every phase using the shared
+materialize path (Field, RecordType, Layout, ValidationRule,
+Profile, future PermissionSet/User/Flow). Profile cycle's
+audit numbers (488 skips at 4.4%) are surfaced automatically
+in any future phase's `PhaseResult` as well.
+
+**Future work tracked:** a more substantive observability cycle
+could distinguish three skip categories:
+1. Target is in known-non-syncable set (managed-package
+   internals filtered by Object phase) — expected, no concern
+2. Target was in syncable set but got superseded mid-run —
+   likely concurrent sync race; warrants warn-level log
+3. Target `external_id` is malformed — sync code bug; warrants
+   error-level log
+
+Current implementation logs all skips at debug level. The
+distinction above requires correlation with synced-set
+membership at the time of skip; cheap to add when needed.
+
+
+## §20: FlowDefinition is NOT a materialized entity — resolves substrate-1 design contradiction
+
+Date: 2026-05-14
+Step: FlowDefinition cycle (would-be 11 of 12) — survey phase
+Source: Survey for FlowDefinition phase surfaced design-level
+        contradiction between SPEC.md §9 and ENTITY_ORDER
+
+Substrate-1 had an internal contradiction about whether
+FlowDefinition is a Tier-1 entity:
+
+- SPEC.md §9: "10 Tier-1 entity types" (Flow is in the list;
+  FlowDefinition is not)
+- TIER_1_ENTITIES, _NORMALIZERS, _TO_TEXT, TIER_1_EDGES: no
+  FlowDefinition (matches SPEC.md)
+- DB schema: no flow_definition_details table (matches SPEC.md)
+- But: ENTITY_ORDER listed 12 entries including FlowDefinition
+- And: the earlier corrections-log entry ("Cross-cutting drift:
+  normalization.py and ENTITY_ORDER", 2026-05-12) tracked
+  "extend normalization.py / semantic_text.py / presentation
+  with flow_definition functions... Tracked as a pre-requisite
+  for the FlowDefinition phase cycle."
+
+**Resolution: SPEC.md wins. FlowDefinition is NOT a materialized
+entity.**
+
+Rationale:
+
+1. SPEC.md §9's "10 Tier-1 entity types" is design-locked
+   authoritative spec. The four substrate-1 registries
+   (TIER_1_ENTITIES, _NORMALIZERS, _TO_TEXT, TIER_1_EDGES) and
+   the DB schema all already match it — only ENTITY_ORDER and
+   the design-doc's hardcoded-order snippet had drifted.
+2. Substrate-1's bitemporal supersession IS the native
+   versioning mechanism for Flow's versioning needs:
+   - Flow entity keyed by DeveloperName (stable identity)
+   - Each new version deployment → supersedes the prior Flow
+     record with new attributes (api_version, manageable_state,
+     is_active, version_number, etc.)
+   - Entity history IS version history
+   - diff-window queries surface flow-level changes natively
+3. Modeling FlowDefinition + Flow as separate entities would
+   replicate versioning semantics on top of the bitemporal
+   layer that already provides them.
+4. Consumer query patterns work with the Flow-as-supersession
+   model (existence, diff, activation state, version history).
+
+ENTITY_ORDER corrected from 12 → 11 entries. The 11 are all
+entity-materializing phases: the 10 Tier-1 detail-table entity
+types per SPEC §9 (Object, Field, RecordType, Layout,
+ValidationRule, Flow, Profile, PermissionSet, User,
+PicklistValue) PLUS PicklistValueSet — an entity-materializing
+phase that intentionally has no detail table (its full shape
+lives in entities.attributes JSONB; see the Object-cycle
+corrections-log entry). FlowDefinition removed from ENTITY_ORDER
+(and therefore from the PHASE_REGISTRY comprehension that builds
+no-op phases from it).
+
+fetch_flow_definitions remains as a substrate-1 Tooling fetcher
+— it provides parent context (DeveloperName, ActiveVersionId,
+ManageableState) that the Flow phase consumes to:
+- Identify which Flow version is active
+- Decorate Flow records with stable identity (DeveloperName
+  from FlowDefinition rather than per-version FullName)
+- Set Flow's manageable_state attribute correctly
+
+**Retracts:** the earlier "Cross-cutting drift" entry's
+resolution that FlowDefinition needs entity plumbing
+(_normalize_flow_definition, _to_text_flow_definition, a
+TIER_1_ENTITIES entry, a flow_definition_details table). That
+resolution was written from the sync-layer side without
+reconciling against SPEC.md §9. No such plumbing will be added;
+the drift is resolved by removing FlowDefinition from
+ENTITY_ORDER, not by promoting it to an entity.
+
+**Implication for phase count:** the structural-sync phase
+sequence is 11 entity-materializing phases (Object → Flow),
+not 12. The Flow phase (next cycle) is the last entity phase;
+enrichment (design doc §9 step 4) runs as a separate stage
+after the structural phases, not as an ENTITY_ORDER member.
+
+
+## §21: TRIGGERS_ON scope — record triggers only per substrate-1 design
+
+Date: 2026-05-14
+Step: Flow phase (final entity phase, 11/11) — survey
+Source: Live probe of sandbox flows surfaced PlatformEvent-
+        triggered flows that fall outside TRIGGERS_ON's
+        property schema
+
+This is a SCOPE CLARIFICATION entry, not a deferral. Distinct
+from §10, §14, §16, §17 (deferred for unbuilt
+infrastructure / entities / parsers) — TRIGGERS_ON is fully
+implemented within substrate-1's defined scope.
+
+Substrate-1's TriggersOnProperties schema allows only
+record-trigger types via its `trigger_type_known` validator:
+
+    BeforeSave, AfterSave, BeforeDelete, AfterDelete
+
+Per its docstring: "Autolaunched and screen flows have no
+trigger_type — they don't produce TRIGGERS_ON edges in the
+first place."
+
+Salesforce supports additional trigger paradigms beyond
+record triggers:
+
+- Platform Events — Metadata.start.triggerType='PlatformEvent';
+  the start.object is a Platform Event (api name ends `__e`),
+  which is not `queryable AND searchable` and is therefore
+  excluded by Object phase's `_is_syncable_object` filter
+- Scheduled triggers — time-based, no object target
+- Data Cloud Segments, DataGraphs — other non-record targets
+
+These are deliberately out of scope for TRIGGERS_ON per
+substrate-1's design intent. Future cycles can extend support
+via either:
+
+  Option 1: Extend TriggersOnProperties' allowed set AND extend
+            the Object entity to include Platform Events (relax
+            the `queryable AND searchable` filter for the `__e`
+            suffix).
+  Option 2: Add new edge types (TRIGGERS_ON_PLATFORM_EVENT,
+            TRIGGERS_ON_SCHEDULE, …) with type-specific target
+            entity types.
+
+Either option is a focused substrate-1 enhancement cycle.
+
+**Implementation in this cycle:** edge_specs.py defines
+`_RECORD_TRIGGER_TYPE_MAP` (the four record-trigger types).
+`_flow_triggers_on_targets` returns an empty list when
+`Metadata.start.triggerType` is not in that map — PlatformEvent /
+Scheduled / Autolaunched / Screen flows produce no TRIGGERS_ON
+edge. They are correctly OUT OF SCOPE, not silently skipped:
+the extractor never feeds a non-record trigger_type to the
+Pydantic schema's validator, so no validation error can arise.
+The presentation adapter (`_to_presentation_flow`) and detail
+mapper (`_map_flow_details`) apply the identical record-trigger
+gate, so `flow_details.trigger_type` /
+`triggers_on_object_entity_id` and the semantic_text trigger
+fields stay consistent with the edge.
+
+**Sandbox observation:** this sandbox has 13 FlowDefinitions and
+14 Flow versions, all ProcessType=AutoLaunchedFlow. Of the 2
+flows with a `Metadata.start.object`, both are
+PlatformEvent-triggered. Zero record-triggered flows exist;
+therefore zero TRIGGERS_ON edges materialize. The implementation
+is correctness-complete and unit-tested across the record-trigger
+types — a future org with record-triggered flows produces
+TRIGGERS_ON edges automatically without code change.
+
+## §22: HAS_PICKLIST_VALUES standard-field → SVS detection deferred
+
+Date: 2026-05-14
+Step: §10+§14 cycle — survey (decision 3B)
+Source: §10+§14 survey of value-set reference detection
+
+This is a SCOPE CLARIFICATION entry, not an open contradiction.
+Distinct from the §10/§14 deferrals (now RESOLVED) — it carves
+out one piece of HAS_PICKLIST_VALUES that stays deferred because
+no API exposes the data, not because infrastructure is unbuilt.
+
+§10's HAS_PICKLIST_VALUES wiring resolves a picklist field to
+its PicklistValueSet via the Tooling `CustomField.Metadata.
+valueSet.valueSetName` — which only exists for **custom**
+picklist fields, and only carries a value when the field is
+**GlobalValueSet-backed**. That leaves two field classes outside
+§10's realized scope:
+
+- **Inline-picklist custom fields** — `valueSetName` is None;
+  the values are inline-defined, not a shared PicklistValueSet
+  entity. There is genuinely no PicklistValueSet to point at, so
+  no HAS_PICKLIST_VALUES edge is correct (not a deferral — a
+  true absence).
+- **Standard picklist fields** (e.g. `Account.Industry`,
+  `Lead.LeadSource`) — these reference StandardValueSets, which
+  DO materialize as PicklistValueSet entities (external_id
+  `SVS:{FullName}`). But no single Salesforce API exposes the
+  field → StandardValueSet linkage:
+  - REST sObject describe exposes inline `picklistValues` only,
+    no value-set reference (the original §10 finding)
+  - Standard fields don't appear in the Tooling `CustomField`
+    object at all
+  - Tooling `FieldDefinition` queries with an entity filter
+    returned HTTP 400 in v66.0 (live-probed)
+
+**Known approach (deferred):** detect standard-field → SVS
+links by **content-matching** — comparing a standard picklist
+field's describe `picklistValues` value-name set against each
+StandardValueSet's value list (exact match, or a
+subset/overlap threshold to tolerate admin value edits). This
+is a heuristic with real fragility (an admin who removes one
+value from a field breaks exact-match), and bundling it would
+have inflated the §10+§14 cycle. Decision 3B: ship §10 as the
+clean GVS-backed-custom-field wiring and defer standard-field
+SVS detection to its own focused cycle.
+
+**Sandbox impact:** this sandbox has 95 StandardValueSets and 0
+GlobalValueSets, so with standard fields deferred, §10
+materializes 0 HAS_PICKLIST_VALUES edges here. The deferral is
+the entire reason §10's live edge count is 0 rather than ~N
+(one per standard picklist field) in this org — documented so a
+future reader doesn't mistake the 0 for a bug.
+
+**Pattern:** when a relationship is real in Salesforce but no
+API exposes it directly, a content-matching heuristic is the
+fallback — but heuristics earn their own cycle with their own
+fragility analysis, not a rider on an unrelated wiring cycle.
+
+## §23: Enrichment queue worker — RESOLVED
+
+Date: 2026-05-14
+Step: design doc §9 step 4 (enrichment queue worker) — the final
+      Phase 2 sync-layer step
+
+Implementation: P8 precursor (commit 3aa2b8f) + main commit (this
+cycle). The worker consumes ai_enrichment_queue and populates
+entities.embedding + the Flow / ValidationRule detail-table
+summary_* fields.
+
+Substantive decisions made during the cycle:
+
+1. **Embedding provider — Voyage AI, after three environment
+   walls.** The cycle hit three blockers in sequence before
+   landing on Voyage: (a) no OpenAI key + no per-tenant LLM-
+   credential storage; (b) a pivot to a local sentence-
+   transformers model failed because PyTorch has no Python 3.14
+   wheels; (c) the Python-3.11 downgrade still didn't help —
+   PyTorch dropped Intel-macOS (x86_64) wheels after torch 2.2.2,
+   and 2.2.2 conflicts with the project's NumPy 2.x +
+   transformers 5.x. Voyage AI's HTTP API (model voyage-3, 1024
+   dim) runs identically on the Intel-Mac dev box, Linux/Railway,
+   and CI — the only option that preserves local↔prod parity on
+   this hardware. Full rationale + alternatives in D-049. The
+   Python venv was rebuilt 3.14 → 3.11.15 along the way to match
+   the project's declared runtime (`.python-version`, Dockerfile,
+   nixpacks all say 3.11) — an incidental but correct alignment.
+
+2. **Summary scope: Flow + ValidationRule for v1.** Only
+   flow_details and validation_rule_details carry summary_text +
+   summary_embedding storage (summary_text added in P8 migration
+   20260514_0010). The sync engine's SUMMARY_ENABLED_ENTITY_TYPES
+   = {Flow, ValidationRule} constant (materialize.py) gates which
+   entity types enqueue a `summary` primitive; `embedding` is
+   enqueued for all 11 entity types. The other nine types get
+   embedding-only enrichment until a future cycle adds summary
+   storage + prompts for them.
+
+3. **Cleanup migration 20260514_0020.** Before the sync-engine
+   filter shipped, the sync enqueued `summary` rows for all 11
+   entity types — ~5,800 of which (everything but Flow + VR) had
+   no storage destination. The cleanup migration DELETEs those
+   orphans; it's idempotent (0 rows on a schema provisioned after
+   the filter).
+
+4. **Worker structure.** enrichment_tick is the 4th worker_tick
+   item. ai_enrichment_queue lives in the TENANT schema (no
+   tenant_id column), so the worker discovers tenant_<N> schemas
+   from information_schema (not shared.tenants — which can be out
+   of sync, and is empty in the test DB) and runs each subtick
+   scoped to one tenant via SET search_path + SET app.tenant_id
+   (the latter required — entities carries a tenant_id CHECK
+   assertion that re-validates on the embedding UPDATE). Bounded
+   per tenant per tick: ≤128 embedding rows (one Voyage batch) +
+   ≤5 summary rows (per-row Haiku calls). The poll loop drains a
+   large backlog over many ticks without any single tick
+   starving the pipeline / metadata / generation ticks.
+
+5. **Failure handling.** Retryable failures (Voyage 429/5xx/
+   network, LLM rate_limited/provider_error) → failed_retryable,
+   re-claimed on a later tick; non-retryable (Voyage 4xx-auth,
+   LLM auth_error/content_error, entity-not-found) →
+   failed_permanent. The attempts counter caps retries at
+   ENRICHMENT_MAX_ATTEMPTS=5. in_progress rows stuck > 10 min are
+   reaped back to pending (covered by the stalled_idx partial
+   index).
+
+6. **Empty semantic_text is a no-op success.** An entity whose
+   semantic_text is NULL/blank is marked succeeded without an
+   embed call — defensive against a sync bug that left
+   semantic_text empty; re-running the sync is the fix, not a
+   permanent enrichment failure.
+
+7. **The summary path also embeds.** Each generated summary's
+   text gets its own 1024-dim embedding via the Voyage client,
+   written to {flow,validation_rule}_details.summary_embedding
+   alongside summary_text + summary_model + summary_prompt_version
+   + summary_generated_at.
+
+Live verification: test_live_sync_full (the sync still passes,
+queue now carries embedding rows for all types + summary rows
+only for Flow + ValidationRule) + test_live_enrichment (the
+worker drains the queue; entities.embedding populated for every
+active entity; Flow + VR summaries fully populated; zero
+failed_permanent; a second tick after the drain is a no-op).
+
+Phase 2 sync layer status: structurally COMPLETE. All 11
+entity-materialization phases live-verified; all wireable
+TIER_1_EDGES types implemented except §17 REFERENCES (needs a
+Salesforce formula parser — its own cycle); enrichment worker
+RESOLVED here.
+
+## §24: Feature readiness signaling — RESOLVED
+
+Date: 2026-05-15
+Step: design doc §9 step 5 (feature readiness signaling) — the
+      final Phase 2 substrate-1 step before merge-to-main
+      preparation.
+
+Scope: `connected_orgs.ai_enrichment_status` lifecycle,
+`sync_runs` terminal-state transitions, `sync_runs` enrichment
+counters.
+
+Implementation: `primeqa/sync/readiness.py` module with pure
+functions (`compute_org_status`, `apply_org_status`,
+`increment_run_counters`, `maybe_finalize_run`); harness in
+`primeqa/worker.py:enrichment_tick`. Subticks refactored to
+return a `TickResult` dataclass with per-org succeeded /
+failed_retryable / failed_permanent deltas. No schema changes
+(all columns from migration `20260512_0010` are now wired —
+`ai_enrichment_status` was previously stuck at `structural_only`
+because the worker side never advanced it).
+
+Eligibility refinement: `complete` status respects
+`SUMMARY_ENABLED_ENTITY_TYPES = {Flow, ValidationRule}` (the
+§23 sync-engine filter). Orgs with zero Flow + zero
+ValidationRule reach `complete` once embeddings drain — there's
+no summary work to wait on.
+
+Terminal classification: `sync_runs.status='success'` if zero
+`failed_permanent` rows at finalization; `'partial_success'` if
+one or more. `failed_retryable` does NOT count toward
+`partial_success` — those rows aren't terminal and `compute_
+org_status` puts them in the non-terminal bucket which blocks
+the `complete` transition while any are present. A defensive
+WARNING is logged if a `failed_retryable` row is observed at
+finalization time (indicates a worker bug, not a partial
+outcome — unreachable by construction but logged for
+observability).
+
+Bonus robustness fix discovered during T2 attempt 1:
+SQLAlchemy releases connections to the pool on
+`session.commit()`; `pool_recycle=300` + LIFO pool behavior
+means a different connection may be returned for subsequent
+operations. `_set_tenant_context`'s session-level `SET
+search_path` didn't survive this swap. §23 was accidentally
+correct due to fewer commits per tick + LIFO pool typically
+returning the same connection. §24's added commits exposed
+the latent issue. Fix: `_set_tenant_context` now installs an
+`after_begin` event listener that re-applies `SET search_path`
++ `SET app.tenant_id` on every transaction the session begins.
+Production-relevant: `pool_recycle=300` is identical in prod;
+this fix pre-empts the same class of bug in production
+paths.
+
+Live verification: T2 attempt 2 (with the connection-swap fix)
+passed in 11:00. Full lifecycle observed end-to-end:
+`none → structural_only → partial → complete`, with the
+sync_run advancing to `phase='done'`, `status='success'`,
+`completed_at=NOW()`, and counters
+`embeddings_generated=5865`, `summaries_generated=63`,
+`summaries_failed=0`. Sample summaries (Flow
+`BillingReminder_Notification_Flow`, ValidationRule
+`CHANNEL_ORDERS__Customer__c.CHANNEL_ORDERS__Country_2_letter_code`)
+read as expected. Total Anthropic spend $0.033336; Voyage
+batches 46 (`cost_usd=0.0` per design).
+
+Phase 2 sync layer status update: §23 + §24 RESOLVED.
+Remaining toward merge-to-main: §17 REFERENCES (own focused
+cycle, formula parser), formal end-to-end test scenarios
+(§9 step 6), PR to main.
+
+## §25: End-to-end test scenarios formalized (§9 step 6) — RESOLVED
+
+Date: 2026-05-15 / 2026-05-16
+Step: design doc §9 step 6 (integration testing against the dev
+      sandbox — full sync end-to-end, observed sync_run
+      lifecycle, observed enrichment progression).
+
+The spec for §9 step 6 was minimal (one sentence). The literal
+spec was already met by `test_live_sync_full` +
+`test_live_enrichment` before this cycle. The cycle's value is
+in **formalization** — converting implicit ad-hoc verification
+into named pytest scenarios with clear assertions — and **gap
+closure** — adding a multi-org scenario that surfaced the §26
+divergence.
+
+Implementation: new file
+`tests/integration/test_e2e_sync_scenarios.py` with 3 scenario
+functions across 2 pytest test cases:
+
+- `test_scenario_full_sync_lifecycle_and_idempotent_resync` —
+  scenarios 1 + 2 combined (scenario 2's idempotent re-sync
+  depends on scenario 1's terminal state). Verifies the full
+  sync lifecycle (all 11 phases, all four `ai_enrichment_status`
+  transitions, every active entity has an embedding, every Flow
+  + ValidationRule has a summary, counter math reconciles) +
+  §5 hash-based change detection on second sync (entities_
+  inserted=0, entities_superseded=0, entities_unchanged>0).
+- `test_scenario_multi_org_sync` — scenario 3 (NEW). Two
+  `connected_orgs` rows under tenant_1 pointing at the same
+  sandbox; verifies per-org readiness isolation; surfaced the
+  D-030 divergence resolved in §26.
+
+Existing `test_live_sync_full` + `test_live_enrichment_after_
+sync` are preserved as the deep per-phase / per-entity-type /
+per-edge verifiers; the scenarios file delegates to the same
+fixtures but asserts at the narrative / lifecycle level only.
+Legacy-path docstrings added to both pointing readers at the
+canonical scenarios surface.
+
+Cadence: on-demand or nightly, not per-PR. Suite wall-clock
+~30-35 min per full run. Cost ~$0.033 Anthropic + ~$0.04 Voyage
+(estimated; Voyage `cost_usd=0.0` per design).
+
+Scenarios deferred to PARKING_LOT with named revisit triggers:
+partial-sync resume, bitemporal historical query, error-
+recovery, worker restart mid-drain, cross-tenant isolation
+(P-010 through P-014). Each carries unit-test or design-
+invariant coverage that makes e2e formalization marginal at
+this stage. P-016 surfaced separately: `limits._starter_defaults`
+rate-limit tightness causing intermittent rate_limited summary
+calls under burst (observed §25 attempt 1; recurred sporadically
+across §26 attempts; not blocking — summaries_failed=0).
+
+CONVENTIONS.md updated with the e2e cadence rule. PARKING_LOT
+extended with P-010 through P-014 + P-016.
+
+## §26: D-030 multi-org shared-model — RESOLVED
+
+Date: 2026-05-16
+Step: D-030 reconciliation (locked 2026-04-28). Triggered by
+      §25 scenario 3's empirical discovery of per-org entity
+      duplication.
+
+Background: D-030 prescribes "single canonical model across
+orgs; subsequent syncs update the model in place." §25
+scenario 3 observed the explicitly-rejected alternative —
+per-org duplication (Org B inserted 5865 entities on the same
+sandbox as Org A; total active entities = 11,730 = 2 × 5865).
+The implementation diverged from the locked decision.
+
+Root cause: `_batch_read_existing` in
+`primeqa/sync/materialize.py` filtered the existing-entity
+lookup by `last_synced_from_org_id = :org_id`, preventing
+cross-org recognition. Org B's lookup returned empty → all
+entities routed to the `new` bucket → duplicates inserted.
+
+Secondary: `_batch_touch_existing` only updated
+`last_synced_at`, leaving `last_synced_from_org_id` immutable.
+This treated the column as ownership ("this entity belongs to
+this org") rather than D-030's prescribed
+"most-recently-sourced-from" semantic.
+
+Defense-in-depth: the schema's `idx_entities_unique_active`
+partial UNIQUE index `(sf_id) WHERE valid_to_seq IS NULL AND
+sf_id IS NOT NULL` correctly encoded D-030's invariant, but
+was non-functional because `_batch_insert_new_entities`
+hardcoded `sf_id = NULL` on every insert. The schema's
+defense-in-depth was a no-op.
+
+Fix (code-only; no schema changes):
+
+- `materialize.py` `_batch_read_existing`: drop the org-id
+  filter; tenant-scope via the `tenant_<N>` schema search_path.
+- `materialize.py` `_batch_touch_existing`: add `SET
+  last_synced_from_org_id = :org_id` so unchanged entities
+  reflect "most recently synced from" semantic. The 8 phase
+  filter sites in `phases.py` (HOLD #A classification (a))
+  absorb naturally because the touch path propagates the
+  current org's id to every entity touched during the
+  running sync.
+- `materialize.py` `_batch_insert_new_entities`: extract
+  `sf_id` from `normalized["Id"]` instead of hardcoded NULL,
+  activating the schema's UNIQUE index as defense-in-depth.
+- `materialize.py` `SALESFORCE_NULL_ID = "000000000000000AAA"`:
+  Salesforce's placeholder Id for non-customizable metadata
+  (uncustomized SVSes return this). Filtered to NULL at
+  insert so these rows stay outside the partial UNIQUE index
+  — the index defends entities with real SF Ids only.
+- `engine.py` `_mark_sync_run_structural_complete`: after
+  marking the phase transition, advance readiness
+  (`apply_org_status` + `maybe_finalize_run`) for every org
+  in the tenant whose `sync_run` is still `'running'`. D-030's
+  touch path can shift queue-row attribution across orgs;
+  without this loop, an earlier sync's run stays `'running'`
+  indefinitely once its entities are re-attributed away.
+  Single-org case: one iteration, behaviorally identical to
+  pre-§26. Multi-org case: closes the cross-org sync_run
+  finalization gap (which is the §24 "old run stays running"
+  documented limit, now resolved here for the cross-org
+  case).
+
+Cross-org sync_run finalization fix bundled (discovered during
+live verification, scenario 3): the multi-org variant captures
+both the current sync's org and any siblings whose attribution
+shifted. Behaviorally identical in single-org world (one
+running, one iteration).
+
+phases.py + readiness.py review: 8 + 4 sites filtering by
+`last_synced_from_org_id = :org_id`, all classification (a)
+harmless (HOLD #A). The touch path's mutation propagates the
+current org's id forward, so downstream queries that filter
+by "this org's entities" continue to return the correct set
+during the active sync.
+
+Verified via §25 scenario 3 with prescriptive assertions
+post-fix:
+
+- Org A: ai_enrichment_status=complete, phase=done,
+  status=success, entities_inserted=5865, entities_unchanged=0
+- Org B: ai_enrichment_status=complete, phase=done,
+  status=success, entities_inserted=0, entities_unchanged=5865
+- Total active entities = 5865 (single canonical model — not
+  2× per pre-§26 behavior)
+- Entity attribution: org A=0, org B=5865 (touch path mutated
+  to most-recently-synced)
+- Queue rows: 5928, all attributed via org B's entities, zero
+  orphans
+
+Wall-clock §26 closure run: 29:14 (under estimate). Cost
+$0.033151 Anthropic ($0.005865 Flow + $0.027286 VR; 50/50 VR
+OK with no rate_limited retries this attempt), Voyage 46
+batches at logged $0.
+
+PARKING_LOT P-015 ("D-030 multi-org shared-model
+reconciliation") is fully closed by this commit, not parked.
+Other entries (P-010 through P-014, P-016) carry forward as
+planned.
+
+Cross-references: D-030 (locked); §23 enrichment worker; §24
+feature readiness signaling (whose cross-org finalization gap
+is closed here); §25 e2e scenarios (whose scenario 3 surfaced
+the divergence); P-016 (`_starter_defaults` rate-limit
+tightness, separate carry-forward).
+

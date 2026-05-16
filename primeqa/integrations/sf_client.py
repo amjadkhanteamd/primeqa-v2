@@ -33,6 +33,7 @@ Connection management: implements context-manager protocol
 """
 from __future__ import annotations
 
+import logging
 import time
 import urllib.parse
 from typing import Any, Iterable
@@ -48,10 +49,74 @@ from .exceptions import (
 from .sf_constants import STANDARD_VALUE_SET_LABELS
 
 
+# ----------------------------------------------------------------------
+# Module-level helpers (no client instance needed)
+# ----------------------------------------------------------------------
+
+
+def extract_picklist_value_payloads_from_metadata(
+    parent_external_id: str,
+    metadata: dict,
+    value_list_key: str,
+) -> list[dict]:
+    """Extract per-value payloads from a value-set Metadata sub-tree.
+
+    A GlobalValueSet record's Metadata contains a `customValue` list;
+    a StandardValueSet record's Metadata contains a `standardValue`
+    list. Both lists hold value dicts with `valueName`, `label`,
+    `isActive`, etc. Used by `phase_picklist_value` to construct PV
+    payloads from either a fresh fetch or `ctx.svs_metadata_cache`
+    (the §9 fix that eliminates SVS Metadata refetch).
+
+    Each yielded payload carries two sync-layer markers required
+    downstream:
+      `_parent_external_id`  — parent PicklistValueSet external_id
+        (SVS:-prefixed for StandardValueSet sources per the §8
+        addendum collision-avoidance contract)
+      `_sort_order`          — value's index in the parent list
+        (Salesforce returns values in display order; no explicit
+        sortOrder field on the value record itself)
+
+    Skips entries that are not dicts (defensive) or are missing
+    `valueName` (placeholder/blank entries the Metadata API
+    occasionally emits — their external_id would be malformed
+    and the detail mapper would fail).
+
+    Args:
+        parent_external_id: PVS external_id, e.g.,
+            'SVS:AccountSource' or 'MyOrg__MyGVS'.
+        metadata: the Metadata sub-tree of a GVS/SVS record
+            (already-extracted; not the full record). Pass
+            `record.get('Metadata') or {}` from the caller.
+        value_list_key: 'customValue' for GVS, 'standardValue'
+            for SVS.
+
+    Returns:
+        list of payload dicts ready for batched_materialize as
+        the PicklistValue raw_payloads input. Empty list if the
+        list_key isn't present or its value is None.
+    """
+    payloads: list[dict] = []
+    values = metadata.get(value_list_key) or []
+    for idx, v in enumerate(values):
+        if not isinstance(v, dict):
+            continue
+        if not v.get("valueName"):
+            continue
+        payloads.append({
+            **v,
+            "_parent_external_id": parent_external_id,
+            "_sort_order": idx,
+        })
+    return payloads
+
+
 SF_API_VERSION = "v66.0"  # Salesforce Spring '26; rotate ~quarterly
 TRANSIENT_STATUS_CODES = {429, 502, 503, 504}
 MAX_RETRIES = 3
 RETRY_BACKOFF_SEQ: tuple[float, ...] = (1.0, 2.0, 4.0)  # seconds
+
+logger = logging.getLogger(__name__)
 
 
 class SalesforceClient:
@@ -142,6 +207,7 @@ class SalesforceClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
         _refresh_attempted: bool = False,
         _retry_count: int = 0,
     ) -> httpx.Response:
@@ -151,12 +217,19 @@ class SalesforceClient:
         - Transient (429, 5xx) → retry with backoff up to MAX_RETRIES.
         - Persistent 429 → SFRateLimitError.
         - Other 4xx/5xx → SFRequestError.
+
+        json: optional dict body for POST/PATCH requests. httpx
+        serializes with the standard JSON encoder and sets the
+        Content-Type header. Used by fetch_fields_for_objects_bulk
+        for /composite/batch.
         """
         url = f"{self.instance_url}{path}"
         headers = self._authed_headers()
 
         try:
-            resp = self._client.request(method, url, headers=headers, params=params)
+            resp = self._client.request(
+                method, url, headers=headers, params=params, json=json,
+            )
         except httpx.HTTPError as e:
             raise SFRequestError(f"Network error: {e}") from e
 
@@ -170,7 +243,7 @@ class SalesforceClient:
             self._access_token = None
             self._refresh_access_token()
             return self._request(
-                method, path, params=params,
+                method, path, params=params, json=json,
                 _refresh_attempted=True, _retry_count=_retry_count,
             )
 
@@ -180,7 +253,7 @@ class SalesforceClient:
                 backoff = RETRY_BACKOFF_SEQ[min(_retry_count, len(RETRY_BACKOFF_SEQ) - 1)]
                 time.sleep(backoff)
                 return self._request(
-                    method, path, params=params,
+                    method, path, params=params, json=json,
                     _refresh_attempted=_refresh_attempted,
                     _retry_count=_retry_count + 1,
                 )
@@ -265,11 +338,101 @@ class SalesforceClient:
 
         Returns the .fields list from the per-object describe.
         Each field has: name, label, type, custom, picklistValues, etc.
+
+        For multi-Object fetches in sync workflows, prefer
+        fetch_fields_for_objects_bulk — it uses /composite/batch to
+        cut latency ~5-7× (146 sequential describes → ~6 composite
+        batches).
         """
         encoded = urllib.parse.quote(sobject_api_name, safe="")
         path = f"/services/data/{self.api_version}/sobjects/{encoded}/describe"
         resp = self._request("GET", path)
         return resp.json().get("fields", [])
+
+    def fetch_fields_for_objects_bulk(
+        self, object_api_names: list[str],
+    ) -> dict[str, list[dict]]:
+        """Bulk describe for multiple sObjects via /composite/batch.
+
+        Up to 25 sObjects per composite batch request (Salesforce
+        REST API limit; verified against documentation + live probe
+        on the dev sandbox). This helper chunks the input list and
+        issues N composite batches.
+
+        Returns dict keyed by sObject API name → list of field
+        dicts. Per-Object response shape matches
+        fetch_fields_for_object's output (describe.fields list);
+        downstream consumers can use the two methods
+        interchangeably.
+
+        Per-Object failure tolerance: if a single sObject describe
+        fails within a composite batch (e.g., 404 NOT_FOUND for an
+        Object filtered out at the source, or PERMISSION_DENIED),
+        that key is omitted from the return dict and a WARNING
+        logged. Other sObjects in the same batch return normally.
+        This matches the substrate-1 fault-tolerance discipline
+        established by fetch_standard_value_sets (corrections-log
+        §8 addendum).
+
+        Empty input is a no-op (returns {}). No HTTP calls are
+        made — defensive against callers building the list eagerly.
+
+        Sub-request URL format: `{api_version}/sobjects/{name}/describe`
+        (note: api_version already includes the 'v' prefix, so the
+        sub-request URL is e.g. 'v66.0/sobjects/Account/describe').
+        Response shape: {'hasErrors': bool, 'results': [{'statusCode':
+        int, 'result': dict|list}, ...]}. statusCode 200 → result is
+        the describe dict; non-200 → result is an error array.
+        """
+        COMPOSITE_BATCH_LIMIT = 25
+        path = f"/services/data/{self.api_version}/composite/batch"
+
+        result: dict[str, list[dict]] = {}
+        if not object_api_names:
+            return result
+
+        for chunk_start in range(0, len(object_api_names),
+                                   COMPOSITE_BATCH_LIMIT):
+            chunk = object_api_names[
+                chunk_start:chunk_start + COMPOSITE_BATCH_LIMIT
+            ]
+
+            payload = {
+                "batchRequests": [
+                    {
+                        "method": "GET",
+                        "url": (
+                            f"{self.api_version}/sobjects/"
+                            f"{urllib.parse.quote(name, safe='')}/describe"
+                        ),
+                    }
+                    for name in chunk
+                ]
+            }
+
+            resp = self._request("POST", path, json=payload)
+            body = resp.json()
+            sub_results = body.get("results") or []
+
+            for name, sub in zip(chunk, sub_results):
+                status_code = sub.get("statusCode")
+                sub_result = sub.get("result")
+                if status_code == 200 and isinstance(sub_result, dict):
+                    result[name] = sub_result.get("fields", []) or []
+                else:
+                    # Per-Object failure — log + omit from result
+                    # dict. Caller can detect missing keys via
+                    # set-difference if needed.
+                    logger.warning(
+                        "fetch_fields_for_objects_bulk: per-Object "
+                        "describe failed for %r (statusCode=%s, "
+                        "result=%s)",
+                        name, status_code,
+                        sub_result if not isinstance(sub_result, list)
+                        else sub_result[:1],
+                    )
+
+        return result
 
     def fetch_layouts_for_object(self, object_name: str) -> dict:
         """GET /services/data/{api_version}/sobjects/{name}/describe/layouts.
@@ -301,32 +464,43 @@ class SalesforceClient:
         return resp.json()
 
     def fetch_validation_rules(self) -> list[dict]:
-        """Tooling SOQL: SELECT … FROM ValidationRule, with full Metadata.
+        """Tooling SOQL: SELECT … FROM ValidationRule, with FullName + Metadata.
 
         Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
 
         Returned records carry: Id, ValidationName, Active, ErrorMessage,
-        ErrorDisplayField, Description, EntityDefinitionId, and Metadata
-        (with errorConditionFormula, etc.).
+        ErrorDisplayField, Description, EntityDefinitionId, FullName,
+        and Metadata (with errorConditionFormula, etc.).
+
+        Returns FullName as '{Object}.{ValidationName}' per Salesforce's
+        Tooling FullName convention. Use FullName for parent-Object
+        disambiguation and external_id composition.
 
         # Two-phase fetch driven by Salesforce Tooling API constraints:
-        # 1. Cannot select Metadata field on a query returning >1 row
-        #    (Salesforce-documented limit).
+        # 1. Cannot select Metadata OR FullName field on a query
+        #    returning >1 row (Salesforce-documented limit; the two
+        #    fields share this constraint per corrections-log §1).
         # 2. Cannot use EntityDefinition relationship traversal on a
         #    query returning >1000 underlying EntityDefinition rows
         #    (the EXTERNAL_OBJECT_UNSUPPORTED_EXCEPTION subquery limit).
-        # Phase 1 fetches IDs + non-Metadata fields without joining
-        # EntityDefinition (uses EntityDefinitionId direct field instead).
-        # Phase 2 fetches Metadata per-Id one row at a time.
-        # Sync layer (Phase 2 step 4) is responsible for resolving
-        # EntityDefinitionId → Object entity_id via the Object describe
-        # cache built earlier in the same sync run.
+        # Phase 1 fetches IDs + non-Metadata/non-FullName fields without
+        # joining EntityDefinition (uses EntityDefinitionId direct field
+        # instead — which is an opaque 18-char Salesforce Id, NOT the
+        # parent's QualifiedApiName).
+        # Phase 2 fetches FullName + Metadata per-Id one row at a time.
+        # FullName ('{Object}.{ValidationName}') is the canonical
+        # identifier sync uses for external_id composition and parent-
+        # Object api_name extraction (FullName.split('.', 1)[0]).
+        # Same idiom as fetch_record_types Phase 2 — Tooling FullName
+        # carries the parent api_name; sync doesn't need a separate
+        # EntityDefinition lookup.
         # TODO Phase 2 sync layer: consider throttling or batching if a
         # tenant's rule count is large enough to hit API rate limits.
         """
         path = f"/services/data/{self.api_version}/tooling/query/"
 
-        # Phase 1: bulk fetch all rules without Metadata, no EntityDefinition join.
+        # Phase 1: bulk fetch all rules without Metadata/FullName,
+        # no EntityDefinition join.
         phase1_soql = (
             "SELECT Id, ValidationName, Active, ErrorMessage, "
             "ErrorDisplayField, Description, EntityDefinitionId "
@@ -334,17 +508,20 @@ class SalesforceClient:
         )
         records: list[dict] = self._query_all(path, phase1_soql)
 
-        # Phase 2: per-Id Metadata fetch (Salesforce constraint: 1 row max
-        # when selecting Metadata).
+        # Phase 2: per-Id FullName + Metadata fetch (Salesforce
+        # constraint: 1 row max when selecting either field — both
+        # safe in the same 1-row query).
         for rec in records:
             rec_id = rec.get("Id")
             if not rec_id:
                 continue
             phase2_soql = (
-                f"SELECT Id, Metadata FROM ValidationRule WHERE Id = '{rec_id}'"
+                f"SELECT Id, FullName, Metadata FROM ValidationRule "
+                f"WHERE Id = '{rec_id}'"
             )
             phase2_records = self._query_all(path, phase2_soql)
             if phase2_records:
+                rec["FullName"] = phase2_records[0].get("FullName")
                 rec["Metadata"] = phase2_records[0].get("Metadata")
 
         return records
@@ -401,6 +578,131 @@ class SalesforceClient:
                 rec["Metadata"] = phase2_records[0].get("Metadata")
 
         return records
+
+    def fetch_custom_field_id_map(self) -> dict[tuple[str, str], str]:
+        """Tooling SOQL: build a (object api name, field api name) → CustomField Id map.
+
+        Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
+
+        REST sObject describe — the source phase_field uses to enumerate
+        fields — does NOT expose the Tooling CustomField Id. To fetch a
+        custom picklist field's value-set reference (see
+        fetch_custom_field_metadata) the sync layer must first resolve
+        each describe field to its CustomField Id. This helper provides
+        that lookup as a single bulk query.
+
+        SOQL: SELECT Id, DeveloperName, NamespacePrefix,
+              EntityDefinition.QualifiedApiName FROM CustomField
+
+        The EntityDefinition relationship traversal works here because
+        CustomField → EntityDefinition is a single-hop parent reference
+        (not the >1000-row subquery shape that fetch_validation_rules
+        avoids); live-probed against the dev sandbox.
+
+        Key construction:
+          object api name ← EntityDefinition.QualifiedApiName
+                            (e.g. 'Account', 'sfcma__Subscription__c')
+          field api name  ← f"{NamespacePrefix}__{DeveloperName}__c" when
+                            NamespacePrefix is set, else f"{DeveloperName}__c"
+                            — reconstructs the fully-qualified API name as
+                            it appears in REST describe's field['name']
+                            (live-verified: 42/42 match on
+                            sfcma__Subscription__c).
+
+        Rows whose EntityDefinition is null (orphaned / inaccessible) or
+        whose DeveloperName is missing are skipped — they can't be joined
+        to a describe field anyway.
+
+        Returns dict keyed by (object_api_name, field_api_name) → CustomField
+        Id (the 18-char '00N…' Tooling Id). Empty org → {}.
+        """
+        path = f"/services/data/{self.api_version}/tooling/query/"
+        soql = (
+            "SELECT Id, DeveloperName, NamespacePrefix, "
+            "EntityDefinition.QualifiedApiName FROM CustomField"
+        )
+        records = self._query_all(path, soql)
+
+        id_map: dict[tuple[str, str], str] = {}
+        for rec in records:
+            cf_id = rec.get("Id")
+            developer_name = rec.get("DeveloperName")
+            entity_def = rec.get("EntityDefinition") or {}
+            object_api_name = entity_def.get("QualifiedApiName")
+            if not cf_id or not developer_name or not object_api_name:
+                # Orphaned / inaccessible CustomField row — can't be
+                # joined to a describe field, so it's not useful here.
+                continue
+            namespace = rec.get("NamespacePrefix")
+            if namespace:
+                field_api_name = f"{namespace}__{developer_name}__c"
+            else:
+                field_api_name = f"{developer_name}__c"
+            id_map[(object_api_name, field_api_name)] = cf_id
+
+        return id_map
+
+    def fetch_custom_field_metadata(
+        self, field_ids: list[str],
+    ) -> dict[str, dict]:
+        """Tooling SOQL: per-Id Metadata fetch for CustomFields.
+
+        Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
+
+        Returns dict keyed by CustomField Id → that field's Metadata
+        payload. For picklist-typed fields, Metadata.valueSet has the
+        shape:
+          {valueSetName: str | None,   # GVS FullName when GVS-backed,
+                                       # None for an inline value set
+           restricted: bool,
+           valueSetDefinition: {value: [...]} | None,  # inline values
+           controllingField: str | None,
+           valueSettings: [...]}
+        Non-picklist fields have Metadata.valueSet = None.
+
+        Per the corrections-log §1 one-row-per-Tooling-Metadata
+        constraint, fetched sequentially one Id at a time — same idiom
+        as fetch_validation_rules / fetch_record_types Phase 2. Bulk
+        paths were live-probed and rejected:
+          - Bulk SOQL (Id, FullName, Metadata) → HTTP 400 (the §1
+            constraint)
+          - /composite/batch with Tooling sub-requests → HTTP 200 but
+            silently nulls FullName + Metadata
+        Per-Id direct query is the only working approach.
+
+        Caller is expected to filter field_ids to picklist-typed
+        fields (via the REST describe field['type']) before calling, so
+        the sequential fetch only runs for fields whose valueSet is
+        meaningful — avoids ~90% wasted round trips on non-picklist
+        custom fields whose valueSet would be None.
+
+        Per-field failure tolerance: an SFRequestError on one Id logs a
+        WARNING and is skipped; other Ids return normally. Empty input
+        is a no-op (returns {}, no HTTP calls).
+        """
+        result: dict[str, dict] = {}
+        if not field_ids:
+            return result
+
+        path = f"/services/data/{self.api_version}/tooling/query/"
+        for field_id in field_ids:
+            soql = (
+                f"SELECT Id, FullName, Metadata FROM CustomField "
+                f"WHERE Id = '{field_id}'"
+            )
+            try:
+                records = self._query_all(path, soql)
+            except SFRequestError as e:
+                logger.warning(
+                    "fetch_custom_field_metadata: failed for %s: %s",
+                    field_id, e,
+                )
+                # Per-field tolerance — continue with the rest.
+                continue
+            if records:
+                result[field_id] = records[0].get("Metadata") or {}
+
+        return result
 
     def fetch_global_value_sets(self) -> list[dict]:
         """Tooling SOQL: SELECT … FROM GlobalValueSet, with FullName + Metadata.
@@ -485,6 +787,26 @@ class SalesforceClient:
         #
         # Sync layer materializes child PicklistValue entities from
         # Metadata.standardValue per D-037 entity ordering.
+        #
+        # Per-label fault tolerance: the canonical catalog
+        # (sf_constants.STANDARD_VALUE_SET_LABELS) spans 616 entries
+        # pinned to v66.0 across all industry clouds. Many catalog
+        # entries are industry-cloud-specific (Health, Financial
+        # Services, Public Sector, ...) and return HTTP 500 in orgs
+        # where the corresponding cloud is not enabled. Per
+        # corrections-log §6 (Salesforce metadata APIs are
+        # asymmetric, category 3): the canonical catalog is
+        # complete-by-publication, the runtime queryability per
+        # org is incomplete-by-design.
+        #
+        # An empirical sandbox probe shows ~32% of labels return
+        # HTTP 500 on an org with no industry clouds enabled. A
+        # single label's failure must not abort the iteration —
+        # otherwise the consumer (sync layer) gets zero SVS rows
+        # rather than the subset the org actually supports.
+        # SFAuthError + SFRateLimitError remain uncaught — those
+        # signal infrastructure/quota issues that should still
+        # abort the iteration.
         """
         path = f"/services/data/{self.api_version}/tooling/query/"
         target_labels: tuple[str, ...] | tuple[str, ...]
@@ -494,6 +816,7 @@ class SalesforceClient:
             target_labels = tuple(labels)
 
         results: list[dict] = []
+        skipped: list[tuple[str, int | None]] = []
         for label in target_labels:
             # Defensive escape: SOQL string literals escape apostrophes
             # with backslash. None of the canonical catalog labels contain
@@ -505,10 +828,26 @@ class SalesforceClient:
                 "FROM StandardValueSet "
                 f"WHERE MasterLabel = '{escaped_label}'"
             )
-            recs = self._query_all(path, soql)
+            try:
+                recs = self._query_all(path, soql)
+            except SFRequestError as e:
+                # Catalog gap for this org (industry-cloud SVS not
+                # enabled, or sandbox-specific runtime hiccup).
+                # Informational — corrections-log §6 category 3.
+                skipped.append((label, e.status_code))
+                continue
             if recs:
                 results.append(recs[0])
 
+        if skipped:
+            logger.info(
+                "fetch_standard_value_sets skipped %d/%d catalog "
+                "labels (per-label SFRequestError). First-5 "
+                "samples: %s",
+                len(skipped),
+                len(target_labels),
+                skipped[:5],
+            )
         return results
 
     def fetch_profiles(self) -> list[dict]:
@@ -564,14 +903,16 @@ class SalesforceClient:
         return records
 
     def fetch_permission_sets(self) -> dict:
-        """Tooling SOQL × 1 (parent) + Data SOQL × 2 (children) — full
-        Category 4 fetch for PermissionSet.
+        """Tooling SOQL × 1 (parent) + Data SOQL × 4 (children + licenses
+        + PSG components) — full Category 4 fetch for PermissionSet.
 
         Returns:
             {
-                "permission_sets": list[dict],     # parent rows
-                "object_permissions": list[dict],  # child grants, ParentId-joined
-                "field_permissions": list[dict],   # child grants, ParentId-joined
+                "permission_sets":      list[dict],     # parent rows
+                "object_permissions":   list[dict],     # child grants, ParentId-joined
+                "field_permissions":    list[dict],     # child grants, ParentId-joined
+                "psg_components":       list[dict],     # PSG → member PS join rows
+                "license_id_to_label":  dict[str, str], # LicenseId → MasterLabel
             }
 
         # Category 4 pattern (corrections-log §5). PermissionSet has no
@@ -580,26 +921,41 @@ class SalesforceClient:
         # ObjectPermissions and FieldPermissions child entities.
         #
         # ENDPOINT ASYMMETRY: PermissionSet is queryable via both Tooling
-        # API and Data API. ObjectPermissions and FieldPermissions are
-        # Data-API-only — the Tooling API rejects them with INVALID_TYPE.
-        # We use Tooling for the parent query (FIELDS(STANDARD) is a
-        # Tooling-API SOQL feature giving us all 408 columns in one
-        # statement) and Data API for the two child queries. Same OAuth
-        # token, same retry plumbing; only the URL path differs.
+        # API and Data API. ObjectPermissions, FieldPermissions, and
+        # PermissionSetGroupComponent are Data-API-only — the Tooling API
+        # rejects them with INVALID_TYPE. PermissionSetLicense is also
+        # Data-API-only. We use Tooling for the parent query (FIELDS(STANDARD)
+        # is a Tooling-API SOQL feature giving us all 408 columns in one
+        # statement) and Data API for everything else. Same OAuth token,
+        # same retry plumbing; only the URL path differs.
         #
-        # Three queries fetch the full picture. Sync layer joins children
-        # to parents via ParentId.
+        # Five queries fetch the full picture. Sync layer joins children to
+        # parents via ParentId, joins PSGs to member PSes via the
+        # PermissionSetGroupComponent rows, and resolves LicenseId to
+        # MasterLabel via license_id_to_label.
         #
-        # Returns dict with three keys (permission_sets, object_permissions,
-        # field_permissions) rather than a flat list to make the structural
-        # asymmetry from Category 2 entities explicit at the API surface.
-        # Matches fetch_layouts_for_object's structured-dict precedent.
+        # Returns a dict (5 keys) rather than a flat list to make the
+        # structural asymmetry from Category 2 entities explicit at the
+        # API surface. Matches fetch_layouts_for_object's structured-dict
+        # precedent.
         #
         # Sandbox at 71 PermissionSet rows; 18 of those are Type='Profile'
         # auto-synthetic duplicates of the Profile rows (corrections-log
         # §5 Category 4 note). Sync layer filters Type='Profile' to avoid
         # duplication; fetch returns them per transparent-transport-
         # boundary principle.
+        #
+        # Sandbox PSG count: 2 (Type='Group' PermissionSets:
+        # ScaleCenterUsers, SalesWorkspacePSG). PermissionSetGroupComponent
+        # rows join PSGs to their member PSes — N rows per PSG (typically
+        # 2-10 members).
+        #
+        # PermissionSetLicense query is fault-tolerant: if the org doesn't
+        # grant query access to PermissionSetLicense (rare but defensible
+        # for tightly-scoped integration users), the query catches
+        # SFRequestError and returns an empty map. Downstream mapper falls
+        # back to a "(no license)" sentinel — preserves NOT NULL constraint
+        # without aborting the entire sync.
         """
         tooling_path = f"/services/data/{self.api_version}/tooling/query/"
         data_path = f"/services/data/{self.api_version}/query/"
@@ -627,31 +983,118 @@ class SalesforceClient:
         )
         field_permissions = self._query_all(data_path, fp_soql)
 
+        # Query 4: PermissionSetGroupComponent — Data API. Joins a
+        # parent PSG (PermissionSetGroupId) to a member PS
+        # (PermissionSetId). Source for INHERITS_PERMISSION_SET edges.
+        psg_soql = (
+            "SELECT Id, PermissionSetGroupId, PermissionSetId "
+            "FROM PermissionSetGroupComponent"
+        )
+        try:
+            psg_components = self._query_all(data_path, psg_soql)
+        except SFRequestError as e:
+            # Org has no PSG access (rare but possible on legacy orgs
+            # without PSG feature enabled). Log + return empty —
+            # INHERITS edges become 0; sync continues.
+            logger.warning(
+                "fetch_permission_sets: PermissionSetGroupComponent "
+                "query failed (%s); INHERITS_PERMISSION_SET edges "
+                "will be empty this sync.", e,
+            )
+            psg_components = []
+
+        # Query 5: PermissionSetLicense — Data API. Builds Id →
+        # MasterLabel map so the sync layer can populate
+        # permission_set_details.license_type with the human-readable
+        # license name (NOT NULL no-default column).
+        license_soql = "SELECT Id, MasterLabel FROM PermissionSetLicense"
+        license_id_to_label: dict[str, str] = {}
+        try:
+            license_rows = self._query_all(data_path, license_soql)
+            for row in license_rows:
+                lid = row.get("Id")
+                label = row.get("MasterLabel")
+                if lid and label:
+                    license_id_to_label[lid] = label
+        except SFRequestError as e:
+            # Per-query failure tolerance: if PermissionSetLicense
+            # is inaccessible, return empty map. Downstream mapper
+            # falls back to a "(no license)" sentinel — keeps NOT
+            # NULL constraint satisfied without aborting the sync.
+            logger.warning(
+                "fetch_permission_sets: PermissionSetLicense query "
+                "failed (%s); license_type will fall back to "
+                "'(no license)' sentinel.", e,
+            )
+
         return {
             "permission_sets": permission_sets,
             "object_permissions": object_permissions,
             "field_permissions": field_permissions,
+            "psg_components": psg_components,
+            "license_id_to_label": license_id_to_label,
         }
 
-    def fetch_users(self) -> list[dict]:
-        """Fetch all User records via Data API SOQL with a deliberately-
-        scoped 12-field SELECT.
+    def fetch_users(self) -> dict:
+        """Fetch User records + PermissionSetAssignment rows.
+        Category 4 multi-query fetch for User entity (2 SOQLs).
 
-        Category 1 single-phase pattern (corrections-log §5): User has
-        no Metadata complexvalue and no two-phase fetch requirement.
-        Single SOQL returns all data needed.
+        Returns:
+            {
+                "users":                       list[dict],
+                "permission_set_assignments":  list[dict],     # all PSAs
+            }
 
+        Two SOQL queries. The Id → external_id resolution maps for
+        Profile and PermissionSet (needed for HAS_PROFILE and
+        HAS_PERMISSION_SET edge target resolution) are built by
+        phase_user from the entities table, NOT from SOQL — both
+        Profile and PermissionSet entities are materialized BEFORE
+        User per ENTITY_ORDER, so the entities table is the
+        authoritative source of truth for external_ids. Building
+        the maps from the DB sidesteps a Salesforce SOQL
+        asymmetry: `SELECT Name FROM Profile` returns display
+        names (e.g., 'System Administrator') that differ from
+        Tooling `Profile.FullName` (e.g., 'Admin'); Profile
+        entities use FullName as external_id, so a Data-API map
+        would mis-resolve.
+
+        Originally the User cycle's spec called for the maps to
+        come from fetch_users (matching the precedent set by
+        fetch_permission_sets' license_id_to_label). The
+        Tooling-vs-Data API name asymmetry on Profile (caught
+        during live verification) forced the redesign — building
+        the maps from the entities table is both correct AND
+        simpler (fewer SOQL hops in fetch_users).
+        1. SELECT … FROM User (12-field identity + role context)
+        2. SELECT … FROM PermissionSetAssignment WHERE
+           PermissionSetGroupId = NULL (direct PS assignments only;
+           PSG-derived assignments resolve via
+           INHERITS_PERMISSION_SET edges from the PermissionSet
+           cycle's PSG decoration).
+        3. SELECT Id, Name FROM Profile (Id→Name map for the
+           User.ProfileId resolution that user_details.profile_entity_id
+           NOT NULL FK requires)
+
+        # Category 1 originally (single SOQL); extended to Category 4
+        # for the User cycle (corrections-log §5) — PermissionSetAssignment
+        # data is needed for HAS_PERMISSION_SET edges (TIER_1_EDGES
+        # property-bearing edge from User → PermissionSet); profile_id_to_name
+        # is needed for user_details.profile_entity_id resolution
+        # (Profile entities use Name as external_id but User has only
+        # ProfileId).
+        #
         # ENDPOINT: Data API (/services/data/{v}/query/), not Tooling.
-        # User is a standard sObject, not a Tooling-API entity. First
-        # non-Tooling fetch method on this client. Uses the data_path
-        # pattern established by fetch_permission_sets.
+        # User is a standard sObject; PermissionSetAssignment is also
+        # Data-API-only; Profile is queryable on the Data API too.
+        # All three queries hit the same endpoint.
         #
-        # PAGINATION: _query_all walks any paginated response. Sandbox
-        # at 6 users (single page). Customer orgs commonly have hundreds
-        # to low thousands of users; pagination engages on orgs with
-        # >2000.
+        # PAGINATION: _query_all walks any paginated response.
+        # Sandbox at 6 users, 5 PSAs, 18 profiles (all single page).
+        # Customer orgs commonly have hundreds to low thousands of
+        # users and PSAs; pagination engages on larger orgs.
         #
-        # FIELD SCOPE — 12 fields, deliberately limited:
+        # USER FIELD SCOPE — 12 fields, deliberately limited:
         # - Identity: Id, Username, Email, Name, Alias
         # - Status/role: IsActive, UserType, ProfileId, UserRoleId
         # - Audit timestamps: CreatedDate, LastModifiedDate, LastLoginDate
@@ -673,30 +1116,104 @@ class SalesforceClient:
         # User.ProfileId → Profile.UserLicenseId join. fetch_profiles
         # (Method 4) already pulls UserLicenseId via Profile.Metadata.
         #
-        # NO FETCH-TIME FILTERING: returns all User rows regardless of
-        # IsActive or UserType. Sync layer filters per its policy
-        # (e.g., excluding platform synthetics like AutomatedProcess /
-        # CloudIntegrationUser / CsnOnly, or excluding inactive
-        # historical users). Per transparent-transport-boundary
+        # PSA FIELD SCOPE — 7 fields. PermissionSet.Name is fetched
+        # via SOQL related-query syntax (psa['PermissionSet']['Name']
+        # in the response) so the sync layer can resolve PSA →
+        # PermissionSet entity without a separate join query. PSG-
+        # derived assignments (where PermissionSetGroupId is non-NULL)
+        # are FILTERED at the WHERE clause — those memberships are
+        # already captured via INHERITS_PERMISSION_SET edges from
+        # PSGs in the PermissionSet cycle.
+        #
+        # PROFILE FIELD SCOPE — Id + Name only. Just enough for
+        # the Id→Name resolution map; everything else is in
+        # fetch_profiles (Method 4) which the Profile phase already
+        # consumed. We don't piggyback the full Profile.Metadata
+        # here — small focused query, predictable performance.
+        #
+        # NO FETCH-TIME FILTERING on Users: returns all User rows
+        # regardless of IsActive or UserType. Sync layer filters
+        # per its policy. Per transparent-transport-boundary
         # principle.
         #
-        # Sandbox composition (developer org, 2026-05-08):
+        # PSA QUERY FAILURE TOLERANCE: if PermissionSetAssignment
+        # is inaccessible to the integration user (rare; PSAs are
+        # widely-readable), the fetcher logs a warning and returns
+        # an empty list. HAS_PERMISSION_SET edges become 0 for the
+        # sync; User entities still materialize via the User query.
+        #
+        # PROFILE QUERY FAILURE INTOLERANT: user_details.profile_entity_id
+        # is NOT NULL no-default. If the Profile Id→Name map is
+        # empty, every User materialization fails downstream at the
+        # FK resolution. Fail-loud here is the right semantic
+        # (the User cycle pre-requires Profile cycle).
+        #
+        # Sandbox composition (developer org, 2026-05-13):
         # - 6 total users (1 page)
         # - UserType: 3 Standard, 1 AutomatedProcess,
         #   1 CloudIntegrationUser, 1 CsnOnly
         # - IsActive: 5 active, 1 inactive
         # - 4 distinct ProfileIds (some shared)
-        # - UserRoleId universally null (roles undefined; typical for
-        #   developer sandboxes)
+        # - 5 PSAs (all direct; PermissionSetGroupId all NULL in this
+        #   sandbox)
         """
         data_path = f"/services/data/{self.api_version}/query/"
-        soql = (
+
+        # Query 1: User parent rows (existing 12-field scope)
+        user_soql = (
             "SELECT Id, Username, Email, Name, Alias, "
             "IsActive, UserType, ProfileId, UserRoleId, "
             "CreatedDate, LastModifiedDate, LastLoginDate "
             "FROM User"
         )
-        return self._query_all(data_path, soql)
+        users = self._query_all(data_path, user_soql)
+
+        # Query 2: PermissionSetAssignment.
+        #
+        # FIELD SCOPE — 6 fields. Audit fields (CreatedById,
+        # CreatedDate) are RESTRICTED on PSA in some org/version
+        # combinations (Tooling SOQL access required for them in
+        # v66.0+ unless the integration user has "View Setup and
+        # Configuration"). We use SystemModstamp as a close-enough
+        # proxy for `assigned_at` (PSAs rarely get post-creation
+        # updates), and accept that
+        # HasPermissionSetProperties.assigned_by_user_entity_id is
+        # permanently None for v1 (no CreatedById means the
+        # two-pass assigner resolution in phase_user has nothing
+        # to resolve). Future cycle could switch this query to
+        # the Tooling endpoint to recover audit fields.
+        #
+        # PSG-DERIVED FILTERING happens in PYTHON (in phase_user),
+        # not via a SOQL WHERE clause — the `WHERE
+        # PermissionSetGroupId = NULL` syntax surfaces an HTTP 400
+        # in this org's SOQL implementation. Python-side filter
+        # is simple and version-stable.
+        #
+        # PERMISSION_SET.NAME via RELATED-QUERY also surfaced HTTP
+        # 400 in this org. We instead populate a separate PS
+        # Id→Name map (query 3 below) and resolve in phase_user.
+        psa_soql = (
+            "SELECT Id, AssigneeId, PermissionSetId, "
+            "PermissionSetGroupId, ExpirationDate, "
+            "SystemModstamp "
+            "FROM PermissionSetAssignment"
+        )
+        try:
+            permission_set_assignments = self._query_all(
+                data_path, psa_soql,
+            )
+        except SFRequestError as e:
+            logger.warning(
+                "fetch_users: PermissionSetAssignment query failed "
+                "(%s); HAS_PERMISSION_SET edges will be empty for "
+                "this sync.", e,
+            )
+            permission_set_assignments = []
+
+        return {
+            "users": users,
+            "permission_set_assignments": permission_set_assignments,
+        }
 
     def fetch_flow_definitions(self) -> list[dict]:
         """Tooling SOQL: SELECT … FROM FlowDefinition, with FullName + Metadata.
@@ -889,5 +1406,55 @@ class SalesforceClient:
             "SELECT Id, Name, EntityDefinitionId, NamespacePrefix, "
             "ManageableState, LayoutType "
             "FROM Layout"
+        )
+        return self._query_all(path, soql)
+
+    def fetch_profile_layouts(self) -> list[dict]:
+        """Tooling SOQL: SELECT … FROM ProfileLayout. Bulk, single-phase.
+
+        Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
+
+        Returned records carry: Id, ProfileId, LayoutId, RecordTypeId.
+        RecordTypeId may be NULL — those rows are Profile→Layout
+        assignments with no explicit RecordType (the layout a Profile
+        sees by default when no record type applies). The sync layer
+        scopes ASSIGNED_TO_PROFILE_RECORDTYPE edges to RT-bound
+        assignments only (corrections-log §16 resolution), so NULL-RT
+        rows are filtered there — but the fetch returns them verbatim
+        per the transparent-transport-boundary principle.
+
+        # ProfileLayout is the canonical Salesforce source for
+        # per-(Profile, Layout, RecordType) assignments. Discovered
+        # during the §16-resolution cycle: the originally-anticipated
+        # sources don't expose this data —
+        # - REST describe/layouts (fetch_layouts_for_object) returns
+        #   recordTypeMappings (RecordType ↔ Layout) but carries no
+        #   Profile reference at all.
+        # - Tooling Profile.Metadata (fetch_profiles) OMITS
+        #   layoutAssignments — it's a Metadata-API-retrieve-only
+        #   field; the Tooling API's Profile.Metadata exposes
+        #   recordTypeVisibilities / applicationVisibilities /
+        #   tabVisibilities / pageAccesses but not layoutAssignments.
+        #
+        # ProfileLayout is a Tooling-only sObject — the Data API
+        # rejects it (HTTP 400, verified live). Bulk-queryable in a
+        # single SOQL; NO per-Profile iteration needed. _query_all
+        # walks the 2000-row pagination boundary.
+        #
+        # Sandbox at ~3,131 ProfileLayout rows (18 profiles ×
+        # ~174 layouts). Customer orgs scale by profile count ×
+        # layout count; large orgs (100 profiles × 500 layouts)
+        # could see ~50K rows — sizeable but a single paginated
+        # bulk query, well within sync budget.
+        #
+        # Substrate-1 fetcher enhancement, parallel to prior cycles'
+        # P5 (VR FullName). The Layout phase consumes these rows to
+        # populate ASSIGNED_TO_PROFILE_RECORDTYPE edges (Layout →
+        # Profile, property-bearing with RecordType info).
+        """
+        path = f"/services/data/{self.api_version}/tooling/query/"
+        soql = (
+            "SELECT Id, ProfileId, LayoutId, RecordTypeId "
+            "FROM ProfileLayout"
         )
         return self._query_all(path, soql)

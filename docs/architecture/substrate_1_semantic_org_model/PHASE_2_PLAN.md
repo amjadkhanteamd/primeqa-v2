@@ -1,5 +1,21 @@
 # PHASE_2_PLAN.md — Substrate 1, Phase 2
 
+> **Status:** Locked planning artifact. Captures the plan as approved
+> at the start of Phase 2 (Substrate 1 sync). Implementation choices
+> that diverged from this plan are tracked in
+> `PHASE_2_PLAN_corrections.md` (§1 through §23).
+>
+> Notable divergences from the original plan:
+> - Embedding provider: D-049 (Voyage AI `voyage-3` / 1024 dim)
+>   superseded the planning-time choice (OpenAI
+>   `text-embedding-3-small` / 1536 dim). See
+>   corrections-log §23.
+> - Various per-cycle scope refinements (§1 through §22).
+>
+> Read this document as a historical snapshot of the plan.
+> For current state of Substrate 1 sync: SPEC.md +
+> PHASE_2_PLAN_corrections.md + DECISIONS_LOG.
+
 **Project:** PrimeQA v2, Substrate 1 (Semantic Org Model)
 **Phase:** 2 — Sync engine + AI retrieval primitives + materialized view
 **Branch:** `phase-2-substrate-1` (to be created from `main` at the latest commit)

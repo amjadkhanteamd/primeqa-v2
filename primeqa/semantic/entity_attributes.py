@@ -147,7 +147,7 @@ class RecordTypeAttributes(_EntityAttributes):
 
     RecordType has unusually little hot metadata; most of its semantic
     weight lives in outgoing edges (CONSTRAINS_PICKLIST_VALUES to
-    PicklistValueSets, ASSIGNED_TO_PROFILE_RECORDTYPE to Profiles).
+    PicklistValues, ASSIGNED_TO_PROFILE_RECORDTYPE to Profiles).
     The JSONB stays sparse on purpose.
 
     business_process_id is populated only for RecordTypes attached to

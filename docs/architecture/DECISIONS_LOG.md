@@ -1184,4 +1184,90 @@ The `is_seed_source` flag itself was removed when sync architecture simplified t
 
 ---
 
+## D-049 — Embedding provider: Voyage AI `voyage-3` via raw httpx, 1024 dim
+
+**Status:** Locked
+**Date:** 2026-05-14
+**Phase:** 2 (§23 enrichment-worker cycle)
+**Supersedes:** the informal "D-043" — OpenAI `text-embedding-3-small` @ 1536 dim, never formally ratified, only ever a parenthetical "currently…" in `PRIMEQA_PRODUCT_DEFINITION.md`.
+
+**Decision.** The §23 enrichment worker generates embeddings via the Voyage AI API — model `voyage-3`, 1024 dimensions — over raw `httpx` HTTP calls. No vendor SDK; the client (`primeqa/intelligence/embeddings.py`) matches the `sf_client.py` pattern. The API key is read from the `VOYAGE_API_KEY` environment variable. `entities.embedding` and the detail-table `summary_embedding` columns are sized `vector(1024)` (migration `20260514_0010`, down from the 1536 the never-ratified OpenAI choice implied).
+
+**Rationale.**
+
+1. **Environment portability — the deciding factor.** A local `sentence-transformers` model (the highest-quality, zero-API-cost option) is not installable on the Intel-macOS dev box: PyTorch dropped x86_64-macOS wheels after `torch 2.2.2`, and `torch 2.2.2` is itself incompatible with the project's NumPy 2.x and `transformers` 5.x. An HTTP embedding API runs *identically* on the Intel-Mac dev box, on Linux/Railway production, and in CI — preserving the "what you verify locally is what ships" parity (CLAUDE.md working agreement) that a local PyTorch model would break on this hardware.
+
+2. **Quality.** `voyage-3` is competitive with state-of-the-art retrieval embedding models on public benchmarks, and Voyage is Anthropic's recommended embedding partner — a coherent pairing with the Anthropic LLM gateway already in production.
+
+3. **Operational simplicity.** No ~1 GB model weights to ship, no PyTorch dependency, no ~2 GB worker memory footprint, no GPU question. The worker container stays small. Raw `httpx` (already a dependency) — no SDK to track.
+
+4. **Cost.** Negligible at the scale we expect — a ~5,900-entity sandbox sync embeds for roughly $0.02; a 50K-entity org for ~$1-2 per full sync. Embeddings remain "sub-cent per entity."
+
+**Alternatives considered.**
+
+- *OpenAI `text-embedding-3-small`* (the informal D-043) — needs a vendor account unrelated to the Anthropic ecosystem, and the project has no per-tenant LLM-credential storage to hold the key.
+- *Local `sentence-transformers` + Snowflake `arctic-embed-l-v2.0`* — best quality, zero external API; rejected because PyTorch wheels are unavailable on the Intel-macOS dev environment, which would break local↔prod parity.
+- *`model2vec`* (torch-free local, static embeddings) — installs cleanly everywhere, but static embeddings are a meaningful retrieval-quality step down and the dimension drops to ~256.
+- *Pinning an old PyTorch stack* (`torch 2.2.2` + `numpy<2` + `transformers<5`) — would hold production back to a 2024-era dependency set to accommodate one Intel dev box; the wrong trade.
+
+**Consequences.** A `VOYAGE_API_KEY` must be provisioned in every environment that runs the enrichment worker (documented in `.env.example`). Embedding calls don't flow through the message gateway's `llm_call()`, so `limits.record_embedding_usage()` logs one `llm_usage_log` row per Voyage batch to keep embeddings visible to the per-tenant rate-limit windows. Voyage's free tier (3 RPM / 10K TPM) is enough for development; production needs at least the first paid tier. If PrimeQA moves to Apple-Silicon dev hardware a local `sentence-transformers` model becomes viable again and this decision is worth revisiting; likewise if Anthropic ships a first-party embedding API, or if a downstream substrate surfaces retrieval-quality issues that point at the model choice.
+
+**Cross-references.** D-046 (semantic_text is the deterministic embedding input); D-048 (graceful fallback for AI-primitive failures); `PHASE_2_PLAN_corrections.md` §23; P8 precursor commit `3aa2b8f`.
+
+> **Note on prior informal D-043.** The pre-D-049 choice of OpenAI
+> `text-embedding-3-small` (1536 dim) was recorded in
+> `docs/architecture/substrate_1_semantic_org_model/PHASE_2_PLAN.md:468`
+> as informal D-043, not in this DECISIONS_LOG. PHASE_2_PLAN is a
+> locked planning artifact and is not edited; this D-049 entry
+> supersedes the planning-time choice. See
+> `PHASE_2_PLAN_corrections.md` §23 for the resolution narrative.
+
+---
+
+## D-050 — 8-substrate model is architectural authority; PRIMEQA_PRODUCT_DEFINITION's 4-substrate framing is product narrative
+
+**Date:** 2026-05-14
+**Substrates affected:** [all]
+**Status:** active
+
+**Decision.** Per D-001, PrimeQA's architecture is decomposed into 8
+substrates: S1 Semantic Org Model, S2 Test Representation, S3
+Generation Engine, S4 Execution Engine, S5 Knowledge System, S6
+Observation and Interpretation, S7 Conversation and Control, S8
+Evolution Engine. This 8-substrate framing is authoritative for all
+architectural decisions, substrate spec naming, and phase planning.
+
+`PRIMEQA_PRODUCT_DEFINITION.md` previously used a 4-substrate framing
+that collapsed S2+S3 into "Test Generation" and omitted S5, S7, S8.
+That framing was a product narrative written without a DECISIONS_LOG
+entry overriding D-001. It is reconciled in this cycle:
+PRODUCT_DEFINITION updated to use 8-substrate framing throughout.
+
+**Rationale.** Two competing substrate framings caused real confusion
+at Phase 3 (Substrate 2 — Test Representation) design kickoff.
+PLATFORM_VISION's 8-substrate decomposition is the more architecturally
+precise framing — Test Representation as data structure separate from
+Generation Engine as AI pipeline is a meaningful split. Forcing both
+docs to use the same framing eliminates ambiguity for current and
+future contributors.
+
+**Alternatives considered.**
+
+- *Override D-001 to adopt 4-substrate model* — rejected;
+  PLATFORM_VISION's decomposition is the more precise framing and
+  overriding D-001 would compress architectural distinctions that
+  matter (S2 data structure vs S3 generation, S5 knowledge
+  cross-cutting).
+- *Keep both framings and document the mapping* — rejected as ongoing
+  drift surface; pick one and use it.
+
+**References.**
+
+- D-001 (original 8-substrate decision)
+- `PLATFORM_VISION.md` §"The Eight Substrates"
+- `PRIMEQA_PRODUCT_DEFINITION.md` (after this commit's updates)
+- `docs/CONVENTIONS.md` §"Documentation authority"
+
+---
+
 *End of Phase 2 additions.*
