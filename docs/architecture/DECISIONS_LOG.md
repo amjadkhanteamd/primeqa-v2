@@ -1271,3 +1271,107 @@ future contributors.
 ---
 
 *End of Phase 2 additions.*
+
+
+## Phase 3 additions
+
+## D-051 — Test case as identity-bearing claim with replaceable recipes (resolves S2-Q-001)
+
+**Date:** 2026-05-16
+**Substrates affected:** [S2, with downstream consequences for S3, S4, S6, S8]
+**Status:** active
+
+**Decision.** A PrimeQA test case is fundamentally a structured
+claim — an *asserted system truth* scoped by the *semantic
+conditions* under which it should hold, realized through *one or
+more replaceable executable recipes*. A test case decomposes into
+five layers, two of which (asserted truth and semantic conditions)
+are identity-bearing; the other three (execution realization,
+execution environment, provenance) are not. Coverage is derived
+from the claim, not authored separately.
+
+| Layer                  | Identity-bearing? |
+| ---------------------- | :---------------: |
+| Asserted system truth  | YES               |
+| Semantic conditions    | YES               |
+| Execution realization  | NO                |
+| Execution environment  | NO                |
+| Provenance             | NO                |
+
+Discipline rule for the semantic-vs-operational boundary: *if a
+value or entity is referenced inside the claim, it is semantic and
+identity-bearing; otherwise it is operational and lives in the
+recipe.* Claim structure is intentionally constrained — S2 is not
+a general system-specification language; claims express what QA
+tests actually need to assert, bounded by human legibility, machine
+queryability, and archetype coherence. Canonical claim units lean
+atomic; aggregation of multiple atomic claims under a user-facing
+test envelope is permitted, with the structural shape of that
+aggregation pending S2-Q-003.
+
+**Rationale.** Per the TA pushback on the original four-candidate
+framing (scenario / semantic slice / execution recipe / LLM
+transcript), the missing fifth candidate — assertion / invariant /
+expected truth-condition — turned out to be the architecturally
+load-bearing one. The asserted truth outlives recipes, UI changes,
+and generation regenerations; it is what S6 must map failures back
+to, what S8 must preserve when rewriting tests autonomously, and
+what humans engage with day-to-day. Refinement during the design
+conversation separated semantic conditions (identity-bearing, part
+of the claim) from execution context (operational, part of the
+recipe), which produced the five-layer model. This is cleaner than
+the alternatives because it places identity in the smallest stable
+unit that carries meaning, while giving S8 (Evolution) wide
+autonomous latitude over operational layers without crossing the
+human-authority boundary.
+
+**Alternatives considered.**
+
+- *Execution recipe as root (v2.2 status quo).* Rejected. Recipes
+  are brittle; the same assertion can be tested by many recipes,
+  and recipes don't generalize across the five archetypes —
+  configuration, permission, UI, and integration tests don't fit
+  a CRUD-step shape.
+- *Coverage / semantic slice as root.* Rejected. Collapses test
+  meaning into structural footprint; two semantically distinct
+  tests with identical S1 coverage would falsely share identity.
+- *LLM-generation transcript as root.* Rejected. This is provenance,
+  not identity. Regeneration of the same JIRA ticket producing the
+  same claim should not create a new test.
+- *Scenario as root (A4-style).* Rejected as final framing.
+  "Scenario" overloaded two distinct concerns — identity-bearing
+  semantic conditions and operational execution context — under
+  one term. Pulling these apart into separate layers gives a
+  cleaner cut.
+- *(claim, scenario) tuple as identity.* Rejected. Same overload
+  problem: the "scenario" half dissolves into identity-bearing and
+  non-identity-bearing parts on closer examination.
+
+**Downstream consequences.**
+
+- *S2-Q-002 (commonality across archetypes).* The five-layer model
+  is structurally uniform across all five archetypes; only the
+  *form* of claim and recipe varies per archetype.
+- *S2-Q-004 (S1 references).* References inside the claim are
+  intent-bearing and lean toward pinning; references inside the
+  recipe are operational and lean toward logical resolution. Final
+  shape pending S2-Q-004.
+- *S2-Q-006 (authority over mutation).* S8 has autonomous authority
+  over the three non-identity-bearing layers; changes to either
+  identity-bearing layer require human authority.
+
+**References.**
+
+- `substrate_2_test_representation/SPEC.md` §2
+- `substrate_2_test_representation/BACKGROUND.md` (architectural
+  ambition framing; human-legibility principle)
+- `substrate_2_test_representation/OPEN_QUESTIONS.md` S2-Q-002,
+  S2-Q-003, S2-Q-004, S2-Q-006 (downstream questions whose
+  resolutions this decision constrains)
+- `archive/ARCHITECTURE_4_NOTE.md` (scenario-binds-execution
+  principle; partially absorbed as semantic conditions)
+- `PRIMEQA_PRODUCT_DEFINITION.md` §4.3 (S2's six concerns: intent,
+  coverage, relationships, execution history, assumptions,
+  provenance)
+
+---

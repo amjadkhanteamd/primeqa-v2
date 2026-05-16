@@ -27,3 +27,29 @@ Initial skeleton. No design decisions yet. Created:
 
 No `DECISIONS_LOG.md` entries yet. First substantive decision will
 be S2-Q-001 (deepest invariant) addressed in Phase 1 SPEC design.
+
+---
+
+## 2026-05-16 — S2-Q-001 resolved: claim as identity-bearing root (D-051)
+
+Filled in SPEC §2 (Deepest invariant) per the resolution that a
+PrimeQA test case is fundamentally a structured claim — asserted
+system truth plus semantic conditions — realized through replaceable
+executable recipes. Five-layer model: two identity-bearing layers
+(asserted truth, semantic conditions); three non-identity-bearing
+layers (execution realization, execution environment, provenance);
+coverage derived. Discipline rule landed explicitly: "if referenced
+in the claim → semantic; otherwise operational." Claim structure
+intentionally constrained (not a general system-specification
+language). Atomic-canonical direction noted, structural shape
+pending S2-Q-003.
+
+S2-Q-001 moved to Resolved in OPEN_QUESTIONS.md. D-051 added to
+top-level DECISIONS_LOG.md.
+
+Adjacent open questions whose context the resolution updates:
+S2-Q-002 (structural uniformity via the five-layer model is now
+established), S2-Q-004 (claim references lean pinned; recipe
+references lean logical), S2-Q-006 (authority boundary now concrete
+— S8 autonomous on the three non-identity layers, human-required
+for the two identity-bearing layers).

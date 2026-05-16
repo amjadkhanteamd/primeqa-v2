@@ -5,37 +5,14 @@ questions live in the top-level `OPEN_QUESTIONS.md`.
 
 ---
 
+## Resolved
+
+- ~~S2-Q-001 — Deepest invariant of a test case~~ → resolved by
+  D-051. See `SPEC.md` §2.
+
+---
+
 ## Open
-
-### S2-Q-001 — Deepest invariant of a test case
-
-What is a PrimeQA test case most essentially? Candidates surfaced in
-`PRIMEQA_PRODUCT_DEFINITION.md` §4.3 and `PLATFORM_VISION.md`
-§"Substrate 2":
-
-- A *scenario* — declared situation with actors, preconditions,
-  expected outcome. (A4 leaning.)
-- A *covered slice of the semantic model* — set of S1 entities the
-  test exercises. (S6 / S8 leaning.)
-- An *execution recipe* — sequence of actions that can be run.
-  (PLATFORM_VISION's "executable, human-readable, evolvable"
-  leaning.)
-- An *assertion / invariant / expected truth-condition* — a claim
-  about the system that should hold (e.g. "When `Stage = Closed
-  Won`, `Amount` is required"). Stable across execution-recipe
-  rewrites, UI changes, generation regenerations; the assertion
-  often outlives any particular procedure that tests it.
-  (Specification leaning.)
-- A *transcript of an LLM generation* — structured record of what
-  was generated, why, against what context. (v2.2 leaning.)
-
-These framings are not exclusive — a test case may layer all five.
-The question is which is the ROOT / CENTER from which the others
-derive their shape. Pick the deepest invariant; the structure
-follows. Address before Phase 1 SPEC begins.
-
-Linked: S2-Q-006 (the invariant choice constrains who has authority
-to mutate which parts of a test case).
 
 ### S2-Q-002 — Common substrate across five archetypes (structural and semantic)
 
