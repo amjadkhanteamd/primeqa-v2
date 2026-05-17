@@ -53,3 +53,28 @@ established), S2-Q-004 (claim references lean pinned; recipe
 references lean logical), S2-Q-006 (authority boundary now concrete
 — S8 autonomous on the three non-identity layers, human-required
 for the two identity-bearing layers).
+
+---
+
+## 2026-05-16 — S2-Q-002 resolved: three orthogonal discriminators with archetype-specific semantic forms (D-052)
+
+Filled in SPEC §3 (Archetype representation) per the resolution
+that test cases are classified along three orthogonal
+discriminators — `archetype`, `claim_kind`, `recipe_kind`. The
+five-layer model from §2 is structurally uniform across all five
+archetypes; within each layer the line falls between a uniform
+discriminator-bearing envelope and archetype-specific semantic
+forms. Guardrail stated: archetypes are classifications, not
+storage partitions. Execution environment sharpened from "setup
+payload" to "capability assumptions and setup the recipe relies
+on" — both in §3 narrative and via a small edit to §2's table
+description for consistency. Seeded claim-kind taxonomy (4-6
+kinds per archetype) included; lock deferred to S2-Q-003.
+
+S2-Q-002 moved to Resolved in OPEN_QUESTIONS.md. D-052 added to
+top-level DECISIONS_LOG.md.
+
+Deferred to S2-Q-003: recipe-kind taxonomy, concrete storage
+shape (table layout, JSONB schemas, Pydantic validation),
+cross-archetype claim-kind consolidation, capability-assumption
+model's interaction with environment-availability metadata.

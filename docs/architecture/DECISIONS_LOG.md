@@ -1375,3 +1375,98 @@ human-authority boundary.
   provenance)
 
 ---
+
+
+## D-052 — Three orthogonal discriminators with archetype-specific semantic forms (resolves S2-Q-002)
+
+**Date:** 2026-05-16
+**Substrates affected:** [S2, with consequences for S3, S4]
+**Status:** active
+
+**Decision.** A PrimeQA test case is classified along three
+orthogonal discriminators — `archetype` (5 values: data_behavior,
+configuration, permission, ui, integration), `claim_kind` (multiple
+per archetype, taxonomy seeded but not locked), and `recipe_kind`
+(taxonomy deferred to S2-Q-003). The five-layer model from D-051
+is structurally uniform across all five archetypes; within each
+layer the boundary between common and archetype-specific falls
+inside the layer: a uniform discriminator-bearing envelope holds
+an archetype-specific *semantic form*. Coverage is fully derived
+from claim references.
+
+Guardrail: **archetypes are classifications, not storage
+partitions.** The discriminators name conceptual categories; they
+do not entail per-archetype tables or migrations. Storage
+realization is fully S2-Q-003.
+
+Sharpening: the execution-environment layer models *capability
+assumptions* (what the recipe requires to be available in order
+to run) — not merely setup payloads. This is what makes recipe
+selection meaningful: S4 matches the available environment against
+each recipe's capability assumptions when picking among multiple
+recipes for the same claim. SPEC §2's table row description for
+execution environment updated in the same commit for consistency.
+
+**Rationale.** The TA pushback in S2-Q-002 surfaced two distinct
+layers — structural commonality (schema-level) and semantic
+commonality (conceptual). D-051 established semantic commonality
+at the level of the five-layer model. What remained open was where
+the line falls within each layer between uniform and archetype-
+specific. The orthogonal-three-discriminator framing puts the line
+in the right place: uniformity at the envelope and discriminator
+level, archetype-specific at the semantic form level. Treating
+archetype, claim_kind, and recipe_kind as independent axes (rather
+than nested) preserves forward compatibility — a future recipe_kind
+for an existing claim_kind requires no schema change. The
+capability-assumption sharpening of execution environment
+strengthens the recipe-selection model and aligns the layer with
+its actual operational role.
+
+**Alternatives considered.**
+
+- *Per-archetype tables (storage = classification).* Rejected.
+  Confuses conceptual classification with storage layout;
+  precludes cross-archetype queries; would require migration when
+  archetypes evolve.
+- *Nested discriminators (archetype determines claim_kind which
+  determines recipe_kind).* Rejected. Couples axes that can vary
+  independently in practice — e.g., a permission capability-claim
+  can be realized by a run-as recipe OR a metadata-inspection
+  recipe; recipe_kind is independent of claim_kind.
+- *Single discriminator (archetype only).* Rejected. Collapses
+  meaningful distinctions: a "data-behavior test" can carry many
+  different claim-kinds and many different recipe-kinds;
+  flattening these into one axis loses structure that downstream
+  substrates (S4 executor selection, S6 attribution, S8 evolution)
+  need.
+- *Execution environment as bare setup payload.* Rejected. Fails
+  to capture what makes multi-recipe-per-claim meaningful;
+  obscures the recipe-selection semantic.
+
+**Downstream consequences.**
+
+- *S2-Q-003 (data model):* Lock the claim_kind taxonomy, design
+  the recipe_kind taxonomy, realize the uniform envelope plus
+  per-archetype semantic forms in concrete storage shapes.
+- *S2-Q-007 (execution-history boundary):* The capability-
+  assumption model interacts with environment-availability
+  metadata; the S2/S4 boundary on this is partially open.
+- *S4 design (future substrate):* Recipe selection becomes a
+  capability-assumption-matching problem rather than a generic
+  "pick a recipe" problem.
+
+**References.**
+
+- `substrate_2_test_representation/SPEC.md` §3
+- `substrate_2_test_representation/SPEC.md` §2 (five-layer model
+  from D-051; execution-environment table row sharpened in this
+  commit for consistency with §3)
+- D-051 (the structural-and-semantic-uniform baseline this
+  decision builds on)
+- `PLATFORM_VISION.md` §"Product Scope" (the five-archetype
+  product scope)
+- `substrate_2_test_representation/OPEN_QUESTIONS.md` S2-Q-003
+  (locks the seeded claim-kind taxonomy; designs the recipe-kind
+  taxonomy; chooses storage realization)
+
+---

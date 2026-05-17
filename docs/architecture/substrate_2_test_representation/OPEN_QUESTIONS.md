@@ -9,39 +9,12 @@ questions live in the top-level `OPEN_QUESTIONS.md`.
 
 - ~~S2-Q-001 — Deepest invariant of a test case~~ → resolved by
   D-051. See `SPEC.md` §2.
+- ~~S2-Q-002 — Common substrate across five archetypes (structural
+  and semantic)~~ → resolved by D-052. See `SPEC.md` §3.
 
 ---
 
 ## Open
-
-### S2-Q-002 — Common substrate across five archetypes (structural and semantic)
-
-`PLATFORM_VISION.md` mandates: tests "across all five archetypes
-using a common substrate — not five different representations." Two
-layers hide inside this question and need to be answered
-independently:
-
-**A. Structural commonality.** What schema-level shape is shared
-across all archetypes — envelope, provenance fields, lifecycle,
-reference encoding, identity column.
-
-**B. Semantic commonality.** What CONCEPTS are shared across all
-archetypes — intent, assertion, executionability, coverage,
-claim-about-truth.
-
-These can diverge. v2.2 has schema uniformity (every
-test_case_version has the same `steps` JSONB + `referenced_entities`
-array) without semantic uniformity (the CRUD-step shape distorts
-configuration / permission / UI / integration tests, because each
-archetype has a fundamentally different concept of "what the test
-asserts"). Schema uniformity without semantic uniformity is the
-wrong kind of common substrate; semantic uniformity without schema
-uniformity creates integration pain.
-
-Decide both layers explicitly. The likely shape candidate is
-scenario declaration + archetype-specific body + common envelope —
-but where the line falls between common and archetype-specific *and
-on which layer* is itself the design.
 
 ### S2-Q-003 — Test case data model
 
