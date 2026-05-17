@@ -1,13 +1,14 @@
 # Substrate 2 — Test Representation — SPEC
 
 **Status:** Phase 1 in progress. §2 (deepest invariant) and §3
-(archetype representation, including claim-kind and recipe-kind
-taxonomy locks) resolved per D-051, D-052, D-053, and D-054; other
-sections pending.
+(archetype representation, including claim-kind, recipe-kind, and
+trigger-kind taxonomy locks; four-discriminator framing; six-layer
+model) resolved per D-051 through D-055; other sections pending.
 
 **Last substantive update:** 2026-05-17 (Phase 1: deepest invariant
 + archetype representation + claim-kind taxonomy lock + recipe-kind
-taxonomy lock)
+taxonomy lock + trigger-kind taxonomy lock + six-layer model
+amendment)
 
 ---
 
@@ -43,16 +44,23 @@ structured claim — an *asserted system truth* scoped by the
 *semantic conditions* under which it should hold, realized through
 *one or more executable recipes*.
 
-**Five-layer model.** A test case decomposes into five layers, two
+**Six-layer model.** A test case decomposes into six layers, two
 of which are identity-bearing:
 
-| Layer                  | Role                                                     | Identity-bearing? |
-| ---------------------- | -------------------------------------------------------- | :---------------: |
-| Asserted system truth  | What the test claims is true (the THEN)                  | YES               |
-| Semantic conditions    | Under which conditions the truth should hold (WHEN)      | YES               |
-| Execution realization  | The procedure of a particular recipe                     | NO                |
-| Execution environment  | Capability assumptions and setup the recipe relies on    | NO                |
-| Provenance             | How the test came to exist                               | NO                |
+| Layer                   | Role                                                       | Identity-bearing? |
+| ----------------------- | ---------------------------------------------------------- | :---------------: |
+| Asserted system truth   | What the test claims is true (the THEN)                    | YES               |
+| Semantic conditions     | Under which conditions the truth should hold (WHEN)        | YES               |
+| Causal initiation       | How the triggering cause is operationally realized         | NO (default)      |
+| Observation realization | The procedure that observes and asserts                    | NO                |
+| Execution environment   | Capability assumptions and setup the recipe relies on      | NO                |
+| Provenance              | How the test came to exist                                 | NO                |
+
+*Note: the five-layer model originally established in D-051 was
+extended to six layers in D-055 with the addition of the "Causal
+initiation" layer. The "Observation realization" layer was
+originally named "Execution realization" in D-051 and renamed per
+D-055 to better reflect D-054's recipe-kind purity scope.*
 
 *Coverage* is derived from the claim (the union of S1 entities
 referenced by the asserted truth and the semantic conditions), not
@@ -111,7 +119,7 @@ S2-Q-003.
 
 **Downstream consequences for adjacent open questions.**
 
-- *S2-Q-002 (commonality across archetypes).* The five-layer model
+- *S2-Q-002 (commonality across archetypes).* The six-layer model
   is structurally uniform across all five archetypes; only the
   *form* of claim and recipe varies per archetype.
 - *S2-Q-004 (S1 references).* References inside the claim are
@@ -120,26 +128,27 @@ S2-Q-003.
   logical resolution (preserves liveness). Final reference model
   pending S2-Q-004.
 - *S2-Q-006 (authority).* The authority boundary is now concrete:
-  S8 has autonomous authority over the three non-identity-bearing
+  S8 has autonomous authority over the four non-identity-bearing
   layers; changes to either identity-bearing layer require human
   authority.
 
-See `DECISIONS_LOG.md` D-051 for rationale and alternatives
-considered.
+See `DECISIONS_LOG.md` D-051 and D-055 for rationale and
+alternatives considered.
 
 ---
 
 ## 3. Archetype representation — common substrate, archetype-specific semantic forms
 
-**Resolution.** Per D-052: a PrimeQA test case is classified along
-*three orthogonal discriminators* — `archetype`, `claim_kind`, and
-`recipe_kind`. The five-layer model from §2 is structurally uniform
-across all five archetypes; within each layer, the boundary between
-common and archetype-specific falls *inside the layer*: a uniform
-discriminator-bearing envelope holds an archetype-specific *semantic
-form*.
+**Resolution.** Per D-052 (extended by D-055 to four discriminators):
+a PrimeQA test case is classified along *four orthogonal
+discriminators* — `archetype`, `claim_kind`, `trigger_kind`, and
+`recipe_kind`. The six-layer model (per D-051, extended by D-055)
+is structurally uniform across all five archetypes; within each
+layer, the boundary between common and archetype-specific falls
+*inside the layer*: a uniform discriminator-bearing envelope holds
+an archetype-specific *semantic form*.
 
-**Three orthogonal discriminators.**
+**Four orthogonal discriminators.**
 
 - **`archetype`** — the coarse product category: `data_behavior`,
   `configuration`, `permission`, `ui`, or `integration`. Five values
@@ -148,17 +157,29 @@ form*.
 - **`claim_kind`** — the fine-grained semantic type of the asserted
   truth. Multiple values per archetype (locked taxonomy below, per
   D-053). Determines the semantic form of the claim.
-- **`recipe_kind`** — the kind of executable procedure (locked
-  taxonomy below, per D-054). Five values total. Determines the
-  observability domain of the recipe and what capability assumptions
-  it carries.
+- **`trigger_kind`** — the kind of causal initiation that sets the
+  test scenario in motion. Five values (locked taxonomy below, per
+  D-055). Determines the operational realization of the cause.
+- **`recipe_kind`** — the kind of executable procedure that observes
+  and asserts. Five values (locked taxonomy below, per D-054).
+  Determines the observability domain of the recipe.
 
-*Orthogonal* means independent: the three axes vary independently,
+**Substrate ontology at a glance.** Each discriminator answers a
+fundamentally different semantic question:
+
+| Axis | Semantic question |
+|---|---|
+| `claim_kind` | What truth? |
+| `trigger_kind` | What initiates evaluation? |
+| `recipe_kind` | How is truth observed? |
+| `archetype` | What operational domain? |
+
+*Orthogonal* means independent: the four axes vary independently,
 not in a nested hierarchy. Not every combination is meaningful in
 practice, but constraints on which combinations are supported live
 at the application layer, not the schema layer. This permits
-forward compatibility — a future recipe_kind for an existing
-claim_kind requires no schema change.
+forward compatibility — a future trigger_kind or recipe_kind for
+an existing claim_kind requires no schema change.
 
 **Archetypes are classifications, not storage partitions.** The
 discriminator names a conceptual category. It does not entail
@@ -189,19 +210,40 @@ Different truth → maybe a new claim-kind.
 guardrail, parallel to the archetype and claim-kind guardrails
 above. A recipe-kind names what a procedure observes and how it
 asserts — not what triggers the scenario being tested. Triggering
-actions are a separate classification axis, addressed in S2-Q-011.
+actions are a separate classification axis, classified by
+trigger-kind.
 
-**Structural commonality (A).** Every layer of the five-layer model
+**Trigger-kinds classify causal-initiation semantics only.** A
+fourth purity guardrail. A trigger-kind names what kind of cause
+initiates the test scenario — not what's observed (that's
+recipe-kind), not what's asserted (that's claim-kind), not the
+product domain (that's archetype). This guardrail prevents triggers
+from absorbing observation logic or implementation-technology
+distinctions that belong elsewhere.
+
+**Trigger-kind and recipe-kind are orthogonal.** They classify
+different aspects of operational realization — causal initiation
+vs observability — and must not be conflated. The same trigger
+can be observed via multiple recipes (a `data-mutation-trigger`
+followed by both a `data-recipe` AND a `ui-recipe` observing
+different effects). The same recipe-kind can observe effects of
+multiple trigger-kinds (a `data-recipe` observes effects of
+inbound-triggers, data-mutation-triggers, configuration-triggers
+alike). Collapsing these axes loses meaningful structural
+distinctions and forces artificial pairings.
+
+**Structural commonality (A).** Every layer of the six-layer model
 is uniformly present in every archetype. Within each layer, the
 line between uniform and archetype-specific falls as follows:
 
-| Layer                  | Uniform across archetypes                              | Archetype-specific                                                |
-| ---------------------- | ------------------------------------------------------ | ----------------------------------------------------------------- |
-| Asserted system truth  | claim_kind discriminator, identity hash, subject refs  | semantic form of the claim body                                   |
-| Semantic conditions    | conditions metadata, condition-kind discriminator      | semantic form of condition body (varies with claim_kind)          |
-| Execution realization  | recipe_kind discriminator, step ordering               | semantic form of step content (CRUD ≠ metadata ≠ browser ≠ ...)   |
-| Execution environment  | environment-kind discriminator                         | capability assumptions and setup the recipe relies on             |
-| Provenance             | fully uniform — no archetype-specific provenance       | none                                                              |
+| Layer                   | Uniform across archetypes                              | Archetype-specific                                                |
+| ----------------------- | ------------------------------------------------------ | ----------------------------------------------------------------- |
+| Asserted system truth   | claim_kind discriminator, identity hash, subject refs  | semantic form of the claim body                                   |
+| Semantic conditions     | conditions metadata, condition-kind discriminator      | semantic form of condition body (varies with claim_kind)          |
+| Causal initiation       | trigger_kind discriminator, trigger metadata           | semantic form of trigger content (varies with trigger_kind)       |
+| Observation realization | recipe_kind discriminator, step ordering               | semantic form of step content (varies with recipe_kind)           |
+| Execution environment   | environment-kind discriminator                         | capability assumptions and setup the recipe relies on             |
+| Provenance              | fully uniform — no archetype-specific provenance       | none                                                              |
 
 Coverage is fully derived from claim and semantic-conditions
 references; its uniformity follows automatically.
@@ -209,10 +251,10 @@ references; its uniformity follows automatically.
 **Semantic commonality (B).** Established by D-051 and reinforced
 here. Every test in every archetype is a structured claim —
 asserted system truth scoped by semantic conditions — realized
-through one or more replaceable executable recipes. The discipline
-rule, identity model, coverage-derivation rule, and authority model
-from D-051 apply uniformly. No archetype is an exception to the
-conceptual model.
+through one or more replaceable executable recipes, initiated by
+one or more triggers. The discipline rule, identity model,
+coverage-derivation rule, and authority model from D-051 apply
+uniformly. No archetype is an exception to the conceptual model.
 
 **Execution environment as capability assumptions.** Sharpening §2:
 the execution-environment layer is not merely "operational setup"
@@ -371,11 +413,102 @@ warrant separate kinds under the semantic-form guardrail.
 Inbound injection is intentionally not a recipe-kind. Tests of
 `inbound-effect-claim` use `data-recipe` or
 `event-subscription-recipe` for observation; the inbound payload
-that triggers the scenario is a trigger-kind concern addressed
-in S2-Q-011 — recipe-kinds preserve observability purity.
+that triggers the scenario is classified by trigger-kind (see
+`inbound-trigger` below).
 
-See `DECISIONS_LOG.md` D-054 for rationale and alternatives
-considered.
+**Trigger-kind taxonomy (locked per D-055).** Five trigger-kinds,
+each classifying a causal-initiation pattern. The Plane column
+distinguishes runtime-plane triggers (operate within the existing
+org model) from model-plane triggers (mutate the org model itself).
+
+| Trigger-kind | Plane | Causal initiation domain |
+|---|---|---|
+| `inbound-trigger` | runtime | External system pushes payload into Salesforce |
+| `data-mutation-trigger` | runtime | DML on records inside Salesforce |
+| `ui-trigger` | runtime | User-driven UI action |
+| `time-trigger` | runtime | Salesforce mechanisms firing because elapsed-time predicates were met |
+| `configuration-trigger` | **model** | Metadata deploy as causal initiation; mutates the org model |
+
+- `inbound-trigger` — External system pushes a payload into
+  Salesforce as the causal initiation. *Sub-discriminators:*
+  channel (REST / SOAP / inbound email / streaming push / external
+  platform-event publish). *Capability assumptions:* inbound
+  channel infrastructure (mock endpoint, email gateway simulation,
+  etc.) or external system credentials.
+
+- `data-mutation-trigger` — DML on records inside Salesforce as
+  the causal initiation. The DML causes downstream effects
+  (automation, sharing recalc, related-record updates) that the
+  recipe observes. Same mechanism as `data-recipe` but different
+  role — cause vs observation. *Sub-discriminators:* operation
+  (create / update / delete), identity context (system / run-as
+  user), volume (single / bulk). *Capability assumptions:* data
+  API auth; write permissions on target objects.
+
+- `ui-trigger` — User-driven UI action (click, navigation, form
+  fill) as the causal initiation. Distinct from `ui-recipe`:
+  `ui-recipe` both drives the UI and observes UI state internally;
+  `ui-trigger` drives the UI as cause while observation happens
+  via another recipe-kind. *Sub-discriminators:* action type
+  (button click / form submit / navigation / inline edit).
+  *Capability assumptions:* browser environment; Salesforce UI
+  auth; session management.
+
+- `time-trigger` — Salesforce mechanisms that fire because
+  elapsed-time predicates were met: scheduled flows, scheduled
+  batch Apex, time-based workflow actions, time-dependent field
+  updates. **Not** general async / retry / queue semantics —
+  those are downstream behaviors observed by recipes, not
+  triggers. The category is narrower than "system progression";
+  it covers test-initiated activation of time-dependent firing
+  mechanisms. *Sub-discriminators:* mechanism (scheduled-flow
+  advancement / batch-Apex manual invocation / time-based-workflow
+  stub / Test.setCreatedDate). *Capability assumptions:*
+  test-environment support for the specific time-mechanism this
+  trigger uses (Salesforce has no general clock-advance primitive;
+  each mechanism has its own simulation approach).
+
+- `configuration-trigger` — Metadata deploy as the triggering
+  action; the test asserts "deploying X causes behavior Y."
+  **Cross-plane:** unlike the four runtime triggers, this one
+  *mutates the org model itself* rather than operating within an
+  existing model. Three structural consequences follow:
+
+  1. *Test-runtime risk:* can break unrelated tests by changing
+     the rules. Runtime triggers are contained within test
+     records; configuration changes affect all tests sharing
+     the org.
+  2. *Shared-org coordination:* cannot run concurrently with
+     other tests that depend on the configuration being changed.
+  3. *S8-adjacency:* configuration changes are what S8
+     (Evolution) responds to. Configuration-trigger tests are
+     tests *of the platform's behavior under its own evolution*
+     — semantically interesting and architecturally adjacent to
+     S8's domain.
+
+  *Sub-discriminators:* deploy target (activation flag / property
+  change / entity create-or-delete / permission grant). *Capability
+  assumptions:* metadata-write capability; shared-org coordination
+  mechanism.
+
+**Trigger-kind identity nuance.** Trigger-kind is *operational by
+default* and not identity-bearing — changing how a cause is
+realized (DML vs UI button click) does not change what the test
+means. However, D-051's discipline rule applies: if the trigger
+mechanism itself is *semantically asserted* in the claim (e.g.,
+"when external system sends via synchronous REST, the response
+includes outcome X within 5 seconds"), the mechanism becomes part
+of semantic conditions and IS identity-bearing. Operational by
+default, semantic by assertion.
+
+**One primary trigger per test (default).** A test has one primary
+trigger — the causal initiation most directly tied to the claim's
+WHEN. Other causal-looking actions in the recipe are setup. Composite
+scenarios ("update X, advance time, observe Y") still have one
+primary trigger — typically the time advance, since the test's
+behavior under test depends on time; the update is setup.
+Multi-primary trigger scenarios are possible but rare and usually
+indicate the test should decompose into multiple tests.
 
 **Forward compatibility.** Schema accommodates all five archetypes
 from day one. Discriminator columns exist; per-archetype semantic
@@ -393,15 +526,14 @@ foundation must not foreclose the other four.
 - Validation patterns: what's enforced at app boundary, what at DB
   layer (sub-cycle 5).
 - The relationship between the capability-assumption model and
-  environment-availability metadata (partially S2-Q-007
-  territory).
+  environment-availability metadata (partially S2-Q-007 territory).
 
 Trigger-kind classification — surfaced during sub-cycle 2 as a
-parallel concept to recipe-kind — is tracked separately as
-S2-Q-011.
+parallel concept to recipe-kind — was resolved by D-055 (5 kinds,
+four-discriminator extension, six-layer model amendment).
 
-See `DECISIONS_LOG.md` D-052, D-053, and D-054 for rationale and
-alternatives considered.
+See `DECISIONS_LOG.md` D-052, D-053, D-054, and D-055 for rationale
+and alternatives considered.
 
 ---
 

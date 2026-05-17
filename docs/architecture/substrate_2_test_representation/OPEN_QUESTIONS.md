@@ -11,6 +11,10 @@ questions live in the top-level `OPEN_QUESTIONS.md`.
   D-051. See `SPEC.md` §2.
 - ~~S2-Q-002 — Common substrate across five archetypes (structural
   and semantic)~~ → resolved by D-052. See `SPEC.md` §3.
+- ~~S2-Q-011 — Trigger-kind classification~~ → resolved by D-055.
+  5 kinds locked, four-discriminator framing extended, six-layer
+  model amended (rename: "execution realization" → "observation
+  realization"). See `SPEC.md` §3.
 
 ---
 
@@ -179,74 +183,3 @@ Once S2-Q-001 through S2-Q-009 land, walk each v2.2 table:
   (S8 territory) rather than reproduced in S2.
 
 This question generates a `DECISIONS_LOG.md` entry on resolution.
-
-### S2-Q-011 — Trigger-kind classification
-
-Surfaced during S2-Q-003 sub-cycle 2 (recipe-kind lock, D-054).
-Recipe-kinds were locked as observability-domain classifications
-only, per the recipe-kind purity rule. Triggering actions — what
-*initiates* a test scenario, as opposed to what *observes* its
-effects — are a parallel classification axis warranting their own
-design treatment.
-
-**Trigger-kind purity guardrail (proposed).** Trigger-kinds
-classify *causal initiation patterns* — what kind of action sets
-the scenario in motion. Trigger-kinds do not classify
-observability (that's recipe-kind), do not classify the truth
-being asserted (that's claim-kind), and do not classify the
-product category (that's archetype). A trigger-kind names *what
-kind of cause triggers the behavior being tested*.
-
-**Candidate trigger-kinds (to be vetted during S2-Q-011 design).**
-
-- *Inbound injection* — external system pushes a payload into
-  Salesforce as the causal initiation. Channels include inbound
-  REST, inbound SOAP, inbound email, external platform-event
-  publish, streaming push.
-- *Internal data mutation* — create / update / delete records
-  inside Salesforce as the causal initiation. Distinct from
-  `data-recipe` observation: a data mutation as trigger CAUSES
-  downstream effects (automation firing, sharing recalculation,
-  related-record updates); `data-recipe` observes the resulting
-  state. The mutation is the cause; the observation is whatever
-  the recipe-kind does. Same mechanism (DML), different role.
-- *UI trigger* — user clicks, navigates, or fills a form as the
-  triggering action. Distinct from `ui-recipe`: `ui-recipe` both
-  drives the UI and observes the resulting DOM/UI state (the
-  observability happens within the recipe); UI-as-trigger drives
-  the UI as the causal initiation while observation happens
-  elsewhere (e.g., `data-recipe` observing record state after a
-  UI save). The distinction matters — bundling both under
-  "ui-recipe" loses the trigger-vs-observation clarity.
-- *Time-based trigger* — clock advancement causes scheduled jobs,
-  batch Apex, or time-based workflow/flow actions to fire.
-  Architecturally important — many real Salesforce behaviors
-  depend on time-based primitives and cannot be reduced to
-  other trigger-kinds.
-- *Configuration change* — metadata deploy as the triggering
-  action (e.g., test that activating a flow causes behavior Y).
-  Rare but real for configuration tests asserting "deploying X
-  changes behavior Y."
-- *External event publish* — upstream system fires a platform
-  event that Salesforce receives. Possibly a sub-case of inbound
-  injection (channel = platform-event publish from external),
-  possibly its own kind. To be resolved during S2-Q-011 design.
-
-**Open sub-questions.**
-
-- Is trigger-kind a fourth orthogonal discriminator alongside
-  archetype / claim_kind / recipe_kind, or is it a property of
-  the recipe (a sub-discriminator)?
-- How do trigger-kinds map to capability assumptions (similar
-  treatment to recipe-kinds)?
-- How does trigger-kind interact with `inbound-effect-claim`
-  specifically — the inbound payload is the test's primary input,
-  so its structural treatment matters.
-- The UI-trigger / UI-recipe distinction creates two paths for
-  any test involving the UI; clear discipline is needed for when
-  to use each.
-
-This question is a downstream consequence of D-053's claim-kind
-lock (`inbound-effect-claim` being a real claim-kind makes
-triggering patterns first-class) and D-054's recipe-kind purity
-(recipe-kinds don't classify triggers).

@@ -161,3 +161,53 @@ D-054 added to top-level DECISIONS_LOG.md.
 
 Next: S2-Q-003 sub-cycle 3 (storage realization) and S2-Q-011
 (trigger-kind classification) become parallel design tracks.
+
+---
+
+## 2026-05-17 — S2-Q-011 resolved: trigger-kind taxonomy locked + four-discriminator extension + six-layer model amendment (D-055)
+
+Five interrelated architectural commitments landed in this cycle:
+
+1. Fourth orthogonal discriminator added — `trigger_kind` joins
+   archetype, claim_kind, recipe_kind. Extends D-052's
+   three-discriminator framing.
+2. Six-layer structural model — extends D-051's five-layer model
+   with a new "Causal initiation" layer for trigger realization.
+3. Terminology supersession — "Execution realization" (D-051)
+   renamed to "Observation realization" per D-054's recipe-kind
+   purity scope. §2's table updated for consistency. Term may be
+   further refined in future cycles.
+4. Five trigger-kinds locked: `inbound-trigger`,
+   `data-mutation-trigger`, `ui-trigger`, `time-trigger`,
+   `configuration-trigger`. Plane column distinguishes runtime
+   (four kinds) from model-plane (configuration-trigger).
+5. Two new guardrails: trigger-kind purity (parallel to the three
+   existing purity guardrails) and trigger-vs-recipe orthogonality
+   (about relationship between two discriminators).
+
+Key TA refinements integrated:
+
+- Time-trigger narrowed to "Salesforce mechanisms firing because
+  elapsed-time predicates were met" — NOT general async/retry/queue
+  semantics (those are downstream behaviors observed by recipes).
+- Configuration-trigger elevated to cross-plane structural
+  treatment, not just a label: explicit test-runtime risk,
+  shared-org coordination requirement, S8-adjacency noted.
+- Trigger identity nuance: operational by default, semantic if
+  the mechanism is asserted in the claim per D-051's discipline
+  rule.
+- One primary trigger per test (default) — softer than "one
+  trigger per test"; acknowledges composite scenarios while
+  favoring the simple case.
+- Four-axes summary table added to §3 (TA framing, verbatim).
+
+S2-Q-011 moved to Resolved in OPEN_QUESTIONS.md. D-055 added to
+top-level DECISIONS_LOG.md.
+
+Phase 1 of substrate-2 is now substantively complete on the
+conceptual side: deepest invariant + archetype representation +
+all three taxonomies + four-discriminator framing + six-layer
+model. Remaining S2-Q-003 sub-cycles (storage, identity-hash,
+validation) move from conceptual to concrete data model.
+
+Next: S2-Q-003 sub-cycle 3 (storage realization).

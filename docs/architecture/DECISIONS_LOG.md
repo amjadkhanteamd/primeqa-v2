@@ -1706,3 +1706,166 @@ Key moves during the design conversation:
   opened parallel question)
 
 ---
+
+
+## D-055 — Trigger-kind taxonomy locked + four-discriminator extension + six-layer model amendment [S2-Q-011]
+
+**Date:** 2026-05-17
+**Substrates affected:** [S2, with consequences for S3, S4, S6, S8]
+**Status:** active
+
+**Decision.** Five interrelated architectural commitments:
+
+1. **Fourth orthogonal discriminator added.** `trigger_kind` joins
+   `archetype`, `claim_kind`, and `recipe_kind` as a fourth
+   independent classification axis. Extends D-052's three-discriminator
+   framing.
+
+2. **Six-layer structural model.** The five-layer model from D-051
+   is extended to six layers by adding a "Causal initiation" layer
+   for trigger realization. The existing five layers retain their
+   roles and identity properties; the new layer is non-identity-bearing
+   by default.
+
+3. **Terminology supersession.** "Execution realization" (D-051) is
+   renamed to "Observation realization" per the recipe-kind purity
+   scope from D-054. This better reflects that the layer scopes
+   observation, not arbitrary execution. The term may be further
+   refined in future cycles. `SPEC.md` §2 is updated in this commit
+   for consistency.
+
+4. **Trigger-kind taxonomy locked at five kinds:**
+
+   | Trigger-kind | Plane | Causal initiation domain |
+   |---|---|---|
+   | `inbound-trigger` | runtime | External system pushes payload into Salesforce |
+   | `data-mutation-trigger` | runtime | DML on records inside Salesforce |
+   | `ui-trigger` | runtime | User-driven UI action |
+   | `time-trigger` | runtime | Salesforce mechanisms firing because elapsed-time predicates were met |
+   | `configuration-trigger` | **model** | Metadata deploy as causal initiation; mutates org model |
+
+5. **Two new guardrails added** to §3's existing three:
+   - *Trigger-kind purity:* trigger-kinds classify causal-initiation
+     semantics only, not observation or implementation technology.
+   - *Trigger-vs-recipe orthogonality:* trigger-kind and recipe-kind
+     classify different aspects of operational realization and must
+     not be conflated.
+
+**Runtime-plane vs model-plane distinction.** Four trigger-kinds
+(`inbound-trigger`, `data-mutation-trigger`, `ui-trigger`,
+`time-trigger`) operate at the runtime plane — they cause behavior
+within the existing org model. `configuration-trigger` operates at
+the model plane — it mutates the org model itself. This is a
+structural distinction, not a label: configuration-trigger tests
+carry test-runtime risk (can break unrelated tests by changing
+shared rules), require shared-org coordination, and are
+architecturally adjacent to S8 (Evolution) work since they test
+the platform's response to its own configuration changes.
+
+**Trigger-kind identity nuance.** Trigger-kind is operational by
+default and not identity-bearing. However, D-051's discipline rule
+applies: if the trigger mechanism itself is semantically asserted
+in the claim ("when external system sends via synchronous REST,
+the response includes outcome X within 5 seconds"), the mechanism
+becomes part of semantic conditions and IS identity-bearing.
+Operational by default, semantic by assertion.
+
+**Time-trigger narrowed semantics.** During design discussion the
+question arose whether time-trigger should encompass general
+"system progression semantics" (including retry queues, async
+chains, batch windows). Decision: narrow scope to Salesforce
+mechanisms firing because elapsed-time predicates were met
+(scheduled flows, scheduled batch Apex, time-based workflow actions,
+time-dependent field updates). General async / retry / queue
+semantics are downstream behaviors observed by recipes, not
+triggers themselves.
+
+**One primary trigger per test (default).** A test has one primary
+trigger most directly tied to the claim's WHEN; other causal-looking
+actions are setup. Multi-primary scenarios are possible but rare
+and usually indicate decomposition into multiple tests.
+
+**Rationale.** The sub-cycle 2 (recipe-kind) resolution established
+recipe-kind purity (observability semantics only). This left
+causal-initiation patterns without a first-class home, which would
+have either dissolved them into recipe-kinds (violating purity) or
+buried them in JSONB (losing structural clarity). Promoting
+trigger-kind to a fourth orthogonal discriminator gives them
+first-class structural treatment while preserving the purity rule.
+The six-layer model amendment follows directly from the new
+discriminator — trigger realization needs a structural home, and
+folding it into "execution realization" would have silently
+re-violated D-054's purity scope.
+
+The TA pushback during S2-Q-011 design surfaced several refinements
+integrated into this lock: time-trigger narrowed scope, elevated
+treatment of configuration-trigger's cross-plane semantics
+(structural distinction, not just a label), trigger identity
+nuance (operational-by-default vs identity-bearing-if-asserted),
+"observation realization" terminology rename, and the
+trigger-vs-recipe orthogonality guardrail.
+
+**Alternatives considered.**
+
+- *Trigger-kind as sub-discriminator of recipe-kind.* Rejected.
+  Couples two independent classification axes; collapses cases
+  where the same trigger has multiple recipes (data-mutation
+  observed by both data-recipe and ui-recipe).
+- *Keep five-layer model and fold trigger into "execution
+  realization."* Rejected. D-054 already scoped that layer to
+  observation-only under the recipe-kind purity rule. Folding
+  trigger in would silently re-violate that scope.
+- *Configuration-trigger removed from taxonomy.* Rejected. It's
+  rare in v1 but architecturally real for tests asserting
+  "deploying X causes behavior Y." Removed-then-re-added later
+  would be more disruptive than including it with explicit
+  cross-plane treatment now.
+- *Time-trigger broadened to "system progression semantics"*
+  (covering retry queues, async chains). Rejected. Overloads the
+  kind and conflates triggers with downstream behaviors observed
+  by recipes. Narrower scope is more honest.
+- *"Observation realization" kept as "execution realization."*
+  Rejected. The term mismatches D-054's purity scope. Worth the
+  D-051 terminology supersession; future further rename remains
+  open.
+
+**Downstream consequences.**
+
+- *S2-Q-003 sub-cycle 3 (storage realization):* Has four
+  discriminator columns to plan around (archetype, claim_kind,
+  trigger_kind, recipe_kind) plus sub-discriminator patterns per
+  kind. The six-layer model means storage may need a separate
+  trigger-body shape alongside recipe-body shape.
+- *S2-Q-004 (S1 references):* Trigger bodies will hold S1 entity
+  references too (the entity being mutated, the user identity for
+  ui-trigger, etc.). Same reproducibility-vs-evolvability tension
+  applies; trigger references probably follow the recipe-reference
+  pattern (logical) rather than the claim-reference pattern
+  (pinned).
+- *S4 (Execution, future substrate):* Recipe selection becomes
+  capability-matching against environment; trigger selection has
+  the same structure. S4 needs both a trigger-executor and a
+  recipe-executor (or one executor handling both).
+- *S6 (Interpretation):* Failure attribution may differ for
+  trigger failures (the trigger itself didn't fire correctly) vs
+  recipe failures (the observation failed). Useful structural
+  distinction.
+
+**References.**
+
+- `substrate_2_test_representation/SPEC.md` §3 (Trigger-kind
+  taxonomy subsection, four-discriminator definition, six-layer
+  model, two new guardrails, four-axes summary table — all added
+  or updated in this commit)
+- `substrate_2_test_representation/SPEC.md` §2 (one-row table
+  description updated for terminology consistency)
+- D-051 (the five-layer model this amends; "execution realization"
+  terminology superseded)
+- D-052 (the three-discriminator framing this extends to four)
+- D-053 (the claim-kind taxonomy parallel)
+- D-054 (the recipe-kind taxonomy parallel; recipe-kind purity
+  rule)
+- `substrate_2_test_representation/OPEN_QUESTIONS.md` S2-Q-011
+  (closed by this decision)
+
+---
