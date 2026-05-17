@@ -78,3 +78,43 @@ Deferred to S2-Q-003: recipe-kind taxonomy, concrete storage
 shape (table layout, JSONB schemas, Pydantic validation),
 cross-archetype claim-kind consolidation, capability-assumption
 model's interaction with environment-availability metadata.
+
+---
+
+## 2026-05-16 — S2-Q-003 sub-cycle 1: claim-kind taxonomy locked (D-053)
+
+Filled in SPEC §3 with the locked claim-kind taxonomy, replacing
+the §3 "Seeded claim-kind taxonomy" subsection. 16 kinds across
+5 archetypes. Notable moves from the §3 first-draft seeds:
+
+- Data-behavior: merged VR-firing + Flow-effect into
+  `automation-effect-claim`; merged deletion-blocked +
+  duplicate-prevention into `prohibition-claim` (renamed from
+  `operation-blocked-claim` per TA invariant-orientation
+  pushback).
+- Configuration: absorbed `activation-claim` into
+  `property-claim`.
+- Permission: kept Option B (`capability-claim` +
+  `sharing-rule-claim` distinct) per TA confirmation.
+- UI: absorbed `element-visibility-claim` into
+  `element-state-claim`.
+- Integration: kept platform-event-claim, outbound-message-claim,
+  callout-claim distinct per TA split-pushback (different
+  semantic forms, not just different implementation primitives).
+
+Articulated the state-transition vs automation-effect
+distinction: state-transition asserts the resulting end state
+(mechanism-agnostic); automation-effect asserts a specific
+automation firing and its side effects (mechanism-specific).
+Dividing test: would the test still mean the same thing under a
+different implementing primitive?
+
+Added second guardrail in §3: claim-kinds model semantic forms,
+not implementation primitives. Parallel to D-052's "archetypes
+are classifications, not storage partitions."
+
+S2-Q-003 entry in OPEN_QUESTIONS.md expanded to enumerate
+sub-cycles 1-5 with sub-cycle 1 marked as locked. D-053 added
+to top-level DECISIONS_LOG.md.
+
+Next sub-cycle: recipe-kind taxonomy (S2-Q-003 sub-cycle 2).

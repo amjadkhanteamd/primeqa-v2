@@ -1,11 +1,11 @@
 # Substrate 2 — Test Representation — SPEC
 
 **Status:** Phase 1 in progress. §2 (deepest invariant) and §3
-(archetype representation) resolved per D-051 and D-052; other
-sections pending.
+(archetype representation, including claim-kind taxonomy lock)
+resolved per D-051, D-052, and D-053; other sections pending.
 
 **Last substantive update:** 2026-05-16 (Phase 1: deepest invariant
-+ archetype representation)
++ archetype representation + claim-kind taxonomy lock)
 
 ---
 
@@ -144,8 +144,8 @@ form*.
   total. Determines which kinds of recipes are typically applicable
   and which S4 executor handles execution.
 - **`claim_kind`** — the fine-grained semantic type of the asserted
-  truth. Multiple values per archetype (seeded taxonomy below).
-  Determines the semantic form of the claim.
+  truth. Multiple values per archetype (locked taxonomy below, per
+  D-053). Determines the semantic form of the claim.
 - **`recipe_kind`** — the kind of executable procedure: e.g., CRUD
   steps, metadata query, run-as context, browser interaction, event
   capture. Determines the semantic form of the recipe and what
@@ -166,6 +166,22 @@ discriminator columns plus archetype-specific bodies, an envelope
 table plus detail tables per archetype, or some other shape is
 fully S2-Q-003. The storage realization must support the
 conceptual classification; it does not have to mirror it.
+
+**Claim-kinds model semantic forms, not implementation primitives.**
+A second guardrail, parallel to the archetype guardrail above. A
+new claim-kind is warranted when it names a different *kind of
+truth being asserted* — a different semantic form. A new claim-kind
+is *not* warranted when it names a different *Salesforce mechanism*
+that realizes the same semantic. Validation-rule-firing and
+flow-firing share `automation-effect-claim` (the semantic is "an
+automation produced an effect"; the mechanism difference is
+captured in a sub-discriminator). Platform-event vs
+outbound-message vs callout get separate claim-kinds (different
+payload structures and observables, not just different
+implementation mechanisms). The test for a proposed new claim-kind:
+"Does this name a different *kind of truth*, or just a different
+*mechanism*?" Different mechanism alone → not a new claim-kind.
+Different truth → maybe a new claim-kind.
 
 **Structural commonality (A).** Every layer of the five-layer model
 is uniformly present in every archetype. Within each layer, the
@@ -211,58 +227,86 @@ carry different capability profiles — "which can run here" becomes
 a function of environment availability rather than a property of
 the claim itself.
 
-**Seeded claim-kind taxonomy.** Starting material for S2-Q-003 to
-refine, merge, split, and finalize. Not locked.
+**Claim-kind taxonomy (locked per D-053).** 16 kinds across 5
+archetypes. Refined from the §3 first-draft seeds per TA pushback;
+locked here.
 
 *Data-behavior archetype:*
-- `value-claim` — field/record has value V under conditions C
-- `state-transition-claim` — when X happens, record transitions to
-  state S
-- `vr-firing-claim` — Validation Rule Z fires for input X
-- `flow-effect-claim` — Flow F produces effect E when triggered by
-  X
-- `deletion-blocked-claim` — record cannot be deleted under
-  conditions C
-- `duplicate-prevention-claim` — cannot create record matching
-  criteria X
+
+- `value-claim` — record or field has value V under conditions C.
+- `state-transition-claim` — record transitions from state S1 to
+  state S2 when event E occurs. About the resulting end state of
+  the record; mechanism-agnostic.
+- `automation-effect-claim` — automation primitive (VR / Flow /
+  trigger / process builder) fires and produces effect E when
+  triggered by X. About a specific automation behaving correctly;
+  the primitive is captured in a sub-discriminator. Distinct from
+  `state-transition-claim` by mechanism-specificity: if the test
+  would still mean the same thing under a different implementing
+  primitive, it's a `state-transition-claim`; if not, it's an
+  `automation-effect-claim`.
+- `prohibition-claim` — operation O on target T is prohibited
+  under conditions C. Covers deletion-prohibited,
+  duplicate-prevented, and other system-enforced operation
+  restrictions. Distinct from permission's `capability-claim`:
+  prohibition is about *system enforcement* (a VR, sharing rule,
+  or trigger blocks the operation regardless of user); capability
+  is about *user privilege* (this user lacks the right).
 
 *Configuration archetype:*
-- `existence-claim` — entity X exists in the org
-- `property-claim` — metadata entity X has property P with value V
-- `activation-claim` — entity X is active/inactive
-- `metadata-relationship-claim` — metadata entity X has structural
-  relationship to Y
+
+- `existence-claim` — metadata entity E exists in the org.
+- `property-claim` — metadata entity E has property P with value
+  V. Covers activation (`active`/`inactive` as property values),
+  status, configuration values, and other entity properties.
+- `metadata-relationship-claim` — metadata entity E has
+  structural relationship R to entity F (e.g., field belongs to
+  object, layout assigned to record-type, validation rule on
+  object).
 
 *Permission archetype:*
-- `capability-claim` — user/profile X can/cannot perform action Y
-  on Z
-- `field-access-claim` — profile X has read/edit access to field Y
-- `record-visibility-claim` — user X can/cannot see record Y
-- `sharing-claim` — sharing rules grant/deny access to user X
+
+- `capability-claim` — subject S (user/profile/permset) can or
+  cannot perform action A on target T under context C. Covers
+  field-access (action=read/edit, target=field),
+  record-visibility (action=read, target=record), object-level
+  CRUD, and other outcome-level capabilities.
+- `sharing-rule-claim` — sharing rule R grants or denies access
+  of type T to subject S under criteria C. Distinct from
+  `capability-claim` by structural focus: capability-claim is
+  about the *outcome* (what the user can do); sharing-rule-claim
+  is about the *rule mechanism* (what the rule itself declares).
 
 *UI archetype:*
-- `element-visibility-claim` — element X is/is-not visible under
-  state Y
-- `element-state-claim` — element X has property P (enabled, value,
-  text) under state Y
-- `navigation-claim` — action X takes user to page Y
-- `layout-claim` — page X displays sections/fields in arrangement Y
+
+- `element-state-claim` — UI element E has property P with value
+  V under page state S. Covers visibility (property=visible),
+  enabled-state, displayed-text, displayed-value, and other
+  element properties. Provisional — UI archetype is least-mature
+  in the roadmap and concrete UI tests may surface new kinds
+  that warrant addition under the semantic-form guardrail.
+- `navigation-claim` — action A on page P1 takes the user to
+  page P2.
+- `layout-claim` — page P displays sections and fields in
+  arrangement A. About page-level composition, distinct from
+  single-element properties.
 
 *Integration archetype:*
-- `outbound-message-claim` — when X happens, outbound message Y is
-  sent with payload Z
-- `platform-event-claim` — when X happens, platform event Y fires
-  with payload Z
-- `inbound-effect-claim` — when external system sends X, internal
-  state changes to Y
-- `callout-claim` — when X happens, outbound HTTP callout to Y
-  occurs
 
-Cross-archetype consolidation is likely on lock — `existence-claim`
-may unify between configuration (does the field exist?) and
-data-behavior (does the record exist?). UI's `element-state-claim`
-may split into narrower kinds once concrete UI tests surface.
-S2-Q-003 will refine.
+- `platform-event-claim` — when trigger T occurs, platform event
+  E fires with payload P.
+- `outbound-message-claim` — when trigger T occurs, outbound
+  (workflow) message M is sent with XML payload P.
+- `callout-claim` — when trigger T occurs, outbound HTTP callout
+  to endpoint U is made with request R.
+- `inbound-effect-claim` — when external system sends inbound
+  message M, internal state change C results.
+
+The four integration kinds remain distinct rather than
+consolidating into a single `outbound-effect-claim` because their
+semantic forms differ — different payload structures and
+inspection mechanisms — not merely different implementation
+primitives. See D-053.
 
 **Forward compatibility.** Schema accommodates all five archetypes
 from day one. Discriminator columns exist; per-archetype semantic
@@ -270,18 +314,23 @@ forms come online incrementally as their archetypes ship. v1 may
 materialize only the data-behavior archetype's semantic forms; the
 foundation must not foreclose the other four.
 
-**Deferred to S2-Q-003.**
+**Deferred to S2-Q-003 (remaining sub-cycles).**
 
-- Recipe-kind taxonomy (parallel to the claim-kind seed above).
+- Recipe-kind taxonomy (parallel to the locked claim-kind taxonomy
+  above; sub-cycle 2).
 - Concrete storage shape for the uniform envelope and archetype-
-  specific semantic forms (table layout, JSONB schemas, Pydantic
-  validation).
-- Cross-archetype consolidation of claim-kinds that may unify.
+  specific semantic forms — table layout, JSONB schemas, Pydantic
+  validation (sub-cycle 3).
+- Identity-hash mechanics for `(archetype, claim_kind, claim body,
+  semantic conditions)` (sub-cycle 4).
+- Validation patterns: what's enforced at app boundary, what at DB
+  layer (sub-cycle 5).
 - The relationship between the capability-assumption model and
-  environment-availability metadata (partially S2-Q-007 territory).
+  environment-availability metadata (partially S2-Q-007
+  territory).
 
-See `DECISIONS_LOG.md` D-052 for rationale and alternatives
-considered.
+See `DECISIONS_LOG.md` D-052 and D-053 for rationale and
+alternatives considered.
 
 ---
 

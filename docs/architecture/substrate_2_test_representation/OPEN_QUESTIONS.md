@@ -18,9 +18,25 @@ questions live in the top-level `OPEN_QUESTIONS.md`.
 
 ### S2-Q-003 — Test case data model
 
-Given S2-Q-001 and S2-Q-002: concrete columns, tables, JSONB shapes.
-Story view vs mechanical view (or both). Step ontology — if "steps"
-survive S2-Q-002 as a unifying concept.
+Multi-sub-cycle question. Concrete columns, tables, JSONB shapes,
+identity mechanics, validation patterns.
+
+Sub-cycles:
+
+- ~~Sub-cycle 1: Claim-kind taxonomy.~~ Locked per D-053. 16 kinds
+  across 5 archetypes. See `SPEC.md` §3.
+- **Sub-cycle 2 (next):** Recipe-kind taxonomy. Parallel to
+  claim-kind for the procedural side; capability-assumption
+  profiles per recipe-kind.
+- Sub-cycle 3: Storage realization. Discriminator-column-plus-JSONB,
+  envelope-plus-detail-tables, or hybrid. Constrained by the locked
+  taxonomies and the S2-Q-005 versioning choice.
+- Sub-cycle 4: Identity-hash mechanics. Canonical hashing of
+  `(archetype, claim_kind, claim body, semantic conditions)` that
+  preserves identity stability across recipe rewrites and across
+  trivial body reorderings.
+- Sub-cycle 5: Pydantic validation patterns. What's enforced at
+  app boundary, what at DB layer, what at schema level.
 
 ### S2-Q-004 — References to S1 entities: reproducibility vs evolvability
 

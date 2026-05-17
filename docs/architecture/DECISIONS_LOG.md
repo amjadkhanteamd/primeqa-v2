@@ -1470,3 +1470,125 @@ its actual operational role.
   taxonomy; chooses storage realization)
 
 ---
+
+
+## D-053 — Claim-kind taxonomy locked (16 kinds, 5 archetypes) [S2-Q-003 sub-cycle 1]
+
+**Date:** 2026-05-16
+**Substrates affected:** [S2, with consequences for S3, S4, S6]
+**Status:** active
+
+**Decision.** The claim-kind taxonomy seeded in the §3 first draft
+is locked at 16 kinds across 5 archetypes:
+
+| Archetype | Locked claim-kinds | Count |
+|---|---|---|
+| `data_behavior` | `value-claim`, `state-transition-claim`, `automation-effect-claim`, `prohibition-claim` | 4 |
+| `configuration` | `existence-claim`, `property-claim`, `metadata-relationship-claim` | 3 |
+| `permission` | `capability-claim`, `sharing-rule-claim` | 2 |
+| `ui` | `element-state-claim`, `navigation-claim`, `layout-claim` | 3 |
+| `integration` | `platform-event-claim`, `outbound-message-claim`, `callout-claim`, `inbound-effect-claim` | 4 |
+
+A second guardrail is established alongside D-052's "archetypes
+are classifications, not storage partitions":
+
+**Claim-kinds model semantic forms, not implementation primitives.**
+A new claim-kind is warranted when it names a different *kind of
+truth being asserted* (different semantic form). A new claim-kind
+is *not* warranted when it names a different *Salesforce mechanism*
+that realizes the same semantic. Validation-rule-firing and
+flow-firing are the same semantic (an automation produced an
+effect); they share `automation-effect-claim` with the primitive
+captured in a sub-discriminator. Platform-event vs
+outbound-message vs callout differ in semantic form (different
+payload structures and observables) and get separate claim-kinds.
+
+**Rationale.** The §3 first-draft seeds (per D-052) gave a
+starting taxonomy. Locking required walking each archetype and
+applying merge/split/rename moves under two principles:
+mechanism-vs-semantic distinction (the new guardrail above), and
+TA pushback on specific items. Notable moves:
+
+- *Data-behavior:* merged `vr-firing-claim` + `flow-effect-claim`
+  into `automation-effect-claim` (same semantic, mechanism as
+  sub-discriminator). Merged `deletion-blocked-claim` +
+  `duplicate-prevention-claim` into `prohibition-claim` (renamed
+  from `operation-blocked-claim` per TA invariant-orientation
+  pushback — "operation O is prohibited under conditions C" reads
+  as an invariant, where "operation was blocked" reads
+  procedurally).
+- *Configuration:* absorbed `activation-claim` into
+  `property-claim` ("active" is a property value, not a separate
+  semantic).
+- *Permission:* kept Option B (capability-claim and
+  sharing-rule-claim distinct) per TA confirmation.
+  Sharing-rule's rule-mechanism structure is genuinely distinct
+  from outcome-capability — testing the rule itself is a
+  different assertion from testing what a user can do.
+- *UI:* absorbed `element-visibility-claim` into
+  `element-state-claim` (visibility is a property of element
+  state).
+- *Integration:* kept all four kinds distinct per TA
+  split-pushback — the three outbound effect kinds
+  (platform-event, outbound-message, callout) have different
+  semantic forms (different payload structures and inspection
+  mechanisms), not merely different implementation primitives.
+
+Articulated the state-transition vs automation-effect distinction
+explicitly: state-transition asserts the resulting end state
+(mechanism-agnostic); automation-effect asserts a specific
+automation firing and its side effects (mechanism-specific).
+Concrete dividing test: would the test still mean the same thing
+under a different implementing primitive? Yes →
+state-transition-claim. No → automation-effect-claim.
+
+**Alternatives considered.**
+
+- *Option A on permission (single capability-claim absorbing all
+  permission variants).* Rejected per TA pushback. Sharing-rule's
+  rule-mechanism structure is structurally distinct from
+  outcome-capability; collapsing them loses the rule-level test.
+- *Aggressive integration consolidation (`outbound-effect-claim`
+  covering platform-events, outbound-messages, callouts).*
+  Rejected per TA pushback. The three differ in semantic form
+  (payload structures, observables), which is exactly the kind
+  of distinction that warrants separate claim-kinds under the
+  new guardrail.
+- *`operation-blocked-claim` as procedural name.* Rejected per
+  TA invariant-orientation pushback. Renamed `prohibition-claim`.
+- *Cross-archetype name reuse (e.g., `existence-claim` in both
+  configuration and data-behavior).* Considered and not done in
+  this lock. The D-052 discriminator framing permits it, but no
+  data-behavior use case currently needs `existence-claim` —
+  record-existence is expressible via combinations of other
+  kinds (e.g., `prohibition-claim` of create + `value-claim` of
+  post-state). Reserved as a possible future addition without
+  schema change.
+
+**Downstream consequences.**
+
+- *S2-Q-003 sub-cycle 2 (recipe-kind taxonomy):* Can now be
+  designed with concrete claim-kinds to attach recipe-kinds to.
+- *S2-Q-003 sub-cycle 3 (storage realization):* Has 16
+  discriminator values to plan around. The merge/split moves in
+  this lock determine which sub-discriminators (e.g.,
+  automation-primitive within `automation-effect-claim`) become
+  part of the JSONB body.
+- *S3 (Generation, future substrate):* Schema-enforcement of LLM
+  output against S2 will validate that generated claims match
+  one of the 16 kinds with a valid sub-discriminator combination.
+- *Future taxonomy proposals:* Constrained by the
+  semantic-vs-implementation-primitive guardrail.
+
+**References.**
+
+- `substrate_2_test_representation/SPEC.md` §3 (claim-kind
+  taxonomy section, replaced from seeded to locked in this
+  commit; second guardrail subsection added)
+- D-052 (the three-discriminator framing and the first
+  archetype-classification guardrail this builds on)
+- `substrate_2_test_representation/OPEN_QUESTIONS.md` S2-Q-003
+  (the multi-sub-cycle data-model question, of which this is
+  sub-cycle 1)
+
+---
