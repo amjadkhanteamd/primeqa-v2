@@ -118,3 +118,46 @@ sub-cycles 1-5 with sub-cycle 1 marked as locked. D-053 added
 to top-level DECISIONS_LOG.md.
 
 Next sub-cycle: recipe-kind taxonomy (S2-Q-003 sub-cycle 2).
+
+---
+
+## 2026-05-17 — S2-Q-003 sub-cycle 2: recipe-kind taxonomy locked (D-054); S2-Q-011 opened
+
+Filled in SPEC §3 with the locked recipe-kind taxonomy. Five
+kinds: `data-recipe`, `metadata-recipe` (with `metadata-read` and
+`metadata-write` modes), `ui-recipe`, `event-subscription-recipe`,
+`callout-intercept-recipe`.
+
+Key moves during sub-cycle 2:
+
+- `crud-recipe` renamed `data-recipe` (broader semantic, matches
+  the observability-domain pattern of other kinds; "CRUD" was
+  leaking implementation-primitive vocabulary into the kind name).
+- `metadata-recipe` clarified with `metadata-read` and
+  `metadata-write` named sub-discriminator modes — different
+  capability assumptions and risk profiles.
+- `event-subscription-recipe` vs `callout-intercept-recipe` split
+  justified on semantic-vocabulary grounds (Salesforce-event
+  payload structure vs HTTP-request structure), not transport
+  grounds.
+- Inbound injection considered as recipe-kind (Option A) and
+  rejected per Option B: it's a triggering pattern, not an
+  observability domain.
+
+Added third guardrail in §3: recipe-kinds classify observability
+semantics only. Parallel to D-052's archetype classification rule
+and D-053's claim-kind semantic-form rule.
+
+S2-Q-011 (Trigger-kind classification) opened as a parallel
+architectural question per TA strong-recommend. Refinements
+integrated into S2-Q-011's content per TA pushback: internal data
+mutation as causal initiation (distinct from `data-recipe`
+observation), UI-trigger vs UI-recipe distinction, time-based
+trigger importance preserved as first-class, trigger-kind purity
+guardrail proposed.
+
+S2-Q-003 sub-cycle 2 marked complete in OPEN_QUESTIONS.md.
+D-054 added to top-level DECISIONS_LOG.md.
+
+Next: S2-Q-003 sub-cycle 3 (storage realization) and S2-Q-011
+(trigger-kind classification) become parallel design tracks.

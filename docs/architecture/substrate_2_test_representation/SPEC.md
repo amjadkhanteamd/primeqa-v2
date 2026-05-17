@@ -1,11 +1,13 @@
 # Substrate 2 — Test Representation — SPEC
 
 **Status:** Phase 1 in progress. §2 (deepest invariant) and §3
-(archetype representation, including claim-kind taxonomy lock)
-resolved per D-051, D-052, and D-053; other sections pending.
+(archetype representation, including claim-kind and recipe-kind
+taxonomy locks) resolved per D-051, D-052, D-053, and D-054; other
+sections pending.
 
-**Last substantive update:** 2026-05-16 (Phase 1: deepest invariant
-+ archetype representation + claim-kind taxonomy lock)
+**Last substantive update:** 2026-05-17 (Phase 1: deepest invariant
++ archetype representation + claim-kind taxonomy lock + recipe-kind
+taxonomy lock)
 
 ---
 
@@ -146,10 +148,10 @@ form*.
 - **`claim_kind`** — the fine-grained semantic type of the asserted
   truth. Multiple values per archetype (locked taxonomy below, per
   D-053). Determines the semantic form of the claim.
-- **`recipe_kind`** — the kind of executable procedure: e.g., CRUD
-  steps, metadata query, run-as context, browser interaction, event
-  capture. Determines the semantic form of the recipe and what
-  capability assumptions it carries.
+- **`recipe_kind`** — the kind of executable procedure (locked
+  taxonomy below, per D-054). Five values total. Determines the
+  observability domain of the recipe and what capability assumptions
+  it carries.
 
 *Orthogonal* means independent: the three axes vary independently,
 not in a nested hierarchy. Not every combination is meaningful in
@@ -182,6 +184,12 @@ implementation mechanisms). The test for a proposed new claim-kind:
 "Does this name a different *kind of truth*, or just a different
 *mechanism*?" Different mechanism alone → not a new claim-kind.
 Different truth → maybe a new claim-kind.
+
+**Recipe-kinds classify observability semantics only.** A third
+guardrail, parallel to the archetype and claim-kind guardrails
+above. A recipe-kind names what a procedure observes and how it
+asserts — not what triggers the scenario being tested. Triggering
+actions are a separate classification axis, addressed in S2-Q-011.
 
 **Structural commonality (A).** Every layer of the five-layer model
 is uniformly present in every archetype. Within each layer, the
@@ -308,6 +316,67 @@ semantic forms differ — different payload structures and
 inspection mechanisms — not merely different implementation
 primitives. See D-053.
 
+**Recipe-kind taxonomy (locked per D-054).** Five recipe-kinds,
+each classifying an observability domain.
+
+- `data-recipe` — Record-level operations via the data API.
+  Broader than literal CRUD: covers create/read/update/delete,
+  SOQL queries including aggregates, record-action invocations
+  (e.g., Submit for Approval), composite/bulk operations, and
+  anonymous Apex blocks that operate on data. *Sub-discriminators:*
+  API choice (REST / Bulk / Composite), identity context (system /
+  run-as user), execution mechanism (direct API / anonymous Apex).
+  *Capability assumptions:* data API auth; write permissions on
+  target objects.
+
+- `metadata-recipe` — Metadata-level operations via Metadata API
+  or Tooling API. *Sub-discriminator modes:* `metadata-read`
+  (query metadata existence, properties, permissions matrices;
+  non-destructive) and `metadata-write` (create, update, or delete
+  metadata entities; destructive — requires coordination in shared
+  orgs). *Capability assumptions:* metadata API access for read;
+  plus deployment permission for write.
+
+- `ui-recipe` — Browser-driven interaction with Lightning UI.
+  Navigate, click, type, observe DOM state, capture screenshots.
+  *Sub-discriminators:* framework (Playwright / Selenium /
+  Lightning Test Service), identity context (system / run-as via
+  session impersonation). *Capability assumptions:* browser
+  environment; Salesforce UI authentication; session management.
+
+- `event-subscription-recipe` — Subscribe to and observe
+  Salesforce-defined event payloads (platform events, outbound
+  messages, change-data-capture streams). *Sub-discriminators:*
+  channel type (platform-event / outbound-message / CDC),
+  subscription mode (durable / ephemeral). *Capability
+  assumptions:* event channel subscription access.
+
+- `callout-intercept-recipe` — Capture Salesforce-initiated HTTP
+  callouts. Inspect method, URL, headers, request body, timing;
+  optionally return mocked responses. *Sub-discriminators:*
+  interception mechanism (mock endpoint / proxy). *Capability
+  assumptions:* mock endpoint infrastructure; Named Credential
+  configuration access.
+
+The split between `event-subscription-recipe` and
+`callout-intercept-recipe` rests on a semantic-vocabulary
+distinction, not a transport distinction: event subscription
+observes **Salesforce-defined event payloads** (event-firing
+assertions on Salesforce-native schemas); callout interception
+observes **arbitrary HTTP requests** (HTTP-protocol-level
+assertions on method, URL, headers, body). These produce different
+assertion vocabularies regardless of underlying transport, and
+warrant separate kinds under the semantic-form guardrail.
+
+Inbound injection is intentionally not a recipe-kind. Tests of
+`inbound-effect-claim` use `data-recipe` or
+`event-subscription-recipe` for observation; the inbound payload
+that triggers the scenario is a trigger-kind concern addressed
+in S2-Q-011 — recipe-kinds preserve observability purity.
+
+See `DECISIONS_LOG.md` D-054 for rationale and alternatives
+considered.
+
 **Forward compatibility.** Schema accommodates all five archetypes
 from day one. Discriminator columns exist; per-archetype semantic
 forms come online incrementally as their archetypes ship. v1 may
@@ -316,8 +385,6 @@ foundation must not foreclose the other four.
 
 **Deferred to S2-Q-003 (remaining sub-cycles).**
 
-- Recipe-kind taxonomy (parallel to the locked claim-kind taxonomy
-  above; sub-cycle 2).
 - Concrete storage shape for the uniform envelope and archetype-
   specific semantic forms — table layout, JSONB schemas, Pydantic
   validation (sub-cycle 3).
@@ -329,7 +396,11 @@ foundation must not foreclose the other four.
   environment-availability metadata (partially S2-Q-007
   territory).
 
-See `DECISIONS_LOG.md` D-052 and D-053 for rationale and
+Trigger-kind classification — surfaced during sub-cycle 2 as a
+parallel concept to recipe-kind — is tracked separately as
+S2-Q-011.
+
+See `DECISIONS_LOG.md` D-052, D-053, and D-054 for rationale and
 alternatives considered.
 
 ---

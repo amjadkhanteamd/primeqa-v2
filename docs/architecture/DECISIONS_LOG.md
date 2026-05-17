@@ -1592,3 +1592,117 @@ state-transition-claim. No → automation-effect-claim.
   sub-cycle 1)
 
 ---
+
+
+## D-054 — Recipe-kind taxonomy locked (5 kinds, observability-domain only) [S2-Q-003 sub-cycle 2]
+
+**Date:** 2026-05-17
+**Substrates affected:** [S2, with consequences for S3, S4]
+**Status:** active
+
+**Decision.** The recipe-kind taxonomy is locked at 5 kinds:
+
+| Recipe-kind | Observability domain |
+|---|---|
+| `data-recipe` | Record-level operations via data API (broader than CRUD) |
+| `metadata-recipe` | Metadata-level operations (with `metadata-read` and `metadata-write` sub-discriminator modes) |
+| `ui-recipe` | Browser-driven Lightning UI interaction |
+| `event-subscription-recipe` | Salesforce-defined event payload observation |
+| `callout-intercept-recipe` | Salesforce-initiated HTTP callout observation |
+
+A third guardrail is established alongside D-052's "archetypes are
+classifications, not storage partitions" and D-053's "claim-kinds
+model semantic forms, not implementation primitives":
+
+**Recipe-kinds classify observability semantics only.** A
+recipe-kind names what a procedure observes and how it asserts —
+not what triggers the scenario being tested. Triggering actions
+are a separate classification axis, tracked as S2-Q-011.
+
+**Rationale.** The sub-cycle 2 design conversation surfaced two
+related questions: (1) what set of observability domains exists
+in Salesforce testing, and (2) is the triggering-action of a test
+part of the recipe or separate from it. The first question
+produced the 5 kinds. The second question was resolved by adopting
+Option B from the design conversation: inbound-injection is not a
+recipe-kind; it belongs to a separate trigger-kind classification.
+This preserves "one observability domain per recipe-kind" as a
+clean structural rule.
+
+Key moves during the design conversation:
+
+- `crud-recipe` renamed `data-recipe`. The CRUD framing was
+  leaking implementation-primitive vocabulary into the kind name.
+  `data-recipe` is broader (covers queries, aggregates, record
+  actions, composite operations, anonymous-Apex-over-data) and
+  matches the observability-domain pattern of the other kinds.
+- `metadata-recipe` clarified with named sub-discriminator modes:
+  `metadata-read` (non-destructive query) and `metadata-write`
+  (destructive deploy). These have meaningfully different
+  capability assumptions and risk profiles. v1 expected to be
+  `metadata-read`-only; `metadata-write` covers configuration
+  tests asserting "deploying X changes behavior Y."
+- `event-subscription-recipe` vs `callout-intercept-recipe` split
+  justified on semantic-vocabulary grounds (Salesforce-event
+  payload structure vs HTTP-request structure), not on transport
+  grounds. Event-subscription assertions reference event-defined
+  fields; callout assertions reference HTTP request shape.
+  Different assertion vocabularies, different semantic forms,
+  separate kinds.
+- Inbound-injection considered as a 6th recipe-kind (composite
+  push-plus-observe) and rejected per Option B selection. Inbound
+  injection is a causal-initiation pattern, not an observability
+  pattern; classifying it as a recipe-kind would dissolve the
+  one-domain-per-kind rule. Tests of `inbound-effect-claim` use
+  existing recipe-kinds for observation; the inbound payload is
+  a trigger-kind concern.
+
+**Alternatives considered.**
+
+- *Option A: inbound-injection as composite recipe-kind* (push
+  payload + observe internal effect under one kind). Rejected per
+  Option B selection. Composite recipe-kinds violate the
+  one-domain-per-kind pattern.
+- *Option C: split inbound-injection by channel*
+  (`inbound-rest-recipe`, `inbound-soap-recipe`,
+  `inbound-email-recipe`). Rejected per Option B selection.
+  Inbound channel splits would proliferate kinds without
+  resolving the underlying issue that inbound injection is a
+  trigger, not an observability domain.
+- *Apex as its own recipe-kind.* Rejected. Apex is an execution
+  mechanism that can wrap data, metadata, or computation
+  operations; the observability pattern depends on what the Apex
+  does, not on Apex itself. Apex becomes a sub-discriminator on
+  `data-recipe` and `metadata-recipe` where applicable.
+- *Run-as as its own recipe-kind.* Rejected. Run-as is an
+  identity context that modifies how `data-recipe`, `ui-recipe`,
+  or `metadata-recipe` execute. The observability pattern doesn't
+  change; only the user identity does. Run-as becomes a
+  sub-discriminator plus a capability assumption.
+
+**Downstream consequences.**
+
+- *S2-Q-003 sub-cycle 3 (storage realization):* Has 5 recipe-kind
+  discriminator values to plan around, plus the sub-discriminator
+  patterns within each.
+- *S2-Q-011 (trigger-kind classification):* Now a tracked open
+  question. Triggering actions including inbound injection,
+  internal data mutation, UI actions, time-based triggers, and
+  configuration changes need their own taxonomic treatment.
+- *S4 (Execution, future substrate):* Recipe-kind dispatches to
+  a specific executor; sub-discriminators tune the execution
+  within that kind. S4 will need a recipe-selection algorithm
+  that matches recipe capability assumptions against environment
+  availability.
+
+**References.**
+
+- `substrate_2_test_representation/SPEC.md` §3 (Recipe-kind
+  taxonomy subsection and observability-purity guardrail added
+  in this commit)
+- D-051, D-052, D-053 (the foundation this builds on)
+- `substrate_2_test_representation/OPEN_QUESTIONS.md` S2-Q-003
+  sub-cycle 2 (closed by this decision) and S2-Q-011 (newly
+  opened parallel question)
+
+---
