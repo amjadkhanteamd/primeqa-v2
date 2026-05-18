@@ -1,12 +1,12 @@
 # Substrate 2 — Test Representation — SPEC
 
-**Status:** §2, §3, §4 (data model), and §6 (lifecycle and
-versioning) substantively complete per D-051 through D-057.
-Remaining sections (§1, §5, §7-§11) pending their respective
-questions.
+**Status:** §2, §3, §4 (data model), §5 (S1 references), and §6
+(lifecycle and versioning) substantively complete per D-051
+through D-058. Remaining sections (§1, §7-§11) pending their
+respective questions.
 
-**Last substantive update:** 2026-05-17 (storage realization +
-effective-time supersession versioning)
+**Last substantive update:** 2026-05-17 (hybrid-by-layer reference
+model with ontology-enforcement validation)
 
 ---
 
@@ -123,8 +123,8 @@ direction; the §4 data model does not foreclose either.
 - *S2-Q-004 (S1 references).* References inside the claim are
   intent-bearing and lean toward pinning (preserves meaning);
   references inside the recipe are operational and lean toward
-  logical resolution (preserves liveness). Final reference model
-  pending S2-Q-004.
+  logical resolution (preserves liveness). Resolved per D-058
+  as hybrid-by-layer; see §5.
 - *S2-Q-006 (authority).* The authority boundary is now concrete:
   S8 has autonomous authority over the four non-identity-bearing
   layers; changes to either identity-bearing layer require human
@@ -705,7 +705,220 @@ considered.
 
 ## 5. References to S1 entities
 
-(Placeholder. Pending S2-Q-004.)
+**Resolution.** Per D-058: substrate-2 uses **hybrid-by-layer**
+reference resolution. Identity-bearing layers (asserted truth,
+semantic conditions) require pinned references; operational
+layers (causal initiation, observation realization, execution
+environment) default to logical references, with pinned permitted
+as opt-in for specific reproducibility needs.
+
+### 5.1 The hybrid-by-layer rule
+
+| Layer | Reference kind | Rule |
+|---|---|---|
+| Asserted system truth | pinned | **required** |
+| Semantic conditions | pinned | **required** |
+| Causal initiation | logical | **default**; pinned opt-in |
+| Observation realization | logical | **default**; pinned opt-in |
+| Execution environment | logical | **default**; pinned opt-in |
+| Provenance | (no entity references in body) | n/a |
+
+The rule maps directly onto the sixth guardrail
+(semantic-vs-operational lifecycle distinction). References that
+participate in the test's identity are pinned because their
+specific version is part of what makes the test mean what it
+means. References that participate in operational realization
+default to logical because the operational realization should
+follow org evolution naturally; pinning is the exception for
+reproducibility-specific needs.
+
+### 5.2 Reference shapes
+
+References live inside JSONB bodies as typed objects.
+
+**Pinned reference** (used in identity-bearing layer bodies;
+permitted in operational layer bodies for reproducibility):
+
+```json
+{
+  "ref_kind": "pinned",
+  "entity_type": "field",
+  "entity_id": "550e8400-e29b-41d4-a716-446655440000",
+  "version_seq": 47,
+  "external_id": "Account.AccountNumber"
+}
+```
+
+`entity_id` and `version_seq` are the canonical authoritative
+reference. `external_id` is informational — useful for human
+readability, exports, and as a fallback identifier. The pinned
+reference resolves against S1's bitemporal history at the
+specified `version_seq`.
+
+**Logical reference** (default in operational layer bodies):
+
+```json
+{
+  "ref_kind": "logical",
+  "entity_type": "field",
+  "external_id": "Account.AccountNumber"
+}
+```
+
+Resolves at execution time against current S1 state via
+`(entity_type, external_id)`.
+
+The `ref_kind` field is part of the JSON shape (not implicit by
+location) so reference objects are self-describing for exports,
+debugging, and external tooling.
+
+### 5.3 Identity_hash canonicalization
+
+`identity_hash` (per D-057) canonicalizes references from
+identity-bearing layers as part of the semantic equivalence
+fingerprint. The canonicalization rule:
+
+- **Pinned references contribute `entity_id` only** to the hash
+  input. `version_seq` is operational metadata and is excluded.
+- **Logical references** do not appear in identity-bearing layers
+  (rejected by validation per §5.5).
+
+Consequence: when S8 updates a pinned reference's `version_seq`
+forward (the entity evolved compatibly per a blessed transition —
+see §5.7), the hash is preserved, the change is operational, and
+approval state is not invalidated. When S8 cannot update
+`version_seq` safely (entity meaning changed), the rewrite
+becomes a semantic edit requiring human authority; once approved,
+the hash changes and approval is invalidated.
+
+This puts S8 in a precise role: it can bump `version_seq`
+forward on pinned references when the underlying entity evolved
+in a way it has blessed; it must escalate to human authority
+when the evolution materially changes meaning.
+
+Full canonicalization mechanics (whitespace, ordering, complete
+input set, hash algorithm) are defined in S2-Q-003 sub-cycle 4.
+
+### 5.4 Coverage derivation
+
+`test_claim_coverage` extracts pinned references from
+identity-bearing layers (`asserted_truth` and
+`semantic_conditions`) only. Operational layer references —
+whether logical or opt-in pinned — are NOT in coverage; they are
+operational dependencies, not semantic content.
+
+Per D-056's forward-compat marker: operational dependencies of
+recipes (e.g., for S8 evolution propagation) belong to a future
+operational linkage layer (`test_recipe_dependencies` or
+similar), distinct from `test_claim_coverage`.
+
+### 5.5 Cross-layer reference validation as ontology enforcement
+
+Reference-kind validation is not Pydantic boilerplate; it is
+**ontology enforcement**. The hybrid-by-layer rule is the
+substrate's structural commitment to the semantic-vs-operational
+lifecycle distinction (sixth guardrail) and the continuity triad
+(seventh guardrail). Violating it would:
+
+- Make `identity_hash` ambiguous (does it canonicalize logical
+  refs?)
+- Blur the line between identity-bearing and operational layers
+- Compromise S8's authority boundary (S8 cannot autonomously
+  rewrite identity-bearing content)
+
+Therefore:
+
+- **Identity-bearing layers reject logical references at write
+  time.** Detected violations are write-time errors, not warnings.
+- **Operational layers accept both kinds.** Logical is the
+  default expectation; pinned is opt-in.
+- **The validation lives at the substrate level**, not in
+  application convention. Relaxing it is not a Pydantic refactor
+  — it would require an architectural decision revisiting the
+  hybrid-by-layer rule itself.
+
+### 5.6 external_id drift modes
+
+Logical references are evolvable but not safe — `external_id`
+resolves dynamically against S1's current state, and "current
+state" can drift in multiple meaningful ways. S8's drift detection
+must handle multiple modes, not a single concern:
+
+- **Rename** — `external_id` changes; `entity_id` stable. Pinned
+  refs survive (still point to same `entity_id`); logical refs
+  break.
+- **Move** — same `external_id` on different parent (e.g., a
+  custom field moved between objects). Logical refs may resolve
+  to the wrong target.
+- **Replace** — entity deleted, new entity created with same
+  `external_id`. Logical refs resolve to the new entity; pinned
+  refs to the old still resolve in S1 history.
+- **Namespace shift** — managed-package contexts change (e.g.,
+  `Account__c` vs `ns__Account__c`). Logical refs may fail to
+  resolve.
+- **Inheritance change** — permission/profile structures where
+  `external_id` resolves through inheritance chains; inheritance
+  edits change resolution.
+- **Metadata-resolution quirks** — Salesforce-specific edge
+  cases (custom field external IDs vs standard field naming;
+  custom labels with locale-dependent resolution; etc.).
+
+S8's responsibility under each mode is broadly:
+
+- Detect the drift mode via S1's diff structure
+- For pinned-referencing tests: drift is contained (pinned refs
+  still resolve historically); S8 may propose updates to current
+  with human review
+- For logical-referencing tests: drift may silently change
+  meaning; S8 surfaces affected tests for review
+
+Single-mode drift detection ("name collision") is insufficient.
+The S8 design must address each mode explicitly.
+
+### 5.7 Reference semantics under replay modes (cross-reference to §6.8)
+
+Per D-057's reserved replay modes (§6.8), references resolve
+differently under historical vs semantic replay:
+
+- **Historical replay:** pinned refs resolve at their pinned
+  `(entity_id, version_seq)`; logical refs resolve at the
+  historical point's S1 state.
+- **Semantic replay:** logical refs resolve to current S1
+  entities. Pinned refs follow forward to current `version_seq`
+  of the same `entity_id` **only via S8-blessed transitions** —
+  entity evolutions S8 has validated as semantically equivalent.
+  Unblessed transitions surface for human review rather than
+  silent forward-resolution.
+
+The S8-blessing mechanism is anchored in `identity_hash`
+preservation: entity evolutions that preserve hash are blessed
+and may be silently followed in semantic replay; evolutions that
+change hash are unblessed and require human authority before
+semantic replay proceeds past them.
+
+This makes semantic replay disciplined, not aggressive. "Follow
+forward" is a structural capability, not a default behavior.
+
+### 5.8 Forward-compatibility reservations
+
+Three architectural directions reserved without action in v1:
+
+- **Weighted semantic linkage.** `test_claim_coverage` today has
+  binary `reference_kind` (subject / condition). Future may need
+  richer weighting — subject refs are load-bearing (entity change
+  strongly affects test) vs supporting condition refs (change
+  may or may not affect test). Storage shape preserves room for
+  this via either a `weight` column, a richer `reference_kind`
+  enum, or a parallel `linkage_weight` table.
+- **Operational linkage layer for recipes.** Per D-056's marker;
+  S2-Q-003 sub-cycle 5 / future S8 work may surface this.
+- **Reference resolution policies.** Per D-057's marker;
+  vocabulary upgrade is on standby. If the logical/pinned binary
+  diversifies (nearest-compatible, policy-constrained, etc.),
+  these become resolution policies under a common framing.
+
+See `DECISIONS_LOG.md` D-058 for rationale and alternatives
+considered.
 
 ---
 
@@ -844,19 +1057,29 @@ becomes a substrate-level decision requiring explicit
 re-evaluation of the lineage guarantee — not a routine
 optimization.
 
-### 6.8 Replay modes (reserved)
+### 6.8 Replay modes (storage support; engine downstream)
 
 Two distinct replay modes are supported by the storage shape;
-the actual replay engine is downstream (S4 territory).
+the actual replay engine is downstream (S4 territory). Per D-058,
+reference resolution differs by mode:
 
 - **Historical replay** — reconstruct the test exactly as it was
-  at a point in time. Use pinned references where they exist;
-  resolve other references at the historical point's S1 state.
-  Answers "what did this test do on 2024-03-15."
+  at a point in time. Pinned references resolve at their pinned
+  `(entity_id, version_seq)`; logical references resolve at the
+  historical point's S1 state. Answers "what did this test do
+  on 2024-03-15."
 - **Semantic replay** — reconstruct the test's meaning but
-  execute against current state. Use logical references; resolve
-  to current S1 entities. Answers "what does this test mean
-  today, even if it was authored a year ago."
+  execute against current state. Logical references resolve to
+  current S1 entities. Pinned references follow forward to
+  current `version_seq` of the same `entity_id` **only via
+  S8-blessed transitions** — entity evolutions S8 has validated
+  as semantically equivalent (those preserving `identity_hash`).
+  Unblessed transitions surface for human review rather than
+  silent forward-resolution.
+
+The S8-blessing discipline makes semantic replay deliberate,
+not aggressive. Follow-forward is a structural capability of
+the substrate, not a default behavior of the replay engine.
 
 ### 6.9 Reservations (forward-compatible directions)
 

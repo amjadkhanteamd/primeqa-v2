@@ -286,37 +286,90 @@ Two new guardrails landed in §3:
 SPEC.md filled with substantive content for the first time;
 both previously placeholders.
 
-TA refinements integrated across both cycles:
-- Pattern D + claim/recipe split + discriminator placement +
-  app-level coverage (sub-cycle 3 working position)
-- Semantic linkage framing for coverage
-- Recipe-level provenance support
-- `body_schema_version` rename (precision over `schema_version`)
-- Forward-compat marker for semantic_conditions graphification
-- Recipes as first-class operational entities (explicit framing)
-- Row discriminator as canonical authority (row > body)
-- Reserved room for operational linkage layer (recipe-derived)
-- Semantic-vs-operational lifecycle guardrail (sixth)
-- "Bitemporal" → "effective-time supersession" terminology
-- `version_seq` over `valid_to` invariant hierarchy
-- `identity_hash` semantic equivalence fingerprint framing
-- Canonicalization as governance-critical (elevates sub-cycle 4)
-- Archival reframed: lineage continuity > retention optimization
-- Replay-sensitive recipe selection reserved
-- Version-granular provenance reserved
-- "Resolution policy" direction acknowledged; vocabulary not
-  forced
-- Continuity triad guardrail (seventh)
-
 S2-Q-005 moved to Resolved. S2-Q-003 sub-cycle 3 marked complete;
 sub-cycle 4 entry expanded with governance-critical framing.
 D-056 and D-057 added to top-level DECISIONS_LOG.md.
 
 Substrate-2 SPEC is now substantively complete on §2, §3, §4, §6.
-Remaining sections (§1 overview, §5 references, §7 mutation paths,
-§8 execution-history boundary, §9 requirement linkage, §10 outward
-surfaces, §11 v2.2 disposition) pending their respective questions.
 
 Next: S2-Q-003 sub-cycle 4 (identity-hash mechanics; now framed
 as governance work) and S2-Q-004 (S1 references; coupled with
 the just-resolved versioning model).
+
+---
+
+## 2026-05-17 — S2-Q-004 resolved: reference model — hybrid by layer with ontology-enforcement validation (D-058)
+
+Resolved the deepest pressure in S2's reference design:
+reproducibility vs evolvability for S1 references. Four candidate
+models considered (pinned everywhere, logical everywhere, hybrid
+by reference kind, both with explicit conversion); hybrid-by-layer
+selected as cleanest cut along the existing semantic-vs-operational
+lifecycle boundary.
+
+**Reference model:**
+
+- Identity-bearing layers (asserted_truth, semantic_conditions):
+  pinned references **required**. Pinned = entity_id + version_seq.
+- Operational layers (causal_initiation, observation_realization,
+  execution_environment): logical references **default**; pinned
+  **allowed as opt-in** for reproducibility cases.
+- Reference shapes: typed JSON objects with `ref_kind`
+  discriminator; pinned carries (entity_id, version_seq,
+  informational external_id); logical carries external_id only.
+
+**Identity_hash canonicalization:** pinned refs contribute
+entity_id only (not version_seq). S8 may bump version_seq forward
+on pinned refs when entity evolution is blessed (operational
+edit, hash preserved). Hash-changing rewrites require human
+authority.
+
+**Coverage:** pinned references from identity-bearing layers only.
+Operational dependencies (recipe-derived) belong to the future
+operational linkage layer per D-056's marker.
+
+**Cross-layer validation is ontology enforcement.** Substrate-level
+commitment, not Pydantic routine. Identity-bearing layers reject
+logical refs at write time. Operational layers accept both.
+Relaxing this rule is an architectural decision, not a refactor.
+
+**Semantic replay refinement (SPEC §6.8 updated):** semantic
+replay follows pinned references forward only via S8-blessed
+transitions — entity evolutions S8 has validated as semantically
+equivalent (those preserving identity_hash). Unblessed transitions
+surface for human review rather than silent forward-resolution.
+Makes follow-forward a deliberate capability, not a default.
+
+**external_id drift is multi-mode.** S8's drift detection handles
+six modes explicitly: rename, move, replace, namespace shift,
+inheritance change, metadata-resolution quirks. Single-mode
+framing is insufficient.
+
+**Weighted semantic linkage reservation:** future evolution of
+`test_claim_coverage.reference_kind` (currently binary
+subject/condition) toward richer weighting preserved as
+forward-compat marker.
+
+TA refinements integrated:
+- Semantic replay must not casually "follow forward" — S8-blessed
+  transitions only
+- Operational layers default to logical, allow pinned opt-in (not
+  strict reject)
+- external_id drift is multi-mode (deeper than name collision)
+- Cross-layer validation as ontology enforcement framing
+- Weighted semantic linkage reservation
+
+§5 (References to S1 entities) of SPEC.md filled with substantive
+content for the first time; previously placeholder. §6.8 (Replay
+modes) refined to incorporate S8-blessed forward-resolution.
+
+S2-Q-004 moved to Resolved. D-058 added to top-level DECISIONS_LOG.md.
+
+Substrate-2 SPEC §2, §3, §4, §5, §6 now substantively complete.
+Remaining: §1 overview, §7 mutation paths, §8 execution-history
+boundary, §9 requirement linkage, §10 outward surfaces, §11 v2.2
+disposition.
+
+Next: S2-Q-003 sub-cycle 4 (identity-hash mechanics — governance-critical
+canonicalization) now well-constrained by both D-057 (versioning
+anchors) and D-058 (reference canonicalization scope).

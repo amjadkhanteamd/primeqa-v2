@@ -11,6 +11,16 @@ questions live in the top-level `OPEN_QUESTIONS.md`.
   D-051. See `SPEC.md` §2.
 - ~~S2-Q-002 — Common substrate across five archetypes (structural
   and semantic)~~ → resolved by D-052. See `SPEC.md` §3.
+- ~~S2-Q-004 — References to S1 entities: reproducibility vs
+  evolvability~~ → resolved by D-058. Hybrid by layer: pinned
+  required in identity-bearing layers, logical default with
+  pinned opt-in in operational layers. Cross-layer validation
+  is ontology enforcement. Identity_hash canonicalizes
+  `entity_id` only from pinned references. Coverage derived
+  from identity-bearing layer pinned refs only. Multi-mode
+  `external_id` drift detection is S8's responsibility.
+  Semantic-replay forward-resolution conditioned on S8-blessed
+  transitions. See `SPEC.md` §5.
 - ~~S2-Q-005 — Lifecycle and versioning model~~ → resolved by D-057.
   Effective-time supersession with `version_seq` canonical authority,
   `identity_hash` as semantic equivalence fingerprint, logical-default
@@ -53,43 +63,6 @@ Sub-cycles:
   resulting governance contract.
 - Sub-cycle 5: Pydantic validation patterns. What's enforced at
   app boundary, what at DB layer, what at schema level.
-
-### S2-Q-004 — References to S1 entities: reproducibility vs evolvability
-
-The central design tension in S2's reference model:
-
-- *Pinned references* (entity UUID at specific `version_seq`) are
-  **reproducible but brittle**. A test generated at v47 can be
-  reconstructed exactly as it was meant; but it breaks if the
-  referenced entity is later renamed or restructured.
-- *Logical references* (`(entity_type, external_id)` resolved
-  through S1's query interface) are **evolvable but semantically
-  driftable**. The reference keeps working as the org changes; but
-  it may now refer to something subtly different from what the test
-  originally meant.
-
-This trade-off is probably the deepest pressure in S2's reference
-design. Candidate resolutions:
-
-- *Pinned everywhere.* Tests reproduce exactly; S8 mass-updates
-  references on each org change.
-- *Logical everywhere.* Tests evolve transparently; S6 has to
-  detect "the entity moved underneath me" cases.
-- *Hybrid by reference kind.* Direct citations pinned (preserves
-  intent); traversal-derived references logical (preserves
-  liveness).
-- *Both, with explicit conversion.* Every reference carries both
-  a pinned UUID and a logical identity; consumers choose semantics
-  per query.
-
-Sub-question: how references cover both directly-cited entities and
-traversal-derived entities (e.g., a Validation Rule that references
-a cited Field).
-
-Linked: S2-Q-005 (resolved — D-057's effective-time supersession
-favors pinned-by-default for identity-bearing refs; logical-default
-for operational refs); S2-Q-006 (S8's rewrite scope is constrained
-by how much pinning has been done).
 
 ### S2-Q-006 — Mutation paths and authority over meaning
 
