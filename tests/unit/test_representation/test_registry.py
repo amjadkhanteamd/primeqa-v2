@@ -353,18 +353,73 @@ class TestRegisterBodyDecorator:
 
 
 # ---------------------------------------------------------------------------
-# Default-registry hygiene — B-α MUST ship with an empty default
-# registry (no body kinds yet; bodies arrive in B-β..ε)
+# Default-registry hygiene — the package's top-level + non-body
+# submodules MUST NOT register anything. Body modules register only
+# when they're individually imported.
 # ---------------------------------------------------------------------------
 
 class TestDefaultRegistryHygiene:
-    def test_default_registry_is_empty_in_b_alpha(self) -> None:
-        """Concrete body modules don't exist yet in B-α; importing
-        the package must not leak any (kind, version) pairs.
+    def test_root_package_import_does_not_register_bodies(self) -> None:
+        """The contract: ``import primeqa.test_representation``
+        (or any of its non-body submodules) must NOT pull in claim
+        body modules as a side effect.
+
+        Verified in a subprocess so the test isn't contaminated by
+        the parent process's already-imported body modules (the
+        other tests in this run import claim bodies via top-of-file
+        imports; once those imports happen, ``default_registry``
+        is populated for the rest of the process lifetime). The
+        subprocess starts fresh.
 
         If this test breaks, a concrete body got imported by the
         package's __init__ path — find the import and gate it
         behind explicit module import per the registry's contract
         (bodies register at import time of the body module, not at
         import time of primeqa.test_representation)."""
-        assert len(default_registry) == 0
+        import subprocess
+        import sys
+
+        script = (
+            "from primeqa.test_representation.models.registry "
+            "import default_registry;"
+            "import primeqa.test_representation;"
+            "import primeqa.test_representation.errors;"
+            "import primeqa.test_representation.models;"
+            "import primeqa.test_representation.models.common;"
+            "import primeqa.test_representation.models.references;"
+            "import primeqa.test_representation.models.registry;"
+            # claims/ is a placeholder package — importing it must
+            # not pull in any archetype subpackage.
+            "import primeqa.test_representation.models.claims;"
+            "assert len(default_registry) == 0, "
+            "f'package import polluted registry: "
+            "{sorted(default_registry._models.keys())}'"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            check=False,
+            capture_output=True,
+        )
+        assert result.returncode == 0, (
+            f"subprocess failed:\n"
+            f"stdout: {result.stdout.decode()}\n"
+            f"stderr: {result.stderr.decode()}"
+        )
+
+    def test_in_process_registry_holds_expected_bodies(self) -> None:
+        """In the live test process the data-behavior claim bodies
+        and the conditions body have all been imported via the
+        other test modules' top-of-file imports. They MUST be
+        registered. This is the positive counterpart to the
+        hygiene test above."""
+        for key in (
+            ("conditions", 1),
+            ("value-claim", 1),
+            ("state-transition-claim", 1),
+            ("automation-effect-claim", 1),
+            ("prohibition-claim", 1),
+        ):
+            assert key in default_registry, (
+                f"expected {key!r} registered in default_registry "
+                f"after B-β imports"
+            )
