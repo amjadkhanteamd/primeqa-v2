@@ -31,9 +31,12 @@ from __future__ import annotations
 from primeqa.test_representation.errors import (
     AuthorityViolationError,
     BodyCorruptionError,
+    FloatInIdentityBearingContentError,
     OntologyViolationError,
     SchemaIncompatibilityError,
     SubstrateError,
+    UnmarkedArraySemanticsError,
+    UnresolvedSemanticProjectionError,
 )
 
 # ---------------------------------------------------------------------------
@@ -171,14 +174,40 @@ from primeqa.test_representation.models.environment import (
     InfrastructureAssumption,
 )
 
+# ---------------------------------------------------------------------------
+# Canonicalization + identity_hash (Track C)
+#
+# Imports are ordered so the canonicalization core loads first; the
+# identity_hash module depends on it. The ``canonicalizers`` package
+# import then triggers registration of the state-transition and
+# automation-effect custom canonicalizers as a side effect.
+# ---------------------------------------------------------------------------
+
+from primeqa.test_representation.canonicalization import (
+    canonical_serialize,
+    canonicalize,
+)
+from primeqa.test_representation.identity_hash import (
+    IDENTITY_HASH_VERSION,
+    compute_identity_hash,
+)
+from primeqa.test_representation.canonicalizers import (
+    CanonicalizerRegistry,
+    default_canonicalizer_registry,
+    register_canonicalizer,
+)
+
 
 __all__ = [
     # ----- Errors -----
     "AuthorityViolationError",
     "BodyCorruptionError",
+    "FloatInIdentityBearingContentError",
     "OntologyViolationError",
     "SchemaIncompatibilityError",
     "SubstrateError",
+    "UnmarkedArraySemanticsError",
+    "UnresolvedSemanticProjectionError",
     # ----- Common types -----
     "ArraySemantics",
     "BodyBase",
@@ -246,4 +275,12 @@ __all__ = [
     "ExecutionEnvironmentBody",
     "FeatureAssumption",
     "InfrastructureAssumption",
+    # ----- Canonicalization + identity_hash (Track C) -----
+    "CanonicalizerRegistry",
+    "IDENTITY_HASH_VERSION",
+    "canonical_serialize",
+    "canonicalize",
+    "compute_identity_hash",
+    "default_canonicalizer_registry",
+    "register_canonicalizer",
 ]

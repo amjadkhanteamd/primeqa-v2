@@ -274,3 +274,20 @@ class TestAutomationEffectRegistration:
         assert get_body_model(
             "automation-effect-claim", 1,
         ) is AutomationEffectClaimBody
+
+
+class TestAutomationEffectArraySemanticsMarker:
+    def test_affected_fields_marked_set(self) -> None:
+        """Per Track C: affected_fields is a set of field
+        references; order is incidental. The
+        :class:`ArraySemantics.SET` marker is required for the
+        automation-effect canonicalizer to sort the list and to
+        match the field_values dict keys correctly when
+        ``expected_effect`` is a
+        :class:`FieldChangeEffect`."""
+        from primeqa.test_representation.models.common import ArraySemantics
+
+        metadata = AutomationEffectClaimBody.model_fields[
+            "affected_fields"
+        ].metadata
+        assert ArraySemantics.SET in metadata

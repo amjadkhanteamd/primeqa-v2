@@ -205,3 +205,17 @@ class TestStateTransitionRegistration:
         assert get_body_model(
             "state-transition-claim", 1,
         ) is StateTransitionClaimBody
+
+
+class TestStateTransitionArraySemanticsMarker:
+    def test_subject_fields_marked_set(self) -> None:
+        """Per Track C: subject_fields is a set of field
+        references (entity_id-based); order is incidental.
+        :class:`ArraySemantics.SET` is required for the
+        canonicalizer to sort the list before hashing."""
+        from primeqa.test_representation.models.common import ArraySemantics
+
+        metadata = StateTransitionClaimBody.model_fields[
+            "subject_fields"
+        ].metadata
+        assert ArraySemantics.SET in metadata

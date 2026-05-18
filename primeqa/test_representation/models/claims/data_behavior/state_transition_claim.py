@@ -19,11 +19,14 @@ change — it could be a side effect or a block).
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import ConfigDict
 
-from primeqa.test_representation.models.common import BodyBase
+from primeqa.test_representation.models.common import (
+    ArraySemantics,
+    BodyBase,
+)
 from primeqa.test_representation.models.primitives import (
     EventDescriptor,
     StateDescriptor,
@@ -61,13 +64,18 @@ class StateTransitionClaimBody(BodyBase):
     Opportunity Object reference). NOT a field reference — this
     is the Object that owns the changing fields."""
 
-    subject_fields: list[IdentityBearingRef]
+    subject_fields: Annotated[
+        list[IdentityBearingRef], ArraySemantics.SET,
+    ]
     """The Field references mentioned in ``from_state`` and
     ``to_state``. Required for D-058 §5.4 coverage extraction:
     state dicts key by external_id string, so the explicit
-    IdentityBearingRefs live here. May be empty if the transition
-    is observed via a different mechanism (e.g., record existence
-    rather than field values), though that's atypical for v1."""
+    IdentityBearingRefs live here. Marked
+    :class:`ArraySemantics.SET` per D-059 §6.3.4 — order is
+    incidental, identity is by the set of entity_id values. May
+    be empty if the transition is observed via a different
+    mechanism (e.g., record existence rather than field values),
+    though that's atypical for v1."""
 
     from_state: StateDescriptor
     """The pre-event state. Field values keyed by field

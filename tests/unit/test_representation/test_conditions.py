@@ -239,3 +239,18 @@ class TestConditionsRegistration:
     def test_unknown_version_for_conditions_raises(self) -> None:
         with pytest.raises(SchemaIncompatibilityError):
             get_body_model("conditions", 99)
+
+
+# ---------------------------------------------------------------------------
+# ArraySemantics marker (Track C)
+# ---------------------------------------------------------------------------
+
+class TestConditionsArraySemanticsMarker:
+    def test_conditions_field_marked_set(self) -> None:
+        """Per Track C: conditions are AND-composed and order is
+        incidental; the field carries :class:`ArraySemantics.SET`
+        so canonicalization sorts the list before hashing."""
+        from primeqa.test_representation.models.common import ArraySemantics
+
+        metadata = SemanticConditionsBody.model_fields["conditions"].metadata
+        assert ArraySemantics.SET in metadata

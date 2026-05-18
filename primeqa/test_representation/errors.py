@@ -201,3 +201,118 @@ class AuthorityViolationError(SubstrateError):
             referent=referent,
             **extra,
         )
+
+
+# ---------------------------------------------------------------------------
+# Canonicalization error types (Track C)
+# ---------------------------------------------------------------------------
+
+class UnresolvedSemanticProjectionError(SubstrateError):
+    """Raised when canonicalization encounters a field marked with
+    :class:`SemanticField` or :class:`ProjectionField`.
+
+    Per SPEC §6.3.10: semantic projection fields are RESERVED in
+    v1 of the canonicalization policy. The markers exist on body
+    models so concrete bodies (B-β..ε) can reserve names without
+    forward-declaring; v2 will define how the markers translate
+    into the canonical form. v1 fails loud rather than silently
+    omitting the field.
+
+    Structured context:
+      - ``body_class``: the body class containing the marked field
+      - ``field_path``: dotted path to the marked field
+      - ``marker_kind``: which marker (``"SemanticField"`` or
+        ``"ProjectionField"``)
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        body_class: Optional[str] = None,
+        field_path: Optional[str] = None,
+        marker_kind: Optional[str] = None,
+        **extra: Any,
+    ) -> None:
+        super().__init__(
+            message,
+            body_class=body_class,
+            field_path=field_path,
+            marker_kind=marker_kind,
+            **extra,
+        )
+
+
+class UnmarkedArraySemanticsError(SubstrateError):
+    """Raised when canonicalization encounters a typed list field
+    in identity-bearing content that lacks an explicit
+    :class:`ArraySemantics` marker.
+
+    Per D-059 §6.3.4: identity-bearing list fields MUST declare
+    their semantics (ORDERED vs SET) explicitly. The canonicalizer
+    cannot guess: ORDERED would silently preserve incidental order
+    differences as semantic; SET would silently flatten meaningful
+    order. v1 requires the author to choose at the body-model
+    declaration site.
+
+    Untyped lists inside ``Any``-typed content default to ORDERED
+    (canonical-JSON convention); this error fires only for typed
+    ``list[T]`` fields on Pydantic models without an
+    :class:`ArraySemantics` marker.
+
+    Structured context:
+      - ``body_class``: the body class containing the unmarked field
+      - ``field_path``: dotted path to the unmarked list field
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        body_class: Optional[str] = None,
+        field_path: Optional[str] = None,
+        **extra: Any,
+    ) -> None:
+        super().__init__(
+            message,
+            body_class=body_class,
+            field_path=field_path,
+            **extra,
+        )
+
+
+class FloatInIdentityBearingContentError(SubstrateError):
+    """Raised when canonicalization encounters a Python ``float``
+    value in identity-bearing content.
+
+    Per D-059 §6.3.2: v1 of the canonicalization policy FORBIDS
+    floats in identity-bearing content. Float representation is
+    platform-dependent (IEEE-754 rounding differs across runtimes
+    and processors); allowing floats would make the
+    ``identity_hash`` unstable. Authors who need numeric values
+    use ``str`` (e.g., ``"3.14"``) or ``int`` (when the value is
+    discrete). v2 may introduce a ``DecimalValue`` shape with an
+    explicit precision contract if compelling.
+
+    Structured context:
+      - ``body_class``: the body class where the float was found
+      - ``field_path``: dotted path to the offending value
+      - ``value_repr``: ``repr(value)`` for diagnostic output
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        body_class: Optional[str] = None,
+        field_path: Optional[str] = None,
+        value_repr: Optional[str] = None,
+        **extra: Any,
+    ) -> None:
+        super().__init__(
+            message,
+            body_class=body_class,
+            field_path=field_path,
+            value_repr=value_repr,
+            **extra,
+        )

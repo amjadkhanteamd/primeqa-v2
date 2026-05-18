@@ -18,11 +18,14 @@ is meaningful for a given claim_kind.
 """
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from primeqa.test_representation.models.common import BodyBase
+from primeqa.test_representation.models.common import (
+    ArraySemantics,
+    BodyBase,
+)
 from primeqa.test_representation.models.references import IdentityBearingRef
 from primeqa.test_representation.models.registry import register_body
 
@@ -123,8 +126,8 @@ class SemanticConditionsBody(BodyBase):
     body_schema_version: Literal[1] = 1
     kind: Literal["conditions"] = "conditions"
 
-    conditions: list[Condition] = []
+    conditions: Annotated[list[Condition], ArraySemantics.SET] = []
     """Implicitly AND-composed clauses. Empty list = "applies
-    unconditionally". Order is preserved on the wire but is NOT
-    semantically meaningful (canonicalization per D-059 §6.3.4
-    will sort for hashing)."""
+    unconditionally". Marked :class:`ArraySemantics.SET` per D-059
+    §6.3.4: AND-composition is commutative; order is incidental on
+    the wire and canonicalization sorts for hashing."""
