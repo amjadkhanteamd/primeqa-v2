@@ -1,7 +1,7 @@
 """create substrate-2 tables
 
-Revision ID: <REPLACE_ME>
-Revises: <REPLACE_ME_WITH_LATEST_SUBSTRATE_1_REVISION>
+Revision ID: 123534d82956
+Revises: 20260515_0010
 Create Date: 2026-05-18
 
 Substrate-2 (Test Representation) initial schema. Per
@@ -38,8 +38,8 @@ from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
-revision = '<REPLACE_ME>'
-down_revision = '<REPLACE_ME_WITH_LATEST_SUBSTRATE_1_REVISION>'
+revision = '123534d82956'
+down_revision = '20260515_0010'
 branch_labels = None
 depends_on = None
 
