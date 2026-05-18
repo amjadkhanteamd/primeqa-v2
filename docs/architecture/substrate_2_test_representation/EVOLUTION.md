@@ -83,41 +83,17 @@ model's interaction with environment-availability metadata.
 
 ## 2026-05-16 — S2-Q-003 sub-cycle 1: claim-kind taxonomy locked (D-053)
 
-Filled in SPEC §3 with the locked claim-kind taxonomy, replacing
-the §3 "Seeded claim-kind taxonomy" subsection. 16 kinds across
-5 archetypes. Notable moves from the §3 first-draft seeds:
+Filled in SPEC §3 with the locked claim-kind taxonomy. 16 kinds
+across 5 archetypes. Notable consolidations: data-behavior
+absorbs `automation-effect-claim` (VR + Flow merged) and
+`prohibition-claim` (deletion-blocked + duplicate-prevention
+merged); configuration absorbs `activation-claim` into
+`property-claim`; UI absorbs `element-visibility-claim` into
+`element-state-claim`; integration kinds remain distinct on
+semantic-form grounds. Added second guardrail in §3: claim-kinds
+model semantic forms, not implementation primitives.
 
-- Data-behavior: merged VR-firing + Flow-effect into
-  `automation-effect-claim`; merged deletion-blocked +
-  duplicate-prevention into `prohibition-claim` (renamed from
-  `operation-blocked-claim` per TA invariant-orientation
-  pushback).
-- Configuration: absorbed `activation-claim` into
-  `property-claim`.
-- Permission: kept Option B (`capability-claim` +
-  `sharing-rule-claim` distinct) per TA confirmation.
-- UI: absorbed `element-visibility-claim` into
-  `element-state-claim`.
-- Integration: kept platform-event-claim, outbound-message-claim,
-  callout-claim distinct per TA split-pushback (different
-  semantic forms, not just different implementation primitives).
-
-Articulated the state-transition vs automation-effect
-distinction: state-transition asserts the resulting end state
-(mechanism-agnostic); automation-effect asserts a specific
-automation firing and its side effects (mechanism-specific).
-Dividing test: would the test still mean the same thing under a
-different implementing primitive?
-
-Added second guardrail in §3: claim-kinds model semantic forms,
-not implementation primitives. Parallel to D-052's "archetypes
-are classifications, not storage partitions."
-
-S2-Q-003 entry in OPEN_QUESTIONS.md expanded to enumerate
-sub-cycles 1-5 with sub-cycle 1 marked as locked. D-053 added
-to top-level DECISIONS_LOG.md.
-
-Next sub-cycle: recipe-kind taxonomy (S2-Q-003 sub-cycle 2).
+S2-Q-003 sub-cycle 1 marked complete. D-053 added to DECISIONS_LOG.md.
 
 ---
 
@@ -126,91 +102,25 @@ Next sub-cycle: recipe-kind taxonomy (S2-Q-003 sub-cycle 2).
 Filled in SPEC §3 with the locked recipe-kind taxonomy. Five
 kinds: `data-recipe`, `metadata-recipe` (with `metadata-read` and
 `metadata-write` modes), `ui-recipe`, `event-subscription-recipe`,
-`callout-intercept-recipe`.
+`callout-intercept-recipe`. Added third guardrail: recipe-kinds
+classify observability semantics only. S2-Q-011 (Trigger-kind
+classification) opened as parallel architectural question.
 
-Key moves during sub-cycle 2:
-
-- `crud-recipe` renamed `data-recipe` (broader semantic, matches
-  the observability-domain pattern of other kinds; "CRUD" was
-  leaking implementation-primitive vocabulary into the kind name).
-- `metadata-recipe` clarified with `metadata-read` and
-  `metadata-write` named sub-discriminator modes — different
-  capability assumptions and risk profiles.
-- `event-subscription-recipe` vs `callout-intercept-recipe` split
-  justified on semantic-vocabulary grounds (Salesforce-event
-  payload structure vs HTTP-request structure), not transport
-  grounds.
-- Inbound injection considered as recipe-kind (Option A) and
-  rejected per Option B: it's a triggering pattern, not an
-  observability domain.
-
-Added third guardrail in §3: recipe-kinds classify observability
-semantics only. Parallel to D-052's archetype classification rule
-and D-053's claim-kind semantic-form rule.
-
-S2-Q-011 (Trigger-kind classification) opened as a parallel
-architectural question per TA strong-recommend. Refinements
-integrated into S2-Q-011's content per TA pushback: internal data
-mutation as causal initiation (distinct from `data-recipe`
-observation), UI-trigger vs UI-recipe distinction, time-based
-trigger importance preserved as first-class, trigger-kind purity
-guardrail proposed.
-
-S2-Q-003 sub-cycle 2 marked complete in OPEN_QUESTIONS.md.
-D-054 added to top-level DECISIONS_LOG.md.
-
-Next: S2-Q-003 sub-cycle 3 (storage realization) and S2-Q-011
-(trigger-kind classification) become parallel design tracks.
+S2-Q-003 sub-cycle 2 marked complete. D-054 added to DECISIONS_LOG.md.
 
 ---
 
-## 2026-05-17 — S2-Q-011 resolved: trigger-kind taxonomy locked + four-discriminator extension + six-layer model amendment (D-055)
+## 2026-05-17 — S2-Q-011 resolved: trigger-kind taxonomy + four-discriminator extension + six-layer model amendment (D-055)
 
-Five interrelated architectural commitments landed in this cycle:
+Five interrelated architectural commitments: fourth orthogonal
+discriminator `trigger_kind`; six-layer structural model (adds
+"Causal initiation" layer); terminology supersession ("execution
+realization" → "observation realization"); five trigger-kinds
+locked (`inbound-trigger`, `data-mutation-trigger`, `ui-trigger`,
+`time-trigger`, `configuration-trigger`); two new guardrails
+(trigger-kind purity, trigger-vs-recipe orthogonality).
 
-1. Fourth orthogonal discriminator added — `trigger_kind` joins
-   archetype, claim_kind, recipe_kind. Extends D-052's
-   three-discriminator framing.
-2. Six-layer structural model — extends D-051's five-layer model
-   with a new "Causal initiation" layer for trigger realization.
-3. Terminology supersession — "Execution realization" (D-051)
-   renamed to "Observation realization" per D-054's recipe-kind
-   purity scope. §2's table updated for consistency. Term may be
-   further refined in future cycles.
-4. Five trigger-kinds locked: `inbound-trigger`,
-   `data-mutation-trigger`, `ui-trigger`, `time-trigger`,
-   `configuration-trigger`. Plane column distinguishes runtime
-   (four kinds) from model-plane (configuration-trigger).
-5. Two new guardrails: trigger-kind purity (parallel to the three
-   existing purity guardrails) and trigger-vs-recipe orthogonality
-   (about relationship between two discriminators).
-
-Key TA refinements integrated:
-
-- Time-trigger narrowed to "Salesforce mechanisms firing because
-  elapsed-time predicates were met" — NOT general async/retry/queue
-  semantics (those are downstream behaviors observed by recipes).
-- Configuration-trigger elevated to cross-plane structural
-  treatment, not just a label: explicit test-runtime risk,
-  shared-org coordination requirement, S8-adjacency noted.
-- Trigger identity nuance: operational by default, semantic if
-  the mechanism is asserted in the claim per D-051's discipline
-  rule.
-- One primary trigger per test (default) — softer than "one
-  trigger per test"; acknowledges composite scenarios while
-  favoring the simple case.
-- Four-axes summary table added to §3 (TA framing, verbatim).
-
-S2-Q-011 moved to Resolved in OPEN_QUESTIONS.md. D-055 added to
-top-level DECISIONS_LOG.md.
-
-Phase 1 of substrate-2 is now substantively complete on the
-conceptual side: deepest invariant + archetype representation +
-all three taxonomies + four-discriminator framing + six-layer
-model. Remaining S2-Q-003 sub-cycles (storage, identity-hash,
-validation) move from conceptual to concrete data model.
-
-Next: S2-Q-003 sub-cycle 3 (storage realization).
+S2-Q-011 moved to Resolved. D-055 added to DECISIONS_LOG.md.
 
 ---
 
@@ -219,234 +129,71 @@ Next: S2-Q-003 sub-cycle 3 (storage realization).
 Largest combined cycle in substrate-2 work so far. Two tightly
 coupled architectural questions resolved together.
 
-**D-056 — Storage realization:**
+**D-056 — Storage realization:** four-table layout (test_claims,
+test_recipes, test_provenance, test_claim_coverage); Pattern D
+(envelope + JSONB + hot-path typed columns); claim/recipe split;
+row-discriminator-as-canonical-authority; JSONB body conventions
+with `body_schema_version`; semantic linkage layer framing;
+polymorphic provenance; app-level coverage derivation. Two new
+guardrails: semantic-vs-operational lifecycle distinction;
+continuity triad.
 
-- Four-table layout: `test_claims`, `test_recipes`,
-  `test_provenance`, `test_claim_coverage`.
-- Pattern D selected (envelope + JSONB + hot-path typed columns).
-  Patterns B and C rejected as direct violations of D-052's
-  archetype-classification guardrail.
-- Claim/recipe split honors D-051's identity model — claim is
-  identity, recipes are first-class operational entities with
-  independent lifecycle.
-- Discriminator placement: archetype/claim_kind on claims;
-  trigger_kind/recipe_kind on recipes.
-- Row discriminator as canonical authority; JSONB body `kind`
-  field is redundant self-description; row wins on disagreement.
-- JSONB body conventions: `body_schema_version` + `kind` as
-  top-level keys; body shape dispatched on (row discriminator,
-  `body_schema_version`).
-- Semantic linkage layer framing for `test_claim_coverage` —
-  first-class architectural concern (S2↔S1 bridge), not
-  denormalized cache.
-- Polymorphic provenance — nullable claim_test_id / recipe_id
-  with CHECK constraint; event-kind discriminator distinguishes
-  levels.
-- App-level coverage derivation by S3 / S8 writers.
+**D-057 — Lifecycle and versioning:** effective-time supersession
+(NOT bitemporal); `version_seq` canonical over `valid_to`;
+`identity_hash` as semantic equivalence fingerprint;
+canonicalization policy elevated to governance-critical;
+recipe-to-claim FK logical-default with pinning opt-in;
+current-only coverage; no archival (lineage-continuity
+rationale); replay modes reserved; three forward-compat
+reservations.
 
-Two new guardrails landed in §3:
-- *Sixth — Semantic-vs-operational lifecycle distinction.*
-  Identity-bearing changes require human authority + invalidate
-  approval; operational changes can be S8-autonomous + preserve
-  approval.
-- *Seventh — Continuity triad.* Stable identifiers, identity_hash,
-  and version_seq model three distinct continuities; substrate
-  honors this separation throughout.
-
-**D-057 — Lifecycle and versioning model:**
-
-- Effective-time supersession (NOT bitemporal — single time
-  dimension; term reserved for future transaction-time
-  escalation).
-- `version_seq` is canonical supersession authority; `valid_to`
-  is denormalized convenience. When they disagree, version_seq
-  wins.
-- `identity_hash` is semantic equivalence fingerprint — not
-  unique, not key; multiple rows may share it across a test's
-  version timeline. Operational edits preserve hash; semantic
-  edits change it and invalidate approval.
-- Canonicalization policy is **governance-critical** —
-  sub-cycle 4's scope elevated from "compute hash" to "define
-  governance for semantic vs operational edit boundary." Governs
-  approval invalidation and S8 authority.
-- Recipe-to-claim FK: logical-default (claim_test_id) with
-  pinning opt-in (nullable claim_version_seq).
-- Coverage current-only; rederived on claim version change.
-- Approval state dual-tracked: current on row.status; history
-  in provenance.
-- No archival in v1 — semantic lineage continuity is
-  architecturally more valuable than retention optimization.
-  Not cost-driven.
-- Replay modes (historical / semantic) supported by storage
-  shape; replay engine downstream.
-- Reservations: replay-sensitive recipe selection;
-  version-granular provenance; reference resolution policies.
-
-§4 (Data model) and §6 (Lifecycle and versioning) sections of
-SPEC.md filled with substantive content for the first time;
-both previously placeholders.
-
-S2-Q-005 moved to Resolved. S2-Q-003 sub-cycle 3 marked complete;
-sub-cycle 4 entry expanded with governance-critical framing.
-D-056 and D-057 added to top-level DECISIONS_LOG.md.
-
-Substrate-2 SPEC is now substantively complete on §2, §3, §4, §6.
-
-Next: S2-Q-003 sub-cycle 4 (identity-hash mechanics; now framed
-as governance work) and S2-Q-004 (S1 references; coupled with
-the just-resolved versioning model).
+§4 and §6 of SPEC.md filled with substantive content for the
+first time. S2-Q-005 moved to Resolved; S2-Q-003 sub-cycle 3
+marked complete. D-056 and D-057 added to DECISIONS_LOG.md.
 
 ---
 
 ## 2026-05-17 — S2-Q-004 resolved: reference model — hybrid by layer with ontology-enforcement validation (D-058)
 
-Resolved the deepest pressure in S2's reference design:
-reproducibility vs evolvability for S1 references. Four candidate
-models considered (pinned everywhere, logical everywhere, hybrid
-by reference kind, both with explicit conversion); hybrid-by-layer
-selected as cleanest cut along the existing semantic-vs-operational
-lifecycle boundary.
+Hybrid-by-layer reference resolution: pinned required in
+identity-bearing layers; logical default with pinned opt-in in
+operational layers. Reference shapes with `ref_kind`
+discriminator. Identity_hash canonicalizes `entity_id` only.
+Coverage from identity-bearing layer pinned refs only.
+Cross-layer validation as ontology enforcement. Semantic replay
+forward-resolution via S8-blessed transitions only. external_id
+drift multi-mode (rename / move / replace / namespace /
+inheritance / metadata quirks). Weighted semantic linkage
+reservation.
 
-**Reference model:**
-
-- Identity-bearing layers (asserted_truth, semantic_conditions):
-  pinned references **required**. Pinned = entity_id + version_seq.
-- Operational layers (causal_initiation, observation_realization,
-  execution_environment): logical references **default**; pinned
-  **allowed as opt-in** for reproducibility cases.
-- Reference shapes: typed JSON objects with `ref_kind`
-  discriminator; pinned carries (entity_id, version_seq,
-  informational external_id); logical carries external_id only.
-
-**Identity_hash canonicalization:** pinned refs contribute
-entity_id only (not version_seq). S8 may bump version_seq forward
-on pinned refs when entity evolution is blessed (operational
-edit, hash preserved). Hash-changing rewrites require human
-authority.
-
-**Coverage:** pinned references from identity-bearing layers only.
-Operational dependencies (recipe-derived) belong to the future
-operational linkage layer per D-056's marker.
-
-**Cross-layer validation is ontology enforcement.** Substrate-level
-commitment, not Pydantic routine. Identity-bearing layers reject
-logical refs at write time. Operational layers accept both.
-Relaxing this rule is an architectural decision, not a refactor.
-
-**Semantic replay refinement (SPEC §6.8 updated):** semantic
-replay follows pinned references forward only via S8-blessed
-transitions — entity evolutions S8 has validated as semantically
-equivalent (those preserving identity_hash). Unblessed transitions
-surface for human review rather than silent forward-resolution.
-Makes follow-forward a deliberate capability, not a default.
-
-**external_id drift is multi-mode.** S8's drift detection handles
-six modes explicitly: rename, move, replace, namespace shift,
-inheritance change, metadata-resolution quirks. Single-mode
-framing is insufficient.
-
-**Weighted semantic linkage reservation:** future evolution of
-`test_claim_coverage.reference_kind` (currently binary
-subject/condition) toward richer weighting preserved as
-forward-compat marker.
-
-TA refinements integrated:
-- Semantic replay must not casually "follow forward" — S8-blessed
-  transitions only
-- Operational layers default to logical, allow pinned opt-in (not
-  strict reject)
-- external_id drift is multi-mode (deeper than name collision)
-- Cross-layer validation as ontology enforcement framing
-- Weighted semantic linkage reservation
-
-§5 (References to S1 entities) of SPEC.md filled with substantive
-content for the first time; previously placeholder. §6.8 (Replay
-modes) refined to incorporate S8-blessed forward-resolution.
-
-S2-Q-004 moved to Resolved. D-058 added to top-level DECISIONS_LOG.md.
-
-Substrate-2 SPEC §2, §3, §4, §5, §6 now substantively complete.
-Remaining: §1 overview, §7 mutation paths, §8 execution-history
-boundary, §9 requirement linkage, §10 outward surfaces, §11 v2.2
-disposition.
-
-Next: S2-Q-003 sub-cycle 4 (identity-hash mechanics — governance-critical
-canonicalization) now well-constrained by both D-057 (versioning
-anchors) and D-058 (reference canonicalization scope).
+§5 of SPEC.md filled with substantive content. S2-Q-004 moved to
+Resolved. D-058 added to DECISIONS_LOG.md.
 
 ---
 
 ## 2026-05-18 — S2-Q-003 sub-cycle 4 resolved: identity-hash mechanics + governance contract (D-059)
 
-Sub-cycle 4 of S2-Q-003 locked. Per D-057's elevation, this was
-**governance work**, not implementation detail: the
-canonicalization policy mechanically determines approval
-invalidation, S8's autonomous-rewrite authority boundary, and
-cross-test semantic equivalence reasoning.
+Sub-cycle 4 of S2-Q-003 locked. Governance-critical work per
+D-057's elevation: the canonicalization policy mechanically
+determines approval invalidation, S8's autonomous-rewrite
+authority boundary, and cross-test semantic equivalence
+reasoning.
 
-**Hash input scope:** archetype + claim_kind + canonicalized
-asserted_truth + canonicalized semantic_conditions. Out of scope:
-test_id, version_seq, temporal columns, status, recipe content,
-coverage, body_schema_version.
+Hash input scope (archetype + claim_kind + canonicalized
+asserted_truth + canonicalized semantic_conditions).
+Canonicalization rules (strict, RFC 8785-ish; array semantics
+schema-declared). SHA-256 hex. Canonicalization policy
+versioned via `identity_hash_version` column.
 
-**Canonicalization rules (strict, RFC 8785-ish):**
-- Alphabetical recursive key ordering
-- Whitespace stripped between tokens; preserved in string values
-- UTF-8, case-sensitive
-- null vs missing distinguished
-- Booleans lowercase
-- Array semantics schema-declared (ordered default; set opt-in)
-- Pinned references canonicalize to {entity_id, entity_type}
-  only (per D-058)
+Six-rule governance contract including two-gate evaluation
+framing for S8 evolution through entity changes (Gate 1: hash
+preservation; Gate 2: entity-evolution semantic compatibility,
+S8-design territory). Semantic projection fields reserved.
 
-**Hash algorithm:** SHA-256, hex-encoded.
-
-**Canonicalization policy versioning:** new column
-`identity_hash_version` on `test_claims`. Hashes scoped to
-policy version. Policy evolution is governed, not implicit.
-
-**Six-rule governance contract:**
-1. S8 autonomy boundary (hash + version preservation)
-2. Approval invalidation (mechanical on hash change)
-3. S8 entity evolution two-gate evaluation (refines D-058)
-4. Cross-test semantic equivalence scoped to policy version
-5. Schema migration discipline
-6. Canonicalization policy migration as governed operation
-
-**Two-gate evaluation refines D-058.** S8 autonomous update
-through S1 entity evolution requires both Gate 1 (hash
-preservation, mechanical) AND Gate 2 (entity-evolution semantic
-compatibility, judgmental). Entity-lineage does NOT guarantee
-semantic compatibility — a field can be renamed, repurposed, or
-refactored while retaining its entity_id. Gate 2's machinery is
-S8-design territory.
-
-**Semantic projection fields reserved.** V1 hashes entire body;
-future support for schema-declared per-field hash-contribution
-preserved as forward-compat marker.
-
-TA refinements integrated:
-- Array semantics schema-defined
-- Versioned canonicalization policy
-- Semantic projection field reservation
-- Equivalence scope qualified to policy version
-- Entity-lineage ≠ semantic compatibility (refines Rule 3
-  framing)
-
-§6.3 of SPEC.md expanded with substantive content for the first
-time (previously placeholder). §4.1 `test_claims` table extended
-with `identity_hash_version` column.
-
-S2-Q-003 sub-cycle 4 marked complete in OPEN_QUESTIONS.md.
-Sub-cycle 5 (Pydantic validation patterns) is now next, with
-array-semantics declarations identified as a new responsibility.
-
-D-059 added to top-level DECISIONS_LOG.md.
-
-Substrate-2 SPEC §2, §3, §4, §5, §6 now substantively complete
-with all hash mechanics and governance specified. Remaining
-sub-cycle 5 (Pydantic validation) plus standalone questions
-S2-Q-006 through S2-Q-010.
+§6.3 of SPEC.md expanded with substantive content. §4.1
+`test_claims` table extended with `identity_hash_version`
+column. S2-Q-003 sub-cycle 4 marked complete. D-059 added to
+DECISIONS_LOG.md.
 
 ---
 
@@ -455,88 +202,119 @@ S2-Q-006 through S2-Q-010.
 Sub-cycle 5 of S2-Q-003 locked. Composes prior commitments
 (D-051 through D-059) into a coherent validation architecture.
 
-**Three complementary enforcement layers** (not hierarchical):
-- DB layer: substrate-critical structural invariants
-  (un-bypassable, slow to evolve)
-- Pydantic layer: semantic content validation (bypassable by
-  raw SQL, fast to evolve)
-- Schema layer: per-body type definitions and semantic field
-  descriptors
+Three complementary enforcement layers (DB / Pydantic / Schema)
+— not hierarchical. Pydantic model organization with two-level
+discriminator dispatch. Reference type hierarchy with semantic
+role preservation: `IdentityBearingRef(PinnedRef)` as distinct
+type. Semantic field descriptors via `Annotated[T, Marker]`
+uniformly. The Semantic Transaction Coordinator elevated to
+named substrate-level component. Hash computation in Coordinator
+via pure functions; never recomputed on read within
+`(identity_hash, identity_hash_version)` regime. Four read-path
+error types distinguished (`SchemaIncompatibilityError`,
+`BodyCorruptionError`, `OntologyViolationError`,
+`ValidationError`). Migration handling as governance work.
 
-Substrate-critical invariants double-enforced across DB and
-Pydantic; coordination cost accepted.
+§4.7 of SPEC.md filled with substantive content. §5.5, §6.3.10,
+§6.3.11 received small cross-references. S2-Q-003 sub-cycle 5
+marked complete; **S2-Q-003 now fully resolved** across all five
+sub-cycles. D-060 added to DECISIONS_LOG.md.
 
-**Pydantic model organization:** two-level discriminator dispatch
-(row discriminator → family of body models; body_schema_version
-→ specific version).
+---
 
-**Reference type hierarchy with semantic role preservation:**
-- `PinnedRef` and `LogicalRef` as structural shapes
-- `IdentityBearingRef(PinnedRef)` as **distinct type** (not
-  alias) preserving the semantic-role marker
-- `OperationalRef = Union[PinnedRef, LogicalRef]` for
-  operational layers
-- D-058's hybrid-by-layer rule becomes structural type
-  enforcement; cross-layer violations fail Pydantic validation
-  as type mismatches
+## 2026-05-18 — S2-Q-006 resolved: mutation paths and authority over meaning (D-061)
 
-**Semantic field descriptors via `Annotated[T, Marker]`
-uniformly.** Today's marker: `ArraySemantics.SET`. Trajectory:
-hash-contribution annotations, identity-contribution annotations,
-others. Single mechanism reservation per D-060.
+Sub-cycle 6 of substrate-2 work. Composition over invention —
+the authority machinery was fully locked by D-057, D-059, D-060;
+this resolution formalizes the three mutation paths and per-path
+rules built on that machinery.
 
-**The Semantic Transaction Coordinator** elevated to named
-substrate-level component coordinating consistency invariants
-across `test_claims`, `test_recipes`, `test_claim_coverage`,
-`test_provenance`, multiple body schemas, and three validation
-layers. All API-driven writes route through it. Architectural
-status, not implementation glue.
+**Three mutation paths** (human / S3 / S8) routed by the
+Semantic Transaction Coordinator with per-path authority rules.
 
-**Hash computation** lives in the Coordinator (via shared pure
-functions). Hash never recomputed on read within a given
-`(identity_hash, identity_hash_version)` regime; cross-regime
-requires explicit re-hashing.
+**S8 invariant refined to "no autonomous semantic divergence."**
+The earlier framing ("S8 cannot mutate identity-bearing
+content") was misleading — S8 *does* mutate identity-bearing
+JSONB content when bumping pinned-ref `version_seq` forward.
+What S8 cannot do is cause semantic divergence (hash change).
+The invariant is mechanical, not layer-based. Hash preservation
+operates *within* identity-bearing layers, not as a fence
+*around* them.
 
-**Read-path error types distinguished:**
-- `SchemaIncompatibilityError` (graceful degradation)
-- `BodyCorruptionError` (incident-level)
-- `OntologyViolationError` (write-time cross-layer)
-- `ValidationError` (Pydantic standard)
+**Identity continuity (test_id) and semantic continuity
+(identity_hash, scoped to identity_hash_version)** as orthogonal
+dimensions of test continuity across mutations.
 
-Distinguishing schema-incompatibility from corruption supports
-cross-substrate-version compatibility.
+**Trust boundary asymmetry:**
+- Claim approval: governed by `identity_hash` change (mechanical,
+  per D-057 Rule 2 / D-059 Rule 2)
+- Recipe re-approval: **conservative default**, not intrinsic
+  asymmetry. The substrate currently lacks a mechanical detection
+  mechanism for "this recipe edit didn't meaningfully change
+  behavior"; without such a mechanism, the safe default is
+  re-approval. Future evolution (recipe content hashing, recipe
+  approval-preservation declarations) could relax this default.
 
-**Migration handling** (body-schema-version and
-identity-hash-version): governance-level with explicit
-canonical-form-preservation declarations per D-059 Rule 5.
+**Linear supersession preserved.** "Latest" vs "current-approved"
+as distinct query notions.
+
+**Current-approved as governance resolution, not simple status
+lookup.** `get_current_approved_claim(test_id)` is a Coordinator
+governance operation interpreting version history per substrate
+rules; downstream substrates must use the Coordinator interface,
+not direct DB queries.
+
+**Test-level approval as derived composition** in Coordinator
+(`get_test_approval_status(test_id)` → fully_approved /
+claim_approved_recipe_pending / draft).
+
+**Rollback via supersession, not status mutation.** Status enum
+doesn't permit `approved` → `draft` direct transition; rollback
+creates a new draft version that supersedes the prior approved.
+
+**Edge cases handled:** concurrent structural writes (DB
+conflict + retry); concurrent semantic conflicts (linear
+supersession, future merge/rebase reserved); S3 hash-preserving
+regeneration as no-op skip; cross-test equivalence as query
+(no auto-merge); claim references deleted entity surfaces for
+review; approval rollback via new draft version.
+
+**Four forward-compat reservations:**
+- Recipe approval auto-preservation (when detection mechanism
+  exists)
+- Merge/rebase semantics for concurrent semantic conflicts
+- Provenance streams as named taxonomy (current single
+  `event_kind` becomes multi-stream)
+- Deprecation kinds as sub-status taxonomy (current single
+  `deprecated` status conflates multiple states)
 
 TA refinements integrated:
-- Floor/ceiling hierarchy wording replaced with
-  complementary-layers framing
-- `IdentityBearingRef` preserved as distinct semantic-role type
-- `SchemaIncompatibilityError` vs `BodyCorruptionError`
-  distinction
-- Trajectory toward semantic field descriptors acknowledged
-- Hash trust qualified by hash-version regime
-- Orchestrator elevated to Semantic Transaction Coordinator
+- S8 invariant reframed as "no autonomous semantic divergence"
+  (was misleadingly suggesting S8 can't touch identity-bearing
+  layers at all)
+- Recipe re-approval as conservative default (not intrinsic
+  asymmetry)
+- Current-approved as governance resolution (not simple lookup)
+- Concurrent semantic conflicts merge/rebase reservation added
+- Provenance multi-stream taxonomy reservation
+- Deprecation taxonomy reservation
 
-§4.7 of SPEC.md filled with substantive content (new section).
-§5.5 received small cross-reference to §4.7.3's structural
-ontology enforcement. §6.3.10 extended to acknowledge semantic
-field descriptor trajectory. §6.3.11 hash-trust framing scoped
-to regime.
+§7 (Mutation paths and authority) of SPEC.md filled with
+substantive content for the first time; previously placeholder.
+§2's S2-Q-006 cross-reference updated to reflect mechanical
+authority framing. §4.7.6 write-flow extended with authority
+enforcement step. §4.7.8 added `AuthorityViolationError` to
+read-path error types. §6.3.9 Rule 1 phrasing refined to
+"no autonomous semantic divergence" with explicit explanatory
+text. §6.6 cross-reference to §7 added.
 
-S2-Q-003 sub-cycle 5 marked complete. **S2-Q-003 now fully
-resolved** across all five sub-cycles; entry moved to Resolved
-section in OPEN_QUESTIONS.md. D-060 added to top-level
-DECISIONS_LOG.md.
+S2-Q-006 moved to Resolved. D-061 added to DECISIONS_LOG.md.
 
-Phase 3 substrate-2 SPEC §2, §3, §4, §5, §6 fully complete with
-all data-model, reference-model, versioning, canonicalization,
-and validation patterns specified. Ten D-entries committed
-(D-051 through D-060).
-
-Next: standalone open questions S2-Q-006 (mutation paths and
-authority) through S2-Q-010 (v2.2 disposition). S2-Q-006 is the
-natural next given how well-anchored its scope now is (D-057,
-D-058, D-059, D-060 all constrain it mechanically).
+Substrate-2 SPEC §2, §3, §4, §5, §6, §7 now substantively
+complete. Remaining: §1 overview, §8 execution-history boundary
+(S2-Q-007), §9 requirement linkage (S2-Q-008), §10 outward
+surfaces (S2-Q-009), §11 v2.2 disposition (S2-Q-010). Eleven
+D-entries committed (D-051 through D-061). The substrate's
+internal coherence is now fully specified; remaining work is
+boundaries with other substrates (S4, JIRA), API surface, and
+the v2.2 transition.

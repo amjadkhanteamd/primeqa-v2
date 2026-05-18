@@ -39,6 +39,23 @@ questions live in the top-level `OPEN_QUESTIONS.md`.
   `identity_hash` as semantic equivalence fingerprint, logical-default
   recipe FK, current-only coverage, no archival (lineage-continuity
   rationale). See `SPEC.md` §6.
+- ~~S2-Q-006 — Mutation paths and authority over meaning~~ →
+  resolved by D-061. Three mutation paths (human / S3 / S8)
+  routed by the Semantic Transaction Coordinator with per-path
+  authority rules. S8 invariant: **no autonomous semantic
+  divergence** (mechanical via `identity_hash`); S8 can mutate
+  any layer including identity-bearing layers provided hash
+  preserves. Identity continuity (test_id) and semantic
+  continuity (identity_hash) as orthogonal dimensions. Claim
+  approval governed by hash change (mechanical); recipe
+  re-approval as **conservative default** with future
+  auto-preservation reserved. Linear supersession preserved;
+  current-approved as governance resolution in Coordinator,
+  not simple status lookup. Test-level approval as derived
+  composition. Rollback via supersession, not status mutation.
+  Four forward-compat reservations: recipe auto-preservation,
+  merge/rebase, provenance streams, deprecation taxonomy. See
+  `SPEC.md` §7.
 - ~~S2-Q-011 — Trigger-kind classification~~ → resolved by D-055.
   5 kinds locked, four-discriminator framing extended, six-layer
   model amended (rename: "execution realization" → "observation
@@ -47,54 +64,6 @@ questions live in the top-level `OPEN_QUESTIONS.md`.
 ---
 
 ## Open
-
-### S2-Q-006 — Mutation paths and authority over meaning
-
-A test case can change via at least three paths:
-
-- Human edit.
-- S3 regeneration (same JIRA ticket, new model version, different
-  LLM output).
-- S8 autonomous rewrite (field renamed, validation rule changed,
-  flow deactivated).
-
-The procedural question — what changes in the database — is easy.
-The deeper question is: **who has authority to redefine the meaning
-of a test?** If S8 rewrites steps after a field rename, did the test
-remain "the same test"? The procedural answer ("same row, new
-contents") is easy. The semantic answer — *is this still the test
-the QA approved last sprint* — is hard, and product trust depends
-on it.
-
-The sub-questions:
-
-- *Identity continuity.* Across each mutation path, what makes the
-  test-after-mutation "the same test" as the test-before? Stable
-  identifier? Unchanged assertion (if S2-Q-001 lands on assertion)?
-  Unchanged scenario? Unchanged coverage set?
-- *Trust boundary.* Which mutations preserve approved-state and
-  which invalidate it? Human edit invalidates approval (re-review).
-  Does S8 auto-rewrite? Does S3 regenerate?
-- *Ownership authority.* Who can authorize each mutation path?
-  Human authority is clear for edits; less clear who authorizes
-  S8's autonomous changes — implicit (any field rename grants S8
-  rewrite authority) or explicit (per-test opt-in).
-
-Closely linked to S2-Q-001: if a test case is fundamentally an
-*assertion*, S8 rewrites the recipe (the way it tests) but cannot
-rewrite the assertion (what it tests). If a test case is
-fundamentally a *recipe*, S8 has wider latitude. The invariant
-choice constrains the authority model; the two questions cannot be
-answered independently.
-
-Note: authority boundary now mechanically anchored by D-057 +
-D-059 + D-060 — S8 can autonomously do anything that preserves
-`identity_hash` AND `identity_hash_version` AND passes Gate 2
-(entity-evolution semantic compatibility). Cannot do anything
-that fails either gate without escalation. The Semantic
-Transaction Coordinator is the routing point for human-edit /
-S3-regenerate / S8-rewrite paths. S2-Q-006 sub-questions on
-identity continuity and trust boundary remain.
 
 ### S2-Q-007 — Execution-history boundary against S4
 
@@ -137,7 +106,7 @@ shape derives from the Coordinator's write/read interfaces.
 
 ### S2-Q-010 — Disposition of v2.2 test-management tables
 
-Once S2-Q-001 through S2-Q-009 land, walk each v2.2 table:
+Once S2-Q-007 through S2-Q-009 land, walk each v2.2 table:
 
 - `sections` — keep / drop / absorb.
 - `requirements` — keep / drop / absorb (depends on S2-Q-008).

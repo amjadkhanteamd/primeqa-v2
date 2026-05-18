@@ -2794,3 +2794,279 @@ TA refinements integrated:
   Coordinator)
 
 ---
+
+
+## D-061 — Mutation paths and authority over meaning [S2-Q-006]
+
+**Date:** 2026-05-18
+**Substrates affected:** [S2, with consequences for S3, S4, S6, S8]
+**Status:** active
+
+**Decision.** Substrate-2 defines three formal mutation paths
+(human edit / S3 regeneration / S8 autonomous rewrite), each
+routed by the Semantic Transaction Coordinator with per-path
+authority rules. S8's invariant is **no autonomous semantic
+divergence** — mechanically detected by `identity_hash` change.
+Claim approval is governed by hash change (mechanical); recipe
+re-approval is a **conservative default** awaiting future
+detection mechanisms.
+
+**Three mutation paths:**
+
+- **Human edit** — Authorized human directly edits claim or
+  recipe through substrate API. Source of authority: human
+  identity.
+- **S3 regeneration** — Future generation substrate produces new
+  content (same JIRA ticket, new LLM version, different output).
+  Autonomous-but-bounded actor.
+- **S8 autonomous rewrite** — Future evolution substrate
+  responds to S1 entity changes; rewrites recipes, bumps
+  pinned-ref `version_seq` when entities evolve compatibly,
+  surfaces tests for review when unblessed transitions occur.
+
+All three paths route through the Coordinator. Direct DB writes
+bypass authority enforcement (DB-layer invariants still apply
+per D-060 §4.7.1, but mutation-path rules do not).
+
+**S8 invariant: no autonomous semantic divergence.** S8 may
+autonomously create new claim versions if and only if the new
+version's canonical form equals the predecessor's (hash
+preserved AND `identity_hash_version` preserved). Identity-
+bearing layer mutations are **permitted within this bound** —
+e.g., S8 bumping pinned-ref `version_seq` inside `asserted_truth`
+JSONB. The invariant is mechanical and operates *within*
+identity-bearing layers, not as a fence *around* them. Mutations
+producing semantic divergence (hash change) require human
+authority regardless of which layer they touch.
+
+This refines the earlier framing ("S8 cannot mutate
+identity-bearing content"), which was misleading. S8 *does*
+mutate identity-bearing JSONB; what it cannot do is cause
+semantic divergence.
+
+**Per-actor authority scope:**
+
+| Actor | Hash-preserving claim writes | Hash-changing claim writes | Recipe writes | Promote draft → approved |
+|---|---|---|---|---|
+| Human | ✓ (preserves approval) | ✓ (invalidates approval; new in `draft`) | ✓ (new requires re-approval) | ✓ (only humans promote) |
+| S3 | ✓ (semantic no-op) | ✓ (writes draft; needs human promotion) | ✓ (new in `generated_unapproved`) | ✗ |
+| S8 | ✓ (e.g., version_seq bumps per D-059 Rule 3 two-gate evaluation) | ✗ (`AuthorityViolationError`; surfaces for review) | ✓ (new in `generated_unapproved`) | ✗ |
+
+**Identity continuity and semantic continuity** as orthogonal
+dimensions:
+
+- *Identity continuity* = stable identifier (`test_id`,
+  `recipe_id`) continuity. Persists across all mutations.
+- *Semantic continuity* = `identity_hash` continuity (scoped to
+  `identity_hash_version` per D-059 Rule 4). Different hash =
+  semantically different test, even with same `test_id`.
+
+A test can preserve identity AND semantic continuity (operational
+edit, S8 version_seq bump) OR preserve identity but lose semantic
+continuity (hash-changing edit — same test, new meaning). Cannot
+lose identity without leaving the mutation framework entirely.
+
+**Trust boundary asymmetry:**
+
+- **Claim approval is mechanical.** Governed by `identity_hash`
+  change between versions per D-057 Rule 2 / D-059 Rule 2.
+  Preserved on hash preservation; invalidated on hash change.
+  Same rule across all actors.
+- **Recipe re-approval is a conservative default.** Every new
+  recipe version requires explicit re-approval. The reason is
+  not that recipes are fundamentally different from claims —
+  it is that the substrate currently lacks a mechanical
+  detection mechanism for "this recipe edit didn't meaningfully
+  change behavior." Without such a mechanism, the safe default
+  is re-approval. Future evolution could relax this default;
+  reserved as forward-compat.
+
+**Linear supersession preserved.** "Latest" vs "current-approved"
+as distinct query notions.
+
+**Current-approved as governance resolution, not status lookup.**
+`get_current_approved_claim(test_id)` is a Coordinator governance
+operation interpreting version history per substrate rules:
+
+- An approved version is current-approved if no later approved
+  version supersedes it
+- A deprecation event removes current-approved status
+- Cross-policy considerations (per D-059 Rule 6): if approved
+  versions exist under different `identity_hash_version`
+  regimes, policy-version-aware resolution applies
+- Future rules compose into resolution without schema or
+  downstream-query change
+
+Downstream substrates use Coordinator interface exclusively;
+never query DB directly for current-approved.
+
+**Test-level approval as derived composition** in Coordinator.
+`get_test_approval_status(test_id)` returns:
+- `fully_approved` — current-approved claim AND at least one
+  current-approved recipe
+- `claim_approved_recipe_pending` — claim approved, no
+  current-approved recipe
+- `draft` — claim is draft
+
+**Rollback via supersession, not status mutation.** Status enum
+doesn't permit direct un-approval (`approved` → `draft`).
+Rollback creates a new draft that supersedes the prior approved;
+prior version stays "approved" in history but is no longer
+current-approved.
+
+**Edge cases:**
+
+- *Concurrent structural writes:* DB enforces PK uniqueness on
+  `(test_id, version_seq)`; one wins, other gets conflict error;
+  Coordinator-level retry with new base version_seq.
+- *Concurrent semantic conflicts:* v1 = linear supersession;
+  whoever writes last wins; losing edit recoverable via
+  provenance. Future merge/rebase reserved.
+- *S3 hash-preserving regeneration:* Coordinator skips writing
+  (no-op); returns reference to existing version.
+- *Cross-test semantic equivalence:* substrate provides
+  equivalence query (per D-059 Rule 4); S3 may dedup; substrate
+  does NOT auto-merge.
+- *S8 claim references deleted entity:* surfaces for human
+  review per D-058 unblessed-transition discipline; provenance
+  records surfaced concern; test stays in current state pending
+  human action.
+- *Human promotes S3-generated draft:* status change `draft` →
+  `approved`; provenance records `claim_approved` event with
+  human actor; new version becomes current-approved.
+
+**Rationale.** Sub-cycle 6 is composition over invention. The
+authority machinery was fully locked by D-057 (versioning
+anchors), D-059 (canonicalization mechanics and six-rule
+governance contract), and D-060 (Coordinator as routing point).
+What remained: formal definition of the three mutation paths,
+identity-continuity framing, per-path approval semantics, edge
+case handling.
+
+The six critical refinements during design:
+
+- **S8 invariant as "no autonomous semantic divergence."**
+  Initial framing ("no autonomous semantic mutation")
+  misdescribed what S8 does — S8 *does* mutate identity-bearing
+  JSONB. Refined framing positions hash preservation as the
+  universal autonomy rule operating *within* layers, not as a
+  fence around them.
+- **Recipe re-approval as conservative default.** Initial
+  framing as intrinsic asymmetry foreclosed future evolution.
+  Refined framing acknowledges the asymmetry is a product of
+  current detection capabilities; future evolution could relax
+  the default.
+- **Current-approved as governance resolution, not simple
+  status lookup.** Initial framing under-described what the
+  resolution actually does (interprets history per substrate
+  rules across policy versions, deprecation events, etc.).
+  Refined framing makes the Coordinator's role explicit and
+  protects against downstream substrates building incompatible
+  direct queries.
+- **Concurrent semantic conflicts merge/rebase reservation.**
+  Initial framing only addressed structural concurrency;
+  semantic concurrency needed acknowledgment as future work.
+- **Provenance multi-stream taxonomy reservation.** Initial
+  treatment lumped distinct streams under single `event_kind`;
+  forward-compat framing reserved for stream classification.
+- **Deprecation taxonomy reservation.** Single `deprecated`
+  status conflates multiple distinct states; future taxonomy
+  reserved.
+
+TA refinements integrated:
+
+- S8 invariant as "no autonomous semantic divergence" (not
+  "no semantic mutation")
+- Recipe re-approval as conservative default (not intrinsic
+  asymmetry)
+- Current-approved as governance resolution (not status lookup)
+- Concurrent semantic conflicts merge/rebase acknowledgement
+- Provenance multi-stream taxonomy reservation
+- Deprecation taxonomy reservation
+
+**Alternatives considered.**
+
+- *S8 invariant as "no autonomous semantic mutation"
+  (layer-based fence).* Rejected per TA. Misrepresents what S8
+  actually does; under-describes its bounded authority.
+- *Recipe re-approval as intrinsic asymmetry vs claim.*
+  Rejected per TA. Forecloses future evolution; framing as
+  conservative default is correct.
+- *Current-approved as `WHERE status='approved' ORDER BY
+  version_seq DESC LIMIT 1` query.* Rejected per TA. Bypasses
+  governance; doesn't handle deprecation, policy-version
+  scenarios, or future composition rules. Coordinator
+  governance resolution is the principled answer.
+- *Concurrent semantic conflicts: substrate auto-merges.*
+  Rejected. Substrate's job is to maintain consistency
+  invariants; semantic merge is judgmental. Linear supersession
+  + future merge/rebase reservation is the principled v1
+  position.
+- *Direct un-approval transition (`approved` → `draft`).*
+  Rejected. Status mutation without supersession breaks audit
+  trail; rollback via new draft is cleaner and preserves history.
+- *Test-level approval denormalized to schema column.*
+  Rejected. Derivation rules may evolve (e.g., when
+  cross-recipe-kind approval semantics emerge); composition
+  in Coordinator is forward-compatible.
+- *Provenance multi-stream as v1 implementation.* Rejected.
+  Current single enum sufficient; framing reservation prevents
+  ad-hoc taxonomy growth without committing v1 schema change.
+- *Deprecation taxonomy as v1 implementation.* Rejected. Same
+  reasoning as multi-stream provenance; framing reserves
+  coherent future evolution.
+
+**Downstream consequences.**
+
+- *S2-Q-009 (outward surfaces):* API design must expose the
+  Coordinator's per-path interfaces (human / S3 / S8). The
+  authority enforcement step (D-060 §4.7.6 step 10) becomes
+  visible at the API boundary.
+- *S3 (Generation, future substrate):* Generator implements
+  hash-preserving and hash-changing regeneration patterns;
+  uses Coordinator's no-op detection for hash-preserving
+  cases; produces drafts for hash-changing cases.
+- *S4 (Execution, future substrate):* Distinguishes
+  "current-approved" (production execution) from "latest"
+  (replay or development) per use case.
+- *S6 (Interpretation):* Failure attribution uses
+  current-approved for production failures; uses provenance
+  history for "test was approved at time T but failed at time
+  T+N" attribution.
+- *S8 (Evolution):* Must implement Gate 2 machinery (per
+  D-059 Rule 3); must surface unblessed transitions per D-058
+  rather than attempting hash-changing autonomous writes;
+  must handle multi-mode entity drift per D-058 §5.6.
+- *Future substrates / sub-cycles:* The four forward-compat
+  reservations (recipe approval auto-preservation, merge/rebase,
+  provenance streams, deprecation taxonomy) define a coherent
+  evolution path; the substrate is designed to accommodate
+  these without major refactoring.
+
+**References.**
+
+- `substrate_2_test_representation/SPEC.md` §7 (mutation paths
+  and authority over meaning, substantive content added in this
+  commit)
+- `substrate_2_test_representation/SPEC.md` §2 (cross-reference
+  to S2-Q-006 updated for mechanical authority framing)
+- `substrate_2_test_representation/SPEC.md` §4.7.6 (write-flow
+  extended with authority enforcement step)
+- `substrate_2_test_representation/SPEC.md` §4.7.8 (read-path
+  error types extended with `AuthorityViolationError`)
+- `substrate_2_test_representation/SPEC.md` §6.3.9 Rule 1
+  (refined phrasing — "no autonomous semantic divergence")
+- `substrate_2_test_representation/SPEC.md` §6.6 (approval
+  state lifecycle cross-references §7)
+- D-051 (identity model — three layers identified as
+  identity-bearing or operational; authority framework starts
+  here)
+- D-056 (storage realization — Coordinator-coordinated tables)
+- D-057 (versioning model — approval invalidation Rule 2)
+- D-058 (reference model — unblessed transitions, multi-mode
+  drift)
+- D-059 (canonicalization mechanics — Rule 1 S8 autonomy bound,
+  Rule 3 two-gate evaluation)
+- D-060 (validation layering — Coordinator as routing point)
+
+---

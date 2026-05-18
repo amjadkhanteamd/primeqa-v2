@@ -1,13 +1,13 @@
 # Substrate 2 — Test Representation — SPEC
 
 **Status:** §2, §3, §4 (data model, including validation layering),
-§5 (S1 references), and §6 (lifecycle and versioning, including
-canonicalization mechanics) substantively complete per D-051
-through D-060. Remaining sections (§1, §7-§11) pending their
-respective questions.
+§5 (S1 references), §6 (lifecycle and versioning, including
+canonicalization mechanics), and §7 (mutation paths and authority)
+substantively complete per D-051 through D-061. Remaining sections
+(§1, §8-§11) pending their respective questions.
 
-**Last substantive update:** 2026-05-18 (validation layering and
-the Semantic Transaction Coordinator)
+**Last substantive update:** 2026-05-18 (mutation paths and authority
+over meaning)
 
 ---
 
@@ -126,10 +126,13 @@ direction; the §4 data model does not foreclose either.
   references inside the recipe are operational and lean toward
   logical resolution (preserves liveness). Resolved per D-058
   as hybrid-by-layer; see §5.
-- *S2-Q-006 (authority).* The authority boundary is now concrete:
-  S8 has autonomous authority over the four non-identity-bearing
-  layers; changes to either identity-bearing layer require human
-  authority.
+- *S2-Q-006 (authority).* The authority boundary is mechanical:
+  S8 has autonomous authority bounded by **hash preservation**
+  (no autonomous semantic divergence). S8 can mutate any layer,
+  including identity-bearing layers, provided the mutation
+  preserves canonical form. Mutations producing semantic
+  divergence (hash change) require human authority. See §7 and
+  D-061.
 
 See `DECISIONS_LOG.md` D-051 and D-055 for rationale and
 alternatives considered.
@@ -863,6 +866,7 @@ It coordinates:
 - Canonicalization-hash consistency (D-059 §6.3)
 - Coverage-claim consistency (D-058 §5.4)
 - Provenance-event consistency (D-056 §4.1)
+- Mutation-path routing and authority enforcement (D-061 §7)
 
 These invariants individually live in different specifications;
 the Coordinator is the single component where they are
@@ -902,7 +906,9 @@ The Semantic Transaction Coordinator's canonical write sequence:
 8. **Hash computation** — SHA-256 of canonical form
 9. **Coverage extraction** — pull pinned refs from
    identity-bearing layers per D-058 §5.4
-10. **DB write transaction** — `test_claims` row (canonical body
+10. **Authority enforcement** — verify the writing actor (per §7)
+    has authority for this mutation given hash-change status
+11. **DB write transaction** — `test_claims` row (canonical body
     + hash + `identity_hash_version`) + `test_claim_coverage`
     rows + `test_provenance` event
 
@@ -944,6 +950,7 @@ distinct handling:
 | `SchemaIncompatibilityError` | No Pydantic model exists for `(kind, body_schema_version)` | Graceful degradation | Surface raw JSONB with warning; may indicate substrate-library version mismatch or missing migration |
 | `BodyCorruptionError` | Model exists for `(kind, body_schema_version)` but body fails validation | Incident | Log + alert; surface degraded result; investigate (storage corruption, out-of-band edit, bug) |
 | `OntologyViolationError` (write-time) | Cross-layer reference-kind rule violated | Architectural rejection | Return structured error with explicit ontology framing per D-058 |
+| `AuthorityViolationError` (write-time) | Writing actor lacks authority for this mutation given hash-change status | Architectural rejection | Return structured error with explicit authority framing per D-061 |
 | `ValidationError` (Pydantic standard) | Routine field validation failure (write-time) | Soft rejection | Return structured error with field-level details |
 
 Distinguishing `SchemaIncompatibilityError` from
@@ -1408,11 +1415,16 @@ from canonical for all semantic purposes.
 The canonicalization policy mechanically determines six
 substrate-level rules:
 
-**Rule 1 — S8 autonomy boundary.** S8 may autonomously create
-new claim versions if and only if the new version's
-`identity_hash` equals the predecessor's, AND the new version
-shares the predecessor's `identity_hash_version`. Hash-changing
-edits or policy-version-changing edits require human authority.
+**Rule 1 — S8 autonomy boundary (no autonomous semantic divergence).**
+S8 may autonomously create new claim versions if and only if the
+new version's canonical form equals the predecessor's — i.e.,
+`identity_hash` preserved AND `identity_hash_version` preserved.
+Identity-bearing layer mutations are permitted within this bound
+(e.g., S8 bumping pinned-ref `version_seq` forward); mutations
+producing semantic divergence (hash change) or policy-version
+change require human authority. The invariant is **no autonomous
+semantic divergence**, not "no autonomous mutation of
+identity-bearing content."
 
 **Rule 2 — Approval invalidation.** When a new claim version
 has a different `identity_hash` from its predecessor (or a
@@ -1556,9 +1568,11 @@ Approval state is dual-tracked:
 Approval-state invalidation triggers on `identity_hash` change
 between versions (per §6.3's semantic-edit definition). S8
 autonomous rewrites cannot trigger approval invalidation because
-S8 only operates on operational layers (per the
-semantic-vs-operational lifecycle guardrail) and those don't
-change the hash.
+S8 only operates within hash-preserving authority bounds (per
+Rule 1 in §6.3.9).
+
+Mutation paths and their per-path approval impact are specified
+in §7 per D-061.
 
 ### 6.7 Archival policy
 
@@ -1631,9 +1645,276 @@ considered.
 
 ---
 
-## 7. Mutation paths (human edit, S3 regenerate, S8 autonomous rewrite)
+## 7. Mutation paths and authority over meaning
 
-(Placeholder. Pending S2-Q-006. Note: authority boundary established in §2 and §6.)
+**Resolution.** Per D-061: substrate-2 defines three formal
+mutation paths (human / S3 / S8), each routed by the Semantic
+Transaction Coordinator (§4.7.5) with per-path authority rules.
+S8's invariant is **no autonomous semantic divergence** —
+mechanically detected by `identity_hash` change. Claim approval
+is governed by hash change (mechanical); recipe re-approval is a
+**conservative default** awaiting future detection mechanisms.
+
+### 7.1 The three mutation paths
+
+A test case can change through three distinct paths:
+
+- **Human edit** — A QA engineer, BA, or other authorized human
+  directly edits a claim or recipe through the substrate's API.
+  Source of authority: human identity.
+- **S3 regeneration** — The future generation substrate produces
+  new claim or recipe content (same JIRA ticket, new LLM version,
+  different output). S3 is an autonomous-but-bounded actor.
+- **S8 autonomous rewrite** — The future evolution substrate
+  responds to S1 entity changes — rewrites recipes when fields
+  are renamed, bumps pinned-ref `version_seq` when entities
+  evolve compatibly, surfaces tests for review when unblessed
+  transitions occur.
+
+All three paths route through the Semantic Transaction
+Coordinator. Direct DB writes that bypass the Coordinator bypass
+authority enforcement (DB-layer invariants still apply per
+§4.7.1, but mutation-path rules do not).
+
+### 7.2 Authority model — no autonomous semantic divergence
+
+The substrate's universal autonomy rule, derived from §6.3.9
+Rule 1:
+
+> S8 (and S3 on claim writes) may autonomously create new
+> versions **if and only if the new version preserves canonical
+> form** — `identity_hash` and `identity_hash_version` both
+> unchanged. Mutations producing semantic divergence (hash
+> change) require human authority.
+
+This invariant is **mechanical, not layer-based.** S8 *can*
+mutate identity-bearing layer content (e.g., bump `version_seq`
+inside `asserted_truth` pinned refs); what S8 cannot do is cause
+the canonical form to diverge. The hash-preservation rule
+operates *within* identity-bearing layers, not as a fence
+*around* them.
+
+Per-actor authority scope:
+
+| Actor | Hash-preserving claim writes | Hash-changing claim writes | Recipe writes |
+|---|---|---|---|
+| Human | ✓ (preserves approval) | ✓ (invalidates approval; new version in `draft`) | ✓ (new recipe version requires re-approval) |
+| S3 | ✓ (semantic no-op) | ✓ (writes draft; requires human promotion) | ✓ (new recipe in `generated_unapproved`) |
+| S8 | ✓ (e.g., version_seq bumps when both Gates pass per §6.3.9 Rule 3) | ✗ (Authority violation; surfaces for human review) | ✓ (new recipe in `generated_unapproved`) |
+
+Note that none of the actors can promote a draft to approved —
+**promotion is a human-only action** regardless of authoring path.
+
+### 7.3 Identity continuity and semantic continuity
+
+The seventh guardrail in §3 separates three continuities. Two
+matter for mutation paths:
+
+- **Identity continuity** = stable identifier (`test_id`,
+  `recipe_id`) continuity. A test is "the same test" across all
+  its versions, regardless of mutation path. Stable identifiers
+  persist; mutations create new versions, never new identifiers.
+- **Semantic continuity** = `identity_hash` continuity (scoped to
+  `identity_hash_version` per D-059 Rule 4). Different
+  identity_hash means semantically different test, even with
+  same `test_id`.
+
+These dimensions are **orthogonal**. A test can:
+
+- Preserve identity AND semantic continuity (operational edit,
+  S8 version_seq bump)
+- Preserve identity but lose semantic continuity (hash-changing
+  edit — same test_id, new meaning)
+- Cannot lose identity without leaving the mutation framework
+  entirely (deletion is out of scope; deprecation is the proper
+  path for retiring tests)
+
+### 7.4 Trust boundary by path
+
+Approval impact per path:
+
+| Path | Actor | Target | Hash impact (claim) | Approval impact |
+|---|---|---|---|---|
+| Human edit (hash-preserving claim) | Human | claim | preserved | preserved |
+| Human edit (hash-changing claim) | Human | claim | changes | invalidated; new version in `draft` |
+| Human edit (recipe) | Human | recipe | n/a | new recipe version requires re-approval |
+| S3 regeneration (hash-preserving) | S3 | claim | preserved | preserved (semantic no-op; Coordinator may skip writing) |
+| S3 regeneration (hash-changing) | S3 | claim | changes | invalidated; new version in `draft` requiring human promotion |
+| S3 recipe generation | S3 | recipe | n/a | new recipe in `generated_unapproved` |
+| S8 recipe rewrite | S8 | recipe | n/a | new recipe in `generated_unapproved` |
+| S8 claim `version_seq` bump | S8 | claim | preserved (by construction; both Gates per §6.3.9 Rule 3 pass) | preserved |
+
+Two asymmetries are worth naming:
+
+**Claim approval is mechanical.** Governed by `identity_hash`
+change between versions per D-057 Rule 2 / D-059 Rule 2.
+Preserved on hash preservation; invalidated on hash change.
+Same rule applies regardless of which actor authored the change.
+
+**Recipe re-approval is a conservative default.** Every new
+recipe version requires explicit re-approval. The reason is
+*not* that recipes are fundamentally different from claims — it
+is that the substrate currently lacks a mechanical detection
+mechanism for "this recipe edit didn't meaningfully change
+behavior." Without such a mechanism, the safe default is: any
+recipe change might affect test behavior, so re-approval is
+required. Future evolution (recipe content hashing, recipe
+approval-preservation declarations) could relax this default to
+match the claim model. Reserved as forward-compat in §7.8.
+
+### 7.5 Linear supersession and current-approved resolution
+
+**Linear supersession.** Each new claim or recipe version
+supersedes the prior in `version_seq`. The "exactly one
+`valid_to`=NULL per identifier" invariant (per §6.1) is
+maintained. No branching, no concurrent live versions.
+
+**Two notions of "current."** Linear supersession produces a
+gap between two queries:
+
+- **Latest** — the highest `version_seq` for the identifier;
+  always has `valid_to`=NULL.
+- **Current-approved** — the canonical "production" version
+  according to substrate governance rules. May not be the latest
+  if newer drafts exist.
+
+When a draft is created (e.g., S3 hash-changing regeneration),
+*latest* ≠ *current-approved*. The substrate makes both queryable.
+
+**Current-approved as governance resolution, not status lookup.**
+`get_current_approved_claim(test_id)` is a **governance
+resolution operation** that interprets version history per
+substrate rules — not a simple `WHERE status='approved' ORDER BY
+version_seq DESC LIMIT 1` query. The resolution rules include:
+
+- An approved version is current-approved if no later approved
+  version supersedes it
+- A deprecation event removes current-approved status (without
+  setting another)
+- Cross-policy considerations (per D-059 Rule 6): if approved
+  versions exist under different `identity_hash_version`
+  regimes, policy-version-aware resolution is governance work
+- Future rules (concurrent-version merge handling, etc.) compose
+  into this resolution without schema or downstream-query change
+
+Downstream substrates use the Coordinator's interface
+exclusively; never query the DB directly for current-approved.
+Direct queries bypass governance and may return results that
+violate substrate guarantees.
+
+### 7.6 Test-level approval as derived composition
+
+Per-artifact (claim, recipe) approval is tracked on `status`
+columns. Test-level approval is **derived composition**:
+
+- *Fully approved* — current-approved claim AND at least one
+  current-approved recipe
+- *Claim approved, recipe pending* — claim approved AND no
+  current-approved recipe (e.g., S8 rewrote and re-approval is
+  pending)
+- *Draft* — claim is draft
+
+Composition logic lives in the Coordinator's query interface
+(`get_test_approval_status(test_id)`). Not denormalized to the
+schema — derivation rules may evolve without migration.
+
+### 7.7 Edge cases
+
+**Concurrent structural writes.** Two paths attempt to create
+the next `version_seq` simultaneously. DB enforces PK uniqueness
+on `(test_id, version_seq)`; one wins, the other gets a conflict
+error from the Coordinator and must retry with the new
+`version_seq` as base. Transactional concern at the Coordinator
+level.
+
+**Concurrent semantic conflicts.** Two paths produce
+semantically divergent versions concurrently. v1 behavior:
+linear supersession; whoever writes last wins (subject to
+authority rules); the losing edit is recoverable via provenance
+but is not auto-merged. Forward-compat reservation in §7.8
+addresses future merge/rebase semantics.
+
+**S3 regenerates an existing test (same canonical form).** Hash
+equivalence detected; Coordinator skips writing a new version
+(no-op). Returns reference to existing version. Avoids version
+churn for semantic no-ops.
+
+**S3 regenerates and produces same canonical form as a different
+existing test.** Cross-test semantic equivalence (per D-059
+Rule 4). Substrate provides equivalence query; S3 may dedup or
+merge per its own design. The substrate does NOT auto-merge;
+merging is a deliberate downstream operation.
+
+**S8 detects claim's pinned ref is to a deleted entity.** S8
+surfaces for human review per D-058 unblessed-transition
+discipline. Substrate records a provenance event noting the
+surfaced concern. The test stays in its current state; human
+action determines next step (revise claim, deprecate test, etc.).
+
+**Human promotes an S3-generated draft.** Status changes from
+`draft` to `approved`. Provenance records `claim_approved` event
+with human actor. The newly-approved version becomes
+current-approved; the prior approved version (if any) is now
+both superseded (in `version_seq` terms) AND no longer
+current-approved.
+
+**S8 rewrites a recipe that was just approved.** New recipe
+version in `generated_unapproved`; the just-approved version is
+superseded. Provenance records `recipe_s8_rewrite`. Test-level
+approval becomes "claim approved, recipe pending." Human review
+of the new recipe restores full approval.
+
+**Approval rollback.** The status enum (`draft` / `approved` /
+`deprecated`) does not permit direct un-approval (`approved` →
+`draft`). If a previously-approved version needs to "lose
+approval," the human creates a new version (with whatever edit)
+which becomes a draft. The prior version stays "approved" in
+history but is superseded by the new draft. **Rollback through
+supersession, not status mutation.**
+
+### 7.8 Forward-compatibility reservations
+
+Four architectural directions reserved without action in v1:
+
+- **Recipe approval auto-preservation.** Current conservative
+  default (every new recipe version requires re-approval) may
+  evolve toward a hash-based or declaration-based preservation
+  model analogous to claims. Possible mechanisms: recipe content
+  hashing, recipe approval-preservation declarations by the
+  human author, recipe semantic-equivalence detection. Today's
+  conservative default is forward-compatible.
+
+- **Merge/rebase semantics for concurrent semantic conflicts.**
+  Current behavior is linear supersession; concurrent semantic
+  edits result in one winning and one becoming
+  provenance-recoverable. Future work may introduce:
+  - Branches (concurrent drafts coexist; explicit merge
+    operation)
+  - Rebase (a draft is "rebased" on a newer approved version,
+    reapplying its semantic intent)
+  - Conflict surfacing (substrate detects semantic conflicts
+    and surfaces for human resolution)
+
+  Reserved; no v1 machinery. Linear supersession is the explicit
+  current commitment.
+
+- **Provenance streams as named taxonomy.** The current single
+  `event_kind` enum lumps conceptually distinct streams: content
+  edits, approval lifecycle, surfaced-for-review events, recipe
+  operations, migration events. Future may categorize events by
+  stream with possible consequences for retention policy, access
+  control, and consumer filtering. Reserved as framing; no v1
+  schema change.
+
+- **Deprecation taxonomy.** The current single `deprecated`
+  status conflates conceptually distinct states (soft deprecate,
+  hard deprecate, replaced, out-of-date, schema-incompatible).
+  Future may evolve toward a richer enum or sub-status
+  discriminator. Pairs naturally with provenance stream framing.
+  Reserved; no v1 schema change.
+
+See `DECISIONS_LOG.md` D-061 for rationale and alternatives
+considered.
 
 ---
 
