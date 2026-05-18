@@ -1,12 +1,13 @@
 # Substrate 2 — Test Representation — SPEC
 
-**Status:** §2, §3, §4 (data model), §5 (S1 references), and §6
-(lifecycle and versioning, including canonicalization mechanics)
-substantively complete per D-051 through D-059. Remaining sections
-(§1, §7-§11) pending their respective questions.
+**Status:** §2, §3, §4 (data model, including validation layering),
+§5 (S1 references), and §6 (lifecycle and versioning, including
+canonicalization mechanics) substantively complete per D-051
+through D-060. Remaining sections (§1, §7-§11) pending their
+respective questions.
 
-**Last substantive update:** 2026-05-18 (identity-hash canonicalization
-mechanics and governance contract)
+**Last substantive update:** 2026-05-18 (validation layering and
+the Semantic Transaction Coordinator)
 
 ---
 
@@ -666,7 +667,7 @@ Every JSONB body carries two top-level keys:
 - `kind` (string) — redundant self-description matching the row discriminator. Self-describing for exports; **row discriminator is authoritative on disagreement**.
 
 Body shape per (`row discriminator`, `body_schema_version`) is
-defined by Pydantic models locked in S2-Q-003 sub-cycle 5.
+defined by Pydantic models per §4.7.
 
 ### 4.5 Coverage derivation strategy
 
@@ -694,12 +695,291 @@ Three architectural directions reserved without being built:
   A parallel operational linkage layer (e.g.,
   `test_recipe_dependencies`) is forward-compatible territory,
   not realized today.
-- **Sub-cycle 5 Pydantic validation patterns.** Body validation,
-  cross-field constraints, and discriminator-driven dispatch are
-  S2-Q-003 sub-cycle 5 work. The conventions in §4.4 are the
-  contract that sub-cycle 5 implements.
 
 See `DECISIONS_LOG.md` D-056 for rationale and alternatives
+considered.
+
+### 4.7 Validation layering and the Semantic Transaction Coordinator
+
+**Resolution.** Per D-060: substrate-2's validation operates
+across three complementary enforcement layers, coordinated
+through a named substrate-level component (the Semantic
+Transaction Coordinator) that maintains consistency invariants
+spanning multiple tables, body schemas, and validation layers.
+
+#### 4.7.1 Three complementary enforcement layers
+
+The substrate distributes validation responsibilities across
+three layers with distinct scope, evolution speed, and bypass
+characteristics. The layers are **complementary, not
+hierarchical** — each has a first-class enforcement role and a
+distinct scope.
+
+| Layer | Scope | Bypass characteristic | Evolution speed |
+|---|---|---|---|
+| DB | Structural invariants (discriminator enums, FK/PK integrity, CHECK constraints) | Un-bypassable | Slow (migration overhead) |
+| Pydantic | Semantic content validation (body shape, cross-field rules, ontology enforcement, reference shapes) | Bypassable by raw SQL | Fast (code change) |
+| Schema | Per-body type definitions, semantic field descriptors, discriminator dispatch | (not directly enforcing) | Fast (code change) |
+
+Substrate-critical invariants are deliberately **double-enforced**
+across layers — e.g., discriminator values are both DB enums AND
+Pydantic Literal types; this redundancy is intentional and the
+coordination cost on enum changes is accepted.
+
+#### 4.7.2 Pydantic model organization
+
+Two-level discriminator dispatch:
+
+- **Level 1 — row discriminator** (`archetype`, `claim_kind` for
+  claims; `trigger_kind`, `recipe_kind` for recipes): selects the
+  family of body models that applies
+- **Level 2 — `body_schema_version`**: selects the specific
+  version within that family
+
+Pydantic 2 idiom with discriminated unions:
+
+```python
+class ValueClaimBodyV1(BaseModel):
+    body_schema_version: Literal[1]
+    kind: Literal["value-claim"]
+    subject: IdentityBearingRef
+    expected_value: ValueExpression
+
+class ValueClaimBodyV2(BaseModel):
+    body_schema_version: Literal[2]
+    kind: Literal["value-claim"]
+    subject: IdentityBearingRef
+    expected_value: ValueExpression
+    expected_value_format: Literal["raw", "formatted"]
+
+ValueClaimBody = Annotated[
+    Union[ValueClaimBodyV1, ValueClaimBodyV2],
+    Field(discriminator="body_schema_version"),
+]
+
+DataBehaviorClaimBody = Annotated[
+    Union[ValueClaimBody, StateTransitionClaimBody, ...],
+    Field(discriminator="kind"),
+]
+```
+
+The Semantic Transaction Coordinator (§4.7.5) dispatches at write
+time through these two levels.
+
+#### 4.7.3 Reference type hierarchy with semantic role preservation
+
+Per D-060, reference types distinguish **structural shape** from
+**semantic role**:
+
+```python
+class PinnedRef(BaseModel):
+    ref_kind: Literal["pinned"]
+    entity_type: str
+    entity_id: UUID
+    version_seq: int
+    external_id: str
+
+class LogicalRef(BaseModel):
+    ref_kind: Literal["logical"]
+    entity_type: str
+    external_id: str
+
+class IdentityBearingRef(PinnedRef):
+    """Pinned reference that participates in the test's identity.
+
+    Structurally identical to PinnedRef; the distinct type
+    preserves the semantic-role information for documentation,
+    tooling introspection, and forward-compatibility with
+    additional semantic-role markers.
+    """
+    pass
+
+OperationalRef = Annotated[
+    Union[PinnedRef, LogicalRef],
+    Field(discriminator="ref_kind"),
+]
+```
+
+`IdentityBearingRef` is a **distinct type**, not a type alias.
+This preserves three properties:
+
+- **Documentation**: a field typed `IdentityBearingRef`
+  communicates the semantic role (participates in identity),
+  not just structural shape.
+- **Evolution**: future semantic-role markers
+  (e.g., `ProvenanceRef`) can be added without retyping existing
+  fields.
+- **Introspection**: substrate-level tooling can identify
+  identity-bearing references by type.
+
+The hybrid-by-layer rule (per D-058 §5.1) becomes **structural
+type enforcement**: identity-bearing layer body models declare
+fields with `IdentityBearingRef`; operational layer body models
+declare fields with `OperationalRef`. Cross-layer rule violations
+fail Pydantic validation as type mismatches.
+
+#### 4.7.4 Semantic field descriptors
+
+Per-field semantic metadata uses `Annotated[T, Marker]`
+consistently. Today's marker:
+
+```python
+class SomeBody(BaseModel):
+    steps: list[Step]  # ordered (default)
+    allowed_values: Annotated[list[str], ArraySemantics.SET]
+```
+
+Future markers may include hash-contribution annotations
+(`SEMANTIC` vs `PROJECTION`, per D-059 §6.3.10 reservation),
+identity-contribution annotations, and other per-field semantic
+declarations. The discipline:
+
+- **Single mechanism**: all semantic metadata via `Annotated`;
+  no `json_schema_extra`, custom decorators, or other parallel
+  mechanisms.
+- **Introspection-friendly**: substrate-level tooling reads field
+  annotations through Pydantic's `model_fields[field].metadata`.
+- **Forward-compatible**: new markers compose with existing ones
+  without breaking patterns.
+
+The trajectory is toward a coherent **semantic field descriptor
+framework** — a unified mechanism for attaching semantic metadata
+to fields. Sub-cycle 5 establishes the pattern; future sub-cycles
+extend the marker vocabulary as needs emerge.
+
+#### 4.7.5 The Semantic Transaction Coordinator
+
+The Semantic Transaction Coordinator is a **named substrate-level
+component** that maintains consistency invariants spanning
+multiple tables, body schemas, and validation layers within
+write transactions.
+
+It coordinates:
+
+- Body-shape consistency (Pydantic per body)
+- Row-body discriminator consistency (D-056 §4.3)
+- Cross-layer ontology consistency (D-058 §5.5, structurally
+  enforced via type hierarchy per §4.7.3)
+- Canonicalization-hash consistency (D-059 §6.3)
+- Coverage-claim consistency (D-058 §5.4)
+- Provenance-event consistency (D-056 §4.1)
+
+These invariants individually live in different specifications;
+the Coordinator is the single component where they are
+maintained transactionally on write. Future invariants emerging
+from new sub-cycles or new substrates are added to the
+Coordinator as named coordination steps.
+
+All API-driven writes to `test_claims`, `test_recipes`,
+`test_claim_coverage`, and `test_provenance` route through the
+Coordinator. Direct DB writes that bypass the Coordinator bypass
+the Pydantic-layer invariants; DB-layer invariants
+(substrate-critical structural rules per §4.7.1) still apply.
+
+The Coordinator is implementation territory but has architectural
+status — it is a named component in substrate-2's design, not
+implementation glue.
+
+#### 4.7.6 Write-flow orchestration
+
+The Semantic Transaction Coordinator's canonical write sequence:
+
+1. **Discriminator validation** — archetype, claim_kind in
+   valid enum (DB enum + Pydantic Literal both enforce)
+2. **Body dispatch** — select Pydantic model per
+   `(claim_kind, body_schema_version)`
+3. **Body validation** — Pydantic checks body shape, field types,
+   cross-field constraints
+4. **Body-row consistency** — body.kind must match
+   row.claim_kind (per D-056)
+5. **Cross-layer ontology validation** — structural via per-layer
+   ref types (`IdentityBearingRef` vs `OperationalRef`)
+6. **Cross-body validation** — recipe's `claim_test_id` must
+   reference existing claim (FK at DB layer enforces; Pydantic
+   may pre-check)
+7. **Canonicalization** — produce canonical-form dict per
+   D-059 §6.3.2
+8. **Hash computation** — SHA-256 of canonical form
+9. **Coverage extraction** — pull pinned refs from
+   identity-bearing layers per D-058 §5.4
+10. **DB write transaction** — `test_claims` row (canonical body
+    + hash + `identity_hash_version`) + `test_claim_coverage`
+    rows + `test_provenance` event
+
+Any step's failure rolls back the transaction. Each step has
+structured error types per §4.7.8.
+
+#### 4.7.7 Read-path semantics
+
+Read flow at the substrate's API boundary:
+
+1. Row fetched from DB
+2. JSONB body parsed
+3. Pydantic model dispatched on
+   `(row_discriminator, body_schema_version)`
+4. Body validated against model (defense in depth against
+   corruption or out-of-band edits)
+5. Returned as typed Pydantic object
+
+**Hash is not recomputed on read.** Within a given
+`(identity_hash, identity_hash_version)` regime, the stored hash
+is trusted. Cross-regime hash comparison requires explicit
+re-hashing (per D-059 Rule 6).
+
+**Pinned-ref resolution is lazy.** Reading a row does not
+resolve pinned references against S1 — caller decides when to
+resolve. Avoids S1 queries on every claim read.
+
+Hash audit operations (periodic verification that stored hashes
+re-canonicalize correctly under their `identity_hash_version`
+policy) run as separate maintenance jobs, not in the read path.
+
+#### 4.7.8 Read-path error types
+
+Read-path failures distinguish four error categories with
+distinct handling:
+
+| Error type | Cause | Severity | Handling |
+|---|---|---|---|
+| `SchemaIncompatibilityError` | No Pydantic model exists for `(kind, body_schema_version)` | Graceful degradation | Surface raw JSONB with warning; may indicate substrate-library version mismatch or missing migration |
+| `BodyCorruptionError` | Model exists for `(kind, body_schema_version)` but body fails validation | Incident | Log + alert; surface degraded result; investigate (storage corruption, out-of-band edit, bug) |
+| `OntologyViolationError` (write-time) | Cross-layer reference-kind rule violated | Architectural rejection | Return structured error with explicit ontology framing per D-058 |
+| `ValidationError` (Pydantic standard) | Routine field validation failure (write-time) | Soft rejection | Return structured error with field-level details |
+
+Distinguishing `SchemaIncompatibilityError` from
+`BodyCorruptionError` matters for cross-substrate-version
+compatibility: if S3 writes at `body_schema_version=3` and a
+reading service uses a substrate library that knows only up to
+v2, the reader gets a `SchemaIncompatibilityError` it can handle
+gracefully (skip the body, return what it has) rather than a
+hard crash.
+
+#### 4.7.9 Migration handling
+
+Body-schema-version migration is governance work, not routine
+maintenance. The migration author provides:
+
+1. **New Pydantic model** for the new version
+   (e.g., `ValueClaimBodyV3`)
+2. **Migration function** `(old_body: V2) -> (new_body: V3)`
+3. **Canonical-form preservation declaration** per D-059 Rule 5:
+   - "preserves canonical form" → re-hash matches old hash → no
+     approval invalidation
+   - "changes canonical form" → re-hash differs → approval
+     invalidation per D-059 Rule 2
+
+Backfill operation: for each row of old version, apply
+migration → re-validate against new model → re-canonicalize →
+re-hash → write new row with updated `body_schema_version`.
+A provenance event per migrated row records the migration.
+
+Canonicalization policy migration (per D-059 Rule 6) follows
+the same pattern but operates on `identity_hash_version` rather
+than `body_schema_version`. Both are governance-level
+operations: explicit, audited, recorded in provenance, not
+implicit or batch-automated.
+
+See `DECISIONS_LOG.md` D-060 for rationale and alternatives
 considered.
 
 ---
@@ -838,6 +1118,15 @@ Therefore:
   — it would require an architectural decision revisiting the
   hybrid-by-layer rule itself.
 
+Per D-060 §4.7.3, this ontology enforcement is implemented
+structurally via Pydantic type hierarchy — identity-bearing
+layer body models declare ref-typed fields with
+`IdentityBearingRef` (a distinct type, not alias); operational
+layer body models declare fields with `OperationalRef`
+(`Union[PinnedRef, LogicalRef]`). Cross-layer rule violations
+fail Pydantic validation as type mismatches rather than as
+ad-hoc validators.
+
 ### 5.6 external_id drift modes
 
 Logical references are evolvable but not safe — `external_id`
@@ -918,7 +1207,7 @@ Three architectural directions reserved without action in v1:
   this via either a `weight` column, a richer `reference_kind`
   enum, or a parallel `linkage_weight` table.
 - **Operational linkage layer for recipes.** Per D-056's marker;
-  S2-Q-003 sub-cycle 5 / future S8 work may surface this.
+  future S8 work may surface this.
 - **Reference resolution policies.** Per D-057's marker;
   vocabulary upgrade is on standby. If the logical/pinned binary
   diversifies (nearest-compatible, policy-constrained, etc.),
@@ -1058,8 +1347,8 @@ Per D-059, **body schemas declare per-field array semantics:**
   order hash identically.
 
 Default is `ordered` (safest — never conflates sequences with
-sets). Schemas explicitly opt into `set` semantics. Sub-cycle 5
-(Pydantic validation) is the locus for these declarations.
+sets). Schemas explicitly opt into `set` semantics. The Pydantic
+patterns in §4.7.4 are the locus for these declarations.
 
 #### 6.3.5 `body_schema_version` handling
 
@@ -1203,6 +1492,15 @@ Mechanism (when concrete projection fields emerge):
 Reserved as forward-compat. No v1 implementation; no v1 examples;
 storage shape preserves room.
 
+**Trajectory toward semantic field descriptors (per D-060
+§4.7.4).** Semantic projection field annotation is one of an
+emerging family of per-field semantic metadata markers, alongside
+array-semantics declarations (§6.3.4) and potentially others.
+The discipline is to use `Annotated[T, Marker]` uniformly
+across all such markers — single mechanism, introspection-friendly,
+forward-compatible. The framework lives in Pydantic field
+metadata; substrate tooling has one place to look.
+
 #### 6.3.11 Edge cases
 
 - **Hash collision (different content, same hash):**
@@ -1211,7 +1509,9 @@ storage shape preserves room.
 - **Non-canonical write input:** write-layer canonicalizes before
   hashing; canonical form is stored.
 - **Hash computation timing:** at write time only; never
-  recomputed on read.
+  recomputed on read **within a given
+  `(identity_hash, identity_hash_version)` regime**. Cross-regime
+  comparison requires explicit re-hashing per Rule 6.
 - **Policy migration for existing rows:** explicit governed
   operation. Re-hash under new policy; record new
   `identity_hash_version`; document in provenance.

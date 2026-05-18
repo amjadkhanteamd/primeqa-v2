@@ -2581,3 +2581,216 @@ TA refinements integrated:
   S8-blessed-transitions refined by two-gate evaluation)
 
 ---
+
+
+## D-060 — Validation layering and the Semantic Transaction Coordinator [S2-Q-003 sub-cycle 5]
+
+**Date:** 2026-05-18
+**Substrates affected:** [S2, with consequences for S3, S4, S6, S8]
+**Status:** active
+
+**Decision.** Substrate-2's validation operates across three
+complementary enforcement layers, coordinated through a named
+substrate-level component (the Semantic Transaction Coordinator)
+that maintains consistency invariants spanning multiple tables,
+body schemas, and validation layers within write transactions.
+
+**Three complementary enforcement layers (not hierarchical):**
+
+- **DB layer** — substrate-critical structural invariants
+  (discriminator enums, PK/FK integrity, CHECK constraints).
+  Un-bypassable; slow to evolve.
+- **Pydantic layer** — semantic content validation (body shape,
+  cross-field rules, ontology enforcement, reference shapes).
+  Bypassable by raw SQL; fast to evolve.
+- **Schema layer** — per-body type definitions, semantic field
+  descriptors, discriminator dispatch.
+
+Substrate-critical invariants are deliberately double-enforced
+across DB and Pydantic layers; the coordination cost is accepted.
+
+**Pydantic model organization:** two-level discriminator dispatch
+(row discriminator → family of body models; `body_schema_version`
+→ specific version). Discriminated unions throughout.
+
+**Reference type hierarchy with semantic role preservation:**
+
+- `PinnedRef` — structural shape (entity_id + version_seq +
+  external_id)
+- `LogicalRef` — structural shape (external_id only)
+- `IdentityBearingRef(PinnedRef)` — **distinct type**, not alias,
+  carrying the semantic-role marker for identity-bearing pinned
+  refs
+- `OperationalRef = Union[PinnedRef, LogicalRef]` — operational
+  layer ref type permitting either kind
+
+D-058's hybrid-by-layer rule becomes structural type enforcement:
+identity-bearing body models declare fields with
+`IdentityBearingRef`; operational body models declare fields
+with `OperationalRef`. Cross-layer violations fail Pydantic
+validation as type mismatches.
+
+**Semantic field descriptors via `Annotated[T, Marker]`
+uniformly.** Today's marker: `ArraySemantics.SET` per D-059.
+Trajectory: hash-contribution annotations (per D-059 §6.3.10
+reservation), identity-contribution annotations, future markers.
+Single mechanism; substrate tooling reads field metadata via
+Pydantic introspection.
+
+**The Semantic Transaction Coordinator** is a named
+substrate-level component coordinating consistency invariants
+across substrate-2's multiple tables and validation layers. All
+API-driven writes route through it. The Coordinator has
+architectural status — it is a named component, not
+implementation glue. Future invariants from new sub-cycles or
+substrates are added as named coordination steps.
+
+**Hash computation hooks** live in the Coordinator (via shared
+pure functions), not in Pydantic models, not in DB triggers.
+Hash never recomputed on read within a given
+`(identity_hash, identity_hash_version)` regime; cross-regime
+comparison requires explicit re-hashing per D-059 Rule 6.
+
+**Read-path error types distinguished:**
+
+- `SchemaIncompatibilityError` — no Pydantic model exists for
+  `(kind, body_schema_version)`. Graceful degradation; surface
+  raw JSONB with warning. Indicates substrate-library version
+  mismatch or missing migration.
+- `BodyCorruptionError` — model exists but body fails validation.
+  Incident-level. Log + alert; surface degraded; investigate
+  (storage corruption, out-of-band edit, bug).
+- `OntologyViolationError` (write-time) — cross-layer ref-kind
+  rule violated.
+- `ValidationError` (Pydantic standard) — routine write-time
+  validation failure.
+
+Distinguishing schema-incompatibility from corruption matters
+for cross-substrate-version compatibility — a reader using an
+older substrate library handles the schema-incompatibility
+gracefully rather than crashing.
+
+**Migration handling** (body-schema-version and
+identity-hash-version both): governance-level operations with
+explicit canonical-form-preservation declarations per D-059 Rule
+5. Backfill applies migration → re-validates → re-canonicalizes
+→ re-hashes → writes new row → records provenance event.
+
+**Rationale.** Sub-cycle 5 composes existing commitments (from
+D-051 through D-059) into a coherent validation architecture
+with a named coordination point. The architectural questions
+were largely answered by prior decisions; this sub-cycle locks
+how they are implemented in Pydantic and where each layer of
+validation lives.
+
+The six critical refinements during design:
+
+- **Complementary layers, not hierarchy.** Initial framing
+  ("DB floor / Pydantic ceiling") suggested vertical ordering.
+  Reality is complementary scopes; rephrasing prevents misreading.
+- **`IdentityBearingRef` as distinct type, not alias.** Preserves
+  semantic-role distinction from structural shape; enables
+  documentation, evolution, and tooling introspection.
+- **`SchemaIncompatibilityError` distinct from
+  `BodyCorruptionError`.** Different failure modes with different
+  mitigations; cross-substrate-version compatibility requires
+  the distinction.
+- **Semantic field descriptors as emerging trajectory.** Today's
+  array-semantics marker is one of an emerging family; use
+  `Annotated` uniformly to converge toward a coherent framework
+  rather than proliferate bespoke patterns.
+- **Hash trust scoped to regime.** Within a given
+  `(identity_hash, identity_hash_version)` regime; cross-regime
+  requires explicit re-hashing.
+- **Semantic Transaction Coordinator as named substrate-level
+  component.** Architectural status, not implementation glue;
+  coordinates the substrate's consistency invariants
+  transactionally; named in architectural diagrams.
+
+TA refinements integrated:
+
+- Floor/ceiling hierarchy wording replaced with
+  complementary-layers framing
+- `IdentityBearingRef` preserved as distinct semantic-role type
+- `SchemaIncompatibilityError` vs `BodyCorruptionError`
+  distinction at read time
+- Trajectory toward semantic field descriptors acknowledged
+- Hash trust qualified by hash-version regime
+- Orchestrator elevated to Semantic Transaction Coordinator
+  (named substrate-level component)
+
+**Alternatives considered.**
+
+- *Hierarchical layering with DB as foundation.* Rejected per TA.
+  Misrepresents the architectural relationship; layers are
+  complementary, not stacked.
+- *`IdentityBearingRef` as type alias.* Rejected per TA.
+  Collapses semantic-role information into structural shape;
+  loses documentation, evolution, and introspection benefits.
+- *Single read-time error type for all body validation failures.*
+  Rejected per TA. Conflates schema-incompatibility (graceful
+  degradation) with corruption (incident); blocks
+  cross-substrate-version compatibility.
+- *Bespoke patterns per semantic field annotation.* Rejected.
+  Proliferating mechanisms (some via `json_schema_extra`, some
+  via decorators, some via Annotated) makes substrate-level
+  introspection brittle and fragments the schema-evolution
+  story.
+- *Procedural cross-layer validator instead of structural type
+  enforcement.* Rejected. Structural enforcement via the type
+  hierarchy makes ontology rules part of the type system rather
+  than an ad-hoc procedural check; harder to bypass accidentally.
+- *Hash computation in Pydantic computed_field or DB triggers.*
+  Rejected. Hash spans multiple bodies + row columns, awkward
+  in Pydantic; DB-side canonicalization is brittle in PL/pgSQL.
+  Pure functions in Coordinator are testable, evolvable, and
+  language-portable.
+- *Orchestrator as "write helper" / implementation glue.*
+  Rejected per TA. Under-names the architectural role of a
+  component that coordinates substrate-level invariants;
+  promotion to named component reflects reality.
+
+**Downstream consequences.**
+
+- *S2-Q-006 (mutation paths and authority):* The Coordinator is
+  the locus where mutation paths (human edit, S3 regenerate,
+  S8 autonomous rewrite) are routed; identity-continuity rules
+  become explicit Coordinator policies.
+- *S2-Q-009 (outward surfaces):* S3, S4, S6, S8 APIs interact
+  with the substrate through the Coordinator. API shape derives
+  from Coordinator's write/read interfaces.
+- *S3 (Generation):* Generator uses cross-test equivalence
+  (per D-059 Rule 4 + Coordinator's hash-equivalence query) for
+  dedup-check before generating new claims.
+- *S4 (Execution):* Read-path error types
+  (`SchemaIncompatibilityError`) support cross-substrate-version
+  resilience.
+- *S6 (Interpretation):* Failure-attribution clustering uses
+  Coordinator's hash-equivalence queries.
+- *S8 (Evolution):* Gate 2 machinery (per D-059 Rule 3) lives
+  outside the Coordinator's transactional scope (it is
+  judgmental, not transactional) but interacts with Coordinator
+  for resulting autonomous writes.
+
+**References.**
+
+- `substrate_2_test_representation/SPEC.md` §4.7 (validation
+  layering and Semantic Transaction Coordinator, substantive
+  content added in this commit)
+- `substrate_2_test_representation/SPEC.md` §5.5 (cross-layer
+  ontology enforcement, refined to reference structural type
+  hierarchy per §4.7.3)
+- `substrate_2_test_representation/SPEC.md` §6.3.10 (semantic
+  field descriptors trajectory framing added)
+- `substrate_2_test_representation/SPEC.md` §6.3.11 (hash trust
+  scoping clarified)
+- D-051 (identity model — the Coordinator's coordination
+  responsibilities derive from this)
+- D-056 (storage realization — multi-table consistency invariants
+  the Coordinator maintains)
+- D-058 (reference model — structural type hierarchy implements
+  hybrid-by-layer rule)
+- D-059 (canonicalization mechanics — hash computation hooks in
+  Coordinator)
+
+---

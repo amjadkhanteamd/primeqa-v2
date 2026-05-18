@@ -447,3 +447,96 @@ Substrate-2 SPEC §2, §3, §4, §5, §6 now substantively complete
 with all hash mechanics and governance specified. Remaining
 sub-cycle 5 (Pydantic validation) plus standalone questions
 S2-Q-006 through S2-Q-010.
+
+---
+
+## 2026-05-18 — S2-Q-003 sub-cycle 5 resolved: validation layering and the Semantic Transaction Coordinator (D-060); S2-Q-003 fully resolved
+
+Sub-cycle 5 of S2-Q-003 locked. Composes prior commitments
+(D-051 through D-059) into a coherent validation architecture.
+
+**Three complementary enforcement layers** (not hierarchical):
+- DB layer: substrate-critical structural invariants
+  (un-bypassable, slow to evolve)
+- Pydantic layer: semantic content validation (bypassable by
+  raw SQL, fast to evolve)
+- Schema layer: per-body type definitions and semantic field
+  descriptors
+
+Substrate-critical invariants double-enforced across DB and
+Pydantic; coordination cost accepted.
+
+**Pydantic model organization:** two-level discriminator dispatch
+(row discriminator → family of body models; body_schema_version
+→ specific version).
+
+**Reference type hierarchy with semantic role preservation:**
+- `PinnedRef` and `LogicalRef` as structural shapes
+- `IdentityBearingRef(PinnedRef)` as **distinct type** (not
+  alias) preserving the semantic-role marker
+- `OperationalRef = Union[PinnedRef, LogicalRef]` for
+  operational layers
+- D-058's hybrid-by-layer rule becomes structural type
+  enforcement; cross-layer violations fail Pydantic validation
+  as type mismatches
+
+**Semantic field descriptors via `Annotated[T, Marker]`
+uniformly.** Today's marker: `ArraySemantics.SET`. Trajectory:
+hash-contribution annotations, identity-contribution annotations,
+others. Single mechanism reservation per D-060.
+
+**The Semantic Transaction Coordinator** elevated to named
+substrate-level component coordinating consistency invariants
+across `test_claims`, `test_recipes`, `test_claim_coverage`,
+`test_provenance`, multiple body schemas, and three validation
+layers. All API-driven writes route through it. Architectural
+status, not implementation glue.
+
+**Hash computation** lives in the Coordinator (via shared pure
+functions). Hash never recomputed on read within a given
+`(identity_hash, identity_hash_version)` regime; cross-regime
+requires explicit re-hashing.
+
+**Read-path error types distinguished:**
+- `SchemaIncompatibilityError` (graceful degradation)
+- `BodyCorruptionError` (incident-level)
+- `OntologyViolationError` (write-time cross-layer)
+- `ValidationError` (Pydantic standard)
+
+Distinguishing schema-incompatibility from corruption supports
+cross-substrate-version compatibility.
+
+**Migration handling** (body-schema-version and
+identity-hash-version): governance-level with explicit
+canonical-form-preservation declarations per D-059 Rule 5.
+
+TA refinements integrated:
+- Floor/ceiling hierarchy wording replaced with
+  complementary-layers framing
+- `IdentityBearingRef` preserved as distinct semantic-role type
+- `SchemaIncompatibilityError` vs `BodyCorruptionError`
+  distinction
+- Trajectory toward semantic field descriptors acknowledged
+- Hash trust qualified by hash-version regime
+- Orchestrator elevated to Semantic Transaction Coordinator
+
+§4.7 of SPEC.md filled with substantive content (new section).
+§5.5 received small cross-reference to §4.7.3's structural
+ontology enforcement. §6.3.10 extended to acknowledge semantic
+field descriptor trajectory. §6.3.11 hash-trust framing scoped
+to regime.
+
+S2-Q-003 sub-cycle 5 marked complete. **S2-Q-003 now fully
+resolved** across all five sub-cycles; entry moved to Resolved
+section in OPEN_QUESTIONS.md. D-060 added to top-level
+DECISIONS_LOG.md.
+
+Phase 3 substrate-2 SPEC §2, §3, §4, §5, §6 fully complete with
+all data-model, reference-model, versioning, canonicalization,
+and validation patterns specified. Ten D-entries committed
+(D-051 through D-060).
+
+Next: standalone open questions S2-Q-006 (mutation paths and
+authority) through S2-Q-010 (v2.2 disposition). S2-Q-006 is the
+natural next given how well-anchored its scope now is (D-057,
+D-058, D-059, D-060 all constrain it mechanically).

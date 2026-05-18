@@ -11,6 +11,19 @@ questions live in the top-level `OPEN_QUESTIONS.md`.
   D-051. See `SPEC.md` §2.
 - ~~S2-Q-002 — Common substrate across five archetypes (structural
   and semantic)~~ → resolved by D-052. See `SPEC.md` §3.
+- ~~S2-Q-003 — Test case data model~~ → fully resolved across
+  five sub-cycles:
+  - Sub-cycle 1 (D-053): claim-kind taxonomy locked (16 kinds)
+  - Sub-cycle 2 (D-054): recipe-kind taxonomy locked (5 kinds)
+  - Sub-cycle 3 (D-056): storage realization (four-table layout,
+    Pattern D)
+  - Sub-cycle 4 (D-059): identity-hash mechanics and governance
+    contract
+  - Sub-cycle 5 (D-060): validation layering and the Semantic
+    Transaction Coordinator
+
+  See `SPEC.md` §3 (taxonomies), §4 (data model and validation
+  layering), §6.3 (canonicalization mechanics).
 - ~~S2-Q-004 — References to S1 entities: reproducibility vs
   evolvability~~ → resolved by D-058. Hybrid by layer: pinned
   required in identity-bearing layers, logical default with
@@ -34,38 +47,6 @@ questions live in the top-level `OPEN_QUESTIONS.md`.
 ---
 
 ## Open
-
-### S2-Q-003 — Test case data model
-
-Multi-sub-cycle question. Concrete columns, tables, JSONB shapes,
-identity mechanics, validation patterns.
-
-Sub-cycles:
-
-- ~~Sub-cycle 1: Claim-kind taxonomy.~~ Locked per D-053. 16 kinds
-  across 5 archetypes. See `SPEC.md` §3.
-- ~~Sub-cycle 2: Recipe-kind taxonomy.~~ Locked per D-054. 5 kinds,
-  observability-domain only. See `SPEC.md` §3.
-- ~~Sub-cycle 3: Storage realization.~~ Locked per D-056. Four-table
-  shape (test_claims, test_recipes, test_provenance,
-  test_claim_coverage), Pattern D (envelope + JSONB + hot-path
-  typed columns), claim/recipe split, semantic linkage layer
-  framing, row-discriminator-as-canonical, JSONB body conventions.
-  See `SPEC.md` §4.
-- ~~Sub-cycle 4: Identity-hash mechanics.~~ Locked per D-059.
-  Hash input scope (archetype + claim_kind + canonicalized
-  asserted_truth + canonicalized semantic_conditions); strict
-  canonicalization rules; reference canonicalization per D-058
-  constraint; schema-declared array semantics; SHA-256;
-  canonicalization policy versioned via `identity_hash_version`
-  column; six-rule governance contract including two-gate
-  evaluation framing for S8 evolution through entity changes;
-  semantic projection reservation. See `SPEC.md` §6.3.
-- **Sub-cycle 5 (next):** Pydantic validation patterns. What's
-  enforced at app boundary, what at DB layer, what at schema
-  level. Includes ontology-enforcement validation per D-058
-  (cross-layer reference-kind rules) and array-semantics
-  declarations per D-059.
 
 ### S2-Q-006 — Mutation paths and authority over meaning
 
@@ -107,11 +88,13 @@ choice constrains the authority model; the two questions cannot be
 answered independently.
 
 Note: authority boundary now mechanically anchored by D-057 +
-D-059 — S8 can autonomously do anything that preserves
+D-059 + D-060 — S8 can autonomously do anything that preserves
 `identity_hash` AND `identity_hash_version` AND passes Gate 2
 (entity-evolution semantic compatibility). Cannot do anything
-that fails either gate without escalation. S2-Q-006 sub-questions
-on identity continuity and trust boundary remain.
+that fails either gate without escalation. The Semantic
+Transaction Coordinator is the routing point for human-edit /
+S3-regenerate / S8-rewrite paths. S2-Q-006 sub-questions on
+identity continuity and trust boundary remain.
 
 ### S2-Q-007 — Execution-history boundary against S4
 
@@ -148,7 +131,9 @@ What does S2 expose:
 
 Schema-enforcement contract: how S3's LLM output is validated against
 S2's schema is an S3 concern, but S2 has to publish enough structure
-for S3 to enforce against it.
+for S3 to enforce against it. APIs interact with the substrate
+through the Semantic Transaction Coordinator (per D-060); API
+shape derives from the Coordinator's write/read interfaces.
 
 ### S2-Q-010 — Disposition of v2.2 test-management tables
 
