@@ -353,52 +353,44 @@ class TestRegisterBodyDecorator:
 
 
 # ---------------------------------------------------------------------------
-# Default-registry hygiene — the package's top-level + non-body
-# submodules MUST NOT register anything. Body modules register only
-# when they're individually imported.
+# Default-registry contract — B-ε
+#
+# Contract evolution: at B-α the assertion was "root-package import
+# leaves the registry empty" because no body modules existed yet. At
+# B-ε the substrate ships its full v1 body surface, and the
+# top-level package __init__ now imports every shipped body module
+# to populate the registry as a SIDE EFFECT of importing
+# ``primeqa.test_representation``. This is the documented v1
+# behavior per SPEC §4.4 + §10.2.
+#
+# The complementary contract — that the **non-body utility
+# modules** (errors.py, common.py, references.py, registry.py, the
+# placeholder models/__init__.py) don't internally pull in body
+# modules — lives in test_substrate_imports.py as a static source
+# check (see TestNonBodyModulesDontSelfRegister there). That
+# contract still matters: cheap utility imports stay cheap.
 # ---------------------------------------------------------------------------
 
 class TestDefaultRegistryHygiene:
-    def test_root_package_import_does_not_register_bodies(self) -> None:
-        """The contract: ``import primeqa.test_representation``
-        (or any of its non-body submodules) must NOT pull in claim
-        body modules as a side effect.
-
-        Verified in a subprocess so the test isn't contaminated by
-        the parent process's already-imported body modules (the
-        other tests in this run import claim bodies via top-of-file
-        imports; once those imports happen, ``default_registry``
-        is populated for the rest of the process lifetime). The
-        subprocess starts fresh.
-
-        If this test breaks, a concrete body got imported by the
-        package's __init__ path — find the import and gate it
-        behind explicit module import per the registry's contract
-        (bodies register at import time of the body module, not at
-        import time of primeqa.test_representation)."""
+    def test_root_import_populates_full_registry(self) -> None:
+        """Per SPEC §4.4 + §10.2: bare
+        ``import primeqa.test_representation`` registers every
+        shipped body kind via the top-level __init__'s
+        body-module imports. Verified in a subprocess so the
+        assertion is meaningful even when other tests in this
+        run have already imported body modules at top-of-file."""
         import subprocess
         import sys
 
         script = (
-            "from primeqa.test_representation.models.registry "
-            "import default_registry;"
-            "import primeqa.test_representation;"
-            "import primeqa.test_representation.errors;"
-            "import primeqa.test_representation.models;"
-            "import primeqa.test_representation.models.common;"
-            "import primeqa.test_representation.models.references;"
-            "import primeqa.test_representation.models.registry;"
-            # claims/ is a placeholder package — importing it must
-            # not pull in any archetype subpackage.
-            "import primeqa.test_representation.models.claims;"
-            "assert len(default_registry) == 0, "
-            "f'package import polluted registry: "
-            "{sorted(default_registry._models.keys())}'"
+            "import primeqa.test_representation as pkg;"
+            "assert len(pkg.default_registry) >= 16, "
+            "f'expected >=16 registrations after root import; "
+            "got {len(pkg.default_registry)}'"
         )
         result = subprocess.run(
             [sys.executable, "-c", script],
-            check=False,
-            capture_output=True,
+            check=False, capture_output=True,
         )
         assert result.returncode == 0, (
             f"subprocess failed:\n"
