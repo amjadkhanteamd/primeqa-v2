@@ -373,3 +373,77 @@ disposition.
 Next: S2-Q-003 sub-cycle 4 (identity-hash mechanics — governance-critical
 canonicalization) now well-constrained by both D-057 (versioning
 anchors) and D-058 (reference canonicalization scope).
+
+---
+
+## 2026-05-18 — S2-Q-003 sub-cycle 4 resolved: identity-hash mechanics + governance contract (D-059)
+
+Sub-cycle 4 of S2-Q-003 locked. Per D-057's elevation, this was
+**governance work**, not implementation detail: the
+canonicalization policy mechanically determines approval
+invalidation, S8's autonomous-rewrite authority boundary, and
+cross-test semantic equivalence reasoning.
+
+**Hash input scope:** archetype + claim_kind + canonicalized
+asserted_truth + canonicalized semantic_conditions. Out of scope:
+test_id, version_seq, temporal columns, status, recipe content,
+coverage, body_schema_version.
+
+**Canonicalization rules (strict, RFC 8785-ish):**
+- Alphabetical recursive key ordering
+- Whitespace stripped between tokens; preserved in string values
+- UTF-8, case-sensitive
+- null vs missing distinguished
+- Booleans lowercase
+- Array semantics schema-declared (ordered default; set opt-in)
+- Pinned references canonicalize to {entity_id, entity_type}
+  only (per D-058)
+
+**Hash algorithm:** SHA-256, hex-encoded.
+
+**Canonicalization policy versioning:** new column
+`identity_hash_version` on `test_claims`. Hashes scoped to
+policy version. Policy evolution is governed, not implicit.
+
+**Six-rule governance contract:**
+1. S8 autonomy boundary (hash + version preservation)
+2. Approval invalidation (mechanical on hash change)
+3. S8 entity evolution two-gate evaluation (refines D-058)
+4. Cross-test semantic equivalence scoped to policy version
+5. Schema migration discipline
+6. Canonicalization policy migration as governed operation
+
+**Two-gate evaluation refines D-058.** S8 autonomous update
+through S1 entity evolution requires both Gate 1 (hash
+preservation, mechanical) AND Gate 2 (entity-evolution semantic
+compatibility, judgmental). Entity-lineage does NOT guarantee
+semantic compatibility — a field can be renamed, repurposed, or
+refactored while retaining its entity_id. Gate 2's machinery is
+S8-design territory.
+
+**Semantic projection fields reserved.** V1 hashes entire body;
+future support for schema-declared per-field hash-contribution
+preserved as forward-compat marker.
+
+TA refinements integrated:
+- Array semantics schema-defined
+- Versioned canonicalization policy
+- Semantic projection field reservation
+- Equivalence scope qualified to policy version
+- Entity-lineage ≠ semantic compatibility (refines Rule 3
+  framing)
+
+§6.3 of SPEC.md expanded with substantive content for the first
+time (previously placeholder). §4.1 `test_claims` table extended
+with `identity_hash_version` column.
+
+S2-Q-003 sub-cycle 4 marked complete in OPEN_QUESTIONS.md.
+Sub-cycle 5 (Pydantic validation patterns) is now next, with
+array-semantics declarations identified as a new responsibility.
+
+D-059 added to top-level DECISIONS_LOG.md.
+
+Substrate-2 SPEC §2, §3, §4, §5, §6 now substantively complete
+with all hash mechanics and governance specified. Remaining
+sub-cycle 5 (Pydantic validation) plus standalone questions
+S2-Q-006 through S2-Q-010.

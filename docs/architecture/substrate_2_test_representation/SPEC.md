@@ -1,12 +1,12 @@
 # Substrate 2 — Test Representation — SPEC
 
 **Status:** §2, §3, §4 (data model), §5 (S1 references), and §6
-(lifecycle and versioning) substantively complete per D-051
-through D-058. Remaining sections (§1, §7-§11) pending their
-respective questions.
+(lifecycle and versioning, including canonicalization mechanics)
+substantively complete per D-051 through D-059. Remaining sections
+(§1, §7-§11) pending their respective questions.
 
-**Last substantive update:** 2026-05-17 (hybrid-by-layer reference
-model with ontology-enforcement validation)
+**Last substantive update:** 2026-05-18 (identity-hash canonicalization
+mechanics and governance contract)
 
 ---
 
@@ -569,10 +569,11 @@ version_seq).
 - `asserted_truth` JSONB — body for the THEN
 - `semantic_conditions` JSONB — body for the WHEN
 - `identity_hash` text — semantic equivalence fingerprint (not unique; not a key)
+- `identity_hash_version` int — canonicalization policy version that produced this hash (per D-059)
 - `status` enum — current approval state (draft / approved / deprecated)
 - `created_at`, `updated_at` timestamps
 - PK: `(test_id, version_seq)`
-- Indexes: `(test_id) WHERE valid_to IS NULL`; `(identity_hash)` for equivalence queries
+- Indexes: `(test_id) WHERE valid_to IS NULL`; `(identity_hash, identity_hash_version)` for equivalence queries (scoped to policy version)
 
 **`test_recipes`** — first-class operational entities. One row per
 (recipe_id, version_seq). Independent versioning from claims.
@@ -797,7 +798,7 @@ in a way it has blessed; it must escalate to human authority
 when the evolution materially changes meaning.
 
 Full canonicalization mechanics (whitespace, ordering, complete
-input set, hash algorithm) are defined in S2-Q-003 sub-cycle 4.
+input set, hash algorithm) are defined in §6.3 per D-059.
 
 ### 5.4 Coverage derivation
 
@@ -896,6 +897,12 @@ and may be silently followed in semantic replay; evolutions that
 change hash are unblessed and require human authority before
 semantic replay proceeds past them.
 
+Per D-059 §6.3.9 Rule 3, this blessing is a **two-gate evaluation**:
+hash preservation (mechanical) plus entity-evolution semantic
+compatibility (judgmental). Hash preservation alone is necessary
+but not sufficient; entity-lineage (shared `entity_id`) does NOT
+guarantee semantic compatibility.
+
 This makes semantic replay disciplined, not aggressive. "Follow
 forward" is a structural capability, not a default behavior.
 
@@ -969,37 +976,248 @@ modeled separately:
 - **`version_seq`** → supersession order. The version's position
   in its identifier's timeline.
 
-### 6.3 `identity_hash` semantics
+### 6.3 `identity_hash` semantics, canonicalization, and governance contract
 
 `identity_hash` is the **semantic equivalence fingerprint**. It is
 NOT a unique identifier (that's `test_id`). It is NOT a primary
 or unique key — multiple rows may share it.
 
 Across a single test's version timeline:
-- Operational edit (fixing a typo, status change, etc., that
-  preserves canonical semantic content) → new row, **same**
-  `identity_hash`. The test means the same thing.
-- Semantic edit (changing asserted truth or semantic conditions
-  in a way that changes canonical meaning) → new row, **different**
+- Operational edit (preserves canonical semantic content) → new
+  row, **same** `identity_hash`. The test means the same thing.
+- Semantic edit (changes canonical meaning) → new row, **different**
   `identity_hash`. The test means something different now.
   Approval state invalidated per the semantic-vs-operational
   lifecycle guardrail.
 
-**Canonicalization policy is governance-critical.** The rules
-that determine whether an edit is operational or semantic
-directly govern:
+Per D-059, canonicalization mechanics and the resulting governance
+contract are defined as follows.
 
-- Approval state lifecycle (when does QA need to re-approve)
-- Semantic equivalence reasoning (are two tests "the same")
-- S8's autonomous-rewrite authority boundary (S8 can do anything
-  that preserves hash; cannot do anything that changes hash
-  without escalating to human authority)
+#### 6.3.1 Hash input scope
 
-Canonicalization mechanics are defined in S2-Q-003 sub-cycle 4.
-That sub-cycle's scope is not "compute a hash" — it is
-**governance policy for what counts as semantic vs operational
-edit**, which determines approval invalidation and S8's authority
-boundary.
+The hash input comprises four components:
+
+- `archetype` (row discriminator)
+- `claim_kind` (row discriminator)
+- Canonicalized `asserted_truth` JSONB body
+- Canonicalized `semantic_conditions` JSONB body
+
+Out of scope: `test_id`, `version_seq`, temporal columns, `status`,
+`identity_hash` itself, all recipe content, all coverage content,
+and `body_schema_version` (excluded from hash; see §6.3.5).
+
+#### 6.3.2 Canonicalization rules (strict)
+
+The canonical form must be deterministic — same logical content
+must produce byte-identical canonical form regardless of input
+representation.
+
+- **Object key ordering:** alphabetical, recursive at every level.
+- **Whitespace:** stripped between tokens; preserved inside string
+  values (Salesforce treats string whitespace as significant).
+- **String encoding:** UTF-8, no escape variations
+  (e.g., `\u0041` canonicalizes to `A`).
+- **String case:** case-sensitive throughout.
+- **Numbers:** canonical JSON numeric form
+  (e.g., `5.00` → `5` for numeric JSON; strings stay as-is).
+- **Null vs missing:** distinguished. Explicit `null` is an
+  assertion; missing key is non-specification. Different semantic
+  claims.
+- **Empty arrays vs missing:** distinguished.
+- **Booleans:** lowercase JSON literals (`true` / `false`).
+
+#### 6.3.3 Reference canonicalization
+
+Per D-058 constraint, pinned references in identity-bearing
+layers canonicalize to two fields only:
+
+```json
+{ "entity_id": "<uuid>", "entity_type": "<type>" }
+```
+
+`version_seq`, `external_id`, and `ref_kind` are excluded
+(operational metadata, informational, or redundant). Logical
+references do not appear in identity-bearing layers (rejected
+by validation per §5.5); the canonicalization rule does not
+apply to them.
+
+#### 6.3.4 Array semantics (schema-declared)
+
+JSON arrays carry semantic ambiguity — they may represent
+ordered sequences (recipe steps, condition chains) or unordered
+sets (allowed values, tag lists). Canonicalization cannot guess.
+
+Per D-059, **body schemas declare per-field array semantics:**
+
+- **`ordered`** (default) — array order is semantically significant.
+  Canonicalization preserves order. Two arrays with different
+  order hash differently.
+- **`set`** — array order is not semantically significant.
+  Canonicalization sorts the array (canonical sort by element)
+  before hashing. Two arrays with identical elements in different
+  order hash identically.
+
+Default is `ordered` (safest — never conflates sequences with
+sets). Schemas explicitly opt into `set` semantics. Sub-cycle 5
+(Pydantic validation) is the locus for these declarations.
+
+#### 6.3.5 `body_schema_version` handling
+
+`body_schema_version` is **excluded** from the hash input. It is
+storage metadata, not semantic content. Consequence: schema
+migrations that preserve semantic equivalence preserve hashes.
+
+This places a burden on migration discipline (see governance
+contract Rule 5): each body schema migration must declare whether
+it preserves canonical form for semantically-unchanged content.
+
+#### 6.3.6 Hash algorithm
+
+**SHA-256, hex-encoded** → 64-character string stored in
+`identity_hash` column. Computed at write time by application
+code (shared `canonicalize()` + `hash()` function across S3
+generator, S8 evolver, validation). PostgreSQL pgcrypto available
+as fallback for in-database queries.
+
+Not a cryptographic-security context, but collision resistance
+matters — SHA-256's collision space is more than sufficient.
+
+#### 6.3.7 Canonicalization policy versioning
+
+Per D-059, **the canonicalization policy itself is versioned.** A
+new column `identity_hash_version` on `test_claims` records which
+version of the policy produced the row's hash. Hashes are only
+directly comparable between rows sharing the same
+`identity_hash_version`.
+
+Rationale: canonicalization rules will evolve as new edge cases
+surface and new body schemas need new rules. Treating
+canonicalization as immutable would either foreclose evolution
+or force massive disruption when policy needs to change.
+Versioning makes policy evolution explicit and governed.
+
+Migration to a new canonicalization version is a deliberate
+operation — existing rows are re-hashed under the new policy
+with explicit governance review, not implicitly.
+
+#### 6.3.8 Storage of canonical form
+
+Canonicalized JSONB is stored on the row (not the original
+non-canonical input). This:
+
+- Makes `identity_hash` deterministically reproducible from
+  stored content
+- Eliminates representation variance in storage
+- Simplifies cross-version diffing and equivalence queries
+
+Canonicalization is normalizing (key ordering, whitespace,
+representation), not lossy — original content is recoverable
+from canonical for all semantic purposes.
+
+#### 6.3.9 Governance contract (six rules)
+
+The canonicalization policy mechanically determines six
+substrate-level rules:
+
+**Rule 1 — S8 autonomy boundary.** S8 may autonomously create
+new claim versions if and only if the new version's
+`identity_hash` equals the predecessor's, AND the new version
+shares the predecessor's `identity_hash_version`. Hash-changing
+edits or policy-version-changing edits require human authority.
+
+**Rule 2 — Approval invalidation.** When a new claim version
+has a different `identity_hash` from its predecessor (or a
+different `identity_hash_version` with no re-hashing under common
+policy), the predecessor's approval state does NOT carry forward;
+the new version begins in `draft` status. Mechanical, no override.
+
+**Rule 3 — S8 evolution through entity changes (two-gate
+evaluation; refines D-058).** When an S1 entity referenced by a
+claim's pinned ref evolves (S1 produces a new `version_seq` for
+that entity), S8 evaluates **two gates** before autonomous update:
+
+- **Gate 1 — Hash preservation (mechanical):** Does the canonical
+  hash remain preserved when the pinned ref's `version_seq` is
+  bumped forward? Per the canonicalization rule (§6.3.3),
+  `version_seq` is excluded from the hash, so this gate passes
+  by construction for pure version-bumps.
+- **Gate 2 — Entity-evolution semantic compatibility
+  (judgmental):** Is the new entity version semantically
+  compatible with the prior? **Entity-lineage (shared `entity_id`)
+  does NOT guarantee semantic compatibility.** A field can be
+  renamed, repurposed, or refactored while retaining its
+  `entity_id`. Gate 2 requires its own machinery
+  (S8-design territory; not specified by sub-cycle 4).
+
+Both gates must pass for autonomous update. Gate 2 failure →
+human review per D-058's unblessed-transition discipline, even
+though Gate 1 passes.
+
+**Rule 4 — Cross-test semantic equivalence (scoped).** Two
+claims (regardless of `test_id`) with the same `identity_hash`
+AND the same `identity_hash_version` are semantically equivalent
+**under that canonicalization policy**. Cross-version comparison
+(rows on different `identity_hash_version`) requires explicit
+re-hashing under a common policy. Hash equivalence is a
+fingerprint of canonical content under a policy, not metaphysical
+sameness.
+
+Substrate may use this for dedup, query, generator dedup-check.
+Not a uniqueness constraint; collisions across tests are
+permitted and meaningful.
+
+**Rule 5 — Schema migration discipline.** Body schema migrations
+must declare whether they preserve canonical form for
+semantically-unchanged content. Declarations are reviewable
+artifacts.
+
+- "Preserves canonical form" → hashes survive migration; no
+  approval invalidation
+- "Changes canonical form" → hashes change; approval invalidation
+  per Rule 2
+
+**Rule 6 — Canonicalization policy migration.** Evolution of the
+canonicalization policy itself is a governance-level operation.
+Migrating existing rows to a new policy version is explicit
+(re-hash with new rules, record new `identity_hash_version`).
+Cross-policy hash equivalence reasoning is not automatic; it
+requires re-hashing under a common policy.
+
+#### 6.3.10 Semantic projection fields (reservation)
+
+For v1, the entire canonicalized body contributes to the hash.
+
+For future: support schema-declared per-field hash-contribution
+annotation. Some body fields may be informational (rationale,
+note, tags) rather than semantic; they belong in the body for
+visibility but should not shift the hash.
+
+Mechanism (when concrete projection fields emerge):
+
+- Each body schema's Pydantic model declares per field whether
+  it's `semantic` (in hash) or `projection` (out of hash).
+- Canonicalization extracts only semantic-marked fields.
+- Projection fields are still stored, queryable, validated —
+  just not hashed.
+
+Reserved as forward-compat. No v1 implementation; no v1 examples;
+storage shape preserves room.
+
+#### 6.3.11 Edge cases
+
+- **Hash collision (different content, same hash):**
+  cryptographically negligible with SHA-256. Treated as benign;
+  `identity_hash` is for equivalence reasoning, not uniqueness.
+- **Non-canonical write input:** write-layer canonicalizes before
+  hashing; canonical form is stored.
+- **Hash computation timing:** at write time only; never
+  recomputed on read.
+- **Policy migration for existing rows:** explicit governed
+  operation. Re-hash under new policy; record new
+  `identity_hash_version`; document in provenance.
+
+See `DECISIONS_LOG.md` D-059 for rationale and alternatives
+considered.
 
 ### 6.4 Recipe-to-claim FK semantics
 

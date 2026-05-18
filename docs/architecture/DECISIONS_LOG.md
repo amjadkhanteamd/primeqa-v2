@@ -2403,3 +2403,181 @@ TA refinements integrated:
   history; pinned references resolve against this)
 
 ---
+
+
+## D-059 — Identity-hash mechanics + governance contract [S2-Q-003 sub-cycle 4]
+
+**Date:** 2026-05-18
+**Substrates affected:** [S2, with consequences for S3, S4, S6, S8]
+**Status:** active
+
+**Decision.** Substrate-2's `identity_hash` mechanics are defined
+by four locked components plus a six-rule governance contract.
+
+**Hash input scope:**
+- `archetype` (row discriminator)
+- `claim_kind` (row discriminator)
+- Canonicalized `asserted_truth` JSONB
+- Canonicalized `semantic_conditions` JSONB
+
+Out of scope: `test_id`, `version_seq`, temporal columns, `status`,
+`identity_hash` itself, recipe content, coverage content, and
+`body_schema_version`.
+
+**Canonicalization rules (strict, RFC 8785-ish):**
+- Alphabetical recursive object-key ordering
+- Whitespace stripped between tokens; preserved in string values
+- UTF-8 strings; case-sensitive; no escape variation
+- Canonical JSON numeric form
+- `null` vs missing distinguished; empty arrays vs missing
+  distinguished
+- Booleans lowercase
+- **Array semantics schema-declared:** `ordered` (default) or
+  `set` (sort before hash) per field
+- Pinned references canonicalize to `{entity_id, entity_type}`
+  only (per D-058 constraint; `version_seq`, `external_id`,
+  `ref_kind` excluded)
+
+**Hash algorithm:** SHA-256, hex-encoded → 64-char string stored
+in `identity_hash` column.
+
+**Canonicalization policy versioning:** new column
+`identity_hash_version` (int) on `test_claims` records the
+policy version that produced the row's hash. Hash equivalence
+scoped to policy version. Policy evolution is explicit and
+governed.
+
+**Storage:** canonicalized JSONB stored on row (not original).
+Computed at write time by shared application code.
+
+**Six-rule governance contract:**
+
+- **Rule 1 — S8 autonomy boundary.** Autonomous version creation
+  requires hash preservation AND `identity_hash_version`
+  preservation. Hash-changing or policy-version-changing edits
+  require human authority.
+- **Rule 2 — Approval invalidation.** Hash change between
+  versions (or policy-version change without re-hashing under
+  common policy) → predecessor approval not carried forward; new
+  version begins `draft`. Mechanical.
+- **Rule 3 — S8 evolution through entity changes (two-gate
+  evaluation; refines D-058).** S8 autonomous update through S1
+  entity evolution requires both Gate 1 (hash preservation —
+  mechanical, passes by construction since `version_seq` not in
+  hash) AND Gate 2 (entity-evolution semantic compatibility —
+  judgmental; S8-design territory; entity-lineage does NOT
+  guarantee semantic compatibility). Gate 2 failure → human
+  review per D-058 unblessed-transition discipline.
+- **Rule 4 — Cross-test semantic equivalence (scoped).** Same
+  `identity_hash` AND same `identity_hash_version` →
+  semantically equivalent under that policy. Cross-policy
+  comparison requires explicit re-hashing.
+- **Rule 5 — Schema migration discipline.** Body schema
+  migrations declare canonical-form preservation explicitly.
+- **Rule 6 — Canonicalization policy migration.** Policy
+  evolution is governance-level. Re-hashing existing rows under
+  new policy is explicit operation.
+
+**Semantic projection fields reservation.** V1 hashes entire
+canonicalized body. Future: support schema-declared per-field
+hash-contribution annotation (`semantic` vs `projection`).
+Storage shape preserves room; no v1 implementation.
+
+**Rationale.** Sub-cycle 4's scope was elevated by D-057 from
+"compute a hash" to "define governance for what counts as
+semantic vs operational edit." The canonicalization policy
+mechanically determines approval invalidation, S8's autonomous
+authority boundary, and cross-test semantic equivalence reasoning.
+
+The four critical refinements during design:
+
+- **Strict canonicalization** (null/missing distinguished, etc.)
+  selected over lenient. Strict creates spurious hash differences
+  for content "obviously the same" to humans, but lenient creates
+  subtle semantic-equivalence issues. Strict is more defensible.
+- **Versioned canonicalization policy** instead of immutable.
+  Treating canonicalization as immutable forecloses learning;
+  versioning makes policy evolution explicit and governed.
+- **Array semantics schema-declared** instead of universally
+  ordered or universally sorted. Arrays may represent sequences
+  (ordered) or sets (unordered); canonicalization cannot guess.
+  Schema declares per field.
+- **Two-gate evaluation for S8 entity evolution** refining
+  D-058. Hash preservation alone is insufficient — entity-lineage
+  (shared `entity_id`) does NOT guarantee semantic compatibility.
+  Gate 2 (semantic compatibility) is a separate judgmental
+  check, deferred to S8 design.
+
+TA refinements integrated:
+
+- Array semantics must become schema-defined (not universal
+  default)
+- Canonicalization policy versioned, not immutable
+- Semantic projection field reservation
+- Equivalence scope qualified to canonicalization-policy version
+- Entity-lineage ≠ guaranteed semantic compatibility (refined
+  Rule 3 framing)
+
+**Alternatives considered.**
+
+- *Lenient canonicalization* (null ≡ missing; whitespace
+  normalized everywhere). Rejected. Creates subtle
+  semantic-equivalence issues that violate the governance
+  contract's clarity.
+- *Universal array sort* (always sort arrays). Rejected.
+  Conflates ordered sequences with unordered sets. Schemas know
+  which is which.
+- *Universal array order preservation* (never sort). Rejected.
+  Same content in different order would hash differently for
+  set-semantics arrays — false negatives in equivalence reasoning.
+- *Immutable canonicalization policy.* Rejected per TA. Real-world
+  evolution requires the policy to evolve; immutable forecloses
+  learning.
+- *Include `version_seq` in pinned-ref canonicalization.*
+  Rejected per D-058. Violates D-058's lock.
+- *Include `body_schema_version` in hash.* Rejected. Storage
+  metadata, not semantic content. Migration discipline preferred
+  over hash invalidation on every schema bump.
+- *MD5 / SHA-1 hash.* Rejected. Insufficient collision resistance.
+- *Treat S8 entity evolution as single-gate (hash preservation
+  only).* Rejected per TA. Entity-lineage doesn't guarantee
+  semantic compatibility; Gate 2 needed.
+
+**Downstream consequences.**
+
+- *S2-Q-003 sub-cycle 5 (Pydantic validation):* Array-semantics
+  declarations live in Pydantic models. Models declare per-field
+  `ordered`/`set`. Canonicalization reads schema to apply
+  per-array sorting.
+- *S2-Q-006 (mutation paths and authority):* Authority boundary
+  is now fully mechanical for Gate 1. Human-edit / S3-regenerate
+  / S8-rewrite are each evaluated against hash preservation.
+  Gate 2's semantic-compatibility check is S8-territory but
+  framed here.
+- *S3 (Generation, future substrate):* Generator computes hash
+  at write time; may use cross-test equivalence (Rule 4) for
+  dedup-check before generating new claim.
+- *S4 (Execution, future substrate):* Semantic replay's
+  S8-blessed-transition mechanism (D-058 §6.8) is anchored on
+  both gates of Rule 3.
+- *S6 (Interpretation):* Hash equivalence (Rule 4) supports
+  failure-attribution clustering — "tests with this hash all
+  fail" is a queryable signal.
+- *S8 (Evolution):* Must implement Gate 2's machinery (semantic
+  compatibility check on entity evolution). Specification of
+  Gate 2 is S8-design territory; this decision provides the
+  framework but defers the mechanism.
+
+**References.**
+
+- `substrate_2_test_representation/SPEC.md` §6.3 (canonicalization
+  mechanics and governance contract, substantive content added)
+- `substrate_2_test_representation/SPEC.md` §4.1 (`test_claims`
+  table — new `identity_hash_version` column)
+- D-051 (identity model; hash scope rests on this)
+- D-056 (storage realization; hash column placement)
+- D-057 (versioning model; hash semantics anchored here)
+- D-058 (reference model; reference canonicalization constraint;
+  S8-blessed-transitions refined by two-gate evaluation)
+
+---

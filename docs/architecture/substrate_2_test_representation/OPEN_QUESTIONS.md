@@ -52,17 +52,20 @@ Sub-cycles:
   typed columns), claim/recipe split, semantic linkage layer
   framing, row-discriminator-as-canonical, JSONB body conventions.
   See `SPEC.md` §4.
-- **Sub-cycle 4 (next):** Identity-hash mechanics. **Scope is
-  governance-critical, not implementation detail.** The
-  canonicalization policy determines what counts as semantic vs
-  operational edit, which governs (a) approval-state invalidation,
-  (b) semantic equivalence reasoning, (c) S8's autonomous-rewrite
-  authority boundary. Sub-cycle output: canonicalization rules
-  (whitespace, ordering, reference normalization, sub-discriminator
-  values, etc.) plus hash computation specification plus the
-  resulting governance contract.
-- Sub-cycle 5: Pydantic validation patterns. What's enforced at
-  app boundary, what at DB layer, what at schema level.
+- ~~Sub-cycle 4: Identity-hash mechanics.~~ Locked per D-059.
+  Hash input scope (archetype + claim_kind + canonicalized
+  asserted_truth + canonicalized semantic_conditions); strict
+  canonicalization rules; reference canonicalization per D-058
+  constraint; schema-declared array semantics; SHA-256;
+  canonicalization policy versioned via `identity_hash_version`
+  column; six-rule governance contract including two-gate
+  evaluation framing for S8 evolution through entity changes;
+  semantic projection reservation. See `SPEC.md` §6.3.
+- **Sub-cycle 5 (next):** Pydantic validation patterns. What's
+  enforced at app boundary, what at DB layer, what at schema
+  level. Includes ontology-enforcement validation per D-058
+  (cross-layer reference-kind rules) and array-semantics
+  declarations per D-059.
 
 ### S2-Q-006 — Mutation paths and authority over meaning
 
@@ -103,11 +106,12 @@ fundamentally a *recipe*, S8 has wider latitude. The invariant
 choice constrains the authority model; the two questions cannot be
 answered independently.
 
-Note: authority boundary now mechanically anchored by D-057 —
-S8 can autonomously do anything that preserves `identity_hash`;
-cannot do anything that changes it. Sub-cycle 4 (identity-hash
-mechanics) defines the precise boundary via canonicalization
-policy.
+Note: authority boundary now mechanically anchored by D-057 +
+D-059 — S8 can autonomously do anything that preserves
+`identity_hash` AND `identity_hash_version` AND passes Gate 2
+(entity-evolution semantic compatibility). Cannot do anything
+that fails either gate without escalation. S2-Q-006 sub-questions
+on identity continuity and trust boundary remain.
 
 ### S2-Q-007 — Execution-history boundary against S4
 
