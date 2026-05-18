@@ -407,12 +407,12 @@ class TestDefaultRegistryHygiene:
         )
 
     def test_in_process_registry_holds_expected_bodies(self) -> None:
-        """In the live test process the conditions body, the four
-        data-behavior claim bodies (B-β) and the five trigger
-        bodies (B-γ) have all been imported via the other test
-        modules' top-of-file imports. They MUST be registered.
-        This is the positive counterpart to the hygiene test
-        above."""
+        """In the live test process the conditions body (B-β), the
+        four data-behavior claim bodies (B-β), the five trigger
+        bodies (B-γ), the execution-environment body (B-δ), and
+        the five recipe bodies (B-δ) have all been imported via
+        the other test modules' top-of-file imports. They MUST be
+        registered."""
         for key in (
             # B-β
             ("conditions", 1),
@@ -426,8 +426,15 @@ class TestDefaultRegistryHygiene:
             ("ui-trigger", 1),
             ("time-trigger", 1),
             ("configuration-trigger", 1),
+            # B-δ
+            ("execution_environment", 1),
+            ("data-recipe", 1),
+            ("metadata-recipe", 1),
+            ("ui-recipe", 1),
+            ("event-subscription-recipe", 1),
+            ("callout-intercept-recipe", 1),
         ):
             assert key in default_registry, (
                 f"expected {key!r} registered in default_registry "
-                f"after B-β + B-γ imports"
+                f"after B-β + B-γ + B-δ imports"
             )

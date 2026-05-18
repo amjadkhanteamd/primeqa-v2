@@ -26,6 +26,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from primeqa.test_representation.models.primitives import (
+    AssertionPredicate,
     BlockedOperationEffect,
     EffectDescriptor,
     EventDescriptor,
@@ -381,3 +382,107 @@ class TestRejectionSignal:
                 error_code="X",
                 surprise=True,
             )
+
+
+# ---------------------------------------------------------------------------
+# AssertionPredicate (B-δ extension)
+# ---------------------------------------------------------------------------
+
+class TestAssertionPredicate:
+    @pytest.mark.parametrize("predicate", [
+        "equals", "not_equals", "matches_pattern",
+    ])
+    def test_value_bearing_predicates_accept_value(
+        self, predicate: str,
+    ) -> None:
+        ap = AssertionPredicate(
+            subject_ref="step_1.Id",
+            predicate=predicate,  # type: ignore[arg-type]
+            value="001x000000abcde",
+        )
+        assert ap.predicate == predicate
+        assert ap.subject_ref == "step_1.Id"
+        assert ap.value == "001x000000abcde"
+
+    @pytest.mark.parametrize("predicate", ["exists", "is_null"])
+    def test_value_free_predicates_accept_no_value(
+        self, predicate: str,
+    ) -> None:
+        ap = AssertionPredicate(
+            subject_ref="step_1",
+            predicate=predicate,  # type: ignore[arg-type]
+        )
+        assert ap.predicate == predicate
+        assert ap.value is None
+
+    @pytest.mark.parametrize("predicate", [
+        "equals", "not_equals", "matches_pattern",
+    ])
+    def test_value_bearing_predicates_reject_missing_value(
+        self, predicate: str,
+    ) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            AssertionPredicate(
+                subject_ref="step_1",
+                predicate=predicate,  # type: ignore[arg-type]
+            )
+        assert "requires" in str(exc_info.value).lower()
+
+    @pytest.mark.parametrize("predicate", ["exists", "is_null"])
+    def test_value_free_predicates_reject_provided_value(
+        self, predicate: str,
+    ) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            AssertionPredicate(
+                subject_ref="step_1",
+                predicate=predicate,  # type: ignore[arg-type]
+                value="oops",
+            )
+        assert "forbids" in str(exc_info.value).lower()
+
+    def test_unknown_predicate_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            AssertionPredicate(
+                subject_ref="step_1",
+                predicate="in_set",  # type: ignore[arg-type]
+                value=["a"],
+            )
+
+    def test_subject_ref_is_free_form_string(self) -> None:
+        """The substrate intentionally does NOT validate subject_ref's
+        shape — that's a Coordinator-layer concern per D-060
+        §4.7.6. Any non-empty string is structurally valid here."""
+        for ref in (
+            "step_1",
+            "create_account.Id",
+            "step_3.Account.Name",
+            "some weird id with spaces",
+        ):
+            ap = AssertionPredicate(subject_ref=ref, predicate="exists")
+            assert ap.subject_ref == ref
+
+    def test_subject_ref_required(self) -> None:
+        with pytest.raises(ValidationError):
+            AssertionPredicate(  # type: ignore[call-arg]
+                predicate="exists",
+            )
+
+    def test_assertion_is_frozen(self) -> None:
+        ap = AssertionPredicate(subject_ref="x", predicate="exists")
+        with pytest.raises(ValidationError):
+            ap.subject_ref = "y"  # type: ignore[misc]
+
+    def test_assertion_rejects_extras(self) -> None:
+        with pytest.raises(ValidationError):
+            AssertionPredicate(  # type: ignore[call-arg]
+                subject_ref="x", predicate="exists", surprise=True,
+            )
+
+    def test_round_trip(self) -> None:
+        ap = AssertionPredicate(
+            subject_ref="step_2.Status",
+            predicate="equals",
+            value="Approved",
+        )
+        roundtrip = AssertionPredicate.model_validate(ap.model_dump())
+        assert roundtrip == ap

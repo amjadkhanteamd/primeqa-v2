@@ -325,3 +325,88 @@ class RejectionSignal(BaseModel):
                 "an empty signal cannot be verified by a recipe."
             )
         return self
+
+
+# ---------------------------------------------------------------------------
+# AssertionPredicate — used inside recipe AssertStep variants
+#
+# Per SPEC §3 (recipes observe and assert) + D-054 (recipe-kinds
+# classify observability semantics). An AssertionPredicate is a
+# value-level check applied to a prior step's output during recipe
+# execution. Distinct from :class:`Condition` (semantic conditions
+# layer):
+#   - Condition.subject is an IdentityBearingRef to an S1 entity;
+#     conditions describe the claim's scoping.
+#   - AssertionPredicate.subject_ref is a free-form within-recipe
+#     reference (typically "<step_id>" or "<step_id>.<field>"); the
+#     assertion checks recipe-internal state.
+#
+# Cross-step graph validity (does "step_3.Id" actually point at a
+# prior step's captured Id?) is a Coordinator-layer concern per
+# D-060 §4.7.6 — NOT enforced at the Pydantic layer. The substrate
+# treats subject_ref as opaque text here; the Coordinator walks
+# the recipe's step list at write time to verify the graph.
+# ---------------------------------------------------------------------------
+
+
+# Predicates that require ``value`` to be provided.
+_ASSERTION_VALUE_BEARING_PREDICATES = {
+    "equals", "not_equals", "matches_pattern",
+}
+# Predicates that require ``value`` to be absent.
+_ASSERTION_VALUE_FREE_PREDICATES = {"exists", "is_null"}
+
+
+class AssertionPredicate(BaseModel):
+    """A predicate evaluated against a prior step's captured
+    output during recipe execution.
+
+    The ``subject_ref`` is intentionally free-form text — the
+    substrate doesn't parse it into a structured reference. The
+    Coordinator (per D-060) walks the recipe's step graph at
+    write time to verify that subject_ref resolves to a real
+    prior step's output. Doing the same check here would couple
+    the Pydantic body-validation layer to the multi-step
+    recipe-graph layer, which is an architectural smell.
+
+    The ``(predicate, value)`` coupling is enforced because the
+    coupling is structural (boolean-arity), not graph-related:
+    ``exists`` / ``is_null`` carry no comparison value;
+    ``equals`` / ``not_equals`` / ``matches_pattern`` require one.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    subject_ref: str
+    """Free-form recipe-internal reference (e.g., ``"step_1"``,
+    ``"create_account.Id"``). Coordinator validates the graph at
+    write time."""
+
+    predicate: Literal[
+        "equals",
+        "not_equals",
+        "exists",
+        "is_null",
+        "matches_pattern",
+    ]
+    """The assertion predicate. Closed taxonomy at v1."""
+
+    value: Optional[Any] = None
+    """Comparison value. Required for the value-bearing
+    predicates; forbidden for the value-free ones."""
+
+    @model_validator(mode="after")
+    def _check_value_predicate_coupling(self) -> "AssertionPredicate":
+        if self.predicate in _ASSERTION_VALUE_BEARING_PREDICATES:
+            if self.value is None:
+                raise ValueError(
+                    f"predicate {self.predicate!r} requires a "
+                    f"non-None ``value``"
+                )
+        elif self.predicate in _ASSERTION_VALUE_FREE_PREDICATES:
+            if self.value is not None:
+                raise ValueError(
+                    f"predicate {self.predicate!r} forbids a "
+                    f"``value``; got {self.value!r}"
+                )
+        return self
