@@ -2,12 +2,14 @@
 
 **Status:** §2, §3, §4 (data model, including validation layering),
 §5 (S1 references), §6 (lifecycle and versioning, including
-canonicalization mechanics), and §7 (mutation paths and authority)
-substantively complete per D-051 through D-061. Remaining sections
-(§1, §8-§11) pending their respective questions.
+canonicalization mechanics), §7 (mutation paths and authority),
+§8 (execution-history boundary), §9 (requirement linkage),
+§10 (outward surfaces), and §11 (v2.2 disposition) substantively
+complete per D-051 through D-065. §1 (synthesis overview) remains
+as placeholder, conventionally written after all other sections.
 
-**Last substantive update:** 2026-05-18 (mutation paths and authority
-over meaning)
+**Last substantive update:** 2026-05-18 (execution-history boundary,
+requirement linkage, outward surfaces, v2.2 disposition)
 
 ---
 
@@ -18,21 +20,23 @@ for a test case.
 
 Design proceeds in two phases:
 
-- **Phase 1 (in progress):** Conceptual shape — what S2 is, its
+- **Phase 1 (complete):** Conceptual shape — what S2 is, its
   deepest invariant, archetype representation, lifecycle, mutation
   paths, relationship to S1 and downstream substrates.
-- **Phase 2 (pending):** Concrete data model — tables, columns,
-  JSONB shapes, references, versioning, execution-history boundary.
+- **Phase 2 (complete):** Concrete data model — tables, columns,
+  JSONB shapes, references, versioning, execution-history boundary,
+  outward surfaces.
 
 See `BACKGROUND.md` for why this substrate exists. See
-`OPEN_QUESTIONS.md` for design surfaces currently under deliberation.
+`OPEN_QUESTIONS.md` for design surfaces (now all resolved).
 
 ---
 
 ## 1. What Substrate 2 IS
 
-(Placeholder. Lands after §3 — archetype representation — fully
-defines the shape of "a test case" across the five archetypes.)
+(Placeholder. Synthesis section conventionally written last,
+composing the substantive content from §2 through §11 into a
+single overview.)
 
 ---
 
@@ -555,11 +559,12 @@ D-057 for rationale and alternatives considered.
 
 **Resolution.** Per D-056: substrate-2 uses a four-table layout —
 `test_claims`, `test_recipes`, `test_provenance`, `test_claim_coverage`
-— with discriminator columns plus typed JSONB bodies per layer
-(Pattern D: envelope + JSONB + selected hot-path typed columns).
-The claim/recipe split honors D-051's identity model: claims hold
-the two identity-bearing layers, recipes are first-class operational
-entities, both versioned independently per D-057.
+— extended per D-062 with `test_recipe_runtime_state` and per
+D-063 with `test_requirement_links`. Pattern D throughout: envelope
++ JSONB + selected hot-path typed columns. The claim/recipe split
+honors D-051's identity model: claims hold the two identity-bearing
+layers, recipes are first-class operational entities, both
+versioned independently per D-057.
 
 ### 4.1 Tables
 
@@ -620,9 +625,40 @@ version change per D-057.
 - PK: `(claim_test_id, entity_id, reference_kind)`
 - Indexes: `(entity_id, entity_type)` for reverse lookups (S6/S8)
 
+**`test_recipe_runtime_state`** — last-run snapshot per recipe.
+One row per `recipe_id` (NOT per recipe version). Updated by S4
+via Coordinator callback (per D-062 §8.3). Pure snapshot; no
+aggregate statistics; no history (S4 holds full history).
+
+- `recipe_id` UUID PK — FK to `test_recipes.recipe_id`
+- `last_run_id` UUID — opaque reference into S4
+- `last_run_at` timestamp
+- `last_run_outcome` enum — passed / failed / errored / skipped
+- `last_run_recipe_version_seq` int — which recipe version was actually run
+- `last_pass_at` timestamp NULL — when did this recipe last pass (NULL if never)
+- `last_failure_at` timestamp NULL — when did this recipe last fail
+- `updated_at` timestamp
+- Indexes: `(last_run_outcome)`, `(last_run_at)` for status-based queries
+
+**`test_requirement_links`** — external typed reference to
+requirement-management systems. Multi-kind linkage permitted
+(test may be `generated_from` one requirement AND `verifies`
+another). No content replicated; external system is source of
+truth.
+
+- `test_id` UUID — FK to `test_claims.test_id`
+- `external_system` enum — `jira` (extensible: `linear`, `azure_devops`, etc.; reserved for registry-based evolution per D-063 §9.5)
+- `external_key` text — e.g., `PROJ-1234`
+- `external_version` text NULL — optional version/revision identifier
+- `link_kind` enum — `generated_from` / `verifies` / `related_to`
+- `linked_at` timestamp
+- `linked_by` text — actor (S3, human user, etc.)
+- PK: `(test_id, external_system, external_key, link_kind)`
+- Indexes: `(external_system, external_key)` for reverse lookups
+
 ### 4.2 Architectural roles
 
-The four tables map to architectural concerns:
+The six tables map to architectural concerns:
 
 | Table | Role |
 |---|---|
@@ -630,11 +666,15 @@ The four tables map to architectural concerns:
 | `test_recipes` | Operational realizations (first-class entities per refinement 5 of sub-cycle 3 design) |
 | `test_provenance` | Append-only history; polymorphic across claim and recipe events |
 | `test_claim_coverage` | **Semantic linkage layer** — connects S2 to S1; supports S6 attribution, S8 evolution detection, coverage discovery surfaces |
+| `test_recipe_runtime_state` | **S2/S4 boundary** — last-run snapshot per recipe; opaque references to S4 for full evidence |
+| `test_requirement_links` | **S2/external boundary** — typed references to requirement-management systems (JIRA, etc.); no content replicated |
 
-`test_claim_coverage` is not merely a denormalized cache — it is
-the architectural mechanism by which S2 connects to S1 meaning.
-Its presence as a first-class table (rather than computed-on-read)
-reflects the role it plays across substrates.
+The four core tables (`test_claims`, `test_recipes`,
+`test_provenance`, `test_claim_coverage`) represent substrate-2's
+internal coherence. The two boundary tables
+(`test_recipe_runtime_state`, `test_requirement_links`) represent
+substrate-2's interfaces to other systems — S4 for execution
+evidence, JIRA (and future systems) for requirements.
 
 ### 4.3 Discriminator placement and authority
 
@@ -804,17 +844,6 @@ OperationalRef = Annotated[
 ```
 
 `IdentityBearingRef` is a **distinct type**, not a type alias.
-This preserves three properties:
-
-- **Documentation**: a field typed `IdentityBearingRef`
-  communicates the semantic role (participates in identity),
-  not just structural shape.
-- **Evolution**: future semantic-role markers
-  (e.g., `ProvenanceRef`) can be added without retyping existing
-  fields.
-- **Introspection**: substrate-level tooling can identify
-  identity-bearing references by type.
-
 The hybrid-by-layer rule (per D-058 §5.1) becomes **structural
 type enforcement**: identity-bearing layer body models declare
 fields with `IdentityBearingRef`; operational layer body models
@@ -824,38 +853,19 @@ fail Pydantic validation as type mismatches.
 #### 4.7.4 Semantic field descriptors
 
 Per-field semantic metadata uses `Annotated[T, Marker]`
-consistently. Today's marker:
-
-```python
-class SomeBody(BaseModel):
-    steps: list[Step]  # ordered (default)
-    allowed_values: Annotated[list[str], ArraySemantics.SET]
-```
-
-Future markers may include hash-contribution annotations
-(`SEMANTIC` vs `PROJECTION`, per D-059 §6.3.10 reservation),
-identity-contribution annotations, and other per-field semantic
-declarations. The discipline:
-
-- **Single mechanism**: all semantic metadata via `Annotated`;
-  no `json_schema_extra`, custom decorators, or other parallel
-  mechanisms.
-- **Introspection-friendly**: substrate-level tooling reads field
-  annotations through Pydantic's `model_fields[field].metadata`.
-- **Forward-compatible**: new markers compose with existing ones
-  without breaking patterns.
-
-The trajectory is toward a coherent **semantic field descriptor
-framework** — a unified mechanism for attaching semantic metadata
-to fields. Sub-cycle 5 establishes the pattern; future sub-cycles
-extend the marker vocabulary as needs emerge.
+consistently. Today's marker: `ArraySemantics.SET`. Future
+markers include hash-contribution annotations (per D-059 §6.3.10
+reservation) and identity-contribution annotations. The
+discipline: single mechanism via `Annotated`; substrate-level
+tooling reads field metadata through Pydantic introspection.
 
 #### 4.7.5 The Semantic Transaction Coordinator
 
-The Semantic Transaction Coordinator is a **named substrate-level
-component** that maintains consistency invariants spanning
-multiple tables, body schemas, and validation layers within
-write transactions.
+The Semantic Transaction Coordinator is **semantic OS
+infrastructure** for substrate-2 (per D-064 framing) — the kernel
+through which all substrate operations route, the surface against
+which all consuming substrates build, the locus where consistency
+invariants and authority rules are enforced.
 
 It coordinates:
 
@@ -867,22 +877,17 @@ It coordinates:
 - Coverage-claim consistency (D-058 §5.4)
 - Provenance-event consistency (D-056 §4.1)
 - Mutation-path routing and authority enforcement (D-061 §7)
-
-These invariants individually live in different specifications;
-the Coordinator is the single component where they are
-maintained transactionally on write. Future invariants emerging
-from new sub-cycles or new substrates are added to the
-Coordinator as named coordination steps.
+- Runtime-state updates from S4 (D-062 §8)
+- Resolution-class operations (current-approved, runtime status,
+  recipe selection — D-064 §10.4)
 
 All API-driven writes to `test_claims`, `test_recipes`,
-`test_claim_coverage`, and `test_provenance` route through the
-Coordinator. Direct DB writes that bypass the Coordinator bypass
-the Pydantic-layer invariants; DB-layer invariants
-(substrate-critical structural rules per §4.7.1) still apply.
-
-The Coordinator is implementation territory but has architectural
-status — it is a named component in substrate-2's design, not
-implementation glue.
+`test_claim_coverage`, `test_provenance`,
+`test_recipe_runtime_state`, and `test_requirement_links` route
+through the Coordinator. Direct DB writes that bypass the
+Coordinator bypass the Pydantic-layer invariants; DB-layer
+invariants (substrate-critical structural rules per §4.7.1)
+still apply.
 
 #### 4.7.6 Write-flow orchestration
 
@@ -934,7 +939,7 @@ re-hashing (per D-059 Rule 6).
 
 **Pinned-ref resolution is lazy.** Reading a row does not
 resolve pinned references against S1 — caller decides when to
-resolve. Avoids S1 queries on every claim read.
+resolve.
 
 Hash audit operations (periodic verification that stored hashes
 re-canonicalize correctly under their `identity_hash_version`
@@ -942,7 +947,7 @@ policy) run as separate maintenance jobs, not in the read path.
 
 #### 4.7.8 Read-path error types
 
-Read-path failures distinguish four error categories with
+Read-path failures distinguish five error categories with
 distinct handling:
 
 | Error type | Cause | Severity | Handling |
@@ -953,38 +958,17 @@ distinct handling:
 | `AuthorityViolationError` (write-time) | Writing actor lacks authority for this mutation given hash-change status | Architectural rejection | Return structured error with explicit authority framing per D-061 |
 | `ValidationError` (Pydantic standard) | Routine field validation failure (write-time) | Soft rejection | Return structured error with field-level details |
 
-Distinguishing `SchemaIncompatibilityError` from
-`BodyCorruptionError` matters for cross-substrate-version
-compatibility: if S3 writes at `body_schema_version=3` and a
-reading service uses a substrate library that knows only up to
-v2, the reader gets a `SchemaIncompatibilityError` it can handle
-gracefully (skip the body, return what it has) rather than a
-hard crash.
-
 #### 4.7.9 Migration handling
 
 Body-schema-version migration is governance work, not routine
-maintenance. The migration author provides:
-
-1. **New Pydantic model** for the new version
-   (e.g., `ValueClaimBodyV3`)
-2. **Migration function** `(old_body: V2) -> (new_body: V3)`
-3. **Canonical-form preservation declaration** per D-059 Rule 5:
-   - "preserves canonical form" → re-hash matches old hash → no
-     approval invalidation
-   - "changes canonical form" → re-hash differs → approval
-     invalidation per D-059 Rule 2
-
-Backfill operation: for each row of old version, apply
-migration → re-validate against new model → re-canonicalize →
-re-hash → write new row with updated `body_schema_version`.
-A provenance event per migrated row records the migration.
+maintenance. The migration author provides a new Pydantic model,
+a migration function `(old_body: V2) -> (new_body: V3)`, and a
+canonical-form preservation declaration per D-059 Rule 5.
 
 Canonicalization policy migration (per D-059 Rule 6) follows
 the same pattern but operates on `identity_hash_version` rather
 than `body_schema_version`. Both are governance-level
-operations: explicit, audited, recorded in provenance, not
-implicit or batch-automated.
+operations: explicit, audited, recorded in provenance.
 
 See `DECISIONS_LOG.md` D-060 for rationale and alternatives
 considered.
@@ -1012,13 +996,7 @@ as opt-in for specific reproducibility needs.
 | Provenance | (no entity references in body) | n/a |
 
 The rule maps directly onto the sixth guardrail
-(semantic-vs-operational lifecycle distinction). References that
-participate in the test's identity are pinned because their
-specific version is part of what makes the test mean what it
-means. References that participate in operational realization
-default to logical because the operational realization should
-follow org evolution naturally; pinning is the exception for
-reproducibility-specific needs.
+(semantic-vs-operational lifecycle distinction).
 
 ### 5.2 Reference shapes
 
@@ -1037,12 +1015,6 @@ permitted in operational layer bodies for reproducibility):
 }
 ```
 
-`entity_id` and `version_seq` are the canonical authoritative
-reference. `external_id` is informational — useful for human
-readability, exports, and as a fallback identifier. The pinned
-reference resolves against S1's bitemporal history at the
-specified `version_seq`.
-
 **Logical reference** (default in operational layer bodies):
 
 ```json
@@ -1052,9 +1024,6 @@ specified `version_seq`.
   "external_id": "Account.AccountNumber"
 }
 ```
-
-Resolves at execution time against current S1 state via
-`(entity_type, external_id)`.
 
 The `ref_kind` field is part of the JSON shape (not implicit by
 location) so reference objects are self-describing for exports,
@@ -1071,21 +1040,7 @@ fingerprint. The canonicalization rule:
 - **Logical references** do not appear in identity-bearing layers
   (rejected by validation per §5.5).
 
-Consequence: when S8 updates a pinned reference's `version_seq`
-forward (the entity evolved compatibly per a blessed transition —
-see §5.7), the hash is preserved, the change is operational, and
-approval state is not invalidated. When S8 cannot update
-`version_seq` safely (entity meaning changed), the rewrite
-becomes a semantic edit requiring human authority; once approved,
-the hash changes and approval is invalidated.
-
-This puts S8 in a precise role: it can bump `version_seq`
-forward on pinned references when the underlying entity evolved
-in a way it has blessed; it must escalate to human authority
-when the evolution materially changes meaning.
-
-Full canonicalization mechanics (whitespace, ordering, complete
-input set, hash algorithm) are defined in §6.3 per D-059.
+Full canonicalization mechanics are defined in §6.3 per D-059.
 
 ### 5.4 Coverage derivation
 
@@ -1095,82 +1050,33 @@ identity-bearing layers (`asserted_truth` and
 whether logical or opt-in pinned — are NOT in coverage; they are
 operational dependencies, not semantic content.
 
-Per D-056's forward-compat marker: operational dependencies of
-recipes (e.g., for S8 evolution propagation) belong to a future
-operational linkage layer (`test_recipe_dependencies` or
-similar), distinct from `test_claim_coverage`.
-
 ### 5.5 Cross-layer reference validation as ontology enforcement
 
 Reference-kind validation is not Pydantic boilerplate; it is
-**ontology enforcement**. The hybrid-by-layer rule is the
-substrate's structural commitment to the semantic-vs-operational
-lifecycle distinction (sixth guardrail) and the continuity triad
-(seventh guardrail). Violating it would:
-
-- Make `identity_hash` ambiguous (does it canonicalize logical
-  refs?)
-- Blur the line between identity-bearing and operational layers
-- Compromise S8's authority boundary (S8 cannot autonomously
-  rewrite identity-bearing content)
-
-Therefore:
+**ontology enforcement** (per D-058 §5.5):
 
 - **Identity-bearing layers reject logical references at write
   time.** Detected violations are write-time errors, not warnings.
 - **Operational layers accept both kinds.** Logical is the
   default expectation; pinned is opt-in.
 - **The validation lives at the substrate level**, not in
-  application convention. Relaxing it is not a Pydantic refactor
-  — it would require an architectural decision revisiting the
-  hybrid-by-layer rule itself.
+  application convention.
 
 Per D-060 §4.7.3, this ontology enforcement is implemented
 structurally via Pydantic type hierarchy — identity-bearing
 layer body models declare ref-typed fields with
-`IdentityBearingRef` (a distinct type, not alias); operational
-layer body models declare fields with `OperationalRef`
-(`Union[PinnedRef, LogicalRef]`). Cross-layer rule violations
-fail Pydantic validation as type mismatches rather than as
-ad-hoc validators.
+`IdentityBearingRef`; operational layer body models declare
+fields with `OperationalRef`. Cross-layer rule violations fail
+Pydantic validation as type mismatches rather than as ad-hoc
+validators.
 
 ### 5.6 external_id drift modes
 
-Logical references are evolvable but not safe — `external_id`
-resolves dynamically against S1's current state, and "current
-state" can drift in multiple meaningful ways. S8's drift detection
-must handle multiple modes, not a single concern:
-
-- **Rename** — `external_id` changes; `entity_id` stable. Pinned
-  refs survive (still point to same `entity_id`); logical refs
-  break.
-- **Move** — same `external_id` on different parent (e.g., a
-  custom field moved between objects). Logical refs may resolve
-  to the wrong target.
-- **Replace** — entity deleted, new entity created with same
-  `external_id`. Logical refs resolve to the new entity; pinned
-  refs to the old still resolve in S1 history.
-- **Namespace shift** — managed-package contexts change (e.g.,
-  `Account__c` vs `ns__Account__c`). Logical refs may fail to
-  resolve.
-- **Inheritance change** — permission/profile structures where
-  `external_id` resolves through inheritance chains; inheritance
-  edits change resolution.
-- **Metadata-resolution quirks** — Salesforce-specific edge
-  cases (custom field external IDs vs standard field naming;
-  custom labels with locale-dependent resolution; etc.).
-
-S8's responsibility under each mode is broadly:
-
-- Detect the drift mode via S1's diff structure
-- For pinned-referencing tests: drift is contained (pinned refs
-  still resolve historically); S8 may propose updates to current
-  with human review
-- For logical-referencing tests: drift may silently change
-  meaning; S8 surfaces affected tests for review
-
-Single-mode drift detection ("name collision") is insufficient.
-The S8 design must address each mode explicitly.
+Logical references face six drift modes — rename, move, replace,
+namespace shift, inheritance change, metadata-resolution quirks.
+S8's drift detection must handle each mode explicitly per D-058
+§5.6. Pinned references survive most drift modes (the entity_id
+is stable); logical references are evolvable but drift-vulnerable.
 
 ### 5.7 Reference semantics under replay modes (cross-reference to §6.8)
 
@@ -1182,43 +1088,19 @@ differently under historical vs semantic replay:
   historical point's S1 state.
 - **Semantic replay:** logical refs resolve to current S1
   entities. Pinned refs follow forward to current `version_seq`
-  of the same `entity_id` **only via S8-blessed transitions** —
-  entity evolutions S8 has validated as semantically equivalent.
-  Unblessed transitions surface for human review rather than
-  silent forward-resolution.
-
-The S8-blessing mechanism is anchored in `identity_hash`
-preservation: entity evolutions that preserve hash are blessed
-and may be silently followed in semantic replay; evolutions that
-change hash are unblessed and require human authority before
-semantic replay proceeds past them.
+  of the same `entity_id` **only via S8-blessed transitions**.
 
 Per D-059 §6.3.9 Rule 3, this blessing is a **two-gate evaluation**:
 hash preservation (mechanical) plus entity-evolution semantic
-compatibility (judgmental). Hash preservation alone is necessary
-but not sufficient; entity-lineage (shared `entity_id`) does NOT
-guarantee semantic compatibility.
-
-This makes semantic replay disciplined, not aggressive. "Follow
-forward" is a structural capability, not a default behavior.
+compatibility (judgmental).
 
 ### 5.8 Forward-compatibility reservations
 
 Three architectural directions reserved without action in v1:
 
-- **Weighted semantic linkage.** `test_claim_coverage` today has
-  binary `reference_kind` (subject / condition). Future may need
-  richer weighting — subject refs are load-bearing (entity change
-  strongly affects test) vs supporting condition refs (change
-  may or may not affect test). Storage shape preserves room for
-  this via either a `weight` column, a richer `reference_kind`
-  enum, or a parallel `linkage_weight` table.
-- **Operational linkage layer for recipes.** Per D-056's marker;
-  future S8 work may surface this.
-- **Reference resolution policies.** Per D-057's marker;
-  vocabulary upgrade is on standby. If the logical/pinned binary
-  diversifies (nearest-compatible, policy-constrained, etc.),
-  these become resolution policies under a common framing.
+- **Weighted semantic linkage** (per D-058 §5.8)
+- **Operational linkage layer for recipes** (per D-056's marker)
+- **Reference resolution policies** (per D-057's marker)
 
 See `DECISIONS_LOG.md` D-058 for rationale and alternatives
 considered.
@@ -1230,415 +1112,173 @@ considered.
 **Resolution.** Per D-057: substrate-2 uses **effective-time
 supersession** — single time dimension, version_seq as canonical
 supersession authority, valid_to as denormalized convenience.
-This is NOT true bitemporal (no separate transaction-time
-dimension); the term is reserved should we ever add transaction-time
-tracking.
 
 ### 6.1 Invariant hierarchy
 
-**`version_seq` defines supersession truth.** It is a
-monotonically-increasing integer per stable identifier (`test_id`
-for claims, `recipe_id` for recipes). The version with the
-highest `version_seq` for a given identifier is current.
-
-**`valid_to` is denormalized convenience.** It describes WHEN
-supersession happened, not the ordering. Operationally,
-`WHERE valid_to IS NULL` is the read-path predicate for current
-state.
-
-**Invariant hierarchy.** In any operational scenario where
-`version_seq` and `valid_to` appear to disagree (partial
-migrations, repair operations, backfills, replay imports),
-**`version_seq` ordering is authoritative**. The "exactly one
-NULL `valid_to` per identifier" invariant may be temporarily
-violated during specific operations while `version_seq`
-correctness is preserved; reconciliation re-derives `valid_to`
-from `version_seq`.
+`version_seq` defines supersession truth. `valid_to` is
+denormalized convenience. In any scenario where they disagree,
+`version_seq` ordering is authoritative.
 
 ### 6.2 The continuity triad
 
-Per the seventh guardrail in §3, three distinct continuities are
-modeled separately:
-
-- **Stable identifiers** (`test_id`, `recipe_id`) → organizational
-  continuity. A test is "the same test" across all its versions,
-  regardless of how its meaning, operational realization, or
-  approval state evolved. Stable identifiers are the substrate's
-  identity-as-organizational-artifact.
-- **`identity_hash`** → semantic equivalence. The hash fingerprints
-  the test's meaning, not its history or identity-as-row. Two
-  rows with the same hash are semantically equivalent regardless
-  of which test_id they belong to or which version they are.
-- **`version_seq`** → supersession order. The version's position
-  in its identifier's timeline.
+Three distinct continuities modeled separately (per seventh
+guardrail in §3): stable identifiers (organizational), identity_hash
+(semantic equivalence), version_seq (supersession order).
 
 ### 6.3 `identity_hash` semantics, canonicalization, and governance contract
 
-`identity_hash` is the **semantic equivalence fingerprint**. It is
-NOT a unique identifier (that's `test_id`). It is NOT a primary
-or unique key — multiple rows may share it.
-
-Across a single test's version timeline:
-- Operational edit (preserves canonical semantic content) → new
-  row, **same** `identity_hash`. The test means the same thing.
-- Semantic edit (changes canonical meaning) → new row, **different**
-  `identity_hash`. The test means something different now.
-  Approval state invalidated per the semantic-vs-operational
-  lifecycle guardrail.
+`identity_hash` is the **semantic equivalence fingerprint**.
+Operational edits preserve hash; semantic edits change it and
+invalidate approval per the semantic-vs-operational lifecycle
+guardrail.
 
 Per D-059, canonicalization mechanics and the resulting governance
 contract are defined as follows.
 
 #### 6.3.1 Hash input scope
 
-The hash input comprises four components:
-
-- `archetype` (row discriminator)
-- `claim_kind` (row discriminator)
-- Canonicalized `asserted_truth` JSONB body
-- Canonicalized `semantic_conditions` JSONB body
-
-Out of scope: `test_id`, `version_seq`, temporal columns, `status`,
-`identity_hash` itself, all recipe content, all coverage content,
-and `body_schema_version` (excluded from hash; see §6.3.5).
+The hash input comprises four components: `archetype`,
+`claim_kind`, canonicalized `asserted_truth` JSONB, canonicalized
+`semantic_conditions` JSONB. Out of scope: `test_id`,
+`version_seq`, temporal columns, `status`, `identity_hash` itself,
+all recipe content, all coverage content, runtime state, requirement
+links, and `body_schema_version`.
 
 #### 6.3.2 Canonicalization rules (strict)
 
-The canonical form must be deterministic — same logical content
-must produce byte-identical canonical form regardless of input
-representation.
-
-- **Object key ordering:** alphabetical, recursive at every level.
-- **Whitespace:** stripped between tokens; preserved inside string
-  values (Salesforce treats string whitespace as significant).
-- **String encoding:** UTF-8, no escape variations
-  (e.g., `\u0041` canonicalizes to `A`).
-- **String case:** case-sensitive throughout.
-- **Numbers:** canonical JSON numeric form
-  (e.g., `5.00` → `5` for numeric JSON; strings stay as-is).
-- **Null vs missing:** distinguished. Explicit `null` is an
-  assertion; missing key is non-specification. Different semantic
-  claims.
-- **Empty arrays vs missing:** distinguished.
-- **Booleans:** lowercase JSON literals (`true` / `false`).
+- Object key ordering: alphabetical, recursive at every level.
+- Whitespace: stripped between tokens; preserved inside string values.
+- String encoding: UTF-8, no escape variations; case-sensitive.
+- Numbers: canonical JSON numeric form.
+- Null vs missing: distinguished. Empty arrays vs missing: distinguished.
+- Booleans: lowercase JSON literals.
 
 #### 6.3.3 Reference canonicalization
 
 Per D-058 constraint, pinned references in identity-bearing
-layers canonicalize to two fields only:
-
-```json
-{ "entity_id": "<uuid>", "entity_type": "<type>" }
-```
-
-`version_seq`, `external_id`, and `ref_kind` are excluded
-(operational metadata, informational, or redundant). Logical
-references do not appear in identity-bearing layers (rejected
-by validation per §5.5); the canonicalization rule does not
-apply to them.
+layers canonicalize to `{ "entity_id": "<uuid>", "entity_type":
+"<type>" }` only. `version_seq`, `external_id`, and `ref_kind`
+are excluded.
 
 #### 6.3.4 Array semantics (schema-declared)
 
-JSON arrays carry semantic ambiguity — they may represent
-ordered sequences (recipe steps, condition chains) or unordered
-sets (allowed values, tag lists). Canonicalization cannot guess.
-
-Per D-059, **body schemas declare per-field array semantics:**
-
-- **`ordered`** (default) — array order is semantically significant.
-  Canonicalization preserves order. Two arrays with different
-  order hash differently.
-- **`set`** — array order is not semantically significant.
-  Canonicalization sorts the array (canonical sort by element)
-  before hashing. Two arrays with identical elements in different
-  order hash identically.
-
-Default is `ordered` (safest — never conflates sequences with
-sets). Schemas explicitly opt into `set` semantics. The Pydantic
-patterns in §4.7.4 are the locus for these declarations.
+Per D-059, body schemas declare per-field array semantics as
+`ordered` (default) or `set` (sort before hash).
 
 #### 6.3.5 `body_schema_version` handling
 
-`body_schema_version` is **excluded** from the hash input. It is
-storage metadata, not semantic content. Consequence: schema
-migrations that preserve semantic equivalence preserve hashes.
-
-This places a burden on migration discipline (see governance
-contract Rule 5): each body schema migration must declare whether
-it preserves canonical form for semantically-unchanged content.
+Excluded from the hash input. Storage metadata, not semantic
+content.
 
 #### 6.3.6 Hash algorithm
 
-**SHA-256, hex-encoded** → 64-character string stored in
-`identity_hash` column. Computed at write time by application
-code (shared `canonicalize()` + `hash()` function across S3
-generator, S8 evolver, validation). PostgreSQL pgcrypto available
-as fallback for in-database queries.
-
-Not a cryptographic-security context, but collision resistance
-matters — SHA-256's collision space is more than sufficient.
+SHA-256, hex-encoded → 64-character string stored in
+`identity_hash` column. Computed at write time by the Semantic
+Transaction Coordinator.
 
 #### 6.3.7 Canonicalization policy versioning
 
-Per D-059, **the canonicalization policy itself is versioned.** A
-new column `identity_hash_version` on `test_claims` records which
-version of the policy produced the row's hash. Hashes are only
+Per D-059, the canonicalization policy itself is versioned via
+`identity_hash_version` column on `test_claims`. Hashes are only
 directly comparable between rows sharing the same
 `identity_hash_version`.
-
-Rationale: canonicalization rules will evolve as new edge cases
-surface and new body schemas need new rules. Treating
-canonicalization as immutable would either foreclose evolution
-or force massive disruption when policy needs to change.
-Versioning makes policy evolution explicit and governed.
-
-Migration to a new canonicalization version is a deliberate
-operation — existing rows are re-hashed under the new policy
-with explicit governance review, not implicitly.
 
 #### 6.3.8 Storage of canonical form
 
 Canonicalized JSONB is stored on the row (not the original
-non-canonical input). This:
-
-- Makes `identity_hash` deterministically reproducible from
-  stored content
-- Eliminates representation variance in storage
-- Simplifies cross-version diffing and equivalence queries
-
-Canonicalization is normalizing (key ordering, whitespace,
-representation), not lossy — original content is recoverable
-from canonical for all semantic purposes.
+non-canonical input).
 
 #### 6.3.9 Governance contract (six rules)
 
-The canonicalization policy mechanically determines six
-substrate-level rules:
-
 **Rule 1 — S8 autonomy boundary (no autonomous semantic divergence).**
 S8 may autonomously create new claim versions if and only if the
-new version's canonical form equals the predecessor's — i.e.,
-`identity_hash` preserved AND `identity_hash_version` preserved.
-Identity-bearing layer mutations are permitted within this bound
-(e.g., S8 bumping pinned-ref `version_seq` forward); mutations
-producing semantic divergence (hash change) or policy-version
-change require human authority. The invariant is **no autonomous
-semantic divergence**, not "no autonomous mutation of
-identity-bearing content."
+new version's canonical form equals the predecessor's. The
+invariant is **no autonomous semantic divergence**, not "no
+autonomous mutation of identity-bearing content."
 
-**Rule 2 — Approval invalidation.** When a new claim version
-has a different `identity_hash` from its predecessor (or a
-different `identity_hash_version` with no re-hashing under common
-policy), the predecessor's approval state does NOT carry forward;
-the new version begins in `draft` status. Mechanical, no override.
+**Rule 2 — Approval invalidation.** Hash change between versions
+→ approval invalidated; new version begins in `draft` status.
 
 **Rule 3 — S8 evolution through entity changes (two-gate
-evaluation; refines D-058).** When an S1 entity referenced by a
-claim's pinned ref evolves (S1 produces a new `version_seq` for
-that entity), S8 evaluates **two gates** before autonomous update:
-
-- **Gate 1 — Hash preservation (mechanical):** Does the canonical
-  hash remain preserved when the pinned ref's `version_seq` is
-  bumped forward? Per the canonicalization rule (§6.3.3),
-  `version_seq` is excluded from the hash, so this gate passes
-  by construction for pure version-bumps.
-- **Gate 2 — Entity-evolution semantic compatibility
-  (judgmental):** Is the new entity version semantically
-  compatible with the prior? **Entity-lineage (shared `entity_id`)
-  does NOT guarantee semantic compatibility.** A field can be
-  renamed, repurposed, or refactored while retaining its
-  `entity_id`. Gate 2 requires its own machinery
-  (S8-design territory; not specified by sub-cycle 4).
-
-Both gates must pass for autonomous update. Gate 2 failure →
-human review per D-058's unblessed-transition discipline, even
-though Gate 1 passes.
+evaluation).** Both Gate 1 (hash preservation, mechanical) AND
+Gate 2 (entity-evolution semantic compatibility, judgmental)
+must pass for autonomous update.
 
 **Rule 4 — Cross-test semantic equivalence (scoped).** Two
-claims (regardless of `test_id`) with the same `identity_hash`
-AND the same `identity_hash_version` are semantically equivalent
-**under that canonicalization policy**. Cross-version comparison
-(rows on different `identity_hash_version`) requires explicit
-re-hashing under a common policy. Hash equivalence is a
-fingerprint of canonical content under a policy, not metaphysical
-sameness.
-
-Substrate may use this for dedup, query, generator dedup-check.
-Not a uniqueness constraint; collisions across tests are
-permitted and meaningful.
+claims with same `identity_hash` AND same `identity_hash_version`
+are semantically equivalent under that canonicalization policy.
 
 **Rule 5 — Schema migration discipline.** Body schema migrations
-must declare whether they preserve canonical form for
-semantically-unchanged content. Declarations are reviewable
-artifacts.
+declare canonical-form preservation explicitly.
 
-- "Preserves canonical form" → hashes survive migration; no
-  approval invalidation
-- "Changes canonical form" → hashes change; approval invalidation
-  per Rule 2
-
-**Rule 6 — Canonicalization policy migration.** Evolution of the
-canonicalization policy itself is a governance-level operation.
-Migrating existing rows to a new policy version is explicit
-(re-hash with new rules, record new `identity_hash_version`).
-Cross-policy hash equivalence reasoning is not automatic; it
-requires re-hashing under a common policy.
+**Rule 6 — Canonicalization policy migration.** Policy evolution
+is governance-level. Re-hashing existing rows under new policy
+is an explicit operation.
 
 #### 6.3.10 Semantic projection fields (reservation)
 
 For v1, the entire canonicalized body contributes to the hash.
-
-For future: support schema-declared per-field hash-contribution
-annotation. Some body fields may be informational (rationale,
-note, tags) rather than semantic; they belong in the body for
-visibility but should not shift the hash.
-
-Mechanism (when concrete projection fields emerge):
-
-- Each body schema's Pydantic model declares per field whether
-  it's `semantic` (in hash) or `projection` (out of hash).
-- Canonicalization extracts only semantic-marked fields.
-- Projection fields are still stored, queryable, validated —
-  just not hashed.
-
-Reserved as forward-compat. No v1 implementation; no v1 examples;
-storage shape preserves room.
-
-**Trajectory toward semantic field descriptors (per D-060
-§4.7.4).** Semantic projection field annotation is one of an
-emerging family of per-field semantic metadata markers, alongside
-array-semantics declarations (§6.3.4) and potentially others.
-The discipline is to use `Annotated[T, Marker]` uniformly
-across all such markers — single mechanism, introspection-friendly,
-forward-compatible. The framework lives in Pydantic field
-metadata; substrate tooling has one place to look.
+Future: schema-declared per-field hash-contribution annotation
+(`semantic` vs `projection`). Trajectory toward semantic field
+descriptors framework per D-060 §4.7.4.
 
 #### 6.3.11 Edge cases
 
-- **Hash collision (different content, same hash):**
-  cryptographically negligible with SHA-256. Treated as benign;
-  `identity_hash` is for equivalence reasoning, not uniqueness.
-- **Non-canonical write input:** write-layer canonicalizes before
+- Hash collision (different content, same hash): cryptographically
+  negligible with SHA-256.
+- Non-canonical write input: Coordinator canonicalizes before
   hashing; canonical form is stored.
-- **Hash computation timing:** at write time only; never
-  recomputed on read **within a given
-  `(identity_hash, identity_hash_version)` regime**. Cross-regime
-  comparison requires explicit re-hashing per Rule 6.
-- **Policy migration for existing rows:** explicit governed
-  operation. Re-hash under new policy; record new
-  `identity_hash_version`; document in provenance.
+- Hash computation timing: at write time only; never recomputed
+  on read within a given `(identity_hash, identity_hash_version)`
+  regime.
+- Policy migration for existing rows: explicit governed operation.
 
 See `DECISIONS_LOG.md` D-059 for rationale and alternatives
 considered.
 
 ### 6.4 Recipe-to-claim FK semantics
 
-**Default — logical resolution.** A recipe's `claim_test_id`
-column references the claim's `test_id` (not a specific version).
-Recipes follow claim evolution: when the claim's current version
-changes, recipes resolve against the new current version. This is
-the common case.
-
-**Optional — pinned resolution.** When `claim_version_seq` is set,
-the recipe is pinned to a specific claim version. Replay against
-that version uses the pinned reference; current execution either
-resolves against the pinned version (strict) or against current
-(reconciled). Pinning is opt-in for reproducibility-critical
-contexts.
+Default — logical resolution (recipe's `claim_test_id` references
+the claim's `test_id`, not specific version). Optional pinning
+via `claim_version_seq` for reproducibility-critical contexts.
 
 ### 6.5 Coverage rederivation
 
 `test_claim_coverage` is current-only. When a new claim version
-supersedes its predecessor, coverage rows derived from the
-predecessor are deleted and rows for the new version are inserted.
-Historical coverage is reconstructible from claim history if
-needed (parse the historical claim row's JSONB references) but
-is not pre-stored.
-
-Invariant: coverage rows describe current claim versions only.
+supersedes its predecessor, coverage rows are deleted and
+rederived.
 
 ### 6.6 Approval state lifecycle
 
-Approval state is dual-tracked:
-- **Current state** on the `test_claims` row's `status` column —
-  queryable in O(1).
-- **History** in `test_provenance` rows of event_kind
-  `claim_approved` / `claim_deprecated` / etc. — auditable trail.
-
-Approval-state invalidation triggers on `identity_hash` change
-between versions (per §6.3's semantic-edit definition). S8
-autonomous rewrites cannot trigger approval invalidation because
-S8 only operates within hash-preserving authority bounds (per
-Rule 1 in §6.3.9).
-
-Mutation paths and their per-path approval impact are specified
-in §7 per D-061.
+Approval state is dual-tracked: current state on `test_claims.status`;
+history in `test_provenance` rows. Approval-state invalidation
+triggers on `identity_hash` change between versions. Mutation
+paths and their per-path approval impact are specified in §7
+per D-061.
 
 ### 6.7 Archival policy
 
-**No archival in v1.** Semantic lineage continuity is currently
-more valuable than retention optimization. The substrate's value
-rests on preserving the continuous record of how tests evolved
-(claim edits, recipe rewrites, approval transitions, S8 autonomous
-changes); archival would degrade that continuity in exchange for
-retention savings.
-
-This is an architectural commitment, not a cost-driven decision.
-If retention costs ever pressure this commitment, archival policy
-becomes a substrate-level decision requiring explicit
-re-evaluation of the lineage guarantee — not a routine
-optimization.
+**No archival in v1.** Semantic lineage continuity is more
+valuable than retention optimization. Architectural commitment,
+not cost-driven decision.
 
 ### 6.8 Replay modes (storage support; engine downstream)
 
-Two distinct replay modes are supported by the storage shape;
-the actual replay engine is downstream (S4 territory). Per D-058,
-reference resolution differs by mode:
+Two distinct replay modes supported by the storage shape;
+replay engine is downstream (S4 territory). Per D-058:
 
-- **Historical replay** — reconstruct the test exactly as it was
-  at a point in time. Pinned references resolve at their pinned
-  `(entity_id, version_seq)`; logical references resolve at the
-  historical point's S1 state. Answers "what did this test do
-  on 2024-03-15."
-- **Semantic replay** — reconstruct the test's meaning but
-  execute against current state. Logical references resolve to
-  current S1 entities. Pinned references follow forward to
-  current `version_seq` of the same `entity_id` **only via
-  S8-blessed transitions** — entity evolutions S8 has validated
-  as semantically equivalent (those preserving `identity_hash`).
-  Unblessed transitions surface for human review rather than
-  silent forward-resolution.
-
-The S8-blessing discipline makes semantic replay deliberate,
-not aggressive. Follow-forward is a structural capability of
-the substrate, not a default behavior of the replay engine.
+- **Historical replay** — pinned refs resolve at pinned
+  `(entity_id, version_seq)`; logical refs resolve at historical
+  S1 state.
+- **Semantic replay** — logical refs resolve to current S1;
+  pinned refs follow forward only via S8-blessed transitions
+  (per D-058 + two-gate evaluation per D-059 §6.3.9 Rule 3).
 
 ### 6.9 Reservations (forward-compatible directions)
 
 Three architectural directions reserved without action in v1:
-
-- **Replay-sensitive recipe selection.** Today, replay-mode
-  affects reference resolution but not recipe selection.
-  Eventually, historical replay may require *historically valid
-  recipes* (the recipe row current at the replay timestamp) while
-  semantic replay may permit *modernized recipes* (current
-  recipe, regardless of when authored). Recipe supersession
-  semantics themselves may become replay-sensitive. Storage shape
-  (per-recipe `version_seq`) supports this evolution without
-  migration.
-- **Version-granular provenance.** Provenance events today
-  reference stable identifiers (`claim_test_id` or `recipe_id`).
-  Future events may want to target specific `version_seq` —
-  "S8 rewrote recipe R-123 from v2 to v3 because field renamed."
-  Adding `version_seq_before` / `version_seq_after` to provenance
-  rows is a clean migration when needed.
-- **Reference resolution policies.** Today's binary
-  (logical / pinned) is conceptually a degenerate case of future
-  polymorphism. If reference resolution diversifies beyond
-  logical / pinned (e.g., nearest-compatible, policy-constrained),
-  these become *resolution policies* under a common framing. The
-  current binary is forward-compatible; vocabulary upgrade is on
-  standby, not active.
+replay-sensitive recipe selection, version-granular provenance,
+reference resolution policies.
 
 See `DECISIONS_LOG.md` D-057 for rationale and alternatives
 considered.
@@ -1661,257 +1301,93 @@ A test case can change through three distinct paths:
 
 - **Human edit** — A QA engineer, BA, or other authorized human
   directly edits a claim or recipe through the substrate's API.
-  Source of authority: human identity.
 - **S3 regeneration** — The future generation substrate produces
-  new claim or recipe content (same JIRA ticket, new LLM version,
-  different output). S3 is an autonomous-but-bounded actor.
+  new claim or recipe content. S3 is an autonomous-but-bounded
+  actor.
 - **S8 autonomous rewrite** — The future evolution substrate
-  responds to S1 entity changes — rewrites recipes when fields
-  are renamed, bumps pinned-ref `version_seq` when entities
-  evolve compatibly, surfaces tests for review when unblessed
-  transitions occur.
+  responds to S1 entity changes — rewrites recipes, bumps
+  pinned-ref `version_seq` when entities evolve compatibly,
+  surfaces tests for review when unblessed transitions occur.
 
 All three paths route through the Semantic Transaction
-Coordinator. Direct DB writes that bypass the Coordinator bypass
-authority enforcement (DB-layer invariants still apply per
-§4.7.1, but mutation-path rules do not).
+Coordinator.
 
 ### 7.2 Authority model — no autonomous semantic divergence
 
-The substrate's universal autonomy rule, derived from §6.3.9
-Rule 1:
+The substrate's universal autonomy rule (per §6.3.9 Rule 1):
+S8 (and S3 on claim writes) may autonomously create new versions
+**if and only if the new version preserves canonical form** —
+`identity_hash` and `identity_hash_version` both unchanged. The
+invariant is **mechanical, not layer-based.** S8 can mutate any
+layer including identity-bearing layers (e.g., version_seq bumps
+inside `asserted_truth`); what S8 cannot do is cause semantic
+divergence.
 
-> S8 (and S3 on claim writes) may autonomously create new
-> versions **if and only if the new version preserves canonical
-> form** — `identity_hash` and `identity_hash_version` both
-> unchanged. Mutations producing semantic divergence (hash
-> change) require human authority.
-
-This invariant is **mechanical, not layer-based.** S8 *can*
-mutate identity-bearing layer content (e.g., bump `version_seq`
-inside `asserted_truth` pinned refs); what S8 cannot do is cause
-the canonical form to diverge. The hash-preservation rule
-operates *within* identity-bearing layers, not as a fence
-*around* them.
-
-Per-actor authority scope:
-
-| Actor | Hash-preserving claim writes | Hash-changing claim writes | Recipe writes |
-|---|---|---|---|
-| Human | ✓ (preserves approval) | ✓ (invalidates approval; new version in `draft`) | ✓ (new recipe version requires re-approval) |
-| S3 | ✓ (semantic no-op) | ✓ (writes draft; requires human promotion) | ✓ (new recipe in `generated_unapproved`) |
-| S8 | ✓ (e.g., version_seq bumps when both Gates pass per §6.3.9 Rule 3) | ✗ (Authority violation; surfaces for human review) | ✓ (new recipe in `generated_unapproved`) |
-
-Note that none of the actors can promote a draft to approved —
-**promotion is a human-only action** regardless of authoring path.
+Per-actor authority scope per D-061 §7.2 table.
 
 ### 7.3 Identity continuity and semantic continuity
 
-The seventh guardrail in §3 separates three continuities. Two
-matter for mutation paths:
+Identity continuity = stable identifier (`test_id`, `recipe_id`)
+continuity. Persists across all mutations.
 
-- **Identity continuity** = stable identifier (`test_id`,
-  `recipe_id`) continuity. A test is "the same test" across all
-  its versions, regardless of mutation path. Stable identifiers
-  persist; mutations create new versions, never new identifiers.
-- **Semantic continuity** = `identity_hash` continuity (scoped to
-  `identity_hash_version` per D-059 Rule 4). Different
-  identity_hash means semantically different test, even with
-  same `test_id`.
+Semantic continuity = `identity_hash` continuity (scoped to
+`identity_hash_version`). Different hash = semantically different
+test, even with same `test_id`.
 
-These dimensions are **orthogonal**. A test can:
-
-- Preserve identity AND semantic continuity (operational edit,
-  S8 version_seq bump)
-- Preserve identity but lose semantic continuity (hash-changing
-  edit — same test_id, new meaning)
-- Cannot lose identity without leaving the mutation framework
-  entirely (deletion is out of scope; deprecation is the proper
-  path for retiring tests)
+Orthogonal dimensions. Identity preservation does not imply
+semantic preservation; semantic preservation does not require
+identity preservation.
 
 ### 7.4 Trust boundary by path
 
-Approval impact per path:
+Per D-061 §7.4 table. Two asymmetries:
 
-| Path | Actor | Target | Hash impact (claim) | Approval impact |
-|---|---|---|---|---|
-| Human edit (hash-preserving claim) | Human | claim | preserved | preserved |
-| Human edit (hash-changing claim) | Human | claim | changes | invalidated; new version in `draft` |
-| Human edit (recipe) | Human | recipe | n/a | new recipe version requires re-approval |
-| S3 regeneration (hash-preserving) | S3 | claim | preserved | preserved (semantic no-op; Coordinator may skip writing) |
-| S3 regeneration (hash-changing) | S3 | claim | changes | invalidated; new version in `draft` requiring human promotion |
-| S3 recipe generation | S3 | recipe | n/a | new recipe in `generated_unapproved` |
-| S8 recipe rewrite | S8 | recipe | n/a | new recipe in `generated_unapproved` |
-| S8 claim `version_seq` bump | S8 | claim | preserved (by construction; both Gates per §6.3.9 Rule 3 pass) | preserved |
-
-Two asymmetries are worth naming:
-
-**Claim approval is mechanical.** Governed by `identity_hash`
-change between versions per D-057 Rule 2 / D-059 Rule 2.
-Preserved on hash preservation; invalidated on hash change.
-Same rule applies regardless of which actor authored the change.
-
-**Recipe re-approval is a conservative default.** Every new
-recipe version requires explicit re-approval. The reason is
-*not* that recipes are fundamentally different from claims — it
-is that the substrate currently lacks a mechanical detection
-mechanism for "this recipe edit didn't meaningfully change
-behavior." Without such a mechanism, the safe default is: any
-recipe change might affect test behavior, so re-approval is
-required. Future evolution (recipe content hashing, recipe
-approval-preservation declarations) could relax this default to
-match the claim model. Reserved as forward-compat in §7.8.
+- **Claim approval is mechanical** — governed by `identity_hash`
+  change.
+- **Recipe re-approval is a conservative default** — every new
+  recipe version requires explicit re-approval, not because
+  recipes are fundamentally different from claims but because the
+  substrate currently lacks mechanical detection for "this recipe
+  edit didn't meaningfully change behavior." Future evolution
+  could relax this default.
 
 ### 7.5 Linear supersession and current-approved resolution
 
-**Linear supersession.** Each new claim or recipe version
-supersedes the prior in `version_seq`. The "exactly one
-`valid_to`=NULL per identifier" invariant (per §6.1) is
-maintained. No branching, no concurrent live versions.
+**Linear supersession** — each new version supersedes the prior
+in `version_seq`. "Latest" vs "current-approved" as distinct
+query notions.
 
-**Two notions of "current."** Linear supersession produces a
-gap between two queries:
-
-- **Latest** — the highest `version_seq` for the identifier;
-  always has `valid_to`=NULL.
-- **Current-approved** — the canonical "production" version
-  according to substrate governance rules. May not be the latest
-  if newer drafts exist.
-
-When a draft is created (e.g., S3 hash-changing regeneration),
-*latest* ≠ *current-approved*. The substrate makes both queryable.
-
-**Current-approved as governance resolution, not status lookup.**
-`get_current_approved_claim(test_id)` is a **governance
-resolution operation** that interprets version history per
-substrate rules — not a simple `WHERE status='approved' ORDER BY
-version_seq DESC LIMIT 1` query. The resolution rules include:
-
-- An approved version is current-approved if no later approved
-  version supersedes it
-- A deprecation event removes current-approved status (without
-  setting another)
-- Cross-policy considerations (per D-059 Rule 6): if approved
-  versions exist under different `identity_hash_version`
-  regimes, policy-version-aware resolution is governance work
-- Future rules (concurrent-version merge handling, etc.) compose
-  into this resolution without schema or downstream-query change
-
-Downstream substrates use the Coordinator's interface
-exclusively; never query the DB directly for current-approved.
-Direct queries bypass governance and may return results that
-violate substrate guarantees.
+**Current-approved as governance resolution.** `get_current_approved_claim(test_id)`
+is a Coordinator governance operation interpreting version
+history per substrate rules — not a simple status lookup.
+Downstream substrates use Coordinator interface exclusively.
 
 ### 7.6 Test-level approval as derived composition
 
-Per-artifact (claim, recipe) approval is tracked on `status`
-columns. Test-level approval is **derived composition**:
-
-- *Fully approved* — current-approved claim AND at least one
-  current-approved recipe
-- *Claim approved, recipe pending* — claim approved AND no
-  current-approved recipe (e.g., S8 rewrote and re-approval is
-  pending)
-- *Draft* — claim is draft
-
-Composition logic lives in the Coordinator's query interface
-(`get_test_approval_status(test_id)`). Not denormalized to the
-schema — derivation rules may evolve without migration.
+`get_test_approval_status(test_id)` returns: `fully_approved` /
+`claim_approved_recipe_pending` / `draft`. Composition logic
+lives in Coordinator; not denormalized to schema.
 
 ### 7.7 Edge cases
 
-**Concurrent structural writes.** Two paths attempt to create
-the next `version_seq` simultaneously. DB enforces PK uniqueness
-on `(test_id, version_seq)`; one wins, the other gets a conflict
-error from the Coordinator and must retry with the new
-`version_seq` as base. Transactional concern at the Coordinator
-level.
-
-**Concurrent semantic conflicts.** Two paths produce
-semantically divergent versions concurrently. v1 behavior:
-linear supersession; whoever writes last wins (subject to
-authority rules); the losing edit is recoverable via provenance
-but is not auto-merged. Forward-compat reservation in §7.8
-addresses future merge/rebase semantics.
-
-**S3 regenerates an existing test (same canonical form).** Hash
-equivalence detected; Coordinator skips writing a new version
-(no-op). Returns reference to existing version. Avoids version
-churn for semantic no-ops.
-
-**S3 regenerates and produces same canonical form as a different
-existing test.** Cross-test semantic equivalence (per D-059
-Rule 4). Substrate provides equivalence query; S3 may dedup or
-merge per its own design. The substrate does NOT auto-merge;
-merging is a deliberate downstream operation.
-
-**S8 detects claim's pinned ref is to a deleted entity.** S8
-surfaces for human review per D-058 unblessed-transition
-discipline. Substrate records a provenance event noting the
-surfaced concern. The test stays in its current state; human
-action determines next step (revise claim, deprecate test, etc.).
-
-**Human promotes an S3-generated draft.** Status changes from
-`draft` to `approved`. Provenance records `claim_approved` event
-with human actor. The newly-approved version becomes
-current-approved; the prior approved version (if any) is now
-both superseded (in `version_seq` terms) AND no longer
-current-approved.
-
-**S8 rewrites a recipe that was just approved.** New recipe
-version in `generated_unapproved`; the just-approved version is
-superseded. Provenance records `recipe_s8_rewrite`. Test-level
-approval becomes "claim approved, recipe pending." Human review
-of the new recipe restores full approval.
-
-**Approval rollback.** The status enum (`draft` / `approved` /
-`deprecated`) does not permit direct un-approval (`approved` →
-`draft`). If a previously-approved version needs to "lose
-approval," the human creates a new version (with whatever edit)
-which becomes a draft. The prior version stays "approved" in
-history but is superseded by the new draft. **Rollback through
-supersession, not status mutation.**
+Concurrent structural writes (DB conflict + retry). Concurrent
+semantic conflicts (linear supersession; future merge/rebase
+reserved). S3 hash-preserving regeneration as no-op skip.
+Cross-test semantic equivalence (query, no auto-merge). S8
+detects deleted-entity reference (surfaces for review). Approval
+rollback via new draft version, not status mutation.
 
 ### 7.8 Forward-compatibility reservations
 
 Four architectural directions reserved without action in v1:
 
-- **Recipe approval auto-preservation.** Current conservative
-  default (every new recipe version requires re-approval) may
-  evolve toward a hash-based or declaration-based preservation
-  model analogous to claims. Possible mechanisms: recipe content
-  hashing, recipe approval-preservation declarations by the
-  human author, recipe semantic-equivalence detection. Today's
-  conservative default is forward-compatible.
-
-- **Merge/rebase semantics for concurrent semantic conflicts.**
-  Current behavior is linear supersession; concurrent semantic
-  edits result in one winning and one becoming
-  provenance-recoverable. Future work may introduce:
-  - Branches (concurrent drafts coexist; explicit merge
-    operation)
-  - Rebase (a draft is "rebased" on a newer approved version,
-    reapplying its semantic intent)
-  - Conflict surfacing (substrate detects semantic conflicts
-    and surfaces for human resolution)
-
-  Reserved; no v1 machinery. Linear supersession is the explicit
-  current commitment.
-
-- **Provenance streams as named taxonomy.** The current single
-  `event_kind` enum lumps conceptually distinct streams: content
-  edits, approval lifecycle, surfaced-for-review events, recipe
-  operations, migration events. Future may categorize events by
-  stream with possible consequences for retention policy, access
-  control, and consumer filtering. Reserved as framing; no v1
-  schema change.
-
-- **Deprecation taxonomy.** The current single `deprecated`
-  status conflates conceptually distinct states (soft deprecate,
-  hard deprecate, replaced, out-of-date, schema-incompatible).
-  Future may evolve toward a richer enum or sub-status
-  discriminator. Pairs naturally with provenance stream framing.
-  Reserved; no v1 schema change.
+- **Recipe approval auto-preservation** (when detection mechanism
+  exists)
+- **Merge/rebase semantics** for concurrent semantic conflicts
+- **Provenance streams as named taxonomy** (current single
+  `event_kind` becomes multi-stream)
+- **Deprecation taxonomy** as sub-status (current single
+  `deprecated` status conflates multiple states)
 
 See `DECISIONS_LOG.md` D-061 for rationale and alternatives
 considered.
@@ -1920,22 +1396,586 @@ considered.
 
 ## 8. Execution-history boundary against S4
 
-(Placeholder. Pending S2-Q-007.)
+**Resolution.** Per D-062: substrate-2's boundary with the future
+execution substrate (S4) is the **last-run snapshot** pattern.
+S2 holds minimal denormalized state per recipe (latest outcome,
+last_pass_at, last_failure_at) via the `test_recipe_runtime_state`
+table; S4 holds the full evidence and history. S4 pushes updates
+to S2 via Coordinator callback. Test-level runtime status is a
+**resolution operation** composing recipe-level state.
+
+### 8.1 The substrate boundary
+
+Platform philosophy distinguishes:
+
+- **Execution captures truth** — S4's domain. Run identifiers,
+  structured traces, errors, metadata references, contextual
+  signals.
+- **Intelligence interprets truth** — S6's domain. Failure
+  attribution, clustering, semantic explanation.
+- **Representation owns identity** — S2's domain. Claims,
+  recipes, identity, approval, coverage, provenance.
+
+S2 must NOT replicate S4's evidence — that would conflate
+execution with representation. But S2 benefits from minimal
+denormalized state for hot-path queries (S6 attribution
+ergonomics, S8 evolution prioritization, UX status display) that
+would otherwise force every status query to join with S4.
+
+The boundary commitment: **S2 holds only what it needs for its
+own resolution operations; S4 holds everything else.**
+
+### 8.2 The runtime-state snapshot
+
+The `test_recipe_runtime_state` table (defined in §4.1) holds one
+row per `recipe_id` (NOT per recipe version). It is a pure
+snapshot:
+
+- `last_run_id` (opaque reference to S4 — S2 does not interpret)
+- `last_run_at`, `last_run_outcome`, `last_run_recipe_version_seq`
+- `last_pass_at`, `last_failure_at` (NULL if never)
+
+**No aggregate statistics.** No run counters, no pass-rate
+percentages, no flakiness metrics. These belong to S4 (raw data)
+or S6 (derived analyses). S2 maintaining them would muddy the
+substrate's purpose and add write coordination overhead on every
+run report.
+
+**Per-recipe, not per-recipe-version.** Recipes are versioned;
+runtime state is not. The `last_run_recipe_version_seq` field
+records which version was run, but only the latest outcome is
+retained.
+
+**Separate table, not columns on `test_recipes`.** The boundary
+must be visible in the schema. Mixing runtime state into the
+representation table blurs the substrate boundary.
+
+### 8.3 Push-based S4 integration
+
+S4 reports run outcomes via a Coordinator callback:
+
+```
+coordinator.report_run_outcome(
+    actor=S4,
+    run_id=<UUID>,
+    recipe_id=<UUID>,
+    recipe_version_seq=<int>,
+    outcome=<enum>,
+    ran_at=<timestamp>,
+)
+```
+
+S2 never queries S4. S4 pushes; S2 ingests. This:
+
+- Avoids S2 → S4 dependencies (S2 doesn't need S4's API surface)
+- Concentrates write coordination at the Coordinator (atomic
+  update of `test_recipe_runtime_state`)
+- Allows S4 to batch reports if needed (S2 doesn't care about
+  timing as long as the snapshot eventually reflects the latest
+  run)
+
+**Idempotency:** the callback is idempotent on `run_id`. Re-reporting
+the same run is a no-op (Coordinator detects the duplicate via
+`last_run_id` match).
+
+### 8.4 Test-level runtime status as resolution operation
+
+Test-level runtime status is **derived composition**, not stored.
+A Coordinator resolution operation:
+
+```
+coordinator.get_test_runtime_status(test_id) → TestRuntimeStatus
+```
+
+Returns one of:
+
+- `passing` — at least one current-approved recipe has
+  `last_run_outcome=passed` AND no current-approved recipe has
+  `last_run_outcome=failed`
+- `failing` — at least one current-approved recipe has
+  `last_run_outcome=failed`
+- `untested` — no current-approved recipe has a run
+- `mixed` — multiple recipes with conflicting outcomes that don't
+  fit the above
+
+This is **resolution**, not lookup — it interprets recipe-level
+state per substrate composition rules. Per D-064, resolution-class
+operations are first-class substrate concepts; they live in the
+Coordinator.
+
+### 8.5 Multi-recipe outcome resolution has pressure
+
+The composition rule in §8.4 is conservative and initial. Multi-recipe
+outcomes have genuine ambiguity:
+
+- A claim with API recipe (passed) and UI recipe (failed) — is the
+  test passing or failing? Both recipes observe legitimate aspects;
+  their outcomes may diverge for substantive reasons.
+- A claim with primary recipe (passed) and regression recipe
+  (failed) — is the primary's outcome canonical?
+- A claim with 3 recipes, 2 passed, 1 errored — what's the status?
+
+The substrate provides:
+
+- **Raw recipe-level state** via direct queries on
+  `test_recipe_runtime_state` (full information, no composition)
+- **Derived test-level composition** via the resolution operation
+  (with conservative initial rule)
+
+Consumers needing different composition policies (e.g., "primary
+recipe outcome wins" or "only consider critical-priority recipes")
+compose against the raw recipe state rather than the substrate's
+default composition.
+
+### 8.6 Forward-compatibility reservations
+
+Two architectural directions reserved without action in v1:
+
+- **Richer runtime-state resolution.** The composition rule in
+  §8.4 may evolve toward:
+  - Recipe priority weighting in test-level status
+  - "Primary recipe" designation (one recipe canonical for status)
+  - Outcome-aggregation policies (any-pass / all-pass /
+    primary-pass / weighted)
+  Substrate exposes raw state today; evolved resolution policies
+  layer on top without schema change.
+
+- **Run history beyond last-run.** Some S6 attribution scenarios
+  may want "this test has been flaky" (run history with pass/fail
+  pattern). Requires querying S4 or building a separate
+  denormalized aggregate. Today's snapshot-only model defers this
+  to either S4-side queries or a future flakiness-detection
+  substrate.
+
+See `DECISIONS_LOG.md` D-062 for rationale and alternatives
+considered.
 
 ---
 
 ## 9. Requirement linkage
 
-(Placeholder. Pending S2-Q-008.)
+**Resolution.** Per D-063: substrate-2 links to external
+requirement-management systems (JIRA, etc.) via **external typed
+references only**. No ticket content is replicated in PrimeQA;
+the external system remains the source of truth. The
+`test_requirement_links` table provides multi-kind linkage
+(generated-from / verifies / related-to). Future evolution to
+registry-based external-system identification is reserved.
+
+### 9.1 External typed reference model
+
+Substrate-2's role re requirements is **linkage, not ownership.**
+Requirements (JIRA tickets, Linear issues, Azure DevOps work
+items) are external to PrimeQA's domain. PrimeQA tests can
+reference them for traceability — "this test was generated from
+PROJ-1234," "this test verifies PROJ-5678" — but PrimeQA does
+not own or replicate ticket content.
+
+Why no content replication:
+
+- **Content goes stale.** JIRA tickets evolve (description edits,
+  status changes, comments added). Replicated content drifts from
+  the source of truth.
+- **Mission boundary.** PrimeQA is about asserting system truths.
+  Project management is a separate concern. Replicating ticket
+  content would expand the substrate's responsibility beyond its
+  scope.
+- **Sync overhead.** Bidirectional or even unidirectional sync
+  introduces operational complexity (when to sync, how to handle
+  conflicts, etc.) that PrimeQA doesn't need.
+
+### 9.2 The `test_requirement_links` table
+
+Defined in §4.1. Schema summary:
+
+- `test_id` — FK to `test_claims.test_id`
+- `external_system` enum — `jira` today; reserved for registry-based
+  evolution per §9.5
+- `external_key` text — e.g., `PROJ-1234`
+- `external_version` text NULL — optional version/revision identifier
+- `link_kind` enum — `generated_from` / `verifies` / `related_to`
+- `linked_at`, `linked_by` — metadata
+- PK: `(test_id, external_system, external_key, link_kind)`
+- Index for reverse lookup: `(external_system, external_key)`
+
+**Multi-kind linkage.** A test may be `generated_from` one
+requirement (the JIRA ticket that prompted its creation) AND
+`verifies` another (an upstream requirement that the test
+contributes to verifying). Many-to-many relationship.
+
+**`external_version` field.** Most systems (JIRA, Linear)
+don't expose meaningful version identifiers for tickets. The field
+is reserved for systems that do (e.g., document-management systems,
+formal requirements tools). Likely NULL for JIRA in practice.
+
+### 9.3 No content replication
+
+The substrate stores **only the link**, never the content.
+Downstream consumers (S3 prompt context, UX display, S6
+attribution) query the external system's API directly when they
+need ticket content.
+
+Forward-compat: a content-cache layer could be added as a separate
+concern (different substrate or service) without changing
+substrate-2's commitment. The `test_requirement_links` table
+provides the reference; consumers decide how to resolve.
+
+### 9.4 Multi-kind linkage semantics
+
+The three link kinds capture distinct relationships:
+
+- **`generated_from`** — S3 generated this test in response to
+  this requirement. The requirement is the test's origin.
+- **`verifies`** — This test contributes to verifying this
+  requirement. May be human-authored (manual linkage) or
+  S3-derived (S3 traces test back to requirement during
+  generation).
+- **`related_to`** — Loose association. The test and requirement
+  are connected in some way that doesn't fit the above categories.
+  Catch-all for ad-hoc relationships.
+
+A single test may have multiple link kinds to the same
+requirement (e.g., `generated_from` AND `verifies`), or one link
+kind across multiple requirements (e.g., `verifies` for several
+upstream requirements).
+
+### 9.5 Forward-compatibility reservations
+
+Three architectural directions reserved without action in v1:
+
+- **Registry-based `external_system`.** Today the enum has hardcoded
+  values (`jira` initially; potentially `linear`, `azure_devops`).
+  Future may need:
+  - Per-tenant external-system configuration (different orgs use
+    different in-house tools)
+  - Runtime registration of external systems (without migration)
+  - Per-system metadata (API endpoints, link format templates,
+    content fetch interfaces)
+  Evolution path: an `external_systems` registry table replaces
+  the enum; `test_requirement_links.external_system` becomes a
+  foreign key. The schema-shape commitment today is that
+  `external_system` is a *typed identifier* — enum or FK
+  depending on stage — not an irrevocable type choice.
+
+- **Sprint / release / project associations.** These are external-system
+  concerns (JIRA-side metadata, not PrimeQA-side). If they need to
+  be queryable through PrimeQA, that's UX plumbing over external API
+  queries, not substrate-2 schema.
+
+- **Bidirectional sync (PrimeQA → external).** Out of substrate-2
+  scope. A future integration layer could push PrimeQA test
+  results back to JIRA tickets as comments or status updates;
+  not the substrate's responsibility.
+
+See `DECISIONS_LOG.md` D-063 for rationale and alternatives
+considered.
 
 ---
 
 ## 10. Outward surfaces (consumed by S3, S4, S6, S8)
 
-(Placeholder. Pending S2-Q-009.)
+**Resolution.** Per D-064: substrate-2's outward surface is the
+**Semantic Transaction Coordinator**, framed as **semantic OS
+infrastructure** rather than as a substrate-internal component.
+The Coordinator exposes five interface groups, each with
+explicit behavioral contracts (idempotency, authority, atomicity,
+error, concurrency). Three Coordinator-level operations are
+named **resolution-class operations** — first-class substrate
+concepts that compose substrate rules rather than executing
+simple queries. Wire format (Python-direct, gRPC, REST) is
+unspecified at the substrate level; behavioral contracts are not.
+
+### 10.1 The Coordinator as semantic OS infrastructure
+
+The Semantic Transaction Coordinator (defined in §4.7.5) is **the
+substrate's outward surface.** Consuming substrates (S3, S4, S6,
+S8) interact with substrate-2 exclusively through the Coordinator
+interface. Direct DB queries bypass the Coordinator's invariants
+and may return results that violate substrate guarantees.
+
+The Coordinator is no longer a "substrate-2 component" but
+**semantic OS infrastructure** — the kernel through which all
+substrate operations route, the surface against which all
+consuming substrates build, the locus where consistency
+invariants and authority rules are enforced.
+
+Consequences of this framing:
+
+- The Coordinator's interface stability is **foundational** —
+  changes ripple to all consuming substrates.
+- The Coordinator's behavioral contracts (§10.3) are first-class
+  architectural commitments, not implementation conventions.
+- Future substrates (S1 Coordinator, S4 Coordinator) may form a
+  Coordinator family with cross-coordinator concerns; substrate-2's
+  Coordinator is the first instance of what may become a platform
+  pattern.
+
+### 10.2 Five interface groups
+
+The Coordinator exposes interfaces organized by consumer concern.
+Each group serves multiple substrates:
+
+**(1) Write interfaces — actor-aware, authority-enforced:**
+
+```
+coordinator.write_claim(actor, claim_data) → ClaimWriteOutcome
+coordinator.write_recipe(actor, recipe_data) → RecipeWriteOutcome
+coordinator.promote_claim_to_approved(actor, test_id, version_seq) → ()   [human-only]
+coordinator.deprecate_claim(actor, test_id, version_seq) → ()             [human-only]
+coordinator.deprecate_recipe(actor, recipe_id, version_seq) → ()          [human-only]
+coordinator.surface_unblessed_transition(actor=S8, test_id, reason) → ()  [provenance event only]
+```
+
+`ClaimWriteOutcome` includes: `test_id`, `version_seq`, `outcome`
+enum (`new_version` / `noop_equivalent` / `authority_violation`),
+`identity_hash`, `identity_hash_version`. S3's hash-preserving
+regeneration receives `noop_equivalent`; the Coordinator skips
+writing.
+
+**(2) Read interfaces — current-approved vs latest distinction:**
+
+```
+coordinator.get_current_approved_claim(test_id) → ClaimView | None    [resolution operation]
+coordinator.get_latest_claim(test_id) → ClaimView | None
+coordinator.get_claim_version(test_id, version_seq) → ClaimView | None
+coordinator.list_active_recipes(test_id) → list[RecipeView]
+coordinator.select_recipe_for_execution(test_id, context) → RecipeView | None  [resolution operation]
+```
+
+`*View` return types are typed Pydantic objects per D-060. Recipes
+returned by `select_recipe_for_execution` are selected per
+substrate-level policy (§10.4).
+
+**(3) Equivalence and discovery interfaces:**
+
+```
+coordinator.query_equivalent_claims(canonical_form, identity_hash_version) → list[test_id]
+coordinator.list_tests_affected_by_entity(entity_id) → list[test_id]    [uses coverage]
+coordinator.list_tests_by_requirement(external_system, external_key) → list[test_id]
+```
+
+**(4) Runtime state interfaces (per §8):**
+
+```
+coordinator.report_run_outcome(actor=S4, run_id, recipe_id, recipe_version_seq, outcome, ran_at) → ()
+coordinator.get_recipe_runtime_state(recipe_id) → RuntimeStateView
+coordinator.get_test_runtime_status(test_id) → TestRuntimeStatus   [resolution operation]
+```
+
+**(5) Provenance interfaces:**
+
+```
+coordinator.get_provenance(test_id, time_range=None, event_kinds=None) → list[ProvenanceEvent]
+coordinator.get_recipe_provenance(recipe_id, time_range=None) → list[ProvenanceEvent]
+```
+
+### 10.3 Behavioral contracts per interface
+
+Behavioral contracts are **substrate-level commitments**, not
+implementation conventions. Each interface declares:
+
+- **Idempotency** — On what key is the operation idempotent?
+  - `write_claim` is idempotent on canonical content (hash-preserving
+    regeneration returns `noop_equivalent`)
+  - `write_recipe` is idempotent on `(actor, recipe_id, version_seq)`
+    for retry scenarios
+  - `report_run_outcome` is idempotent on `run_id`
+  - `promote_claim_to_approved` is idempotent (already-approved
+    version returns success no-op)
+- **Authority** — Which actors may call this interface?
+  - Per D-061 §7.2 per-actor scope
+  - Authority violations raise `AuthorityViolationError`
+- **Atomicity** — Which interfaces are transactional?
+  - All write interfaces are atomic across the relevant tables
+    (test_claims + test_claim_coverage + test_provenance for
+    claim writes; test_recipes + test_provenance for recipe writes;
+    test_recipe_runtime_state + test_provenance for run-outcome
+    reports)
+- **Error contracts** — Which error types may be raised?
+  - Per D-060 §4.7.8 + `AuthorityViolationError` per D-061
+  - Each interface documents its possible error types
+- **Concurrency** — How does the interface behave under concurrent
+  access?
+  - Writes use DB-level conflict detection (per `version_seq` PK
+    uniqueness); concurrent writes resolve via retry
+  - Reads are consistent within a transaction; cross-transaction
+    reads see the latest committed state
+- **Performance asymptotics** (where commitments are warranted)
+  - Hot-path resolution operations
+    (`get_current_approved_claim`, `get_test_runtime_status`,
+    `select_recipe_for_execution`) should be O(constant) or O(log n)
+  - Discovery operations
+    (`list_tests_affected_by_entity`) are O(coverage rows for
+    entity) — bounded by entity fan-out
+
+These contracts are part of substrate-2's architectural commitment
+and visible at the API boundary.
+
+### 10.4 Resolution-class operations
+
+Three Coordinator interfaces are **resolution-class operations** —
+first-class substrate concepts that compose substrate rules
+rather than executing simple queries:
+
+| Operation | Resolves | Composes |
+|---|---|---|
+| `get_current_approved_claim` | Version history → canonical current-approved | Status events, deprecation, policy-version scenarios |
+| `get_test_runtime_status` | Recipe runtime state → test-level composition | Recipe outcomes, approval state, conservative initial policy |
+| `select_recipe_for_execution` | Multi-recipe + context → selected recipe | Environment matching, priority, approval state, replay mode, S8-blessing |
+
+Resolution operations are distinguished from lookups by:
+
+- **Composition over substrate rules** — not single-row queries
+- **Governance / policy implications** — the resolution rules are
+  architectural commitments, not implementation choices
+- **Future-extensible** — new factors can be added to the
+  resolution policy without consumer changes
+
+Resolution operations are named as a substrate-level pattern.
+Future resolution operations (S6 attribution clustering, S8
+evolution prioritization, etc.) will follow this pattern rather
+than reinvent the architectural slot.
+
+### 10.5 Wire format reservation
+
+The substrate's commitment is the **Coordinator interface and its
+behavioral contracts**, not a specific wire format. Concrete wire
+formats — Python-direct calls (in-process), gRPC (cross-service),
+REST (HTTP), or others — are deployment concerns.
+
+Forward-compat: the substrate does not commit to a single wire
+format. The Coordinator's interface is the architectural anchor;
+wire formats may multiply (e.g., Python-direct for in-process
+consumers, gRPC for cross-service consumers) without changing
+the substrate's commitment.
+
+### 10.6 Forward-compatibility reservations
+
+Three architectural directions reserved without action in v1:
+
+- **Cross-substrate Coordinator concerns.** As future substrates
+  develop their own Coordinators (S1, S4, S6, S8), patterns for
+  cross-coordinator coordination may emerge — e.g., distributed
+  transactions across substrate boundaries, cross-substrate query
+  composition. The "Coordinator family" framing reserves this
+  evolution path.
+
+- **API versioning.** Today the Coordinator's interface is single-version;
+  changes are breaking. Future may need explicit API versioning
+  (consumers pin to interface versions; substrate maintains backward
+  compatibility for declared versions). Reserved.
+
+- **Behavioral contract evolution.** Performance asymptotics and
+  concurrency guarantees may strengthen as the substrate matures
+  (e.g., from "O(log n)" to "O(1) with caching" for hot-path
+  operations). Reserved.
+
+See `DECISIONS_LOG.md` D-064 for rationale and alternatives
+considered.
 
 ---
 
 ## 11. Disposition of v2.2 test-management tables
 
-(Placeholder. Pending S2-Q-010.)
+**Resolution.** Per D-065: each v2.2 test-management table is
+dispositioned for the v2 substrate-based architecture. Two tables
+are absorbed by substrate-2; three are dropped; four migrate to
+orthogonal substrates (TBD); one is dropped in favor of S8
+territory. The dispositions reflect an **intentional architectural
+trade-off** — short-term v2.2 feature parity sacrificed for
+long-term substrate coherence.
+
+### 11.1 Disposition vocabulary
+
+- **ABSORB** — Content moves into substrate-2's new schema.
+- **DROP** — Content is not retained in PrimeQA v2 (or is
+  replaced by a different mechanism that doesn't require
+  migration).
+- **MIGRATE** — Content lives in a separate (TBD) substrate in
+  v2; not part of substrate-2.
+
+### 11.2 Per-table disposition
+
+| v2.2 Table | Disposition | Rationale |
+|---|---|---|
+| `sections` | MIGRATE | Organizational/curation concern; not test-representation. Future "test catalog" or "organizational" substrate. |
+| `requirements` | DROP | Per D-063 (S2-Q-008), requirements are external typed references. `test_requirement_links` provides linkage; ticket content stays in JIRA. No PrimeQA-side replication. |
+| `test_cases` | ABSORB | Replaced by S2's `test_claims` + `test_recipes` (per D-056). Migration: each v2.2 test_case becomes a claim + one or more recipes per the six-layer model. |
+| `test_case_versions` | DROP | Replaced by effective-time supersession (per D-057). `version_seq` on `test_claims` / `test_recipes` provides version history without a separate table. |
+| `test_suites` | MIGRATE | Suite-membership is curation, not test-representation. Lives in the same future "test catalog" substrate as `sections`. |
+| `suite_test_cases` | MIGRATE | Same as `test_suites` — curation layer. |
+| `ba_reviews` | MIGRATE | BA review is a workflow concept distinct from substrate-2's approval-state lifecycle (which is mechanical per D-061). Future "review workflow" substrate. |
+| `metadata_impacts` | DROP | Absorbed into S1-diff-driven evolution per S8 (future substrate). Not S2's job to replicate; S8 derives impacts from S1's bitemporal history at evolution time. |
+
+### 11.3 Intentional architectural trade-off
+
+The four MIGRATE dispositions create an explicit gap:
+substrate-2 v1 doesn't handle sections, suites, or BA reviews.
+Teams using v2.2 features in those areas have a feature gap
+during transition.
+
+This is **not a pressure point to be mitigated — it is a
+deliberate architectural commitment.** The substrate's
+coherence is more valuable than short-term feature parity.
+
+- **Short-term cost:** v2.2 features unavailable in v2 until
+  orthogonal substrates ship
+- **Long-term gain:** each concern lives in its own substrate
+  with clean boundaries; future evolution of each concern happens
+  independently
+
+Each MIGRATE-targeted concern represents a *separate substrate's
+responsibility*, not substrate-2's. Absorbing them into S2 would
+compromise the substrate boundary that makes the platform
+architecture coherent.
+
+The gap is real; the gap is acceptable; the gap is intentional.
+
+### 11.4 Migration strategy (high-level)
+
+For ABSORB-dispositioned content:
+
+- v2.2 `test_cases` + `test_case_versions` → v2 `test_claims` +
+  `test_recipes` via S3-assisted decomposition. Each v2.2 test
+  → claim + one or more recipes per the six-layer model. The
+  procedural steps in v2.2 become recipe bodies; the asserted
+  truth must be extracted, often via LLM-assisted parsing.
+
+For DROP-dispositioned content:
+
+- `requirements` content not migrated; instead,
+  `test_requirement_links` is populated from v2.2's
+  test-to-requirement relationships.
+- `test_case_versions` content not migrated; effective-time
+  supersession replaces; v2.2 version history is provenance-only
+  (recorded as `claim_created` events in v2 provenance).
+- `metadata_impacts` content discarded; S1 + S8 reconstruct as
+  needed.
+
+For MIGRATE-dispositioned content:
+
+- Out of substrate-2's v1 scope. Migration deferred until the
+  receiving substrates ship. v2.2 tables can be retained
+  in-place under separate ownership during transition.
+
+**Detailed migration execution** (data scripts, validation,
+rollback procedures) is implementation work post-Phase-3, not
+substrate design.
+
+### 11.5 Forward-compatibility reservations
+
+The MIGRATE dispositions create implicit dependencies on future
+substrates:
+
+- **Test catalog substrate** (for `sections`, `test_suites`,
+  `suite_test_cases`) — organizational/curation concerns
+- **Review workflow substrate** (for `ba_reviews`) — workflow
+  concerns distinct from substrate-2's mechanical approval
+  lifecycle
+
+These substrates ship later. Substrate-2 v1 ships first; the
+orthogonal substrates ship in subsequent phases as their scope
+becomes clear. The substrate roadmap is sequential and deliberate.
+
+See `DECISIONS_LOG.md` D-065 for rationale and alternatives
+considered.

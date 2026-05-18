@@ -3070,3 +3070,730 @@ TA refinements integrated:
 - D-060 (validation layering — Coordinator as routing point)
 
 ---
+
+
+## D-062 — Execution-history boundary against S4 [S2-Q-007]
+
+**Date:** 2026-05-18
+**Substrates affected:** [S2, with consequences for S4, S6, S8]
+**Status:** active
+
+**Decision.** Substrate-2's boundary with the future execution
+substrate (S4) is the **last-run snapshot** pattern. S2 holds
+minimal denormalized state per recipe (latest outcome,
+`last_pass_at`, `last_failure_at`) via a new
+`test_recipe_runtime_state` table; S4 holds the full evidence and
+history. S4 pushes updates to S2 via Coordinator callback;
+**S2 never queries S4.** Test-level runtime status is a
+**resolution operation** composing recipe-level state with
+conservative initial policy.
+
+**The substrate boundary:**
+
+Platform philosophy distinguishes execution (S4's domain),
+interpretation (S6's domain), and representation (S2's domain).
+S2 must NOT replicate S4's evidence — that would conflate
+execution with representation. But S2 benefits from minimal
+denormalized state for hot-path queries (S6 attribution
+ergonomics, S8 evolution prioritization, UX status display) that
+would otherwise force every status query to join with S4.
+
+The boundary commitment: **S2 holds only what it needs for its
+own resolution operations; S4 holds everything else.**
+
+**The runtime-state snapshot:**
+
+`test_recipe_runtime_state` table, one row per `recipe_id`
+(NOT per recipe version):
+
+- `recipe_id` UUID PK — FK to `test_recipes.recipe_id`
+- `last_run_id` UUID — opaque reference into S4
+- `last_run_at` timestamp
+- `last_run_outcome` enum — passed / failed / errored / skipped
+- `last_run_recipe_version_seq` int — which version was run
+- `last_pass_at` timestamp NULL — when did this recipe last pass
+- `last_failure_at` timestamp NULL — when did this recipe last fail
+- `updated_at` timestamp
+
+**Pure snapshot — no aggregate statistics.** No `run_count`, no
+pass-rate percentages, no flakiness metrics. These belong to S4
+(raw data) or S6 (derived analyses). S2 maintaining them would
+muddy the substrate's purpose and add write coordination
+overhead on every run report.
+
+**Per-recipe, not per-recipe-version.** Recipes are versioned;
+runtime state is not. The `last_run_recipe_version_seq` field
+records which version was run, but only the latest outcome is
+retained.
+
+**Separate table, not columns on `test_recipes`.** The substrate
+boundary must be visible in the schema. Mixing runtime state into
+the representation table blurs the boundary.
+
+**Push-based S4 integration:**
+
+S4 reports run outcomes via Coordinator callback:
+
+```
+coordinator.report_run_outcome(
+    actor=S4,
+    run_id,
+    recipe_id,
+    recipe_version_seq,
+    outcome,
+    ran_at,
+)
+```
+
+S2 never queries S4. S4 pushes; S2 ingests. This avoids S2 → S4
+dependencies, concentrates write coordination at the Coordinator,
+and allows S4 to batch reports if needed.
+
+Idempotent on `run_id`. Re-reporting the same run is a no-op.
+
+**Test-level runtime status as resolution operation:**
+
+`coordinator.get_test_runtime_status(test_id)` returns:
+
+- `passing` — at least one current-approved recipe has
+  `last_run_outcome=passed` AND no current-approved recipe has
+  `last_run_outcome=failed`
+- `failing` — at least one current-approved recipe has
+  `last_run_outcome=failed`
+- `untested` — no current-approved recipe has a run
+- `mixed` — multiple recipes with conflicting outcomes that
+  don't fit the above
+
+This is **resolution**, not lookup — composing recipe-level state
+per substrate rules. Per D-064, resolution-class operations are
+first-class substrate concepts.
+
+**Multi-recipe outcome resolution has acknowledged pressure:**
+
+The §8.4 composition rule is conservative and initial. Multi-recipe
+outcomes have genuine ambiguity:
+
+- API recipe (passed) + UI recipe (failed) — passing or failing?
+- Primary recipe (passed) + regression recipe (failed) — is the
+  primary's outcome canonical?
+- 3 recipes, 2 passed, 1 errored — what's the status?
+
+The substrate provides both raw recipe-level state (direct query)
+AND derived test-level composition (resolution operation).
+Consumers needing different composition policies compose against
+raw state rather than the substrate's default.
+
+**Rationale.** Sub-cycle 7 settles the substrate's first
+**boundary** with another substrate. Prior cycles (D-051 through
+D-061) established substrate-2's internal coherence; this cycle
+establishes how that coherent design interfaces with execution
+(which is owned by a different substrate per platform philosophy).
+
+The four critical refinements during design:
+
+- **Drop `run_count`.** Initial design included a run-count
+  column as cheap denormalization. Refined: aggregate statistics
+  belong to S4 (raw) or S6 (derived); S2 maintaining them is
+  mission creep and adds write coordination overhead. Pure
+  snapshot is the principled position.
+- **Separate table, not columns on `test_recipes`.** The
+  substrate boundary must be visible in the schema. Mixing
+  runtime state into the representation table blurs the
+  boundary that makes the platform architecture coherent.
+- **Push-based S4 integration.** S2 never queries S4. The
+  alternative (S2 pulls from S4) would create cross-substrate
+  query dependencies that violate substrate isolation.
+- **Multi-recipe resolution pressure acknowledged openly.**
+  Initial framing buried the multi-recipe ambiguity as edge
+  case. Refined: explicit §8.5 pressure-point framing
+  acknowledges that test-level status composition has genuine
+  open questions; substrate provides both raw and derived
+  state.
+
+**Alternatives considered.**
+
+- *Run-id references only (S4 holds all evidence; every S2 status
+  query joins to S4).* Rejected. Forces every "is this test
+  passing" query to traverse a cross-substrate join. Hot-path
+  performance cost is too high; resolution operations need
+  in-substrate state.
+- *Per-version pass/fail summary (aggregate counts denormalized
+  into S2).* Rejected. Aggregate statistics belong to S4 or S6;
+  S2 maintaining them is mission creep. Pure snapshot is
+  cleaner.
+- *Last-run + run history (last N runs stored in S2).* Rejected.
+  Where does N stop? Run history is S4's domain; S2 retaining
+  history beyond last-run pulls evidence into the representation
+  substrate. Reserved as forward-compat if hot-path needs surface.
+- *Columns on `test_recipes` rather than separate table.*
+  Rejected per TA. Boundary visibility matters.
+- *S2 polls S4 for run outcomes.* Rejected. Creates cross-substrate
+  query dependencies; coupling that violates substrate isolation.
+  Push-based callback is the principled approach.
+- *Run-count column for cheap convenience.* Rejected per TA.
+  Statistics belong elsewhere.
+- *Single test-level runtime status column denormalized to
+  `test_claims`.* Rejected. Test-level status is derived
+  composition (per D-061's approval composition pattern); not
+  denormalized to schema. Resolution operation is the
+  principled placement.
+
+**Downstream consequences.**
+
+- *S4 (Execution, future substrate):* Must implement the
+  `report_run_outcome` callback to Coordinator after each run.
+  Idempotent on `run_id`.
+- *S6 (Interpretation):* Queries `test_recipe_runtime_state`
+  directly for raw last-run state; queries Coordinator's
+  resolution operation for composed test-level status.
+- *S8 (Evolution):* Uses runtime state to prioritize evolution
+  work (recently-failing tests; long-untested tests).
+- *UX/Dashboard:* Queries Coordinator's resolution operation
+  for display.
+- *S2-Q-009 (outward surfaces):* Runtime state interfaces
+  appear as one of the five interface groups in D-064.
+
+**Forward-compatibility reservations.**
+
+- *Richer runtime-state resolution.* §8.4 composition rule may
+  evolve toward recipe priority weighting, primary-recipe
+  designation, or outcome-aggregation policies. Substrate
+  exposes raw state today; evolved resolution policies layer
+  on top without schema change.
+- *Run history beyond last-run.* Some S6 attribution scenarios
+  may want flakiness detection (run history with pass/fail
+  pattern). Today deferred to S4-side queries or a future
+  flakiness-detection substrate.
+
+**References.**
+
+- `substrate_2_test_representation/SPEC.md` §8 (execution-history
+  boundary, substantive content added in this commit)
+- `substrate_2_test_representation/SPEC.md` §4.1
+  (`test_recipe_runtime_state` table definition)
+- `substrate_2_test_representation/SPEC.md` §4.2 (architectural
+  roles table extended)
+- D-051 (identity model — recipes as operational entities)
+- D-056 (storage realization — Pattern D extended with snapshot
+  table)
+- D-061 (mutation paths — runtime state outside claim/recipe
+  mutation framework)
+- D-064 (outward surfaces — Coordinator interfaces for runtime
+  state)
+
+---
+
+
+## D-063 — Requirement linkage [S2-Q-008]
+
+**Date:** 2026-05-18
+**Substrates affected:** [S2, with consequences for S3, S6, UX integration]
+**Status:** active
+
+**Decision.** Substrate-2 links to external requirement-management
+systems (JIRA, etc.) via **external typed references only**. No
+ticket content is replicated in PrimeQA; the external system
+remains the source of truth. A new `test_requirement_links` table
+provides multi-kind linkage (`generated_from` / `verifies` /
+`related_to`). Future evolution to registry-based external-system
+identification is reserved.
+
+**The external typed reference model:**
+
+Substrate-2's role re requirements is **linkage, not ownership.**
+Requirements (JIRA tickets, Linear issues, Azure DevOps work
+items) are external to PrimeQA's domain. PrimeQA tests can
+reference them for traceability — "this test was generated from
+PROJ-1234," "this test verifies PROJ-5678" — but PrimeQA does
+not own or replicate ticket content.
+
+Why no content replication:
+
+- Content goes stale (JIRA tickets evolve)
+- Mission boundary (project management is a separate concern)
+- Sync overhead (when to sync, how to handle conflicts)
+
+**The `test_requirement_links` table:**
+
+- `test_id` UUID — FK to `test_claims.test_id`
+- `external_system` enum — `jira` today; extensible
+- `external_key` text — e.g., `PROJ-1234`
+- `external_version` text NULL — optional version/revision
+- `link_kind` enum — `generated_from` / `verifies` / `related_to`
+- `linked_at` timestamp
+- `linked_by` text — actor
+- PK: `(test_id, external_system, external_key, link_kind)`
+- Index for reverse lookup: `(external_system, external_key)`
+
+**Multi-kind linkage.** A test may be `generated_from` one
+requirement AND `verifies` another. Many-to-many relationship.
+
+**Three link kinds:**
+
+- `generated_from` — S3 generated this test in response to this
+  requirement
+- `verifies` — this test contributes to verifying this requirement
+- `related_to` — loose association catch-all
+
+**No ticket content replicated.** Downstream consumers query the
+external system's API directly when they need ticket content.
+
+**Rationale.** The substrate's coherence depends on clear
+boundaries. Requirements are external concerns; replicating them
+would expand substrate-2's responsibility beyond its scope and
+create stale-data problems. The link-only model preserves the
+substrate boundary while supporting traceability.
+
+The three critical refinements during design:
+
+- **External typed reference, not first-class entity.** Initial
+  candidates included absorbing requirements as a first-class
+  S2 entity (mirroring v2.2's `requirements` table). Refined:
+  the substrate boundary forbids absorbing concerns that belong
+  to external systems.
+- **Multi-kind linkage with explicit kinds.** Initial design
+  considered a single "linked-to" relationship. Refined:
+  `generated_from` / `verifies` / `related_to` capture
+  genuinely distinct relationships, each with different
+  semantic implications.
+- **Registry-based evolution reserved.** Hardcoded enum is fine
+  for v1, but future per-tenant external systems may emerge.
+  Schema-shape commitment today is "typed identifier" (enum or
+  FK), not an irrevocable type choice.
+
+**Alternatives considered.**
+
+- *First-class requirements entity in S2 (mirrors v2.2).*
+  Rejected. Expands substrate responsibility; creates stale-data
+  problems.
+- *Separate substrate for requirements.* Possible future direction
+  but unnecessary now — link-only model handles substrate-2's
+  needs without requiring a separate substrate.
+- *Single "linked-to" relationship without kind discriminator.*
+  Rejected. Different relationships have different semantic
+  implications (S3 attribution differs from manual verification
+  linkage).
+- *Replicate minimal ticket metadata (title, status).* Rejected.
+  Where does minimal stop? Title is content; status is mutable;
+  any replicated data goes stale.
+- *Bidirectional sync to JIRA (PrimeQA → JIRA comments).*
+  Out of scope. Could be a future integration layer; not S2's
+  responsibility.
+
+**Downstream consequences.**
+
+- *S3 (Generation):* When generating a test from a JIRA ticket,
+  writes a `test_requirement_links` row with `link_kind=generated_from`.
+- *S6 (Interpretation):* When attributing a failure, may surface
+  the requirement that the test was generated from.
+- *UX:* Queries Coordinator for tests by requirement, displays
+  ticket content via direct JIRA API call.
+- *v2.2 disposition:* `requirements` table → DROP per D-065.
+  Migration: extract test-to-requirement relationships from v2.2
+  data into `test_requirement_links`; ticket content discarded.
+
+**Forward-compatibility reservations.**
+
+- *Registry-based `external_system`.* `external_systems` registry
+  table could replace the enum if multi-tenant external-system
+  configuration emerges.
+- *Sprint / release / project associations.* External-system
+  concerns; not S2 schema.
+- *Bidirectional sync.* Future integration layer; not substrate.
+
+**References.**
+
+- `substrate_2_test_representation/SPEC.md` §9 (requirement
+  linkage, substantive content added in this commit)
+- `substrate_2_test_representation/SPEC.md` §4.1
+  (`test_requirement_links` table definition)
+- D-064 (outward surfaces — `list_tests_by_requirement` interface)
+- D-065 (v2.2 disposition — `requirements` table → DROP)
+
+---
+
+
+## D-064 — Outward surfaces [S2-Q-009]
+
+**Date:** 2026-05-18
+**Substrates affected:** [S2, with consequences for S3, S4, S6, S8, and all future substrate consumers]
+**Status:** active
+
+**Decision.** Substrate-2's outward surface is the **Semantic
+Transaction Coordinator**, framed as **semantic OS infrastructure**
+rather than as a substrate-internal component. The Coordinator
+exposes five interface groups, each with explicit **behavioral
+contracts** (idempotency, authority, atomicity, error,
+concurrency, asymptotics) as substrate-level commitments. Three
+Coordinator-level operations are named **resolution-class
+operations** — first-class substrate concepts that compose
+substrate rules rather than executing simple queries. Wire format
+(Python-direct, gRPC, REST) is unspecified at the substrate
+level; behavioral contracts are not.
+
+**The Coordinator as semantic OS infrastructure:**
+
+After D-060 (Coordinator as named substrate component), D-061
+(mutation paths routed through Coordinator), and D-062 (runtime
+state managed through Coordinator), the Coordinator is no longer
+a "substrate-2 component." It is **semantic OS infrastructure** —
+the kernel through which all substrate operations route, the
+surface against which all consuming substrates build, the locus
+where consistency invariants and authority rules are enforced.
+
+Consequences of this elevation:
+
+- Interface stability is **foundational** — changes ripple to all
+  consuming substrates.
+- Behavioral contracts are first-class architectural commitments,
+  not implementation conventions.
+- Future substrates (S1 Coordinator, S4 Coordinator) may form a
+  Coordinator family with cross-coordinator concerns.
+- "Semantic OS infrastructure" is the right framing in
+  cross-substrate documentation.
+
+**Five interface groups:**
+
+Organized by consumer concern, not by consuming substrate:
+
+1. **Write interfaces** (actor-aware, authority-enforced) —
+   `write_claim`, `write_recipe`, `promote_claim_to_approved`
+   (human-only), `deprecate_claim` (human-only),
+   `deprecate_recipe` (human-only),
+   `surface_unblessed_transition` (S8-only).
+
+2. **Read interfaces** (current-approved vs latest distinction) —
+   `get_current_approved_claim` (resolution operation),
+   `get_latest_claim`, `get_claim_version`, `list_active_recipes`,
+   `select_recipe_for_execution` (resolution operation).
+
+3. **Equivalence and discovery interfaces** —
+   `query_equivalent_claims`, `list_tests_affected_by_entity`
+   (uses coverage), `list_tests_by_requirement`.
+
+4. **Runtime state interfaces** (per D-062) —
+   `report_run_outcome` (S4-only),
+   `get_recipe_runtime_state`,
+   `get_test_runtime_status` (resolution operation).
+
+5. **Provenance interfaces** — `get_provenance`,
+   `get_recipe_provenance`.
+
+**Behavioral contracts per interface:**
+
+Substrate-level commitments, not implementation conventions:
+
+- **Idempotency** — Each interface declares its idempotency key
+  (canonical content for `write_claim`; `(actor, recipe_id,
+  version_seq)` for `write_recipe`; `run_id` for
+  `report_run_outcome`; etc.)
+- **Authority** — Per D-061 §7.2; authority violations raise
+  `AuthorityViolationError`
+- **Atomicity** — Write interfaces are atomic across the
+  relevant tables (e.g., claim writes atomic across `test_claims`
+  + `test_claim_coverage` + `test_provenance`)
+- **Error contracts** — Per D-060 §4.7.8 + D-061
+  `AuthorityViolationError`; each interface documents possible
+  error types
+- **Concurrency** — Writes use DB-level conflict detection;
+  reads are transaction-consistent
+- **Performance asymptotics** — Hot-path resolution operations
+  should be O(constant) or O(log n); discovery operations are
+  O(coverage rows for entity)
+
+**Resolution-class operations:**
+
+Three Coordinator interfaces are **resolution-class operations**:
+
+| Operation | Composes |
+|---|---|
+| `get_current_approved_claim` (D-061) | Status events, deprecation, policy-version scenarios |
+| `get_test_runtime_status` (D-062) | Recipe outcomes, approval state, conservative initial policy |
+| `select_recipe_for_execution` (this) | Environment matching, priority, approval state, replay mode, S8-blessing |
+
+Distinguished from lookups by composition over substrate rules,
+governance/policy implications, and future-extensibility. Named
+as a substrate-level pattern; future resolution operations (S6
+attribution clustering, S8 evolution prioritization) will follow
+this pattern rather than reinvent the architectural slot.
+
+**Wire format reservation:**
+
+The Coordinator's interface and behavioral contracts are the
+architectural commitment. Concrete wire formats — Python-direct,
+gRPC, REST — are deployment concerns. Wire formats may multiply
+(in-process for direct consumers; cross-service for distributed
+consumers) without changing the substrate's commitment.
+
+**Rationale.** S2-Q-009 originally framed as "what APIs S2
+exposes." Refined framing: the substrate doesn't expose APIs in
+the conventional sense; it exposes a **Coordinator surface** with
+behavioral contracts. This framing matters because:
+
+- The Coordinator's elevation to semantic OS infrastructure (per
+  TA refinement) positions it as platform-foundational
+- Behavioral contracts (per TA refinement) are first-class
+  commitments, not implementation conventions
+- Resolution-class operations (per TA refinement on recipe
+  selection) emerge as a recognized pattern across D-061, D-062,
+  and this decision
+
+The four critical refinements during design:
+
+- **Coordinator as semantic OS infrastructure.** Initial framing
+  as "named substrate-level component" undersells the role after
+  Coordinator absorbs mutation routing (D-061), runtime state
+  (D-062), and now serves as the full outward surface (this
+  decision). Elevation reflects architectural reality.
+- **Behavioral contracts as substrate-level commitments.**
+  Initial framing left contracts implicit ("wire format
+  unspecified" was loose). Refined: contracts are explicit
+  per-interface commitments; wire format is downstream of
+  contracts.
+- **Resolution-class operations named as first-class pattern.**
+  Initial framing treated each resolution as ad-hoc. Refined:
+  three resolution operations across recent decisions form a
+  recognized pattern; naming it prepares for future resolution
+  operations.
+- **Recipe selection as policy resolution.** Initial framing
+  treated recipe selection as deterministic lookup. Refined:
+  selection composes environment matching, priority, approval
+  state, replay mode, S8-blessing; it's policy resolution, not
+  lookup.
+
+**Alternatives considered.**
+
+- *Per-substrate API layer (S3-API, S4-API, etc.).* Rejected.
+  Different consuming substrates have overlapping needs
+  (S6 and S8 both query coverage); per-consumer APIs would
+  duplicate logic. Concern-grouped is the principled
+  organization.
+- *Coordinator as substrate-2 component.* Rejected per TA.
+  Undersells architectural role.
+- *Behavioral contracts as implementation conventions.* Rejected
+  per TA. Contracts are part of the substrate's commitment;
+  treating them as implementation makes them invisible at the
+  API boundary.
+- *Wire format committed at substrate level (e.g., gRPC).*
+  Rejected. Different deployment contexts have different needs;
+  substrate's commitment is interface + contracts, not wire
+  format.
+- *Resolution operations as undistinguished interfaces.*
+  Rejected per TA. Naming the pattern prevents future
+  resolution operations from being reinvented ad-hoc.
+
+**Downstream consequences.**
+
+- *All consuming substrates (S3, S4, S6, S8):* Build against
+  Coordinator interface and behavioral contracts. Direct DB
+  access prohibited.
+- *Cross-substrate Coordinator concerns:* As future substrates
+  develop their own Coordinators, patterns for cross-coordinator
+  coordination may emerge. Reserved.
+- *API versioning:* Today single-version; changes are breaking.
+  Future may need explicit versioning. Reserved.
+- *Implementation:* Coordinator implementation is substantial
+  engineering work; behavioral contracts inform implementation
+  testing.
+
+**Forward-compatibility reservations.**
+
+- *Cross-substrate Coordinator concerns* — distributed
+  transactions across substrate boundaries, cross-substrate query
+  composition
+- *API versioning* — explicit version pinning for backward
+  compatibility
+- *Behavioral contract evolution* — performance asymptotics and
+  concurrency guarantees may strengthen as substrate matures
+
+**References.**
+
+- `substrate_2_test_representation/SPEC.md` §10 (outward surfaces,
+  substantive content added in this commit)
+- `substrate_2_test_representation/SPEC.md` §4.7.5 (Coordinator
+  framing updated to semantic OS infrastructure)
+- D-060 (Coordinator established as named substrate-level
+  component; this decision elevates further)
+- D-061 (mutation routing through Coordinator; current-approved
+  as first resolution operation)
+- D-062 (runtime state through Coordinator; test runtime status
+  as second resolution operation)
+- D-063 (`list_tests_by_requirement` as discovery interface)
+
+---
+
+
+## D-065 — Disposition of v2.2 test-management tables [S2-Q-010]
+
+**Date:** 2026-05-18
+**Substrates affected:** [S2, with consequences for v2.2 migration, future "test catalog" and "review workflow" substrates]
+**Status:** active
+
+**Decision.** Each v2.2 test-management table is dispositioned
+for the v2 substrate-based architecture. Two tables are absorbed
+by substrate-2; three are dropped; four migrate to orthogonal
+substrates (TBD); one is dropped in favor of S8 territory. The
+dispositions reflect an **intentional architectural trade-off** —
+short-term v2.2 feature parity sacrificed for long-term
+substrate coherence. Migration execution is post-Phase-3
+implementation work.
+
+**Disposition vocabulary:**
+
+- **ABSORB** — Content moves into substrate-2's new schema.
+- **DROP** — Content is not retained (or is replaced by a
+  mechanism that doesn't require migration).
+- **MIGRATE** — Content lives in a separate (TBD) substrate.
+
+**Per-table disposition:**
+
+| v2.2 Table | Disposition | Rationale |
+|---|---|---|
+| `sections` | MIGRATE | Organizational concern; future "test catalog" substrate. |
+| `requirements` | DROP | External typed reference replaces (per D-063); no PrimeQA-side replication. |
+| `test_cases` | ABSORB | Replaced by `test_claims` + `test_recipes` (per D-056). |
+| `test_case_versions` | DROP | Effective-time supersession replaces (per D-057). |
+| `test_suites` | MIGRATE | Curation concern; future "test catalog" substrate. |
+| `suite_test_cases` | MIGRATE | Same as `test_suites`. |
+| `ba_reviews` | MIGRATE | Workflow concept; future "review workflow" substrate. |
+| `metadata_impacts` | DROP | S8 territory in v2; derived from S1 bitemporal history. |
+
+**Intentional architectural trade-off:**
+
+The four MIGRATE dispositions create an explicit gap:
+substrate-2 v1 doesn't handle sections, suites, or BA reviews.
+Teams using v2.2 features in those areas have a feature gap
+during transition.
+
+This is **not a pressure point to be mitigated — it is a
+deliberate architectural commitment.** The substrate's
+coherence is more valuable than short-term feature parity.
+
+- Short-term cost: v2.2 features unavailable in v2 until
+  orthogonal substrates ship
+- Long-term gain: each concern lives in its own substrate with
+  clean boundaries; future evolution of each concern happens
+  independently
+
+Each MIGRATE-targeted concern represents a *separate substrate's
+responsibility*. Absorbing them into S2 would compromise the
+substrate boundary that makes the platform architecture coherent.
+
+**The gap is real; the gap is acceptable; the gap is intentional.**
+
+**Migration strategy (high-level):**
+
+For ABSORB-dispositioned content:
+
+- v2.2 `test_cases` + `test_case_versions` → v2 `test_claims` +
+  `test_recipes` via S3-assisted decomposition. Each v2.2 test
+  → claim + one or more recipes per the six-layer model. The
+  procedural steps in v2.2 become recipe bodies; the asserted
+  truth must be extracted, often via LLM-assisted parsing.
+
+For DROP-dispositioned content:
+
+- `requirements` content not migrated; instead,
+  `test_requirement_links` populated from v2.2's
+  test-to-requirement relationships.
+- `test_case_versions` content not migrated; effective-time
+  supersession replaces; v2.2 version history is provenance-only
+  (recorded as `claim_created` events in v2 provenance).
+- `metadata_impacts` content discarded; S1 + S8 reconstruct as
+  needed.
+
+For MIGRATE-dispositioned content:
+
+- Out of substrate-2's v1 scope. Migration deferred until
+  receiving substrates ship. v2.2 tables can be retained
+  in-place under separate ownership during transition.
+
+**Detailed migration execution** (data scripts, validation,
+rollback) is implementation work post-Phase-3.
+
+**Rationale.** S2-Q-010 walks each v2.2 table and decides its
+fate. The walk is mostly mechanical given prior decisions:
+
+- `test_cases` + `test_case_versions` are exactly what S2's
+  data model replaces (D-056 + D-057) → ABSORB / DROP
+- `requirements` is exactly what D-063 dispositions externally
+  → DROP
+- `metadata_impacts` is exactly what S8 covers from S1 → DROP
+- `sections`, `test_suites`, `suite_test_cases`, `ba_reviews`
+  are concerns outside substrate-2's domain → MIGRATE
+
+The decision's substance is the **intentional architectural
+trade-off** framing. v2.2 had bundled all these concerns into
+test-management tables; v2 substrate-based architecture
+deliberately splits them along clean boundaries even at the cost
+of short-term parity.
+
+The single critical refinement during design:
+
+- **MIGRATE as deliberate commitment, not pressure point.**
+  Initial framing treated the v2.2 feature gap as a "pressure
+  point" requiring acknowledgment as a concern. Refined: the
+  gap is a deliberate architectural commitment. Substrate
+  coherence trumps short-term parity. Surfacing the trade-off
+  explicitly as commitment rather than concern is the
+  principled position.
+
+**Alternatives considered.**
+
+- *Absorb all v2.2 tables into substrate-2.* Rejected. Sections,
+  suites, BA reviews are not test-representation concerns;
+  absorbing them violates the substrate boundary.
+- *Retain v2.2 schema alongside v2 substrate-based schema (dual
+  data model).* Rejected. Creates dual-write coordination,
+  consistency problems, and doesn't progress toward the
+  substrate architecture.
+- *Defer migration until all orthogonal substrates ship (no v1
+  release).* Rejected. Substrate-2 has independent value;
+  shipping it first builds momentum and proves the substrate
+  pattern.
+- *Treat v2.2 gap as pressure point requiring mitigation.*
+  Rejected per TA. The gap is the architecture working as
+  designed; framing it as concern misrepresents the commitment.
+
+**Downstream consequences.**
+
+- *Migration team:* Has clear per-table disposition; can plan
+  ABSORB migrations (test_cases) and DROP rationales
+  (requirements, test_case_versions, metadata_impacts).
+- *Future "test catalog" substrate:* Inherits sections,
+  test_suites, suite_test_cases when it ships. Its scope must
+  cover organizational and curation concerns.
+- *Future "review workflow" substrate:* Inherits ba_reviews
+  when it ships. Its scope must cover BA review workflows
+  distinct from substrate-2's mechanical approval lifecycle.
+- *Operations / Product:* Must communicate the intentional v2.2
+  feature gap during transition; teams needing migrated
+  features must wait for orthogonal substrates.
+
+**Forward-compatibility reservations.**
+
+The MIGRATE dispositions create implicit dependencies on future
+substrates:
+
+- *Test catalog substrate* — for `sections`, `test_suites`,
+  `suite_test_cases`
+- *Review workflow substrate* — for `ba_reviews`
+
+These substrates ship later. Substrate-2 v1 ships first; the
+orthogonal substrates ship in subsequent phases as their scope
+becomes clear. The substrate roadmap is sequential and
+deliberate.
+
+**References.**
+
+- `substrate_2_test_representation/SPEC.md` §11 (v2.2 disposition,
+  substantive content added in this commit)
+- D-056 (storage realization — test_claims, test_recipes replace
+  v2.2 test_cases)
+- D-057 (effective-time supersession — replaces v2.2
+  test_case_versions)
+- D-061 (approval lifecycle as mechanical — distinct from BA
+  review workflows)
+- D-063 (requirement linkage — replaces v2.2 requirements)
+
+---

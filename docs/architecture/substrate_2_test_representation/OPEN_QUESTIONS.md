@@ -3,6 +3,12 @@
 Questions specific to this substrate's design. Cross-cutting
 questions live in the top-level `OPEN_QUESTIONS.md`.
 
+All substrate-2 design questions are now resolved. The substrate's
+internal coherence (claims, recipes, identity, validation, mutation
+paths) and external boundaries (S4 execution-history, JIRA
+requirements, outward API surface, v2.2 disposition) are fully
+specified across D-051 through D-065.
+
 ---
 
 ## Resolved
@@ -56,6 +62,54 @@ questions live in the top-level `OPEN_QUESTIONS.md`.
   Four forward-compat reservations: recipe auto-preservation,
   merge/rebase, provenance streams, deprecation taxonomy. See
   `SPEC.md` §7.
+- ~~S2-Q-007 — Execution-history boundary against S4~~ →
+  resolved by D-062. Last-run snapshot pattern via new
+  `test_recipe_runtime_state` table (per recipe, not per recipe
+  version). Pure snapshot: no aggregate statistics, no history
+  (S4 holds full history). S4 reports run outcomes via
+  Coordinator callback (push-based; S2 never queries S4).
+  Test-level runtime status as **resolution operation**
+  composing recipe-level state with conservative initial policy.
+  Multi-recipe outcome resolution has acknowledged pressure;
+  raw recipe state exposed for consumers needing different
+  composition policies. Two forward-compat reservations:
+  richer runtime-state resolution, run history beyond last-run.
+  See `SPEC.md` §8.
+- ~~S2-Q-008 — Requirement linkage~~ → resolved by D-063.
+  External typed reference model. New `test_requirement_links`
+  table with multi-kind linkage (`generated_from` / `verifies`
+  / `related_to`). No ticket content replicated in PrimeQA;
+  external system (JIRA) remains source of truth. `external_system`
+  as typed identifier today (enum); registry-based evolution
+  reserved. Three forward-compat reservations: registry-based
+  external systems, sprint/release associations, bidirectional
+  sync. See `SPEC.md` §9.
+- ~~S2-Q-009 — Outward surfaces (for S3, S4, S6, S8)~~ →
+  resolved by D-064. Semantic Transaction Coordinator framed
+  as **semantic OS infrastructure** rather than substrate-internal
+  component. Five interface groups: write (actor-aware,
+  authority-enforced), read (current-approved vs latest
+  distinction), equivalence and discovery, runtime state,
+  provenance. **Behavioral contracts** specified per interface
+  (idempotency, authority, atomicity, error, concurrency,
+  asymptotics) as substrate-level commitments. Three
+  **resolution-class operations** named as first-class
+  substrate concept (current-approved, runtime status, recipe
+  selection). Wire format unspecified at substrate level;
+  behavioral contracts are not. Three forward-compat
+  reservations: cross-substrate Coordinator concerns, API
+  versioning, behavioral contract evolution. See `SPEC.md` §10.
+- ~~S2-Q-010 — Disposition of v2.2 test-management tables~~ →
+  resolved by D-065. Per-table disposition: `test_cases`
+  ABSORB; `test_case_versions` DROP; `requirements` DROP;
+  `metadata_impacts` DROP; `sections`, `test_suites`,
+  `suite_test_cases`, `ba_reviews` MIGRATE to future substrates
+  (test catalog, review workflow). Substrate-2 ships first;
+  orthogonal substrates ship later. Migration execution is
+  post-Phase-3 implementation work. **Intentional architectural
+  trade-off** framing: short-term v2.2 feature parity sacrificed
+  for long-term substrate coherence. Gap is real, acceptable,
+  intentional. See `SPEC.md` §11.
 - ~~S2-Q-011 — Trigger-kind classification~~ → resolved by D-055.
   5 kinds locked, four-discriminator framing extended, six-layer
   model amended (rename: "execution realization" → "observation
@@ -65,60 +119,6 @@ questions live in the top-level `OPEN_QUESTIONS.md`.
 
 ## Open
 
-### S2-Q-007 — Execution-history boundary against S4
-
-What does S2 store about runs:
-
-- Run-id references only (S4 holds all evidence).
-- Per-version pass/fail summary (denormalized into S2).
-- Last-run snapshot (latest result inline, history via references).
-- Some other shape.
-
-S6's failure-attribution and S8's evolution decisions both depend on
-how easily S2 can answer "when did this test last pass" and "what
-was the most recent failure."
-
-### S2-Q-008 — Requirement linkage
-
-Where do JIRA tickets live:
-
-- First-class entity in S2 (mirrors v2.2's `requirements` table).
-- Separate substrate.
-- External typed reference only (S2 stores `jira_key` + version,
-  doesn't store ticket body).
-
-How are sprint / release / project associations modeled.
-
-### S2-Q-009 — Outward surfaces (for S3, S4, S6, S8)
-
-What does S2 expose:
-
-- Insert/update API for S3.
-- Read API for S4 (the executor's data source).
-- Read API for S6 (intent + coverage + last-run for attribution).
-- Read/write API for S8 (target of autonomous rewrites).
-
-Schema-enforcement contract: how S3's LLM output is validated against
-S2's schema is an S3 concern, but S2 has to publish enough structure
-for S3 to enforce against it. APIs interact with the substrate
-through the Semantic Transaction Coordinator (per D-060); API
-shape derives from the Coordinator's write/read interfaces.
-
-### S2-Q-010 — Disposition of v2.2 test-management tables
-
-Once S2-Q-007 through S2-Q-009 land, walk each v2.2 table:
-
-- `sections` — keep / drop / absorb.
-- `requirements` — keep / drop / absorb (depends on S2-Q-008).
-- `test_cases` — keep schema / rewrite / absorb (depends on
-  S2-Q-003).
-- `test_case_versions` — keep / drop (effective-time supersession
-  per D-057 replaces this) / rewrite.
-- `test_suites`, `suite_test_cases` — likely keep; suite-membership
-  is curation, not test-representation.
-- `ba_reviews` — depends on whether review is an S7 concern
-  (separate substrate) or has structural ties to S2 versioning.
-- `metadata_impacts` — likely absorbed into S1-diff-driven evolution
-  (S8 territory) rather than reproduced in S2.
-
-This question generates a `DECISIONS_LOG.md` entry on resolution.
+None. Substrate-2 design is complete pending §1 synthesis section
+(conventionally written last, composing the substantive content
+from §2 through §11 into a single overview).
