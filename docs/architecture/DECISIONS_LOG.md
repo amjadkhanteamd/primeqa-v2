@@ -1869,3 +1869,352 @@ trigger-vs-recipe orthogonality guardrail.
   (closed by this decision)
 
 ---
+
+
+## D-056 — Storage realization for substrate-2: four-table layout with Pattern D [S2-Q-003 sub-cycle 3]
+
+**Date:** 2026-05-17
+**Substrates affected:** [S2, with consequences for S3, S4, S6, S8]
+**Status:** active
+
+**Decision.** Substrate-2 uses a four-table layout:
+
+| Table | Role | Discriminators (canonical authority) |
+|---|---|---|
+| `test_claims` | Identity-bearing semantic content | `archetype`, `claim_kind` |
+| `test_recipes` | First-class operational entities | `trigger_kind`, `recipe_kind` |
+| `test_provenance` | Append-only history (polymorphic) | event_kind |
+| `test_claim_coverage` | Semantic linkage layer (S2↔S1) | (entity_type, reference_kind) |
+
+Storage pattern is **Pattern D**: envelope + JSONB bodies per
+layer + selected typed columns for hot paths (discriminators,
+identity_hash, status, version columns).
+
+**Two new guardrails added** to §3:
+
+- *Sixth — Semantic-vs-operational lifecycle distinction.*
+  Identity-bearing layers and operational layers have distinct
+  lifecycle semantics. Changes to identity-bearing layers require
+  human authority and invalidate approval; changes to operational
+  layers can be S8-autonomous and preserve approval. Storage shape
+  and authority model consistently honor this.
+- *Seventh — Continuity triad.* Stable identifiers, identity_hash,
+  and version_seq model three distinct continuities (organizational,
+  semantic, supersession-order). Most systems collapse these into
+  "latest version"; the substrate models them separately so each
+  can evolve independently.
+
+**Key structural decisions.**
+
+- *Claim/recipe split.* Honors D-051's identity model — claim is
+  identity, recipes are replaceable. Recipes are first-class
+  operational entities with their own lifecycle, not "child details
+  of claims." S8 can rewrite a recipe without touching its parent
+  claim.
+- *Discriminator placement.* `archetype` + `claim_kind` on
+  `test_claims` (what's asserted); `trigger_kind` + `recipe_kind`
+  on `test_recipes` (operational realization). Different recipes
+  for the same claim can carry different trigger-kind /
+  recipe-kind combinations.
+- *Row discriminator as canonical authority.* Row-level discriminator
+  columns are source of truth. JSONB body's `kind` field is
+  redundant self-description for export/debug; row wins on
+  disagreement. Write-time validation enforces consistency.
+- *JSONB body conventions.* Top-level `body_schema_version` (int,
+  per-body-kind trajectory) + `kind` (redundant self-description).
+  Body shape per (row discriminator, schema version) defined by
+  Pydantic models locked in sub-cycle 5.
+- *Semantic linkage layer.* `test_claim_coverage` is first-class
+  architectural concern (S2↔S1 bridge for S6 attribution, S8
+  evolution detection, coverage discovery), not merely a
+  denormalized cache. App-level derivation by S3 / S8 writers.
+- *Polymorphic provenance.* Single `test_provenance` table with
+  nullable `claim_test_id` and `recipe_id` (CHECK constraint:
+  exactly one set). Event-kind discriminator distinguishes
+  claim-level from recipe-level events.
+
+**Rationale.** Sub-cycle 3 design considered four candidate
+patterns:
+- Pattern A (single envelope + JSONB) — conceptually correct but
+  no hot-path optimization.
+- Pattern B (envelope + per-archetype tables) — directly violates
+  D-052's "archetypes are classifications, not storage partitions"
+  guardrail.
+- Pattern C (envelope + per-kind tables) — even worse guardrail
+  violation; combinatorial schema migrations.
+- Pattern D (envelope + JSONB + hot-path typed columns) — Pattern
+  A plus pragmatic denormalizations; selected.
+
+The claim/recipe split addresses D-051's "one or more executable
+recipes" structurally — multiple recipes per claim becomes a
+clean FK relationship, recipes are queryable on their own, and
+the identity model is honored at storage level.
+
+TA refinements during sub-cycle 3 design integrated:
+
+- Semantic linkage framing for coverage (elevates it from
+  denormalized cache to first-class architectural layer)
+- Recipe-level provenance (polymorphic event table)
+- `body_schema_version` discipline in JSONB bodies (preserves
+  forward-compatibility for body shape evolution)
+- Forward-compatibility marker for `semantic_conditions`
+  graphification
+- Recipes as first-class operational entities (explicit framing)
+- Row discriminator as canonical authority (`body_schema_version`
+  rename from `schema_version` for precision; row > body on
+  disagreement)
+- Reserved room for operational linkage layer (recipe-derived,
+  parallel to semantic linkage)
+- Semantic-vs-operational lifecycle guardrail (sixth)
+- Continuity triad guardrail (seventh)
+
+**Alternatives considered.**
+
+- *Single envelope, all six layers in one row.* Rejected. Forces
+  multiple recipes per claim into either multiple rows per test
+  (identity is wrong) or recipes-as-JSONB-array (loses queryability
+  and per-recipe state).
+- *Per-archetype detail tables (Pattern B).* Rejected. Directly
+  violates D-052.
+- *Per-kind detail tables (Pattern C).* Rejected. Even more
+  severe guardrail violation; combinatorial schema migrations on
+  new kinds.
+- *Coverage as materialized view.* Rejected. Refresh strategy
+  needed; staleness possible; loses the "semantic linkage layer"
+  architectural framing.
+- *DB-trigger-driven coverage updates.* Rejected. Trigger logic
+  must parse JSONB; brittle to body schema changes; harder to test.
+  App-level (S3 / S8 writers) preferred.
+
+**Downstream consequences.**
+
+- *S2-Q-003 sub-cycle 4 (identity-hash mechanics):* Operates on
+  `test_claims.asserted_truth` + `test_claims.semantic_conditions`
+  JSONB; canonicalization policy is governance-critical for
+  approval invalidation and S8 authority boundary.
+- *S2-Q-003 sub-cycle 5 (Pydantic validation):* Implements body
+  validation per (row discriminator, `body_schema_version`)
+  dispatch; enforces row-vs-body consistency at write time.
+- *S2-Q-004 (S1 references):* Reference shape lives inside JSONB
+  bodies; pinned-vs-logical resolution affects body content and
+  coverage derivation.
+- *S2-Q-005 (versioning):* Resolved jointly with this decision as
+  D-057.
+- *S3 (Generation):* Writes `test_claims` + `test_recipes` +
+  `test_claim_coverage` together; validates against Pydantic
+  models per discriminator.
+- *S6 (Interpretation):* Reads `test_claim_coverage` for failure
+  attribution; reads `test_provenance` for historical context.
+- *S8 (Evolution):* Reads `test_claim_coverage` for affected-test
+  detection on S1 entity changes; writes new `test_recipes`
+  rows on autonomous rewrites; writes `test_provenance` rows for
+  audit trail. Cannot write `test_claims` (semantic content)
+  without human authority.
+
+**References.**
+
+- `substrate_2_test_representation/SPEC.md` §4 (data model
+  substantive content)
+- `substrate_2_test_representation/SPEC.md` §3 (two new guardrails
+  added: semantic-vs-operational lifecycle; continuity triad)
+- D-051 (identity model; claim/recipe split derives from this)
+- D-052 (archetype classification guardrail; honored by Pattern D)
+- D-053, D-054, D-055 (taxonomies that occupy the discriminator
+  columns)
+- D-057 (versioning model; jointly resolved)
+
+---
+
+
+## D-057 — Lifecycle and versioning model: effective-time supersession with version_seq canonical authority [S2-Q-005]
+
+**Date:** 2026-05-17
+**Substrates affected:** [S2, with consequences for S3, S4, S6, S8]
+**Status:** active
+
+**Decision.** Substrate-2 uses **effective-time supersession** as
+its versioning model. Single time dimension (effective time only;
+no separate transaction-time tracking). Applied uniformly to
+`test_claims` and `test_recipes`; `test_provenance` is naturally
+append-only (degenerate-supersession); `test_claim_coverage` is
+current-only.
+
+**The term "bitemporal" is intentionally avoided.** True bitemporal
+tracks both valid time and transaction time. What this decision
+implements is single-dimension effective-time supersession. The
+"bitemporal" label is reserved should we ever add transaction-time
+tracking.
+
+**Invariant hierarchy.** `version_seq` defines supersession truth;
+`valid_to` is denormalized convenience. In any operational scenario
+where they appear to disagree (partial migrations, repair operations,
+backfills, replay imports), **`version_seq` wins**. The "exactly
+one NULL `valid_to` per identifier" invariant may be temporarily
+violated during specific operations while `version_seq` correctness
+is preserved; reconciliation re-derives `valid_to` from `version_seq`.
+
+**`identity_hash` semantics.** `identity_hash` is the **semantic
+equivalence fingerprint**. NOT a unique identifier (that's
+`test_id`). NOT a primary or unique key — multiple rows may share
+it. The hash fingerprints the test's *meaning*, not its history
+or identity-as-row. Across a test's version timeline: operational
+edits preserve hash (test means the same); semantic edits change
+hash (test means something different now; approval invalidated).
+
+**Canonicalization policy is governance-critical.** Sub-cycle 4's
+scope is not "compute a hash" but "define governance policy for
+what counts as semantic vs operational edit." The canonicalization
+rules determine:
+- Approval state lifecycle (when QA re-approval is needed)
+- Semantic equivalence reasoning (are two tests "the same")
+- S8's autonomous-rewrite authority boundary (S8 can do anything
+  that preserves hash; cannot do anything that changes hash
+  without escalating to human authority)
+
+**Recipe-to-claim FK semantics.** Default is **logical resolution**:
+recipe's `claim_test_id` references the claim's `test_id` (not a
+specific version). Recipes follow claim evolution. Optional pinning
+via nullable `claim_version_seq` for reproducibility-critical
+contexts (historical replay, audit).
+
+**Coverage rederivation.** Current-only. When a new claim version
+supersedes its predecessor, coverage rows are deleted and rederived
+for the new version. Historical coverage is reconstructible from
+claim history but not pre-stored.
+
+**Approval state lifecycle.** Dual-tracked: current state on the
+`test_claims.status` column (O(1) query); history in
+`test_provenance` events. Invalidation triggers on `identity_hash`
+change between versions. S8 autonomous rewrites cannot trigger
+invalidation because S8 only operates on operational layers.
+
+**Archival policy.** **None in v1, because semantic lineage
+continuity is currently more valuable than retention optimization.**
+This is an architectural commitment, not a cost-driven decision. If
+retention costs ever pressure this commitment, archival becomes a
+substrate-level decision requiring explicit re-evaluation of the
+lineage guarantee.
+
+**Replay modes supported by storage shape** (replay engine
+downstream in S4):
+- *Historical replay* — pinned references; resolve other refs at
+  historical S1 state.
+- *Semantic replay* — logical references; resolve to current S1.
+
+**Continuity triad (cross-reference to D-056 / §3 seventh
+guardrail).** This decision's `version_seq` is the supersession-order
+anchor; `identity_hash` is the semantic-equivalence anchor; stable
+identifiers (`test_id`, `recipe_id`) are the organizational-continuity
+anchor. The three model distinct continuities and evolve
+independently.
+
+**Rationale.** Three candidate models considered:
+- *Bitemporal supersession (like S1).* Architecturally consistent
+  with S1; cross-substrate queries natural; pinned references
+  align cleanly; full historical reconstruction; recipe rewrites
+  are first-class history events.
+- *Version-immutable aggregate (like v2.2).* Familiar from v2.2;
+  "current is one row per entity" simpler; strong immutability
+  on history.
+- *Hybrid.* Bitemporal for claims + version-immutable for recipes,
+  or other splits.
+
+Effective-time supersession selected. Aligns with S1 (architectural
+consistency); S8 evolution naturally fits supersession (each rewrite
+= new row); pinned references align; full historical reconstruction
+queryable; no JOIN required on every read. Hybrid rejected — two
+patterns in one substrate add cognitive load for marginal benefit.
+Version-immutable rejected — pattern diverges from S1, requires
+JOINs, and the v2.2 muscle-memory benefit is sunk (Phase 3 is
+rebuild anyway).
+
+The "bitemporal" terminology refinement landed during TA pushback:
+what we implement is single-dimension effective-time supersession,
+not true bitemporal. The terminology change matters because future
+engineers expecting transaction-time queries under "bitemporal"
+would be misled.
+
+TA refinements integrated:
+- "Bitemporal" → "effective-time supersession" terminology
+- `version_seq` canonical over `valid_to` (invariant hierarchy
+  formalized; valid_to is denormalized convenience)
+- `identity_hash` as semantic equivalence fingerprint (sharper
+  framing than "tracks semantic identity")
+- Canonicalization as governance-critical (elevates sub-cycle 4
+  scope)
+- Archival rationale reframed: lineage continuity > retention
+  optimization (architectural commitment, not cost-driven)
+- Replay-mode distinction reserved (historical vs semantic);
+  replay-sensitive recipe selection reserved for future
+- Version-granular provenance reserved for future
+- "Resolution policy" terminology direction acknowledged but not
+  adopted; "logical" / "pinned" remain everyday vocabulary
+- Continuity triad guardrail (seventh guardrail in §3, cross-ref'd
+  from this decision)
+
+**Alternatives considered.**
+
+- *Version-immutable aggregate.* Rejected. Pattern diverges from
+  S1; requires JOINs; pinned-reference alignment is awkward.
+- *Hybrid (bitemporal claims + version-immutable recipes).*
+  Rejected. Two patterns in one substrate add cognitive load.
+- *Pinned-by-default recipe FK.* Rejected. Logical-by-default
+  matches the common case (recipes follow claim evolution
+  automatically); pinning is opt-in for the reproducibility-critical
+  minority.
+- *Coverage versioning (history retained).* Rejected. Coverage is
+  derived; reconstructible from claim history if needed; pre-storing
+  history of derived data adds storage and consistency cost without
+  proportional value.
+- *Limited archival (e.g., after N years, retire old versions).*
+  Rejected for v1. Lineage continuity is currently the
+  architectural priority; archival would require deliberate
+  re-evaluation if retention costs ever pressure it.
+- *"Bitemporal" terminology retained.* Rejected per TA pushback.
+  Precision matters: what we implement is single-dimension; the
+  bitemporal label is reserved for future true-bitemporal
+  escalation.
+
+**Downstream consequences.**
+
+- *S2-Q-003 sub-cycle 4 (identity-hash mechanics):* Now framed
+  as governance-critical scope, not implementation detail.
+  Canonicalization rules govern approval invalidation and S8
+  authority.
+- *S2-Q-004 (S1 references):* Reference shape interacts with
+  versioning. Logical references resolve through S1's query
+  interface; pinned references reference specific S1 version_seq
+  values. The pinned-vs-logical S2-Q-004 design will integrate
+  with this versioning model.
+- *S2-Q-006 (mutation paths and authority):* Authority boundary
+  is now mechanically anchored — S8 can autonomously do anything
+  that preserves `identity_hash`; cannot do anything that changes
+  it. Approval invalidation triggers on hash change.
+- *S2-Q-007 (execution-history boundary):* Execution events
+  reference recipe `(recipe_id, version_seq)` — replay can
+  reconstruct exact recipe used.
+- *S4 (Execution, future substrate):* Recipe selection happens
+  against current recipes by default; replay engine supports both
+  historical and semantic modes per §6.8.
+- *S6 (Interpretation):* Failure attribution can trace through
+  version history; "this test failed because S8 rewrote the
+  recipe last week" is queryable.
+- *S8 (Evolution):* Mechanically bounded by `identity_hash`
+  preservation. Cannot edit asserted_truth or semantic_conditions
+  (would change hash). Can rewrite causal_initiation,
+  observation_realization, execution_environment freely (preserve
+  hash). Each rewrite produces new recipe row + provenance event.
+
+**References.**
+
+- `substrate_2_test_representation/SPEC.md` §6 (lifecycle and
+  versioning substantive content)
+- `substrate_2_test_representation/SPEC.md` §3 (continuity triad
+  guardrail, cross-ref'd)
+- D-051 (identity model; identity_hash semantics anchored here)
+- D-056 (storage realization; jointly resolved)
+- `substrate_1_semantic_org_model/SPEC.md` (S1's bitemporal
+  pattern; S2's effective-time supersession is the single-dimension
+  analog)
+
+---

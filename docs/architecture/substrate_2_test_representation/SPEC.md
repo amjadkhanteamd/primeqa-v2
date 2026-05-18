@@ -1,14 +1,12 @@
 # Substrate 2 — Test Representation — SPEC
 
-**Status:** Phase 1 in progress. §2 (deepest invariant) and §3
-(archetype representation, including claim-kind, recipe-kind, and
-trigger-kind taxonomy locks; four-discriminator framing; six-layer
-model) resolved per D-051 through D-055; other sections pending.
+**Status:** §2, §3, §4 (data model), and §6 (lifecycle and
+versioning) substantively complete per D-051 through D-057.
+Remaining sections (§1, §5, §7-§11) pending their respective
+questions.
 
-**Last substantive update:** 2026-05-17 (Phase 1: deepest invariant
-+ archetype representation + claim-kind taxonomy lock + recipe-kind
-taxonomy lock + trigger-kind taxonomy lock + six-layer model
-amendment)
+**Last substantive update:** 2026-05-17 (storage realization +
+effective-time supersession versioning)
 
 ---
 
@@ -108,14 +106,14 @@ by three forces:
   language would dissolve those into anonymous predicates.
 
 The specific structural shape of the claim — fields, types, the
-claim-kind taxonomy — is pending S2-Q-003 (test case data model).
+claim-kind taxonomy — is defined in §4 (data model).
 
-**Direction (not locked).** Canonical claim units remain atomic
+**Direction (locked in §4).** Canonical claim units remain atomic
 internally; human-facing test concepts may aggregate multiple
 atomic claims under one UX-visible test envelope. Whether claim is
 structurally allowed composition (AND, sequence) or whether
-aggregation lives only at the user-facing layer is pending
-S2-Q-003.
+aggregation lives only at the user-facing layer remains a design
+direction; the §4 data model does not foreclose either.
 
 **Downstream consequences for adjacent open questions.**
 
@@ -184,11 +182,9 @@ an existing claim_kind requires no schema change.
 **Archetypes are classifications, not storage partitions.** The
 discriminator names a conceptual category. It does not entail
 per-archetype tables, per-archetype migrations, or any other
-storage commitment. Whether storage is one envelope table with
-discriminator columns plus archetype-specific bodies, an envelope
-table plus detail tables per archetype, or some other shape is
-fully S2-Q-003. The storage realization must support the
-conceptual classification; it does not have to mirror it.
+storage commitment. The storage realization (§4) is a single
+envelope-plus-JSONB pattern (Pattern D) that supports the
+conceptual classification without mirroring it.
 
 **Claim-kinds model semantic forms, not implementation primitives.**
 A second guardrail, parallel to the archetype guardrail above. A
@@ -231,6 +227,36 @@ multiple trigger-kinds (a `data-recipe` observes effects of
 inbound-triggers, data-mutation-triggers, configuration-triggers
 alike). Collapsing these axes loses meaningful structural
 distinctions and forces artificial pairings.
+
+**Semantic-vs-operational lifecycle distinction.** A sixth guardrail.
+Identity-bearing layers (asserted truth, semantic conditions) and
+operational layers (causal initiation, observation realization,
+execution environment, provenance) have distinct lifecycle semantics.
+Changes to identity-bearing layers require human authority and
+invalidate prior approval state — the test's meaning is redefined.
+Changes to operational layers can be S8-autonomous and preserve
+approval state — the test's meaning is unchanged, only its
+realization. Storage shape, mutation paths, and authority model
+must consistently honor this distinction. See D-056 for structural
+treatment and D-057 for versioning treatment.
+
+**Stable identifiers, identity_hash, and version_seq model three
+distinct continuities.** A seventh guardrail. The substrate
+separates three forms of continuity that most systems collapse
+into "latest test version":
+
+- **Stable identifiers** (`test_id`, `recipe_id`) model
+  *organizational continuity* — "this is the same artifact across
+  its lifetime, regardless of how it evolved."
+- **`identity_hash`** models *semantic equivalence* — "this means
+  the same thing as that, regardless of which row it is."
+- **`version_seq`** models *supersession order* — "this version
+  came after that one, regardless of timestamps."
+
+Modeling these separately allows organizational, semantic, and
+operational continuity to evolve independently. Storage shape
+(D-056) and versioning model (D-057) consistently honor this
+separation.
 
 **Structural commonality (A).** Every layer of the six-layer model
 is uniformly present in every archetype. Within each layer, the
@@ -516,30 +542,164 @@ forms come online incrementally as their archetypes ship. v1 may
 materialize only the data-behavior archetype's semantic forms; the
 foundation must not foreclose the other four.
 
-**Deferred to S2-Q-003 (remaining sub-cycles).**
-
-- Concrete storage shape for the uniform envelope and archetype-
-  specific semantic forms — table layout, JSONB schemas, Pydantic
-  validation (sub-cycle 3).
-- Identity-hash mechanics for `(archetype, claim_kind, claim body,
-  semantic conditions)` (sub-cycle 4).
-- Validation patterns: what's enforced at app boundary, what at DB
-  layer (sub-cycle 5).
-- The relationship between the capability-assumption model and
-  environment-availability metadata (partially S2-Q-007 territory).
-
-Trigger-kind classification — surfaced during sub-cycle 2 as a
-parallel concept to recipe-kind — was resolved by D-055 (5 kinds,
-four-discriminator extension, six-layer model amendment).
-
-See `DECISIONS_LOG.md` D-052, D-053, D-054, and D-055 for rationale
-and alternatives considered.
+See `DECISIONS_LOG.md` D-052, D-053, D-054, D-055, D-056, and
+D-057 for rationale and alternatives considered.
 
 ---
 
 ## 4. Data model
 
-(Placeholder. Phase 2.)
+**Resolution.** Per D-056: substrate-2 uses a four-table layout —
+`test_claims`, `test_recipes`, `test_provenance`, `test_claim_coverage`
+— with discriminator columns plus typed JSONB bodies per layer
+(Pattern D: envelope + JSONB + selected hot-path typed columns).
+The claim/recipe split honors D-051's identity model: claims hold
+the two identity-bearing layers, recipes are first-class operational
+entities, both versioned independently per D-057.
+
+### 4.1 Tables
+
+**`test_claims`** — identity-bearing claim. One row per (test_id,
+version_seq).
+
+- `test_id` UUID — stable organizational identifier (constant across versions)
+- `version_seq` int — monotonic supersession counter (canonical per D-057)
+- `valid_from`, `valid_to` timestamps — informational effective-time window
+- `archetype` enum, `claim_kind` enum — canonical row discriminators
+- `asserted_truth` JSONB — body for the THEN
+- `semantic_conditions` JSONB — body for the WHEN
+- `identity_hash` text — semantic equivalence fingerprint (not unique; not a key)
+- `status` enum — current approval state (draft / approved / deprecated)
+- `created_at`, `updated_at` timestamps
+- PK: `(test_id, version_seq)`
+- Indexes: `(test_id) WHERE valid_to IS NULL`; `(identity_hash)` for equivalence queries
+
+**`test_recipes`** — first-class operational entities. One row per
+(recipe_id, version_seq). Independent versioning from claims.
+
+- `recipe_id` UUID — stable organizational identifier
+- `version_seq` int — monotonic supersession counter
+- `valid_from`, `valid_to` timestamps — informational
+- `claim_test_id` UUID — logical FK to `test_claims.test_id`
+- `claim_version_seq` int NULL — optional pinning to specific claim version (per §6 pinning semantics)
+- `trigger_kind` enum, `recipe_kind` enum — canonical row discriminators
+- `causal_initiation` JSONB — body for trigger realization
+- `observation_realization` JSONB — body for recipe procedure
+- `execution_environment` JSONB — body for capability assumptions + setup
+- `priority` int — recipe-selection ordering
+- `status` enum — active / deprecated / generated_unapproved / approved
+- `created_at`, `updated_at` timestamps
+- PK: `(recipe_id, version_seq)`
+- Indexes: `(recipe_id) WHERE valid_to IS NULL`; `(claim_test_id) WHERE valid_to IS NULL`
+
+**`test_provenance`** — append-only history. Polymorphic across
+claim-level and recipe-level events.
+
+- `id` UUID PK
+- `claim_test_id` UUID NULL — FK to `test_claims.test_id` (claim-level event)
+- `recipe_id` UUID NULL — FK to `test_recipes.recipe_id` (recipe-level event)
+- CHECK constraint: exactly one of (`claim_test_id`, `recipe_id`) is non-NULL
+- `event_kind` enum — claim_created / claim_edited / claim_regenerated / claim_approved / claim_deprecated / recipe_created / recipe_edited / recipe_s8_rewrite / recipe_approved / recipe_deprecated / recipe_priority_changed
+- `event_data` JSONB
+- `event_actor` text
+- `event_at` timestamp
+
+**`test_claim_coverage`** — semantic linkage layer connecting S2
+claims to S1 entities. Current-only; rederived on each claim
+version change per D-057.
+
+- `claim_test_id` UUID — FK to `test_claims.test_id`
+- `entity_type` text — 'field', 'object', 'flow', 'profile', etc.
+- `entity_id` UUID — FK to S1 entity
+- `reference_kind` enum — subject / condition
+- PK: `(claim_test_id, entity_id, reference_kind)`
+- Indexes: `(entity_id, entity_type)` for reverse lookups (S6/S8)
+
+### 4.2 Architectural roles
+
+The four tables map to architectural concerns:
+
+| Table | Role |
+|---|---|
+| `test_claims` | Identity-bearing semantic content |
+| `test_recipes` | Operational realizations (first-class entities per refinement 5 of sub-cycle 3 design) |
+| `test_provenance` | Append-only history; polymorphic across claim and recipe events |
+| `test_claim_coverage` | **Semantic linkage layer** — connects S2 to S1; supports S6 attribution, S8 evolution detection, coverage discovery surfaces |
+
+`test_claim_coverage` is not merely a denormalized cache — it is
+the architectural mechanism by which S2 connects to S1 meaning.
+Its presence as a first-class table (rather than computed-on-read)
+reflects the role it plays across substrates.
+
+### 4.3 Discriminator placement and authority
+
+Discriminator columns per D-052 (extended by D-055):
+
+- `archetype`, `claim_kind` live on `test_claims` (describe what
+  the test asserts).
+- `trigger_kind`, `recipe_kind` live on `test_recipes` (describe
+  the operational realization).
+
+**Row discriminator is canonical authority.** The DB-level
+discriminator columns are the source of truth. JSONB bodies carry
+a `kind` field as redundant self-description for export/debug/backup
+purposes, but the row discriminator wins on any disagreement. All
+queries dispatch on row discriminator (indexed, typed, authoritative).
+All Pydantic validation reads row discriminator to select the model,
+then validates body content. Write-time validation enforces
+`body.kind == row.discriminator` — drift is a bug.
+
+### 4.4 JSONB body conventions
+
+Every JSONB body carries two top-level keys:
+
+```json
+{
+  "body_schema_version": 1,
+  "kind": "value-claim",
+  ...body content...
+}
+```
+
+- `body_schema_version` (int) — version of the body's schema; per-body-kind trajectory; enables Pydantic-model dispatch during schema evolution.
+- `kind` (string) — redundant self-description matching the row discriminator. Self-describing for exports; **row discriminator is authoritative on disagreement**.
+
+Body shape per (`row discriminator`, `body_schema_version`) is
+defined by Pydantic models locked in S2-Q-003 sub-cycle 5.
+
+### 4.5 Coverage derivation strategy
+
+App-level derivation. The S3 generator and S8 evolver are the only
+writers of `test_claims`; both update `test_claim_coverage` rows
+as part of the claim write. Avoids DB-trigger complexity and
+materialized-view staleness. Coverage rederivation on version
+change is handled per D-057 (delete-and-replace pattern; old
+coverage removed when new claim version supersedes).
+
+### 4.6 Forward-compatibility markers
+
+Three architectural directions reserved without being built:
+
+- **`semantic_conditions` graphification.** Current shape is flat
+  JSONB. If conditions develop compositional structure
+  (preconditions with dependency relationships, AND/OR/sequence
+  composition), this may evolve to a relational or graph
+  representation. The flat shape today doesn't foreclose this.
+- **Operational linkage layer for recipes.** `test_claim_coverage`
+  is *semantic* linkage (claim-derived, supports the substrate's
+  S2↔S1 bridge). Recipes also reference S1 entities (target
+  objects for mutations, user identities for impersonation, etc.),
+  but these are *operational* dependencies, not semantic coverage.
+  A parallel operational linkage layer (e.g.,
+  `test_recipe_dependencies`) is forward-compatible territory,
+  not realized today.
+- **Sub-cycle 5 Pydantic validation patterns.** Body validation,
+  cross-field constraints, and discriminator-driven dispatch are
+  S2-Q-003 sub-cycle 5 work. The conventions in §4.4 are the
+  contract that sub-cycle 5 implements.
+
+See `DECISIONS_LOG.md` D-056 for rationale and alternatives
+considered.
 
 ---
 
@@ -551,13 +711,188 @@ and alternatives considered.
 
 ## 6. Lifecycle and versioning
 
-(Placeholder. Pending S2-Q-005.)
+**Resolution.** Per D-057: substrate-2 uses **effective-time
+supersession** — single time dimension, version_seq as canonical
+supersession authority, valid_to as denormalized convenience.
+This is NOT true bitemporal (no separate transaction-time
+dimension); the term is reserved should we ever add transaction-time
+tracking.
+
+### 6.1 Invariant hierarchy
+
+**`version_seq` defines supersession truth.** It is a
+monotonically-increasing integer per stable identifier (`test_id`
+for claims, `recipe_id` for recipes). The version with the
+highest `version_seq` for a given identifier is current.
+
+**`valid_to` is denormalized convenience.** It describes WHEN
+supersession happened, not the ordering. Operationally,
+`WHERE valid_to IS NULL` is the read-path predicate for current
+state.
+
+**Invariant hierarchy.** In any operational scenario where
+`version_seq` and `valid_to` appear to disagree (partial
+migrations, repair operations, backfills, replay imports),
+**`version_seq` ordering is authoritative**. The "exactly one
+NULL `valid_to` per identifier" invariant may be temporarily
+violated during specific operations while `version_seq`
+correctness is preserved; reconciliation re-derives `valid_to`
+from `version_seq`.
+
+### 6.2 The continuity triad
+
+Per the seventh guardrail in §3, three distinct continuities are
+modeled separately:
+
+- **Stable identifiers** (`test_id`, `recipe_id`) → organizational
+  continuity. A test is "the same test" across all its versions,
+  regardless of how its meaning, operational realization, or
+  approval state evolved. Stable identifiers are the substrate's
+  identity-as-organizational-artifact.
+- **`identity_hash`** → semantic equivalence. The hash fingerprints
+  the test's meaning, not its history or identity-as-row. Two
+  rows with the same hash are semantically equivalent regardless
+  of which test_id they belong to or which version they are.
+- **`version_seq`** → supersession order. The version's position
+  in its identifier's timeline.
+
+### 6.3 `identity_hash` semantics
+
+`identity_hash` is the **semantic equivalence fingerprint**. It is
+NOT a unique identifier (that's `test_id`). It is NOT a primary
+or unique key — multiple rows may share it.
+
+Across a single test's version timeline:
+- Operational edit (fixing a typo, status change, etc., that
+  preserves canonical semantic content) → new row, **same**
+  `identity_hash`. The test means the same thing.
+- Semantic edit (changing asserted truth or semantic conditions
+  in a way that changes canonical meaning) → new row, **different**
+  `identity_hash`. The test means something different now.
+  Approval state invalidated per the semantic-vs-operational
+  lifecycle guardrail.
+
+**Canonicalization policy is governance-critical.** The rules
+that determine whether an edit is operational or semantic
+directly govern:
+
+- Approval state lifecycle (when does QA need to re-approve)
+- Semantic equivalence reasoning (are two tests "the same")
+- S8's autonomous-rewrite authority boundary (S8 can do anything
+  that preserves hash; cannot do anything that changes hash
+  without escalating to human authority)
+
+Canonicalization mechanics are defined in S2-Q-003 sub-cycle 4.
+That sub-cycle's scope is not "compute a hash" — it is
+**governance policy for what counts as semantic vs operational
+edit**, which determines approval invalidation and S8's authority
+boundary.
+
+### 6.4 Recipe-to-claim FK semantics
+
+**Default — logical resolution.** A recipe's `claim_test_id`
+column references the claim's `test_id` (not a specific version).
+Recipes follow claim evolution: when the claim's current version
+changes, recipes resolve against the new current version. This is
+the common case.
+
+**Optional — pinned resolution.** When `claim_version_seq` is set,
+the recipe is pinned to a specific claim version. Replay against
+that version uses the pinned reference; current execution either
+resolves against the pinned version (strict) or against current
+(reconciled). Pinning is opt-in for reproducibility-critical
+contexts.
+
+### 6.5 Coverage rederivation
+
+`test_claim_coverage` is current-only. When a new claim version
+supersedes its predecessor, coverage rows derived from the
+predecessor are deleted and rows for the new version are inserted.
+Historical coverage is reconstructible from claim history if
+needed (parse the historical claim row's JSONB references) but
+is not pre-stored.
+
+Invariant: coverage rows describe current claim versions only.
+
+### 6.6 Approval state lifecycle
+
+Approval state is dual-tracked:
+- **Current state** on the `test_claims` row's `status` column —
+  queryable in O(1).
+- **History** in `test_provenance` rows of event_kind
+  `claim_approved` / `claim_deprecated` / etc. — auditable trail.
+
+Approval-state invalidation triggers on `identity_hash` change
+between versions (per §6.3's semantic-edit definition). S8
+autonomous rewrites cannot trigger approval invalidation because
+S8 only operates on operational layers (per the
+semantic-vs-operational lifecycle guardrail) and those don't
+change the hash.
+
+### 6.7 Archival policy
+
+**No archival in v1.** Semantic lineage continuity is currently
+more valuable than retention optimization. The substrate's value
+rests on preserving the continuous record of how tests evolved
+(claim edits, recipe rewrites, approval transitions, S8 autonomous
+changes); archival would degrade that continuity in exchange for
+retention savings.
+
+This is an architectural commitment, not a cost-driven decision.
+If retention costs ever pressure this commitment, archival policy
+becomes a substrate-level decision requiring explicit
+re-evaluation of the lineage guarantee — not a routine
+optimization.
+
+### 6.8 Replay modes (reserved)
+
+Two distinct replay modes are supported by the storage shape;
+the actual replay engine is downstream (S4 territory).
+
+- **Historical replay** — reconstruct the test exactly as it was
+  at a point in time. Use pinned references where they exist;
+  resolve other references at the historical point's S1 state.
+  Answers "what did this test do on 2024-03-15."
+- **Semantic replay** — reconstruct the test's meaning but
+  execute against current state. Use logical references; resolve
+  to current S1 entities. Answers "what does this test mean
+  today, even if it was authored a year ago."
+
+### 6.9 Reservations (forward-compatible directions)
+
+Three architectural directions reserved without action in v1:
+
+- **Replay-sensitive recipe selection.** Today, replay-mode
+  affects reference resolution but not recipe selection.
+  Eventually, historical replay may require *historically valid
+  recipes* (the recipe row current at the replay timestamp) while
+  semantic replay may permit *modernized recipes* (current
+  recipe, regardless of when authored). Recipe supersession
+  semantics themselves may become replay-sensitive. Storage shape
+  (per-recipe `version_seq`) supports this evolution without
+  migration.
+- **Version-granular provenance.** Provenance events today
+  reference stable identifiers (`claim_test_id` or `recipe_id`).
+  Future events may want to target specific `version_seq` —
+  "S8 rewrote recipe R-123 from v2 to v3 because field renamed."
+  Adding `version_seq_before` / `version_seq_after` to provenance
+  rows is a clean migration when needed.
+- **Reference resolution policies.** Today's binary
+  (logical / pinned) is conceptually a degenerate case of future
+  polymorphism. If reference resolution diversifies beyond
+  logical / pinned (e.g., nearest-compatible, policy-constrained),
+  these become *resolution policies* under a common framing. The
+  current binary is forward-compatible; vocabulary upgrade is on
+  standby, not active.
+
+See `DECISIONS_LOG.md` D-057 for rationale and alternatives
+considered.
 
 ---
 
 ## 7. Mutation paths (human edit, S3 regenerate, S8 autonomous rewrite)
 
-(Placeholder. Pending S2-Q-006. Note: authority boundary established in §2.)
+(Placeholder. Pending S2-Q-006. Note: authority boundary established in §2 and §6.)
 
 ---
 

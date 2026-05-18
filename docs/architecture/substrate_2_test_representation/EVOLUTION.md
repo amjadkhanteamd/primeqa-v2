@@ -211,3 +211,112 @@ model. Remaining S2-Q-003 sub-cycles (storage, identity-hash,
 validation) move from conceptual to concrete data model.
 
 Next: S2-Q-003 sub-cycle 3 (storage realization).
+
+---
+
+## 2026-05-17 — S2-Q-003 sub-cycle 3 + S2-Q-005 jointly resolved: storage realization + effective-time supersession (D-056, D-057)
+
+Largest combined cycle in substrate-2 work so far. Two tightly
+coupled architectural questions resolved together.
+
+**D-056 — Storage realization:**
+
+- Four-table layout: `test_claims`, `test_recipes`,
+  `test_provenance`, `test_claim_coverage`.
+- Pattern D selected (envelope + JSONB + hot-path typed columns).
+  Patterns B and C rejected as direct violations of D-052's
+  archetype-classification guardrail.
+- Claim/recipe split honors D-051's identity model — claim is
+  identity, recipes are first-class operational entities with
+  independent lifecycle.
+- Discriminator placement: archetype/claim_kind on claims;
+  trigger_kind/recipe_kind on recipes.
+- Row discriminator as canonical authority; JSONB body `kind`
+  field is redundant self-description; row wins on disagreement.
+- JSONB body conventions: `body_schema_version` + `kind` as
+  top-level keys; body shape dispatched on (row discriminator,
+  `body_schema_version`).
+- Semantic linkage layer framing for `test_claim_coverage` —
+  first-class architectural concern (S2↔S1 bridge), not
+  denormalized cache.
+- Polymorphic provenance — nullable claim_test_id / recipe_id
+  with CHECK constraint; event-kind discriminator distinguishes
+  levels.
+- App-level coverage derivation by S3 / S8 writers.
+
+Two new guardrails landed in §3:
+- *Sixth — Semantic-vs-operational lifecycle distinction.*
+  Identity-bearing changes require human authority + invalidate
+  approval; operational changes can be S8-autonomous + preserve
+  approval.
+- *Seventh — Continuity triad.* Stable identifiers, identity_hash,
+  and version_seq model three distinct continuities; substrate
+  honors this separation throughout.
+
+**D-057 — Lifecycle and versioning model:**
+
+- Effective-time supersession (NOT bitemporal — single time
+  dimension; term reserved for future transaction-time
+  escalation).
+- `version_seq` is canonical supersession authority; `valid_to`
+  is denormalized convenience. When they disagree, version_seq
+  wins.
+- `identity_hash` is semantic equivalence fingerprint — not
+  unique, not key; multiple rows may share it across a test's
+  version timeline. Operational edits preserve hash; semantic
+  edits change it and invalidate approval.
+- Canonicalization policy is **governance-critical** —
+  sub-cycle 4's scope elevated from "compute hash" to "define
+  governance for semantic vs operational edit boundary." Governs
+  approval invalidation and S8 authority.
+- Recipe-to-claim FK: logical-default (claim_test_id) with
+  pinning opt-in (nullable claim_version_seq).
+- Coverage current-only; rederived on claim version change.
+- Approval state dual-tracked: current on row.status; history
+  in provenance.
+- No archival in v1 — semantic lineage continuity is
+  architecturally more valuable than retention optimization.
+  Not cost-driven.
+- Replay modes (historical / semantic) supported by storage
+  shape; replay engine downstream.
+- Reservations: replay-sensitive recipe selection;
+  version-granular provenance; reference resolution policies.
+
+§4 (Data model) and §6 (Lifecycle and versioning) sections of
+SPEC.md filled with substantive content for the first time;
+both previously placeholders.
+
+TA refinements integrated across both cycles:
+- Pattern D + claim/recipe split + discriminator placement +
+  app-level coverage (sub-cycle 3 working position)
+- Semantic linkage framing for coverage
+- Recipe-level provenance support
+- `body_schema_version` rename (precision over `schema_version`)
+- Forward-compat marker for semantic_conditions graphification
+- Recipes as first-class operational entities (explicit framing)
+- Row discriminator as canonical authority (row > body)
+- Reserved room for operational linkage layer (recipe-derived)
+- Semantic-vs-operational lifecycle guardrail (sixth)
+- "Bitemporal" → "effective-time supersession" terminology
+- `version_seq` over `valid_to` invariant hierarchy
+- `identity_hash` semantic equivalence fingerprint framing
+- Canonicalization as governance-critical (elevates sub-cycle 4)
+- Archival reframed: lineage continuity > retention optimization
+- Replay-sensitive recipe selection reserved
+- Version-granular provenance reserved
+- "Resolution policy" direction acknowledged; vocabulary not
+  forced
+- Continuity triad guardrail (seventh)
+
+S2-Q-005 moved to Resolved. S2-Q-003 sub-cycle 3 marked complete;
+sub-cycle 4 entry expanded with governance-critical framing.
+D-056 and D-057 added to top-level DECISIONS_LOG.md.
+
+Substrate-2 SPEC is now substantively complete on §2, §3, §4, §6.
+Remaining sections (§1 overview, §5 references, §7 mutation paths,
+§8 execution-history boundary, §9 requirement linkage, §10 outward
+surfaces, §11 v2.2 disposition) pending their respective questions.
+
+Next: S2-Q-003 sub-cycle 4 (identity-hash mechanics; now framed
+as governance work) and S2-Q-004 (S1 references; coupled with
+the just-resolved versioning model).

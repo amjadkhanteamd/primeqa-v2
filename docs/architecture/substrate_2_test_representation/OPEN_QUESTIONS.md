@@ -11,6 +11,11 @@ questions live in the top-level `OPEN_QUESTIONS.md`.
   D-051. See `SPEC.md` §2.
 - ~~S2-Q-002 — Common substrate across five archetypes (structural
   and semantic)~~ → resolved by D-052. See `SPEC.md` §3.
+- ~~S2-Q-005 — Lifecycle and versioning model~~ → resolved by D-057.
+  Effective-time supersession with `version_seq` canonical authority,
+  `identity_hash` as semantic equivalence fingerprint, logical-default
+  recipe FK, current-only coverage, no archival (lineage-continuity
+  rationale). See `SPEC.md` §6.
 - ~~S2-Q-011 — Trigger-kind classification~~ → resolved by D-055.
   5 kinds locked, four-discriminator framing extended, six-layer
   model amended (rename: "execution realization" → "observation
@@ -31,13 +36,21 @@ Sub-cycles:
   across 5 archetypes. See `SPEC.md` §3.
 - ~~Sub-cycle 2: Recipe-kind taxonomy.~~ Locked per D-054. 5 kinds,
   observability-domain only. See `SPEC.md` §3.
-- **Sub-cycle 3 (next):** Storage realization. Discriminator-column-
-  plus-JSONB, envelope-plus-detail-tables, or hybrid. Constrained
-  by the locked taxonomies and the S2-Q-005 versioning choice.
-- Sub-cycle 4: Identity-hash mechanics. Canonical hashing of
-  `(archetype, claim_kind, claim body, semantic conditions)` that
-  preserves identity stability across recipe rewrites and across
-  trivial body reorderings.
+- ~~Sub-cycle 3: Storage realization.~~ Locked per D-056. Four-table
+  shape (test_claims, test_recipes, test_provenance,
+  test_claim_coverage), Pattern D (envelope + JSONB + hot-path
+  typed columns), claim/recipe split, semantic linkage layer
+  framing, row-discriminator-as-canonical, JSONB body conventions.
+  See `SPEC.md` §4.
+- **Sub-cycle 4 (next):** Identity-hash mechanics. **Scope is
+  governance-critical, not implementation detail.** The
+  canonicalization policy determines what counts as semantic vs
+  operational edit, which governs (a) approval-state invalidation,
+  (b) semantic equivalence reasoning, (c) S8's autonomous-rewrite
+  authority boundary. Sub-cycle output: canonicalization rules
+  (whitespace, ordering, reference normalization, sub-discriminator
+  values, etc.) plus hash computation specification plus the
+  resulting governance contract.
 - Sub-cycle 5: Pydantic validation patterns. What's enforced at
   app boundary, what at DB layer, what at schema level.
 
@@ -73,21 +86,10 @@ Sub-question: how references cover both directly-cited entities and
 traversal-derived entities (e.g., a Validation Rule that references
 a cited Field).
 
-Linked: S2-Q-005 (versioning model constrains which resolution is
-natural — bitemporal S2 favors pinned-by-default; version-immutable
-aggregate may favor logical-by-default); S2-Q-006 (S8's rewrite
-scope is constrained by how much pinning has been done).
-
-### S2-Q-005 — Lifecycle and versioning model
-
-- Bitemporal supersession like S1 (new entity row per change, no
-  in-place mutation).
-- Version-immutable aggregate like v2.2 (`current_version_id` +
-  immutable `test_case_versions`).
-- Hybrid.
-
-Has to land alongside S2-Q-003 because reference semantics from
-S2-Q-004 depend on this choice.
+Linked: S2-Q-005 (resolved — D-057's effective-time supersession
+favors pinned-by-default for identity-bearing refs; logical-default
+for operational refs); S2-Q-006 (S8's rewrite scope is constrained
+by how much pinning has been done).
 
 ### S2-Q-006 — Mutation paths and authority over meaning
 
@@ -127,6 +129,12 @@ rewrite the assertion (what it tests). If a test case is
 fundamentally a *recipe*, S8 has wider latitude. The invariant
 choice constrains the authority model; the two questions cannot be
 answered independently.
+
+Note: authority boundary now mechanically anchored by D-057 —
+S8 can autonomously do anything that preserves `identity_hash`;
+cannot do anything that changes it. Sub-cycle 4 (identity-hash
+mechanics) defines the precise boundary via canonicalization
+policy.
 
 ### S2-Q-007 — Execution-history boundary against S4
 
@@ -173,8 +181,8 @@ Once S2-Q-001 through S2-Q-009 land, walk each v2.2 table:
 - `requirements` — keep / drop / absorb (depends on S2-Q-008).
 - `test_cases` — keep schema / rewrite / absorb (depends on
   S2-Q-003).
-- `test_case_versions` — keep / drop (if bitemporal) / rewrite
-  (depends on S2-Q-005).
+- `test_case_versions` — keep / drop (effective-time supersession
+  per D-057 replaces this) / rewrite.
 - `test_suites`, `suite_test_cases` — likely keep; suite-membership
   is curation, not test-representation.
 - `ba_reviews` — depends on whether review is an S7 concern
