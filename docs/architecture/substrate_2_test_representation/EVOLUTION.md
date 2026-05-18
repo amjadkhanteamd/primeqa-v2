@@ -133,122 +133,117 @@ added `AuthorityViolationError`. D-061 added.
 
 ## 2026-05-18 — S2-Q-007 through S2-Q-010 jointly resolved: execution-history boundary, requirement linkage, outward surfaces, v2.2 disposition (D-062, D-063, D-064, D-065)
 
-Final batch — all four remaining open questions resolved in a
-single pass. The substrate's internal coherence was fully locked
-by D-051 through D-061; this batch settles the boundary
+Final design batch — all four remaining open questions resolved
+in a single pass. The substrate's internal coherence was fully
+locked by D-051 through D-061; this batch settled the boundary
 concerns (S4 execution-history, JIRA requirements), the outward
 API surface, and the v2.2 transition.
 
 **D-062 — Execution-history boundary against S4:** Last-run
-snapshot pattern via new `test_recipe_runtime_state` table (per
-recipe, not per recipe version). Pure snapshot — no aggregate
-statistics, no history (S4 holds full history). S4 reports run
-outcomes via Coordinator callback (push-based; S2 never queries
-S4). Test-level runtime status as **resolution operation**
-composing recipe-level state with conservative initial policy
-("any failure → failing; all pass → passing; otherwise mixed").
+snapshot pattern via new `test_recipe_runtime_state` table. Pure
+snapshot — no aggregate statistics, no history. Push-based S4
+integration via Coordinator callback. Test-level runtime status
+as resolution operation with conservative initial policy.
 Multi-recipe outcome resolution has acknowledged architectural
-pressure; raw recipe state exposed for consumers needing
-different composition policies. Two forward-compat reservations:
-richer runtime-state resolution, run history beyond last-run.
+pressure.
 
 **D-063 — Requirement linkage:** External typed reference only.
-New `test_requirement_links` table with multi-kind linkage
-(`generated_from` / `verifies` / `related_to`). No ticket
-content replicated; JIRA remains source of truth. `external_system`
-as typed identifier today (enum); registry-based evolution
-reserved. Three forward-compat reservations: registry-based
-external systems, sprint/release associations, bidirectional
-sync.
+`test_requirement_links` table with multi-kind linkage. No ticket
+content replicated. Registry-based evolution reserved.
 
-**D-064 — Outward surfaces:** Semantic Transaction Coordinator
-elevated to **semantic OS infrastructure** rather than
-substrate-internal component. Five interface groups: write
-(actor-aware, authority-enforced), read (current-approved vs
-latest distinction), equivalence and discovery, runtime state
-(per D-062), provenance. **Behavioral contracts specified per
-interface** (idempotency, authority, atomicity, error,
-concurrency, asymptotics) as substrate-level commitments. Three
+**D-064 — Outward surfaces:** Coordinator elevated to **semantic
+OS infrastructure**. Five interface groups. **Behavioral contracts
+specified per interface** as substrate-level commitments. Three
 **resolution-class operations** named as first-class substrate
-concept: `get_current_approved_claim` (per D-061),
-`get_test_runtime_status` (per D-062),
-`select_recipe_for_execution` (per D-064 + D-057 reservation).
-Resolution operations distinguished from lookups by composition
-over substrate rules. Wire format unspecified at substrate
-level; behavioral contracts are not. Three forward-compat
-reservations: cross-substrate Coordinator concerns, API
-versioning, behavioral contract evolution.
+pattern.
 
-**D-065 — v2.2 disposition:** Per-table disposition for v2.2
-test-management tables:
-- `test_cases` → ABSORB (into new test_claims + test_recipes)
-- `test_case_versions` → DROP (effective-time supersession
-  replaces)
-- `requirements` → DROP (external typed reference replaces
-  per D-063)
-- `metadata_impacts` → DROP (S8 territory, not S2's)
-- `sections`, `test_suites`, `suite_test_cases`, `ba_reviews`
-  → MIGRATE to future orthogonal substrates (test catalog,
-  review workflow)
+**D-065 — v2.2 disposition:** Per-table disposition. **Intentional
+architectural trade-off** framing — short-term v2.2 feature parity
+sacrificed for long-term substrate coherence.
 
-**Intentional architectural trade-off** framing: short-term v2.2
-feature parity sacrificed for long-term substrate coherence.
-The MIGRATE-targeted concerns represent separate substrates'
-responsibilities; absorbing them into S2 would compromise the
-substrate boundary that makes the platform architecture coherent.
-Gap is real, acceptable, intentional.
-
-TA refinements integrated across the batch:
-1. Drop `run_count` from `test_recipe_runtime_state` — keep
-   snapshot pure (statistics belong to S4 or S6)
-2. Runtime-state resolution semantics has real architectural
-   pressure; surfaced explicitly in §8.5 rather than buried as
-   edge case
-3. `external_system` may evolve to registry-based — reserved as
-   forward-compat with schema-shape commitment of typed
-   identifier (enum or FK)
-4. Coordinator elevated to **semantic OS infrastructure** framing
-   (was "named substrate-level component")
-5. **Behavioral contracts per interface** as substrate-level
-   commitments (idempotency, authority, atomicity, error,
-   concurrency, asymptotics)
+Seven TA refinements integrated:
+1. Drop `run_count` from runtime state — keep snapshot pure
+2. Runtime-state resolution semantics has real pressure; surfaced
+   explicitly
+3. `external_system` may evolve to registry-based — reserved
+4. Coordinator elevated to semantic OS infrastructure framing
+5. Behavioral contracts per interface as substrate-level
+   commitments
 6. MIGRATE decisions as intentional architectural trade-off, not
-   pressure point — reframed as deliberate commitment
-7. Recipe selection as **policy resolution** (not deterministic
-   lookup); third resolution-class operation alongside D-061's
-   current-approved and D-062's runtime status
+   pressure point
+7. Recipe selection as policy resolution; third resolution-class
+   operation
 
-Resolution-class operations emerge as a recognized pattern in
-this batch: Coordinator-level operations that compose substrate
-rules rather than executing simple queries. The pattern is named
-in D-064 to prepare for future resolution operations (S6
-attribution clustering, S8 evolution prioritization, etc.)
-without re-inventing the architectural slot.
-
-§4.1 of SPEC.md extended with `test_recipe_runtime_state` and
-`test_requirement_links` tables. §4.2 architectural-roles table
-extended with the two new tables (marked as boundary tables).
-§4.7.5 Coordinator framing updated to semantic OS infrastructure.
 §§8, 9, 10, 11 of SPEC.md filled with substantive content for
-the first time; previously placeholders. Status block updated.
+the first time. §4.1 extended with `test_recipe_runtime_state` and
+`test_requirement_links` tables. §4.2 architectural-roles table
+extended. §4.7.5 Coordinator framing updated to semantic OS
+infrastructure.
 
-**S2-Q-007 through S2-Q-010 all moved to Resolved.** Substrate-2
-SPEC §2 through §11 substantively complete; only §1 synthesis
-remains as placeholder (conventionally written last). **Fifteen
-D-entries committed** (D-051 through D-065). Substrate-2's design
-phase is complete.
+S2-Q-007 through S2-Q-010 all moved to Resolved. Substrate-2 SPEC
+§2 through §11 substantively complete; only §1 synthesis remained
+as placeholder. Fifteen D-entries committed (D-051 through D-065).
 
-The substrate's six-table layout (`test_claims`, `test_recipes`,
-`test_provenance`, `test_claim_coverage`,
-`test_recipe_runtime_state`, `test_requirement_links`) carries
-the four core tables of internal coherence plus two boundary
-tables of external interface. The Coordinator is semantic OS
-infrastructure with five interface groups, three resolution-class
-operations, and explicit behavioral contracts. Twelve forward-compat
-reservations across all decisions provide the deliberate evolution
-path.
+---
 
-Next: implementation work. The substrate design is complete; what
-remains is shipping it. The four substrates that depend on
-substrate-2 (S3, S4, S6, S8) build against the Coordinator's
-interface and behavioral contracts.
+## 2026-05-18 — §1 synthesis composing §2–§11
+
+§1 (synthesis overview) filled with substantive content composing
+§2–§11 into a readable entry point for the substrate-2
+documentation. Conventionally written last; not a tracked open
+question.
+
+Synthesis structure:
+- §1.1 — the deepest invariant + architectural thesis
+- §1.2 — the classification framework
+- §1.3 — the data model
+- §1.4 — references, lifecycle, mutation
+- §1.5 — boundaries (S4, external systems)
+- §1.6 — the outward surface (Coordinator) + Coordinator scoping
+- §1.7 — the v2.2 transition
+- §1.8 — what substrate-2 enables
+- §1.9 — reading guide
+
+**Two foundational principles surfaced as explicit framings in
+the synthesis (per TA refinement):**
+
+1. **Architectural thesis (§1.1):** "The substrate is designed so
+   operational evolution can occur without breaking semantic
+   continuity." This is the deepest *practical* commitment that
+   all the architectural decisions support — identity_hash
+   governance, hybrid-by-layer references, "no autonomous
+   semantic divergence," mechanical approval semantics, the
+   continuity triad. Every commitment in §3–§7 serves this
+   principle: recipes, references, environments, and pinned
+   versions can all evolve while the test's meaning stays the
+   test's meaning. Without this principle, S8 cannot operate
+   autonomously when the org changes; with it, S8 has bounded
+   authority to keep the substrate alive without compromising
+   approval state.
+
+2. **Coordinator scoping (§1.6):** "The Coordinator governs
+   substrate semantics; it does not absorb downstream substrate
+   responsibilities." Essential clarification against god-object
+   misreading. S3's generation logic, S4's execution machinery,
+   S6's interpretation, S8's evolution decisions belong to their
+   respective substrates. The Coordinator's wide interface
+   surface is substrate-2's surface, scoped to substrate-2's
+   semantics. Future substrate boundaries are protected by this
+   discipline. As future substrates ship with their own
+   coordinators, cross-coordinator coordination patterns may
+   emerge; the discipline that each Coordinator stays within its
+   substrate's semantic scope is the architectural commitment
+   that makes that pattern viable.
+
+Status block updated: all sections substantively complete per
+D-051 through D-065; §1 synthesis composing §2–§11.
+
+No D-entry generated for this cycle — synthesis is composition
+of existing decisions, not a new architectural decision. The
+two foundational principles surfaced in §1 are reframings of
+existing commitments, not new commitments.
+
+**Substrate-2 design phase is now complete.** Fifteen D-entries
+(D-051 through D-065), eleven SPEC sections, six tables in the
+data model (four core + two boundary), seven structural guardrails,
+twelve forward-compatibility reservations. Next: implementation.
