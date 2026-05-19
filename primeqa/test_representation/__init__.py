@@ -197,6 +197,26 @@ from primeqa.test_representation.canonicalizers import (
     register_canonicalizer,
 )
 
+# ---------------------------------------------------------------------------
+# SQLAlchemy table models (Track D-α)
+#
+# These are the Python-side projection of the substrate-2 schema. They
+# share the project-wide ``Base`` (from ``primeqa.db``) per substrate-1
+# convention. Importing this package adds the six tables to
+# ``Base.metadata`` as a side effect — consumers that build queries
+# against the substrate-2 tables can import the classes directly from
+# the top level.
+# ---------------------------------------------------------------------------
+
+from primeqa.test_representation.models_db import (
+    TestClaim,
+    TestClaimCoverage,
+    TestProvenance,
+    TestRecipe,
+    TestRecipeRuntimeState,
+    TestRequirementLink,
+)
+
 
 __all__ = [
     # ----- Errors -----
@@ -283,4 +303,11 @@ __all__ = [
     "compute_identity_hash",
     "default_canonicalizer_registry",
     "register_canonicalizer",
+    # ----- SQLAlchemy table models (Track D-α) -----
+    "TestClaim",
+    "TestClaimCoverage",
+    "TestProvenance",
+    "TestRecipe",
+    "TestRecipeRuntimeState",
+    "TestRequirementLink",
 ]
