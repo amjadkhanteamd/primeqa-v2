@@ -4008,3 +4008,90 @@ losing history.
   to reflect in-place mutation).
 
 ---
+
+
+## D-069 — S3 design begins ahead of substrate-1's deferred-item resolution
+
+**Date:** 2026-05-19
+**Substrates affected:** [S1, S3]
+**Status:** active
+
+**Decision.** Begin S3 Phase 1 (architectural design) without
+waiting for substrate-1 to retire its remaining deferred items
+(ValidationRule `REFERENCES` edge population pending a Salesforce
+formula parser per substrate-1 corrections-log §17; standard-field
+→ `StandardValueSet` detection per §22). Substrate-1's 11 Tier 1
+entity types and 13-of-14 populated edge types provide sufficient
+design surface; the open items affect specific generation pathways,
+not S3's architectural shape.
+
+**Context.** Substrate-1's Phase 2 sync has shipped 11 of the 12
+originally-scoped entity types (Object, PicklistValueSet,
+PicklistValue, Field, RecordType, Layout, ValidationRule, Profile,
+PermissionSet, User, Flow). The 12th (FlowDefinition) was
+deliberately unified into Flow per corrections-log §20 — Flow is
+versioned natively via bitemporal supersession; the original
+"FlowDefinition as separate entity" framing was retired. The
+remaining open items in substrate-1 are sub-feature deferrals
+(formula parser for `REFERENCES` edges; content-matching heuristic
+for standard-field StandardValueSet detection), not missing
+entity types.
+
+S3 (Generation) is the substrate whose design is most
+architecturally consequential and whose value is most commercially
+significant — substrate-2 was specifically designed around S3's
+authority constraints. The natural sequence would be substrate-1
+100% completion → S3 design, but two factors argue for not
+waiting:
+
+1. **Architectural continuity.** Substrate-2's Phase 4 just
+   completed; the substrate's design is fresh. S3 design will
+   reference substrate-2 constantly (authority model, body
+   registry, canonicalization governance, reference discipline).
+   Doing S3 design while substrate-2 is freshly in mind produces
+   better-grounded architectural decisions.
+
+2. **Work-mode parallelization.** Substrate-1's deferred items
+   are mechanical sub-features (parser implementation, heuristic
+   population); S3 Phase 1 design is architectural. The two work
+   modes are different enough that they can run in sequence with
+   no real cost (or in parallel if a second developer joins).
+
+**Rationale.**
+
+- S3 design does not depend on the deferred substrate-1 items
+  being implemented — they affect specific `REFERENCES` and
+  standard-picklist generation paths, not S3's architectural
+  shape.
+- Substrate-1 deferred-item completion can run in parallel with
+  S3 implementation (Phase 2) or after S3 design.
+- The greenfield-vs-evolve strategic decision (how S3 maps onto
+  the existing PrimeQA v2 generation surface) is independent of
+  either substrate-1 completion or S3 design; it can be
+  resolved separately before S3 implementation.
+- S3 design's preconditions are captured in
+  `docs/architecture/substrate_3_generation/PRECONDITIONS.md`
+  for explicit articulation of inherited assumptions.
+
+**Consequences.**
+
+- Substrate-1's deferred items (formula parser, StandardValueSet
+  detection) are completed after S3 design (or in parallel if
+  Dev B is available).
+- If S3 design surfaces a hard requirement on either deferred
+  item, that item becomes an accelerated substrate-1 work item.
+- S3 Phase 1 design proceeds with awareness of which entity
+  types and edge types are currently populated (per PRECONDITIONS
+  §1.1–§1.2) and which are deferred (per §1.3).
+- Future decision-log readers see the substrate sequence broke
+  from the roadmap order for the reasons above.
+
+**Related decisions / sections.**
+
+- D-051 through D-065 (substrate-2 Phase 3 design).
+- D-066 through D-068 (substrate-2 Phase 4 implementation).
+- `substrate_3_generation/PRECONDITIONS.md` (S3 design ground
+  state, including the 11-entity-type + 14-edge-type substrate-1
+  inventory).
+
+---
