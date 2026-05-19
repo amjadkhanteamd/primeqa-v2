@@ -49,11 +49,13 @@ from primeqa.test_representation.authority import (
     ActorKind,
     check_claim_write_authority,
     check_recipe_write_authority,
+    check_runtime_state_write_authority,
     enforce_authority,
 )
 from primeqa.test_representation.canonicalization import canonicalize
 from primeqa.test_representation.coverage import extract_coverage
 from primeqa.test_representation.errors import (
+    AuthorityViolationError,
     BodyCorruptionError,
     OntologyViolationError,
     SchemaIncompatibilityError,
@@ -247,6 +249,53 @@ class RequirementMatch:
     link_kind: str
     external_version: Optional[str]
     linked_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Boundary-interface result shapes (Track D-δ)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RecipeRuntimeState:
+    """Runtime state snapshot for a recipe per SPEC §8.2.
+
+    One row per ``recipe_id`` (NOT per ``(recipe_id, version_seq)``);
+    a new recipe version inherits the snapshot. The
+    ``last_run_recipe_version_seq`` column records which version
+    was last actually run, so consumers can detect stale state
+    (recipe has new content but runtime state predates it).
+    """
+
+    recipe_id: UUID
+    last_run_id: UUID
+    last_run_at: datetime
+    last_run_outcome: str
+    last_run_recipe_version_seq: int
+    last_pass_at: Optional[datetime]
+    last_failure_at: Optional[datetime]
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class RequirementLinkResult:
+    """Result of
+    :meth:`SemanticTransactionCoordinator.link_requirement` /
+    :meth:`SemanticTransactionCoordinator.unlink_requirement`.
+
+    ``was_noop=True`` indicates a re-link with identical
+    metadata (including ``external_version``) — no DB write was
+    performed.
+    """
+
+    test_id: UUID
+    external_system: str
+    external_key: str
+    link_kind: str
+    external_version: Optional[str]
+    linked_at: datetime
+    linked_by: str
+    was_noop: bool
 
 
 # ---------------------------------------------------------------------------
@@ -1576,6 +1625,354 @@ class SemanticTransactionCoordinator:
                 return False
 
         return True
+
+    # ------------------------------------------------------------------
+    # Boundary interfaces (Track D-δ)
+    #
+    # Per SPEC §8 + §9: these methods are the substrate's
+    # external boundary surface — S4 reports run outcomes here
+    # (§8.3), and the requirement-link methods exchange
+    # external-system references with the rest of the platform
+    # (§9). No provenance event is emitted from these methods
+    # per the D-δ-9 decision; the boundary-table rows ARE the
+    # audit record.
+    # ------------------------------------------------------------------
+
+    def report_run_outcome(
+        self,
+        session: Session,
+        *,
+        actor: ActorKind,
+        recipe_id: UUID,
+        last_run_id: UUID,
+        last_run_at: datetime,
+        last_run_outcome: Literal[
+            "passed", "failed", "errored", "skipped",
+        ],
+        last_run_recipe_version_seq: int,
+    ) -> RecipeRuntimeState:
+        """S4 boundary callback per SPEC §8.3.
+
+        Authority: ``actor='s4'`` only;
+        :class:`AuthorityViolationError` otherwise.
+
+        Idempotency on ``last_run_id``: same ``run_id`` reported
+        twice returns the existing state unchanged
+        (**first-write-wins**). A late correction with the same
+        ``run_id`` but a different ``outcome`` does NOT
+        overwrite — by design, the boundary is append-only on
+        new run_ids. If a corrected outcome is needed, S4 must
+        report it under a fresh ``run_id``.
+
+        Upsert semantics: one row per ``recipe_id`` per SPEC
+        §8.2. The accumulation rule:
+
+          - ``last_pass_at`` ← ``last_run_at`` when
+            ``outcome='passed'``; preserved otherwise.
+          - ``last_failure_at`` ← ``last_run_at`` when
+            ``outcome IN ('failed', 'errored')``; preserved
+            otherwise.
+          - ``last_run_id``, ``last_run_at``,
+            ``last_run_outcome``,
+            ``last_run_recipe_version_seq``: replaced with the
+            new report's values.
+
+        No provenance event emitted (per D-δ-9): runtime-state
+        rows ARE their own audit trail via the snapshot
+        accumulation columns.
+        """
+        check_runtime_state_write_authority(actor)
+
+        existing = (
+            session.query(TestRecipeRuntimeState)
+            .filter(TestRecipeRuntimeState.recipe_id == recipe_id)
+            .first()
+        )
+
+        # Idempotency: same run_id → no-op return.
+        if existing is not None and existing.last_run_id == last_run_id:
+            return self._hydrate_runtime_state_row(existing)
+
+        # Accumulate pass/failure timestamps.
+        if last_run_outcome == "passed":
+            new_last_pass = last_run_at
+        else:
+            new_last_pass = (
+                existing.last_pass_at if existing is not None else None
+            )
+        if last_run_outcome in ("failed", "errored"):
+            new_last_failure = last_run_at
+        else:
+            new_last_failure = (
+                existing.last_failure_at if existing is not None else None
+            )
+
+        if existing is None:
+            session.add(TestRecipeRuntimeState(
+                recipe_id=recipe_id,
+                last_run_id=last_run_id,
+                last_run_at=last_run_at,
+                last_run_outcome=last_run_outcome,
+                last_run_recipe_version_seq=last_run_recipe_version_seq,
+                last_pass_at=new_last_pass,
+                last_failure_at=new_last_failure,
+            ))
+            session.flush()
+            return self.get_recipe_runtime_state(session, recipe_id)
+        # Update existing.
+        existing.last_run_id = last_run_id
+        existing.last_run_at = last_run_at
+        existing.last_run_outcome = last_run_outcome
+        existing.last_run_recipe_version_seq = (
+            last_run_recipe_version_seq
+        )
+        existing.last_pass_at = new_last_pass
+        existing.last_failure_at = new_last_failure
+        # updated_at has a server_default; let the column-level
+        # default fire via NOW() expression on the next write,
+        # or update it explicitly here so the column reflects
+        # this write rather than the original INSERT time.
+        session.execute(
+            text(
+                "UPDATE test_recipe_runtime_state SET updated_at = NOW() "
+                "WHERE recipe_id = :r"
+            ),
+            {"r": str(recipe_id)},
+        )
+        session.flush()
+        # Re-fetch so we capture the DB-side updated_at + the
+        # ORM-side column updates in one consistent snapshot.
+        session.refresh(existing)
+        return self._hydrate_runtime_state_row(existing)
+
+    def get_recipe_runtime_state(
+        self,
+        session: Session,
+        recipe_id: UUID,
+    ) -> Optional[RecipeRuntimeState]:
+        """Raw runtime-state read per SPEC §8.
+
+        Returns ``None`` if the recipe has never had a run
+        reported. Use :meth:`get_test_runtime_status` for the
+        composed test-level resolution; this method exposes
+        the raw snapshot for consumers that need it (S6
+        attribution, future flakiness detection per SPEC §8.6
+        reservation).
+        """
+        row = (
+            session.query(TestRecipeRuntimeState)
+            .filter(TestRecipeRuntimeState.recipe_id == recipe_id)
+            .first()
+        )
+        if row is None:
+            return None
+        return self._hydrate_runtime_state_row(row)
+
+    def _hydrate_runtime_state_row(
+        self, row: TestRecipeRuntimeState,
+    ) -> RecipeRuntimeState:
+        """Build a :class:`RecipeRuntimeState` from a SQLAlchemy
+        :class:`TestRecipeRuntimeState` row."""
+        return RecipeRuntimeState(
+            recipe_id=row.recipe_id,
+            last_run_id=row.last_run_id,
+            last_run_at=row.last_run_at,
+            last_run_outcome=row.last_run_outcome,
+            last_run_recipe_version_seq=row.last_run_recipe_version_seq,
+            last_pass_at=row.last_pass_at,
+            last_failure_at=row.last_failure_at,
+            updated_at=row.updated_at,
+        )
+
+    def link_requirement(
+        self,
+        session: Session,
+        *,
+        actor: ActorKind,
+        test_id: UUID,
+        external_system: str,
+        external_key: str,
+        link_kind: Literal[
+            "generated_from", "verifies", "related_to",
+        ],
+        external_version: Optional[str] = None,
+    ) -> RequirementLinkResult:
+        """Establish or update a requirement link per SPEC §9.
+
+        Authority: any actor EXCEPT ``s4``. Typically S3 creates
+        ``generated_from`` links during generation; humans
+        create ``verifies`` / ``related_to`` during curation.
+
+        Idempotency on the PK
+        ``(test_id, external_system, external_key, link_kind)``:
+
+          - **First call** → INSERT, ``was_noop=False``.
+          - **Subsequent call**, same PK, SAME
+            ``external_version`` → no-op, ``was_noop=True``,
+            existing row returned.
+          - **Subsequent call**, same PK, DIFFERENT
+            ``external_version`` → UPDATE ``external_version``
+            only; ``linked_by`` and ``linked_at`` preserved
+            (original authorship is authoritative).
+            ``was_noop=False``.
+
+        Validation:
+          - ``actor='s4'`` →
+            :class:`AuthorityViolationError`.
+          - ``external_system`` must be a registered enum value
+            (only ``'jira'`` at v1) — ``ValueError`` otherwise.
+          - ``test_id`` must reference an existing test (any
+            version_seq) — :class:`OntologyViolationError`
+            otherwise.
+
+        No provenance event emitted (per D-δ-9): linkage state
+        is its own audit record via the row's ``linked_by`` and
+        ``linked_at`` columns.
+        """
+        # Authority: s4 is runtime-state-only.
+        if actor == "s4":
+            raise AuthorityViolationError(
+                f"link_requirement is a substrate-2/external boundary "
+                f"per SPEC §9; actor='s4' is the runtime-state-only "
+                f"actor and not authorized. Got actor={actor!r}.",
+            )
+        # external_system validation.
+        if external_system not in _VALID_EXTERNAL_SYSTEMS:
+            raise ValueError(
+                f"unknown external_system: {external_system!r}; "
+                f"expected one of {sorted(_VALID_EXTERNAL_SYSTEMS)}"
+            )
+        # test_id existence (any version).
+        exists = session.execute(
+            text(
+                "SELECT 1 FROM test_claims WHERE test_id = :t LIMIT 1"
+            ),
+            {"t": str(test_id)},
+        ).first()
+        if exists is None:
+            raise OntologyViolationError(
+                f"link_requirement references test_id={test_id!r} "
+                f"but no claim row exists for that test_id",
+                field_path="test_id",
+                referent=str(test_id),
+            )
+
+        existing = (
+            session.query(TestRequirementLink)
+            .filter(
+                TestRequirementLink.test_id == test_id,
+                TestRequirementLink.external_system == external_system,
+                TestRequirementLink.external_key == external_key,
+                TestRequirementLink.link_kind == link_kind,
+            )
+            .first()
+        )
+
+        if existing is None:
+            # First link → INSERT.
+            row = TestRequirementLink(
+                test_id=test_id,
+                external_system=external_system,
+                external_key=external_key,
+                external_version=external_version,
+                link_kind=link_kind,
+                linked_by=actor,
+            )
+            session.add(row)
+            session.flush()
+            session.refresh(row)
+            return self._hydrate_requirement_link_row(
+                row, was_noop=False,
+            )
+
+        # Existing row — distinguish no-op from version-update.
+        if existing.external_version == external_version:
+            return self._hydrate_requirement_link_row(
+                existing, was_noop=True,
+            )
+        # external_version changed — UPDATE only that column;
+        # linked_by and linked_at are preserved to capture
+        # original authorship per the D-δ contract.
+        existing.external_version = external_version
+        session.flush()
+        return self._hydrate_requirement_link_row(
+            existing, was_noop=False,
+        )
+
+    def unlink_requirement(
+        self,
+        session: Session,
+        *,
+        actor: ActorKind,
+        test_id: UUID,
+        external_system: str,
+        external_key: str,
+        link_kind: Literal[
+            "generated_from", "verifies", "related_to",
+        ],
+    ) -> Optional[RequirementLinkResult]:
+        """Remove a requirement link.
+
+        Authority: same as :meth:`link_requirement` (any actor
+        except ``s4``).
+
+        Idempotent on missing rows: returns ``None`` when no
+        matching link exists (the desired state — absent — is
+        already achieved). Returns the
+        :class:`RequirementLinkResult` snapshot of the deleted
+        row when a link was actually removed.
+
+        No provenance event emitted (per D-δ-9).
+        """
+        if actor == "s4":
+            raise AuthorityViolationError(
+                f"unlink_requirement is a substrate-2/external "
+                f"boundary per SPEC §9; actor='s4' is not "
+                f"authorized. Got actor={actor!r}.",
+            )
+
+        existing = (
+            session.query(TestRequirementLink)
+            .filter(
+                TestRequirementLink.test_id == test_id,
+                TestRequirementLink.external_system == external_system,
+                TestRequirementLink.external_key == external_key,
+                TestRequirementLink.link_kind == link_kind,
+            )
+            .first()
+        )
+        if existing is None:
+            return None
+        snapshot = self._hydrate_requirement_link_row(
+            existing, was_noop=False,
+        )
+        session.delete(existing)
+        session.flush()
+        return snapshot
+
+    def _hydrate_requirement_link_row(
+        self,
+        row: TestRequirementLink,
+        *,
+        was_noop: bool,
+    ) -> RequirementLinkResult:
+        """Build a :class:`RequirementLinkResult` from a
+        SQLAlchemy :class:`TestRequirementLink` row."""
+        return RequirementLinkResult(
+            test_id=row.test_id,
+            external_system=row.external_system,
+            external_key=row.external_key,
+            link_kind=row.link_kind,
+            external_version=row.external_version,
+            linked_at=row.linked_at,
+            linked_by=row.linked_by,
+            was_noop=was_noop,
+        )
+
+
+# Registered external systems per the migration's enum. Update
+# when the migration adds new values (e.g., GitHub issues, Linear).
+_VALID_EXTERNAL_SYSTEMS = frozenset({"jira"})
 
 
 def _verify_no_identity_bearing_refs(

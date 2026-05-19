@@ -234,3 +234,70 @@ class TestAuthorityDecisionShape:
         assert decision.is_noop is True
         assert decision.new_status == "approved"
         assert decision.rejection_reason is None
+
+
+# ---------------------------------------------------------------------------
+# S4 actor — scoped to runtime-state reporting (Track D-δ)
+# ---------------------------------------------------------------------------
+
+class TestActorS4ScopedToRuntimeState:
+    """Per SPEC §8.3 + D-δ: the ``s4`` actor is recognized ONLY
+    by :func:`check_runtime_state_write_authority`. Passing
+    ``"s4"`` to claim or recipe write authority is a category
+    error and rejects with :class:`AuthorityDecision`
+    ``allowed=False``."""
+
+    def test_s4_rejected_by_claim_authority_no_prior(self) -> None:
+        decision = check_claim_write_authority(
+            actor="s4", has_prior_version=False, hash_changed=None,
+        )
+        assert decision.allowed is False
+        assert "s4" in (decision.rejection_reason or "")
+        assert "report_run_outcome" in (decision.rejection_reason or "")
+
+    def test_s4_rejected_by_claim_authority_with_prior(self) -> None:
+        decision = check_claim_write_authority(
+            actor="s4", has_prior_version=True, hash_changed=False,
+        )
+        assert decision.allowed is False
+
+    def test_s4_rejected_by_recipe_authority(self) -> None:
+        from primeqa.test_representation import (
+            check_recipe_write_authority,
+        )
+        decision = check_recipe_write_authority(
+            actor="s4", has_prior_version=False,
+        )
+        assert decision.allowed is False
+        assert "s4" in (decision.rejection_reason or "")
+
+    def test_s4_passes_runtime_state_authority(self) -> None:
+        from primeqa.test_representation.authority import (
+            check_runtime_state_write_authority,
+        )
+        # No exception → authorized.
+        check_runtime_state_write_authority("s4")
+
+    def test_human_rejected_by_runtime_state_authority(self) -> None:
+        from primeqa.test_representation.authority import (
+            check_runtime_state_write_authority,
+        )
+        with pytest.raises(AuthorityViolationError) as exc_info:
+            check_runtime_state_write_authority("human")
+        # The message names the SPEC section so future readers
+        # find the policy context.
+        assert "8.3" in str(exc_info.value)
+
+    def test_s3_rejected_by_runtime_state_authority(self) -> None:
+        from primeqa.test_representation.authority import (
+            check_runtime_state_write_authority,
+        )
+        with pytest.raises(AuthorityViolationError):
+            check_runtime_state_write_authority("s3")
+
+    def test_s8_rejected_by_runtime_state_authority(self) -> None:
+        from primeqa.test_representation.authority import (
+            check_runtime_state_write_authority,
+        )
+        with pytest.raises(AuthorityViolationError):
+            check_runtime_state_write_authority("s8")

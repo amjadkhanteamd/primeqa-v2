@@ -179,9 +179,15 @@ def arrange_runtime_state(
 ) -> None:
     """Insert a ``test_recipe_runtime_state`` row directly.
 
-    Track D-δ's ``report_run_outcome`` will replace this with a
-    Coordinator method that S4 calls back into when a run
-    completes.
+    Track D-δ's :meth:`SemanticTransactionCoordinator.report_run_outcome`
+    is now the production path for runtime-state writes. This
+    helper remains as an **escape hatch** for tests that need
+    to seed state without going through the Coordinator
+    authority check — useful for tests that want a runtime row
+    on a recipe whose actor mix would otherwise need careful
+    s4-only setup. Production code paths use
+    ``report_run_outcome``; tests setting up scenarios use
+    this helper for brevity.
 
     Note per SPEC §8.2: runtime state is keyed by ``recipe_id``
     only (one row per recipe regardless of which version_seq was

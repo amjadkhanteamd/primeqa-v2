@@ -231,6 +231,7 @@ from primeqa.test_representation.authority import (
     AuthorityDecision,
     check_claim_write_authority,
     check_recipe_write_authority,
+    check_runtime_state_write_authority,
     enforce_authority,
 )
 from primeqa.test_representation.coverage import (
@@ -241,6 +242,8 @@ from primeqa.test_representation.coordinator import (
     ClaimRead,
     CoverageMatch,
     RecipeRead,
+    RecipeRuntimeState,
+    RequirementLinkResult,
     RequirementMatch,
     SemanticTransactionCoordinator,
     WriteClaimResult,
@@ -347,12 +350,15 @@ __all__ = [
     "CoverageEntry",
     "CoverageMatch",
     "RecipeRead",
+    "RecipeRuntimeState",
+    "RequirementLinkResult",
     "RequirementMatch",
     "SemanticTransactionCoordinator",
     "WriteClaimResult",
     "WriteRecipeResult",
     "check_claim_write_authority",
     "check_recipe_write_authority",
+    "check_runtime_state_write_authority",
     "enforce_authority",
     "extract_coverage",
 ]

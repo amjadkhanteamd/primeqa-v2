@@ -41,7 +41,7 @@ from primeqa.test_representation.errors import AuthorityViolationError
 # Types
 # ---------------------------------------------------------------------------
 
-ActorKind = Literal["human", "s3", "s8"]
+ActorKind = Literal["human", "s3", "s8", "s4"]
 """Closed taxonomy of actor identifiers per D-061.
 
   - ``"human"`` — direct human authorship via the UI or CLI; full
@@ -51,6 +51,11 @@ ActorKind = Literal["human", "s3", "s8"]
     per SPEC §7.7 to avoid creating duplicate-meaning versions.
   - ``"s8"`` — evolution actor. Authority over operational
     realization only; semantic content is OFF-LIMITS.
+  - ``"s4"`` — runtime-state-reporting actor. Authority is SCOPED
+    to :func:`check_runtime_state_write_authority` only: S4 calls
+    :meth:`SemanticTransactionCoordinator.report_run_outcome`
+    per SPEC §8.3 and nothing else. Passing ``"s4"`` to claim or
+    recipe write paths raises :class:`AuthorityViolationError`.
 """
 
 
@@ -145,8 +150,23 @@ def check_claim_write_authority(
             "hash_changed must be specified when has_prior_version=True"
         )
 
-    # Case 1: no prior version — any actor can create a new claim
-    # as a draft.
+    # ``s4`` is scoped to runtime-state reporting only — see
+    # :func:`check_runtime_state_write_authority`. Passing s4 to
+    # the claim write path is a category error.
+    if actor == "s4":
+        return AuthorityDecision(
+            allowed=False,
+            is_noop=False,
+            new_status=None,
+            rejection_reason=(
+                "actor='s4' is the runtime-state-reporting actor; "
+                "not authorized for claim writes. Use "
+                "report_run_outcome instead per SPEC §8.3."
+            ),
+        )
+
+    # Case 1: no prior version — any actor (except s4, handled above)
+    # can create a new claim as a draft.
     if not has_prior_version:
         return AuthorityDecision(
             allowed=True,
@@ -254,6 +274,20 @@ def check_recipe_write_authority(
     # and to leave the door open for a future
     # "first version vs subsequent version" distinction.
     del has_prior_version
+    # ``s4`` is scoped to runtime-state reporting only — see
+    # :func:`check_runtime_state_write_authority`. Passing s4 to
+    # the recipe write path is a category error.
+    if actor == "s4":
+        return AuthorityDecision(
+            allowed=False,
+            is_noop=False,
+            new_status=None,
+            rejection_reason=(
+                "actor='s4' is the runtime-state-reporting actor; "
+                "not authorized for recipe writes. Use "
+                "report_run_outcome instead per SPEC §8.3."
+            ),
+        )
     if actor not in ("human", "s3", "s8"):
         raise ValueError(f"unknown actor kind: {actor!r}")
     return AuthorityDecision(
@@ -262,6 +296,30 @@ def check_recipe_write_authority(
         new_status="generated_unapproved",
         rejection_reason=None,
     )
+
+
+def check_runtime_state_write_authority(actor: ActorKind) -> None:
+    """S4 boundary callback authority per SPEC §8.3.
+
+    Only ``actor='s4'`` may call
+    :meth:`SemanticTransactionCoordinator.report_run_outcome`.
+    Any other actor raises :class:`AuthorityViolationError` —
+    runtime-state reporting is exclusively the S4 boundary's
+    responsibility. Test runs are observed by S4; substrate-2
+    only stores the snapshot S4 reports.
+
+    Returns nothing on success (the authorized path is
+    silent); raises on rejection. Used as a side-effecting
+    guard, not a decision-returning function — runtime-state
+    write authority has no decision space to evaluate, just an
+    actor identity to verify.
+    """
+    if actor != "s4":
+        raise AuthorityViolationError(
+            f"report_run_outcome is the S4 boundary callback per "
+            f"SPEC §8.3; only actor='s4' is authorized to call it. "
+            f"Got actor={actor!r}.",
+        )
 
 
 def enforce_authority(decision: AuthorityDecision) -> None:
