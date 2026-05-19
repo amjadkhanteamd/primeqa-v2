@@ -63,6 +63,9 @@ from primeqa.test_representation.identity_hash import (
     compute_identity_hash,
 )
 from primeqa.test_representation.models.common import BodyBase
+from primeqa.test_representation.models.environment import (
+    ExecutionEnvironmentBody,
+)
 from primeqa.test_representation.models.references import (
     IdentityBearingRef,
 )
@@ -72,6 +75,7 @@ from primeqa.test_representation.models_db import (
     TestClaimCoverage,
     TestProvenance,
     TestRecipe,
+    TestRecipeRuntimeState,
     TestRequirementLink,
 )
 
@@ -1261,6 +1265,317 @@ class SemanticTransactionCoordinator:
             )
             for row in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Resolution-class operations (Track D-γ.2)
+    #
+    # Per SPEC §10.4: resolution operations COMPOSE substrate
+    # rules (version ordering, approval state, environment
+    # satisfiability, runtime outcomes) into single answers
+    # that callers commonly need. The substrate owns the
+    # composition policy so it stays consistent across S3 / S4
+    # / S6 / S8.
+    # ------------------------------------------------------------------
+
+    def get_current_approved_claim(
+        self,
+        session: Session,
+        test_id: UUID,
+    ) -> Optional[ClaimRead]:
+        """Governance resolution per SPEC §7.5 + §10.4.
+
+        Composes version ordering with approval-state
+        filtering: returns the highest-``version_seq`` row whose
+        ``status='approved'``, or ``None`` if no approved version
+        exists in the test's history.
+
+        Distinct from :meth:`get_latest_claim`:
+
+          - :meth:`get_latest_claim` returns the current
+            ``valid_to IS NULL`` row regardless of status. After a
+            hash-changing edit per D-059 §6.3.9 Rule 2, the
+            current valid row is ``draft``; the prior approved
+            row sits at a lower ``version_seq`` with ``valid_to``
+            closed.
+          - This method walks back through history to find the
+            last approved row, regardless of supersession state.
+
+        Per SPEC §6.6: deprecation is orthogonal to supersession.
+        A ``deprecated`` current valid row is skipped here because
+        it's not ``approved``; the resolution continues walking
+        back to find an earlier approved row if one exists.
+        """
+        row = (
+            session.query(TestClaim)
+            .filter(
+                TestClaim.test_id == test_id,
+                TestClaim.status == "approved",
+            )
+            .order_by(TestClaim.version_seq.desc())
+            .first()
+        )
+        if row is None:
+            return None
+        return self._hydrate_claim_row(row)
+
+    def get_test_runtime_status(
+        self,
+        session: Session,
+        test_id: UUID,
+    ) -> Literal["passing", "failing", "untested", "mixed"]:
+        """Policy resolution per SPEC §8.4 + §10.4.
+
+        Composes:
+          - current-approved claim resolution
+          - active-recipe filtering
+          - per-recipe runtime state aggregation
+          - SPEC §8.4 conservative outcome composition
+
+        Returns one of four states:
+
+          - ``"untested"`` — no approved claim, OR no eligible
+            recipes, OR no eligible recipes have a runtime state
+            row, OR all runtime states are ``"skipped"``.
+          - ``"failing"`` — any eligible recipe's runtime state
+            shows ``"failed"`` or ``"errored"``.
+          - ``"passing"`` — every eligible recipe has a runtime
+            state row, every outcome is ``"passed"`` or
+            ``"skipped"``, AND at least one is ``"passed"``.
+          - ``"mixed"`` — any other combination (typically: some
+            recipes have runtime state, others don't, with no
+            failures observed).
+
+        Eligibility per D-γ.2's "no autonomous execution"
+        commitment: a recipe is eligible iff
+        ``status IN ('active', 'approved')`` AND
+        ``valid_to IS NULL``. ``generated_unapproved`` and
+        ``deprecated`` recipes are EXCLUDED from runtime-state
+        resolution.
+
+        Per SPEC §8.2: runtime state is keyed by ``recipe_id``
+        only (not ``recipe_id + version_seq``). A new recipe
+        version inherits its predecessor's runtime-state row;
+        the row's ``last_run_recipe_version_seq`` column
+        records which version was actually run (consumers
+        detect "runtime state is stale" via that column).
+
+        Per SPEC §8.5: the conservative composition policy has
+        acknowledged pressure that v1 cannot fully address.
+        SPEC §8.6 reserves richer resolution
+        (recipe-priority weighting, primary-recipe designation,
+        etc.) for future evolution.
+        """
+        approved = self.get_current_approved_claim(session, test_id)
+        if approved is None:
+            return "untested"
+
+        eligible = (
+            session.query(TestRecipe)
+            .filter(
+                TestRecipe.claim_test_id == test_id,
+                TestRecipe.valid_to.is_(None),
+                TestRecipe.status.in_(["active", "approved"]),
+            )
+            .all()
+        )
+        if not eligible:
+            return "untested"
+
+        # Look up runtime-state row per eligible recipe_id. The
+        # PK is recipe_id alone; one row per recipe regardless
+        # of version_seq history.
+        recipe_ids = [r.recipe_id for r in eligible]
+        states = (
+            session.query(TestRecipeRuntimeState)
+            .filter(
+                TestRecipeRuntimeState.recipe_id.in_(recipe_ids),
+            )
+            .all()
+        )
+        outcomes_by_id = {
+            s.recipe_id: s.last_run_outcome for s in states
+        }
+
+        # Composition rule.
+        has_failure = any(
+            outcomes_by_id.get(rid) in ("failed", "errored")
+            for rid in recipe_ids
+        )
+        if has_failure:
+            return "failing"
+
+        outcomes = [outcomes_by_id.get(rid) for rid in recipe_ids]
+        # Tally the categories.
+        none_count = sum(1 for o in outcomes if o is None)
+        passed_count = sum(1 for o in outcomes if o == "passed")
+        skipped_count = sum(1 for o in outcomes if o == "skipped")
+
+        # All recipes have runtime state, all are passed or
+        # skipped, at least one passed → passing.
+        if (
+            none_count == 0
+            and passed_count >= 1
+            and (passed_count + skipped_count) == len(outcomes)
+        ):
+            return "passing"
+
+        # No recipe has any runtime state row, OR all rows are
+        # skipped → untested. "All skipped" is treated as "no
+        # recipe actually exercised" per the SPEC §8.4
+        # conservative policy.
+        if none_count == len(outcomes):
+            return "untested"
+        if passed_count == 0 and none_count == 0:
+            # All recipes have state, none passed, none failed
+            # (since has_failure was False) → all are skipped.
+            return "untested"
+
+        return "mixed"
+
+    def select_recipe_for_execution(
+        self,
+        session: Session,
+        test_id: UUID,
+        *,
+        available_environment: ExecutionEnvironmentBody,
+        replay_mode: Literal["live"] = "live",
+    ) -> Optional[RecipeRead]:
+        """Policy resolution per SPEC §10.4 — the canonical
+        example of resolution-class operations.
+
+        Composes:
+          - current-approved claim resolution
+          - eligible-recipe filtering (D-γ.2's "no autonomous
+            execution" commitment: ``status IN
+            ('active', 'approved')`` AND ``valid_to IS NULL``)
+          - environment satisfiability matching
+            (see :meth:`_environment_satisfies`)
+          - deterministic ordering (priority DESC, version_seq
+            DESC, recipe_id ASC)
+
+        Returns ``None`` if any composition step yields no
+        match.
+
+        ``replay_mode='live'`` is the only supported value at
+        v1; SPEC §6.8 reserves historical and semantic replay
+        modes for future evolution. Other values raise
+        :class:`NotImplementedError` with a SPEC reference.
+        """
+        if replay_mode != "live":
+            raise NotImplementedError(
+                f"replay_mode={replay_mode!r} is reserved per "
+                f"SPEC §6.8; only 'live' is supported at v1"
+            )
+
+        approved = self.get_current_approved_claim(session, test_id)
+        if approved is None:
+            return None
+
+        eligible = (
+            session.query(TestRecipe)
+            .filter(
+                TestRecipe.claim_test_id == test_id,
+                TestRecipe.valid_to.is_(None),
+                TestRecipe.status.in_(["active", "approved"]),
+            )
+            .all()
+        )
+        if not eligible:
+            return None
+
+        # Filter by environment satisfiability.
+        matching = []
+        for row in eligible:
+            recipe_env = self._deserialize_body(row.execution_environment)
+            if self._environment_satisfies(
+                recipe_env=recipe_env,
+                available_env=available_environment,
+            ):
+                matching.append(row)
+        if not matching:
+            return None
+
+        # Sort: priority DESC, version_seq DESC, recipe_id ASC.
+        matching.sort(key=lambda r: (
+            -r.priority,
+            -r.version_seq,
+            str(r.recipe_id),
+        ))
+        return self._hydrate_recipe_row(matching[0])
+
+    def _environment_satisfies(
+        self,
+        *,
+        recipe_env: ExecutionEnvironmentBody,
+        available_env: ExecutionEnvironmentBody,
+    ) -> bool:
+        """Membership-based environment matching for v1.
+
+        Returns ``True`` iff every assumption the recipe makes
+        is honored by the available environment:
+
+          1. ``org_kind`` / ``salesforce_edition`` — when set on
+             recipe, must equal available's value. ``None`` on
+             recipe means "any value acceptable."
+          2. ``feature_assumptions`` — for each recipe entry:
+             - ``required=True`` ⇒ available MUST contain a
+               feature with matching ``feature_name``.
+             - ``required=False`` ⇒ available MUST NOT contain a
+               feature with matching ``feature_name`` (negative
+               assumption — recipe assumes absence).
+          3. ``auth_assumptions`` — every recipe ``auth_kind``
+             MUST appear in available's auth_kinds.
+          4. ``infrastructure_assumptions`` — every recipe
+             ``infra_kind`` MUST appear in available's
+             infra_kinds.
+
+        Matching is by name / kind only. ``description`` /
+        ``details`` are advisory at v1. Future evolution per
+        SPEC §3 reservations may add capability-level matching.
+        """
+        # (1) org_kind
+        if recipe_env.org_kind is not None:
+            if recipe_env.org_kind != available_env.org_kind:
+                return False
+
+        # (1) salesforce_edition
+        if recipe_env.salesforce_edition is not None:
+            if (
+                recipe_env.salesforce_edition
+                != available_env.salesforce_edition
+            ):
+                return False
+
+        # (2) feature_assumptions
+        available_feature_names = {
+            f.feature_name for f in available_env.feature_assumptions
+        }
+        for fa in recipe_env.feature_assumptions:
+            present = fa.feature_name in available_feature_names
+            if fa.required and not present:
+                return False
+            if (not fa.required) and present:
+                # Negative assumption violated — recipe expected
+                # the feature ABSENT, but it's present.
+                return False
+
+        # (3) auth_assumptions
+        available_auth_kinds = {
+            a.auth_kind for a in available_env.auth_assumptions
+        }
+        for aa in recipe_env.auth_assumptions:
+            if aa.auth_kind not in available_auth_kinds:
+                return False
+
+        # (4) infrastructure_assumptions
+        available_infra_kinds = {
+            i.infra_kind for i in available_env.infrastructure_assumptions
+        }
+        for ia in recipe_env.infrastructure_assumptions:
+            if ia.infra_kind not in available_infra_kinds:
+                return False
+
+        return True
 
 
 def _verify_no_identity_bearing_refs(
