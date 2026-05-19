@@ -58,34 +58,35 @@ class TestCoordinatorClass:
 # Stub methods raise NotImplementedError with the right pointer
 # ---------------------------------------------------------------------------
 
-class TestCoordinatorWriteClaimStub:
-    def test_raises_not_implemented(self) -> None:
-        coord = SemanticTransactionCoordinator()
-        with pytest.raises(NotImplementedError):
-            coord.write_claim(
-                session=None,  # type: ignore[arg-type]
-                actor="human",
-                test_id=None,
-                archetype="data_behavior",
-                claim_kind="value-claim",
-                asserted_truth=None,  # type: ignore[arg-type]
-                semantic_conditions=None,  # type: ignore[arg-type]
-            )
+class TestCoordinatorWriteClaimImplemented:
+    """At Track D-β.1 these asserted write_claim raised
+    :class:`NotImplementedError`. At D-β.2 write_claim is
+    implemented; the tests confirm the method is no longer a
+    stub (importable, callable — the integration tests under
+    ``tests/integration/test_representation/`` exercise the
+    actual 11-step orchestration against a real DB)."""
 
-    def test_error_message_points_to_implementing_subtrack(self) -> None:
+    def test_method_is_implemented(self) -> None:
+        """write_claim should not raise NotImplementedError. A
+        call with invalid arguments raises the appropriate
+        validation error from the implementation (here:
+        ValueError on the archetype check), NOT
+        NotImplementedError."""
         coord = SemanticTransactionCoordinator()
-        with pytest.raises(NotImplementedError) as exc_info:
+        with pytest.raises(Exception) as exc_info:
             coord.write_claim(
                 session=None,  # type: ignore[arg-type]
                 actor="human",
                 test_id=None,
-                archetype="data_behavior",
+                archetype="bogus_archetype",
                 claim_kind="value-claim",
                 asserted_truth=None,  # type: ignore[arg-type]
                 semantic_conditions=None,  # type: ignore[arg-type]
             )
-        msg = str(exc_info.value)
-        assert "D-β.2" in msg
+        # The implementation reaches step 1 (discriminator
+        # validation) and raises ValueError on the unknown
+        # archetype before any DB activity.
+        assert not isinstance(exc_info.value, NotImplementedError)
 
 
 class TestCoordinatorWriteRecipeStub:
