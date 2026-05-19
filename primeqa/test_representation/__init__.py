@@ -217,6 +217,31 @@ from primeqa.test_representation.models_db import (
     TestRequirementLink,
 )
 
+# ---------------------------------------------------------------------------
+# Coordinator + write-flow foundational helpers (Track D-β.1)
+#
+# Coverage extraction, authority model, and the Semantic Transaction
+# Coordinator class skeleton. The write methods on the Coordinator are
+# stubs in D-β.1; D-β.2 and D-β.3 implement write_claim and
+# write_recipe respectively.
+# ---------------------------------------------------------------------------
+
+from primeqa.test_representation.authority import (
+    ActorKind,
+    AuthorityDecision,
+    check_claim_write_authority,
+    enforce_authority,
+)
+from primeqa.test_representation.coverage import (
+    CoverageEntry,
+    extract_coverage,
+)
+from primeqa.test_representation.coordinator import (
+    SemanticTransactionCoordinator,
+    WriteClaimResult,
+    WriteRecipeResult,
+)
+
 
 __all__ = [
     # ----- Errors -----
@@ -310,4 +335,14 @@ __all__ = [
     "TestRecipe",
     "TestRecipeRuntimeState",
     "TestRequirementLink",
+    # ----- Coordinator + write-flow helpers (Track D-β.1) -----
+    "ActorKind",
+    "AuthorityDecision",
+    "CoverageEntry",
+    "SemanticTransactionCoordinator",
+    "WriteClaimResult",
+    "WriteRecipeResult",
+    "check_claim_write_authority",
+    "enforce_authority",
+    "extract_coverage",
 ]
