@@ -4095,3 +4095,211 @@ waiting:
   inventory).
 
 ---
+
+
+## D-070 — S3 is a constrained interpretation engine bounded by S1 ontology and substrate-2 taxonomy, with refusal as first-class output [Theme 1]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S1, S2, S4, S5, S6, S7, S8]
+**Status:** active
+
+**Decision.** Substrate-3 (the Generation Engine) is positioned as
+a constrained interpretation engine: it takes structured
+requirements (JIRA tickets in v1; the architecture admits other
+requirement sources later) and produces substrate-2 records
+(claims plus recipes) via an interpretation pipeline grounded in
+substrate-1. Seven structural commitments anchor the substrate:
+
+1. **Interpretation, not translation.** Requirements are
+   interpreted through S1's ontology (which entities exist, what
+   kinds they are) and topology (how they connect — Profile
+   inheritance, Flow triggering, validation rule reference
+   graph). Interpretation produces a scoped semantic neighborhood
+   within S1 that bounds where the LLM reasons. Retrieval is
+   mechanics; interpretation is the architectural layer.
+
+2. **Admissible grounding.** Every claim S3 emits is admissibly
+   grounded in S1: not merely that referenced entities exist, but
+   that the org's actual constraint structure (as modeled at S1's
+   current capability tier) supports the claim's assertion. V1
+   admissibility-checking is rigorous on what S1 currently
+   exposes (type compatibility, picklist value membership,
+   permission grants, layout containment) and degrades cleanly
+   on the surfaces S1 has deferred (validation-rule formula
+   semantics, pending substrate-1 §17 formula parser;
+   standard-field StandardValueSet detection per substrate-1
+   §22).
+
+3. **Autonomous-but-bounded actor.** S3's authority position
+   under substrate-2's D-061 model: writes drafts (claims in
+   `status='draft'`, recipes in `status='generated_unapproved'`);
+   never auto-promotes; cannot diverge `identity_hash` on
+   existing approved tests; same-hash regeneration is
+   mechanically no-op via substrate-2's `was_noop=True` response.
+   Dedup (`query_equivalent_claims` before write) is an
+   architectural concern, not optimization.
+
+4. **Verification bar, not co-authoring.** S3's output bar is
+   calibrated for verification by humans — bounded-time,
+   structured affirmation — not co-authoring. Output below the
+   verification bar refuses rather than emits weakly. This
+   forbids the slow-erosion failure mode where review degrades
+   into repair work.
+
+5. **Refusal as first-class product surface.** When output
+   cannot reach the verification bar, S3 refuses with typed,
+   actionable feedback. Refusals carry a typed `RefusalKind`
+   discriminator and flow through the same surfaces as drafts.
+   A high-quality refusal is informative to the engineer; a
+   low-quality refusal silently says "could not generate."
+   Refusal quality is measurable parallel to generation quality.
+
+6. **Semantic search space bounded (S3 Guardrail 1).** The LLM's
+   semantic search space is bounded by S1's ontology ×
+   substrate-2's locked taxonomy. The LLM cannot invent semantic
+   content outside this bounded space, and operates
+   conservatively within it (ambiguity refuses or surfaces
+   disambiguation rather than guesses).
+
+7. **Failure-loud philosophy extended.** Substrate-1's "fail
+   loud over hallucinating" and substrate-2's "no autonomous
+   semantic divergence" are extended by S3 as: S3 refuses to
+   produce output rather than producing structurally valid but
+   semantically wrong claims.
+
+Five refusal categories named in Theme 1 (typed `RefusalKind`
+taxonomy extends through Theme 2):
+
+- `underspecified-requirement` — requirement itself lacks
+  specificity to ground anywhere in S1.
+- `no-relevant-context` — requirement is specific but does not
+  connect to anything in this org's S1.
+- `ambiguous-reference` — requirement references something that
+  disambiguates to multiple S1 entities without further input.
+- `ungrounded-claim` — proposed claim would not be admissibly
+  supported by S1's current constraint structure.
+- `structural-validation-failure` — LLM output cannot be coerced
+  to a valid substrate-2 body shape after bounded retry.
+
+A sixth — `no-admissible-negative-scenario-found` — is
+anticipated for Theme 4 (grounded negatives).
+
+Three Theme 2 design surfaces established here (not resolved):
+
+- Typed `RefusalKind` discriminator with actionable feedback
+  shape per category.
+- S3-owned generation ledger with schema forward-compatible to
+  substrate-2's reserved `get_provenance` /
+  `get_recipe_provenance` interfaces; ledger retires into
+  substrate-2 on the same commit that ships those interfaces.
+- `GenerationOutcome` protocol union admitting drafts, refusals,
+  and partial outcomes mixing both.
+
+**V1 archetype-coverage reality.** Substrate-3's
+four-discriminator architecture (archetype × claim_kind ×
+trigger_kind × recipe_kind) supports all five product archetypes
+at full strength. V1 product coverage is layered against current
+S1 Tier 1: data-behavior strong, configuration solid, permission
+usable, UI minimal (Layout-level only; element-level claims
+blocked until S1 Tier 3), integration scoped. The architecture
+forecloses none; v1 product reality is honest about current S1
+ceiling. Themes 3 and 4 operationalize this.
+
+**Rationale.** The framing emerged through TA-loop refinement
+from a weaker opening hypothesis ("S3 discovers what should be
+claimed; produces recipes alongside") to the load-bearing
+position above. Seven critical refinements during review
+tightened the substrate's stance from "LLM-mediated generation
+we hope produces good output" to "constrained interpretation
+engine where the LLM operates within a bounded semantic space
+and refusals are first-class outputs." This is a more demanding
+architecture but a more honest one. It is the substrate-3 analog
+of substrate-2's architectural thesis: substrate-3's thesis is
+that AI-mediated generation is trustworthy only when bounded by
+deterministic ontology and substrate-validated structure, and
+only when refusal is as architecturally first-class as emission.
+
+**Alternatives considered (during TA-loop).**
+
+- *Requirements as translation rather than interpretation.*
+  Rejected per TA refinement 1. Translation framing under-names
+  the structured-inference work over S1's ontology + topology
+  that must precede claim generation.
+- *Reference-existence grounding rather than admissibility
+  grounding.* Rejected per TA refinement 2. Existence is the
+  weakest possible grounding bar; admissibility against the
+  org's actual constraint structure is the real bar and the
+  defense against tests that fail for reasons unrelated to the
+  bug they're meant to catch.
+- *Review as compensating for weak generation.* Rejected per
+  TA refinement 4. Review-as-repair collapses the trust loop
+  and converges the platform back to manual-authoring tools.
+- *Refusals as internal error handling.* Rejected per TA
+  refinement 5. Refusals carry product value (actionable
+  feedback) that confident-but-wrong output does not; treating
+  them as errors hides their value.
+- *Generation ledger as deferred sub-decision.* Rejected per TA
+  refinement 6. Ledger underpins iterative regeneration,
+  refusal continuity, and evaluation infrastructure; it's a
+  first-order Theme 2 design surface.
+- *Implicit semantic boundedness.* Rejected per TA refinement
+  7. Named guardrail is the discipline that keeps prompt design
+  and retrieval strategy honest as the substrate evolves.
+
+**Downstream consequences.**
+
+- Theme 2 (generation request shape): Must specify `RefusalKind`
+  taxonomy, `GenerationOutcome` union, S3-owned generation
+  ledger schema with substrate-2 forward-compat.
+- Theme 3 (per-archetype strategies): Admissibility is
+  per-archetype-specific. UI archetype is honestly constrained
+  by S1 Tier 1.
+- Theme 4 (grounded negatives): Negative scenarios are grounded
+  against the org's actual rejection-producing constraint
+  structure; the formula-parser deferral creates a layered
+  admissibility ceiling.
+- Theme 5 (LLM architecture): Semantic-search-space guardrail
+  constrains prompt design and retrieval scope. Q-004 (tool-use
+  vs structured JSON, top-level OPEN_QUESTIONS) is evaluated
+  partly against which better enforces conservative LLM
+  behavior within bounded space.
+- Theme 6 (prompt management): Eval surface measures generation
+  quality AND refusal quality on parallel dimensions.
+- Theme 7 (quality envelope): Quality has two measurable
+  dimensions (emission, refusal) each with acceptance
+  thresholds.
+- S5 (Knowledge System): Domain Pack integration shapes the
+  interpretation layer; S3 consumes from S5, not the inverse.
+- S6 (Interpretation): When S6 ships, attribution feedback can
+  inform S3's interpretation layer, closing the generation-time
+  / execution-time gap on domain-truth checking.
+- S8 (Evolution): Recipe-evolution responsibility migrates
+  progressively; S3's design bar of "S8-evolvable recipes from
+  day one" means no large-scale rewrite is required when
+  handoff happens.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §2 (substrate boundaries and
+  architectural posture — substantive content of Theme 1,
+  written in this commit)
+- `substrate_3_generation/PRECONDITIONS.md` (S3 baseline; §2.1
+  corrected per the get_provenance reservation in commit
+  `42cae2d`)
+- `substrate_2_test_representation/SPEC.md` §1.1 (substrate-2's
+  architectural thesis, which S3 extends), §7 (authority model
+  S3 operates under), §10 (Coordinator outward surface S3
+  consumes)
+- `substrate_1_semantic_org_model/SPEC.md` (ontology and
+  capability tier S3 grounds against),
+  `PHASE_2_PLAN_corrections.md` §17 (formula-parser deferral
+  that limits v1 admissibility)
+- `archive/ARCHITECTURE_4_NOTE.md` (carry-forward principles —
+  scenario-binds-execution, state-handed-out-not-invented,
+  strict-validation-over-silent-recovery)
+- D-051, D-061, D-064, D-068 (substrate-2 commitments S3
+  operates under)
+- D-069 (S3 design proceeds ahead of substrate-1's deferred-item
+  resolution)
+
+---

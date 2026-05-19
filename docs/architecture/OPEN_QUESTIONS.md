@@ -25,6 +25,8 @@ Worth carrying forward (per archive/ARCHITECTURE_4_NOTE.md):
 
 Open question: Is tool-use the right generation model, or is single-shot structured JSON generation with validate-then-retry sufficient? Address during S3 design with Tier 1 model in hand.
 
+**Tracked in S3 design.** Resolved in S3 Theme 5 (LLM integration architecture); see `substrate_3_generation/OPEN_QUESTIONS.md` S3-Q-005.
+
 ### Q-005 — Is there a substrate between "Execution Engine" and "Observation" that we haven't named?
 
 S4 runs tests and captures evidence; S6 interprets results. Is there a "result processing" substrate between them — normalizing raw execution data, enriching with org context, making it queryable?
