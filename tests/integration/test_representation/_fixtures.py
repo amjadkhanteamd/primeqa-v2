@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Literal, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import text
 
@@ -246,6 +246,133 @@ def arrange_runtime_state(
 # ---------------------------------------------------------------------------
 # Environment builder
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Composed-scenario fixtures (Track E)
+#
+# These helpers compose the primitive helpers above (which still
+# represent the "direct-SQL escape hatch" path) into multi-step
+# arrangements that the e2e tests commonly need as starting state.
+# Building on the primitives keeps the fixture layer consistent and
+# avoids duplicating direct-SQL logic.
+# ---------------------------------------------------------------------------
+
+
+def arrange_approved_test_with_recipes(
+    session,
+    coordinator: SemanticTransactionCoordinator,
+    *,
+    num_recipes: int = 1,
+    recipe_priorities: Optional[list[int]] = None,
+    recipe_environments: Optional[list[ExecutionEnvironmentBody]] = None,
+) -> tuple[UUID, list[UUID]]:
+    """Compose: write claim → promote to approved → write N recipes
+    → promote each to approved (status='approved'; eligible for
+    selection + runtime resolution).
+
+    Args:
+      num_recipes: Number of recipes to create.
+      recipe_priorities: Per-recipe priority overrides; defaults to
+        ``[0] * num_recipes`` if omitted.
+      recipe_environments: Per-recipe environment overrides; defaults
+        to a minimal empty environment for each recipe.
+
+    Returns:
+      ``(test_id, list of recipe_ids)`` — the recipe_ids list is
+      ordered by creation order, NOT priority.
+    """
+    priorities = (
+        list(recipe_priorities) if recipe_priorities is not None
+        else [0] * num_recipes
+    )
+    environments = (
+        list(recipe_environments) if recipe_environments is not None
+        else [None] * num_recipes
+    )
+    if len(priorities) != num_recipes:
+        raise ValueError(
+            f"recipe_priorities length {len(priorities)} != "
+            f"num_recipes {num_recipes}"
+        )
+    if len(environments) != num_recipes:
+        raise ValueError(
+            f"recipe_environments length {len(environments)} != "
+            f"num_recipes {num_recipes}"
+        )
+    test_id, _ = arrange_approved_claim(session, coordinator)
+    recipe_ids: list[UUID] = []
+    for prio, env in zip(priorities, environments):
+        rid, _ = arrange_recipe_with_status(
+            session, coordinator,
+            claim_test_id=test_id,
+            status="approved",
+            priority=prio,
+            execution_environment=env,
+        )
+        recipe_ids.append(rid)
+    return test_id, recipe_ids
+
+
+def arrange_test_in_failing_state(
+    session,
+    coordinator: SemanticTransactionCoordinator,
+) -> tuple[UUID, UUID]:
+    """Compose: approved test + one approved recipe + S4 failed-run
+    report. Useful as the starting state for recovery workflows.
+
+    Returns ``(test_id, recipe_id)``.
+    """
+    test_id, recipe_ids = arrange_approved_test_with_recipes(
+        session, coordinator, num_recipes=1,
+    )
+    recipe_id = recipe_ids[0]
+    coordinator.report_run_outcome(
+        session,
+        actor="s4",
+        recipe_id=recipe_id,
+        last_run_id=uuid4(),
+        last_run_at=datetime.now(timezone.utc),
+        last_run_outcome="failed",
+        last_run_recipe_version_seq=1,
+    )
+    return test_id, recipe_id
+
+
+def arrange_test_with_runtime_history(
+    session,
+    coordinator: SemanticTransactionCoordinator,
+    *,
+    outcomes: list[
+        Literal["passed", "failed", "errored", "skipped"]
+    ],
+) -> tuple[UUID, UUID]:
+    """Compose: approved test + one approved recipe + a sequence of
+    S4 run reports.
+
+    The recipe ends up reflecting the LAST outcome in the list;
+    ``last_pass_at`` / ``last_failure_at`` accumulate across the
+    history per the D-δ rule.
+
+    Returns ``(test_id, recipe_id)``.
+    """
+    if not outcomes:
+        raise ValueError("outcomes must be a non-empty list")
+    test_id, recipe_ids = arrange_approved_test_with_recipes(
+        session, coordinator, num_recipes=1,
+    )
+    recipe_id = recipe_ids[0]
+    for outcome in outcomes:
+        coordinator.report_run_outcome(
+            session,
+            actor="s4",
+            recipe_id=recipe_id,
+            last_run_id=uuid4(),
+            last_run_at=datetime.now(timezone.utc),
+            last_run_outcome=outcome,
+            last_run_recipe_version_seq=1,
+        )
+    return test_id, recipe_id
 
 
 def make_minimal_execution_environment(
