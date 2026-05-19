@@ -238,6 +238,10 @@ from primeqa.test_representation.coverage import (
     extract_coverage,
 )
 from primeqa.test_representation.coordinator import (
+    ClaimRead,
+    CoverageMatch,
+    RecipeRead,
+    RequirementMatch,
     SemanticTransactionCoordinator,
     WriteClaimResult,
     WriteRecipeResult,
@@ -339,7 +343,11 @@ __all__ = [
     # ----- Coordinator + write-flow helpers (Track D-β.1) -----
     "ActorKind",
     "AuthorityDecision",
+    "ClaimRead",
     "CoverageEntry",
+    "CoverageMatch",
+    "RecipeRead",
+    "RequirementMatch",
     "SemanticTransactionCoordinator",
     "WriteClaimResult",
     "WriteRecipeResult",

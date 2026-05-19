@@ -38,7 +38,8 @@ from __future__ import annotations
 
 import uuid as _uuid_mod
 from dataclasses import dataclass
-from typing import Optional
+from datetime import datetime
+from typing import Literal, Optional
 from uuid import UUID
 
 from sqlalchemy import text
@@ -71,6 +72,7 @@ from primeqa.test_representation.models_db import (
     TestClaimCoverage,
     TestProvenance,
     TestRecipe,
+    TestRequirementLink,
 )
 
 
@@ -145,6 +147,102 @@ class WriteRecipeResult:
     recipe_id: UUID
     version_seq: int
     status: str
+
+
+# ---------------------------------------------------------------------------
+# Read result shapes (Track D-γ.1)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ClaimRead:
+    """Read result for a single claim version.
+
+    Pydantic bodies (``asserted_truth`` /
+    ``semantic_conditions``) are deserialized from their JSONB
+    storage form into the registered Pydantic body classes for
+    their declared ``(kind, body_schema_version)``. Row metadata
+    (timestamps, status, hash) is the SQLAlchemy row's column
+    values.
+
+    A note on lifecycle: ``valid_to`` and ``status`` are
+    orthogonal axes per SPEC §6.6 + D-061. ``valid_to`` closes
+    when a row is SUPERSEDED by a newer version (a write of
+    ``version_seq + 1``); ``status`` (``draft`` / ``approved`` /
+    ``deprecated``) is a separate semantic-lifecycle marker.
+    A deprecated current version still has ``valid_to IS NULL``
+    and is returned by :meth:`get_latest_claim`; consumers
+    check ``status`` separately if they care.
+    """
+
+    test_id: UUID
+    version_seq: int
+    valid_from: datetime
+    valid_to: Optional[datetime]
+    archetype: str
+    claim_kind: str
+    asserted_truth: BodyBase
+    semantic_conditions: BodyBase
+    identity_hash: str
+    identity_hash_version: int
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class RecipeRead:
+    """Read result for a single recipe version. Same lifecycle
+    semantics as :class:`ClaimRead` per SPEC §6.6."""
+
+    recipe_id: UUID
+    version_seq: int
+    valid_from: datetime
+    valid_to: Optional[datetime]
+    claim_test_id: UUID
+    claim_version_seq: Optional[int]
+    trigger_kind: str
+    recipe_kind: str
+    causal_initiation: BodyBase
+    observation_realization: BodyBase
+    execution_environment: BodyBase
+    priority: int
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class CoverageMatch:
+    """A coverage match from
+    :meth:`SemanticTransactionCoordinator.list_tests_affected_by_entity`.
+
+    Identifies a test that references the queried entity along
+    with the slot (``"subject"`` vs ``"condition"``) the
+    reference occupies. The slot is meaningful for S6 impact
+    attribution and S8 evolution detection: subject references
+    are stronger coupling than condition references.
+    """
+
+    test_id: UUID
+    reference_kind: str
+
+
+@dataclass(frozen=True)
+class RequirementMatch:
+    """A requirement-link match from
+    :meth:`SemanticTransactionCoordinator.list_tests_by_requirement`.
+
+    Carries the link kind (``"generated_from"`` /
+    ``"verifies"`` / ``"related_to"``) so callers can
+    distinguish, for example, a test that was generated from a
+    requirement vs one that merely verifies it.
+    """
+
+    test_id: UUID
+    link_kind: str
+    external_version: Optional[str]
+    linked_at: datetime
 
 
 # ---------------------------------------------------------------------------
@@ -830,6 +928,339 @@ class SemanticTransactionCoordinator:
             version_seq=new_version_seq,
             status=new_status,
         )
+
+    # ------------------------------------------------------------------
+    # Read interfaces (Track D-γ.1)
+    #
+    # Per SPEC §10.2: substrate-2's outward surface is the
+    # Coordinator. Callers (S3 / S4 / S6 / S8) read through these
+    # methods rather than running raw SQL — the methods guarantee
+    # JSONB-to-Pydantic deserialization via the body registry, so
+    # callers get typed body instances back rather than dicts.
+    #
+    # All methods take ``session`` as first positional argument
+    # (caller-provided per the D-β construction contract).
+    # ------------------------------------------------------------------
+
+    def _deserialize_body(self, jsonb_dict: dict) -> BodyBase:
+        """Deserialize a JSONB body dict to a typed Pydantic body.
+
+        Uses the body registry to dispatch to the right model
+        class for the dict's declared
+        ``(kind, body_schema_version)`` pair.
+
+        Raises:
+          :class:`SchemaIncompatibilityError` — if the registry
+          has no model for the declared pair. The error contract
+          is consistent with the write-path's step 2 dispatch
+          (D-060 §4.7.8).
+        """
+        kind = jsonb_dict["kind"]
+        version = jsonb_dict["body_schema_version"]
+        body_class = get_body_model(kind, version)
+        return body_class.model_validate(jsonb_dict)
+
+    def _hydrate_claim_row(self, row: TestClaim) -> ClaimRead:
+        """Build a :class:`ClaimRead` from a SQLAlchemy
+        :class:`TestClaim` row."""
+        return ClaimRead(
+            test_id=row.test_id,
+            version_seq=row.version_seq,
+            valid_from=row.valid_from,
+            valid_to=row.valid_to,
+            archetype=row.archetype,
+            claim_kind=row.claim_kind,
+            asserted_truth=self._deserialize_body(row.asserted_truth),
+            semantic_conditions=self._deserialize_body(
+                row.semantic_conditions,
+            ),
+            identity_hash=row.identity_hash,
+            identity_hash_version=row.identity_hash_version,
+            status=row.status,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    def _hydrate_recipe_row(self, row: TestRecipe) -> RecipeRead:
+        """Build a :class:`RecipeRead` from a SQLAlchemy
+        :class:`TestRecipe` row."""
+        return RecipeRead(
+            recipe_id=row.recipe_id,
+            version_seq=row.version_seq,
+            valid_from=row.valid_from,
+            valid_to=row.valid_to,
+            claim_test_id=row.claim_test_id,
+            claim_version_seq=row.claim_version_seq,
+            trigger_kind=row.trigger_kind,
+            recipe_kind=row.recipe_kind,
+            causal_initiation=self._deserialize_body(row.causal_initiation),
+            observation_realization=self._deserialize_body(
+                row.observation_realization,
+            ),
+            execution_environment=self._deserialize_body(
+                row.execution_environment,
+            ),
+            priority=row.priority,
+            status=row.status,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    # ----- Plain claim reads -----
+
+    def get_latest_claim(
+        self,
+        session: Session,
+        test_id: UUID,
+    ) -> Optional[ClaimRead]:
+        """Return the current valid version of a claim.
+
+        "Current" means ``valid_to IS NULL`` per D-057 effective-
+        time supersession. Independent of ``status`` — a
+        ``deprecated`` current version is still returned;
+        consumers check ``status`` separately if they care
+        (SPEC §6.6).
+
+        Returns ``None`` if no row matches the ``test_id``.
+        """
+        row = (
+            session.query(TestClaim)
+            .filter(
+                TestClaim.test_id == test_id,
+                TestClaim.valid_to.is_(None),
+            )
+            .first()
+        )
+        if row is None:
+            return None
+        return self._hydrate_claim_row(row)
+
+    def get_claim_version(
+        self,
+        session: Session,
+        test_id: UUID,
+        version_seq: int,
+    ) -> Optional[ClaimRead]:
+        """Return a specific historical version of a claim, or
+        ``None`` if ``(test_id, version_seq)`` doesn't exist.
+
+        Distinct from :meth:`get_latest_claim`: this returns a
+        row regardless of its ``valid_to`` state. Used for
+        replay, audit, and the D-γ.2 resolution operations.
+        """
+        row = (
+            session.query(TestClaim)
+            .filter(
+                TestClaim.test_id == test_id,
+                TestClaim.version_seq == version_seq,
+            )
+            .first()
+        )
+        if row is None:
+            return None
+        return self._hydrate_claim_row(row)
+
+    # ----- Plain recipe reads -----
+
+    def list_active_recipes(
+        self,
+        session: Session,
+        claim_test_id: UUID,
+    ) -> list[RecipeRead]:
+        """Return all currently-valid recipes for a claim.
+
+        "Current" means ``valid_to IS NULL`` for each recipe.
+        Recipes are sorted by ``recipe_id`` ascending for
+        deterministic output.
+
+        Returns an empty list if no recipes exist for the
+        claim — including the case where the claim itself
+        doesn't exist (no logical-FK enforcement on read).
+        """
+        rows = (
+            session.query(TestRecipe)
+            .filter(
+                TestRecipe.claim_test_id == claim_test_id,
+                TestRecipe.valid_to.is_(None),
+            )
+            .order_by(TestRecipe.recipe_id)
+            .all()
+        )
+        return [self._hydrate_recipe_row(r) for r in rows]
+
+    def get_recipe_latest(
+        self,
+        session: Session,
+        recipe_id: UUID,
+    ) -> Optional[RecipeRead]:
+        """Return the current valid version of a recipe, or
+        ``None`` if no such recipe exists."""
+        row = (
+            session.query(TestRecipe)
+            .filter(
+                TestRecipe.recipe_id == recipe_id,
+                TestRecipe.valid_to.is_(None),
+            )
+            .first()
+        )
+        if row is None:
+            return None
+        return self._hydrate_recipe_row(row)
+
+    def get_recipe_version(
+        self,
+        session: Session,
+        recipe_id: UUID,
+        version_seq: int,
+    ) -> Optional[RecipeRead]:
+        """Return a specific historical version of a recipe, or
+        ``None`` if ``(recipe_id, version_seq)`` doesn't exist."""
+        row = (
+            session.query(TestRecipe)
+            .filter(
+                TestRecipe.recipe_id == recipe_id,
+                TestRecipe.version_seq == version_seq,
+            )
+            .first()
+        )
+        if row is None:
+            return None
+        return self._hydrate_recipe_row(row)
+
+    # ----- Equivalence + discovery -----
+
+    def query_equivalent_claims(
+        self,
+        session: Session,
+        *,
+        identity_hash: str,
+        identity_hash_version: int,
+    ) -> list[ClaimRead]:
+        """Return current-valid claims with the same identity_hash
+        AND identity_hash_version.
+
+        Per SPEC §6.3.9 Rule 4: cross-test semantic equivalence
+        is scoped to the same canonicalization policy version.
+        Both parameters are REQUIRED — passing only the hash
+        would silently return cross-version matches that aren't
+        actually equivalent (the canonicalization rules may
+        have changed). Keyword-only to make accidental
+        single-arg calls a syntax error.
+
+        Filters out historical (closed) versions
+        (``valid_to IS NULL``) — same-content historical rows
+        of any test_id may exist but the current canonical
+        version of each test_id is what consumers care about.
+
+        Result order: deterministic by ``test_id`` string
+        ascending.
+        """
+        rows = (
+            session.query(TestClaim)
+            .filter(
+                TestClaim.identity_hash == identity_hash,
+                TestClaim.identity_hash_version
+                == identity_hash_version,
+                TestClaim.valid_to.is_(None),
+            )
+            .order_by(TestClaim.test_id)
+            .all()
+        )
+        return [self._hydrate_claim_row(r) for r in rows]
+
+    def list_tests_affected_by_entity(
+        self,
+        session: Session,
+        *,
+        entity_id: UUID,
+        entity_type: Optional[str] = None,
+        reference_kind: Optional[
+            Literal["subject", "condition"]
+        ] = None,
+    ) -> list[CoverageMatch]:
+        """Return tests that reference an S1 entity in their
+        identity-bearing content.
+
+        Reads from :class:`TestClaimCoverage` (already
+        deduplicated on
+        ``(claim_test_id, entity_id, reference_kind)`` per the
+        Track D-α PK). Drives S6 impact attribution and S8
+        evolution detection.
+
+        Filters:
+          entity_type: restricts to a single entity type when
+            the same ``entity_id`` could conceivably collide
+            across types.
+          reference_kind: restricts to ``"subject"`` or
+            ``"condition"`` references only.
+
+        Result order: deterministic by
+        ``(test_id, reference_kind)`` ascending.
+        """
+        query = session.query(TestClaimCoverage).filter(
+            TestClaimCoverage.entity_id == entity_id,
+        )
+        if entity_type is not None:
+            query = query.filter(
+                TestClaimCoverage.entity_type == entity_type,
+            )
+        if reference_kind is not None:
+            query = query.filter(
+                TestClaimCoverage.reference_kind == reference_kind,
+            )
+        rows = query.order_by(
+            TestClaimCoverage.claim_test_id,
+            TestClaimCoverage.reference_kind,
+        ).all()
+        return [
+            CoverageMatch(
+                test_id=row.claim_test_id,
+                reference_kind=row.reference_kind,
+            )
+            for row in rows
+        ]
+
+    def list_tests_by_requirement(
+        self,
+        session: Session,
+        *,
+        external_system: str,
+        external_key: str,
+        link_kind: Optional[
+            Literal["generated_from", "verifies", "related_to"]
+        ] = None,
+    ) -> list[RequirementMatch]:
+        """Return tests linked to an external requirement.
+
+        Reads from :class:`TestRequirementLink`. Filter:
+
+          link_kind: restricts to a specific link kind. ``None``
+            returns all link kinds.
+
+        Result order: deterministic by
+        ``(test_id, link_kind)`` ascending.
+        """
+        query = session.query(TestRequirementLink).filter(
+            TestRequirementLink.external_system == external_system,
+            TestRequirementLink.external_key == external_key,
+        )
+        if link_kind is not None:
+            query = query.filter(
+                TestRequirementLink.link_kind == link_kind,
+            )
+        rows = query.order_by(
+            TestRequirementLink.test_id,
+            TestRequirementLink.link_kind,
+        ).all()
+        return [
+            RequirementMatch(
+                test_id=row.test_id,
+                link_kind=row.link_kind,
+                external_version=row.external_version,
+                linked_at=row.linked_at,
+            )
+            for row in rows
+        ]
 
 
 def _verify_no_identity_bearing_refs(
