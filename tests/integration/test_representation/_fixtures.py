@@ -57,8 +57,13 @@ def arrange_approved_claim(
     """Write a value-claim and promote to ``status='approved'``
     via direct UPDATE.
 
-    Track D-ε will add ``promote_claim`` and this helper will
-    delegate to it.
+    Track D-ε's
+    :meth:`SemanticTransactionCoordinator.promote_claim_to_approved`
+    is now the production path for promotion. This helper
+    remains as an **escape hatch** for tests that need to seed
+    approved state without invoking the humans-only authority
+    check (e.g., to simulate an already-approved fixture in
+    tests focused on resolution logic).
 
     Returns ``(test_id, version_seq)``.
     """
@@ -122,9 +127,17 @@ def arrange_recipe_with_status(
     ``generated_unapproved``) and optionally update status +
     priority via direct UPDATE.
 
-    Track D-ε will add ``promote_recipe`` /
-    ``deprecate_recipe``; Track D-δ may add a priority setter.
-    This helper combines the operations until those land.
+    Track D-ε's
+    :meth:`SemanticTransactionCoordinator.promote_recipe_to_approved`,
+    :meth:`SemanticTransactionCoordinator.deprecate_recipe`,
+    and
+    :meth:`SemanticTransactionCoordinator.change_recipe_priority`
+    are now the production paths for status + priority mutation.
+    This helper remains as an **escape hatch** for tests that
+    need to seed state without invoking the production authority
+    checks (notably the humans-only requirement on
+    promote/deprecate) — useful for resolution-logic tests that
+    don't care about the call chain that produced the state.
 
     Returns ``(recipe_id, version_seq)``.
     """

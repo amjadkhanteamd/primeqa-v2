@@ -1969,6 +1969,417 @@ class SemanticTransactionCoordinator:
             was_noop=was_noop,
         )
 
+    # ------------------------------------------------------------------
+    # Status mutation + priority change (Track D-ε)
+    #
+    # In-place mutation operations per SPEC §6.6 + §7 + §10.2
+    # group 1. These methods update the target row's ``status``
+    # (or ``priority``) WITHOUT bumping ``version_seq`` — they
+    # represent lifecycle and operational-metadata transitions,
+    # not new semantic versions.
+    #
+    # Authority model:
+    #   - promote/deprecate (status mutation) — HUMANS ONLY per
+    #     D-ε-1's conservative default. Future evolution may
+    #     extend autonomous approval / deprecation, but at v1
+    #     the substrate insists on human authorship for
+    #     governance signals.
+    #   - change_recipe_priority — any actor EXCEPT ``s4``.
+    #     Priority is operational metadata, not behavior-
+    #     affecting, so the substrate accepts S3 / S8 priority
+    #     adjustments alongside humans.
+    #
+    # Each method emits a provenance event from the §4.1
+    # provenance_event_kind enum (claim_approved /
+    # claim_deprecated / recipe_approved / recipe_deprecated /
+    # recipe_priority_changed). No-op paths (already in target
+    # state) emit no event and leave ``updated_at`` unchanged
+    # — same precedent as :meth:`report_run_outcome`.
+    # ------------------------------------------------------------------
+
+    def promote_claim_to_approved(
+        self,
+        session: Session,
+        *,
+        actor: ActorKind,
+        test_id: UUID,
+        version_seq: int,
+    ) -> ClaimRead:
+        """Promote a specific claim version to ``status='approved'``.
+
+        Per D-ε-1: humans only. The substrate's v1 conservative
+        default refuses autonomous approval — S3's generations and
+        S8's evolution proposals must surface through review
+        rather than auto-approving.
+
+        Status transitions:
+          - ``draft`` → ``approved``
+          - ``deprecated`` → ``approved`` (un-deprecation; the
+            audit trail in :class:`TestProvenance` retains the
+            full history)
+          - ``approved`` → ``approved``: no-op (no provenance
+            event; ``updated_at`` unchanged)
+
+        Targets a specific ``(test_id, version_seq)`` rather than
+        "the latest" to prevent races where a new version writes
+        between caller intent and operation execution. Callers
+        explicitly say which version they intend to approve.
+        """
+        if actor != "human":
+            raise AuthorityViolationError(
+                f"promote_claim_to_approved is humans-only per "
+                f"D-ε-1 conservative default; got actor={actor!r}",
+            )
+        row = (
+            session.query(TestClaim)
+            .filter(
+                TestClaim.test_id == test_id,
+                TestClaim.version_seq == version_seq,
+            )
+            .first()
+        )
+        if row is None:
+            raise ValueError(
+                f"no claim row for (test_id={test_id!r}, "
+                f"version_seq={version_seq!r})"
+            )
+        if row.status == "approved":
+            return self._hydrate_claim_row(row)
+
+        prior_status = row.status
+        session.execute(
+            text(
+                "UPDATE test_claims "
+                "SET status = 'approved', updated_at = NOW() "
+                "WHERE test_id = :t AND version_seq = :v"
+            ),
+            {"t": str(test_id), "v": version_seq},
+        )
+        session.add(TestProvenance(
+            id=_uuid_mod.uuid4(),
+            claim_test_id=test_id,
+            recipe_id=None,
+            event_kind="claim_approved",
+            event_data={
+                "actor": actor,
+                "version_seq": version_seq,
+                "prior_status": prior_status,
+                "new_status": "approved",
+            },
+            event_actor=actor,
+        ))
+        session.flush()
+        session.refresh(row)
+        return self._hydrate_claim_row(row)
+
+    def promote_recipe_to_approved(
+        self,
+        session: Session,
+        *,
+        actor: ActorKind,
+        recipe_id: UUID,
+        version_seq: int,
+    ) -> RecipeRead:
+        """Promote a specific recipe version to
+        ``status='approved'``.
+
+        Parallel of :meth:`promote_claim_to_approved` for
+        recipes. Same humans-only authority per D-ε-1, same
+        in-place mutation semantics, same no-op behavior when
+        already approved.
+
+        Status transitions:
+          - ``generated_unapproved`` → ``approved``
+          - ``active`` → ``approved``
+          - ``deprecated`` → ``approved`` (un-deprecation)
+          - ``approved`` → ``approved``: no-op
+
+        Provenance event: ``recipe_approved``.
+        """
+        if actor != "human":
+            raise AuthorityViolationError(
+                f"promote_recipe_to_approved is humans-only per "
+                f"D-ε-1 conservative default; got actor={actor!r}",
+            )
+        row = (
+            session.query(TestRecipe)
+            .filter(
+                TestRecipe.recipe_id == recipe_id,
+                TestRecipe.version_seq == version_seq,
+            )
+            .first()
+        )
+        if row is None:
+            raise ValueError(
+                f"no recipe row for (recipe_id={recipe_id!r}, "
+                f"version_seq={version_seq!r})"
+            )
+        if row.status == "approved":
+            return self._hydrate_recipe_row(row)
+
+        prior_status = row.status
+        session.execute(
+            text(
+                "UPDATE test_recipes "
+                "SET status = 'approved', updated_at = NOW() "
+                "WHERE recipe_id = :r AND version_seq = :v"
+            ),
+            {"r": str(recipe_id), "v": version_seq},
+        )
+        session.add(TestProvenance(
+            id=_uuid_mod.uuid4(),
+            claim_test_id=None,
+            recipe_id=recipe_id,
+            event_kind="recipe_approved",
+            event_data={
+                "actor": actor,
+                "version_seq": version_seq,
+                "prior_status": prior_status,
+                "new_status": "approved",
+            },
+            event_actor=actor,
+        ))
+        session.flush()
+        session.refresh(row)
+        return self._hydrate_recipe_row(row)
+
+    def deprecate_claim(
+        self,
+        session: Session,
+        *,
+        actor: ActorKind,
+        test_id: UUID,
+        version_seq: int,
+        reason: str,
+    ) -> ClaimRead:
+        """Deprecate a specific claim version.
+
+        Per D-ε-1: humans only. S8's evolution detection cannot
+        autonomously deprecate at v1 — it must surface findings
+        through other mechanisms; deprecation is a governance
+        signal requiring explicit human authority.
+
+        ``reason`` is REQUIRED (non-empty) per D-ε-5:
+        deprecation is forward-explanatory; the reason is
+        captured in :attr:`TestProvenance.event_data`, NOT as a
+        column on :class:`TestClaim`. Future audit tooling
+        reads provenance to surface deprecation rationale.
+
+        Status transitions:
+          - ``draft`` → ``deprecated``
+          - ``approved`` → ``deprecated``
+          - ``deprecated`` → ``deprecated``: no-op (no provenance
+            event; ``updated_at`` unchanged)
+
+        Provenance event: ``claim_deprecated``.
+        """
+        if actor != "human":
+            raise AuthorityViolationError(
+                f"deprecate_claim is humans-only per D-ε-1 "
+                f"conservative default; got actor={actor!r}",
+            )
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(
+                "deprecate_claim requires a non-empty 'reason' "
+                "per D-ε-5: deprecation is forward-explanatory."
+            )
+        row = (
+            session.query(TestClaim)
+            .filter(
+                TestClaim.test_id == test_id,
+                TestClaim.version_seq == version_seq,
+            )
+            .first()
+        )
+        if row is None:
+            raise ValueError(
+                f"no claim row for (test_id={test_id!r}, "
+                f"version_seq={version_seq!r})"
+            )
+        if row.status == "deprecated":
+            return self._hydrate_claim_row(row)
+
+        prior_status = row.status
+        session.execute(
+            text(
+                "UPDATE test_claims "
+                "SET status = 'deprecated', updated_at = NOW() "
+                "WHERE test_id = :t AND version_seq = :v"
+            ),
+            {"t": str(test_id), "v": version_seq},
+        )
+        session.add(TestProvenance(
+            id=_uuid_mod.uuid4(),
+            claim_test_id=test_id,
+            recipe_id=None,
+            event_kind="claim_deprecated",
+            event_data={
+                "actor": actor,
+                "version_seq": version_seq,
+                "prior_status": prior_status,
+                "new_status": "deprecated",
+                "reason": reason,
+            },
+            event_actor=actor,
+        ))
+        session.flush()
+        session.refresh(row)
+        return self._hydrate_claim_row(row)
+
+    def deprecate_recipe(
+        self,
+        session: Session,
+        *,
+        actor: ActorKind,
+        recipe_id: UUID,
+        version_seq: int,
+        reason: str,
+    ) -> RecipeRead:
+        """Deprecate a specific recipe version.
+
+        Parallel of :meth:`deprecate_claim` for recipes. Same
+        humans-only authority, same required ``reason``, same
+        no-op semantics. Provenance event:
+        ``recipe_deprecated``.
+        """
+        if actor != "human":
+            raise AuthorityViolationError(
+                f"deprecate_recipe is humans-only per D-ε-1 "
+                f"conservative default; got actor={actor!r}",
+            )
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(
+                "deprecate_recipe requires a non-empty 'reason' "
+                "per D-ε-5."
+            )
+        row = (
+            session.query(TestRecipe)
+            .filter(
+                TestRecipe.recipe_id == recipe_id,
+                TestRecipe.version_seq == version_seq,
+            )
+            .first()
+        )
+        if row is None:
+            raise ValueError(
+                f"no recipe row for (recipe_id={recipe_id!r}, "
+                f"version_seq={version_seq!r})"
+            )
+        if row.status == "deprecated":
+            return self._hydrate_recipe_row(row)
+
+        prior_status = row.status
+        session.execute(
+            text(
+                "UPDATE test_recipes "
+                "SET status = 'deprecated', updated_at = NOW() "
+                "WHERE recipe_id = :r AND version_seq = :v"
+            ),
+            {"r": str(recipe_id), "v": version_seq},
+        )
+        session.add(TestProvenance(
+            id=_uuid_mod.uuid4(),
+            claim_test_id=None,
+            recipe_id=recipe_id,
+            event_kind="recipe_deprecated",
+            event_data={
+                "actor": actor,
+                "version_seq": version_seq,
+                "prior_status": prior_status,
+                "new_status": "deprecated",
+                "reason": reason,
+            },
+            event_actor=actor,
+        ))
+        session.flush()
+        session.refresh(row)
+        return self._hydrate_recipe_row(row)
+
+    def change_recipe_priority(
+        self,
+        session: Session,
+        *,
+        actor: ActorKind,
+        recipe_id: UUID,
+        version_seq: int,
+        new_priority: int,
+    ) -> RecipeRead:
+        """Change the priority of a specific recipe version.
+
+        Per D-ε-7: priority is operational metadata, not
+        behavior-affecting. Any actor in
+        ``{human, s3, s8}`` may call this; ``s4`` cannot
+        (s4 is the runtime-state callback only — D-δ scope).
+
+        Per D-ε-8: no ``version_seq`` bump. The recipe's
+        priority column updates in-place; ``version_seq``
+        tracks semantic supersession, and priority changes are
+        operational, not semantic.
+
+        ``new_priority`` accepts any integer (positive,
+        negative, zero) — the column carries no sign
+        constraint. Resolution operations
+        (:meth:`select_recipe_for_execution`) sort by priority
+        DESC, so larger values rank higher.
+
+        No-op when ``new_priority == current priority``: no
+        provenance event; ``updated_at`` unchanged.
+
+        Provenance event: ``recipe_priority_changed``.
+        """
+        if actor == "s4":
+            raise AuthorityViolationError(
+                f"change_recipe_priority is not authorized for "
+                f"actor='s4' (runtime-state-callback only); use "
+                f"a human / s3 / s8 actor instead",
+            )
+        if actor not in ("human", "s3", "s8"):
+            raise AuthorityViolationError(
+                f"change_recipe_priority got unknown actor "
+                f"{actor!r}; expected one of human / s3 / s8",
+            )
+        row = (
+            session.query(TestRecipe)
+            .filter(
+                TestRecipe.recipe_id == recipe_id,
+                TestRecipe.version_seq == version_seq,
+            )
+            .first()
+        )
+        if row is None:
+            raise ValueError(
+                f"no recipe row for (recipe_id={recipe_id!r}, "
+                f"version_seq={version_seq!r})"
+            )
+        if row.priority == new_priority:
+            return self._hydrate_recipe_row(row)
+
+        prior_priority = row.priority
+        session.execute(
+            text(
+                "UPDATE test_recipes "
+                "SET priority = :p, updated_at = NOW() "
+                "WHERE recipe_id = :r AND version_seq = :v"
+            ),
+            {"p": new_priority, "r": str(recipe_id), "v": version_seq},
+        )
+        session.add(TestProvenance(
+            id=_uuid_mod.uuid4(),
+            claim_test_id=None,
+            recipe_id=recipe_id,
+            event_kind="recipe_priority_changed",
+            event_data={
+                "actor": actor,
+                "version_seq": version_seq,
+                "prior_priority": prior_priority,
+                "new_priority": new_priority,
+            },
+            event_actor=actor,
+        ))
+        session.flush()
+        session.refresh(row)
+        return self._hydrate_recipe_row(row)
+
 
 # Registered external systems per the migration's enum. Update
 # when the migration adds new values (e.g., GitHub issues, Linear).
