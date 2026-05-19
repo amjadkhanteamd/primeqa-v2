@@ -133,9 +133,15 @@ S3 will primarily consume:
   + `identity_hash_version`).
 - **`get_latest_claim`**, **`list_active_recipes`** — for
   inspecting existing state before generating.
-- **`get_provenance`** (when the reserved method is implemented
-  per SPEC §10.2) — for inspecting prior generation attempts on
-  the same `test_id`.
+- **`get_provenance` / `get_recipe_provenance`** — reserved per
+  SPEC §10.2; NOT realized in Phase 4 (alongside
+  `surface_unblessed_transition`). S3 design must not assume
+  these surfaces exist for v1. When implemented, they will
+  enable inspection of prior generation attempts on the same
+  `test_id` / `recipe_id`; until then, iterative regeneration
+  cannot rely on substrate-2's audit trail and must either
+  work from `query_equivalent_claims` + `get_latest_claim`
+  alone, or carry its own provenance state.
 
 ### §2.2 Body model surfaces
 
