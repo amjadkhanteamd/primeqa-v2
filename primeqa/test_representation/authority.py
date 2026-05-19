@@ -220,6 +220,50 @@ def check_claim_write_authority(
 # Enforcement helper
 # ---------------------------------------------------------------------------
 
+def check_recipe_write_authority(
+    actor: ActorKind,
+    has_prior_version: bool,
+) -> AuthorityDecision:
+    """Evaluate the authority decision for a proposed recipe write.
+
+    Per SPEC §7.4 (conservative re-approval default): every new
+    recipe version requires explicit re-approval regardless of
+    actor or change content. Unlike claims, recipes carry no
+    ``identity_hash`` mechanism — the substrate cannot detect
+    "recipe edit preserves behavior," and a hash-preserving
+    no-op skip (the §7.7 claim-side case) has no analogue here.
+
+    Per D-061 §7.2: the no-autonomous-semantic-divergence rule
+    applies to identity-bearing content (claims + conditions),
+    NOT to recipes. S8 CAN rewrite recipes autonomously. The
+    conservative re-approval default is a SPEC §7.4 policy
+    choice on the substrate's part, not an actor-authority
+    restriction.
+
+    Policy at v1:
+      - All actors + any history → ``allowed=True``, never
+        a no-op, ``new_status="generated_unapproved"``.
+
+    This function exists as a forward-compat hook: future
+    versions may relax the conservative default once behavior-
+    preserving detection exists. Today it always returns the
+    same decision.
+    """
+    # ``has_prior_version`` is unused at v1 but kept in the
+    # signature to mirror :func:`check_claim_write_authority`
+    # and to leave the door open for a future
+    # "first version vs subsequent version" distinction.
+    del has_prior_version
+    if actor not in ("human", "s3", "s8"):
+        raise ValueError(f"unknown actor kind: {actor!r}")
+    return AuthorityDecision(
+        allowed=True,
+        is_noop=False,
+        new_status="generated_unapproved",
+        rejection_reason=None,
+    )
+
+
 def enforce_authority(decision: AuthorityDecision) -> None:
     """Raise :class:`AuthorityViolationError` if ``decision``
     disallows the write; otherwise return without effect.

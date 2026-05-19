@@ -230,6 +230,7 @@ from primeqa.test_representation.authority import (
     ActorKind,
     AuthorityDecision,
     check_claim_write_authority,
+    check_recipe_write_authority,
     enforce_authority,
 )
 from primeqa.test_representation.coverage import (
@@ -343,6 +344,7 @@ __all__ = [
     "WriteClaimResult",
     "WriteRecipeResult",
     "check_claim_write_authority",
+    "check_recipe_write_authority",
     "enforce_authority",
     "extract_coverage",
 ]

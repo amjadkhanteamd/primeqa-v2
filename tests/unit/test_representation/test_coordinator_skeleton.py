@@ -89,38 +89,36 @@ class TestCoordinatorWriteClaimImplemented:
         assert not isinstance(exc_info.value, NotImplementedError)
 
 
-class TestCoordinatorWriteRecipeStub:
-    def test_raises_not_implemented(self) -> None:
-        coord = SemanticTransactionCoordinator()
-        with pytest.raises(NotImplementedError):
-            coord.write_recipe(
-                session=None,  # type: ignore[arg-type]
-                actor="human",
-                recipe_id=None,
-                claim_test_id=uuid4(),
-                trigger_kind="ui-trigger",
-                recipe_kind="data-recipe",
-                causal_initiation=None,  # type: ignore[arg-type]
-                observation_realization=None,  # type: ignore[arg-type]
-                execution_environment=None,  # type: ignore[arg-type]
-            )
+class TestCoordinatorWriteRecipeImplemented:
+    """At Track D-β.1 these asserted write_recipe raised
+    :class:`NotImplementedError`. At D-β.3 write_recipe is
+    implemented; the tests confirm the method is no longer a
+    stub (importable, callable — the integration tests under
+    ``tests/integration/test_representation/`` exercise the
+    actual orchestration against a real DB)."""
 
-    def test_error_message_points_to_implementing_subtrack(self) -> None:
+    def test_method_is_implemented(self) -> None:
+        """write_recipe should not raise NotImplementedError. A
+        call with invalid arguments raises the appropriate
+        validation error from the implementation (here:
+        ValueError on the trigger_kind check), NOT
+        NotImplementedError."""
         coord = SemanticTransactionCoordinator()
-        with pytest.raises(NotImplementedError) as exc_info:
+        with pytest.raises(Exception) as exc_info:
             coord.write_recipe(
                 session=None,  # type: ignore[arg-type]
                 actor="human",
                 recipe_id=None,
                 claim_test_id=uuid4(),
-                trigger_kind="ui-trigger",
+                trigger_kind="bogus-trigger",
                 recipe_kind="data-recipe",
                 causal_initiation=None,  # type: ignore[arg-type]
                 observation_realization=None,  # type: ignore[arg-type]
                 execution_environment=None,  # type: ignore[arg-type]
             )
-        msg = str(exc_info.value)
-        assert "D-β.3" in msg
+        # Step 1 (discriminator validation) raises ValueError
+        # before any DB activity.
+        assert not isinstance(exc_info.value, NotImplementedError)
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +157,11 @@ class TestCoordinatorSignatures:
             ), f"parameter {name!r} should be keyword-only"
 
     def test_write_recipe_parameter_names(self) -> None:
+        """The D-β.1 skeleton pinned the parameter list; D-β.3
+        added one optional kwarg (``claim_version_seq``) per SPEC
+        §6.4 for the recipe-to-claim version-pinning case. The
+        prior-pinned parameters MUST remain in the same positions
+        — only the new optional kwarg appends to the end."""
         sig = inspect.signature(
             SemanticTransactionCoordinator.write_recipe,
         )
@@ -170,6 +173,7 @@ class TestCoordinatorSignatures:
             "trigger_kind", "recipe_kind",
             "causal_initiation", "observation_realization",
             "execution_environment",
+            "claim_version_seq",  # added in D-β.3
         ]
 
     def test_write_recipe_keyword_only_after_session(self) -> None:
@@ -181,6 +185,7 @@ class TestCoordinatorSignatures:
             "trigger_kind", "recipe_kind",
             "causal_initiation", "observation_realization",
             "execution_environment",
+            "claim_version_seq",
         ):
             assert (
                 sig.parameters[name].kind
