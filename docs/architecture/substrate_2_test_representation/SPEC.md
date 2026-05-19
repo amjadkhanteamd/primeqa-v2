@@ -774,6 +774,7 @@ claim-level and recipe-level events.
 - `event_data` JSONB
 - `event_actor` text
 - `event_at` timestamp
+- Indexes: `(claim_test_id) WHERE claim_test_id IS NOT NULL` and `(recipe_id) WHERE recipe_id IS NOT NULL` — partial-index pair supporting per-target history lookups (added in Track A's migration beyond this section's literal text; future SPEC update)
 
 **`test_claim_coverage`** — semantic linkage layer connecting S2
 claims to S1 entities. Current-only; rederived on each claim
@@ -859,6 +860,16 @@ App-level derivation. The S3 generator and S8 evolver are the only
 writers of `test_claims`; both update `test_claim_coverage` rows
 as part of the claim write. Coverage rederivation on version
 change follows the delete-and-replace pattern per D-057.
+
+The reference-bearing list fields that drive coverage —
+`subject_fields` (state-transition claims), `affected_fields`
+(automation-effect claims), and the `conditions` list on
+semantic-conditions bodies — carry `ArraySemantics.SET`. Coverage
+extraction emits one row per `(entity_type, entity_id, reference_kind)`
+triple regardless of source order; canonicalization for
+`identity_hash` (§6.3) sorts SET-marked lists before hashing.
+Reordering these fields in the body therefore changes neither
+coverage rows nor the identity_hash.
 
 ### 4.6 Forward-compatibility markers
 
@@ -960,6 +971,20 @@ computation → coverage extraction → authority enforcement → DB
 write transaction.
 
 Any step's failure rolls back the transaction.
+
+The body-row discriminator-consistency step (step 4) is
+structurally defensive for typed Pydantic body input — concrete
+body classes pin `kind` via `Literal[...]`, so a body whose
+internal `kind` disagrees with the row discriminator cannot be
+constructed in the first place; the inconsistency is caught at
+the registry-dispatch step (step 2) instead. The step is
+preserved for canonical ordering and for the dict-input variant
+where the check is reachable. The same reasoning applies to the
+recipe-side cross-body validation step (§4.7.6, recipes), where
+step 5 (cross-layer ontology) is structurally defensive against
+`IdentityBearingRef` leaking into operational-layer bodies —
+Pydantic's `OperationalRef` union resolution prevents that case
+at construction.
 
 #### 4.7.7 Read-path semantics
 
@@ -1206,6 +1231,17 @@ Default: logical resolution (recipe's `claim_test_id` references
 the claim's `test_id`, not specific version). Optional pinning via
 `claim_version_seq` for reproducibility-critical contexts.
 
+The recipe-to-claim FK is **logical-only**: there is no
+DB-level foreign-key constraint (recipes reference test_id,
+which is not unique in `test_claims` — the PK is
+`(test_id, version_seq)`). The Coordinator enforces referential
+integrity at write time per §4.7.6 step 6: the recipe's
+`claim_test_id` must resolve to an existing claim (any
+version_seq); when `claim_version_seq` is provided, that specific
+version must exist. Either failure raises
+`OntologyViolationError`. See D-α §A6 for the substrate-isolation
+rationale.
+
 ### 6.5 Coverage rederivation
 
 `test_claim_coverage` is current-only. When a new claim version
@@ -1219,6 +1255,17 @@ Approval state is dual-tracked: current state on
 invalidation triggers on `identity_hash` change between versions.
 Mutation paths and per-path approval impact specified in §7 per
 D-061.
+
+**Deprecation is orthogonal to supersession.** The `valid_to`
+window closes on **supersession** (a new version_seq for the
+same test_id); `status` (`draft` / `approved` / `deprecated`) is
+a separate semantic-lifecycle axis. A deprecated row may still
+have `valid_to IS NULL` (current valid version, deprecated
+status). `get_current_approved_claim` walks back through history
+by `status='approved'` filter; it skips deprecated rows
+regardless of their `valid_to` state. See D-068 for the
+in-place mutation rationale (status changes do not bump
+version_seq).
 
 ### 6.7 Archival policy
 
@@ -1271,6 +1318,14 @@ is governed by hash change (mechanical); recipe re-approval is a
 
 All three paths route through the Semantic Transaction
 Coordinator.
+
+**S4 is recognized as a fourth actor for boundary callback only.**
+The actor taxonomy is `Literal["human", "s3", "s8", "s4"]`. The
+`s4` value is accepted ONLY by `report_run_outcome` (per §8.3);
+all other Coordinator methods that take an actor reject `s4`
+with `AuthorityViolationError`. S4 is a runtime-state-reporting
+callback identity, not a substrate-2 mutation actor in the
+sense of the three paths above. See D-066.
 
 ### 7.2 Authority model — no autonomous semantic divergence
 
@@ -1379,6 +1434,16 @@ aggregate statistics, no history.
 Per-recipe, not per-recipe-version. Separate table, not columns
 on `test_recipes` — the boundary must be visible in the schema.
 
+**Cross-version persistence.** Because the row is keyed by
+`recipe_id` alone, a new recipe version (different
+`version_seq`, same `recipe_id`) inherits the existing runtime
+state row. The row's `last_run_recipe_version_seq` column
+records which version was actually run, so consumers detect
+"runtime state predates the current recipe content" by
+comparing `last_run_recipe_version_seq` to the recipe's current
+`version_seq`. A subsequent `report_run_outcome` on the new
+version updates this column to reflect the run.
+
 ### 8.3 Push-based S4 integration
 
 S4 reports run outcomes via Coordinator callback:
@@ -1479,6 +1544,18 @@ Three architectural directions reserved without action in v1:
 - **Bidirectional sync (PrimeQA → external)** — out of
   substrate-2 scope.
 
+### 9.6 Coordinator-side enforcement
+
+`link_requirement` rejects unknown `external_system` values with
+`ValueError` (v1 enum membership: `{"jira"}`; extensions require
+a migration to add an enum value AND an update to the
+Coordinator's allow-list constant). The same method rejects an
+unknown `test_id` with `OntologyViolationError` per §6.4's
+logical-FK contract. `unlink_requirement` is idempotent on
+missing rows (returns `None`). Re-linking with a changed
+`external_version` updates that column only; `linked_by` and
+`linked_at` are preserved to capture original authorship.
+
 See `DECISIONS_LOG.md` D-063 for rationale and alternatives
 considered.
 
@@ -1514,28 +1591,52 @@ Consequences of this framing:
 
 ### 10.2 Five interface groups
 
-Organized by consumer concern, not by consuming substrate:
+Organized by consumer concern, not by consuming substrate. The
+Phase 4 implementation (Tracks A–E) realized 22 Coordinator
+methods plus 3 free-function authority helpers across these
+groups:
 
-1. **Write interfaces** — `write_claim`, `write_recipe`,
-   `promote_claim_to_approved` (human-only), `deprecate_claim`
+1. **Write (7 methods)** — `write_claim`, `write_recipe`,
+   `promote_claim_to_approved` (human-only),
+   `promote_recipe_to_approved` (human-only), `deprecate_claim`
    (human-only), `deprecate_recipe` (human-only),
-   `surface_unblessed_transition` (S8-only).
+   `change_recipe_priority` (any actor except `s4`).
 
-2. **Read interfaces** — `get_current_approved_claim` (resolution
-   operation), `get_latest_claim`, `get_claim_version`,
-   `list_active_recipes`, `select_recipe_for_execution` (resolution
-   operation).
+2. **Read (5 methods)** — `get_latest_claim`,
+   `get_claim_version`, `list_active_recipes`,
+   `get_recipe_latest`, `get_recipe_version`.
 
-3. **Equivalence and discovery interfaces** —
-   `query_equivalent_claims`, `list_tests_affected_by_entity`
-   (uses coverage), `list_tests_by_requirement`.
+3. **Discovery (3 methods)** — `query_equivalent_claims`,
+   `list_tests_affected_by_entity` (drives via coverage),
+   `list_tests_by_requirement`.
 
-4. **Runtime state interfaces** (per §8) —
-   `report_run_outcome` (S4-only), `get_recipe_runtime_state`,
-   `get_test_runtime_status` (resolution operation).
+4. **Resolution (3 methods)** — `get_current_approved_claim`,
+   `get_test_runtime_status`, `select_recipe_for_execution`.
+   Per §10.4, these compose substrate rules into single
+   answers; they are first-class substrate concepts, not raw
+   lookups.
 
-5. **Provenance interfaces** — `get_provenance`,
-   `get_recipe_provenance`.
+5. **Boundary (4 methods)** — `report_run_outcome` (S4-only),
+   `get_recipe_runtime_state`, `link_requirement`,
+   `unlink_requirement`.
+
+Plus 3 authority helpers as free functions:
+`check_claim_write_authority`, `check_recipe_write_authority`,
+`check_runtime_state_write_authority`. The first two return an
+`AuthorityDecision` carrying the policy outcome; the third
+raises directly because the s4-only contract has no decision
+space.
+
+**Reservations not realized in Phase 4** (forward-compat
+placeholders, not commitments revoked):
+
+- `surface_unblessed_transition` (S8-only) — the v1
+  Coordinator does not implement this; S8's deletion-detection
+  workflow surfaces via existing mutation paths.
+- `get_provenance` / `get_recipe_provenance` — provenance is
+  written by all mutation methods but no read interface ships
+  in Phase 4. Direct queries against `test_provenance` remain
+  available; a typed read API can be added in a future track.
 
 ### 10.3 Behavioral contracts per interface
 
@@ -1560,6 +1661,16 @@ Distinguished from lookups by composition over substrate rules,
 governance/policy implications, and future-extensibility. Named
 as a substrate-level pattern; future resolution operations will
 inherit this slot rather than reinvent it.
+
+The Phase 4 v1 implementations use the **conservative policies**
+documented in §7.5 (current-approved walks past drafts and
+deprecated rows), §8.4 (test-runtime status: "any failure →
+failing; all pass → passing; skipped doesn't downgrade;
+generated_unapproved recipes excluded"), and the
+membership-based environment matcher described above. §8.5's
+acknowledged pressure on multi-recipe composition is unresolved
+at v1; §8.6 + §6.9 reserve richer policies for future
+evolution.
 
 ### 10.5 Wire format reservation
 
@@ -1649,3 +1760,132 @@ Both ship later. Substrate-2 v1 ships first.
 
 See `DECISIONS_LOG.md` D-065 for rationale and alternatives
 considered.
+
+---
+
+## 12. Implementation notes (Phase 4)
+
+This section captures findings, conventions, and gotchas that
+emerged during the Phase 4 implementation (Tracks A through E).
+Substrate behavior is defined by §1–§11; this section is
+descriptive, not prescriptive.
+
+### 12.0 Phase 4 summary
+
+Substrate-2 Phase 4 implemented the substrate end-to-end across
+17 commits. Outcomes:
+
+- **22 Coordinator methods** across the 5 interface groups defined
+  in §10.2 (7 write, 5 read, 3 discovery, 3 resolution,
+  4 boundary) plus 3 free-function authority helpers.
+- **1148 tests** (872 unit + 276 integration; 3 documented skips
+  for defence-in-depth paths unreachable for typed Pydantic
+  input).
+- **Five architectural commitments verified mechanically**:
+  - **No autonomous semantic divergence** (D-061 §7.2): S8 cannot
+    write hash-changing claims; the authority check rejects.
+  - **No autonomous execution** (D-064 + §10.4):
+    `generated_unapproved` recipes are ineligible for
+    `select_recipe_for_execution` until a human promotes.
+  - **Conservative re-approval default** (§7.4): every new recipe
+    version requires explicit re-approval regardless of actor.
+  - **S3 same-hash no-op** (§7.7): S3 regenerating identical
+    canonical form produces a no-op skip (no new version, no
+    provenance event).
+  - **First-write-wins idempotency** (§8.3): `report_run_outcome`
+    preserves the first valid report for a given `run_id`; late
+    corrections do not overwrite.
+- **18 end-to-end scenarios** across 5 categories (lifecycle,
+  version evolution, multi-recipe, S4 boundary, discovery)
+  verifying composition correctness across the 22 methods. Zero
+  composition bugs surfaced; one test-side fixture-assertion
+  alignment was the only adjustment.
+
+The implementation deltas from Phase 3 design are minor and
+captured inline in the relevant sections (§4.1, §4.5, §4.7.6,
+§6.4, §6.6, §7.1, §8.2, §9.6, §10.2, §10.4); the substrate as
+specified in Phase 3 is what was built.
+
+### 12.1 Test convention
+
+Substrate-2's integration tests use **local PostgreSQL with
+per-test transactional rollback**. This differs from
+substrate-1's against-actual-Railway pattern + prefix-based
+cleanup. Rationale: substrate-2's write-flow tests require
+transactional isolation for "fails at step N, transaction rolls
+back, no partial state" verification, which prefix cleanup
+cannot express.
+
+Convention specifics:
+
+- Local PostgreSQL 16.13 + pgvector 0.8.0 + pgcrypto via
+  Homebrew.
+- Test DB name: `primeqa_test_substrate2` (env var
+  `SUBSTRATE_2_TEST_DB_URL` for override).
+- Per-test `session` fixture wraps a SQLAlchemy `Connection` in
+  a transaction; the fixture's teardown rolls back the
+  transaction so no row persists across tests.
+- **Flush-not-commit**: end-to-end tests rely on the
+  Coordinator's internal `session.flush()` calls to make
+  intermediate state visible across steps WITHOUT exiting the
+  test's outer transaction. Explicit `session.commit()` calls
+  would break per-test rollback isolation, so the e2e suite
+  avoids them.
+- Full suite (1148 tests) runs end-to-end in ~17 seconds.
+
+See D-067 for the architectural decision; see
+`tests/integration/test_representation/_fixtures.py` for the
+composed-scenario helpers.
+
+### 12.2 Implementation patterns
+
+Patterns that emerged from the SQLAlchemy + PostgreSQL tech
+stack and are worth carrying forward in substrate-2
+maintenance:
+
+- **`session.refresh(row)` after raw NOW() UPDATEs.** SQLAlchemy
+  ORM's identity map can carry stale data after raw SQL
+  UPDATEs. Explicit refresh ensures returned dataclasses
+  reflect DB-side timestamps. Used in `promote_*`,
+  `deprecate_*`, `change_recipe_priority`, `report_run_outcome`.
+- **`ON CONFLICT ... DO UPDATE` for idempotent inserts.**
+  `report_run_outcome` and the `arrange_runtime_state` helper
+  use this pattern. Cleaner than SELECT-then-INSERT-or-UPDATE
+  with equivalent atomicity guarantees.
+- **`updated_at` invariance for no-op verification.** In tests,
+  after a Coordinator call that should be a no-op, the
+  assertion `result.updated_at == prior.updated_at` (with a
+  small `time.sleep(...)` between calls so the DB clock could
+  have advanced if a write had fired) establishes no-op
+  *semantically*, not just "no observable change in this
+  microsecond."
+- **Lazy imports inside function bodies for circular-dependency
+  resolution.** The
+  `canonicalization` ↔ `identity_hash` ↔ `canonicalizers`
+  triangle resolves by lazy imports inside `canonicalize()`.
+  Established in Track C; inherited by Track D.
+- **Class-level `__test__ = False` on SQLAlchemy row classes.**
+  Prevents pytest's `Test*` collection glob from picking up
+  `TestClaim`, `TestRecipe`, etc., as test classes. Set on all
+  six row models.
+
+### 12.3 Setup gotchas
+
+Environment-setup details that future developers will need:
+
+- **pgvector extension required.** Substrate-1's tenant
+  migrations add `VECTOR(1024)` columns to entities tables. The
+  test-DB setup must run
+  `CREATE EXTENSION IF NOT EXISTS vector` before invoking
+  alembic. The conftest does this; manual setups must mirror.
+- **pgcrypto extension required.** Needed by substrate-1's
+  tenant migrations for UUID generation. Same setup pattern.
+- **Alembic multiple-heads.** The project has two migration
+  branches (`shared` and `tenant`). Bare `alembic upgrade head`
+  is ambiguous; use `alembic upgrade shared@head` and
+  `alembic upgrade tenant@head` explicitly (with
+  `-x mode=shared` / `-x mode=tenant -x tenant_id=N`).
+- **Local PG version.** Tests verified against PostgreSQL
+  16.13 + pgvector 0.8.0 via Homebrew. Version mismatches with
+  the migration set may surface as constraint-name or
+  enum-handling differences.

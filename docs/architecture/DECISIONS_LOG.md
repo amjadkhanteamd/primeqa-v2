@@ -3797,3 +3797,214 @@ deliberate.
 - D-063 (requirement linkage — replaces v2.2 requirements)
 
 ---
+
+
+## D-066 — Actor taxonomy expansion: `s4` recognized as runtime-state-only callback
+
+**Date:** 2026-05-19
+**Substrates affected:** [S2, with consequences for S4]
+**Status:** active
+
+**Decision.** Extend the substrate's actor taxonomy from
+`Literal["human", "s3", "s8"]` to `Literal["human", "s3", "s8", "s4"]`.
+The `s4` value is recognized ONLY by
+:func:`check_runtime_state_write_authority` + the
+:meth:`SemanticTransactionCoordinator.report_run_outcome` callback
+per SPEC §8.3. Every other Coordinator method that accepts an
+`actor` rejects `s4` with `AuthorityViolationError`, returned via
+the existing `AuthorityDecision` contract.
+
+**Context.** Track D-δ implemented the S4 boundary callback per
+SPEC §8.3. The substrate's authority model already treats `actor`
+as a first-class parameter with enforcement at every entry point
+(humans, S3, S8 are evaluated for claim and recipe writes per
+D-061). S4 being a *boundary callback only* (substrate-2 never
+queries S4; S4 pushes via Coordinator) needed a mechanical way
+to express that constraint consistent with the existing
+authority-enforcement pattern.
+
+**Rationale.** Two paths considered:
+
+1. **Special-case S4 as a sentinel inside `report_run_outcome`
+   without taxonomy recognition.** Rejected: this would make the
+   actor parameter ambiguous (sometimes a member of
+   `{human, s3, s8}`, sometimes a `report_run_outcome` sentinel),
+   weakening the mechanical-check contract that every other
+   substrate method depends on.
+2. **Recognize `s4` in the taxonomy and enforce its scope with
+   the same allowlist mechanism used by all other entry points.**
+   Chosen: keeps the contract uniform; future actor additions
+   (S6 for read-only attribution, admin override, etc.) follow
+   the same precedent.
+
+**Consequences.**
+
+- `ActorKind` expansions are non-breaking additions when handled
+  as `Literal` extensions.
+- `check_*_write_authority` functions enforce their actor
+  allow-list via `AuthorityDecision` returns (allowing the
+  shared `enforce_authority` helper to raise uniformly).
+- Authority error messages reference both the rule (e.g.,
+  "humans-only per D-ε-1") AND the SPEC section
+  ("per SPEC §8.3") for debug context.
+- SPEC §7.1 lists S4 alongside the three mutation paths with an
+  explicit note that it's a *boundary callback only*, not a
+  fourth mutation path.
+
+**Related decisions / sections.**
+
+- D-061 (mutation paths + authority — the existing model that
+  this decision extends).
+- D-062 (S4 boundary — runtime state semantics that
+  `report_run_outcome` implements).
+- SPEC §7.1 + §8.3 (updated in the Phase 4 documentation pass).
+
+---
+
+
+## D-067 — Substrate-2 test convention: local PostgreSQL with per-test transactional rollback
+
+**Date:** 2026-05-19
+**Substrates affected:** [S2]
+**Status:** active
+
+**Decision.** Substrate-2 adopts a substrate-local integration-test
+convention: local PostgreSQL 16.13 + pgvector 0.8.0 + pgcrypto via
+Homebrew; per-test SQLAlchemy `Session` fixture bound to a
+`Connection` in a transaction, with the transaction rolled back
+at teardown. The test database (`primeqa_test_substrate2`) is
+created and migrated at pytest-session start; dropped at
+session end unless `SUBSTRATE_2_KEEP_TEST_DB=1` is set.
+Substrate-1 retains its existing convention (tests against the
+actual Railway DB + prefix-based cleanup).
+
+**Context.** Track D-β.2 implemented the 11-step `write_claim`
+orchestration, which needed integration tests verifying "fails at
+step N, transaction rolls back, no partial state remains."
+Substrate-1's convention (tests against the actual Railway DB
+with prefix-based cleanup at teardown) cannot express this:
+prefix cleanup runs ordered DELETEs *after* the test body
+completes; it doesn't model a transaction aborting *during* the
+test.
+
+**Rationale.** Substrate-2's write-flow tests have
+architecturally different needs than substrate-1's sync tests.
+The transactional-rollback pattern is *necessary*, not aesthetic:
+
+- Step-failure tests need to assert that NO rows persist after
+  a mid-flow exception. Prefix cleanup cannot verify "no rows
+  persisted" — it only cleans up rows that DID persist.
+- Concurrent-collision tests deliberately produce
+  `IntegrityError` and need clean rollback in the test fixture
+  to recover.
+- E2E scenarios assert state after each step; an outer
+  transaction makes "the previous step's writes are visible to
+  the next step's reads" trivial without committing.
+
+Local PostgreSQL already exists in the dev environment (per
+project working memory — set up to address Railway-proxy
+unreliability for substrate-1's sync tests). This decision uses
+it as the substrate-2 test environment without enforcing
+substrate-1 migration.
+
+**Consequences.**
+
+- Substrate-1 keeps its existing pattern; no enforced uniformity.
+- CI integration requires local PG availability (test DB URL
+  configurable via env var `SUBSTRATE_2_TEST_DB_URL`).
+- Future substrates choose their test convention based on the
+  test patterns they need, not project uniformity.
+- The e2e test convention adds **flush-not-commit**: the
+  Coordinator's internal `session.flush()` calls make
+  intermediate state visible across steps within a scenario
+  without committing the outer transaction. Explicit
+  `session.commit()` calls in tests would break per-test
+  rollback isolation, so the e2e suite avoids them.
+- Setup gotchas documented in SPEC §12.3: pgvector + pgcrypto
+  extensions, Alembic multiple-heads handling (branch-qualified
+  `upgrade` targets).
+
+**Related decisions / sections.**
+
+- D-α §A6 (substrate-isolation principle — testing follows the
+  same principle as schema layout: substrate-local
+  organization).
+- SPEC §12.1 + §12.3 (test convention + setup gotchas
+  documented in the Phase 4 documentation pass).
+
+---
+
+
+## D-068 — In-place mutation for status and priority changes; no version_seq bump
+
+**Date:** 2026-05-19
+**Substrates affected:** [S2, with consequences for S3, S6, S8]
+**Status:** active
+
+**Decision.** The Coordinator's status-mutation methods
+(`promote_claim_to_approved`, `promote_recipe_to_approved`,
+`deprecate_claim`, `deprecate_recipe`) and the operational
+priority-change method (`change_recipe_priority`) UPDATE the
+target row's `status` (or `priority`) column **in place**.
+`version_seq` is NOT incremented. State transitions are captured
+in `test_provenance` via the appropriate `event_kind`
+(`claim_approved` / `claim_deprecated` / `recipe_approved` /
+`recipe_deprecated` / `recipe_priority_changed`).
+
+**Context.** Track D-ε implemented the lifecycle-mutation
+methods. The design question: should these operations create new
+version_seq rows (preserving prior status in history via the row
+itself), or mutate the target row in place (with audit-trail
+history in `test_provenance`)?
+
+**Rationale.** `version_seq` models semantic supersession per
+D-057 — it tracks "this claim's meaning has been replaced by
+the next version's meaning." Bumping `version_seq` for status
+changes would conflate two distinct lifecycle dimensions:
+
+- *Semantic supersession*: a new identity_hash (or, for recipes,
+  a new operational realization). Modeled by `version_seq`.
+- *Operational lifecycle*: approval, deprecation, priority
+  adjustment. None of these change the body content; all are
+  governance / operational metadata.
+
+Bumping `version_seq` for approvals would inflate the counter
+for non-semantic reasons, breaking the invariant that
+`version_seq` measures *semantic* progression. Provenance is
+already the substrate's audit trail (every mutation method
+appends an event); the row itself can mutate in place without
+losing history.
+
+**Consequences.**
+
+- After `promote_claim_to_approved(test_id, version_seq=1)`,
+  querying by `(test_id, version_seq=1)` returns the same row
+  with `status='approved'`. Callers reasoning about
+  `version_seq` continuity stay correct.
+- Provenance carries the full audit trail.
+  `event_data["prior_status"]` + `event_data["new_status"]`
+  capture the transition; deprecation events additionally
+  carry `event_data["reason"]` per D-ε-5.
+- The `reason` field for deprecation lives ONLY in
+  `test_provenance.event_data` — there is no `reason` column on
+  `test_claims` or `test_recipes`. SQL filters against
+  `status='deprecated'` won't surface the reason; audit tooling
+  reads provenance for it.
+- Mechanically verified by integration tests
+  (`test_promote_*.py`, `test_deprecate_*.py`,
+  `test_change_recipe_priority.py`): each scenario writes,
+  applies a status / priority change, then asserts that the row
+  count for the target `recipe_id` (or `test_id`) is exactly 1
+  with the new state.
+
+**Related decisions / sections.**
+
+- D-057 (effective-time supersession — `version_seq` semantics
+  this decision preserves).
+- D-061 (mutation paths + authority — status mutations are
+  human-only per the conservative default this decision
+  inherits).
+- SPEC §6.6 + §10.2 (updated in the Phase 4 documentation pass
+  to reflect in-place mutation).
+
+---
