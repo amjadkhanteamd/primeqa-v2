@@ -28,6 +28,7 @@ from primeqa.test_representation import (
     LiteralValue,
     LogicalRef,
     NullValue,
+    OntologyViolationError,
     PinnedRef,
     ProhibitionClaimBody,
     RejectionSignal,
@@ -315,7 +316,8 @@ class TestExtractCoverageDefensiveRefRejection:
     def test_plain_pinned_ref_in_input_raises(self) -> None:
         """A plain :class:`PinnedRef` (operational) shouldn't
         appear in identity-bearing content; the walk fails
-        loudly if it does."""
+        loudly with the designated cross-layer error per SPEC
+        §4.7.8 + D-058 §5."""
         # We can't construct a claim body with a PinnedRef in a
         # subject slot (Pydantic enforces IdentityBearingRef
         # there), so call the walk directly via a hand-crafted
@@ -329,9 +331,17 @@ class TestExtractCoverageDefensiveRefRejection:
             version_seq=1,
             external_id="X.Y",
         )
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(OntologyViolationError) as exc_info:
             _walk(plain_pinned, "subject", set(), "test")
-        assert "PinnedRef" in str(exc_info.value)
+        err = exc_info.value
+        assert "PinnedRef" in str(err)
+        # Structured context preserved:
+        assert err.context["field_path"] == "test"
+        assert err.context["actual_entity_type"] == "Field"
+        # OntologyViolationError IS a SubstrateError — the legacy
+        # base-class assertion still holds for any caller catching
+        # at that level.
+        assert isinstance(err, SubstrateError)
 
     def test_logical_ref_in_input_raises(self) -> None:
         from primeqa.test_representation.coverage import _walk
@@ -339,9 +349,13 @@ class TestExtractCoverageDefensiveRefRejection:
         logical = LogicalRef(
             entity_type="Field", external_id="X.Y",
         )
-        with pytest.raises(SubstrateError) as exc_info:
+        with pytest.raises(OntologyViolationError) as exc_info:
             _walk(logical, "subject", set(), "test")
-        assert "LogicalRef" in str(exc_info.value)
+        err = exc_info.value
+        assert "LogicalRef" in str(err)
+        assert err.context["field_path"] == "test"
+        assert err.context["actual_entity_type"] == "Field"
+        assert isinstance(err, SubstrateError)
 
 
 # ---------------------------------------------------------------------------

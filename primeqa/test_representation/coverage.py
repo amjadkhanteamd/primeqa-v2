@@ -41,7 +41,7 @@ from uuid import UUID
 from pydantic import BaseModel
 from pydantic.fields import FieldInfo
 
-from primeqa.test_representation.errors import SubstrateError
+from primeqa.test_representation.errors import OntologyViolationError
 from primeqa.test_representation.models.common import BodyBase
 from primeqa.test_representation.models.references import (
     IdentityBearingRef,
@@ -87,11 +87,13 @@ def extract_coverage(
     deterministic order.
 
     Raises:
-      :class:`SubstrateError` — defensively, if the walk
+      :class:`OntologyViolationError` — defensively, if the walk
       encounters a :class:`PinnedRef` (not
       :class:`IdentityBearingRef`) or :class:`LogicalRef` in
       identity-bearing content. Operational refs aren't allowed
-      in claim bodies.
+      in claim bodies per D-058 §5 + SPEC §4.7.8 — this is the
+      cross-layer reference-type contract; the designated error
+      type is :class:`OntologyViolationError`.
     """
     accumulated: set[tuple[str, UUID, ReferenceKind]] = set()
     _walk(asserted_truth, "subject", accumulated, "asserted_truth")
@@ -132,19 +134,21 @@ def _walk(
         return
 
     if isinstance(value, PinnedRef):
-        raise SubstrateError(
+        raise OntologyViolationError(
             f"PinnedRef (operational ref) encountered at {path}: "
             f"identity-bearing content requires IdentityBearingRef "
             f"per D-058 §5",
             field_path=path,
+            actual_entity_type=value.entity_type,
         )
 
     if isinstance(value, LogicalRef):
-        raise SubstrateError(
+        raise OntologyViolationError(
             f"LogicalRef (operational ref) encountered at {path}: "
             f"identity-bearing content requires IdentityBearingRef "
             f"per D-058 §5",
             field_path=path,
+            actual_entity_type=value.entity_type,
         )
 
     if isinstance(value, BaseModel):
