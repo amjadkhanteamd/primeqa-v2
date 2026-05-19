@@ -1638,6 +1638,16 @@ placeholders, not commitments revoked):
   in Phase 4. Direct queries against `test_provenance` remain
   available; a typed read API can be added in a future track.
 
+Likely consumers (forward-pointer, not a commitment):
+`get_provenance` for S3 generation (inspecting prior
+generation attempts), `get_provenance` /
+`get_recipe_provenance` for S6 intelligence (audit surfaces
+over the substrate's mutation history), and
+`surface_unblessed_transition` for S8 evolution (the
+"I detected drift; needs human review" surface). The
+reservations exist so the interface shape is ready when
+downstream substrates need it.
+
 ### 10.3 Behavioral contracts per interface
 
 Substrate-level commitments, not implementation conventions. Each
