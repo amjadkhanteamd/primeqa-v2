@@ -5989,3 +5989,311 @@ Together they make substrate-3's semantic identity robust to operational variati
 - D-087 (Theme 5; telemetry vs provenance separation)
 
 ---
+
+
+## D-089 — Prompt management architecture with bounded co-evolution and policy-adjacent surface acknowledgment [Theme 6]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with downstream consequences for substrate-3 evolution discipline and Theme 7 quality envelope]
+**Status:** active
+
+**Decision.** Theme 6 commits substrate-3 to a prompt management architecture covering versioning, composition, lifecycle, and the prompt-substrate-orchestration co-evolution discipline. Prompts are explicitly acknowledged as a policy-adjacent surface within substrate-bounded governance.
+
+**(a) Prompt versioning.**
+
+- Sequential `prompt_template_version` per template file. Increments on any change.
+- Storage in version-controlled repository at `substrate-3/prompts/`. Version tied to git commit.
+- Immutable per version. Once a `prompt_template_version` is referenced by a `GenerationRequest`, that content is frozen. Required for replay determinism.
+- Forward-compat with rollback. When a new version ships, old versions remain available for replay indefinitely. Substrate maintains a prompt registry mapping version → content.
+
+Per D-071: prompts are operational_context. `prompt_template_version` field exists alongside `llm_model_identifier`, `retry_policy`, `budgets` in the operational axis. Per D-088: operational variation does not affect identity_hash; same semantic_context + governance_context + different operational_context (including different prompt_template_version) → expected identity_hash match.
+
+**(b) Prompt composition.**
+
+V1 composition is layered:
+
+- Base system prompt. Describes substrate-3's three-tool surface (D-086), Guardrail commitments, mission as constrained semantic orchestration runtime (D-085). Same across all generations.
+- Per-archetype fragment. Extends base with archetype-specific guidance for grounding sources and admissibility patterns. V1 ships three archetype fragments (data-behavior, configuration, permission); UI and integration fragments deferred to a future Theme 6 calibration cycle.
+- Per-request context. Request-specific content composed at request time (requirements being processed, S1 context, archetype_hint when supplied). Not separately versioned; part of the request itself.
+- Feedback templates. Substrate-emitted feedback for Layer A violations during multi-turn correction loops.
+
+The `prompt_template_version` references the composed (base + active fragments) content. Composition is mechanical; substrate-3 implementation territory.
+
+**(c) Prompt lifecycle.**
+
+- Authoring. Prompts authored by substrate-3 maintainers; reviewed via pull request.
+- Eval gate. New prompt versions must pass the eval suite (per D-090) before merge.
+- Deployment. Merge to main triggers prompt registry update; new version becomes available; existing generations continue using their referenced version (immutability).
+- Deprecation. Old versions remain available for replay indefinitely.
+
+**(d) Prompts as a policy-adjacent surface within bounded governance.**
+
+Per round 2 TA pushback (item 2): prompts encode admissibility heuristics, refusal tendencies, decomposition preferences. They are behavior-shaping policy surfaces, not merely contextual guidance.
+
+Architectural framing:
+
+- Substrate governance authority (governance_context, Layer B enforcement). The substrate enforces what behaviors are permitted — Guardrail 1/2/3 compliance, bounded decomposition, semantic-substance discipline. Governance-owned.
+- Prompts within bounded space (operational_context). Within the substrate-permitted behavior space, prompts influence what behaviors the LLM tends toward — aggressiveness vs conservatism in negative proposal, breadth of candidate generation, decomposition style. Operational but policy-adjacent.
+
+Operational discipline:
+
+1. Prompt review includes governance-implications check. Not just performance ("does this prompt produce better artifacts?") but behavioral consequences ("does this prompt shift refusal aggressiveness in ways inconsistent with substrate's mission?").
+2. Major prompt fragment changes treated like architectural changes. Eval-gated; reviewed for behavior-shaping consequences; Theme 7 quality envelope re-validated.
+3. Minor prompt tuning (typos, clarifications) treated like operational changes. Standard PR review.
+4. Prompt-driven behavior changes documented in EVOLUTION.md. When a prompt change materially alters Layer B-permitted behavior (e.g., shifts refusal-rate distribution beyond calibrated thresholds), the change is recorded as a substrate evolution event.
+
+This does not move prompts to governance_context. Per D-071, prompts remain operational_context. The behavioral classification (policy-adjacent) is metadata about how the team manages this surface, not a structural recategorization.
+
+**(e) Prompt-substrate-orchestration as bounded co-evolution.**
+
+Per round 2 TA pushback (item 6): prompts and substrate orchestration inevitably co-evolve. The contract is not fully decoupled independent evolution but bounded co-evolution.
+
+Co-evolution discipline:
+
+- Each side has its own design cycle. Substrate orchestration evolves through substrate-3 architectural cycles. Prompts evolve through prompt design cycles (D-090 eval-gated PR review).
+- Changes on either side may require co-evolution on the other. Substrate orchestration changes that affect tool-rejection patterns or candidate availability invalidate prompt assumptions. Prompt changes that shift LLM behavior outside Layer B governance bounds will surface as Layer B violations.
+- Major orchestration changes trigger prompt re-validation. The substrate-3 design-cycle process commits to: substantive orchestration changes trigger a prompt re-validation pass before deployment.
+- Major prompt changes trigger orchestration eval. Substantive prompt changes trigger a substrate-side eval re-run before deployment.
+- Migration costs explicitly acknowledged. Substrate evolution and prompt evolution have costs to the other side.
+- Replay corpus shifts during co-evolution. When either side undergoes substantive change, the replay corpus's drift evaluation must account for the change. Drift signals during planned co-evolution are expected, not regressions (per D-090 drift framework).
+
+**Rationale.** Round 2 TA integration accepted: prompts are policy-adjacent (item 2), prompt-substrate contract is bounded co-evolution (item 6). Both refine the operational discipline surrounding substrate-3's locked architectural commitments without changing the architectural categorization (prompts remain operational_context per D-071).
+
+**Alternatives considered.**
+
+- *Move prompts to governance_context.* Rejected. Architectural categorization per D-071 is sound: prompts are operational, not governance. Behavioral classification (policy-adjacent) is metadata about management discipline, not structural recategorization.
+- *Frame prompts as pure guidance, decoupled from policy.* Rejected per TA item 2. Practically inaccurate; prompts shape behavior significantly within Layer B's permitted space.
+- *Frame prompt-substrate as fully decoupled evolution.* Rejected per TA item 6. Inevitable co-evolution; bounded co-evolution is the honest contract.
+- *Ship UI and integration prompt fragments at v1.* Considered. Deferred. UI and integration archetypes are narrower at v1 (per D-081 minimal coverage; D-082 operational-only admissibility); ship base + 3 archetype fragments first, expand when these archetypes have larger production footprint.
+
+**Downstream consequences.**
+
+- *D-090:* Eval suite measures prompt changes for behavior-shaping consequences; drift evaluation distinguishes prompt-driven evolution from semantic regression.
+- *D-091:* Model routing decisions interact with prompt selection; same prompt under different models produces different behaviors.
+- *Theme 7 quality envelope:* Prompt-driven behavior thresholds calibrated per archetype.
+- *Substrate-3 maintenance discipline:* Documented in substrate-3 maintenance docs; prompt PRs follow governance-implications review.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §7.2 (prompt management architecture), §7.3 (prompts as policy-adjacent surface and bounded co-evolution)
+- D-071 (Theme 2; operational_context.prompt_template_version)
+- D-077 (Theme 3; archetype framework)
+- D-081 (Theme 3; UI archetype minimal scope)
+- D-082 (Theme 3; integration archetype operational-only admissibility)
+- D-085 (Theme 5; substrate-3 as constrained semantic orchestration runtime)
+- D-086 (Theme 5; thin tool surface; substrate-side orchestration evolution)
+- D-087 (Theme 5; two-layer Guardrail enforcement)
+- D-088 (Theme 5; explanation_hash semantic substance; operational variation tolerance)
+- D-090 (Theme 6; eval suite architecture)
+
+---
+
+
+## D-090 — Eval suite architecture with two-invariant replay equivalence and drift-as-evolution framework [Theme 6]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with downstream consequences for Theme 7 quality envelope and substrate-3 maintenance discipline]
+**Status:** active
+
+**Decision.** Theme 6 commits substrate-3 to an eval suite spanning four categories (correctness, quality, performance, drift), with explicit separation of two replay invariants (semantic continuity via identity_hash; transparency continuity via explanation_hash) and a drift evaluation framework that distinguishes regression from healthy architectural evolution.
+
+**(a) Four eval categories.**
+
+*Correctness evals (structural compliance).* Measure per-Guardrail Layer A acceptance rate per D-087.
+
+- Layer A acceptance rate by tool (propose_semantic_intent | select_canonical | emit_outcome).
+- Layer A acceptance rate by Guardrail (1: S1 entity refs valid; 2: vocabulary in substrate-authorized enums; 3: requirement_excerpt present).
+- Layer A correction loops per generation.
+
+*Quality evals (semantic appropriateness).* Measure per-Guardrail Layer B substantive correctness, per-archetype emission quality, per-refusal-kind appropriateness.
+
+- Layer B substantive correctness rate by Guardrail.
+- Per-archetype emission quality (does the generated test actually verify what it claims?).
+- Per-claim-kind admissibility precision (does substrate admissibility evaluation match human-expert judgment?).
+- Per-refusal-kind appropriateness (was the refusal correct? cause distribution within `no-admissible-negative-scenario-found` per D-083 b).
+- Per-archetype Layer 1 vs Layer 2 distribution.
+
+*Performance evals (operational).* From `llm_calls` operational telemetry per D-087 b.
+
+- Cost per generation by archetype.
+- Latency per generation by archetype.
+- Per-model performance comparison (per D-091 routing).
+- Budget exhaustion frequency (`operational-budget-exhausted` rate per archetype).
+
+*Drift evals (replay).* From semantic ledger. See (b) and (c) for two-invariant framework and drift judgment discipline.
+
+**(b) Two-invariant replay equivalence.**
+
+Per round 2 TA pushback (item 1): replay equivalence is two invariants, not one. They are treated distinctly in eval.
+
+*`identity_hash` (semantic continuity).* Per D-071's identity_hash commitment + D-088's semantic-substance refinement. Same outcome — same emitted claim, same recipe, same outcome_kind, same refusal_kind + payload semantics if refusal. Strict invariant. Drift indicates semantic regression: same input should produce same emitted output. Presumption of regression unless explained.
+
+*`explanation_hash` (transparency continuity).* Per D-075 + D-088. Same `attempted_interpretation` semantic substance — same candidate set, same canonical selection, same `dismissed_alternatives_by_reason` category distribution, same admissibility_layer per artifact. Weaker invariant. Drift indicates reasoning trajectory varied, but emitted output may still be correct.
+
+Per-archetype drift thresholds calibrated separately by Theme 7 per invariant. identity_hash thresholds tight (semantic regressions are real bugs). explanation_hash thresholds looser and contextualized (reasoning trajectories evolve with prompt refinement, substrate orchestration improvement, model updates).
+
+This refines D-088's drift semantics. D-088 committed semantic-substance computation for both hashes; Theme 6 separates their downstream treatment in eval.
+
+**(c) Drift as evolution framework.**
+
+Per round 2 TA pushback (item 5): drift signals trigger investigation, never auto-failure. Each drift event evaluated against architectural improvement criteria.
+
+Drift evaluation framework:
+
+- identity_hash drift — sharp regression signal. Triggers investigation. Same input previously produced output X; now produces output Y. Judgment criteria:
+  - If Y substantively wrong → regression. Investigated as a bug.
+  - If Y substantively better (sharper refusal, more specific grounding, narrower admissibility) → accepted improvement.
+- explanation_hash drift with identity_hash stable — weaker signal. Investigated, but presumption shifts toward explanation refinement or healthy evolution. Same output emitted; reasoning trajectory changed.
+  - Judgment criteria: did the substrate get sharper (more targeted dismissal reasons, more specific candidate paths)? Likely healthy.
+- explanation_hash drift with identity_hash drift — concurrent signals. Both surfaces affected; investigated together.
+
+Drift events surface in EVOLUTION.md alongside substrate code changes and prompt changes. Each annotated with substrate-3 maintainer judgment: `regression` | `evolution` | `neutral`. Patterns inform Theme 7 quality envelope calibration.
+
+Cultural commitment: substrate-3 maintainers explicitly tasked with judging drift as evolution vs regression, not auto-treating drift as failure. Theme 6 establishes the framework; Theme 7 calibrates judgment thresholds per archetype.
+
+**(d) Ground truth strategy and v1 limits.**
+
+Three sources:
+
+- Curated test corpus. Maintainer-authored requirements with expected outcomes. V1 target: 200–500 cases. Maintained as substrate-3 evolves.
+- Pilot customer feedback. Pilot review feeds back into curated corpus and Theme 7 calibration.
+- Replay corpus. Each shipped generation enters mechanically. Replay evals run continuously.
+
+V1 ground truth quality limits explicitly acknowledged:
+
+- Curated corpus is small (hundreds, not thousands).
+- Pilot customer feedback just starting.
+- Replay corpus empty at v1 launch; only meaningful after 3–6 months accumulation.
+
+V1 eval rigor calibrated to these limits. Layer A correctness mechanically self-validating. Layer B substantive correctness has limited ground truth at v1; relies on curated corpus. Per-archetype emission quality validates against curated expected outcomes initially; pilot feedback over time. Drift evals become meaningful as replay corpus accumulates.
+
+Theme 7 quality envelope work will calibrate per-archetype thresholds against this evolving ground truth.
+
+**(e) Eval cadence.**
+
+- Pre-commit / CI. Every PR runs eval suite subset (correctness fully; quality against curated; performance smoke).
+- Pre-release. Full eval suite before deploying new prompt template version or substrate version. Pass thresholds enforced.
+- Continuous production. Sampling drift evals on every production generation. Aggregated drift event rate dashboard. Threshold-triggered alerts.
+- Post-pilot. Pilot customer feedback batch-processed weekly; feeds into curated corpus and calibration.
+
+**(f) Semantic adjudication theory acknowledged as unresolved.**
+
+Per round 2 TA pushback (item 4): in ambiguous enterprise QA scenarios, two generations may both be grounded, admissible, requirement-supported, review-approved — and yet differ. Substrate-3 currently lacks a theory of canonical semantic correctness in the validity-space sense (correctness as space, not point).
+
+Theme 6 ships eval against substrate-architectural-compliance (Guardrail compliance, admissibility discipline, refusal-kind appropriateness) rather than absolute semantic correctness. Forward-compat reservation in OPEN_QUESTIONS.md. Theme 7 quality envelope work may begin addressing the structural question; full resolution requires production data, longitudinal study, and likely formal work beyond v1 scope.
+
+**Rationale.** Round 2 TA integration accepted: two-invariant separation (item 1), drift as evolution framework (item 5), semantic adjudication unresolved (item 4). Together they refine eval discipline without changing the locked architecture: identity_hash and explanation_hash both computed over semantic substance per D-088, but treated distinctly downstream; drift signals investigated, not auto-failures; eval framework explicit about what it measures (architectural compliance) and what remains unresolved (canonical semantic correctness in ambiguous cases).
+
+**Alternatives considered.**
+
+- *Single replay invariant (explanation_hash carrying all responsibility).* Rejected per TA item 1. Overloads one artifact; conflates semantic continuity with transparency continuity; produces false drift alarms; creates anti-evolution gravity.
+- *Drift as auto-failure.* Rejected per TA item 5. Punishes healthy architectural evolution; substrate-3 maintainers tasked with judgment, not gated by mechanical drift detection.
+- *Resolve semantic adjudication theory at Theme 6.* Rejected per TA item 4. Requires production data and longitudinal study; not blocking v1; forward-compat reservation.
+
+**Downstream consequences.**
+
+- *D-091:* Model routing decisions calibrated against eval framework (per-model behavioral profile, per-model identity_hash stability, per-model explanation_hash variation).
+- *Theme 7 quality envelope:* Per-archetype thresholds for each eval category calibrated against this framework. Two-invariant separation enables tight identity_hash thresholds + contextual explanation_hash thresholds.
+- *Substrate-3 maintenance discipline:* Drift event annotation in EVOLUTION.md becomes standard practice. Regression vs evolution judgments documented longitudinally.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §7.4 (eval suite architecture), §7.5 (two-invariant replay equivalence), §7.6 (drift as evolution)
+- D-071 (Theme 2; identity_hash; equivalence algebra)
+- D-074 (Theme 2; llm_calls operational telemetry)
+- D-075 (Theme 2; explanation_hash; drift events)
+- D-083 (Theme 4; admissibility_layer; cause discipline; bounded decomposition)
+- D-087 (Theme 5; two-layer Guardrail enforcement)
+- D-088 (Theme 5; semantic substance for both hashes)
+- D-089 (Theme 6; prompt management and bounded co-evolution)
+
+---
+
+
+## D-091 — Single-model-per-batch routing with model selection as behavior-shaping decision [Theme 6]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for Theme 7 quality envelope and per-batch operational discipline]
+**Status:** active
+
+**Decision.** Theme 6 commits substrate-3 to single-model-per-batch LLM routing at v1, chosen by dominant archetype, with explicit acknowledgment that model selection is a behavior-shaping operational decision affecting refusal aggressiveness, decomposition style, grounding conservatism, and ambiguity handling.
+
+**(a) Model selection as behavior-shaping operational decision.**
+
+Per round 2 TA pushback (item 3): different models do not merely differ in quality, speed, or token efficiency. They differ in semantic temperament — refusal aggressiveness, decomposition behavior, grounding conservatism, ambiguity handling. Model routing creates substrate-observable behavior variation.
+
+Architectural categorization:
+
+- Model identifier is operational_context (per D-071). Architectural categorization unchanged.
+- Model selection affects substrate-observable behavior. Different models produce different Layer A acceptance rates, different Layer B substantive correctness rates, different per-archetype emission quality, different refusal-kind distributions.
+- Theme 7 quality envelope calibrates per-model behavior expectations. Per-model behavioral profiles tracked alongside per-archetype thresholds.
+
+Replay equivalence under model variation: per D-088, same semantic_context + governance_context + different operational_context (including different model_identifier) → expected identity_hash match. The emitted output should be model-invariant; model behavioral differences fall within Layer B governance bounds. If a different model produces a different emitted output, that's a substrate-governance failure (Layer B should have caught it), not a model-routing failure. In practice: model routing affects explanation_hash (different reasoning trajectories per model) but should not affect identity_hash (same emitted output). Theme 7 calibration validates empirically.
+
+**(b) Single-model-per-batch in v1.**
+
+Per round 2 TA pushback (item 7): different models inside one semantic batch creates instability — different refusal tendencies, decomposition styles, transparency shapes within one generation. Especially problematic given D-077's shared interpretation context across batches.
+
+V1 routing commitment:
+
+- Single model per batch. All requirements in one `GenerationRequest` use the same `operational_context.llm_model_identifier`.
+- Dominant-archetype selection. The batch's model is determined by the most prevalent archetype across its requirements.
+- Mixed-archetype batches default to the "complex" model (Claude Opus 4.7); captures the most demanding archetype's reasoning needs.
+- Per-customer override preserved. `operational_context.llm_model_identifier` may be explicitly set per request, overriding the default.
+
+Cross-archetype consistency benefits:
+
+- Within a batch, all requirements receive consistent model cognition.
+- D-077's shared interpretation context operates over consistent model behavior.
+- Replay determinism easier to validate (model is batch-invariant within batch boundaries).
+
+**(c) V1 model defaults per archetype.**
+
+Calibrated by D-090 eval framework on curated corpus before v1 ships. Initial defaults (subject to refinement):
+
+- Pure data-behavior batch → Claude Opus 4.7 (complex multi-constraint reasoning).
+- Pure configuration batch → Claude Sonnet 4.7 (S1-lookup-dominant).
+- Pure permission batch → Claude Opus 4.7 (recipe-kind discipline requires sharp judgment).
+- Pure UI batch → Claude Sonnet 4.7 (narrow scope at v1).
+- Pure integration batch → Claude Opus 4.7 (interaction complexity).
+- Mixed-archetype batch → Claude Opus 4.7 (default to capability).
+
+Defaults are operational, not architectural. Theme 7 quality envelope refines them as eval data accumulates and model capabilities evolve.
+
+**(d) Future per-archetype within-batch routing deferred.**
+
+V1 commits single-model-per-batch. Post-v1, finer per-archetype routing within batches may be revisited once eval infrastructure matures and per-archetype model behavior is well-characterized within a stable framework. Theme 6 commits this as deferred operational refinement, not architectural capability.
+
+Forward-compat reservation: per-archetype within-batch routing may be enabled in future Theme 6 calibration cycles when:
+
+- Per-archetype × model behavioral profiles are well-characterized via production data.
+- Cross-model coherence within a batch can be validated empirically.
+- The cost of per-archetype routing within batches is justified by quality gains.
+
+**Rationale.** Round 2 TA integration accepted: model selection as behavior-shaping (item 3), single-model-per-batch (item 7). Both refine the operational discipline surrounding model routing without changing the architectural categorization (model_identifier remains operational_context per D-071). Architectural coherence within batches takes priority over theoretical per-archetype optimization at v1.
+
+Cost/latency consequence: some single-archetype batches use Opus where Sonnet would have sufficed; some mixed batches use Opus where archetype-specific Sonnet would have been adequate for simpler components. Acceptable trade-off for architectural coherence; Theme 7 calibrates whether the cost is justified at scale.
+
+**Alternatives considered.**
+
+- *Per-archetype within-batch routing in v1.* Rejected per TA item 7. Creates cross-model semantic incoherence within one generation; problematic for D-077's shared interpretation context.
+- *Single model for all generations (no archetype-based routing at all).* Rejected. Some archetypes (configuration, UI at v1) don't need Opus-level capability; some (data-behavior, permission, integration) do. Per-batch routing captures this without within-batch fracturing.
+- *Model selection as semantic_context.* Rejected. Per D-071, model identifier is operational; same emitted output should result from same semantic + governance + different operational. Recategorizing to semantic_context would invalidate replay equivalence framework.
+
+**Downstream consequences.**
+
+- *D-090 eval framework:* Per-model behavioral profile tracked; per-model identity_hash stability validated; per-model explanation_hash variation expected and acceptable.
+- *Theme 7 quality envelope:* Per-archetype per-model thresholds calibrated; defaults refined as production data accumulates.
+- *Operational tuning:* Cost/latency calibration depends on archetype distribution in actual workloads.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §7.7 (single-model-per-batch routing)
+- D-071 (Theme 2; operational_context.llm_model_identifier)
+- D-077 (Theme 3; shared interpretation context across batches)
+- D-085 (Theme 5; LLM integration topology)
+- D-087 (Theme 5; two-layer Guardrail enforcement)
+- D-088 (Theme 5; explanation_hash; operational variation tolerance)
+- D-090 (Theme 6; eval framework calibrates per-model behavior)
+
+---

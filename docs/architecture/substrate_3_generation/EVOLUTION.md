@@ -131,3 +131,41 @@ GLOSSARY.md seeded with 15 Theme 5 terms covering the new vocabulary (the three 
 **Architectural posture.** Substrate-3's full architecture is now in place across Themes 1–5: three Guardrails (mission integrity); eight reasoning-phase dismissal_reasons (D-076 vocabulary); eight refusal kinds across three categories (invalidity, policy, operational); per-archetype operationalization (Theme 3); grounded-negative discipline (Theme 4); LLM integration via tool-use with substrate as orchestration runtime (Theme 5). Remaining themes — Theme 6 (prompt management + eval) and Theme 7 (quality envelope) — operationalize within this locked architecture rather than introducing new architectural primitives. Substrate-3 design is structurally complete.
 
 The substrate-3 framing has clarified materially. Theme 5 made explicit what was implicit since Theme 1: substrate-3 is not a "wrapper around an LLM" but a constrained semantic orchestration runtime that bounds LLM cognition within architectural commitments. Themes 6 and 7 work within this runtime.
+
+## 2026-05-19 — Theme 6 (prompt management and evaluation) complete
+
+Three D-entries committed (D-089 through D-091) locking the prompt management architecture, eval suite, and LLM model routing. Theme 6 operationalizes Themes 1–5 commitments without introducing new substrate-level architectural primitives. Round 2 TA integration accepted six convergence items as architectural refinements plus one acknowledged-but-unresolved (semantic adjudication theory).
+
+**D-089** locks prompt management architecture. Sequential `prompt_template_version` per template; immutable per version (replay determinism); layered composition (base + 3 v1 archetype fragments: data-behavior, configuration, permission; UI and integration deferred). Prompts explicitly acknowledged as policy-adjacent surface — behavior-shaping within substrate-bounded governance, not merely contextual guidance. Prompt-substrate-orchestration as bounded co-evolution — each side has its own design cycle but substantive changes require co-evolution; migration costs explicit.
+
+**D-090** locks eval suite architecture. Four categories: correctness (Layer A acceptance per Guardrail per tool), quality (Layer B substantive correctness, per-archetype emission quality, per-refusal-kind appropriateness), performance (cost, latency, per-model comparison, budget exhaustion frequency), drift (replay-based, per two-invariant framework). Two-invariant replay equivalence: identity_hash (semantic continuity; strict invariant; presumption of regression on drift) vs explanation_hash (transparency continuity; weaker invariant; presumption of refinement on drift when identity_hash stable). Drift-as-evolution framework — drift triggers investigation, not auto-failure; substrate-3 maintainers tasked with judgment annotation (`regression` | `evolution` | `neutral`). Ground truth strategy: curated corpus (200–500 cases) + pilot feedback + replay corpus; v1 quality limits explicitly acknowledged. Semantic adjudication theory in ambiguous enterprise QA acknowledged unresolved; forward-compat reservation.
+
+**D-091** locks single-model-per-batch LLM routing chosen by dominant archetype. Model selection explicitly acknowledged as behavior-shaping operational decision — different models differ in semantic temperament (refusal aggressiveness, decomposition style, grounding conservatism, ambiguity handling). V1 defaults: data-behavior / permission / integration / mixed → Claude Opus 4.7; configuration / UI → Claude Sonnet 4.7. Per-customer override preserved. Per-archetype within-batch routing deferred — future Theme 6 calibration cycle when per-archetype × model behavioral profiles are well-characterized and cross-model coherence within batches validated empirically.
+
+SPEC §7 (prompt management and evaluation) substantively written with eight subsections (§7.1 through §7.8) covering prompt management, prompts as policy-adjacent surface and bounded co-evolution, eval suite architecture, two-invariant replay equivalence, drift as evolution, single-model-per-batch routing, and forward-compat reservations.
+
+OPEN_QUESTIONS.md updated: S3-Q-006 resolved by D-089 through D-091; four new forward-compat reservations appended (semantic adjudication theory; per-archetype within-batch model routing; UI and integration prompt fragments; drift event judgment framework formalization).
+
+GLOSSARY.md seeded with 15 Theme 6 terms covering the new vocabulary (behavior-shaping operational decisions, bounded co-evolution, dominant-archetype selection, drift event judgment, eval ground truth, healthy architectural evolution, policy-adjacent surface, prompt fragment, prompt registry, replay corpus, semantic adjudication theory unresolved, semantic continuity, single-model-per-batch routing, transparency continuity, two-invariant replay equivalence).
+
+**TA-review-loop pattern.** Single round of pressure-test with substantial round 2 integration — seven architectural surfaces identified; six accepted as convergence items; one (semantic adjudication theory) acknowledged unresolved but not blocking v1. Convergence items: separate semantic continuity from transparency continuity (item 1); prompts as policy-adjacent surface (item 2); model routing as behavior-shaping (item 3); drift as healthy evolution (item 5); bounded co-evolution (item 6); single-model-per-batch (item 7). The TA explicitly signaled convergence — "Everything else is strong enough to lock."
+
+**Convergence pattern.** Theme 2: three rounds; Theme 3: two rounds; Theme 4: one round + integration; Theme 5: one round + substantial integration; Theme 6: one round + substantial integration. Themes 4–6 share the pattern of single-round pressure-test with substantial integration response. Each theme's round 2 integration responds to TA convergence items as architectural refinements without re-opening the locked architecture from prior themes.
+
+**Architectural posture.** Substrate-3's full architecture is now in place across Themes 1–6. Theme 7 (quality envelope) remains — the calibration framework that operationalizes per-archetype thresholds against the eval framework Theme 6 established. Substrate-3 design surface no longer introducing new architectural primitives; remaining work is calibration discipline.
+
+Substrate-3's complete architectural inventory through Theme 6:
+
+- Three Guardrails (mission integrity): semantic search space (Theme 1), reasoning artifacts (Theme 2), requirement-anchored origination (Theme 4).
+- Eight dismissal_reasons across three reasoning phases (D-076 vocabulary, dismissal_reason applicability by phase per D-077).
+- Eight refusal kinds across three categories (invalidity / policy / operational per D-073, D-083, D-088).
+- Per-archetype operationalization (Theme 3 five archetypes with four-dimensional spec).
+- Grounded-negative discipline (Theme 4 Guardrail 3 + canonical-negative-per-failure-mode + Layer 1/2 admissibility).
+- LLM integration via tool-use with three thin semantic primitives (Theme 5).
+- Two-layer Guardrail enforcement (Theme 5 Layer A schema + Layer B substantive).
+- Substrate-3 as constrained semantic orchestration runtime (Theme 5).
+- Two-invariant replay equivalence + drift-as-evolution framework (Theme 6).
+- Prompt management with bounded co-evolution + policy-adjacent surface acknowledgment (Theme 6).
+- Single-model-per-batch routing with model-as-behavior-shaping (Theme 6).
+
+Theme 7 calibrates the quality envelopes that operationalize this architecture against per-archetype thresholds.
