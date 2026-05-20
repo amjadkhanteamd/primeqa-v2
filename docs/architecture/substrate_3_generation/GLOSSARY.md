@@ -179,3 +179,35 @@ Terms specific to substrate-3. Cross-cutting terms live in the top-level glossar
 **Transparency continuity (explanation_hash invariant).** Per D-090 (b), the weaker replay invariant. Same `attempted_interpretation` semantic substance — same candidate set, same canonical selection, same `dismissed_alternatives_by_reason` category distribution, same admissibility_layer per artifact. Drift indicates reasoning trajectory varied; emitted output may still be correct. Distinguished from semantic continuity.
 
 **Two-invariant replay equivalence.** Per D-090 (b), the substrate-3 commitment that replay equivalence is two distinct invariants (semantic continuity via identity_hash; transparency continuity via explanation_hash), treated separately in eval. Refines D-088's drift semantics: both hashes computed over semantic substance, but downstream treatment differs (tight thresholds for identity_hash; looser contextual thresholds for explanation_hash).
+
+## Theme 7 terms
+
+**Architectural invariant.** Per D-092 (a), a substrate-level commitment that is substrate law — NOT a calibration surface, NOT tunable by the quality envelope. Enumerated in SUBSTRATE_3_WORLDVIEW.md: identity_hash continuity, Layer A validity, refusal transparency presence, grounding requirements, the three Guardrails, the refusal taxonomy, three-context separation, two-layer enforcement, substrate-as-admissibility-authority, the reproducibility property. Evolution adjudication must preserve every invariant.
+
+**Calibration surface.** Per D-092 (a), a behavioral distribution that the quality envelope calibrates: refusal-rate by semantic category, Layer 1/2 admissibility distribution, explanation_hash drift threshold. Distinct from architectural invariants.
+
+**Canonical routing profile.** Per D-092 (c), the per-archetype default model (D-091 v1 defaults) relative to which a per-archetype quality envelope is defined. Non-canonical (override) model usage produces distributions outside the canonical envelope's scope.
+
+**Quality envelope.** Per D-092, the structured calibration framework specifying which semantic behavioral distributions are calibrated per archetype, how v1 initial values are derived, and how thresholds evolve. Calibrates behavioral distributions, never architectural invariants. Conceptually separated from the operational envelope.
+
+**Operational envelope.** Per D-092 (b), the operational tuning surface tracking cost, latency, budget caps, and `operational-budget-exhausted` rate. Calibrated independently from the quality envelope so operational tuning does not pollute semantic calibration.
+
+**Structure-not-values.** Per D-092 (d), the commitment that the quality envelope is a calibration structure (dimensions, derivation, evolution discipline) with provisional v1 values, not fixed numerical gates — honest about the absence of production data at v1 and the expectation of substrate improvement.
+
+**Threshold evolvability.** Per D-093 (a), the commitment that quality envelope thresholds are expected ranges that shift as the substrate improves, bounded by architectural invariants. A breach triggers adjudication, not auto-failure.
+
+**Evolution adjudication.** Per D-093 (a, b), the maintainer judgment classifying a threshold breach as `regression` | `evolution` | `neutral`, bounded by architectural invariants (a breach of an invariant is regression by definition) and hardened with safeguards (recorded rationale, asymmetric lower-refusal scrutiny, periodic invariant audit, design-cycle-weight review).
+
+**Drift judgment signatures.** Per D-093 (c), documented per-archetype patterns characterizing healthy evolution, regression, and neutral environmental change — the partial formalization of the drift judgment criteria deferred from Theme 6. Full automated formalization remains future.
+
+**Architectural-invariant audit.** Per D-093 (b), the periodic review confirming that accumulated `evolution` shifts have not collectively breached an architectural invariant that no single shift breached. Guards against gradual semantic-center drift.
+
+**Semantic risk tolerance.** Per D-094, the governance policy (the admissibility-confidence threshold) determining how confident the substrate must be before asserting a grounded negative — what the substrate is willing to assert as truth. Governance_context, not operational. Substrate-authored conservative default; per-customer governance override.
+
+**Admissibility-confidence threshold.** Per D-094, the governance_context parameter governing the `policy_restraint` cause (D-083 b). Higher yields more conservative behavior (more refusals); lower yields more permissive. Identity-bearing (changing it is expected to change identity_hash, confirming governance categorization). The quality envelope observes its distributional effect but does not own it.
+
+**Semantic reproducibility.** Per D-093 (d), the substrate-engineering property of replay determinism: same substrate version + same semantic_context + same governance_context yields the same emitted output. The substrate deterministically selects one point. Distinct from semantic acceptability.
+
+**Semantic acceptability.** Per D-093 (d), the semantic property that multiple outputs may be correct for a requirement (validity as a space, not a point). The substrate is reproducible within a wider acceptability space. Distinct from semantic reproducibility.
+
+**Substrate worldview.** The SUBSTRATE_3_WORLDVIEW.md artifact (Phase 1 closeout): the distilled, non-chronological, non-implementation canonical reference for substrate-3's governing principles, non-goals, architectural invariants, semantic boundaries, and responsibilities.

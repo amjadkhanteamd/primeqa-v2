@@ -804,7 +804,81 @@ Theme 6 carries the following reservations:
 
 ## 8. Quality envelope
 
-Reserved for Theme 7.
+**Resolution.** Per D-092 through D-094 (Theme 7): the quality envelope is a structured calibration framework that calibrates behavioral distributions, never architectural invariants; it is conceptually separated from the operational envelope and defined relative to each archetype's canonical routing profile. Thresholds are evolvable ranges bounded by architectural invariants with hardened evolution-adjudication safeguards. The admissibility-confidence threshold is recategorized as governance_context (semantic risk tolerance). Theme 7 introduces no new substrate-level architectural primitives — it calibrates the locked architecture and protects it from calibration-driven erosion. Theme 7 is the final Phase 1 theme; the architectural invariants it protects are enumerated in `SUBSTRATE_3_WORLDVIEW.md`.
+
+### 8.1 What Theme 7 closes
+
+Three D-entries plus the worldview artifact:
+
+- D-092: Quality envelope framework — calibrates behavioral distributions not architectural invariants; quality envelope vs operational envelope; envelopes relative to canonical routing profile; structure-not-values; per-archetype dimensions and v1 provisional profiles; calibration mechanism and cadence.
+- D-093: Threshold evolvability and evolution-adjudication governance — evolvability bounded by architectural invariants; rationalization safeguards; per-archetype drift judgment signatures; validity-space and replay determinism reconciled via reproducibility-versus-acceptability.
+- D-094: Admissibility-confidence threshold as governance_context — semantic risk tolerance; quality envelope observes but does not own; resolves the Theme 4 reservation as governance.
+- SUBSTRATE_3_WORLDVIEW.md: the canonical registry of governing principles, non-goals, architectural invariants, semantic boundaries, and substrate responsibilities.
+
+Convergence emerged from a single round of TA pressure-test surfacing seven tightening items, all accepted in round 2 integration. Three were load-bearing reshapes: calibration-vs-invariants (item 1); evolution-adjudication governance (item 2); admissibility-confidence recategorized to governance_context (item 3, correcting the opening lean). The TA signaled convergence — "Everything else is strong enough to lock Phase 1."
+
+### 8.2 The quality envelope calibrates behavioral distributions, not architectural invariants (D-092)
+
+Per D-092 (a). Not all dimensions are equally calibratable.
+
+**Architectural invariants (substrate law — NOT envelope surfaces, NOT calibratable):** identity_hash semantic continuity (D-090 b); Guardrail Layer A validity (D-087); refusal transparency presence (D-073); grounding requirements (Guardrail 1, D-070); the three Guardrails, eight-refusal-kind taxonomy, three-context separation, two-layer enforcement, substrate-as-admissibility-authority. Enumerated in SUBSTRATE_3_WORLDVIEW.md. The quality envelope observes invariant compliance (a breach is a bug surfaced by eval) but never tunes invariants.
+
+**Calibratable surfaces (behavioral distributions — quality envelope dimensions):** refusal-rate distribution by semantic category (invalidity + policy); Layer 1 / Layer 2 admissibility distribution; explanation_hash drift threshold (contextual).
+
+Commitment: the quality envelope calibrates behavioral distributions, not architectural invariants. This protects later teams from "tuning" non-negotiable substrate commitments.
+
+### 8.3 Quality envelope vs operational envelope (D-092)
+
+Per D-092 (b). Budget exhaustion is operational incompletion (D-088 operational refusal category), not semantic quality; tracking it as semantic behavior would let tighter budgets falsely read as worse semantic behavior.
+
+- **Quality envelope (semantic):** refusal-rate by semantic category (invalidity + policy); Layer 1 / Layer 2 distribution; explanation_hash drift threshold.
+- **Operational envelope (operational):** cost per generation; latency per generation; budget caps (token / time / tool_call_count); `operational-budget-exhausted` rate.
+
+Maps onto D-088's three-category refusal axis: invalidity + policy are semantic (quality envelope); operational is operational (operational envelope). Calibrated independently; the drift-as-evolution framework and evolution-adjudication governance (§8.5) apply to the quality envelope only.
+
+### 8.4 Per-archetype dimensions and v1 profiles (D-092)
+
+**Canonical routing relativity.** Each per-archetype envelope is defined relative to the archetype's canonical routing profile (default model per D-091). Non-canonical model usage produces out-of-scope distributions; per-archetype×model envelopes deferred.
+
+**Structure-not-values.** The envelope is structure (dimensions, derivation, evolution discipline), not fixed gates — v1 has no production data and substrate behavior is expected to improve.
+
+**v1 expected shapes (provisional), from Theme 3 design intent:** data-behavior (refusal-dominant; significant Layer 1 share); configuration (lowest refusal rate; S1-direct); permission (moderate; run-as-disambiguation refusals); UI (higher refusal, honest not regression); integration (higher refusal; operational-only admissibility).
+
+**Calibration cadence:** v1 heuristic initial values → pilot-phase refinement → production calibration (replay corpus, 3–6 months) → ongoing evolution (per §8.5).
+
+### 8.5 Threshold evolvability and evolution-adjudication governance (D-093)
+
+Per D-093 (a–c). Thresholds are expected ranges, not fixed gates (per D-090 c drift-as-evolution). A breach triggers investigation, adjudicated `regression` | `evolution` | `neutral`.
+
+**Bounded by invariants (item 2).** The architectural invariants (§8.2; SUBSTRATE_3_WORLDVIEW.md) are the floor. A drift breaching an invariant is regression by definition — not subject to maintainer judgment. Evolution adjudication must preserve substrate-level architectural commitments even when behavioral distributions shift.
+
+**Safeguards:** recorded rationale tied to a per-archetype evolution signature (not "looks better"); asymmetric scrutiny on lower-refusal shifts (presumption of regression, per fail-loud philosophy); periodic architectural-invariant audit against cumulative shifts; design-cycle-weight review.
+
+**Per-archetype drift judgment signatures:** documented evolution signatures (e.g., data-behavior shift toward Layer 2 as the formula parser ships), regression signatures (e.g., configuration refusal rate rising on clean cases), neutral signatures (environmental change). Full automated formalization remains future.
+
+### 8.6 Validity-space and replay determinism (D-093)
+
+Per D-093 (d). The per-archetype distribution framing is a validity-space framing (validity as space, not point), which is in natural tension with replay determinism.
+
+- **Semantic reproducibility** (replay determinism, identity_hash): an engineering property — same substrate version + same semantic_context + same governance_context yields same emitted output. The substrate deterministically selects one point.
+- **Semantic acceptability** (validity-space): a semantic property — which outputs would be correct. Often a space.
+
+V1 resolution: the substrate is deterministic (reproducible) within a wider acceptability space — it picks one point and reproduces that pick. Reproducibility does not require the pick be the only acceptable point. When the substrate should legitimately vary within the validity-space requires the unresolved semantic adjudication theory (D-090 f); v1 commits to reproducibility. The reproducibility-versus-acceptability distinction is the handle for that future work.
+
+### 8.7 Admissibility-confidence threshold as governance_context (D-094)
+
+Per D-094. The admissibility-confidence threshold (governing the `policy_restraint` cause per D-083 b) directly determines what the substrate is willing to assert as truth — semantic risk tolerance, which is governance.
+
+- **Recategorization (item 3):** governance_context per D-071, not operational_context. Same candidate + grounding + topology, different threshold yields different refusal — semantic admissibility policy, not generation quality. Categorically different from D-089 prompts and D-091 model routing (both operational, behavior-shaping diffusely).
+- **Semantic risk tolerance:** substrate-authored conservative default (fail-loud philosophy); per-customer governance override (risk-averse customer sets higher threshold).
+- **Quality envelope observes, does not own:** the envelope measures the resulting policy-refusal distribution; governance owns the threshold.
+- **Replay confirms it:** changing governance_context is expected to change identity_hash (D-088). An operational parameter changing identity_hash would contradict D-088; a governance parameter changing it is correct. Resolves the Theme 4 reservation as governance.
+
+### 8.8 Forward-compat reservations
+
+- **Validity-space vs replay-determinism reconciliation.** V1 commits to reproducibility within a wider acceptability space. Principled non-determinism within the validity-space requires the unresolved semantic adjudication theory (D-090 f); carried via the reproducibility-versus-acceptability distinction.
+- **Per-archetype×model quality envelopes.** V1 envelopes are relative to the canonical routing profile. Per-archetype×model envelopes deferred until per-model behavioral profiles are well-characterized via production data.
+- **Automated theory of semantic improvement.** V1 ships maintainer-judged evolution adjudication bounded by invariants with documented safeguards. A mechanical theory of semantic improvement remains future.
 
 ---
 
