@@ -411,7 +411,142 @@ Theme 3 carries the following reservations to downstream themes and future subst
 
 ## 5. Grounded negative test generation
 
-Reserved for Theme 4.
+**Resolution.** Per D-083 and D-084 (Theme 4): substrate-3 commits to a grounded-negative discipline preventing the v2 failure mode of plausible-but-ungrounded negatives. Five architectural commitments locked in D-083 plus per-archetype operationalization locked in D-084. Theme 4 adds one new Guardrail, one new refusal kind, one new artifact-level output field — and operationalizes within the Theme 3 archetype strategies.
+
+### 5.1 What Theme 4 closes
+
+Two D-entries lock grounded-negative discipline + per-archetype scope:
+
+- D-083: Grounded-negative discipline with five architectural commitments — S3 Guardrail 3 (requirement-anchored origination); seventh refusal kind with typed internal cause; polarity strictly derived; bounded decomposition; Layer 1 admissibility produces artifact-level visibly degraded trust marker.
+- D-084: Per-archetype grounded-negative scope; integration causal-admissibility forward-compat reservation.
+
+Convergence emerged from a single round of TA pressure-test surfacing six surfaces. Round 2 integration accepted all six: four as architectural commitments (Guardrail 3, typed internal cause, polarity derived, bounded decomposition), one as substrate-3 output property (Layer 1 visible trust), one as forward-compat reservation (integration causal admissibility). The TA explicitly signaled convergence after round 2 integration.
+
+### 5.2 Grounded-negative discipline (D-083)
+
+The discipline prevents the v2 failure mode of plausible-but-ungrounded negatives — tests asserting that a scenario "should fail" without grounding the failure in a specific org constraint. Such tests pass spuriously, fail spuriously, and erode trust.
+
+A negative claim asserts *rejection, absence, or inability* rather than *occurrence, presence, or capability*. Negatives appear across every archetype, not as a separate claim_kind, but as a structural property of claim content. For positive claims, admissibility means the org's constraint structure supports the asserted truth. For negative claims, admissibility means a specific org constraint produces the asserted rejection or absence.
+
+To emit a negative claim, the substrate must:
+
+1. Identify specific org constraint(s) that produce the rejection or absence.
+2. Verify the constraint(s) are admissibly grounded in S1 (Layer 1 or Layer 2 per constraint type and S1 capability tier).
+3. Surface the grounding in `attempted_interpretation.candidate_paths` referencing the constraint(s).
+4. Generate a recipe verifying the failure for the asserted reason when execution layer supports this.
+5. If no specific org constraint can be identified that should produce the rejection or absence, refuse with `no-admissible-negative-scenario-found` (the seventh refusal kind, §5.3).
+
+The discipline is governed under S3 Guardrail 3.
+
+#### 5.2.1 S3 Guardrail 3 — Requirement-anchored origination
+
+Per D-083 (a): grounding constraints justify candidate negatives derived from requirement interpretation. They do not independently originate negatives the requirement did not semantically imply.
+
+Lineage of substrate-3 guardrails:
+- *Guardrail 1* (Theme 1): semantic search space bounded by S1 ontology × substrate-2 taxonomy.
+- *Guardrail 2* (Theme 2 D-075): ontology-bound reasoning artifacts. Substrate-3 reasoning may only reference S1 ontology + substrate-2 taxonomy + substrate-3 reasoning vocabulary.
+- *Guardrail 3* (Theme 4 D-083): requirement-anchored origination. The substrate may not originate negatives the requirement did not semantically imply, even if grounding constraints exist that would admit them.
+
+Each Guardrail tightens what the substrate may do under what authority. Guardrail 3 is the architectural defense against the substrate's quiet drift from "constrained interpretation engine" (D-070 §2.1) to "exploratory QA generator."
+
+Mechanical enforcement: every candidate carries — in `attempted_interpretation.candidate_paths` — the requirement excerpt(s) from which it was derived. Candidates without traceable origin are rejected as substrate-internal products before grounding-phase admissibility checking.
+
+### 5.3 The seventh refusal kind: `no-admissible-negative-scenario-found`
+
+Per D-083 (b). Anticipated in Theme 2 D-073 as a policy-scope category; Theme 4 ships.
+
+Updated refusal taxonomy at Theme 4 close (7 categories):
+
+| RefusalKind | Category | Origin theme |
+|---|---|---|
+| `underspecified-requirement` | invalidity (input) | Theme 1 |
+| `no-relevant-context` | invalidity (grounding) | Theme 1 |
+| `ambiguous-reference` | invalidity (resolution) | Theme 1 |
+| `ungrounded-claim` | invalidity (admissibility) | Theme 1 |
+| `structural-validation-failure` | invalidity (output) | Theme 1 |
+| `low-generation-confidence` | policy (threshold) | Theme 2 (D-073) |
+| `no-admissible-negative-scenario-found` | policy (scope) | Theme 4 (D-083) |
+
+Feedback payload:
+
+    no-admissible-negative-scenario-found: {
+      cause: <ontology_gap | no_org_constraint | policy_restraint>
+      proposed_negative_assertion: <typed structure>
+      searched_constraint_dimensions: [<typed list>]
+      no_grounding_found_because:    <typed reason from substrate-authorized vocabulary>
+      what_would_unblock:            [<optional typed list>]
+    }
+
+Three internal causes:
+
+- `ontology_gap` — substrate cannot ground because S1 doesn't model the relevant constraint dimension. The substrate is incapable, not the org.
+- `no_org_constraint` — the org genuinely has no constraint producing the asserted rejection. The substrate could ground if a constraint existed.
+- `policy_restraint` — a candidate grounding exists but admissibility-confidence threshold not met. Distinct from `low-generation-confidence` (selection-confidence uncertainty).
+
+External refusal_kind stays single. Internal cause preserves semantic granularity for evals, replay, analytics, capability tracking.
+
+Interaction with D-076's `no_constraint_supports_negative` dismissal_reason: the dismissal_reason fires per dismissed candidate during grounding-phase reasoning. The refusal_kind is the outcome-level aggregate when all candidates dismissed for grounding reasons.
+
+### 5.4 Polarity recognition
+
+Per D-083 (c). Polarity is semantic claim identity, not interpretation metadata. The substrate recognizes negatives from claim_kind + content, not from a separate `polarity` field.
+
+Two categories of claim_kinds:
+
+1. *Inherently negative claim_kinds.* `prohibition-claim` (data-behavior). The claim_kind IS the negative semantic.
+2. *Content-derived polarity claim_kinds.* `capability-claim`, `existence-claim`, `property-claim`, `metadata-relationship-claim`, `layout-claim`, `element-state-claim`, integration claim_kinds. Polarity determined by claim content (e.g., capability-claim with grant asserted is positive; with grant denied is negative).
+
+The grounded-negative discipline applies to claim instances whose semantic content asserts rejection or absence, recognized from claim_kind + content. Per-archetype recognition rules in §5.7.
+
+No parallel `polarity` field on `candidate_paths`. No risk of inconsistency between claim_kind and a separate polarity field. Substrate-2 claim_kind remains authoritative.
+
+### 5.5 Bounded decomposition discipline
+
+Per D-083 (d). Three-part principle protecting against combinatorial expansion in enterprise orgs with overlapping constraints:
+
+1. *Canonical negative per identifiable failure mode.* An identifiable failure mode is a distinct semantic dimension of negative the requirement implies. The substrate emits one negative per failure mode.
+2. *Highest-specificity grounding among admissible alternatives.* When multiple constraints could ground one failure mode, the substrate selects the most specific (most directly addresses the requirement's intent). Dismissed alternatives surface in `attempted_interpretation.dismissal_reasons` with `lower_specificity` (D-076 existing reason).
+3. *Bounded candidate enumeration during interpretation.* Top-K candidates per failure mode, K configurable per `governance_context.transparency_policy_version`.
+
+Combined effect: enterprise orgs with overlapping validation rules, layered permissions, and multiple automation gates do not produce many emitted negatives. One canonical negative per failure mode with dismissed alternatives transparently surfaced as `lower_specificity` dismissals. Review UX stays bounded; lineage stays tractable.
+
+### 5.6 Layer 1 / Layer 2 admissibility with artifact-level trust visibility
+
+Per D-083 (e). Substrate-3 commits to artifact-level admissibility-layer visibility for Layer 1 negatives, preventing the false-trust failure mode.
+
+Admissibility layers (from D-078):
+- *Layer 1.* Validation rule exists and is active; formula not parsed. The negative test triggers the rule, expecting rejection. Verifies "rule fires." V1 reality for validation-rule-grounded negatives.
+- *Layer 2.* Validation rule's formula confirms the rule rejects this specific scenario. Verifies "rule fires because formula evaluates to reject for this input." Post substrate-1 §17 formula parser.
+
+Substrate-3 output schema commitments:
+
+- *`admissibility_layer` field at artifact top level* — `layer_1` | `layer_2`. Not nested in `attempted_interpretation`; structural top level alongside claim, recipe, provenance.
+- *Substrate-emitted natural-language caveat in Layer 1 artifacts* — the artifact's narrative includes: "Layer 1 admissibility — validation rule applicability verified; formula-specific rejection logic not parsed."
+- *Downstream review UX renders the layer prominently* — UX rendering is product responsibility; substrate-3 provides artifact-level field + explicit natural language.
+
+Other negative groundings (required-field constraint, type incompatibility, permission grant absence, layout INCLUDES_FIELD absence, integration entity absence) achieve Layer 2 admissibility directly at v1; their artifacts carry `admissibility_layer = layer_2` without the caveat.
+
+### 5.7 Per-archetype grounded-negative scope (D-084)
+
+Per-archetype admissibility-layer distribution and grounding sources:
+
+*Data-behavior.* Richest. Groundings: validation rule (Layer 1 → Layer 2 post formula parser); required field (Layer 2); type incompatibility (Layer 2); permission restriction (Layer 2); automation rejection (partial). Canonical negative shape: `prohibition-claim`.
+
+*Configuration.* Cleanest mechanically. Groundings: S1 entity absence (Layer 2); property state absence (Layer 2 if S1-modeled, else `ungrounded-claim`); edge absence (Layer 2).
+
+*Permission.* Leverages D-080 recipe-kind discipline. Groundings: grant absence (Layer 2 within v1 grant-level); sharing-rule absence (structurally weak; refuses with `no-admissible-negative-scenario-found` cause=`ontology_gap`, what_would_unblock=S1 Tier 2 sharing).
+
+*UI.* Narrow at v1. Groundings: INCLUDES_FIELD edge absence (Layer 2); non-layout-derivable element-state (refuses with cause=`ontology_gap`, what_would_unblock=S1 Tier 3 Lightning page composition).
+
+*Integration.* Operational-only-admissible at v1. Groundings: integration entity absence (operational); configuration absence (operational). Causal-admissibility deeper cases reserved (§5.8).
+
+### 5.8 Forward-compat reservations
+
+Theme 4 carries the following reservations to downstream themes and future substrate-3 cycles:
+
+- *Layer 2 admissibility upgrade for validation-rule-grounded negatives.* When substrate-1 §17 formula parser ships, validation-rule-grounded negatives upgrade from Layer 1 to Layer 2 automatically. `admissibility_layer` artifact field value shifts; substrate-emitted caveat no longer present. Non-breaking.
+- *Integration negative causal admissibility.* Integration negatives (absence-of-effect, non-firing assertions) categorically different from constraint-admissible negatives — verifying non-firing under specific causal conditions requires temporal observation, causal interpretation, distributed-state reasoning. V1 ships with constraint-admissibility framing capturing the simplest cases. A future substrate-3 cycle may add causal-admissibility framework for the philosophically deeper integration negatives; parallel to D-082's interaction-topology admissibility reservation; will likely converge with it in the same future cycle.
+- *Substrate-3 admissibility-confidence calibration for negative `policy_restraint` cause.* The `policy_restraint` cause for `no-admissible-negative-scenario-found` depends on the substrate's admissibility-confidence threshold; Theme 7's quality envelope work calibrates per archetype.
 
 ---
 

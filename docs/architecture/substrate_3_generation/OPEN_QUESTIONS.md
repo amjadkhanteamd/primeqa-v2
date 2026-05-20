@@ -18,13 +18,13 @@ Questions specific to S3's design. Cross-cutting questions live in the top-level
 
 - ~~S3-Q-003 — Per-archetype generation strategies~~ → resolved by D-077 through D-082 (Theme 3). Cross-cutting framework with four dimensions per archetype, shared interpretation context, archetype hint as guidance, dismissal_reason applicability by phase; per-archetype strategies for data-behavior, configuration, permission (with recipe-kind selection preserving claim semantics), UI (with honest v1 scope), integration (with operational-only v1 admissibility).
 
+### Theme 4 (2026-05-19)
+
+- ~~S3-Q-004 — Grounded negative test generation~~ → resolved by D-083 and D-084 (Theme 4). Grounded-negative discipline with five architectural commitments (S3 Guardrail 3 requirement-anchored origination; seventh refusal kind `no-admissible-negative-scenario-found` with typed internal cause distinguishing ontology_gap / no_org_constraint / policy_restraint; polarity strictly derived from claim_kind + content with no parallel field; bounded decomposition via canonical-negative-per-failure-mode + highest-specificity grounding + bounded candidate enumeration; Layer 1 admissibility produces artifact-level visibly degraded trust marker). Per-archetype scope operationalizing the discipline within Theme 3 archetype strategies, with integration causal-admissibility reserved as forward-compat.
+
 ---
 
 ## Open — to be addressed during subsequent themes
-
-### S3-Q-004 — Grounded negative test generation
-
-Theme 4. What "grounded" means concretely per archetype. How the formula-parser deferral shapes v1 grounded-negative scope for claims grounded in validation rules. Structural shape of the `no-admissible-negative-scenario-found` refusal category.
 
 ### S3-Q-005 — LLM integration architecture
 
@@ -67,3 +67,6 @@ Recorded during Theme 1 for downstream consideration:
 - **Implementation topology of interpretation across the batch.** Theme 3 (D-077) commits to shared interpretation context across the batch — cross-requirement awareness for sprint batches is preserved; multi-archetype decomposition is supported. The orchestration shape that delivers this (one-pass, multi-pass coordinated, planner-style with explicit dependency graph) is resolved in Theme 5.
 - **Run-as-execution upgrade path for permission archetype.** Theme 3 (D-080) commits to recipe-kind selection preserving claim semantics; v1 defaults to metadata-inspection with refusal-with-disambiguation when run-as-execution is required. When S1 Tier 2 ships sharing rules, OWD, and Apex sharing modeling, currently-refused complex permission claims may upgrade to grounded run-as-execution recipes.
 - **Integration archetype interaction-topology admissibility.** Theme 3 (D-082) ships integration archetype with operational-only v1 admissibility (existence + structural connectivity). A future substrate-3 cycle may add interaction-topology admissibility — cross-system causality, external observability discipline, temporal sequencing semantics, protocol semantics — when integration becomes a larger product surface. Substrate-3 architectural slot reserved.
+- **Layer 2 admissibility upgrade for validation-rule-grounded negatives.** Theme 4 (D-083 e) commits to Layer 1 admissibility at v1 for validation-rule-grounded negatives, with artifact-level visibly degraded trust marker. When substrate-1 §17 formula parser ships, validation-rule-grounded negatives upgrade from Layer 1 to Layer 2 automatically — `admissibility_layer` artifact field shifts; substrate-emitted caveat no longer present. Non-breaking.
+- **Integration negative causal admissibility.** Theme 4 (D-084) ships integration negatives with constraint-admissibility framing (entity absence, configuration absence — the simplest cases). The philosophically deeper integration negatives (verifying non-firing of effects under specific causal conditions) require *causal admissibility* — temporal observation, causal interpretation, distributed-state reasoning — categorically different from constraint admissibility. A future substrate-3 cycle may add causal-admissibility framework; will likely converge with the Theme 3 interaction-topology admissibility reservation in the same future cycle.
+- **Substrate-3 admissibility-confidence calibration for negative `policy_restraint` cause.** Theme 4 (D-083 b) introduces the `policy_restraint` internal cause for `no-admissible-negative-scenario-found`. The cause depends on the substrate's admissibility-confidence threshold; Theme 7's quality envelope work calibrates per archetype.
