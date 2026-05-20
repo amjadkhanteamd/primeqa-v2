@@ -4303,3 +4303,609 @@ only when refusal is as architecturally first-class as emission.
   resolution)
 
 ---
+
+
+## D-071 — Generation request shape with typed regeneration lineage and three-axis context separation [Theme 2]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S2 provenance integration, S6 attribution, S8 evolution]
+**Status:** active
+
+**Decision.** Substrate-3's unit of work is a `GenerationRequest`. It carries one or more typed external requirement references, three separated context axes (semantic / governance / operational), and — for regeneration — a binary `prior_request_id` discriminator with a typed `deltas` payload categorizing the regeneration's causal change.
+
+**Request structural shape:**
+
+    GenerationRequest {
+      request_id              UUID
+      tenant_id               FK
+      requirement_refs        [<typed external-system references; cardinality 1..N>]
+      semantic_context        { domain_pack_refs, system_rule_version,
+                                s1_version_seq, archetype_hint }
+      governance_context      { refusal_policy_version,
+                                dismissal_taxonomy_version,
+                                transparency_policy_version }
+      operational_context     { prompt_template_version, llm_model_identifier,
+                                retry_policy, cost_budget_usd, latency_budget_ms }
+      prior_request_id        UUID NULL
+      deltas                  <typed payload; non-null iff prior_request_id non-null>
+      created_at              TIMESTAMPTZ
+      completed_at            TIMESTAMPTZ NULL
+    }
+
+**Three-axis context separation.** Three orthogonal context categories:
+
+- *semantic_context* — what admissible world state was visible. Domain Packs invoked, system rule version, S1 `version_seq` pinned, archetype hint. Two requests with the same `semantic_context` saw the same semantic world.
+- *governance_context* — what behavioral policy regime was active. Refusal policy version, dismissal taxonomy version, transparency policy version. Two requests with the same `governance_context` are governed by the same thresholds, taxonomies, and stability rules.
+- *operational_context* — how generation was mechanically executed. Prompt template version, model identifier, retry policy, budgets. Variation here is execution mechanics, not semantic or governance behavior.
+
+This separation enables a clean equivalence algebra:
+
+- Same semantic + same governance + different operational → expected semantic equivalence (substrate-2 `identity_hash` match per D-059) and explanation equivalence (substrate-3 `explanation_hash` match per D-075).
+- Same semantic + different governance → expected behavior change (different refusals, different dismissed alternatives) by design, not regression.
+- Different semantic → expected semantic divergence by construction.
+
+**Regeneration lineage typed.** `prior_request_id` is the binary discriminator: NULL → fresh request; non-NULL → regeneration. When regeneration, `deltas` carries a typed `regeneration_kind` discriminator over five values:
+
+| regeneration_kind          | Category             | Semantic continuity edge? |
+|----------------------------|----------------------|---------------------------|
+| `clarification`            | semantic evolution   | yes — clarifies prior refusal or under-specification |
+| `grounding_evolution`      | semantic evolution   | yes — S1 state advanced (new entities, formula parser shipped, StandardValueSet linked) |
+| `requirement_change`       | semantic evolution   | yes — requirement itself updated |
+| `model_experimentation`    | operational          | no — same semantic, different model |
+| `eval_replay`              | operational          | no — benchmarking against historical generation |
+| `failure_recovery`         | operational          | no — retry after operational failure |
+
+Three semantic-continuity edges migrate into substrate-2 provenance as typed lineage events when `get_provenance` ships. Three operational edges stay in substrate-3's operational observability surface and do not migrate.
+
+The `deltas` payload, per regeneration_kind, carries typed structures appropriate to the kind: `clarification` deltas carry resolved-refusal references; `grounding_evolution` deltas reference the S1 version_seq diff; `requirement_change` deltas reference the updated requirement; `model_experimentation` deltas reference the model identifier change; etc.
+
+**Lineage as queryable substrate property.** The `prior_request_id` chain is first-class semantic continuity infrastructure, not an audit field. Substrate-3 exposes lineage traversal operations (`get_request_lineage(request_id)` returning the ordered chain, filterable by `regeneration_kind` category) to itself and to UX/eval consumers. When substrate-2's `get_provenance` ships, semantic-continuity lineage migrates as a chain of provenance events linked by typed lineage edges.
+
+**Rationale.** The three-axis context separation emerged through TA-loop review surfacing that refusal policy is conceptually neither semantic visibility nor execution mechanics; it is behavioral policy regime. The natural decomposition produces three contexts with clean equivalence algebra and clean substrate-2 migration semantics.
+
+The typed `regeneration_kind` discriminator resolves the lineage-pollution risk: undifferentiated lineage cannot support clean eval, audit, or provenance traversal because semantic continuity and operational experimentation are categorically different.
+
+**Alternatives considered.**
+
+- *Three regeneration modes (fresh / regenerate_from / regenerate_with_clarification).* Rejected. Over-factored; every regeneration is a regeneration with some delta. Binary discriminator plus typed deltas is more honest.
+- *Single context envelope.* Rejected. Conflating semantic visibility, governance policy, and execution mechanics produces incoherent equivalence semantics and incoherent substrate-2 migration.
+- *Undifferentiated lineage chain.* Rejected. Type-distinguishing semantic continuity from operational experimentation is required for clean eval and audit.
+
+**Downstream consequences.**
+
+- *D-072:* `GenerationOutcome` references its `GenerationRequest`; outcome equivalence is computed against `(semantic_context, governance_context)` invariance.
+- *D-074:* Two-surface architecture aligns context separation with substrate boundary — semantic_context + governance structural metadata → semantic ledger → substrate-2 provenance; operational_context + LLM telemetry → operational observability → stays substrate-3.
+- *D-075:* `explanation_hash` stability is computed under invariant `(semantic_context, governance_context)`.
+- *Theme 3:* Per-archetype strategies operate within context-typed requests; `archetype_hint` constrains scope.
+- *Theme 5:* `operational_context` houses LLM call parameterization; Q-004 (tool-use vs structured JSON) resolution operates within operational_context.
+- *Theme 6:* Governance context versions operationalize their machinery here.
+- *Substrate-2 forward-commitment:* Semantic-continuity lineage edges migrate as typed lineage events when get_provenance ships.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §3.2 (request shape and three-axis context separation)
+- `substrate_3_generation/SPEC.md` §2.3 (substrate-2 authority model S3 operates under)
+- D-070 (Theme 1; S3 as constrained interpretation engine; this entry operationalizes the request shape inside that framing)
+- D-059 (substrate-2 identity_hash; semantic equivalence definition substrate-3 inherits)
+- D-061 (substrate-2 authority model)
+- D-064 (substrate-2 Coordinator outward surface)
+- substrate-2 SPEC §10.2 (reserved `get_provenance` / `get_recipe_provenance`)
+
+---
+
+
+## D-072 — GenerationOutcome protocol with binary draft/refusal kinds, dedup as draft form, and the no-silent-drops invariant [Theme 2]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S2 provenance integration, S6 attribution]
+**Status:** active
+
+**Decision.** Substrate-3's output protocol is the `GenerationOutcome` discriminated union with binary kinds: `draft` | `refusal`. Every requirement in a request is explicitly resolved to one outcome — no requirement is silently dropped. Dedup-against-existing-claims is a form of draft outcome with zero new writes, not a third top-level outcome kind. Every outcome — draft or refusal — carries a mandatory `attempted_interpretation` artifact and an `explanation_hash`.
+
+**GenerationOutcome shape:**
+
+    GenerationOutcome {
+      outcome_id                  UUID
+      request_id                  FK to GenerationRequest
+      requirement_ref             <typed external-system reference>
+      outcome_kind                'draft' | 'refusal'
+      
+      // draft variant
+      claims_written              [<{test_id, version_seq}>] NULL
+      recipes_written             [<{recipe_id, version_seq}>] NULL
+      equivalent_existing         [<test_id>] NULL
+      
+      // refusal variant
+      refusals                    [<typed refusal entries>] NULL
+      
+      // mandatory on every outcome
+      attempted_interpretation    <typed structure per D-075>
+      explanation_hash            VARCHAR
+      
+      created_at                  TIMESTAMPTZ
+    }
+
+**Binary outcome_kind.** The discriminator is binary because the substrate's posture is binary: a requirement is either resolved (one or more drafts produced, possibly mixed with dedup matches) or refused (the substrate cannot reach the verification bar). Intermediate categories drift toward "couldn't quite decide" — the verification-bar discipline forbids this.
+
+**Dedup as draft form.** When dedup (via substrate-2's `query_equivalent_claims` against the interpreted semantic neighborhood) finds existing claims that satisfy the requirement, the outcome is `draft`:
+
+- `claims_written` — possibly empty (no new claims emitted)
+- `recipes_written` — possibly empty
+- `equivalent_existing` — populated with the test_ids of existing-satisfying claims
+
+A draft outcome with empty `claims_written` and non-empty `equivalent_existing` is the pure-dedup case. Mixed cases (some new claims, some existing satisfying parts of the requirement) are normal.
+
+**No-silent-drops invariant.** Every requirement in `request.requirement_refs` MUST be resolved by exactly one `GenerationOutcome`. The semantic ledger enforces this structurally: the substrate cannot mark a request `completed_at` without one outcome row per requirement_ref.
+
+This is the architectural defense against the "N drafts produced for M requirements where N < M" failure mode. Every dropped requirement surfaces as either a draft (possibly pure-dedup) or a refusal.
+
+**Mandatory attempted_interpretation on every outcome.** Per D-075, every outcome — draft or refusal — carries a typed `attempted_interpretation` artifact and an `explanation_hash` derived from it. Drafts get attempted_interpretation so reviewers see why this draft and not other admissible candidates. Refusals get it so engineers see what the substrate considered before refusing. This connects to D-070's verification-bar principle: reviewers verify rather than co-author, and attempted_interpretation is the substrate's transparency-grade justification supporting verification.
+
+**Rationale.** The binary discriminator collapsed cleanly from an earlier three-kind framing once dedup was recognized as a successful resolution where the satisfying claim already exists, not a third category. The `equivalent_existing` field preserves full audit information without expanding the discriminator.
+
+The no-silent-drops invariant emerged from Theme 1's verification-bar discipline: review compensating for invisible drops collapses the trust loop. Explicit per-requirement resolution is the defense.
+
+Mandatory `attempted_interpretation` on every outcome (not just refusals) emerged from the transparency-as-product-grade-infrastructure principle: drafts need transparency for verification just as refusals need it for engineer repair.
+
+**Alternatives considered.**
+
+- *Three top-level kinds (draft / refusal / noop_already_covered).* Rejected. `noop_already_covered` is a successful resolution form, not a separate kind.
+- *Allowing requirements to silently drop on edge cases.* Rejected. Defense against the failure mode requires explicit resolution per requirement.
+- *attempted_interpretation only on refusals.* Rejected. Drafts need transparency for verification too.
+- *Allowing mixed outcome_kind per requirement.* Rejected. Per-requirement clarity preserves semantic ledger interpretability.
+
+**Downstream consequences.**
+
+- *D-073:* `RefusalKind` taxonomy lives inside the refusal-variant `refusals` field; each refusal carries its own typed feedback payload.
+- *D-074:* The semantic ledger's row-per-(request, requirement) shape derives from this protocol.
+- *D-075:* `attempted_interpretation` shape is defined; mandatory-on-every-outcome is enforced by the protocol.
+- *Theme 6:* Eval consumes outcome rows; emission quality and refusal quality measurable on parallel dimensions.
+- *Theme 7:* Per-requirement resolution discipline is the substrate's measurement primitive.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §3.3 (outcome protocol and the no-silent-drops invariant)
+- D-070 (Theme 1; verification-bar discipline)
+- D-051 (substrate-2 identity model; `claims_written` references substrate-2 typed identity)
+- D-061 (substrate-2 authority model; dedup operates within authority constraints)
+- substrate-2 SPEC §10.2 (`query_equivalent_claims` interface)
+
+---
+
+
+## D-073 — RefusalKind taxonomy at six categories with invalidity-vs-policy distinction and refusal-as-governed-behavior [Theme 2]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S2 provenance integration, S6 attribution, S7 conversational]
+**Status:** active
+
+**Decision.** Substrate-3 commits to a typed `RefusalKind` taxonomy of six categories at Theme 2 close (seventh anticipated for Theme 4). Each refusal carries a typed actionable-feedback payload appropriate to its kind. Refusals are *governed behavior* — each carries a `refusal_policy_version` from the request's `governance_context` per D-071, making refusal calibration a versioned substrate-3 governance concern, not "natural" generation behavior.
+
+**The six categories at Theme 2 close:**
+
+| RefusalKind                     | Category               | What it signals |
+|---------------------------------|------------------------|-----------------|
+| `underspecified-requirement`    | invalidity (input)     | Requirement lacks specificity to ground anywhere in S1 |
+| `no-relevant-context`           | invalidity (grounding) | Requirement is specific but no S1 entities support its assumptions |
+| `ambiguous-reference`           | invalidity (resolution)| Reference disambiguates to multiple S1 entities; needs engineer input |
+| `ungrounded-claim`              | invalidity (admissibility)| Proposed claim not admissibly supported by org's constraint structure |
+| `structural-validation-failure` | invalidity (output)    | LLM output cannot be coerced to valid substrate-2 body after bounded retry |
+| `low-generation-confidence`     | **policy (threshold)** | Proposed claim is admissibly grounded but doesn't reach `refusal_policy_version` confidence threshold |
+
+A seventh — `no-admissible-negative-scenario-found` — is anticipated for Theme 4 as a *policy (scope)* category.
+
+**Invalidity vs policy distinction.** Five invalidity categories are *structural failures* — the proposed claim is structurally wrong (input under-specified, grounding missing, reference ambiguous, claim inadmissible, output invalid). One policy category at Theme 2 (`low-generation-confidence`) is a *governance threshold* — the proposed claim is structurally fine but doesn't meet the calibrated bar.
+
+The distinction is architecturally consequential. Invalidity refusals would be refusals under any reasonable policy. Policy refusals depend on `refusal_policy_version` calibration — the same underlying claim could pass under v1 and refuse under v2. The substrate exposes the distinction so engineers see which refusals are structural vs which are policy-driven.
+
+**Refusal-as-governed-behavior.** Each refusal entry in the `generation_outcomes.refusals` array carries:
+
+- `refusal_kind` — the discriminator (also exposed at the row level per D-074)
+- `refusal_policy_version` — from the request's `governance_context` (also exposed at row level)
+- `refusal_schema_version` — the version of the feedback_payload typed shape (also exposed at row level)
+- `feedback_payload` — the typed actionable feedback, per kind
+
+Row-level exposure of `refusal_kind`, `refusal_policy_version`, and `refusal_schema_version` is the substrate-2 forward-commitment for typed cross-substrate provenance (per D-074). This makes refusal replay a first-class substrate operation: "would this requirement still be refused under policy v2?" is queryable without rerunning generation.
+
+**Per-kind feedback payload shapes:**
+
+    underspecified-requirement: {
+      missing_axes:                [<typed axis names — target_object, operation_kind, actor_role, etc.>]
+      suggested_clarifications:    [<typed prompts to engineer>]
+    }
+    
+    no-relevant-context: {
+      searched_terms:              [<terms extracted from requirement>]
+      closest_matches:             [<{S1 entity_ref, similarity_score}>] // omitted if all below threshold
+      org_capability_gap:          <optional typed description>
+    }
+    
+    ambiguous-reference: {
+      ambiguous_term:              <surface form from requirement>
+      candidate_entities:          [<S1 entity_refs>]
+      disambiguation_prompt:       <typed clarification engineer can answer>
+    }
+    
+    ungrounded-claim: {
+      proposed_claim_kind:         <claim_kind enum value>
+      proposed_subject_refs:       [<S1 entity_refs>]
+      admissibility_gap:           <typed reason from substrate-authorized vocabulary,
+                                    may cite dismissal_reason codes per D-076>
+      what_would_unblock:          <optional — references deferred S1 capabilities>
+    }
+    
+    structural-validation-failure: {
+      attempt_count:               <number of bounded retries before refusal>
+      last_validation_error:       <typed Pydantic validation error from substrate-2>
+      llm_output_summary:          <bounded raw output; persistent occurrences flag prompt/model issues>
+    }
+    
+    low-generation-confidence: {
+      candidates_considered:       [<{candidate_path_index, confidence_score, threshold_used}>]
+      threshold_calibration_basis: <typed reason — what refusal_policy_version defined as threshold>
+      disambiguation_prompt:       <typed prompt to engineer if applicable>
+    }
+
+Each payload type is itself a typed structure with a `refusal_schema_version`. Schema versions evolve through deliberate substrate-3 design cycles; cross-version comparisons may need migration semantics (substrate-2 provenance design surface when `get_provenance` ships).
+
+**Refusal multiplicity (forward-compat reservation).** V1 ships flat-list refusals per outcome (one refusal-variant outcome may carry multiple `refusal_kind` entries when multiple categories apply — e.g., a requirement that is BOTH underspecified AND has ambiguous references). Future evolution may introduce hierarchy (causality DAG over refusals) or sequencing (repair-path ordering); flat-list schema reserves both non-breakingly via NULL-default fields.
+
+**Rationale.** The `low-generation-confidence` category emerged from review surfacing that the architecture conflated admissibility (mechanical, from S1) with confidence (judgmental, threshold-based). These are categorically different. Surfacing the distinction makes policy-threshold refusals visible as such.
+
+The refusal-as-governed-behavior commitment emerged from review surfacing that refusal thresholds are governance, not generation behavior. Per D-074, refusal_kind, refusal_policy_version, and refusal_schema_version are queryable structural fields at the semantic ledger row level for cross-substrate typed provenance.
+
+**Alternatives considered.**
+
+- *Five categories collapsing `low-generation-confidence` into `ungrounded-claim`.* Rejected. Distinct architectural categories with distinct repair paths.
+- *Free-form refusal feedback text.* Rejected. Typed payloads required for UX consistency, eval comparability, refusal replay under policy changes, and cross-substrate provenance typing.
+- *Refusals as opaque "could not generate" outcomes.* Rejected per Theme 1 D-070 (refusal as first-class product surface).
+- *Refusal policy as operational concern.* Rejected. Refusal policy is governance, not operational mechanics; lives in `governance_context`.
+
+**Downstream consequences.**
+
+- *Theme 4:* Adds `no-admissible-negative-scenario-found` (policy-scope category) with its own typed feedback payload.
+- *Theme 6:* Refusal policy version machinery; refusal replay implementation; eval mechanics measuring refusal quality.
+- *Theme 7:* Refusal calibration thresholds operationalized; per-category refusal quality on parallel dimensions.
+- *D-074:* refusal_kind, refusal_policy_version, refusal_schema_version exposed at semantic ledger row level for cross-substrate typed provenance.
+- *S6 attribution:* When S6 ships, refusal categorization may inform attribution categories.
+- *S7 conversational:* Refusals are substrate-3's surface for conversational clarification flows.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §3.4 (RefusalKind taxonomy)
+- D-070 (Theme 1; refusal as first-class product surface)
+- D-071 (`governance_context.refusal_policy_version`)
+- D-074 (typed cross-substrate provenance for refusal structural metadata)
+- D-075 (attempted_interpretation mandatory on refusals)
+- D-076 (dismissal_reason taxonomy; refusals may cite dismissal_reasons in `admissibility_gap`)
+
+---
+
+
+## D-074 — Two-surface ledger architecture with typed cross-substrate provenance commitment [Theme 2]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S2 provenance interface design when get_provenance ships]
+**Status:** active
+
+**Decision.** Substrate-3 carries two structurally separate ledger surfaces with distinct lifecycles, retentions, and consumers:
+
+- **Semantic ledger** (S3-owned, retires to substrate-2 provenance when `get_provenance` ships): `generation_requests` and `generation_outcomes` tables. Carries the semantic audit trail and supports cross-substrate typed provenance.
+- **Operational observability** (S3-adjacent, stays substrate-3 permanently): `llm_calls` table. Carries operational telemetry. Does NOT migrate to substrate-2 provenance.
+
+The two surfaces are linked by `outcome_id`. Eval joins both surfaces. UX surfaces typically read only the semantic ledger. Operational monitoring reads only the observability surface.
+
+**Semantic ledger schema:**
+
+    generation_requests {
+      request_id              UUID PRIMARY KEY
+      tenant_id               FK
+      actor                   's3'
+      requirement_refs        JSONB
+      semantic_context        JSONB              -- per D-071 shape
+      governance_context      JSONB              -- per D-071 shape
+      operational_context     JSONB              -- per D-071 shape
+      prior_request_id        UUID NULL FK self
+      deltas                  JSONB NULL         -- typed per D-071 regeneration_kind
+      created_at              TIMESTAMPTZ
+      completed_at            TIMESTAMPTZ NULL
+    }
+    
+    generation_outcomes {
+      outcome_id               UUID PRIMARY KEY
+      request_id               FK
+      requirement_ref          JSONB
+      outcome_kind             'draft' | 'refusal'
+      -- draft variant fields (NULL when refusal)
+      claims_written           JSONB NULL
+      recipes_written          JSONB NULL
+      equivalent_existing      JSONB NULL
+      -- refusal variant fields (NULL when draft)
+      refusal_kind             VARCHAR NULL        -- EXPOSED AT ROW LEVEL
+      refusal_policy_version   VARCHAR NULL        -- EXPOSED AT ROW LEVEL
+      refusal_schema_version   VARCHAR NULL        -- EXPOSED AT ROW LEVEL
+      refusals                 JSONB NULL          -- typed feedback payloads array
+      -- mandatory on every outcome
+      attempted_interpretation JSONB               -- per D-075 shape
+      explanation_hash         VARCHAR             -- EXPOSED AT ROW LEVEL
+      dismissal_taxonomy_version VARCHAR           -- EXPOSED AT ROW LEVEL (from governance_context)
+      created_at               TIMESTAMPTZ
+    }
+
+**Critical schema discipline — typed cross-substrate provenance.** The fields `refusal_kind`, `refusal_policy_version`, `refusal_schema_version`, `explanation_hash`, and `dismissal_taxonomy_version` are exposed at the row level, NOT buried inside JSONB. This is the substrate-2 forward-commitment.
+
+When substrate-2's `get_provenance` ships, refusal events migrate from `generation_outcomes` to substrate-2 provenance event rows. Substrate-2 needs these fields as typed structural columns to support:
+
+- Provenance filtering by `refusal_kind`
+- `refusal_policy_version` drift detection along a test_id's lineage
+- `explanation_hash` drift detection across regenerations
+- Decisions about whether two refusal events are comparable under their schema versions
+
+Substrate-2 does NOT interpret `refusals.feedback_payload` contents or `attempted_interpretation` internals — those remain substrate-3-typed and opaque from substrate-2's perspective. The boundary:
+
+> **Substrate-3 owns refusal and explanation *semantics*. Substrate-2 owns refusal and explanation *provenance continuity* through typed structural metadata fields.**
+
+**Operational observability schema:**
+
+    llm_calls {
+      call_id                  UUID PRIMARY KEY
+      outcome_id               FK to generation_outcomes
+      call_sequence_number     INT                -- ordering within an outcome
+      input_tokens             INT
+      output_tokens            INT
+      cost_usd                 NUMERIC
+      latency_ms               INT
+      result_kind              'valid_output' | 'structural_validation_failure' | 'other_error'
+      error_payload            JSONB NULL
+      raw_output_truncated     TEXT NULL          -- bounded size for debug
+      model_identifier         VARCHAR
+      prompt_template_version  VARCHAR
+      created_at               TIMESTAMPTZ
+    }
+
+Strictly operational data. Retention bounded by storage/cost considerations (archival policy named when storage pressure surfaces). Does NOT migrate to substrate-2.
+
+**Atomicity discipline.** Each LLM call attempt produces one `llm_calls` row immediately. Each completed outcome produces one `generation_outcomes` row at outcome resolution time. If operational write fails after semantic write succeeded, the substrate has the semantic outcome (audit-grade record) and loses telemetry. Telemetry can be lossy; semantics cannot. Write ordering enforces this property.
+
+**Rationale.** Two-surface split resolves three architectural concerns: lifecycle alignment (semantic ledger aligns with test lifecycle; operational observability has bounded retention), substrate-2 migration boundary (clean — substrate-2 absorbs semantics, not telemetry), and access patterns (eval, UX, ops have different needs).
+
+The cross-substrate typed provenance commitment emerged from review surfacing that refusal payload schema belongs to substrate-3 but refusal governance semantics leak into substrate-2 provenance law. Substrate-2 needs structural metadata for provenance continuity without interpreting payload internals. Row-level typed exposure (vs. buried JSONB) is what makes this clean rather than opaque.
+
+**Alternatives considered.**
+
+- *Single three-tier ledger with `generation_attempts` as third tier.* Rejected. Conflates lifecycles and migration boundary.
+- *Opaque event_data carrying all refusal structure to substrate-2.* Rejected. Substrate-2 needs typed structural metadata for provenance traversal; opaque event_data breaks cross-substrate audit operations.
+- *Substrate-2 interpreting refusal payload internals.* Rejected. Wrong substrate boundary — substrate-2 knows refusal is a category of provenance event, doesn't know what `low-generation-confidence` payload internals mean.
+
+**Downstream consequences.**
+
+- *D-071, D-072, D-073, D-075, D-076:* Row-level typed fields exposed at semantic ledger row level, not in JSONB.
+- *Substrate-2 forward-commitment:* When `get_provenance` is designed, it MUST absorb the cross-substrate typed provenance constraint. Substrate-2's provenance event row schema includes `refusal_kind`, `refusal_policy_version`, `refusal_schema_version`, `dismissal_taxonomy_version`, `explanation_hash` as typed structural columns. Substrate-2 design surface for that cycle.
+- *Theme 5:* `llm_calls` schema operationalizes here. Tool-use vs single-shot affects `call_sequence_number` semantics.
+- *Theme 6:* Eval joins both surfaces; prompt-version comparison reads operational observability; semantic outcome comparison reads semantic ledger.
+- *Theme 7:* Quality measured against semantic ledger (emission, refusal, explanation stability); cost/perf measured against operational observability.
+- *Forward-compat reservation:* Operational observability archival policy named when storage pressure surfaces.
+- *Forward-compat reservation:* Operational observability may eventually move to a future observability substrate. Substrate-3 commitment in v1 is the schema; substrate boundary for the observability table is provisional.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §3.5 (two-surface architecture)
+- `substrate_3_generation/SPEC.md` §3.9 (typed cross-substrate provenance commitment)
+- D-071 (request shape — semantic, governance, operational context fields)
+- D-072 (outcome protocol — outcome_kind and field shapes)
+- D-073 (RefusalKind taxonomy — refusal structural metadata exposed)
+- D-075 (attempted_interpretation; explanation_hash)
+- D-076 (dismissal_taxonomy_version exposed)
+- substrate-2 SPEC §10.2 (reserved get_provenance; design surface affected)
+
+---
+
+
+## D-075 — S3 Guardrail 2 (ontology-bound reasoning artifacts), attempted_interpretation shape, and transparency as governed substrate artifact [Theme 2]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S2 provenance integration, S5 knowledge, S6 attribution]
+**Status:** active
+
+**Decision.** Substrate-3 commits to two interlocking architectural commitments:
+
+**(a) S3 Guardrail 2 — Ontology-bound reasoning artifacts.** Substrate-3 reasoning artifacts persisted in substrate state may only reference semantic concepts authorized by S1's ontology and substrate-2's taxonomy. They may not introduce durable semantic concepts outside this authorized set. This extends Theme 1's S3 Guardrail 1 (semantic search space bounded) to the substrate's own reasoning vocabulary.
+
+**(b) Transparency as governed substrate artifact.** `attempted_interpretation` is not a debug surface. It is substrate-grade governed behavior with its own equivalence relation (`explanation_hash`), its own stability commitment, and its own substrate-2 forward-compatibility through typed cross-substrate provenance (per D-074).
+
+**Attempted_interpretation structural shape:**
+
+    attempted_interpretation {
+      scoped_neighborhood:    [<IdentityBearingRef>]                     // S1 entity refs only
+      candidate_paths:        [{
+                                path_id:           INT                   // canonical index
+                                archetype:         <S2 archetype enum>
+                                claim_kind:        <S2 claim_kind enum>
+                                subject_refs:      [<IdentityBearingRef>]
+                                status:            'selected' | 'dismissed'
+                              }]
+      dismissal_reasons:      [{
+                                path_id:           INT                   // FK to candidate_paths
+                                reason_codes:      [<dismissal_reason enum value per D-076>]
+                              }]
+      selected_path_id:       INT NULL                                   // when outcome_kind = 'draft'
+    }
+
+Every field is substrate-authorized typed structure. No free-form prose. No LLM-generated rationale text. No invented entity descriptions. Every concept is either an S1 entity (via `IdentityBearingRef`), a substrate-2 taxonomic value (archetype, claim_kind from locked enums), or a substrate-3 reasoning-vocabulary value (`dismissal_reason` from D-076's bounded enum).
+
+**Guardrail 2 enforcement.** The discipline is enforced structurally: the `attempted_interpretation` Pydantic body validates against the typed schema. LLM output proposing invalid entities, invalid claim_kinds, or invalid dismissal_reasons fails validation and either repairs (bounded retry) or surfaces as `structural-validation-failure`.
+
+> *The LLM may generate invalid alternatives during its reasoning, but the substrate only persists alternatives that pass the same admissibility check as the selected path.*
+
+Invalid LLM-proposed alternatives cost LLM latency (recorded in `llm_calls` for cost accounting and debug) but never reach substrate state. This is fail-loud-over-hallucinating applied to the reasoning artifact, not just the output.
+
+**Transparency as governed substrate artifact.**
+
+Once persisted, `attempted_interpretation`:
+
+- Becomes part of product truth (reviewers depend on it, regeneration consumes it, eval compares it)
+- Must remain stable under invariant `(semantic_context, governance_context)` per D-071's equivalence algebra
+- Is subject to a typed equivalence relation (`explanation_hash`) and a typed drift event when stability is violated
+
+**Explanation_hash canonicalization.**
+
+A canonical hash computed over `attempted_interpretation` under ordered canonicalization:
+
+- `scoped_neighborhood` — canonical lexicographic order over `IdentityBearingRef`s (by serialized form)
+- `candidate_paths` — canonical order by `(archetype, claim_kind, subject_refs_canonical)`; path_ids reassigned to match canonical order
+- `dismissal_reasons` per path — canonical alphabetical order by `reason_code`
+- `selected_path_id` — refers to canonical index
+
+The hash is computed only over substrate-authorized typed fields. Per Guardrail 2, no free-form content participates by construction. The hash is mechanical, reproducible, and comparable across runs.
+
+**Explanation drift events.**
+
+When same `(semantic_context, governance_context)` regeneration produces a different `explanation_hash` than its lineage parent, the substrate emits a typed explanation drift event into the semantic ledger:
+
+    explanation_drift_event {
+      drift_id:                 UUID
+      outcome_id:               FK
+      prior_outcome_id:         FK to lineage parent
+      drift_kind:               'structure' | 'composition' | 'reasoning_path'
+                                // structure: scoped_neighborhood changed
+                                // composition: candidate_paths set changed
+                                // reasoning_path: same candidates, different selected_path or different dismissals
+      prior_explanation_hash:   VARCHAR
+      current_explanation_hash: VARCHAR
+      detected_at:              TIMESTAMPTZ
+    }
+
+Detection is mechanical (hash inequality). Categorization (regression / evolution / acceptable variation) is judgmental and deferred to S3-Q-008 (semantic equivalence policy under operational variation, addressed in Theme 5 / Theme 7).
+
+**Transparency_policy_version.** Carried in `governance_context` per D-071. Explicit versioning machinery deferred to Theme 6. V1 ships with `transparency_policy_version='v1'` as implicit calibration: the substrate commits to stable `explanation_hash` under invariant `(semantic_context, governance_context)`, with drift events as the violation signal.
+
+**What v1 does NOT commit to:**
+
+- Free-form prose surfaces in `attempted_interpretation`. V1 ships structured-only because Position B (transparency as governed substrate artifact) requires that everything participating in `explanation_hash` is substrate-validated, and validated prose canonicalization is heavier architecture deferred to a later iteration.
+- LLM-generated rationale text alongside structured artifacts. Reserved forward-compat surface.
+- Explicit transparency policy version machinery (bump rules, replay semantics for version migration). Deferred to Theme 6.
+
+**Rationale.** Guardrail 2 emerged from review surfacing that `attempted_interpretation` without ontology binding drifts toward shadow semantic authority for substrate-3, undermining substrate-2's status as the only semantic authority. The mechanical defense — restricting reasoning artifact vocabulary to substrate-authorized concepts — keeps substrate boundaries clean by construction.
+
+Transparency-as-governed-artifact emerged from review surfacing that surfaced reasoning becomes product truth, and product truth requires substrate-grade stability commitments. The half-position (some transparency governed, some not) creates an undefended boundary that erodes substrate credibility. Accepting Position B (governed explanation surface) absorbs the design weight as the price of architectural coherence.
+
+This is the substrate-3 analog of substrate-2's D-051: identity is mechanical, not judgmental. For substrate-3, **explanation is mechanical, not judgmental, within substrate-authorized vocabulary.**
+
+**Alternatives considered.**
+
+- *attempted_interpretation as ephemeral debug surface.* Rejected. Inconsistent with substrate-3's trust commitment; users will depend on it whether or not the substrate commits to stability.
+- *Free-form prose in reasoning artifacts.* Rejected for v1. Violates Guardrail 2. Forward-compat reservation: prose canonicalization is heavier architecture for a later iteration.
+- *Snapshot testing as the only stability mechanism.* Rejected. Snapshot testing detects drift but doesn't give the substrate a typed equivalence primitive. Explanation_hash is the substrate-3 mechanical primitive analogous to substrate-2's identity_hash.
+- *Explanation stability as informal product commitment.* Rejected. Position B requires mechanical detection (hash) and typed drift events, not informal commitments.
+
+**Downstream consequences.**
+
+- *D-076:* `dismissal_reason` enum is the substrate-3 reasoning vocabulary that `attempted_interpretation.dismissal_reasons` references.
+- *Theme 3:* Per-archetype shape of `scoped_neighborhood` and `candidate_paths` operationalized. Per-archetype dismissal_reason applicability defined.
+- *Theme 5:* Multi-stage interpretation implied (Q-004 resolution bounded toward tool-use). `attempted_interpretation` produced as explicit reasoning step, not extracted post-hoc from prose.
+- *Theme 6:* Explanation stability is a first-class eval signal. Interpretation-layer versioning (distinct from prompt versioning) becomes a substrate concern.
+- *Theme 7:* Explanation drift thresholds calibrated; transparency-stability quality measured on parallel dimension to emission and refusal quality.
+- *S3-Q-008 extended:* Semantic equivalence policy now covers `identity_hash` AND `explanation_hash` divergence categorization under invariant `(semantic_context, governance_context)`.
+- *Substrate-2 forward-commitment:* `explanation_hash` exposed at semantic ledger row level (per D-074) for cross-substrate provenance traversal.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §3.6 (ontology-bound reasoning artifacts; Guardrail 2)
+- `substrate_3_generation/SPEC.md` §3.7 (transparency as governed substrate artifact; explanation_hash)
+- D-070 (Theme 1; S3 Guardrail 1; this entry adds Guardrail 2)
+- D-051 (substrate-2 identity discipline; substrate-3 explanation discipline is the analog)
+- D-059 (substrate-2 `identity_hash` canonicalization; substrate-3 `explanation_hash` is the parallel mechanism)
+- D-071 (`governance_context.transparency_policy_version`; equivalence algebra)
+- D-072 (mandatory `attempted_interpretation` on every outcome)
+- D-074 (row-level `explanation_hash` exposure for cross-substrate provenance)
+- D-076 (dismissal_reason enum referenced by attempted_interpretation)
+
+---
+
+
+## D-076 — Dismissal_reason taxonomy as substrate-3 reasoning vocabulary [Theme 2]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S2 provenance integration when get_provenance ships]
+**Status:** active
+
+**Decision.** Substrate-3 commits to a bounded, versioned, governance-disciplined enum of `dismissal_reason` codes. This enum is the substrate's reasoning vocabulary — the only new semantic vocabulary substrate-3 introduces beyond what S1 and substrate-2 already authorize. It is governed under the same discipline substrate-2 uses on `claim_kind`: bounded, locked through deliberate D-entries, extended only through substrate-3 design cycles.
+
+**V1 bootstrap enum (8 entries across 5 categories):**
+
+    dismissal_reason: enum {
+      // TOPOLOGY — missing or insufficient S1 grounding
+      insufficient_grounding,
+      no_grant_supports_capability,
+      no_constraint_supports_negative,
+      
+      // ONTOLOGY_INVALIDITY — substrate-authorized taxonomy violation
+      type_incompatibility,
+      archetype_mismatch,
+      
+      // RANKING — alternative was preferred or no clean disambiguation
+      ambiguous_target_resolution,
+      lower_specificity,
+      
+      // GOVERNANCE — would-be valid but doesn't meet policy threshold
+      policy_threshold_not_met,
+      
+      // CONFIDENCE — reserved category; no v1 entries
+      // (confidence dismissals enter as refusal-kind `low-generation-confidence` per D-073,
+      //  not as alternative-dismissal reasons, in v1)
+    }
+
+Each entry carries a typed `category` meta-property: TOPOLOGY | ONTOLOGY_INVALIDITY | RANKING | GOVERNANCE | CONFIDENCE. CONFIDENCE is a reserved category with no v1 entries; the placeholder reserves the architectural slot for future evolution.
+
+**Discipline rules:**
+
+- *Bounded enum.* No runtime extensibility. Adding entries requires a deliberate substrate-3 design cycle producing a D-entry. Same discipline substrate-2 applies to `claim_kind`.
+- *Versioned.* The enum carries `dismissal_taxonomy_version` (v1 at Theme 2 close). Bumps occur only via D-entry. Carried in `governance_context` per D-071; exposed at semantic ledger row level per D-074.
+- *Categorized.* Every entry's typed `category` is a property of the entry, not an external mapping. Category structure is part of the locked taxonomy.
+- *Non-exclusive.* A dismissed candidate may carry multiple `reason_codes`. Persistence is an array of codes per dismissed candidate (per D-075's `attempted_interpretation.dismissal_reasons` shape).
+- *Unordered, unweighted in v1.* Reserved forward-compat: future evolution may introduce ordering (primary vs supporting reasons) or weighting (severity values). V1 schema accommodates non-breakingly via NULL-default fields.
+
+**Why this taxonomy is reasoning vocabulary, not UX enum:**
+
+The taxonomy participates in:
+
+- `explanation_hash` canonicalization (per D-075) — codes are part of the hash input
+- Eval comparison across runs — same codes in same canonical order means same explanation
+- Refusal feedback payloads — `ungrounded-claim` refusals may cite codes in `admissibility_gap`
+- Cross-substrate provenance — `dismissal_taxonomy_version` exposed at row level per D-074
+- Regeneration interpretation — `grounding_evolution` regeneration may invalidate prior `insufficient_grounding` dismissals; the substrate reasons about this through the taxonomy
+
+Treating dismissal_reasons as substrate-grade reasoning vocabulary preserves the architectural integrity that Position B (D-075 transparency-as-governed-substrate-artifact) requires.
+
+**Rationale.** The commitment emerged from review surfacing that `attempted_interpretation`'s dismissal_reason field is the durable substrate-3 reasoning vocabulary, and without governance discipline it would drift into a casually-extensible registry that pollutes substrate behavior over time. Specifically pressure-tested: bounded enum vs extensible registry, policy-version coupling, category hierarchy, exclusivity, ordering/weighting — all resolved per the discipline rules above.
+
+The five-category structure lifts structural information into the type system rather than leaving it implicit.
+
+**Alternatives considered.**
+
+- *Free-form text for dismissal reasons.* Rejected. Violates Guardrail 2 (D-075); breaks `explanation_hash` canonicalization; makes eval comparison impossible.
+- *Extensible registry pattern.* Rejected. Taxonomy drift becomes semantic behavior drift; this is substrate law territory.
+- *Single flat category (no `category` meta-property).* Rejected. Category structure is architecturally meaningful and surfaces in product UX — engineers reading a refusal see "this was dismissed for topology reasons" vs "for ranking reasons" — categorically different repair paths.
+- *Mutual-exclusivity at the row level.* Rejected. Real dismissals often carry multiple applicable reasons; forcing exclusivity loses information.
+
+**Downstream consequences.**
+
+- *D-075:* `attempted_interpretation.dismissal_reasons` references this enum; `explanation_hash` canonicalization includes dismissal_reason codes.
+- *D-074:* `dismissal_taxonomy_version` exposed at semantic ledger row level for cross-substrate typed provenance.
+- *D-071:* `governance_context.dismissal_taxonomy_version` carried in every request.
+- *Theme 3:* Per-archetype applicability of dismissal_reason codes operationalized (some codes universal — `ambiguous_target_resolution`; some archetype-specific — `no_grant_supports_capability` applies to permission archetype).
+- *Theme 6:* Eval mechanics include dismissal_reason coverage and drift detection.
+- *Forward-compat reservation:* CONFIDENCE category reserved with no v1 entries. When confidence-as-dismissal becomes relevant (likely Theme 5 or post-Phase-1), entries may be added under deliberate D-entry.
+- *Forward-compat reservation:* Ordering and weighting reserved. V1 schema non-breaking to either extension.
+- *Substrate-2 forward-commitment:* `dismissal_taxonomy_version` is part of substrate-2's eventual `get_provenance` typed provenance metadata (per D-074).
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §3.8 (dismissal_reason as reasoning vocabulary)
+- D-070 (Theme 1; S3 Guardrail 1)
+- D-071 (`governance_context.dismissal_taxonomy_version`)
+- D-074 (row-level exposure for cross-substrate provenance)
+- D-075 (Guardrail 2; reasoning vocabulary discipline; `explanation_hash` canonicalization)
+- substrate-2 D-052/D-053 (substrate-2 claim_kind taxonomy discipline; substrate-3 dismissal_reason is the architectural analog)
+
+---
