@@ -63,3 +63,27 @@ Terms specific to substrate-3. Cross-cutting terms live in the top-level glossar
 **Two-surface ledger architecture.** Substrate-3's separation of the semantic ledger (substrate-2-migrating) from operational observability (substrate-3-resident permanently) per D-074. Linked by `outcome_id`; eval joins both; UX and ops surfaces read each independently.
 
 **Typed cross-substrate provenance.** Substrate-2 forward-commitment under D-074: substrate-2 absorbs typed refusal and explanation structural metadata (`refusal_kind`, `refusal_policy_version`, `refusal_schema_version`, `explanation_hash`, `dismissal_taxonomy_version`) as queryable provenance event columns, but does not interpret refusal payload or attempted_interpretation internals. Substrate-3 owns semantics; substrate-2 owns provenance continuity.
+
+## Theme 3 terms
+
+**Cross-cutting per-archetype framework.** The four-dimensional spec pattern Theme 3 establishes (per D-077): each archetype is specified along interpretation scope × admissibility-checking shape × recipe-kind selection × refusal dominance. The framework anchors D-078 through D-082's per-archetype strategies.
+
+**Grounding phase.** One of three reasoning phases the substrate's processing passes through (per D-077). Grounding phase performs admissibility checking against S1's constraint structure. Applicable dismissal_reasons from D-076: `insufficient_grounding`, `no_grant_supports_capability`, `no_constraint_supports_negative`, `type_incompatibility`, `archetype_mismatch`.
+
+**Governance phase.** One of three reasoning phases (per D-077). Governance phase applies policy threshold evaluation. Applicable dismissal_reason at v1: `policy_threshold_not_met`. Reserved CONFIDENCE category attaches to governance phase if entries are added.
+
+**Interpretation phase.** One of three reasoning phases (per D-077). Interpretation phase performs scoping of the neighborhood, enumeration of candidate paths, and resolution of references. Applicable dismissal_reasons: `ambiguous_target_resolution`, `lower_specificity`.
+
+**Layer 1 admissibility.** Per D-078, the admissibility level the substrate achieves for ValidationRule-based claims at v1: "the rule exists and is active." Honest about v1 reality. Layer 2 admissibility ("formula actually rejects/permits this specific scenario") requires substrate-1 §17 formula parser.
+
+**Layout-derivable elements.** Per D-081, UI elements whose existence and state can be inferred from PageLayout metadata at S1 Tier 1. Element-state-claims targeting non-layout-derivable elements (Lightning components, Dynamic Forms, custom JS-driven UI) require S1 Tier 3 and refuse with `no-relevant-context` at v1.
+
+**Operational-only admissibility.** Per D-082, the admissibility level integration archetype claims achieve at v1: verification of integration entity existence and structural connectivity, but not cross-system causality, external observability, temporal sequencing, or protocol semantics. Future substrate-3 cycle may add interaction-topology admissibility for these dimensions.
+
+**Phase semantics.** The substrate's reasoning process passes through three phases — interpretation, grounding, governance (per D-077). Phase is documentation of how the bounded dismissal_reason enum applies, not new persisted vocabulary. Phase-based applicability decouples reasoning vocabulary from archetype implementation.
+
+**Recipe-kind selection preserving claim semantics.** Per D-080, the architectural commitment that recipe-kind selection in permission archetype does not silently substitute one verification surface for another. Metadata-inspection (verifies configured permission state) and run-as-execution (verifies runtime-effective experience) are categorically different epistemic claims about reality; the substrate either defaults to the safer mechanically-deterministic surface (metadata-inspection) or refuses with disambiguation prompt rather than silently substituting.
+
+**Shared interpretation context.** Per D-077, the architectural property that the substrate's reasoning has access to all requirements in the batch when scoping neighborhoods and constructing candidate paths. Preserves D-071's batch-capable commitment; enables cross-requirement awareness and multi-archetype decomposition. Implementation topology (the orchestration shape that delivers this property) is resolved in Theme 5.
+
+**Verification surface.** Per D-080, what kind of truth about reality a generated test claims to verify. Metadata-inspection has *configured permission state* as its verification surface; run-as-execution has *runtime-effective experience* as its verification surface. The two surfaces are categorically different and the substrate preserves claim semantics by not silently substituting them.

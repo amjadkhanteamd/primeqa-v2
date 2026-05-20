@@ -4909,3 +4909,407 @@ The five-category structure lifts structural information into the type system ra
 - substrate-2 D-052/D-053 (substrate-2 claim_kind taxonomy discipline; substrate-3 dismissal_reason is the architectural analog)
 
 ---
+
+
+## D-077 — Cross-cutting per-archetype framework: four dimensions, shared interpretation context, archetype hint as guidance, dismissal_reason by phase [Theme 3]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for Theme 5 LLM implementation topology]
+**Status:** active
+
+**Decision.** Theme 3's cross-cutting design framework operationalizes the locked governance architecture (Themes 1 + 2) per archetype. Four architectural commitments anchor the framework:
+
+**(a) Four dimensions per archetype.** Each of the five archetypes is specified along four dimensions:
+
+1. *Interpretation scope* — which S1 entity types the interpretation layer constructs `scoped_neighborhood` from for this archetype.
+2. *Admissibility-checking shape* — what concretely constitutes admissibly grounded (per D-070 §2.4) for the claim_kinds in this archetype, given S1's current capability tier.
+3. *Recipe-kind selection* — which substrate-2 recipe_kinds are appropriate for which claim_kinds in this archetype; where the substrate has latitude vs where claim semantics force the selection.
+4. *Refusal dominance* — which `RefusalKind` categories tend to dominate in this archetype, informing the Theme 7 quality envelope's expected refusal-rate calibration per archetype.
+
+The four-dimensional framework is the structural pattern; D-078 through D-082 fill in the per-archetype specifics.
+
+**(b) Shared interpretation context across the batch.** Theme 3 commits to the architectural property that the substrate's reasoning has access to all requirements in the batch when scoping neighborhoods and constructing candidate paths. This preserves D-071's batch-capable commitment (cross-requirement awareness for sprint batches) and enables multi-archetype decomposition where one ticket touches multiple archetypes.
+
+*The implementation topology that delivers shared context is resolved in Theme 5.* Substrate-3 does not commit to one-pass interpretation, multi-pass coordination, planner-style with explicit dependency graph, or any other specific orchestration shape at Theme 3. The commitment is to the architectural property (shared context across the batch); the mechanism is Theme 5's design surface.
+
+**(c) Archetype hint as guidance, not constraint.** The `archetype_hint` carried in `semantic_context` (per D-071) is the interpretation layer's prior, not a hard constraint that admits or refuses claims by archetype. The substrate:
+
+1. Uses the hint to bias initial scoping (which S1 entity types to load first, which candidate paths to enumerate first).
+2. If grounding succeeds outside the hinted archetype, continues with the better-grounded interpretation and surfaces the detected archetype in `attempted_interpretation.candidate_paths` so the engineer sees the substrate's reading.
+3. Refuses only when reinterpretation is itself ambiguous — mapping to existing refusal kinds: `underspecified-requirement` (no archetype grounds well) or `ambiguous-reference` (multiple archetypes ground equally well without disambiguation).
+
+No new refusal kind needed. The substrate serves engineer intent over engineer classification when grounding signal is strong, surfacing the detected archetype transparently.
+
+**(d) Dismissal_reason applicability by phase, not by archetype.** The D-076 dismissal_reason bounded enum applies uniformly across archetypes. Applicability is governed by reasoning *phase*, not by archetype:
+
+| Phase | What happens | Applicable dismissal_reasons |
+|---|---|---|
+| Interpretation | Scoping neighborhood; enumerating candidates; resolving references | `ambiguous_target_resolution`, `lower_specificity` |
+| Grounding | Admissibility checking against S1's constraint structure | `insufficient_grounding`, `no_grant_supports_capability`, `no_constraint_supports_negative`, `type_incompatibility`, `archetype_mismatch` |
+| Governance | Policy threshold evaluation | `policy_threshold_not_met` |
+
+Phase is metadata-about-the-taxonomy, not metadata-about-individual-instances; it is documentation of how the bounded enum applies, not new persisted vocabulary (Guardrail 2 unaffected). The 8 D-076 reason codes map cleanly to three phases (six grounding, two interpretation, one governance). Reserved CONFIDENCE category would attach to governance phase if entries are added.
+
+This decouples reasoning vocabulary from archetype implementation. When archetypes evolve, when hybrid claims emerge, when per-archetype interpretation strategies change, the dismissal_reason vocabulary remains stable because its applicability is governed by phase, not by archetype.
+
+**Rationale.** The four refinements emerged from round 2 TA review surfacing real architectural pressure points:
+
+- *Shared context vs one-pass:* The original framing committed to "one-pass interpretation per request" which over-constrained Theme 5 before implementation design. The substantive commitment is *cross-requirement awareness in batch mode*; the mechanism is downstream.
+- *Archetype hint as guidance:* Refuse-on-mismatch creates workflow friction masquerading as semantic rigor. Real enterprise tickets are ambiguous and archetypes overlap; the substrate should serve grounding signal over engineer classification.
+- *Dismissal_reason by phase:* Per-archetype applicability rules fossilize reasoning behavior tied to current implementation shape. Phase-based applicability decouples vocabulary from archetype implementation.
+
+The four-dimensional framework itself is the structural pattern that emerged from designing the five archetypes individually and recognizing the shared decomposition.
+
+**Alternatives considered.**
+
+- *One-pass interpretation as architectural commitment.* Rejected. Over-constrains Theme 5 implementation freedom; the substantive commitment is shared context, not topology.
+- *Archetype hint as hard constraint with refuse-on-mismatch.* Rejected. Creates workflow friction; better product behavior is guidance with override on strong grounding signal.
+- *Per-archetype applicable dismissal_reason subsets.* Rejected. Couples reasoning vocabulary to archetype implementation, fossilizing behavior. Phase-based applicability is structurally cleaner.
+- *Fewer than four dimensions per archetype.* Considered. Three dimensions (omitting refusal dominance) would be tighter but lose the Theme 7 quality-envelope calibration signal. Four dimensions is the right factorization.
+
+**Downstream consequences.**
+
+- *D-078 through D-082:* Each per-archetype D-entry specifies the four dimensions for that archetype.
+- *Theme 5 (LLM integration):* Implementation topology for shared interpretation context resolved here. Tool-use vs structured JSON vs planner-style is a Theme 5 decision against the shared-context requirement.
+- *Theme 6 (prompt management):* Eval expectations include per-phase dismissal_reason coverage and per-archetype refusal dominance.
+- *Theme 7 (quality envelope):* Per-archetype expected refusal rates inform calibration thresholds; quality envelope is per-archetype, not uniform.
+- *UX:* Surfacing detected archetype when overriding hint is a UX commitment for transparency.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §4.2 (cross-cutting framework — substantive content)
+- D-070 (Theme 1; constrained interpretation engine; archetype × claim_kind × trigger_kind × recipe_kind discriminator structure)
+- D-071 (Theme 2; `archetype_hint` in `semantic_context`; batch capability)
+- D-072 (Theme 2; outcome protocol; `attempted_interpretation` shape including `candidate_paths`)
+- D-073 (Theme 2; refusal taxonomy)
+- D-075 (Theme 2; Guardrail 2; reasoning artifact discipline)
+- D-076 (Theme 2; dismissal_reason bounded enum; this entry specifies its applicability semantics by phase)
+
+---
+
+
+## D-078 — Data-behavior archetype generation strategy [Theme 3]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3]
+**Status:** active
+
+**Decision.** Data-behavior archetype is operationalized along the four dimensions established in D-077. This is the strongest v1 archetype coverage (per D-070 §2.8) where most v1 generation lands.
+
+**Interpretation scope.** `scoped_neighborhood` for data-behavior is Object-centered:
+
+- Target Object entity (resolved from requirement; ambiguity surfaces as `ambiguous-reference` refusal during interpretation phase).
+- Field entities on the Object, filtered by relevance from requirement text.
+- ValidationRule entities applicable to the Object.
+- Flow entities triggering on Object events (DML, scheduled, platform event).
+- Profile and PermissionSet entities granting access to the Object.
+
+The scope graph traverses STRUCTURAL and BEHAVIOR edges (per substrate-1's edge taxonomy) outward from the Object, with relevance filtering on Field nodes.
+
+**Admissibility-checking shape per claim_kind.**
+
+- *value-claim*: Field's data type admits the asserted value (type compatibility); permission grants allow the asserting actor to read/write the Field; picklist value membership verified for custom-field picklists. *V1 limit*: standard-field picklist values blocked by S1 §22 deferral.
+- *state-transition-claim*: ValidationRules don't structurally reject the transition (Layer 1 admissibility — rule exists and is active); permissions admit the transition path; Flow side-effects are tractable when Flow modeled. *V1 limit*: full ValidationRule formula reasoning blocked by S1 §17 deferral; Layer 2 admissibility (formula actually rejects/permits this specific scenario) requires the formula parser.
+- *automation-effect-claim*: the asserted side effect derives from an automation entity in S1 (Flow primarily; Apex trigger partial per S1 Tier 2). Admissibility = "there is a Flow with this effect in its action set." *V1 limit*: Apex-driven effects are S1 Tier 2; admissibility for these is structurally limited to existence-of-trigger.
+- *prohibition-claim*: a constraint entity in the org would reject the proposed scenario. Layer 1 admissibility (rule exists and is active) fully supported; Layer 2 admissibility (formula semantics) requires formula parser. Layer-1-only admissibility is honest about v1 reality; the resulting test verifies "this validation rule fires" not "this validation rule rejects this exact scenario."
+
+**Recipe-kind selection.** Data-behavior recipes are almost always API-execution (creating or updating records via Composite API to trigger validation rules, flows, and automation side effects under realistic conditions). UI-execution is appropriate when the requirement explicitly references UI-driven behavior (approval modals, inline editing, lightning-record-form behaviors). Metadata-inspection is rare — data-behavior is about runtime behavior, not configuration state.
+
+**Refusal dominance.** Expected v1 frequency, in approximate descending order:
+
+1. `underspecified-requirement` — real-world JIRA tickets vague about target Object or trigger conditions.
+2. `ambiguous-reference` — multiple Objects or Fields match without disambiguation.
+3. `ungrounded-claim` — prohibition-claim cases that need formula parser (Layer 2 admissibility unavailable).
+4. `low-generation-confidence` — multiple valid interpretations exist and the substrate can't pick one.
+
+`no-relevant-context` and `structural-validation-failure` are infrequent in data-behavior because S1's data-model coverage is dense at Tier 1.
+
+**Rationale.** Data-behavior is the archetype substrate-1's Tier 1 supports most deeply (Objects, Fields, ValidationRules, Flows, Profiles, PermissionSets all modeled). The four-dimensional spec reflects this coverage: rigorous admissibility, dominant API-execution recipe path, refusal dominance shaped by input quality rather than S1 ceiling.
+
+**Alternatives considered.**
+
+- *Per-claim_kind separate recipe selection.* Considered. Almost always converges to API-execution; per-claim_kind decision tree adds complexity without value. Recipe-kind selection is straightforward in this archetype.
+- *Mandate Layer 2 admissibility for prohibition-claims.* Rejected. Would force all prohibition-claims to refuse until formula parser ships, eliminating useful Layer 1 coverage. Honest v1 commitment is Layer 1 admissibility with explicit "formula not parsed" in `attempted_interpretation`.
+
+**Downstream consequences.**
+
+- *S1 deferred items lifting:* When formula parser ships (S1 §17), prohibition-claim and state-transition-claim admissibility upgrades from Layer 1 to Layer 2 automatically. Non-breaking to Theme 3 design.
+- *S1 Apex Tier 2:* When Apex modeling ships, automation-effect-claim admissibility for Apex-driven effects upgrades from existence-only to effect-tractable.
+- *Theme 4 (grounded negatives):* Prohibition-claims are the primary grounded-negative case; Theme 4 operationalizes within data-behavior's Layer 1 admissibility plus the formula-parser-deferred reality.
+- *Theme 7 (quality envelope):* Data-behavior's expected refusal pattern (underspecified + ambiguous-reference dominant) calibrates the per-archetype quality threshold.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §4.3 (data-behavior archetype)
+- D-077 (Theme 3; cross-cutting framework)
+- D-070 (Theme 1; v1 archetype coverage reality §2.8)
+- Substrate-1 PHASE_2_PLAN_corrections.md §17 (validation rule formula parser deferral)
+- Substrate-1 PHASE_2_PLAN_corrections.md §22 (StandardValueSet detection deferral)
+
+---
+
+
+## D-079 — Configuration archetype generation strategy [Theme 3]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3]
+**Status:** active
+
+**Decision.** Configuration archetype is operationalized along the four dimensions established in D-077. Solid v1 archetype coverage (per D-070 §2.8).
+
+**Interpretation scope.** `scoped_neighborhood` for configuration is centered on the specific metadata entity (or entities) the requirement names. Lighter graph traversal than data-behavior — configuration claims are typically about a single entity's properties or a specific edge between two entities.
+
+- Target metadata entity (Object, Field, Profile, PermissionSet, ValidationRule, Flow, etc.).
+- For metadata-relationship-claim, both ends of the asserted edge.
+- Limited STRUCTURAL traversal — configuration claims rarely require wide neighborhood.
+
+**Admissibility-checking shape per claim_kind.**
+
+- *existence-claim*: S1 has (or does not have) the asserted entity. Fully admissible from S1 directly. The strongest v1 admissibility surface.
+- *property-claim*: the property in question is part of S1's modeled attributes for the entity type, and S1 has the property set as asserted (or not). *V1 limit*: some properties of some entity types may not be modeled at S1's current Tier 1; admissibility falls back to "entity exists; property unmodeled" with `ungrounded-claim` refusal in those cases. The `attempted_interpretation` surfaces specifically which property is unmodeled.
+- *metadata-relationship-claim*: the edge type asserted exists in S1's Tier 1 edge taxonomy (14 Tier 1 edge types); the specific edge between the named entities is present (or not) per S1. Fully admissible for the 14 Tier 1 edge types substrate-1 modeled.
+
+**Recipe-kind selection.** Almost exclusively metadata-inspection — configuration claims are about S1's modeled state, not runtime behavior. Recipe verifies against either fresh metadata (via Tooling/Metadata API) or trusts S1's sync depending on the freshness contract the recipe specifies. Theme 5 operationalizes recipe-side freshness semantics.
+
+**Refusal dominance.** Expected v1 frequency, in approximate descending order:
+
+1. `no-relevant-context` — the org doesn't have what the requirement assumes (a custom field that doesn't exist, a profile that wasn't created).
+2. `ambiguous-reference` — requirements like "the Status field" without specifying which Object's Status.
+3. `ungrounded-claim` — property-claim cases where the property is unmodeled at S1 Tier 1.
+
+`underspecified-requirement` and `low-generation-confidence` are infrequent in configuration because configuration claims tend to be specific enough to ground or not.
+
+**Rationale.** Configuration claims are the simplest admissibility case in substrate-3: S1's metadata coverage at Tier 1 is the substrate of truth, and configuration claims read against it directly. The four-dimensional spec is tighter than data-behavior's because there's less surface area: lighter scoping, metadata-inspection-dominant recipes, refusal patterns shaped by S1 coverage gaps rather than input quality.
+
+**Alternatives considered.**
+
+- *Wider STRUCTURAL traversal during scoping.* Rejected for most cases. Configuration claims are local to their entity (or edge); wider traversal pulls in irrelevant context and degrades grounding signal. Wider traversal reserved for cases where the requirement explicitly invokes related entities ("the validation rule on the Status field").
+- *Recipe-kind permitting UI-execution.* Rejected. Configuration is not about runtime UI behavior; UI-execution recipes for configuration claims would verify the *wrong* truth (the UI displays the configuration vs the configuration exists in the org). Honest archetype scoping prevents this.
+
+**Downstream consequences.**
+
+- *S1 Tier 1 property modeling depth:* When S1 deepens property modeling for entity types (Tier 2/3 expansion), property-claim admissibility automatically deepens. Non-breaking to Theme 3 design.
+- *Theme 4 (grounded negatives):* Configuration negatives are typically existence-claim absences ("this org doesn't have a custom Status field") which are mechanically tractable. Configuration is among the cleanest archetypes for grounded negatives.
+- *Theme 7 (quality envelope):* Configuration's expected refusal dominance pattern (no-relevant-context + ambiguous-reference + ungrounded-claim for unmodeled properties) calibrates the per-archetype quality threshold.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §4.4 (configuration archetype)
+- D-077 (Theme 3; cross-cutting framework)
+- D-070 (Theme 1; v1 archetype coverage reality §2.8)
+- Substrate-1 SPEC (Tier 1 entity types and edge taxonomy)
+
+---
+
+
+## D-080 — Permission archetype generation strategy with recipe-kind selection preserving claim semantics [Theme 3]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S1 Tier 2 sharing/OWD/Apex sharing roadmap]
+**Status:** active
+
+**Decision.** Permission archetype is operationalized along the four dimensions established in D-077, with the explicit architectural commitment that **recipe-kind selection preserves claim semantics — the substrate does not silently substitute one verification surface for another.**
+
+**Interpretation scope.** `scoped_neighborhood` for permission includes:
+
+- Target Object and Field entities (the subject of the asserted capability).
+- Profile and PermissionSet entities (the asserting grants).
+- User entities (or surrogates — typically Profile and PermissionSet stand in for representative users).
+- Permission grant edges: GRANTS_OBJECT_ACCESS, GRANTS_FIELD_ACCESS (per substrate-1's PERMISSION edge category).
+- Profile and PermissionSet assignment edges: HAS_PROFILE, HAS_PERMISSION_SET.
+
+Sharing rules, OWD, role hierarchy, and Apex sharing are S1 Tier 2 and not modeled at v1; permission scoping does not extend into these dimensions.
+
+**Admissibility-checking shape per claim_kind.**
+
+- *capability-claim*: Profile or PermissionSet grants the asserted capability on the asserted target. Fully admissible for object-level and field-level grant verification. *V1 limit*: capabilities that depend on sharing rules, OWD, role hierarchy, or Apex sharing are not S1-modeled at Tier 1; admissibility falls back to grant-level only.
+- *sharing-rule-claim*: the org has a sharing rule (or absence thereof) matching the assertion. *V1 limit*: sharing rules are S1 Tier 2; v1 admissibility-checking is structurally weak here. Most sharing-rule-claims will refuse with `no-relevant-context` until S1 Tier 2 ships.
+
+**Recipe-kind selection — the architectural commitment.** Two recipe kinds are valid for capability-claim, and they verify *different epistemic truths about reality*:
+
+- *Metadata-inspection* verifies: the org's permission configuration is set as claimed (a statement about configured permission state).
+- *Run-as-execution* verifies: a user with this profile experiences this capability at runtime (a statement about runtime-effective experience).
+
+These are not interchangeable verification surfaces. Silent substitution between them would alter what the test asserts is true about reality. The substrate commits to **preserving claim semantics by selecting recipe-kind explicitly:**
+
+1. **Default to metadata-inspection** for permission claims where it is sufficient — object-level CRUD and field-level FLS verification without sharing/OWD/Apex sharing dependencies. The claim's semantic content is *configured permission state*; metadata-inspection is the appropriate verification surface.
+2. **Refuse rather than silently substitute** when the claim's grounding indicates that runtime-effective verification is required (sharing rules, OWD, or Apex sharing dimensions affect the assertion). The refusal kind is `low-generation-confidence` with a typed disambiguation prompt: "this claim's verification surface requires either (a) restricting the assertion to configured-state truth (metadata-inspection appropriate) or (b) explicit runtime-experience scope (run-as-execution required, currently not v1-grounded due to S1 Tier 2 absence of sharing/OWD/Apex-sharing modeling)."
+3. **Run-as-execution as engineer-opt-in only** in v1, gated by explicit `operational_context` preference. Not substrate-defaulted, because substrate-default run-as-execution would silently alter verification surface for claims where the engineer expected configured-state truth.
+
+This is more conservative than naive complexity routing. It accepts higher v1 refusal rate in complex permission cases as the price of semantic precision. Engineers know exactly what verification surface their generated tests cover.
+
+**Refusal dominance.** Expected v1 frequency, in approximate descending order:
+
+1. `ungrounded-claim` — sharing-rule-claim cases blocked by S1 Tier 2 absence.
+2. `low-generation-confidence` — capability-claim cases where sharing/OWD/Apex-sharing dimensions affect the assertion and the substrate cannot determine which verification surface the engineer intended.
+3. `no-relevant-context` — assertions about Profiles or PermissionSets the org doesn't have.
+
+`underspecified-requirement`, `ambiguous-reference`, and `structural-validation-failure` are less dominant.
+
+**Rationale.** The recipe-kind-preserves-claim-semantics commitment emerged from round 2 TA review surfacing that metadata-inspection and run-as-execution do not verify equivalent truths. Recipe-kind selection in permission archetype is not merely a complexity-routing or optimization decision — it changes what kind of truth the generated test asserts. The substrate must preserve claim semantics explicitly or it drifts into silently producing tests that verify different things than engineers intended.
+
+The conservative v1 commitment (default metadata-inspection; refuse with disambiguation when run-as required; opt-in for run-as) is honest about v1's S1 Tier 2 ceiling and protects engineers from semantic drift.
+
+**Alternatives considered.**
+
+- *Substrate-defaulted recipe-kind by complexity routing.* Rejected per round 2 TA review. Silent substitution between metadata-inspection and run-as-execution alters what the claim verifies; this is unacceptable semantic drift.
+- *Engineer chooses recipe-kind per request.* Considered. Rejected as default behavior because most permission claims don't need engineer-level decisions — metadata-inspection covers the common case cleanly. Engineer opt-in via `operational_context` is the right surface for the cases that do.
+- *Refuse all complex permission claims until S1 Tier 2 ships.* Rejected as too conservative. Simple capability-claims (object-level + field-level grants only, no sharing dependencies) are valuable and ground cleanly with metadata-inspection. Refusing them all would eliminate useful v1 coverage.
+
+**Downstream consequences.**
+
+- *S1 Tier 2 sharing/OWD/Apex-sharing modeling:* When ships, currently-refused complex capability-claims may upgrade to grounded run-as-execution recipes. The substrate's refusal-with-disambiguation pattern is the right v1 posture pending Tier 2.
+- *Theme 5 (LLM integration):* `operational_context` carries the engineer's run-as-execution opt-in when applicable; LLM integration handles the recipe-kind decision tree per claim.
+- *Theme 7 (quality envelope):* Permission archetype's expected refusal dominance pattern (ungrounded-claim for sharing rules; low-generation-confidence for complex capability cases) calibrates the per-archetype quality threshold. Higher baseline refusal rate than data-behavior is honest about v1 S1 ceiling.
+- *Forward-compat reservation:* Run-as-execution upgrade path documented in substrate-3 OPEN_QUESTIONS.md.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §4.5 (permission archetype)
+- D-077 (Theme 3; cross-cutting framework)
+- D-070 (Theme 1; v1 archetype coverage reality §2.8)
+- D-073 (Theme 2; `low-generation-confidence` refusal kind)
+- D-071 (Theme 2; `operational_context` for engineer opt-in)
+- Substrate-1 entity types (Profile, PermissionSet, GRANTS_OBJECT_ACCESS, GRANTS_FIELD_ACCESS, HAS_PROFILE, HAS_PERMISSION_SET)
+- Substrate-1 Tier 2 roadmap (sharing rules, OWD, Apex sharing — future capability)
+
+---
+
+
+## D-081 — UI archetype generation strategy with honest v1 scope [Theme 3]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S1 Tier 3 Lightning page composition roadmap]
+**Status:** active
+
+**Decision.** UI archetype is operationalized along the four dimensions established in D-077, with explicit acknowledgment of S1 Tier 3 absence. Minimal v1 archetype coverage (per D-070 §2.8). Higher baseline refusal rate is honest about v1's S1 ceiling, not a quality regression.
+
+**Interpretation scope.** `scoped_neighborhood` for UI is structurally limited at v1:
+
+- PageLayout entities.
+- Field entities on those layouts (via INCLUDES_FIELD edges).
+- The Object the layout belongs to.
+
+Lightning Pages, Lightning Web Components, Aura Components, Dynamic Forms, Flow Screens are S1 Tier 3 and not modeled. The interpretation layer cannot construct neighborhoods for UI requirements that target these surfaces.
+
+**Admissibility-checking shape per claim_kind.**
+
+- *layout-claim*: the asserted field/section appears on the asserted Page Layout. Fully admissible for Tier 1 PageLayout coverage. The strongest v1 UI admissibility surface.
+- *element-state-claim*: the asserted UI element exists in some layout-derivable surface (the field is on a layout, the section is on a layout). *V1 limit*: element-state-claims that target non-layout-derived elements (Lightning component states, Dynamic Form fields, custom JavaScript-driven UI, conditional visibility from Lightning Page configurations) cannot be grounded. These refuse with `no-relevant-context` plus a typed `org_capability_gap` note identifying which UI surface requires S1 Tier 3.
+
+**Recipe-kind selection.**
+
+- *layout-claim*: metadata-inspection primarily (read PageLayout metadata directly). UI-execution available if the requirement specifically asserts a layout-rendering behavior.
+- *element-state-claim*: UI-execution (Playwright-driven) for layout-derivable elements where it grounds.
+
+**Refusal dominance.** Expected v1 frequency, in dominant-and-large-margin order:
+
+1. `no-relevant-context` — dominates by wide margin. Most real UI requirements target Lightning composition, which v1 cannot ground.
+2. `ungrounded-claim` — element-state-claims that name elements not derivable from PageLayout.
+3. `underspecified-requirement` and `ambiguous-reference` — less frequent in UI because UI requirements tend to be specific about target page/element.
+
+The Theme 7 quality envelope must accept that UI archetype has a higher baseline refusal rate than other archetypes — this is honest about v1 reality.
+
+**Rationale.** S1 Tier 3 (Lightning page composition) is the dominant constraint on UI archetype's v1 coverage. The substrate refuses informatively rather than generating weak claims that pretend to ground against an absent S1 layer. Honest scope is the right substrate posture; the alternative (weak UI claim generation) erodes the substrate's trust commitment substantially.
+
+This is also consistent with substrate-3's failure-loud philosophy (D-070 §2.5): refuse to produce output rather than producing structurally valid but semantically wrong claims. UI v1 claims that pretend to ground against absent S1 modeling would be semantically wrong by construction.
+
+**Alternatives considered.**
+
+- *Generate weak UI claims with low-confidence markers.* Rejected. Violates verification-bar discipline (D-070 §2.4) — output below the verification bar refuses rather than emits weakly. Confidence markers don't substitute for ground-truth admissibility.
+- *Defer entire UI archetype until S1 Tier 3 ships.* Rejected. Layout-claim and layout-derivable element-state-claim are valuable v1 surfaces. Excluding them entirely would lose meaningful coverage.
+- *Treat UI archetype as documentation-only at v1.* Rejected. The substrate is operational at v1 for layout-level claims; refusal-with-honest-context is the right posture for non-layout cases.
+
+**Downstream consequences.**
+
+- *S1 Tier 3 Lightning page composition:* When ships, UI archetype coverage expands materially. Currently-refused element-state-claims may upgrade to grounded Lightning-component-aware admissibility.
+- *Theme 7 (quality envelope):* UI archetype's higher baseline refusal rate is calibrated separately from other archetypes. Quality is not measured uniformly across archetypes.
+- *Product strategy:* UI archetype's v1 limitation produces a perception pattern (PrimeQA appears strong on backend/configuration/permission, weaker on UI) that affects evaluation perception, demo strategy, and rollout sequencing. Worth recognizing in product roadmap planning; not architecturally addressable until S1 Tier 3 ships.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §4.6 (UI archetype)
+- D-077 (Theme 3; cross-cutting framework)
+- D-070 (Theme 1; v1 archetype coverage reality §2.8 — UI minimal; failure-loud philosophy §2.5; verification-bar discipline §2.4)
+- Substrate-1 Tier 3 roadmap (Lightning page composition, Lightning Components, Dynamic Forms — future capability)
+
+---
+
+
+## D-082 — Integration archetype generation strategy with operational-only v1 admissibility [Theme 3]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for future substrate-3 cycles when integration becomes larger product surface]
+**Status:** active
+
+**Decision.** Integration archetype is operationalized along the four dimensions established in D-077. V1 ships with operational-only admissibility — verification of existence of integration entities and structural connectivity, not cross-system causality semantics. Scoped v1 archetype coverage (per D-070 §2.8).
+
+**Interpretation scope.** `scoped_neighborhood` for integration varies per claim_kind:
+
+- *platform-event-claim*: PlatformEvent entities; subscribing Flow entities (Apex subscribers partial per S1 Tier 2).
+- *outbound-message-claim*: Workflow rule and OutboundMessage configuration entities (S1 coverage depends on Tier 1 workflow modeling).
+- *callout-claim*: NamedCredential, RemoteSiteSetting, callout-defining Apex entities (Apex partial per S1 Tier 2).
+- *inbound-effect-claim*: Apex REST/SOAP endpoint definitions, inbound HTTP handlers (Apex partial per S1 Tier 2).
+
+**Admissibility-checking shape per claim_kind.** V1 admissibility is *operational-only*:
+
+- *platform-event-claim*: PlatformEvent entity exists in S1; at least one subscribing entity exists. *V1 limit*: Apex subscriber effects partial per S1 Tier 2.
+- *outbound-message-claim*: OutboundMessage configuration entity exists. *V1 limit*: workflow rule sending the message may need fuller workflow modeling than S1 Tier 1 provides.
+- *callout-claim*: NamedCredential and RemoteSiteSetting exist; callout-defining Apex entity exists. *V1 limit*: Apex Tier 2 limits depth.
+- *inbound-effect-claim*: inbound handler exists. *V1 limit*: Apex Tier 2 limits depth.
+
+Operational-only admissibility means: the substrate verifies that the integration entities are configured and structurally connected. It does not verify cross-system causality, external observability, temporal sequencing, or protocol semantics — these are *interaction-topology* concerns that require their own architectural treatment when integration becomes a larger product surface.
+
+**Recipe-kind selection.** Mix per claim_kind:
+
+- *platform-event-claim*: API-execution (fire the event, observe subscriber effects) + metadata-inspection (verify configuration).
+- *outbound-message-claim*: API-execution (trigger workflow conditions, observe outbound dispatch via mock listener) + metadata-inspection.
+- *callout-claim*: API-execution (trigger the callout, observe outbound HTTP via mock external service) + metadata-inspection.
+- *inbound-effect-claim*: API-execution (POST to the inbound endpoint, observe effect on org data) + metadata-inspection.
+
+The metadata-inspection-alongside pattern is consistent: verify configuration exists before firing the operational test. This grounds the operational verification in the substrate's structural admissibility.
+
+**Refusal dominance.** Expected v1 frequency, in approximate descending order:
+
+1. `ungrounded-claim` — cases requiring Apex Tier 2 depth.
+2. `no-relevant-context` — integration requirements that reference patterns the specific org doesn't implement.
+3. `ambiguous-reference` — "the outbound message" without specifying which workflow rule's.
+
+`underspecified-requirement` and `low-generation-confidence` are less dominant.
+
+**Forward-compat reservation: interaction-topology admissibility philosophy.** Integration claims involve concerns that go beyond what operational-only admissibility captures:
+
+- *Cross-system causality:* what observable effect should follow from what trigger across system boundaries.
+- *External observability:* how the substrate verifies effects that manifest outside the org (in external systems via callout).
+- *Temporal sequencing:* what order of operations the integration claim asserts.
+- *Protocol semantics:* what message format, retry behavior, idempotency properties the integration commits to.
+
+These are *interaction-topology claims*, structurally distinct from existence/property/runtime-effect claims that data-behavior, configuration, permission, and UI archetypes handle. V1's operational-only admissibility is honest about not yet having an interaction-topology admissibility framework. A future substrate-3 cycle may add this admissibility philosophy when integration becomes a larger product surface; the architectural slot is reserved.
+
+Substrate-3 OPEN_QUESTIONS.md carries the forward-compat reservation.
+
+**Rationale.** Integration archetype is conceptually weaker at v1 than other archetypes — not because of S1 ceiling alone, but because integration claims are categorically different (interaction-topology) from the other archetypes' assertion types (existence, property, runtime effect, capability, configured-state). Pretending v1 fully addresses integration would be architectural dishonesty. Naming the gap explicitly preserves architectural integrity and reserves the slot for future treatment.
+
+The operational-only v1 admissibility is what the substrate can honestly ground today. Forward-compat reservation for interaction-topology admissibility is honest about what's deferred.
+
+**Alternatives considered.**
+
+- *Defer entire integration archetype to a later substrate-3 cycle.* Rejected. Operational-only v1 admissibility provides useful coverage for the common cases (existence + structural connectivity); excluding it entirely loses real value.
+- *Force interaction-topology admissibility into v1.* Rejected. Substrate-3 doesn't yet have the architectural framework for it; designing the framework in Theme 3 would expand Theme 3 scope substantially without proportionate v1 value.
+- *Per-protocol admissibility shapes (REST vs SOAP vs Platform Event protocols specified individually).* Considered. Premature at v1 — protocol semantics admissibility is part of the interaction-topology framework reserved for a future cycle.
+
+**Downstream consequences.**
+
+- *Future substrate-3 cycle:* Interaction-topology admissibility philosophy (cross-system causality, external observability, temporal sequencing, protocol semantics) may need its own architectural cycle when integration becomes a larger product surface.
+- *S1 Apex Tier 2:* When Apex modeling ships, several integration claim_kinds upgrade from existence-only to depth-tractable.
+- *Theme 4 (grounded negatives):* Integration negatives at v1 are typically existence absences (no NamedCredential, no inbound handler), which are mechanically tractable within operational-only admissibility.
+- *Theme 7 (quality envelope):* Integration's expected refusal dominance pattern (ungrounded-claim due to Apex Tier 2; no-relevant-context due to org-specific implementation variance) calibrates the per-archetype quality threshold.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §4.7 (integration archetype)
+- D-077 (Theme 3; cross-cutting framework)
+- D-070 (Theme 1; v1 archetype coverage reality §2.8 — integration scoped)
+- Substrate-1 Tier 2 roadmap (Apex modeling — affects all four integration claim_kinds)
+
+---
