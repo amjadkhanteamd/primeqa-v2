@@ -5504,3 +5504,488 @@ Integration is the philosophically weakest archetype in the negative space. Hone
 - Substrate-1 PHASE_2_PLAN_corrections.md §17 (formula parser deferral; affects data-behavior Layer 1 / Layer 2 distribution)
 
 ---
+
+
+## D-085 — LLM integration topology: tool-use selected; substrate-3 as constrained semantic orchestration runtime [Theme 5]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with downstream consequences for Theme 6 prompt management and Theme 7 quality envelope]
+**Status:** active
+
+**Decision.** Theme 5 selects tool-use as substrate-3's LLM integration topology and reframes the substrate-LLM authority boundary. The substrate is a constrained semantic orchestration runtime; the LLM is a bounded cognition provider.
+
+**Topology selection: tool-use over structured JSON and planner-style.**
+
+Three candidate topologies evaluated:
+
+- *Tool-use (function-calling).* LLM produces structured outputs via typed tool invocations; substrate validates each call at the tool boundary; per-call observability.
+- *Structured JSON.* LLM produces a single JSON blob conforming to a schema; substrate parses and validates the entire blob.
+- *Planner-style.* LLM produces a multi-step plan, then executes; substrate validates plans and execution.
+
+Tool-use selected. Rationale:
+
+1. *Mechanical Guardrail 2 enforcement at emission boundary.* Tool calls have typed parameter schemas. The LLM cannot emit free-form values at vocabulary positions; substrate-authorized enums (D-076 dismissal_reason, D-073 refusal_kind, D-083 cause and admissibility_layer) are structural preconditions of emission. Structured JSON requires post-emission validation the LLM can drift from over many attempts; tool-use makes vocabulary discipline an emission precondition.
+2. *Per-operation observability for ledger/eval/replay.* Each tool call produces an observable record (D-074's `llm_calls` operational telemetry per D-087). Theme 7 quality envelope benefits from per-call granularity rather than per-generation aggregation.
+3. *Decomposed reasoning maps to substrate orchestration phases.* Tool-use naturally maps to substrate-3's reasoning phases (interpretation / grounding / governance per D-077). Substrate orchestrates across phases; LLM contributes at specific phase boundaries.
+4. *Incremental correction.* Tool-use rejects invalid calls immediately with typed substrate feedback; LLM can correct within the same generation. Structured JSON requires full-regeneration on validation failure; tool-use enables incremental correction.
+5. *Planner-style rejected.* Planner autonomy is misaligned with substrate-3's constrained-interpretation-engine mission (D-070 §2.1). Plan-then-execute introduces LLM-authored intermediate plans the substrate would have to validate; the validation surface expands without proportionate value.
+
+**Substrate-3 as constrained semantic orchestration runtime.**
+
+The round 2 TA pushback (item 8) correctly identified that the substrate is the locus of architectural authority; the LLM contributes within substrate-bounded discipline. Theme 5 makes this explicit:
+
+*Substrate-3 responsibilities:*
+
+- *Orchestration engine.* Coordinates the reasoning phase pipeline (interpretation → grounding → governance per D-077) per request.
+- *Governance engine.* Enforces three Guardrails at both schema and semantic levels (D-087 two-layer enforcement).
+- *Admissibility engine.* Derives admissibility from S1 + substrate-2 taxonomy + Layer 1/2 discipline (D-083 e); LLM does not author admissibility.
+- *Decomposition controller.* Enforces canonical-negative-per-failure-mode + highest-specificity + bounded enumeration (D-083 d).
+- *Replay controller.* Computes identity_hash and explanation_hash over semantic substance; surfaces drift events (D-088).
+- *Refusal router.* Categorizes refusal causes across 8 typed kinds with typed payloads across three categories (invalidity / policy / operational); routes operational vs policy vs invalidity distinctly.
+
+*LLM responsibilities (bounded cognition provider):*
+
+- *Semantic intent interpretation* — what the requirement implies; emitted via `propose_semantic_intent`.
+- *Selection judgment* — when the substrate presents multiple admissibly-grounded canonical options; emitted via `select_canonical`.
+- *Outcome emission* — final structured emission via `emit_outcome`.
+
+The LLM does not orchestrate, does not author admissibility, does not categorize dismissals, does not select among refusal kinds. Those are substrate-locus responsibilities.
+
+**Tool surface — three thin semantic primitives.**
+
+Detailed in D-086. The reshape from a six-tool phase-shaped surface to three thin primitives prevents Theme 5 from baking current reasoning choreography into protocol law; Themes 6/7 are free to evolve substrate-internal orchestration without breaking the API contract.
+
+**Rationale.**
+
+The integration topology decision is straightforward: tool-use provides mechanical Guardrail enforcement and per-call observability that no other topology achieves. The substrate-3-as-orchestration-runtime framing is the deeper commitment — it correctly locates architectural authority and provides a clean evolution surface (LLM cognition advances do not require substrate rework; substrate orchestration evolves through design cycles without breaking the LLM contract).
+
+**Alternatives considered.**
+
+- *Structured JSON as integration topology.* Rejected. Vocabulary discipline weaker at the emission boundary; per-call observability lost; incremental correction unavailable.
+- *Planner-style.* Rejected per substrate-3 mission alignment. Planner autonomy expands validation surface without value; constrained interpretation engine is incompatible with autonomous plan-then-execute.
+- *LLM-centric framing.* Rejected per round 2 TA pushback (item 8). The substrate is the architectural locus; LLM contributes within bounded discipline. Framing the LLM as central understates substrate's responsibilities.
+
+**Downstream consequences.**
+
+- *D-086:* Tool surface schema operationalizes the thin-primitives commitment.
+- *D-087:* Two-layer Guardrail enforcement (schema + semantic governance) realizes the substrate-side governance commitment.
+- *D-088:* Replay equivalence semantics and eighth refusal kind realize the substrate-orchestration commitments for state, identity, and budget-exhaustion routing.
+- *Theme 6 (prompt management).* Prompts engineer LLM behavior within the substrate-bounded tool surface; eval suite measures per-call substrate compliance.
+- *Theme 7 (quality envelope).* Per-archetype quality thresholds calibrated against per-tool-call observability; model routing operational, not architectural.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §6.2 (integration topology and substrate framing)
+- D-070 (Theme 1; constrained interpretation engine; Guardrail 1; failure-loud philosophy)
+- D-071 (Theme 2; semantic_context, governance_context, operational_context separation)
+- D-072 (Theme 2; binary draft/refusal outcome protocol)
+- D-073 (Theme 2; refusal taxonomy with typed structured payloads)
+- D-074 (Theme 2; llm_calls as substrate-3-adjacent operational observability)
+- D-075 (Theme 2; Guardrail 2; explanation_hash)
+- D-077 (Theme 3; reasoning phases — interpretation / grounding / governance)
+- D-083 (Theme 4; Guardrail 3; bounded decomposition; admissibility_layer; cause discipline)
+
+---
+
+
+## D-086 — Thin tool surface schema: three semantic primitives with substrate as admissibility authority [Theme 5]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3]
+**Status:** active
+
+**Decision.** Substrate-3 exposes three thin semantic primitives to the LLM, with substrate-side orchestration internal. The LLM does not author admissibility; the substrate computes admissibility from S1 + substrate-2 taxonomy + the substrate's admissibility logic.
+
+**Three tools:**
+
+**(1) `propose_semantic_intent(requirement_excerpt, intent_descriptor)`**
+
+The LLM proposes what the requirement implies semantically. Parameters:
+
+- `requirement_excerpt: string` — Guardrail 3 anchor. Excerpt from the request's requirement text supporting the proposed intent. Mandatory (Layer A schema enforcement); substrate validates substantive relevance to the proposed intent at Layer B (D-087).
+- `intent_descriptor: typed structure` — substrate-authorized fields:
+  - `archetype_hint: enum` (substrate-2 archetypes, 5 values)
+  - `target_subject_hint: structured reference` (S1 entity ref or descriptive selector)
+  - `polarity_hint: enum` (positive | negative, derived per D-083 c; not authoritative — substrate may reinterpret based on grounding signal)
+  - `failure_mode_framing: optional structured description` (for negatives; identifies the distinct failure mode the requirement implies per D-083 d)
+  - `claim_kind_hint: optional enum` (substrate-2 claim_kinds; substrate may select a different claim_kind if grounding signal is stronger)
+
+Substrate processing on receipt:
+
+1. Validates Layer A schema; rejects malformed calls.
+2. Maps intent_descriptor against substrate-2 taxonomy + Guardrail 1 substantive enforcement (archetype × claim_kind semantically meaningful for target subject).
+3. Validates requirement_excerpt's substantive relevance (Layer B Guardrail 3 enforcement).
+4. Derives candidate(s) internally — candidate enumeration is substrate orchestration, NOT LLM tool calls.
+5. For each derived candidate, computes admissibility against S1 constraint structure using substrate-3's admissibility logic (Layer 1 vs Layer 2 per D-083 e; Guardrail 1 grounding checks).
+6. Records dismissed candidates with typed `dismissal_reason` (D-076) in `attempted_interpretation`.
+7. Returns to LLM with structured response: admissibly-grounded candidates (≥1 → continue; 0 → routes through substrate to refusal emission).
+
+**(2) `select_canonical(candidate_refs, selection_rationale)`**
+
+When the substrate has presented multiple admissibly-grounded candidates for one failure mode, the LLM selects the canonical (per D-083 d highest-specificity discipline). Parameters:
+
+- `candidate_refs: list of path_ids` — refs to substrate-presented admissibly-grounded candidates.
+- `selection_rationale: typed structure` — substrate-authorized:
+  - `selected_path_id: path_id`
+  - `rationale_kind: enum` (highest_specificity | only_admissible | other_substrate_authorized)
+  - `dismissed_alternatives_with_reason: list of (path_id, dismissal_reason)` — uses D-076 enum; typically `lower_specificity` for the highest-specificity discipline.
+
+Substrate processing on receipt:
+
+1. Validates Layer A schema.
+2. Validates Layer B: rationale_kind matches the substrate's view of the candidates; dismissed_alternatives's reasons accurately characterize substrate's reasoning.
+3. Records selection in `attempted_interpretation.selected_path_id`.
+4. Auto-skipped when only one admissibly-grounded candidate exists; substrate auto-selects.
+
+**(3) `emit_outcome(outcome_kind, payload)`**
+
+The LLM emits the final structured outcome per D-072. Parameters:
+
+- `outcome_kind: enum` (`draft` | `refusal`).
+- `payload`:
+  - For `draft`: claim (substrate-2 structured claim ref), recipe (substrate-2 structured recipe ref), admissibility_layer (substrate-authored — LLM transcribes from substrate-presented value, not asserts).
+  - For `refusal`: refusal_kind (D-073 enum, now 8 values), refusal_payload (per D-073's per-kind typed schema; including D-083 cause for `no-admissible-negative-scenario-found` and D-088 budget payload for `operational-budget-exhausted`).
+
+Substrate processing on receipt:
+
+1. Validates Layer A schema.
+2. Validates Layer B: emitted claim references admissibly-grounded candidate from `attempted_interpretation`; emitted recipe respects D-080 recipe-kind discipline; admissibility_layer matches substrate-authored value (D-083 e; not LLM-asserted).
+3. Validates D-072 no-silent-drops invariant: every requirement in the input is explicitly resolved.
+4. Constructs `GenerationOutcome` per D-072 with `attempted_interpretation`, `explanation_hash` (computed per D-088 over semantic substance), and references to operational telemetry in `llm_calls`.
+
+**Substrate-side orchestration internal flow:**
+
+The substrate's per-request lifecycle (not exposed as tools):
+
+1. *Request receipt.* `GenerationRequest` per D-071; semantic_context + governance_context + operational_context parsed.
+2. *Per-requirement orchestration loop.* For each requirement in the batch:
+   a. Solicit `propose_semantic_intent` from LLM.
+   b. Process intent: derive candidates, compute admissibility, record dismissals.
+   c. If ≥2 admissibly-grounded candidates per failure mode, solicit `select_canonical`; else auto-select (or auto-refuse).
+   d. Construct partial `attempted_interpretation` for this requirement.
+3. *Outcome composition.* Across requirements, the substrate composes overall outcome state; verifies no-silent-drops.
+4. *`emit_outcome` solicitation.* Substrate solicits final emission from LLM with full context of resolved interpretations.
+5. *Ledger writes.* `GenerationOutcome` to semantic ledger; `llm_calls` to operational telemetry.
+
+Candidate derivation, admissibility evaluation, dismissal recording, canonical auto-selection — all substrate-internal. Free to evolve per Themes 6/7 calibration without changing the LLM contract.
+
+**Substrate is the admissibility authority.**
+
+Per round 2 TA pushback (item 2): admissibility is substrate governance truth, not LLM-authored interpretation. The mechanical realization:
+
+- `admissibility_layer` is substrate-authored (D-083 e at artifact level).
+- The LLM never has a tool parameter where it asserts a candidate's admissibility_layer; the substrate computes it.
+- In `emit_outcome`, the LLM transcribes the substrate-authored admissibility_layer onto the artifact (Layer A: presence required; Layer B: must match substrate-presented value).
+
+The LLM proposes semantic intent and selects among presented options; the substrate determines what counts as grounding, what layer applies, and which candidates are admissible.
+
+**Rationale.**
+
+The three-tool factorization emerged from the round 2 TA pushback (item 1) to avoid baking phase-shaped reasoning choreography into protocol law. Concretely:
+
+- `propose_semantic_intent` is durably semantic — what the requirement implies. Stable across reasoning topologies.
+- `select_canonical` is durably semantic — judgment among substrate-presented options. Stable across decomposition strategies.
+- `emit_outcome` is durably structural — D-072's binary protocol. Stable across orchestration approaches.
+
+Substrate orchestration (candidate derivation, admissibility evaluation, dismissal recording) lives below the protocol surface, free to evolve.
+
+The substrate-as-admissibility-authority commitment (item 2) follows naturally: admissibility is substrate logic computing against S1; if the LLM asserted admissibility, the substrate would have to second-guess every assertion, which is operationally fragile and semantically wrong (admissibility is substrate truth).
+
+**Alternatives considered.**
+
+- *Phase-shaped six-tool surface (original draft).* Rejected per TA item 1. Bakes current reasoning choreography into protocol; freezes Theme 6/7 experimentation space.
+- *Single-tool emit-everything API.* Rejected. Loses incremental substrate feedback; reverts to structured-JSON-equivalent semantics.
+- *LLM-authored admissibility with substrate validation.* Rejected per TA item 2. Even with validation, the LLM frames the question; substrate authority shifts unacceptably.
+
+**Downstream consequences.**
+
+- *D-087:* Layer A enforcement (schema validation) lives at tool boundary; Layer B enforcement (substantive semantic governance) lives in substrate processing. Theme 5 specifies the Layer B substantive rules per tool.
+- *D-088:* Multi-turn statefulness operates over these three tools; rejected calls categorized per item 3.
+- *Theme 6:* Prompts engineer LLM behavior to use the three tools effectively; eval measures per-tool substantive compliance.
+- *Theme 7:* Substrate orchestration evolution (better candidate derivation, sharper admissibility evaluation) calibrated through per-archetype quality envelopes; tool surface stable.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §6.3 (tool surface schema)
+- D-070 (Theme 1; Guardrail 1; archetype × claim_kind × trigger_kind × recipe_kind)
+- D-071 (Theme 2; request shape)
+- D-072 (Theme 2; outcome protocol)
+- D-073 (Theme 2; refusal taxonomy; typed payloads)
+- D-076 (Theme 2; dismissal_reason vocabulary)
+- D-077 (Theme 3; reasoning phases)
+- D-080 (Theme 3; recipe-kind discipline)
+- D-083 (Theme 4; admissibility_layer; bounded decomposition; cause discipline)
+- D-085 (Theme 5; integration topology and substrate framing)
+
+---
+
+
+## D-087 — Two-layer Guardrail enforcement and clean separation of operational telemetry from semantic provenance [Theme 5]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with downstream consequences for substrate-3 schema design and Theme 6 eval suite]
+**Status:** active
+
+**Decision.** Theme 5 commits substrate-3 to two-layer Guardrail enforcement (schema validation + substrate-side semantic governance validation) and cleanly separates operational telemetry from semantic provenance.
+
+**(a) Two-layer Guardrail enforcement.**
+
+Per round 2 TA pushback (item 5): typed schemas constrain vocabulary, structure, and references — but do not constrain semantic misuse, shallow grounding, misleading decomposition, or weak requirement anchoring. Schemas are *necessary but not sufficient*. Guardrail enforcement is two-layered:
+
+*Layer A — Tool-boundary schema validation (necessary).* Validates at the tool emission boundary:
+
+- *Substrate-authorized vocabulary at vocabulary positions.* All enum-typed parameters bounded to substrate-2 taxonomy or substrate-3 reasoning vocabulary. Archetype ∈ {data-behavior, configuration, permission, ui, integration}; claim_kind ∈ substrate-2 taxonomy; dismissal_reason ∈ D-076 enum (8 values); refusal_kind ∈ D-073 enum (8 values post-Theme 5); cause ∈ D-083 enum (3 values); admissibility_layer ∈ D-083 enum (2 values).
+- *Structural well-formedness.* Required parameters present; types match schemas.
+- *Guardrail 3 syntactic precondition.* `requirement_excerpt` present on every `propose_semantic_intent`; references resolvable to the request's requirement text.
+- *S1 entity refs.* All S1 entity references validated as existing at the current `s1_version_seq` per D-071's semantic_context.
+
+Layer A violations are *operational* — the LLM emitted ill-formed or vocabulary-invalid tool calls. They route to substrate-side typed-feedback correction within the same generation (incremental correction per D-085 rationale 4) or, on persistent violation, to `structural-validation-failure` refusal.
+
+*Layer B — Substrate-side semantic governance validation (sufficient).* Validates during substrate orchestration:
+
+- *Guardrail 1 substantive enforcement.* The proposed archetype × claim_kind combination is semantically meaningful for the referenced S1 entities. Example: `capability-claim` on an S1 Object is meaningful; `capability-claim` on an S1 ValidationRule is not — Layer A would accept both as structurally valid; Layer B rejects the latter.
+- *Guardrail 2 substantive enforcement.* Substrate-3 reasoning artifacts semantically appropriate, not just structurally valid. Example: `lower_specificity` dismissal_reason emitted only when a higher-specificity alternative exists in the substrate's reasoning; not arbitrarily applied.
+- *Guardrail 3 substantive enforcement.* `requirement_excerpt` semantically supports the proposed intent. Substrate verifies excerpt's relevance to the candidate's claim_kind and subject — not just that the excerpt is a syntactic substring of the requirement text.
+- *Bounded decomposition substantive enforcement (D-083 d).* Canonical selection respects highest-specificity discipline; the LLM's `selection_rationale` in `select_canonical` must match the substrate's view of the candidates' specificity.
+- *Admissibility substantive enforcement (D-083 e).* admissibility_layer assignment respects Layer 1 vs Layer 2 distinction's semantic meaning; substrate-authored.
+
+Layer B violations are *semantic findings* — the substrate determined the proposed intent or selection doesn't substantively satisfy the architectural commitment. They route to substrate-orchestrated dismissals (recorded in `attempted_interpretation`) or to typed refusals (per D-073 taxonomy).
+
+Both layers are required. Schema validation alone is insufficient; substrate-side semantic governance is what makes Guardrail enforcement substantive rather than performative.
+
+**(b) Clean separation: operational telemetry vs semantic provenance.**
+
+Per round 2 TA pushback (item 4): `llm_calls` cannot serve simultaneously as operational telemetry and semantic provenance. Theme 5 cleanly separates the two.
+
+*Operational telemetry — `llm_calls` (per D-074 substrate-3-adjacent):*
+
+Schema (specified at Theme 5):
+
+```
+llm_calls: {
+  call_id:               uuid (PK)
+  generation_outcome_id: uuid (FK → generation_outcomes)
+  tool_name:             string (propose_semantic_intent | select_canonical | emit_outcome)
+  raw_parameters:        jsonb (untyped; for debugging)
+  raw_response:          jsonb (untyped; for debugging)
+  operational_outcome:   enum (success | transient_failure | operational_error | rejected_for_correction)
+  attempt_index:         integer (1, 2, ... within the same logical tool emission if Layer A correction loops occurred)
+  timing_start:          timestamp
+  timing_duration_ms:    integer
+  token_count_input:     integer
+  token_count_output:    integer
+  model_identifier:      string (e.g., claude-opus-4-7)
+}
+```
+
+Used for: cost analysis, latency monitoring, error tracking, operational debugging, per-model performance comparison (Theme 7 calibration). NOT used for replay determinism, semantic eval, transparency, or refusal analysis.
+
+*Semantic provenance — `attempted_interpretation` (part of `generation_outcomes`, semantic ledger):*
+
+Schema (refined at Theme 5):
+
+```
+attempted_interpretation: {
+  candidate_paths:        list of structured candidates
+    Each: {
+      path_id:               string
+      archetype:             enum (substrate-2 archetypes)
+      claim_kind:            enum (substrate-2 claim_kinds)
+      subject_refs:          list of S1 entity refs
+      requirement_anchor:    structured (per-Guardrail-3 traceability)
+      admissibility_status:  enum (admissibly_grounded | dismissed)
+      admissibility_layer:   enum (layer_1 | layer_2; populated when admissibly_grounded; substrate-authored)
+      dismissal_reason:      D-076 enum (populated when dismissed)
+    }
+  selected_path_id:       string (refs admissibly_grounded candidate; per D-083 d canonical)
+  dismissed_alternatives_by_reason: structured (D-076 reason → list of dismissed path_ids; bounded set, not ordered list)
+}
+```
+
+Used for: replay determinism (via `explanation_hash` per D-088), semantic eval, transparency surfacing, refusal analysis.
+
+Tension resolved: `llm_calls` is bytes-on-the-wire telemetry; `attempted_interpretation` is the substrate's semantic reasoning record. Different tables; different code paths; different consumers. The "retires to substrate-2 provenance when get_provenance ships" disposition (per D-074) applies to `attempted_interpretation`, not to `llm_calls`.
+
+**Rationale.**
+
+Two-layer enforcement (a) is essential because schema validation alone cannot prevent semantic misuse. The TA's example holds: a propose_semantic_intent with all valid enum values and a technically-valid requirement_excerpt substring could still semantically misuse the requirement. Layer B is what protects substrate-3's mission integrity beyond mere structural compliance.
+
+Telemetry-provenance separation (b) was implicit in D-074 but not mechanically clean. Theme 5 specifies the schema boundary so both consumers — operational analysts and semantic eval engineers — have clean models without cross-contamination.
+
+**Alternatives considered.**
+
+- *Schema-validation-only as Guardrail enforcement.* Rejected per TA item 5. Schemas constrain vocabulary but not semantic substance; substrate-3 mission integrity requires substantive governance.
+- *Single unified `llm_calls`-style table doubling as semantic provenance.* Rejected per TA item 4. Tension between operational and semantic concerns is real; separation is cleaner and matches D-074's destination disposition.
+- *Layer B as optional / progressive enhancement.* Rejected. Layer B is necessary for Guardrail integrity; making it optional erodes substrate-3 mission discipline.
+
+**Downstream consequences.**
+
+- *D-088:* Replay equivalence computed over `attempted_interpretation` semantic substance, not over `llm_calls` operational trace. Sharp tension resolution.
+- *Theme 6 (prompt management).* Prompts engineer LLM behavior to satisfy Layer A and Layer B together; eval suite measures per-Guardrail per-layer compliance (Layer A acceptance rate; Layer B substantive correctness rate).
+- *Theme 7 (quality envelope).* Per-archetype Layer B substantive correctness thresholds calibrated separately from Layer A schema compliance.
+- *Substrate-3 schema design:* `llm_calls` table and `attempted_interpretation` structure both formalized for v1 implementation; both are substrate-3-implementation territory per Theme 5.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §6.4 (two-layer Guardrail enforcement), §6.5 (telemetry vs provenance separation)
+- D-070 (Theme 1; Guardrail 1)
+- D-071 (Theme 2; semantic_context, governance_context, operational_context)
+- D-072 (Theme 2; outcome protocol)
+- D-074 (Theme 2; llm_calls operational observability)
+- D-075 (Theme 2; Guardrail 2)
+- D-076 (Theme 2; dismissal_reason vocabulary)
+- D-083 (Theme 4; Guardrail 3; admissibility_layer; bounded decomposition; cause)
+- D-085 (Theme 5; integration topology)
+- D-086 (Theme 5; tool surface schema)
+
+---
+
+
+## D-088 — Multi-turn statefulness semantics, replay equivalence over semantic substance, eighth refusal kind operational-budget-exhausted [Theme 5]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with downstream consequences for Theme 6 eval suite and Theme 7 quality envelope]
+**Status:** active
+
+**Decision.** Theme 5 clarifies multi-turn tool-use statefulness semantics, tightens D-071/D-075 replay equivalence to semantic substance (not operational trace), and introduces the eighth refusal kind `operational-budget-exhausted` as a third refusal category (operational, alongside invalidity and policy).
+
+**(a) Multi-turn statefulness: rejected tool calls are operational, not semantic.**
+
+Per round 2 TA pushback (item 3): multi-turn tool-use creates conversational statefulness. Theme 5 clarifies which kinds of state are semantic and which are operational.
+
+Rejected tool call categorization:
+
+| Rejection type | Origin | Category | In semantic history? |
+|---|---|---|---|
+| Schema violation (LLM emits malformed tool call) | LLM error | operational | no |
+| Vocabulary violation (LLM emits value outside enum) | LLM error | operational | no |
+| Layer A governance violation (e.g., requirement_excerpt missing on propose_semantic_intent) | LLM error | operational | no |
+| Operational error (timeout, rate limit, model unavailable) | infrastructure | operational | no |
+| Substrate-derived dismissal of a proposed intent | substrate orchestration | semantic | yes — recorded in `attempted_interpretation.dismissed_alternatives_by_reason` |
+| Layer B governance finding (e.g., requirement_excerpt doesn't substantively support proposed intent) | substrate orchestration | semantic | yes — recorded as dismissal with appropriate D-076 reason |
+
+The first four categories are LLM-side or infrastructure errors; they are recorded in operational telemetry (`llm_calls.operational_outcome = rejected_for_correction`) and do not enter semantic provenance. They do not affect `attempted_interpretation`; they do not affect `explanation_hash`.
+
+The last two categories are substrate-derived semantic findings; they are substrate orchestration internal (not LLM tool call rejections under D-086's reshape) and are recorded in `attempted_interpretation`.
+
+Net result: multi-turn statefulness exists operationally (LLM does see prior rejections and adapts); semantic identity is deterministic given semantic_context + governance_context.
+
+**(b) Replay equivalence over semantic substance.**
+
+Per round 2 TA pushback (item 6): the previous framing — same semantic_context + governance_context → same explanation_hash — was too strong if explanation_hash was computed over operational trace. Multi-turn variation would produce false replay regression signals. Theme 5 tightens D-075's explanation_hash semantics and D-071's equivalence algebra to be computed over semantic substance.
+
+*Semantic substance (in scope for explanation_hash):*
+
+- Set of admissibly-grounded candidates per failure mode (unordered set; not ordered list).
+- Canonical selection per failure mode (selected_path_id).
+- Set of dismissed alternatives per failure mode, indexed by dismissal_reason category (D-076 category distribution; not the specific sequence of dismissals).
+- Admissibility_layer per emitted artifact (D-083 e).
+- Outcome kind (draft | refusal) and outcome payload semantics:
+  - For draft: claim ref + recipe ref + admissibility_layer.
+  - For refusal: refusal_kind + refusal payload semantics (cause for `no-admissible-negative-scenario-found`, budget_dimension for `operational-budget-exhausted`, etc.).
+
+*Operational trace (out of scope for explanation_hash):*
+
+- Ordering of LLM tool calls within the generation.
+- Specific tokens in intermediate LLM responses.
+- Number of operational corrections (schema/vocabulary/Layer A violations corrected mid-generation).
+- LLM model identifier (operational_context).
+- Specific timing or token counts.
+
+*Updated D-071 equivalence algebra (refinement, not contradiction):*
+
+- Same semantic_context + same governance_context + different operational_context → expected identity_hash + explanation_hash match.
+- "Match" defined over semantic substance per above; operational trace variation is permitted and expected.
+- Explanation-hash drift events (per D-075) fire on semantic substance divergence, NOT on operational trace divergence.
+
+*Replay equivalence definition:*
+
+Two generations are replay-equivalent iff their identity_hash and explanation_hash match, computed over semantic substance. Replay regressions surface real semantic drift; operational variation is filtered out by construction.
+
+This refinement is a tightening of D-075's commitment, not a reversal. D-075 committed to explanation_hash as a mechanical equivalence primitive; Theme 5 specifies the semantic-substance computation rule. D-071 committed to the equivalence algebra; Theme 5 specifies "match" as semantic substance match.
+
+Forward-compat reservation: the precise computation of explanation_hash over semantic substance may be tuned in Theme 7 quality envelope calibration as substrate-3 observes drift patterns in production.
+
+**(c) Eighth refusal kind: `operational-budget-exhausted`.**
+
+Per round 2 TA pushback (item 7): collapsing budget exhaustion into `structural-validation-failure` pollutes analytics. Budget exhaustion is operational incompletion, not structural invalidity. Taxonomy expansion is justified.
+
+*Updated refusal taxonomy at Theme 5 close (8 kinds across 3 categories):*
+
+| RefusalKind | Category | Origin theme |
+|---|---|---|
+| `underspecified-requirement` | invalidity (input) | Theme 1 |
+| `no-relevant-context` | invalidity (grounding) | Theme 1 |
+| `ambiguous-reference` | invalidity (resolution) | Theme 1 |
+| `ungrounded-claim` | invalidity (admissibility) | Theme 1 |
+| `structural-validation-failure` | invalidity (output) | Theme 1 |
+| `low-generation-confidence` | policy (threshold) | Theme 2 (D-073) |
+| `no-admissible-negative-scenario-found` | policy (scope) | Theme 4 (D-083) |
+| `operational-budget-exhausted` | operational (incompletion) | Theme 5 (this entry) |
+
+The third category axis — operational — is new. Substantive distinction:
+
+- *Invalidity refusals* are about content/structure quality. The substrate examined the request and could not produce a substantively valid output.
+- *Policy refusals* are about substrate-deliberate restraint. The substrate could produce output but chose not to, per policy (confidence threshold; scope of grounded negatives).
+- *Operational refusals* are about substrate-runtime-resource constraints. The substrate ran out of budget before completing reasoning.
+
+All three are genuine refusal causes that downstream consumers should distinguish in eval, analytics, and reliability metrics.
+
+*Feedback payload for `operational-budget-exhausted`:*
+
+```
+operational-budget-exhausted: {
+  budget_dimension:         enum (token | time | tool_call_count)
+  budget_limit:             typed numeric (the cap from operational_context.budgets)
+  budget_consumed:          typed numeric (the amount actually consumed before exhaustion)
+  partial_state_at_exhaustion: {
+    candidates_proposed:       count
+    candidates_admissibly_grounded: count
+    canonicals_selected:       count
+    requirements_resolved:     count
+    requirements_unresolved:   count
+  }
+  recommended_budget_increase: optional typed numeric (substrate-3 may suggest a budget that would have completed based on consumption rate)
+}
+```
+
+The `partial_state_at_exhaustion` preserves semantic substance up to the exhaustion point. Replay equivalence applies: replaying with the same budgets should produce equivalent partial state (same candidates proposed and dismissed up to exhaustion).
+
+**Rationale.**
+
+The three commitments cohere:
+
+- Multi-turn statefulness clarification (a) categorically separates LLM-side / infrastructure operational events from substrate-derived semantic findings. Establishes the foundation for semantic-substance replay equivalence.
+- Replay equivalence over semantic substance (b) filters operational variation out of drift signals, preserving D-075's drift-detection capability while preventing false regressions.
+- Operational refusal category (c) provides downstream consumers with categorically clean refusal analytics, separating operational incompletion from semantic invalidity and policy restraint.
+
+Together they make substrate-3's semantic identity robust to operational variation while preserving sharp signals when real semantic drift occurs.
+
+**Alternatives considered.**
+
+- *Rejected tool calls in semantic history.* Rejected per TA item 3. Pollutes semantic identity with operational variation; breaks replay equivalence.
+- *Replay equivalence over full operational trace.* Rejected per TA item 6. Too fragile; false drift signals from operational variation.
+- *Budget exhaustion as `structural-validation-failure` subtype.* Rejected per TA item 7. Operational incompletion is categorically different from structural invalidity; collapsing them pollutes analytics.
+- *New operational category axis with multiple operational refusal kinds.* Considered. V1 ships with one operational kind (`operational-budget-exhausted`); future operational refusal kinds (e.g., `operational-model-unavailable`, `operational-rate-limit-exhausted`) can be added if Theme 7 quality envelope identifies need.
+
+**Downstream consequences.**
+
+- *Theme 6 (prompt management).* Eval suite measures three categories of refusal separately; per-category rates inform prompt engineering priorities.
+- *Theme 7 (quality envelope).* Per-archetype expected refusal rates broken down by category; operational-budget-exhausted rate informs budget calibration.
+- *Substrate-3 implementation:* explanation_hash computation must operate over `attempted_interpretation` semantic-substance structure (not over `llm_calls` operational trace).
+- *Eval and replay infrastructure:* replay tooling operates over semantic ledger; operational telemetry is parallel concern.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §6.6 (multi-turn statefulness and replay equivalence), §6.7 (eighth refusal kind)
+- D-071 (Theme 2; equivalence algebra; operational_context.budgets)
+- D-072 (Theme 2; outcome protocol)
+- D-073 (Theme 2; refusal taxonomy with typed payloads)
+- D-074 (Theme 2; llm_calls; semantic ledger vs operational observability)
+- D-075 (Theme 2; explanation_hash as mechanical equivalence primitive)
+- D-083 (Theme 4; admissibility_layer; bounded decomposition; cause discipline)
+- D-085 (Theme 5; integration topology)
+- D-086 (Theme 5; tool surface schema)
+- D-087 (Theme 5; telemetry vs provenance separation)
+
+---
