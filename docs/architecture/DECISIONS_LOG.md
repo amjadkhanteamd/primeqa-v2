@@ -4303,3 +4303,2248 @@ only when refusal is as architecturally first-class as emission.
   resolution)
 
 ---
+
+
+## D-071 — Generation request shape with typed regeneration lineage and three-axis context separation [Theme 2]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S2 provenance integration, S6 attribution, S8 evolution]
+**Status:** active
+
+**Decision.** Substrate-3's unit of work is a `GenerationRequest`. It carries one or more typed external requirement references, three separated context axes (semantic / governance / operational), and — for regeneration — a binary `prior_request_id` discriminator with a typed `deltas` payload categorizing the regeneration's causal change.
+
+**Request structural shape:**
+
+    GenerationRequest {
+      request_id              UUID
+      tenant_id               FK
+      requirement_refs        [<typed external-system references; cardinality 1..N>]
+      semantic_context        { domain_pack_refs, system_rule_version,
+                                s1_version_seq, archetype_hint }
+      governance_context      { refusal_policy_version,
+                                dismissal_taxonomy_version,
+                                transparency_policy_version }
+      operational_context     { prompt_template_version, llm_model_identifier,
+                                retry_policy, cost_budget_usd, latency_budget_ms }
+      prior_request_id        UUID NULL
+      deltas                  <typed payload; non-null iff prior_request_id non-null>
+      created_at              TIMESTAMPTZ
+      completed_at            TIMESTAMPTZ NULL
+    }
+
+**Three-axis context separation.** Three orthogonal context categories:
+
+- *semantic_context* — what admissible world state was visible. Domain Packs invoked, system rule version, S1 `version_seq` pinned, archetype hint. Two requests with the same `semantic_context` saw the same semantic world.
+- *governance_context* — what behavioral policy regime was active. Refusal policy version, dismissal taxonomy version, transparency policy version. Two requests with the same `governance_context` are governed by the same thresholds, taxonomies, and stability rules.
+- *operational_context* — how generation was mechanically executed. Prompt template version, model identifier, retry policy, budgets. Variation here is execution mechanics, not semantic or governance behavior.
+
+This separation enables a clean equivalence algebra:
+
+- Same semantic + same governance + different operational → expected semantic equivalence (substrate-2 `identity_hash` match per D-059) and explanation equivalence (substrate-3 `explanation_hash` match per D-075).
+- Same semantic + different governance → expected behavior change (different refusals, different dismissed alternatives) by design, not regression.
+- Different semantic → expected semantic divergence by construction.
+
+**Regeneration lineage typed.** `prior_request_id` is the binary discriminator: NULL → fresh request; non-NULL → regeneration. When regeneration, `deltas` carries a typed `regeneration_kind` discriminator over five values:
+
+| regeneration_kind          | Category             | Semantic continuity edge? |
+|----------------------------|----------------------|---------------------------|
+| `clarification`            | semantic evolution   | yes — clarifies prior refusal or under-specification |
+| `grounding_evolution`      | semantic evolution   | yes — S1 state advanced (new entities, formula parser shipped, StandardValueSet linked) |
+| `requirement_change`       | semantic evolution   | yes — requirement itself updated |
+| `model_experimentation`    | operational          | no — same semantic, different model |
+| `eval_replay`              | operational          | no — benchmarking against historical generation |
+| `failure_recovery`         | operational          | no — retry after operational failure |
+
+Three semantic-continuity edges migrate into substrate-2 provenance as typed lineage events when `get_provenance` ships. Three operational edges stay in substrate-3's operational observability surface and do not migrate.
+
+The `deltas` payload, per regeneration_kind, carries typed structures appropriate to the kind: `clarification` deltas carry resolved-refusal references; `grounding_evolution` deltas reference the S1 version_seq diff; `requirement_change` deltas reference the updated requirement; `model_experimentation` deltas reference the model identifier change; etc.
+
+**Lineage as queryable substrate property.** The `prior_request_id` chain is first-class semantic continuity infrastructure, not an audit field. Substrate-3 exposes lineage traversal operations (`get_request_lineage(request_id)` returning the ordered chain, filterable by `regeneration_kind` category) to itself and to UX/eval consumers. When substrate-2's `get_provenance` ships, semantic-continuity lineage migrates as a chain of provenance events linked by typed lineage edges.
+
+**Rationale.** The three-axis context separation emerged through TA-loop review surfacing that refusal policy is conceptually neither semantic visibility nor execution mechanics; it is behavioral policy regime. The natural decomposition produces three contexts with clean equivalence algebra and clean substrate-2 migration semantics.
+
+The typed `regeneration_kind` discriminator resolves the lineage-pollution risk: undifferentiated lineage cannot support clean eval, audit, or provenance traversal because semantic continuity and operational experimentation are categorically different.
+
+**Alternatives considered.**
+
+- *Three regeneration modes (fresh / regenerate_from / regenerate_with_clarification).* Rejected. Over-factored; every regeneration is a regeneration with some delta. Binary discriminator plus typed deltas is more honest.
+- *Single context envelope.* Rejected. Conflating semantic visibility, governance policy, and execution mechanics produces incoherent equivalence semantics and incoherent substrate-2 migration.
+- *Undifferentiated lineage chain.* Rejected. Type-distinguishing semantic continuity from operational experimentation is required for clean eval and audit.
+
+**Downstream consequences.**
+
+- *D-072:* `GenerationOutcome` references its `GenerationRequest`; outcome equivalence is computed against `(semantic_context, governance_context)` invariance.
+- *D-074:* Two-surface architecture aligns context separation with substrate boundary — semantic_context + governance structural metadata → semantic ledger → substrate-2 provenance; operational_context + LLM telemetry → operational observability → stays substrate-3.
+- *D-075:* `explanation_hash` stability is computed under invariant `(semantic_context, governance_context)`.
+- *Theme 3:* Per-archetype strategies operate within context-typed requests; `archetype_hint` constrains scope.
+- *Theme 5:* `operational_context` houses LLM call parameterization; Q-004 (tool-use vs structured JSON) resolution operates within operational_context.
+- *Theme 6:* Governance context versions operationalize their machinery here.
+- *Substrate-2 forward-commitment:* Semantic-continuity lineage edges migrate as typed lineage events when get_provenance ships.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §3.2 (request shape and three-axis context separation)
+- `substrate_3_generation/SPEC.md` §2.3 (substrate-2 authority model S3 operates under)
+- D-070 (Theme 1; S3 as constrained interpretation engine; this entry operationalizes the request shape inside that framing)
+- D-059 (substrate-2 identity_hash; semantic equivalence definition substrate-3 inherits)
+- D-061 (substrate-2 authority model)
+- D-064 (substrate-2 Coordinator outward surface)
+- substrate-2 SPEC §10.2 (reserved `get_provenance` / `get_recipe_provenance`)
+
+---
+
+
+## D-072 — GenerationOutcome protocol with binary draft/refusal kinds, dedup as draft form, and the no-silent-drops invariant [Theme 2]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S2 provenance integration, S6 attribution]
+**Status:** active
+
+**Decision.** Substrate-3's output protocol is the `GenerationOutcome` discriminated union with binary kinds: `draft` | `refusal`. Every requirement in a request is explicitly resolved to one outcome — no requirement is silently dropped. Dedup-against-existing-claims is a form of draft outcome with zero new writes, not a third top-level outcome kind. Every outcome — draft or refusal — carries a mandatory `attempted_interpretation` artifact and an `explanation_hash`.
+
+**GenerationOutcome shape:**
+
+    GenerationOutcome {
+      outcome_id                  UUID
+      request_id                  FK to GenerationRequest
+      requirement_ref             <typed external-system reference>
+      outcome_kind                'draft' | 'refusal'
+      
+      // draft variant
+      claims_written              [<{test_id, version_seq}>] NULL
+      recipes_written             [<{recipe_id, version_seq}>] NULL
+      equivalent_existing         [<test_id>] NULL
+      
+      // refusal variant
+      refusals                    [<typed refusal entries>] NULL
+      
+      // mandatory on every outcome
+      attempted_interpretation    <typed structure per D-075>
+      explanation_hash            VARCHAR
+      
+      created_at                  TIMESTAMPTZ
+    }
+
+**Binary outcome_kind.** The discriminator is binary because the substrate's posture is binary: a requirement is either resolved (one or more drafts produced, possibly mixed with dedup matches) or refused (the substrate cannot reach the verification bar). Intermediate categories drift toward "couldn't quite decide" — the verification-bar discipline forbids this.
+
+**Dedup as draft form.** When dedup (via substrate-2's `query_equivalent_claims` against the interpreted semantic neighborhood) finds existing claims that satisfy the requirement, the outcome is `draft`:
+
+- `claims_written` — possibly empty (no new claims emitted)
+- `recipes_written` — possibly empty
+- `equivalent_existing` — populated with the test_ids of existing-satisfying claims
+
+A draft outcome with empty `claims_written` and non-empty `equivalent_existing` is the pure-dedup case. Mixed cases (some new claims, some existing satisfying parts of the requirement) are normal.
+
+**No-silent-drops invariant.** Every requirement in `request.requirement_refs` MUST be resolved by exactly one `GenerationOutcome`. The semantic ledger enforces this structurally: the substrate cannot mark a request `completed_at` without one outcome row per requirement_ref.
+
+This is the architectural defense against the "N drafts produced for M requirements where N < M" failure mode. Every dropped requirement surfaces as either a draft (possibly pure-dedup) or a refusal.
+
+**Mandatory attempted_interpretation on every outcome.** Per D-075, every outcome — draft or refusal — carries a typed `attempted_interpretation` artifact and an `explanation_hash` derived from it. Drafts get attempted_interpretation so reviewers see why this draft and not other admissible candidates. Refusals get it so engineers see what the substrate considered before refusing. This connects to D-070's verification-bar principle: reviewers verify rather than co-author, and attempted_interpretation is the substrate's transparency-grade justification supporting verification.
+
+**Rationale.** The binary discriminator collapsed cleanly from an earlier three-kind framing once dedup was recognized as a successful resolution where the satisfying claim already exists, not a third category. The `equivalent_existing` field preserves full audit information without expanding the discriminator.
+
+The no-silent-drops invariant emerged from Theme 1's verification-bar discipline: review compensating for invisible drops collapses the trust loop. Explicit per-requirement resolution is the defense.
+
+Mandatory `attempted_interpretation` on every outcome (not just refusals) emerged from the transparency-as-product-grade-infrastructure principle: drafts need transparency for verification just as refusals need it for engineer repair.
+
+**Alternatives considered.**
+
+- *Three top-level kinds (draft / refusal / noop_already_covered).* Rejected. `noop_already_covered` is a successful resolution form, not a separate kind.
+- *Allowing requirements to silently drop on edge cases.* Rejected. Defense against the failure mode requires explicit resolution per requirement.
+- *attempted_interpretation only on refusals.* Rejected. Drafts need transparency for verification too.
+- *Allowing mixed outcome_kind per requirement.* Rejected. Per-requirement clarity preserves semantic ledger interpretability.
+
+**Downstream consequences.**
+
+- *D-073:* `RefusalKind` taxonomy lives inside the refusal-variant `refusals` field; each refusal carries its own typed feedback payload.
+- *D-074:* The semantic ledger's row-per-(request, requirement) shape derives from this protocol.
+- *D-075:* `attempted_interpretation` shape is defined; mandatory-on-every-outcome is enforced by the protocol.
+- *Theme 6:* Eval consumes outcome rows; emission quality and refusal quality measurable on parallel dimensions.
+- *Theme 7:* Per-requirement resolution discipline is the substrate's measurement primitive.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §3.3 (outcome protocol and the no-silent-drops invariant)
+- D-070 (Theme 1; verification-bar discipline)
+- D-051 (substrate-2 identity model; `claims_written` references substrate-2 typed identity)
+- D-061 (substrate-2 authority model; dedup operates within authority constraints)
+- substrate-2 SPEC §10.2 (`query_equivalent_claims` interface)
+
+---
+
+
+## D-073 — RefusalKind taxonomy at six categories with invalidity-vs-policy distinction and refusal-as-governed-behavior [Theme 2]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S2 provenance integration, S6 attribution, S7 conversational]
+**Status:** active
+
+**Decision.** Substrate-3 commits to a typed `RefusalKind` taxonomy of six categories at Theme 2 close (seventh anticipated for Theme 4). Each refusal carries a typed actionable-feedback payload appropriate to its kind. Refusals are *governed behavior* — each carries a `refusal_policy_version` from the request's `governance_context` per D-071, making refusal calibration a versioned substrate-3 governance concern, not "natural" generation behavior.
+
+**The six categories at Theme 2 close:**
+
+| RefusalKind                     | Category               | What it signals |
+|---------------------------------|------------------------|-----------------|
+| `underspecified-requirement`    | invalidity (input)     | Requirement lacks specificity to ground anywhere in S1 |
+| `no-relevant-context`           | invalidity (grounding) | Requirement is specific but no S1 entities support its assumptions |
+| `ambiguous-reference`           | invalidity (resolution)| Reference disambiguates to multiple S1 entities; needs engineer input |
+| `ungrounded-claim`              | invalidity (admissibility)| Proposed claim not admissibly supported by org's constraint structure |
+| `structural-validation-failure` | invalidity (output)    | LLM output cannot be coerced to valid substrate-2 body after bounded retry |
+| `low-generation-confidence`     | **policy (threshold)** | Proposed claim is admissibly grounded but doesn't reach `refusal_policy_version` confidence threshold |
+
+A seventh — `no-admissible-negative-scenario-found` — is anticipated for Theme 4 as a *policy (scope)* category.
+
+**Invalidity vs policy distinction.** Five invalidity categories are *structural failures* — the proposed claim is structurally wrong (input under-specified, grounding missing, reference ambiguous, claim inadmissible, output invalid). One policy category at Theme 2 (`low-generation-confidence`) is a *governance threshold* — the proposed claim is structurally fine but doesn't meet the calibrated bar.
+
+The distinction is architecturally consequential. Invalidity refusals would be refusals under any reasonable policy. Policy refusals depend on `refusal_policy_version` calibration — the same underlying claim could pass under v1 and refuse under v2. The substrate exposes the distinction so engineers see which refusals are structural vs which are policy-driven.
+
+**Refusal-as-governed-behavior.** Each refusal entry in the `generation_outcomes.refusals` array carries:
+
+- `refusal_kind` — the discriminator (also exposed at the row level per D-074)
+- `refusal_policy_version` — from the request's `governance_context` (also exposed at row level)
+- `refusal_schema_version` — the version of the feedback_payload typed shape (also exposed at row level)
+- `feedback_payload` — the typed actionable feedback, per kind
+
+Row-level exposure of `refusal_kind`, `refusal_policy_version`, and `refusal_schema_version` is the substrate-2 forward-commitment for typed cross-substrate provenance (per D-074). This makes refusal replay a first-class substrate operation: "would this requirement still be refused under policy v2?" is queryable without rerunning generation.
+
+**Per-kind feedback payload shapes:**
+
+    underspecified-requirement: {
+      missing_axes:                [<typed axis names — target_object, operation_kind, actor_role, etc.>]
+      suggested_clarifications:    [<typed prompts to engineer>]
+    }
+    
+    no-relevant-context: {
+      searched_terms:              [<terms extracted from requirement>]
+      closest_matches:             [<{S1 entity_ref, similarity_score}>] // omitted if all below threshold
+      org_capability_gap:          <optional typed description>
+    }
+    
+    ambiguous-reference: {
+      ambiguous_term:              <surface form from requirement>
+      candidate_entities:          [<S1 entity_refs>]
+      disambiguation_prompt:       <typed clarification engineer can answer>
+    }
+    
+    ungrounded-claim: {
+      proposed_claim_kind:         <claim_kind enum value>
+      proposed_subject_refs:       [<S1 entity_refs>]
+      admissibility_gap:           <typed reason from substrate-authorized vocabulary,
+                                    may cite dismissal_reason codes per D-076>
+      what_would_unblock:          <optional — references deferred S1 capabilities>
+    }
+    
+    structural-validation-failure: {
+      attempt_count:               <number of bounded retries before refusal>
+      last_validation_error:       <typed Pydantic validation error from substrate-2>
+      llm_output_summary:          <bounded raw output; persistent occurrences flag prompt/model issues>
+    }
+    
+    low-generation-confidence: {
+      candidates_considered:       [<{candidate_path_index, confidence_score, threshold_used}>]
+      threshold_calibration_basis: <typed reason — what refusal_policy_version defined as threshold>
+      disambiguation_prompt:       <typed prompt to engineer if applicable>
+    }
+
+Each payload type is itself a typed structure with a `refusal_schema_version`. Schema versions evolve through deliberate substrate-3 design cycles; cross-version comparisons may need migration semantics (substrate-2 provenance design surface when `get_provenance` ships).
+
+**Refusal multiplicity (forward-compat reservation).** V1 ships flat-list refusals per outcome (one refusal-variant outcome may carry multiple `refusal_kind` entries when multiple categories apply — e.g., a requirement that is BOTH underspecified AND has ambiguous references). Future evolution may introduce hierarchy (causality DAG over refusals) or sequencing (repair-path ordering); flat-list schema reserves both non-breakingly via NULL-default fields.
+
+**Rationale.** The `low-generation-confidence` category emerged from review surfacing that the architecture conflated admissibility (mechanical, from S1) with confidence (judgmental, threshold-based). These are categorically different. Surfacing the distinction makes policy-threshold refusals visible as such.
+
+The refusal-as-governed-behavior commitment emerged from review surfacing that refusal thresholds are governance, not generation behavior. Per D-074, refusal_kind, refusal_policy_version, and refusal_schema_version are queryable structural fields at the semantic ledger row level for cross-substrate typed provenance.
+
+**Alternatives considered.**
+
+- *Five categories collapsing `low-generation-confidence` into `ungrounded-claim`.* Rejected. Distinct architectural categories with distinct repair paths.
+- *Free-form refusal feedback text.* Rejected. Typed payloads required for UX consistency, eval comparability, refusal replay under policy changes, and cross-substrate provenance typing.
+- *Refusals as opaque "could not generate" outcomes.* Rejected per Theme 1 D-070 (refusal as first-class product surface).
+- *Refusal policy as operational concern.* Rejected. Refusal policy is governance, not operational mechanics; lives in `governance_context`.
+
+**Downstream consequences.**
+
+- *Theme 4:* Adds `no-admissible-negative-scenario-found` (policy-scope category) with its own typed feedback payload.
+- *Theme 6:* Refusal policy version machinery; refusal replay implementation; eval mechanics measuring refusal quality.
+- *Theme 7:* Refusal calibration thresholds operationalized; per-category refusal quality on parallel dimensions.
+- *D-074:* refusal_kind, refusal_policy_version, refusal_schema_version exposed at semantic ledger row level for cross-substrate typed provenance.
+- *S6 attribution:* When S6 ships, refusal categorization may inform attribution categories.
+- *S7 conversational:* Refusals are substrate-3's surface for conversational clarification flows.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §3.4 (RefusalKind taxonomy)
+- D-070 (Theme 1; refusal as first-class product surface)
+- D-071 (`governance_context.refusal_policy_version`)
+- D-074 (typed cross-substrate provenance for refusal structural metadata)
+- D-075 (attempted_interpretation mandatory on refusals)
+- D-076 (dismissal_reason taxonomy; refusals may cite dismissal_reasons in `admissibility_gap`)
+
+---
+
+
+## D-074 — Two-surface ledger architecture with typed cross-substrate provenance commitment [Theme 2]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S2 provenance interface design when get_provenance ships]
+**Status:** active
+
+**Decision.** Substrate-3 carries two structurally separate ledger surfaces with distinct lifecycles, retentions, and consumers:
+
+- **Semantic ledger** (S3-owned, retires to substrate-2 provenance when `get_provenance` ships): `generation_requests` and `generation_outcomes` tables. Carries the semantic audit trail and supports cross-substrate typed provenance.
+- **Operational observability** (S3-adjacent, stays substrate-3 permanently): `llm_calls` table. Carries operational telemetry. Does NOT migrate to substrate-2 provenance.
+
+The two surfaces are linked by `outcome_id`. Eval joins both surfaces. UX surfaces typically read only the semantic ledger. Operational monitoring reads only the observability surface.
+
+**Semantic ledger schema:**
+
+    generation_requests {
+      request_id              UUID PRIMARY KEY
+      tenant_id               FK
+      actor                   's3'
+      requirement_refs        JSONB
+      semantic_context        JSONB              -- per D-071 shape
+      governance_context      JSONB              -- per D-071 shape
+      operational_context     JSONB              -- per D-071 shape
+      prior_request_id        UUID NULL FK self
+      deltas                  JSONB NULL         -- typed per D-071 regeneration_kind
+      created_at              TIMESTAMPTZ
+      completed_at            TIMESTAMPTZ NULL
+    }
+    
+    generation_outcomes {
+      outcome_id               UUID PRIMARY KEY
+      request_id               FK
+      requirement_ref          JSONB
+      outcome_kind             'draft' | 'refusal'
+      -- draft variant fields (NULL when refusal)
+      claims_written           JSONB NULL
+      recipes_written          JSONB NULL
+      equivalent_existing      JSONB NULL
+      -- refusal variant fields (NULL when draft)
+      refusal_kind             VARCHAR NULL        -- EXPOSED AT ROW LEVEL
+      refusal_policy_version   VARCHAR NULL        -- EXPOSED AT ROW LEVEL
+      refusal_schema_version   VARCHAR NULL        -- EXPOSED AT ROW LEVEL
+      refusals                 JSONB NULL          -- typed feedback payloads array
+      -- mandatory on every outcome
+      attempted_interpretation JSONB               -- per D-075 shape
+      explanation_hash         VARCHAR             -- EXPOSED AT ROW LEVEL
+      dismissal_taxonomy_version VARCHAR           -- EXPOSED AT ROW LEVEL (from governance_context)
+      created_at               TIMESTAMPTZ
+    }
+
+**Critical schema discipline — typed cross-substrate provenance.** The fields `refusal_kind`, `refusal_policy_version`, `refusal_schema_version`, `explanation_hash`, and `dismissal_taxonomy_version` are exposed at the row level, NOT buried inside JSONB. This is the substrate-2 forward-commitment.
+
+When substrate-2's `get_provenance` ships, refusal events migrate from `generation_outcomes` to substrate-2 provenance event rows. Substrate-2 needs these fields as typed structural columns to support:
+
+- Provenance filtering by `refusal_kind`
+- `refusal_policy_version` drift detection along a test_id's lineage
+- `explanation_hash` drift detection across regenerations
+- Decisions about whether two refusal events are comparable under their schema versions
+
+Substrate-2 does NOT interpret `refusals.feedback_payload` contents or `attempted_interpretation` internals — those remain substrate-3-typed and opaque from substrate-2's perspective. The boundary:
+
+> **Substrate-3 owns refusal and explanation *semantics*. Substrate-2 owns refusal and explanation *provenance continuity* through typed structural metadata fields.**
+
+**Operational observability schema:**
+
+    llm_calls {
+      call_id                  UUID PRIMARY KEY
+      outcome_id               FK to generation_outcomes
+      call_sequence_number     INT                -- ordering within an outcome
+      input_tokens             INT
+      output_tokens            INT
+      cost_usd                 NUMERIC
+      latency_ms               INT
+      result_kind              'valid_output' | 'structural_validation_failure' | 'other_error'
+      error_payload            JSONB NULL
+      raw_output_truncated     TEXT NULL          -- bounded size for debug
+      model_identifier         VARCHAR
+      prompt_template_version  VARCHAR
+      created_at               TIMESTAMPTZ
+    }
+
+Strictly operational data. Retention bounded by storage/cost considerations (archival policy named when storage pressure surfaces). Does NOT migrate to substrate-2.
+
+**Atomicity discipline.** Each LLM call attempt produces one `llm_calls` row immediately. Each completed outcome produces one `generation_outcomes` row at outcome resolution time. If operational write fails after semantic write succeeded, the substrate has the semantic outcome (audit-grade record) and loses telemetry. Telemetry can be lossy; semantics cannot. Write ordering enforces this property.
+
+**Rationale.** Two-surface split resolves three architectural concerns: lifecycle alignment (semantic ledger aligns with test lifecycle; operational observability has bounded retention), substrate-2 migration boundary (clean — substrate-2 absorbs semantics, not telemetry), and access patterns (eval, UX, ops have different needs).
+
+The cross-substrate typed provenance commitment emerged from review surfacing that refusal payload schema belongs to substrate-3 but refusal governance semantics leak into substrate-2 provenance law. Substrate-2 needs structural metadata for provenance continuity without interpreting payload internals. Row-level typed exposure (vs. buried JSONB) is what makes this clean rather than opaque.
+
+**Alternatives considered.**
+
+- *Single three-tier ledger with `generation_attempts` as third tier.* Rejected. Conflates lifecycles and migration boundary.
+- *Opaque event_data carrying all refusal structure to substrate-2.* Rejected. Substrate-2 needs typed structural metadata for provenance traversal; opaque event_data breaks cross-substrate audit operations.
+- *Substrate-2 interpreting refusal payload internals.* Rejected. Wrong substrate boundary — substrate-2 knows refusal is a category of provenance event, doesn't know what `low-generation-confidence` payload internals mean.
+
+**Downstream consequences.**
+
+- *D-071, D-072, D-073, D-075, D-076:* Row-level typed fields exposed at semantic ledger row level, not in JSONB.
+- *Substrate-2 forward-commitment:* When `get_provenance` is designed, it MUST absorb the cross-substrate typed provenance constraint. Substrate-2's provenance event row schema includes `refusal_kind`, `refusal_policy_version`, `refusal_schema_version`, `dismissal_taxonomy_version`, `explanation_hash` as typed structural columns. Substrate-2 design surface for that cycle.
+- *Theme 5:* `llm_calls` schema operationalizes here. Tool-use vs single-shot affects `call_sequence_number` semantics.
+- *Theme 6:* Eval joins both surfaces; prompt-version comparison reads operational observability; semantic outcome comparison reads semantic ledger.
+- *Theme 7:* Quality measured against semantic ledger (emission, refusal, explanation stability); cost/perf measured against operational observability.
+- *Forward-compat reservation:* Operational observability archival policy named when storage pressure surfaces.
+- *Forward-compat reservation:* Operational observability may eventually move to a future observability substrate. Substrate-3 commitment in v1 is the schema; substrate boundary for the observability table is provisional.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §3.5 (two-surface architecture)
+- `substrate_3_generation/SPEC.md` §3.9 (typed cross-substrate provenance commitment)
+- D-071 (request shape — semantic, governance, operational context fields)
+- D-072 (outcome protocol — outcome_kind and field shapes)
+- D-073 (RefusalKind taxonomy — refusal structural metadata exposed)
+- D-075 (attempted_interpretation; explanation_hash)
+- D-076 (dismissal_taxonomy_version exposed)
+- substrate-2 SPEC §10.2 (reserved get_provenance; design surface affected)
+
+---
+
+
+## D-075 — S3 Guardrail 2 (ontology-bound reasoning artifacts), attempted_interpretation shape, and transparency as governed substrate artifact [Theme 2]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S2 provenance integration, S5 knowledge, S6 attribution]
+**Status:** active
+
+**Decision.** Substrate-3 commits to two interlocking architectural commitments:
+
+**(a) S3 Guardrail 2 — Ontology-bound reasoning artifacts.** Substrate-3 reasoning artifacts persisted in substrate state may only reference semantic concepts authorized by S1's ontology and substrate-2's taxonomy. They may not introduce durable semantic concepts outside this authorized set. This extends Theme 1's S3 Guardrail 1 (semantic search space bounded) to the substrate's own reasoning vocabulary.
+
+**(b) Transparency as governed substrate artifact.** `attempted_interpretation` is not a debug surface. It is substrate-grade governed behavior with its own equivalence relation (`explanation_hash`), its own stability commitment, and its own substrate-2 forward-compatibility through typed cross-substrate provenance (per D-074).
+
+**Attempted_interpretation structural shape:**
+
+    attempted_interpretation {
+      scoped_neighborhood:    [<IdentityBearingRef>]                     // S1 entity refs only
+      candidate_paths:        [{
+                                path_id:           INT                   // canonical index
+                                archetype:         <S2 archetype enum>
+                                claim_kind:        <S2 claim_kind enum>
+                                subject_refs:      [<IdentityBearingRef>]
+                                status:            'selected' | 'dismissed'
+                              }]
+      dismissal_reasons:      [{
+                                path_id:           INT                   // FK to candidate_paths
+                                reason_codes:      [<dismissal_reason enum value per D-076>]
+                              }]
+      selected_path_id:       INT NULL                                   // when outcome_kind = 'draft'
+    }
+
+Every field is substrate-authorized typed structure. No free-form prose. No LLM-generated rationale text. No invented entity descriptions. Every concept is either an S1 entity (via `IdentityBearingRef`), a substrate-2 taxonomic value (archetype, claim_kind from locked enums), or a substrate-3 reasoning-vocabulary value (`dismissal_reason` from D-076's bounded enum).
+
+**Guardrail 2 enforcement.** The discipline is enforced structurally: the `attempted_interpretation` Pydantic body validates against the typed schema. LLM output proposing invalid entities, invalid claim_kinds, or invalid dismissal_reasons fails validation and either repairs (bounded retry) or surfaces as `structural-validation-failure`.
+
+> *The LLM may generate invalid alternatives during its reasoning, but the substrate only persists alternatives that pass the same admissibility check as the selected path.*
+
+Invalid LLM-proposed alternatives cost LLM latency (recorded in `llm_calls` for cost accounting and debug) but never reach substrate state. This is fail-loud-over-hallucinating applied to the reasoning artifact, not just the output.
+
+**Transparency as governed substrate artifact.**
+
+Once persisted, `attempted_interpretation`:
+
+- Becomes part of product truth (reviewers depend on it, regeneration consumes it, eval compares it)
+- Must remain stable under invariant `(semantic_context, governance_context)` per D-071's equivalence algebra
+- Is subject to a typed equivalence relation (`explanation_hash`) and a typed drift event when stability is violated
+
+**Explanation_hash canonicalization.**
+
+A canonical hash computed over `attempted_interpretation` under ordered canonicalization:
+
+- `scoped_neighborhood` — canonical lexicographic order over `IdentityBearingRef`s (by serialized form)
+- `candidate_paths` — canonical order by `(archetype, claim_kind, subject_refs_canonical)`; path_ids reassigned to match canonical order
+- `dismissal_reasons` per path — canonical alphabetical order by `reason_code`
+- `selected_path_id` — refers to canonical index
+
+The hash is computed only over substrate-authorized typed fields. Per Guardrail 2, no free-form content participates by construction. The hash is mechanical, reproducible, and comparable across runs.
+
+**Explanation drift events.**
+
+When same `(semantic_context, governance_context)` regeneration produces a different `explanation_hash` than its lineage parent, the substrate emits a typed explanation drift event into the semantic ledger:
+
+    explanation_drift_event {
+      drift_id:                 UUID
+      outcome_id:               FK
+      prior_outcome_id:         FK to lineage parent
+      drift_kind:               'structure' | 'composition' | 'reasoning_path'
+                                // structure: scoped_neighborhood changed
+                                // composition: candidate_paths set changed
+                                // reasoning_path: same candidates, different selected_path or different dismissals
+      prior_explanation_hash:   VARCHAR
+      current_explanation_hash: VARCHAR
+      detected_at:              TIMESTAMPTZ
+    }
+
+Detection is mechanical (hash inequality). Categorization (regression / evolution / acceptable variation) is judgmental and deferred to S3-Q-008 (semantic equivalence policy under operational variation, addressed in Theme 5 / Theme 7).
+
+**Transparency_policy_version.** Carried in `governance_context` per D-071. Explicit versioning machinery deferred to Theme 6. V1 ships with `transparency_policy_version='v1'` as implicit calibration: the substrate commits to stable `explanation_hash` under invariant `(semantic_context, governance_context)`, with drift events as the violation signal.
+
+**What v1 does NOT commit to:**
+
+- Free-form prose surfaces in `attempted_interpretation`. V1 ships structured-only because Position B (transparency as governed substrate artifact) requires that everything participating in `explanation_hash` is substrate-validated, and validated prose canonicalization is heavier architecture deferred to a later iteration.
+- LLM-generated rationale text alongside structured artifacts. Reserved forward-compat surface.
+- Explicit transparency policy version machinery (bump rules, replay semantics for version migration). Deferred to Theme 6.
+
+**Rationale.** Guardrail 2 emerged from review surfacing that `attempted_interpretation` without ontology binding drifts toward shadow semantic authority for substrate-3, undermining substrate-2's status as the only semantic authority. The mechanical defense — restricting reasoning artifact vocabulary to substrate-authorized concepts — keeps substrate boundaries clean by construction.
+
+Transparency-as-governed-artifact emerged from review surfacing that surfaced reasoning becomes product truth, and product truth requires substrate-grade stability commitments. The half-position (some transparency governed, some not) creates an undefended boundary that erodes substrate credibility. Accepting Position B (governed explanation surface) absorbs the design weight as the price of architectural coherence.
+
+This is the substrate-3 analog of substrate-2's D-051: identity is mechanical, not judgmental. For substrate-3, **explanation is mechanical, not judgmental, within substrate-authorized vocabulary.**
+
+**Alternatives considered.**
+
+- *attempted_interpretation as ephemeral debug surface.* Rejected. Inconsistent with substrate-3's trust commitment; users will depend on it whether or not the substrate commits to stability.
+- *Free-form prose in reasoning artifacts.* Rejected for v1. Violates Guardrail 2. Forward-compat reservation: prose canonicalization is heavier architecture for a later iteration.
+- *Snapshot testing as the only stability mechanism.* Rejected. Snapshot testing detects drift but doesn't give the substrate a typed equivalence primitive. Explanation_hash is the substrate-3 mechanical primitive analogous to substrate-2's identity_hash.
+- *Explanation stability as informal product commitment.* Rejected. Position B requires mechanical detection (hash) and typed drift events, not informal commitments.
+
+**Downstream consequences.**
+
+- *D-076:* `dismissal_reason` enum is the substrate-3 reasoning vocabulary that `attempted_interpretation.dismissal_reasons` references.
+- *Theme 3:* Per-archetype shape of `scoped_neighborhood` and `candidate_paths` operationalized. Per-archetype dismissal_reason applicability defined.
+- *Theme 5:* Multi-stage interpretation implied (Q-004 resolution bounded toward tool-use). `attempted_interpretation` produced as explicit reasoning step, not extracted post-hoc from prose.
+- *Theme 6:* Explanation stability is a first-class eval signal. Interpretation-layer versioning (distinct from prompt versioning) becomes a substrate concern.
+- *Theme 7:* Explanation drift thresholds calibrated; transparency-stability quality measured on parallel dimension to emission and refusal quality.
+- *S3-Q-008 extended:* Semantic equivalence policy now covers `identity_hash` AND `explanation_hash` divergence categorization under invariant `(semantic_context, governance_context)`.
+- *Substrate-2 forward-commitment:* `explanation_hash` exposed at semantic ledger row level (per D-074) for cross-substrate provenance traversal.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §3.6 (ontology-bound reasoning artifacts; Guardrail 2)
+- `substrate_3_generation/SPEC.md` §3.7 (transparency as governed substrate artifact; explanation_hash)
+- D-070 (Theme 1; S3 Guardrail 1; this entry adds Guardrail 2)
+- D-051 (substrate-2 identity discipline; substrate-3 explanation discipline is the analog)
+- D-059 (substrate-2 `identity_hash` canonicalization; substrate-3 `explanation_hash` is the parallel mechanism)
+- D-071 (`governance_context.transparency_policy_version`; equivalence algebra)
+- D-072 (mandatory `attempted_interpretation` on every outcome)
+- D-074 (row-level `explanation_hash` exposure for cross-substrate provenance)
+- D-076 (dismissal_reason enum referenced by attempted_interpretation)
+
+---
+
+
+## D-076 — Dismissal_reason taxonomy as substrate-3 reasoning vocabulary [Theme 2]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S2 provenance integration when get_provenance ships]
+**Status:** active
+
+**Decision.** Substrate-3 commits to a bounded, versioned, governance-disciplined enum of `dismissal_reason` codes. This enum is the substrate's reasoning vocabulary — the only new semantic vocabulary substrate-3 introduces beyond what S1 and substrate-2 already authorize. It is governed under the same discipline substrate-2 uses on `claim_kind`: bounded, locked through deliberate D-entries, extended only through substrate-3 design cycles.
+
+**V1 bootstrap enum (8 entries across 5 categories):**
+
+    dismissal_reason: enum {
+      // TOPOLOGY — missing or insufficient S1 grounding
+      insufficient_grounding,
+      no_grant_supports_capability,
+      no_constraint_supports_negative,
+      
+      // ONTOLOGY_INVALIDITY — substrate-authorized taxonomy violation
+      type_incompatibility,
+      archetype_mismatch,
+      
+      // RANKING — alternative was preferred or no clean disambiguation
+      ambiguous_target_resolution,
+      lower_specificity,
+      
+      // GOVERNANCE — would-be valid but doesn't meet policy threshold
+      policy_threshold_not_met,
+      
+      // CONFIDENCE — reserved category; no v1 entries
+      // (confidence dismissals enter as refusal-kind `low-generation-confidence` per D-073,
+      //  not as alternative-dismissal reasons, in v1)
+    }
+
+Each entry carries a typed `category` meta-property: TOPOLOGY | ONTOLOGY_INVALIDITY | RANKING | GOVERNANCE | CONFIDENCE. CONFIDENCE is a reserved category with no v1 entries; the placeholder reserves the architectural slot for future evolution.
+
+**Discipline rules:**
+
+- *Bounded enum.* No runtime extensibility. Adding entries requires a deliberate substrate-3 design cycle producing a D-entry. Same discipline substrate-2 applies to `claim_kind`.
+- *Versioned.* The enum carries `dismissal_taxonomy_version` (v1 at Theme 2 close). Bumps occur only via D-entry. Carried in `governance_context` per D-071; exposed at semantic ledger row level per D-074.
+- *Categorized.* Every entry's typed `category` is a property of the entry, not an external mapping. Category structure is part of the locked taxonomy.
+- *Non-exclusive.* A dismissed candidate may carry multiple `reason_codes`. Persistence is an array of codes per dismissed candidate (per D-075's `attempted_interpretation.dismissal_reasons` shape).
+- *Unordered, unweighted in v1.* Reserved forward-compat: future evolution may introduce ordering (primary vs supporting reasons) or weighting (severity values). V1 schema accommodates non-breakingly via NULL-default fields.
+
+**Why this taxonomy is reasoning vocabulary, not UX enum:**
+
+The taxonomy participates in:
+
+- `explanation_hash` canonicalization (per D-075) — codes are part of the hash input
+- Eval comparison across runs — same codes in same canonical order means same explanation
+- Refusal feedback payloads — `ungrounded-claim` refusals may cite codes in `admissibility_gap`
+- Cross-substrate provenance — `dismissal_taxonomy_version` exposed at row level per D-074
+- Regeneration interpretation — `grounding_evolution` regeneration may invalidate prior `insufficient_grounding` dismissals; the substrate reasons about this through the taxonomy
+
+Treating dismissal_reasons as substrate-grade reasoning vocabulary preserves the architectural integrity that Position B (D-075 transparency-as-governed-substrate-artifact) requires.
+
+**Rationale.** The commitment emerged from review surfacing that `attempted_interpretation`'s dismissal_reason field is the durable substrate-3 reasoning vocabulary, and without governance discipline it would drift into a casually-extensible registry that pollutes substrate behavior over time. Specifically pressure-tested: bounded enum vs extensible registry, policy-version coupling, category hierarchy, exclusivity, ordering/weighting — all resolved per the discipline rules above.
+
+The five-category structure lifts structural information into the type system rather than leaving it implicit.
+
+**Alternatives considered.**
+
+- *Free-form text for dismissal reasons.* Rejected. Violates Guardrail 2 (D-075); breaks `explanation_hash` canonicalization; makes eval comparison impossible.
+- *Extensible registry pattern.* Rejected. Taxonomy drift becomes semantic behavior drift; this is substrate law territory.
+- *Single flat category (no `category` meta-property).* Rejected. Category structure is architecturally meaningful and surfaces in product UX — engineers reading a refusal see "this was dismissed for topology reasons" vs "for ranking reasons" — categorically different repair paths.
+- *Mutual-exclusivity at the row level.* Rejected. Real dismissals often carry multiple applicable reasons; forcing exclusivity loses information.
+
+**Downstream consequences.**
+
+- *D-075:* `attempted_interpretation.dismissal_reasons` references this enum; `explanation_hash` canonicalization includes dismissal_reason codes.
+- *D-074:* `dismissal_taxonomy_version` exposed at semantic ledger row level for cross-substrate typed provenance.
+- *D-071:* `governance_context.dismissal_taxonomy_version` carried in every request.
+- *Theme 3:* Per-archetype applicability of dismissal_reason codes operationalized (some codes universal — `ambiguous_target_resolution`; some archetype-specific — `no_grant_supports_capability` applies to permission archetype).
+- *Theme 6:* Eval mechanics include dismissal_reason coverage and drift detection.
+- *Forward-compat reservation:* CONFIDENCE category reserved with no v1 entries. When confidence-as-dismissal becomes relevant (likely Theme 5 or post-Phase-1), entries may be added under deliberate D-entry.
+- *Forward-compat reservation:* Ordering and weighting reserved. V1 schema non-breaking to either extension.
+- *Substrate-2 forward-commitment:* `dismissal_taxonomy_version` is part of substrate-2's eventual `get_provenance` typed provenance metadata (per D-074).
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §3.8 (dismissal_reason as reasoning vocabulary)
+- D-070 (Theme 1; S3 Guardrail 1)
+- D-071 (`governance_context.dismissal_taxonomy_version`)
+- D-074 (row-level exposure for cross-substrate provenance)
+- D-075 (Guardrail 2; reasoning vocabulary discipline; `explanation_hash` canonicalization)
+- substrate-2 D-052/D-053 (substrate-2 claim_kind taxonomy discipline; substrate-3 dismissal_reason is the architectural analog)
+
+---
+
+
+## D-077 — Cross-cutting per-archetype framework: four dimensions, shared interpretation context, archetype hint as guidance, dismissal_reason by phase [Theme 3]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for Theme 5 LLM implementation topology]
+**Status:** active
+
+**Decision.** Theme 3's cross-cutting design framework operationalizes the locked governance architecture (Themes 1 + 2) per archetype. Four architectural commitments anchor the framework:
+
+**(a) Four dimensions per archetype.** Each of the five archetypes is specified along four dimensions:
+
+1. *Interpretation scope* — which S1 entity types the interpretation layer constructs `scoped_neighborhood` from for this archetype.
+2. *Admissibility-checking shape* — what concretely constitutes admissibly grounded (per D-070 §2.4) for the claim_kinds in this archetype, given S1's current capability tier.
+3. *Recipe-kind selection* — which substrate-2 recipe_kinds are appropriate for which claim_kinds in this archetype; where the substrate has latitude vs where claim semantics force the selection.
+4. *Refusal dominance* — which `RefusalKind` categories tend to dominate in this archetype, informing the Theme 7 quality envelope's expected refusal-rate calibration per archetype.
+
+The four-dimensional framework is the structural pattern; D-078 through D-082 fill in the per-archetype specifics.
+
+**(b) Shared interpretation context across the batch.** Theme 3 commits to the architectural property that the substrate's reasoning has access to all requirements in the batch when scoping neighborhoods and constructing candidate paths. This preserves D-071's batch-capable commitment (cross-requirement awareness for sprint batches) and enables multi-archetype decomposition where one ticket touches multiple archetypes.
+
+*The implementation topology that delivers shared context is resolved in Theme 5.* Substrate-3 does not commit to one-pass interpretation, multi-pass coordination, planner-style with explicit dependency graph, or any other specific orchestration shape at Theme 3. The commitment is to the architectural property (shared context across the batch); the mechanism is Theme 5's design surface.
+
+**(c) Archetype hint as guidance, not constraint.** The `archetype_hint` carried in `semantic_context` (per D-071) is the interpretation layer's prior, not a hard constraint that admits or refuses claims by archetype. The substrate:
+
+1. Uses the hint to bias initial scoping (which S1 entity types to load first, which candidate paths to enumerate first).
+2. If grounding succeeds outside the hinted archetype, continues with the better-grounded interpretation and surfaces the detected archetype in `attempted_interpretation.candidate_paths` so the engineer sees the substrate's reading.
+3. Refuses only when reinterpretation is itself ambiguous — mapping to existing refusal kinds: `underspecified-requirement` (no archetype grounds well) or `ambiguous-reference` (multiple archetypes ground equally well without disambiguation).
+
+No new refusal kind needed. The substrate serves engineer intent over engineer classification when grounding signal is strong, surfacing the detected archetype transparently.
+
+**(d) Dismissal_reason applicability by phase, not by archetype.** The D-076 dismissal_reason bounded enum applies uniformly across archetypes. Applicability is governed by reasoning *phase*, not by archetype:
+
+| Phase | What happens | Applicable dismissal_reasons |
+|---|---|---|
+| Interpretation | Scoping neighborhood; enumerating candidates; resolving references | `ambiguous_target_resolution`, `lower_specificity` |
+| Grounding | Admissibility checking against S1's constraint structure | `insufficient_grounding`, `no_grant_supports_capability`, `no_constraint_supports_negative`, `type_incompatibility`, `archetype_mismatch` |
+| Governance | Policy threshold evaluation | `policy_threshold_not_met` |
+
+Phase is metadata-about-the-taxonomy, not metadata-about-individual-instances; it is documentation of how the bounded enum applies, not new persisted vocabulary (Guardrail 2 unaffected). The 8 D-076 reason codes map cleanly to three phases (six grounding, two interpretation, one governance). Reserved CONFIDENCE category would attach to governance phase if entries are added.
+
+This decouples reasoning vocabulary from archetype implementation. When archetypes evolve, when hybrid claims emerge, when per-archetype interpretation strategies change, the dismissal_reason vocabulary remains stable because its applicability is governed by phase, not by archetype.
+
+**Rationale.** The four refinements emerged from round 2 TA review surfacing real architectural pressure points:
+
+- *Shared context vs one-pass:* The original framing committed to "one-pass interpretation per request" which over-constrained Theme 5 before implementation design. The substantive commitment is *cross-requirement awareness in batch mode*; the mechanism is downstream.
+- *Archetype hint as guidance:* Refuse-on-mismatch creates workflow friction masquerading as semantic rigor. Real enterprise tickets are ambiguous and archetypes overlap; the substrate should serve grounding signal over engineer classification.
+- *Dismissal_reason by phase:* Per-archetype applicability rules fossilize reasoning behavior tied to current implementation shape. Phase-based applicability decouples vocabulary from archetype implementation.
+
+The four-dimensional framework itself is the structural pattern that emerged from designing the five archetypes individually and recognizing the shared decomposition.
+
+**Alternatives considered.**
+
+- *One-pass interpretation as architectural commitment.* Rejected. Over-constrains Theme 5 implementation freedom; the substantive commitment is shared context, not topology.
+- *Archetype hint as hard constraint with refuse-on-mismatch.* Rejected. Creates workflow friction; better product behavior is guidance with override on strong grounding signal.
+- *Per-archetype applicable dismissal_reason subsets.* Rejected. Couples reasoning vocabulary to archetype implementation, fossilizing behavior. Phase-based applicability is structurally cleaner.
+- *Fewer than four dimensions per archetype.* Considered. Three dimensions (omitting refusal dominance) would be tighter but lose the Theme 7 quality-envelope calibration signal. Four dimensions is the right factorization.
+
+**Downstream consequences.**
+
+- *D-078 through D-082:* Each per-archetype D-entry specifies the four dimensions for that archetype.
+- *Theme 5 (LLM integration):* Implementation topology for shared interpretation context resolved here. Tool-use vs structured JSON vs planner-style is a Theme 5 decision against the shared-context requirement.
+- *Theme 6 (prompt management):* Eval expectations include per-phase dismissal_reason coverage and per-archetype refusal dominance.
+- *Theme 7 (quality envelope):* Per-archetype expected refusal rates inform calibration thresholds; quality envelope is per-archetype, not uniform.
+- *UX:* Surfacing detected archetype when overriding hint is a UX commitment for transparency.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §4.2 (cross-cutting framework — substantive content)
+- D-070 (Theme 1; constrained interpretation engine; archetype × claim_kind × trigger_kind × recipe_kind discriminator structure)
+- D-071 (Theme 2; `archetype_hint` in `semantic_context`; batch capability)
+- D-072 (Theme 2; outcome protocol; `attempted_interpretation` shape including `candidate_paths`)
+- D-073 (Theme 2; refusal taxonomy)
+- D-075 (Theme 2; Guardrail 2; reasoning artifact discipline)
+- D-076 (Theme 2; dismissal_reason bounded enum; this entry specifies its applicability semantics by phase)
+
+---
+
+
+## D-078 — Data-behavior archetype generation strategy [Theme 3]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3]
+**Status:** active
+
+**Decision.** Data-behavior archetype is operationalized along the four dimensions established in D-077. This is the strongest v1 archetype coverage (per D-070 §2.8) where most v1 generation lands.
+
+**Interpretation scope.** `scoped_neighborhood` for data-behavior is Object-centered:
+
+- Target Object entity (resolved from requirement; ambiguity surfaces as `ambiguous-reference` refusal during interpretation phase).
+- Field entities on the Object, filtered by relevance from requirement text.
+- ValidationRule entities applicable to the Object.
+- Flow entities triggering on Object events (DML, scheduled, platform event).
+- Profile and PermissionSet entities granting access to the Object.
+
+The scope graph traverses STRUCTURAL and BEHAVIOR edges (per substrate-1's edge taxonomy) outward from the Object, with relevance filtering on Field nodes.
+
+**Admissibility-checking shape per claim_kind.**
+
+- *value-claim*: Field's data type admits the asserted value (type compatibility); permission grants allow the asserting actor to read/write the Field; picklist value membership verified for custom-field picklists. *V1 limit*: standard-field picklist values blocked by S1 §22 deferral.
+- *state-transition-claim*: ValidationRules don't structurally reject the transition (Layer 1 admissibility — rule exists and is active); permissions admit the transition path; Flow side-effects are tractable when Flow modeled. *V1 limit*: full ValidationRule formula reasoning blocked by S1 §17 deferral; Layer 2 admissibility (formula actually rejects/permits this specific scenario) requires the formula parser.
+- *automation-effect-claim*: the asserted side effect derives from an automation entity in S1 (Flow primarily; Apex trigger partial per S1 Tier 2). Admissibility = "there is a Flow with this effect in its action set." *V1 limit*: Apex-driven effects are S1 Tier 2; admissibility for these is structurally limited to existence-of-trigger.
+- *prohibition-claim*: a constraint entity in the org would reject the proposed scenario. Layer 1 admissibility (rule exists and is active) fully supported; Layer 2 admissibility (formula semantics) requires formula parser. Layer-1-only admissibility is honest about v1 reality; the resulting test verifies "this validation rule fires" not "this validation rule rejects this exact scenario."
+
+**Recipe-kind selection.** Data-behavior recipes are almost always API-execution (creating or updating records via Composite API to trigger validation rules, flows, and automation side effects under realistic conditions). UI-execution is appropriate when the requirement explicitly references UI-driven behavior (approval modals, inline editing, lightning-record-form behaviors). Metadata-inspection is rare — data-behavior is about runtime behavior, not configuration state.
+
+**Refusal dominance.** Expected v1 frequency, in approximate descending order:
+
+1. `underspecified-requirement` — real-world JIRA tickets vague about target Object or trigger conditions.
+2. `ambiguous-reference` — multiple Objects or Fields match without disambiguation.
+3. `ungrounded-claim` — prohibition-claim cases that need formula parser (Layer 2 admissibility unavailable).
+4. `low-generation-confidence` — multiple valid interpretations exist and the substrate can't pick one.
+
+`no-relevant-context` and `structural-validation-failure` are infrequent in data-behavior because S1's data-model coverage is dense at Tier 1.
+
+**Rationale.** Data-behavior is the archetype substrate-1's Tier 1 supports most deeply (Objects, Fields, ValidationRules, Flows, Profiles, PermissionSets all modeled). The four-dimensional spec reflects this coverage: rigorous admissibility, dominant API-execution recipe path, refusal dominance shaped by input quality rather than S1 ceiling.
+
+**Alternatives considered.**
+
+- *Per-claim_kind separate recipe selection.* Considered. Almost always converges to API-execution; per-claim_kind decision tree adds complexity without value. Recipe-kind selection is straightforward in this archetype.
+- *Mandate Layer 2 admissibility for prohibition-claims.* Rejected. Would force all prohibition-claims to refuse until formula parser ships, eliminating useful Layer 1 coverage. Honest v1 commitment is Layer 1 admissibility with explicit "formula not parsed" in `attempted_interpretation`.
+
+**Downstream consequences.**
+
+- *S1 deferred items lifting:* When formula parser ships (S1 §17), prohibition-claim and state-transition-claim admissibility upgrades from Layer 1 to Layer 2 automatically. Non-breaking to Theme 3 design.
+- *S1 Apex Tier 2:* When Apex modeling ships, automation-effect-claim admissibility for Apex-driven effects upgrades from existence-only to effect-tractable.
+- *Theme 4 (grounded negatives):* Prohibition-claims are the primary grounded-negative case; Theme 4 operationalizes within data-behavior's Layer 1 admissibility plus the formula-parser-deferred reality.
+- *Theme 7 (quality envelope):* Data-behavior's expected refusal pattern (underspecified + ambiguous-reference dominant) calibrates the per-archetype quality threshold.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §4.3 (data-behavior archetype)
+- D-077 (Theme 3; cross-cutting framework)
+- D-070 (Theme 1; v1 archetype coverage reality §2.8)
+- Substrate-1 PHASE_2_PLAN_corrections.md §17 (validation rule formula parser deferral)
+- Substrate-1 PHASE_2_PLAN_corrections.md §22 (StandardValueSet detection deferral)
+
+---
+
+
+## D-079 — Configuration archetype generation strategy [Theme 3]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3]
+**Status:** active
+
+**Decision.** Configuration archetype is operationalized along the four dimensions established in D-077. Solid v1 archetype coverage (per D-070 §2.8).
+
+**Interpretation scope.** `scoped_neighborhood` for configuration is centered on the specific metadata entity (or entities) the requirement names. Lighter graph traversal than data-behavior — configuration claims are typically about a single entity's properties or a specific edge between two entities.
+
+- Target metadata entity (Object, Field, Profile, PermissionSet, ValidationRule, Flow, etc.).
+- For metadata-relationship-claim, both ends of the asserted edge.
+- Limited STRUCTURAL traversal — configuration claims rarely require wide neighborhood.
+
+**Admissibility-checking shape per claim_kind.**
+
+- *existence-claim*: S1 has (or does not have) the asserted entity. Fully admissible from S1 directly. The strongest v1 admissibility surface.
+- *property-claim*: the property in question is part of S1's modeled attributes for the entity type, and S1 has the property set as asserted (or not). *V1 limit*: some properties of some entity types may not be modeled at S1's current Tier 1; admissibility falls back to "entity exists; property unmodeled" with `ungrounded-claim` refusal in those cases. The `attempted_interpretation` surfaces specifically which property is unmodeled.
+- *metadata-relationship-claim*: the edge type asserted exists in S1's Tier 1 edge taxonomy (14 Tier 1 edge types); the specific edge between the named entities is present (or not) per S1. Fully admissible for the 14 Tier 1 edge types substrate-1 modeled.
+
+**Recipe-kind selection.** Almost exclusively metadata-inspection — configuration claims are about S1's modeled state, not runtime behavior. Recipe verifies against either fresh metadata (via Tooling/Metadata API) or trusts S1's sync depending on the freshness contract the recipe specifies. Theme 5 operationalizes recipe-side freshness semantics.
+
+**Refusal dominance.** Expected v1 frequency, in approximate descending order:
+
+1. `no-relevant-context` — the org doesn't have what the requirement assumes (a custom field that doesn't exist, a profile that wasn't created).
+2. `ambiguous-reference` — requirements like "the Status field" without specifying which Object's Status.
+3. `ungrounded-claim` — property-claim cases where the property is unmodeled at S1 Tier 1.
+
+`underspecified-requirement` and `low-generation-confidence` are infrequent in configuration because configuration claims tend to be specific enough to ground or not.
+
+**Rationale.** Configuration claims are the simplest admissibility case in substrate-3: S1's metadata coverage at Tier 1 is the substrate of truth, and configuration claims read against it directly. The four-dimensional spec is tighter than data-behavior's because there's less surface area: lighter scoping, metadata-inspection-dominant recipes, refusal patterns shaped by S1 coverage gaps rather than input quality.
+
+**Alternatives considered.**
+
+- *Wider STRUCTURAL traversal during scoping.* Rejected for most cases. Configuration claims are local to their entity (or edge); wider traversal pulls in irrelevant context and degrades grounding signal. Wider traversal reserved for cases where the requirement explicitly invokes related entities ("the validation rule on the Status field").
+- *Recipe-kind permitting UI-execution.* Rejected. Configuration is not about runtime UI behavior; UI-execution recipes for configuration claims would verify the *wrong* truth (the UI displays the configuration vs the configuration exists in the org). Honest archetype scoping prevents this.
+
+**Downstream consequences.**
+
+- *S1 Tier 1 property modeling depth:* When S1 deepens property modeling for entity types (Tier 2/3 expansion), property-claim admissibility automatically deepens. Non-breaking to Theme 3 design.
+- *Theme 4 (grounded negatives):* Configuration negatives are typically existence-claim absences ("this org doesn't have a custom Status field") which are mechanically tractable. Configuration is among the cleanest archetypes for grounded negatives.
+- *Theme 7 (quality envelope):* Configuration's expected refusal dominance pattern (no-relevant-context + ambiguous-reference + ungrounded-claim for unmodeled properties) calibrates the per-archetype quality threshold.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §4.4 (configuration archetype)
+- D-077 (Theme 3; cross-cutting framework)
+- D-070 (Theme 1; v1 archetype coverage reality §2.8)
+- Substrate-1 SPEC (Tier 1 entity types and edge taxonomy)
+
+---
+
+
+## D-080 — Permission archetype generation strategy with recipe-kind selection preserving claim semantics [Theme 3]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S1 Tier 2 sharing/OWD/Apex sharing roadmap]
+**Status:** active
+
+**Decision.** Permission archetype is operationalized along the four dimensions established in D-077, with the explicit architectural commitment that **recipe-kind selection preserves claim semantics — the substrate does not silently substitute one verification surface for another.**
+
+**Interpretation scope.** `scoped_neighborhood` for permission includes:
+
+- Target Object and Field entities (the subject of the asserted capability).
+- Profile and PermissionSet entities (the asserting grants).
+- User entities (or surrogates — typically Profile and PermissionSet stand in for representative users).
+- Permission grant edges: GRANTS_OBJECT_ACCESS, GRANTS_FIELD_ACCESS (per substrate-1's PERMISSION edge category).
+- Profile and PermissionSet assignment edges: HAS_PROFILE, HAS_PERMISSION_SET.
+
+Sharing rules, OWD, role hierarchy, and Apex sharing are S1 Tier 2 and not modeled at v1; permission scoping does not extend into these dimensions.
+
+**Admissibility-checking shape per claim_kind.**
+
+- *capability-claim*: Profile or PermissionSet grants the asserted capability on the asserted target. Fully admissible for object-level and field-level grant verification. *V1 limit*: capabilities that depend on sharing rules, OWD, role hierarchy, or Apex sharing are not S1-modeled at Tier 1; admissibility falls back to grant-level only.
+- *sharing-rule-claim*: the org has a sharing rule (or absence thereof) matching the assertion. *V1 limit*: sharing rules are S1 Tier 2; v1 admissibility-checking is structurally weak here. Most sharing-rule-claims will refuse with `no-relevant-context` until S1 Tier 2 ships.
+
+**Recipe-kind selection — the architectural commitment.** Two recipe kinds are valid for capability-claim, and they verify *different epistemic truths about reality*:
+
+- *Metadata-inspection* verifies: the org's permission configuration is set as claimed (a statement about configured permission state).
+- *Run-as-execution* verifies: a user with this profile experiences this capability at runtime (a statement about runtime-effective experience).
+
+These are not interchangeable verification surfaces. Silent substitution between them would alter what the test asserts is true about reality. The substrate commits to **preserving claim semantics by selecting recipe-kind explicitly:**
+
+1. **Default to metadata-inspection** for permission claims where it is sufficient — object-level CRUD and field-level FLS verification without sharing/OWD/Apex sharing dependencies. The claim's semantic content is *configured permission state*; metadata-inspection is the appropriate verification surface.
+2. **Refuse rather than silently substitute** when the claim's grounding indicates that runtime-effective verification is required (sharing rules, OWD, or Apex sharing dimensions affect the assertion). The refusal kind is `low-generation-confidence` with a typed disambiguation prompt: "this claim's verification surface requires either (a) restricting the assertion to configured-state truth (metadata-inspection appropriate) or (b) explicit runtime-experience scope (run-as-execution required, currently not v1-grounded due to S1 Tier 2 absence of sharing/OWD/Apex-sharing modeling)."
+3. **Run-as-execution as engineer-opt-in only** in v1, gated by explicit `operational_context` preference. Not substrate-defaulted, because substrate-default run-as-execution would silently alter verification surface for claims where the engineer expected configured-state truth.
+
+This is more conservative than naive complexity routing. It accepts higher v1 refusal rate in complex permission cases as the price of semantic precision. Engineers know exactly what verification surface their generated tests cover.
+
+**Refusal dominance.** Expected v1 frequency, in approximate descending order:
+
+1. `ungrounded-claim` — sharing-rule-claim cases blocked by S1 Tier 2 absence.
+2. `low-generation-confidence` — capability-claim cases where sharing/OWD/Apex-sharing dimensions affect the assertion and the substrate cannot determine which verification surface the engineer intended.
+3. `no-relevant-context` — assertions about Profiles or PermissionSets the org doesn't have.
+
+`underspecified-requirement`, `ambiguous-reference`, and `structural-validation-failure` are less dominant.
+
+**Rationale.** The recipe-kind-preserves-claim-semantics commitment emerged from round 2 TA review surfacing that metadata-inspection and run-as-execution do not verify equivalent truths. Recipe-kind selection in permission archetype is not merely a complexity-routing or optimization decision — it changes what kind of truth the generated test asserts. The substrate must preserve claim semantics explicitly or it drifts into silently producing tests that verify different things than engineers intended.
+
+The conservative v1 commitment (default metadata-inspection; refuse with disambiguation when run-as required; opt-in for run-as) is honest about v1's S1 Tier 2 ceiling and protects engineers from semantic drift.
+
+**Alternatives considered.**
+
+- *Substrate-defaulted recipe-kind by complexity routing.* Rejected per round 2 TA review. Silent substitution between metadata-inspection and run-as-execution alters what the claim verifies; this is unacceptable semantic drift.
+- *Engineer chooses recipe-kind per request.* Considered. Rejected as default behavior because most permission claims don't need engineer-level decisions — metadata-inspection covers the common case cleanly. Engineer opt-in via `operational_context` is the right surface for the cases that do.
+- *Refuse all complex permission claims until S1 Tier 2 ships.* Rejected as too conservative. Simple capability-claims (object-level + field-level grants only, no sharing dependencies) are valuable and ground cleanly with metadata-inspection. Refusing them all would eliminate useful v1 coverage.
+
+**Downstream consequences.**
+
+- *S1 Tier 2 sharing/OWD/Apex-sharing modeling:* When ships, currently-refused complex capability-claims may upgrade to grounded run-as-execution recipes. The substrate's refusal-with-disambiguation pattern is the right v1 posture pending Tier 2.
+- *Theme 5 (LLM integration):* `operational_context` carries the engineer's run-as-execution opt-in when applicable; LLM integration handles the recipe-kind decision tree per claim.
+- *Theme 7 (quality envelope):* Permission archetype's expected refusal dominance pattern (ungrounded-claim for sharing rules; low-generation-confidence for complex capability cases) calibrates the per-archetype quality threshold. Higher baseline refusal rate than data-behavior is honest about v1 S1 ceiling.
+- *Forward-compat reservation:* Run-as-execution upgrade path documented in substrate-3 OPEN_QUESTIONS.md.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §4.5 (permission archetype)
+- D-077 (Theme 3; cross-cutting framework)
+- D-070 (Theme 1; v1 archetype coverage reality §2.8)
+- D-073 (Theme 2; `low-generation-confidence` refusal kind)
+- D-071 (Theme 2; `operational_context` for engineer opt-in)
+- Substrate-1 entity types (Profile, PermissionSet, GRANTS_OBJECT_ACCESS, GRANTS_FIELD_ACCESS, HAS_PROFILE, HAS_PERMISSION_SET)
+- Substrate-1 Tier 2 roadmap (sharing rules, OWD, Apex sharing — future capability)
+
+---
+
+
+## D-081 — UI archetype generation strategy with honest v1 scope [Theme 3]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for S1 Tier 3 Lightning page composition roadmap]
+**Status:** active
+
+**Decision.** UI archetype is operationalized along the four dimensions established in D-077, with explicit acknowledgment of S1 Tier 3 absence. Minimal v1 archetype coverage (per D-070 §2.8). Higher baseline refusal rate is honest about v1's S1 ceiling, not a quality regression.
+
+**Interpretation scope.** `scoped_neighborhood` for UI is structurally limited at v1:
+
+- PageLayout entities.
+- Field entities on those layouts (via INCLUDES_FIELD edges).
+- The Object the layout belongs to.
+
+Lightning Pages, Lightning Web Components, Aura Components, Dynamic Forms, Flow Screens are S1 Tier 3 and not modeled. The interpretation layer cannot construct neighborhoods for UI requirements that target these surfaces.
+
+**Admissibility-checking shape per claim_kind.**
+
+- *layout-claim*: the asserted field/section appears on the asserted Page Layout. Fully admissible for Tier 1 PageLayout coverage. The strongest v1 UI admissibility surface.
+- *element-state-claim*: the asserted UI element exists in some layout-derivable surface (the field is on a layout, the section is on a layout). *V1 limit*: element-state-claims that target non-layout-derived elements (Lightning component states, Dynamic Form fields, custom JavaScript-driven UI, conditional visibility from Lightning Page configurations) cannot be grounded. These refuse with `no-relevant-context` plus a typed `org_capability_gap` note identifying which UI surface requires S1 Tier 3.
+
+**Recipe-kind selection.**
+
+- *layout-claim*: metadata-inspection primarily (read PageLayout metadata directly). UI-execution available if the requirement specifically asserts a layout-rendering behavior.
+- *element-state-claim*: UI-execution (Playwright-driven) for layout-derivable elements where it grounds.
+
+**Refusal dominance.** Expected v1 frequency, in dominant-and-large-margin order:
+
+1. `no-relevant-context` — dominates by wide margin. Most real UI requirements target Lightning composition, which v1 cannot ground.
+2. `ungrounded-claim` — element-state-claims that name elements not derivable from PageLayout.
+3. `underspecified-requirement` and `ambiguous-reference` — less frequent in UI because UI requirements tend to be specific about target page/element.
+
+The Theme 7 quality envelope must accept that UI archetype has a higher baseline refusal rate than other archetypes — this is honest about v1 reality.
+
+**Rationale.** S1 Tier 3 (Lightning page composition) is the dominant constraint on UI archetype's v1 coverage. The substrate refuses informatively rather than generating weak claims that pretend to ground against an absent S1 layer. Honest scope is the right substrate posture; the alternative (weak UI claim generation) erodes the substrate's trust commitment substantially.
+
+This is also consistent with substrate-3's failure-loud philosophy (D-070 §2.5): refuse to produce output rather than producing structurally valid but semantically wrong claims. UI v1 claims that pretend to ground against absent S1 modeling would be semantically wrong by construction.
+
+**Alternatives considered.**
+
+- *Generate weak UI claims with low-confidence markers.* Rejected. Violates verification-bar discipline (D-070 §2.4) — output below the verification bar refuses rather than emits weakly. Confidence markers don't substitute for ground-truth admissibility.
+- *Defer entire UI archetype until S1 Tier 3 ships.* Rejected. Layout-claim and layout-derivable element-state-claim are valuable v1 surfaces. Excluding them entirely would lose meaningful coverage.
+- *Treat UI archetype as documentation-only at v1.* Rejected. The substrate is operational at v1 for layout-level claims; refusal-with-honest-context is the right posture for non-layout cases.
+
+**Downstream consequences.**
+
+- *S1 Tier 3 Lightning page composition:* When ships, UI archetype coverage expands materially. Currently-refused element-state-claims may upgrade to grounded Lightning-component-aware admissibility.
+- *Theme 7 (quality envelope):* UI archetype's higher baseline refusal rate is calibrated separately from other archetypes. Quality is not measured uniformly across archetypes.
+- *Product strategy:* UI archetype's v1 limitation produces a perception pattern (PrimeQA appears strong on backend/configuration/permission, weaker on UI) that affects evaluation perception, demo strategy, and rollout sequencing. Worth recognizing in product roadmap planning; not architecturally addressable until S1 Tier 3 ships.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §4.6 (UI archetype)
+- D-077 (Theme 3; cross-cutting framework)
+- D-070 (Theme 1; v1 archetype coverage reality §2.8 — UI minimal; failure-loud philosophy §2.5; verification-bar discipline §2.4)
+- Substrate-1 Tier 3 roadmap (Lightning page composition, Lightning Components, Dynamic Forms — future capability)
+
+---
+
+
+## D-082 — Integration archetype generation strategy with operational-only v1 admissibility [Theme 3]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for future substrate-3 cycles when integration becomes larger product surface]
+**Status:** active
+
+**Decision.** Integration archetype is operationalized along the four dimensions established in D-077. V1 ships with operational-only admissibility — verification of existence of integration entities and structural connectivity, not cross-system causality semantics. Scoped v1 archetype coverage (per D-070 §2.8).
+
+**Interpretation scope.** `scoped_neighborhood` for integration varies per claim_kind:
+
+- *platform-event-claim*: PlatformEvent entities; subscribing Flow entities (Apex subscribers partial per S1 Tier 2).
+- *outbound-message-claim*: Workflow rule and OutboundMessage configuration entities (S1 coverage depends on Tier 1 workflow modeling).
+- *callout-claim*: NamedCredential, RemoteSiteSetting, callout-defining Apex entities (Apex partial per S1 Tier 2).
+- *inbound-effect-claim*: Apex REST/SOAP endpoint definitions, inbound HTTP handlers (Apex partial per S1 Tier 2).
+
+**Admissibility-checking shape per claim_kind.** V1 admissibility is *operational-only*:
+
+- *platform-event-claim*: PlatformEvent entity exists in S1; at least one subscribing entity exists. *V1 limit*: Apex subscriber effects partial per S1 Tier 2.
+- *outbound-message-claim*: OutboundMessage configuration entity exists. *V1 limit*: workflow rule sending the message may need fuller workflow modeling than S1 Tier 1 provides.
+- *callout-claim*: NamedCredential and RemoteSiteSetting exist; callout-defining Apex entity exists. *V1 limit*: Apex Tier 2 limits depth.
+- *inbound-effect-claim*: inbound handler exists. *V1 limit*: Apex Tier 2 limits depth.
+
+Operational-only admissibility means: the substrate verifies that the integration entities are configured and structurally connected. It does not verify cross-system causality, external observability, temporal sequencing, or protocol semantics — these are *interaction-topology* concerns that require their own architectural treatment when integration becomes a larger product surface.
+
+**Recipe-kind selection.** Mix per claim_kind:
+
+- *platform-event-claim*: API-execution (fire the event, observe subscriber effects) + metadata-inspection (verify configuration).
+- *outbound-message-claim*: API-execution (trigger workflow conditions, observe outbound dispatch via mock listener) + metadata-inspection.
+- *callout-claim*: API-execution (trigger the callout, observe outbound HTTP via mock external service) + metadata-inspection.
+- *inbound-effect-claim*: API-execution (POST to the inbound endpoint, observe effect on org data) + metadata-inspection.
+
+The metadata-inspection-alongside pattern is consistent: verify configuration exists before firing the operational test. This grounds the operational verification in the substrate's structural admissibility.
+
+**Refusal dominance.** Expected v1 frequency, in approximate descending order:
+
+1. `ungrounded-claim` — cases requiring Apex Tier 2 depth.
+2. `no-relevant-context` — integration requirements that reference patterns the specific org doesn't implement.
+3. `ambiguous-reference` — "the outbound message" without specifying which workflow rule's.
+
+`underspecified-requirement` and `low-generation-confidence` are less dominant.
+
+**Forward-compat reservation: interaction-topology admissibility philosophy.** Integration claims involve concerns that go beyond what operational-only admissibility captures:
+
+- *Cross-system causality:* what observable effect should follow from what trigger across system boundaries.
+- *External observability:* how the substrate verifies effects that manifest outside the org (in external systems via callout).
+- *Temporal sequencing:* what order of operations the integration claim asserts.
+- *Protocol semantics:* what message format, retry behavior, idempotency properties the integration commits to.
+
+These are *interaction-topology claims*, structurally distinct from existence/property/runtime-effect claims that data-behavior, configuration, permission, and UI archetypes handle. V1's operational-only admissibility is honest about not yet having an interaction-topology admissibility framework. A future substrate-3 cycle may add this admissibility philosophy when integration becomes a larger product surface; the architectural slot is reserved.
+
+Substrate-3 OPEN_QUESTIONS.md carries the forward-compat reservation.
+
+**Rationale.** Integration archetype is conceptually weaker at v1 than other archetypes — not because of S1 ceiling alone, but because integration claims are categorically different (interaction-topology) from the other archetypes' assertion types (existence, property, runtime effect, capability, configured-state). Pretending v1 fully addresses integration would be architectural dishonesty. Naming the gap explicitly preserves architectural integrity and reserves the slot for future treatment.
+
+The operational-only v1 admissibility is what the substrate can honestly ground today. Forward-compat reservation for interaction-topology admissibility is honest about what's deferred.
+
+**Alternatives considered.**
+
+- *Defer entire integration archetype to a later substrate-3 cycle.* Rejected. Operational-only v1 admissibility provides useful coverage for the common cases (existence + structural connectivity); excluding it entirely loses real value.
+- *Force interaction-topology admissibility into v1.* Rejected. Substrate-3 doesn't yet have the architectural framework for it; designing the framework in Theme 3 would expand Theme 3 scope substantially without proportionate v1 value.
+- *Per-protocol admissibility shapes (REST vs SOAP vs Platform Event protocols specified individually).* Considered. Premature at v1 — protocol semantics admissibility is part of the interaction-topology framework reserved for a future cycle.
+
+**Downstream consequences.**
+
+- *Future substrate-3 cycle:* Interaction-topology admissibility philosophy (cross-system causality, external observability, temporal sequencing, protocol semantics) may need its own architectural cycle when integration becomes a larger product surface.
+- *S1 Apex Tier 2:* When Apex modeling ships, several integration claim_kinds upgrade from existence-only to depth-tractable.
+- *Theme 4 (grounded negatives):* Integration negatives at v1 are typically existence absences (no NamedCredential, no inbound handler), which are mechanically tractable within operational-only admissibility.
+- *Theme 7 (quality envelope):* Integration's expected refusal dominance pattern (ungrounded-claim due to Apex Tier 2; no-relevant-context due to org-specific implementation variance) calibrates the per-archetype quality threshold.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §4.7 (integration archetype)
+- D-077 (Theme 3; cross-cutting framework)
+- D-070 (Theme 1; v1 archetype coverage reality §2.8 — integration scoped)
+- Substrate-1 Tier 2 roadmap (Apex modeling — affects all four integration claim_kinds)
+
+---
+
+
+## D-083 — Grounded-negative discipline: S3 Guardrail 3, seventh refusal kind, polarity strictly derived, bounded decomposition, Layer 1 visible trust degradation [Theme 4]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with downstream consequences for Theme 5 LLM integration, Theme 7 quality envelope, and substrate-3 artifact-level output schema]
+**Status:** active
+
+**Decision.** Theme 4 commits substrate-3 to a grounded-negative discipline preventing the v2 failure mode of plausible-but-ungrounded negatives. Five architectural commitments, integrated from round 2 TA convergence:
+
+**(a) S3 Guardrail 3 — Requirement-anchored origination.** Grounding constraints justify candidate negatives derived from requirement interpretation. They do not independently originate negatives the requirement did not semantically imply.
+
+Lineage: Guardrail 1 (Theme 1; semantic search space bounded by S1 × substrate-2 taxonomy) → Guardrail 2 (Theme 2 D-075; ontology-bound reasoning artifacts) → Guardrail 3 (Theme 4 this entry; requirement-anchored origination). Each Guardrail tightens what the substrate may do under what authority.
+
+Mechanical enforcement:
+
+- Interpretation phase produces candidates from requirement text. Requirement text, archetype hint, and explicit negation cues are the only origination signal. Constraint discovery during interpretation serves candidate disambiguation, not candidate origination.
+- Grounding phase tests admissibility of requirement-derived candidates. Constraints are read from S1 to verify admissibility; constraints do not introduce new candidates.
+- Every candidate carries — in `attempted_interpretation.candidate_paths` — the requirement excerpt(s) from which it was derived. A candidate without traceable origin is rejected as substrate-internal product before grounding-phase admissibility checking.
+
+The architectural defense against the substrate's quiet drift from "constrained interpretation engine" (D-070 §2.1) to "exploratory QA generator." Constraint-first generation would shift S3's mission to exploratory QA generation — categorically different product. Guardrail 3 prevents this.
+
+**(b) Seventh refusal kind with typed internal cause.** `no-admissible-negative-scenario-found` (Theme 2 anticipated; Theme 4 ships) carries a typed internal `cause` field distinguishing three semantic causes under one external refusal kind:
+
+- `ontology_gap` — substrate cannot ground because S1 doesn't model the relevant constraint dimension. The substrate is incapable, not the org. `what_would_unblock` points to substrate capabilities (formula parser, S1 Tier 2 sharing, S1 Tier 3 Lightning composition, Apex modeling).
+- `no_org_constraint` — the org genuinely has no constraint producing the asserted rejection. The substrate could ground if a constraint existed; none does. `what_would_unblock` typically empty.
+- `policy_restraint` — a candidate grounding exists but the substrate's admissibility-confidence (distinct from D-073's selection-confidence governed by `low-generation-confidence`) doesn't meet threshold. `what_would_unblock` may point to substrate-3 confidence-calibration evolution.
+
+Updated refusal taxonomy at Theme 4 close (7 categories): the six from Themes 1-2 plus `no-admissible-negative-scenario-found` (policy-scope). External refusal_kind taxonomy stays at 7; internal cause preserves semantic granularity for evals, replay, analytics, capability tracking. Pattern consistent with D-073's typed structured payloads under stable refusal kinds. Cause vocabulary governed under Guardrail 2 (substrate-3 reasoning vocabulary discipline).
+
+Feedback payload:
+
+    no-admissible-negative-scenario-found: {
+      cause: <ontology_gap | no_org_constraint | policy_restraint>
+      proposed_negative_assertion: <typed structure>
+      searched_constraint_dimensions: [<typed list>]
+      no_grounding_found_because:    <typed reason from substrate-authorized vocabulary>
+      what_would_unblock:            [<optional typed list>]
+    }
+
+Interaction with D-076's `no_constraint_supports_negative` dismissal_reason: the dismissal_reason fires per dismissed candidate during grounding-phase reasoning. The refusal_kind is the outcome-level aggregate when all candidates dismissed for grounding reasons.
+
+**(c) Polarity strictly derived from claim semantics — no parallel field.** Polarity is semantic claim identity, not interpretation metadata. The substrate recognizes negatives from claim_kind + content, not from a separate `polarity` field. Adding `polarity` to `candidate_paths` would create parallel semantic systems where claim_kind says one thing and polarity says another; architecturally fragile.
+
+Recognition per archetype:
+
+- Inherently negative claim_kinds: `prohibition-claim` (data-behavior). The claim_kind IS the negative semantic.
+- Content-derived polarity claim_kinds: `capability-claim` (grant asserted vs grant denied), `existence-claim` (entity exists vs absent), `property-claim` (property is X vs is not X), `metadata-relationship-claim` (edge present vs absent), `layout-claim` (field on layout vs not), `element-state-claim` (state X vs not), integration claim_kinds (effect occurs vs does not occur). Polarity determined by claim content.
+
+The grounded-negative discipline applies to claim instances whose semantic content asserts rejection or absence, recognized from claim_kind + content. No parallel polarity property; no risk of inconsistency between claim_kind and a separate polarity field. Substrate-2 claim_kind remains the authoritative semantic identity.
+
+**(d) Bounded decomposition discipline.** Three-part principle protecting against combinatorial expansion in enterprise orgs with overlapping constraints:
+
+1. Canonical negative per identifiable failure mode. An identifiable failure mode is a distinct semantic dimension of negative the requirement implies. The substrate emits one negative per failure mode. Requirements explicitly enumerating multiple failure modes get distinct emitted negatives per mode.
+2. Highest-specificity grounding among admissible alternatives. When multiple constraints could ground one failure mode, the substrate selects the most specific. Specificity = how directly the constraint addresses the requirement's intent. Dismissed alternatives surface in `attempted_interpretation.dismissal_reasons` with `lower_specificity` (D-076 existing reason; no new vocabulary).
+3. Bounded candidate enumeration during interpretation. Interpretation phase enumerates top-K candidates per failure mode, K configurable per `governance_context.transparency_policy_version`. Enumeration cap protects against combinatorial expansion at the interpretation layer.
+
+Combined: enterprise orgs with overlapping validation rules, layered permissions, and multiple automation gates do not produce many emitted negatives. They produce one canonical negative per failure mode with dismissed alternatives transparently surfaced as `lower_specificity` dismissals. Review UX stays bounded; lineage stays tractable. Architectural posture consistent with D-080's recipe-kind discipline (substrate picks the appropriate verification surface, surfaces dismissed alternatives transparently).
+
+**(e) Layer 1 admissibility produces artifact-level visibly degraded trust marker.** Layer 1 admissibility (validation-rule-grounded negatives at v1, where formula not parsed per D-078) is not buried in metadata. Substrate-3 commits to artifact-level trust visibility:
+
+- Typed `admissibility_layer` field at artifact top level — `layer_1` | `layer_2`. Not nested in `attempted_interpretation`; at the artifact's structural top level alongside claim, recipe, and provenance.
+- Substrate-emitted natural-language caveat in Layer 1 artifacts — the artifact's narrative includes: "Layer 1 admissibility — validation rule applicability verified; formula-specific rejection logic not parsed." The caveat is part of the artifact, not optional UX rendering.
+- Downstream review UX renders the layer prominently — UX-level rendering is product responsibility; substrate-3 makes the artifact-level field available and the natural language explicit.
+
+Architectural defense against false trust. The Layer 1 marker is at the same surface level as the test name; the natural language makes the limitation explicit. Engineers who don't deeply internalize Layer 1 vs Layer 2 still see, prominently on every Layer 1 artifact, that the test verifies rule firing without formula-specific verification. Layer 2 artifacts (post formula parser) carry `admissibility_layer = layer_2` without the caveat.
+
+**Rationale.** Five integrated architectural commitments from round 2 TA convergence:
+
+- Guardrail 3 (a) prevents grounded-negative discipline from operationally drifting into constraint-first generation, which would shift S3's mission.
+- Typed internal cause (b) preserves semantic clarity for evals, replay, analytics without proliferating refusal kinds at product surface.
+- Polarity derived (c) avoids parallel semantic systems; preserves substrate-2 claim_kind as authoritative semantic identity.
+- Bounded decomposition (d) prevents combinatorial expansion while preserving transparency through dismissed-alternatives surfacing.
+- Layer 1 visible trust (e) prevents the false-trust failure mode for v1 validation-rule-grounded negatives that are technically grounded but semantically weak.
+
+All five emerged from round 2 TA pressure-test as essential to converging Theme 4 without compromising substrate-3 mission integrity.
+
+**Alternatives considered.**
+
+- *No Guardrail 3 — accept constraint-first generation as a parallel mode.* Rejected. Constraint-first is a different product (exploratory QA generation); substrate-3 is the constrained interpretation engine. Mixing modes muddies mission clarity.
+- *Multiple refusal kinds for ontology_gap, no_org_constraint, policy_restraint.* Rejected per TA: external product behavior should be one refusal kind; internal cause carries semantic granularity. Multiple kinds would proliferate the taxonomy without product-surface value.
+- *Polarity as authoritative candidate-path field.* Rejected per TA: parallel-semantic-systems fragility; polarity is semantic claim identity, not metadata.
+- *No bounded decomposition — emit one negative per admissibly-grounded constraint.* Rejected per TA: combinatorial expansion is operationally unmanageable in large orgs.
+- *Layer 1 admissibility marker as metadata only.* Rejected per TA round 2: users won't internalize Layer 1 vs Layer 2 from metadata; visible trust degradation must be at artifact surface.
+
+**Downstream consequences.**
+
+- *D-084 (Theme 4 per-archetype):* Each archetype's negative scope operationalizes within Guardrail 3 + bounded decomposition + Layer 1 trust visibility discipline.
+- *Theme 5 (LLM integration):* Interpretation-phase candidate origination must enforce requirement-anchored origin signal (Guardrail 3); LLM integration topology bounds K per `transparency_policy_version`.
+- *Theme 6 (prompt management):* Eval suite includes negative-test admissibility-layer distribution, dismissed-alternative surfacing, and cause distribution for `no-admissible-negative-scenario-found` refusals.
+- *Theme 7 (quality envelope):* Per-archetype expected refusal-rate calibration includes `no-admissible-negative-scenario-found` cause distribution; admissibility-confidence threshold for `policy_restraint` cause calibrated per archetype.
+- *Substrate-3 artifact-level output schema:* `admissibility_layer` field at top level of every generated artifact.
+- *Substrate-2 typed provenance:* Theme 4 introduces no new structural metadata at the substrate-2 boundary (layer is artifact-internal; cause is refusal-payload-internal; both governed under substrate-3 refusal_schema_version per D-074).
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §5.2 (grounded-negative discipline), §5.3 (seventh refusal kind), §5.4 (polarity recognition), §5.5 (bounded decomposition), §5.6 (Layer 1/Layer 2 admissibility)
+- D-070 (Theme 1; constrained interpretation engine; Guardrail 1; failure-loud philosophy)
+- D-071 (Theme 2; `governance_context` housing `transparency_policy_version`)
+- D-073 (Theme 2; refusal taxonomy; seventh refusal kind anticipated as policy-scope)
+- D-074 (Theme 2; refusal_schema_version)
+- D-075 (Theme 2; Guardrail 2; reasoning artifact discipline)
+- D-076 (Theme 2; dismissal_reason taxonomy; `lower_specificity`, `no_constraint_supports_negative`)
+- D-077 (Theme 3; cross-cutting framework; dismissal_reason by phase)
+- D-078 (Theme 3; data-behavior Layer 1/Layer 2 distinction for validation-rule grounded claims)
+- D-080 (Theme 3; recipe-kind discipline pattern extended here to negative-grounding selection)
+- Substrate-1 PHASE_2_PLAN_corrections.md §17 (formula parser deferral)
+
+---
+
+
+## D-084 — Per-archetype grounded-negative scope with integration causal-admissibility reserved [Theme 4]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for future substrate-3 cycles when integration becomes larger product surface]
+**Status:** active
+
+**Decision.** Theme 4's grounded-negative discipline (D-083) operationalizes per archetype within the locked Theme 3 archetype strategies. Per-archetype groundings and admissibility-layer distribution:
+
+**Data-behavior negatives.** Richest archetype. Groundings:
+
+- Validation rule — Layer 1 admissibility at v1 (rule exists and is active per Theme 3 D-078); Layer 2 when substrate-1 §17 formula parser ships. Layer 1 negatives carry the substrate-emitted caveat per D-083 (e).
+- Required-field constraint — Layer 2 admissibility at v1 (S1 directly models required-field state).
+- Type incompatibility — Layer 2 admissibility (S1 models field types).
+- Permission restriction — Layer 2 admissibility (S1 models grants); permission-grounded data-behavior negatives leverage Theme 3 D-080's discipline.
+- Automation rejection — partial admissibility (Flow with negative-condition guards is tractable; Apex-driven rejection is S1 Tier 2).
+
+Canonical negative shape per failure mode is `prohibition-claim`. `state-transition-claim` and `automation-effect-claim` negatives decompose to one or more of the groundings above per D-083 (d).
+
+**Configuration negatives.** Cleanest archetype mechanically. Groundings:
+
+- S1 entity absence — Layer 2 admissibility (existence-claim negatives trivially admissible: S1 has the entity or not).
+- Property state absence — Layer 2 when S1 models the property; refuses with `ungrounded-claim` when property unmodeled at S1 Tier 1.
+- Edge absence — Layer 2 (S1 has the edge or not).
+
+Configuration negatives are mechanically the simplest because S1 is the substrate of truth for what does and does not exist.
+
+**Permission negatives.** Leverages Theme 3 D-080's recipe-kind discipline. Groundings:
+
+- Grant absence — Layer 2 within v1 grant-level scope (S1 models GRANTS_OBJECT_ACCESS, GRANTS_FIELD_ACCESS).
+- Sharing-rule absence — structurally weak at v1; most sharing-rule-claim negatives refuse with `no-admissible-negative-scenario-found` cause=`ontology_gap`, `what_would_unblock` pointing to S1 Tier 2 sharing modeling.
+
+Per D-080, recipe-kind selection preserves claim semantics for negatives as well: capability-claim negatives grounded by grant absence are metadata-inspection-verifiable. Negatives requiring sharing/OWD/Apex-sharing grounding refuse cleanly with the typed cause.
+
+**UI negatives.** Narrow scope at v1. Groundings:
+
+- INCLUDES_FIELD edge absence — Layer 2 admissibility for layout-claim negatives (field NOT on Page Layout directly verifiable from S1).
+- Element-state negatives on non-layout-derivable elements — refuse with `no-admissible-negative-scenario-found` cause=`ontology_gap`, `what_would_unblock` pointing to S1 Tier 3 Lightning page composition.
+
+**Integration negatives — operational-only admissibility with causal-admissibility forward-compat.** V1 ships integration negatives with constraint-admissibility framing (simplest cases only):
+
+- Integration entity absence — operational-only-admissible (no NamedCredential, no inbound handler, no PlatformEvent subscriber).
+- Configuration absence — operational-only-admissible.
+
+The philosophically deeper integration negatives (verifying non-firing of effects under specific causal conditions) require causal admissibility — temporal observation, causal interpretation, distributed-state reasoning — categorically different from constraint admissibility. V1 does not have a causal-admissibility framework; a future substrate-3 cycle may add this when integration becomes a larger product surface. Forward-compat reservation in substrate-3 OPEN_QUESTIONS.md; parallel to D-082's interaction-topology admissibility reservation; likely converges with it in the same future cycle.
+
+**Per-archetype negative recognition discipline (operationalizing D-083 c).** Polarity is derived from claim_kind + content. Recognition rules per archetype:
+
+- Data-behavior: prohibition-claim inherently negative; state-transition-claim, automation-effect-claim, value-claim derive polarity from content.
+- Configuration: existence/property/metadata-relationship-claims derive polarity from content (presence or absence).
+- Permission: capability/sharing-rule-claims derive polarity from content (grant asserted or denied).
+- UI: layout/element-state-claims derive polarity from content (presence or absence; state X or not-X).
+- Integration: all four integration claim_kinds derive polarity from content (effect occurs or does not).
+
+No `polarity` field. Recognition is reading the claim's semantic content per archetype.
+
+**Rationale.** Theme 4's per-archetype scope is conceptually uniform — D-083's discipline applies consistently — but admissibility-layer distribution and grounding sources vary by archetype's S1 coverage. Per-archetype documentation makes the differences explicit and provides eval suite (Theme 6) and quality envelope (Theme 7) with calibration anchors.
+
+Integration is the philosophically weakest archetype in the negative space. Honest acknowledgment plus forward-compat reservation preserves substrate-3 architectural integrity without forcing a causal-admissibility framework into Theme 4 scope.
+
+**Alternatives considered.**
+
+- *Force causal-admissibility framework for integration into Theme 4.* Rejected per TA. The framework requires its own architectural treatment; designing it within Theme 4 would expand scope substantially without proportionate v1 value.
+- *Generate integration negatives at causal-admissibility framing without the framework.* Rejected. Would produce structurally valid but semantically unsupported negatives — exactly the v2 failure mode Theme 4 defends against.
+
+**Downstream consequences.**
+
+- *S1 §17 formula parser:* data-behavior validation-rule-grounded negatives upgrade from Layer 1 to Layer 2 automatically when ships. Non-breaking; `admissibility_layer` artifact field shifts value, substrate-emitted caveat no longer emitted.
+- *S1 Tier 2 sharing/OWD/Apex-sharing modeling:* permission sharing-rule negatives upgrade from `ontology_gap` refusal to admissible (likely Layer 2) when ships.
+- *S1 Tier 3 Lightning page composition:* UI element-state negatives on non-layout-derivable elements upgrade from `ontology_gap` refusal to admissible when ships.
+- *Future substrate-3 cycle (integration causal admissibility):* parallel to D-082's interaction-topology admissibility reservation; both likely converge in same cycle.
+- *Theme 7 (quality envelope):* per-archetype expected `no-admissible-negative-scenario-found` rates calibrated per archetype, with cause distribution (ontology_gap vs no_org_constraint vs policy_restraint) per archetype expected.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §5.7 (per-archetype scope), §5.8 (forward-compat reservations)
+- D-083 (Theme 4; grounded-negative discipline machinery)
+- D-077, D-078, D-079, D-080, D-081, D-082 (Theme 3; per-archetype strategies; this entry operationalizes negatives within them)
+- Substrate-1 PHASE_2_PLAN_corrections.md §17 (formula parser deferral; affects data-behavior Layer 1 / Layer 2 distribution)
+
+---
+
+
+## D-085 — LLM integration topology: tool-use selected; substrate-3 as constrained semantic orchestration runtime [Theme 5]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with downstream consequences for Theme 6 prompt management and Theme 7 quality envelope]
+**Status:** active
+
+**Decision.** Theme 5 selects tool-use as substrate-3's LLM integration topology and reframes the substrate-LLM authority boundary. The substrate is a constrained semantic orchestration runtime; the LLM is a bounded cognition provider.
+
+**Topology selection: tool-use over structured JSON and planner-style.**
+
+Three candidate topologies evaluated:
+
+- *Tool-use (function-calling).* LLM produces structured outputs via typed tool invocations; substrate validates each call at the tool boundary; per-call observability.
+- *Structured JSON.* LLM produces a single JSON blob conforming to a schema; substrate parses and validates the entire blob.
+- *Planner-style.* LLM produces a multi-step plan, then executes; substrate validates plans and execution.
+
+Tool-use selected. Rationale:
+
+1. *Mechanical Guardrail 2 enforcement at emission boundary.* Tool calls have typed parameter schemas. The LLM cannot emit free-form values at vocabulary positions; substrate-authorized enums (D-076 dismissal_reason, D-073 refusal_kind, D-083 cause and admissibility_layer) are structural preconditions of emission. Structured JSON requires post-emission validation the LLM can drift from over many attempts; tool-use makes vocabulary discipline an emission precondition.
+2. *Per-operation observability for ledger/eval/replay.* Each tool call produces an observable record (D-074's `llm_calls` operational telemetry per D-087). Theme 7 quality envelope benefits from per-call granularity rather than per-generation aggregation.
+3. *Decomposed reasoning maps to substrate orchestration phases.* Tool-use naturally maps to substrate-3's reasoning phases (interpretation / grounding / governance per D-077). Substrate orchestrates across phases; LLM contributes at specific phase boundaries.
+4. *Incremental correction.* Tool-use rejects invalid calls immediately with typed substrate feedback; LLM can correct within the same generation. Structured JSON requires full-regeneration on validation failure; tool-use enables incremental correction.
+5. *Planner-style rejected.* Planner autonomy is misaligned with substrate-3's constrained-interpretation-engine mission (D-070 §2.1). Plan-then-execute introduces LLM-authored intermediate plans the substrate would have to validate; the validation surface expands without proportionate value.
+
+**Substrate-3 as constrained semantic orchestration runtime.**
+
+The round 2 TA pushback (item 8) correctly identified that the substrate is the locus of architectural authority; the LLM contributes within substrate-bounded discipline. Theme 5 makes this explicit:
+
+*Substrate-3 responsibilities:*
+
+- *Orchestration engine.* Coordinates the reasoning phase pipeline (interpretation → grounding → governance per D-077) per request.
+- *Governance engine.* Enforces three Guardrails at both schema and semantic levels (D-087 two-layer enforcement).
+- *Admissibility engine.* Derives admissibility from S1 + substrate-2 taxonomy + Layer 1/2 discipline (D-083 e); LLM does not author admissibility.
+- *Decomposition controller.* Enforces canonical-negative-per-failure-mode + highest-specificity + bounded enumeration (D-083 d).
+- *Replay controller.* Computes identity_hash and explanation_hash over semantic substance; surfaces drift events (D-088).
+- *Refusal router.* Categorizes refusal causes across 8 typed kinds with typed payloads across three categories (invalidity / policy / operational); routes operational vs policy vs invalidity distinctly.
+
+*LLM responsibilities (bounded cognition provider):*
+
+- *Semantic intent interpretation* — what the requirement implies; emitted via `propose_semantic_intent`.
+- *Selection judgment* — when the substrate presents multiple admissibly-grounded canonical options; emitted via `select_canonical`.
+- *Outcome emission* — final structured emission via `emit_outcome`.
+
+The LLM does not orchestrate, does not author admissibility, does not categorize dismissals, does not select among refusal kinds. Those are substrate-locus responsibilities.
+
+**Tool surface — three thin semantic primitives.**
+
+Detailed in D-086. The reshape from a six-tool phase-shaped surface to three thin primitives prevents Theme 5 from baking current reasoning choreography into protocol law; Themes 6/7 are free to evolve substrate-internal orchestration without breaking the API contract.
+
+**Rationale.**
+
+The integration topology decision is straightforward: tool-use provides mechanical Guardrail enforcement and per-call observability that no other topology achieves. The substrate-3-as-orchestration-runtime framing is the deeper commitment — it correctly locates architectural authority and provides a clean evolution surface (LLM cognition advances do not require substrate rework; substrate orchestration evolves through design cycles without breaking the LLM contract).
+
+**Alternatives considered.**
+
+- *Structured JSON as integration topology.* Rejected. Vocabulary discipline weaker at the emission boundary; per-call observability lost; incremental correction unavailable.
+- *Planner-style.* Rejected per substrate-3 mission alignment. Planner autonomy expands validation surface without value; constrained interpretation engine is incompatible with autonomous plan-then-execute.
+- *LLM-centric framing.* Rejected per round 2 TA pushback (item 8). The substrate is the architectural locus; LLM contributes within bounded discipline. Framing the LLM as central understates substrate's responsibilities.
+
+**Downstream consequences.**
+
+- *D-086:* Tool surface schema operationalizes the thin-primitives commitment.
+- *D-087:* Two-layer Guardrail enforcement (schema + semantic governance) realizes the substrate-side governance commitment.
+- *D-088:* Replay equivalence semantics and eighth refusal kind realize the substrate-orchestration commitments for state, identity, and budget-exhaustion routing.
+- *Theme 6 (prompt management).* Prompts engineer LLM behavior within the substrate-bounded tool surface; eval suite measures per-call substrate compliance.
+- *Theme 7 (quality envelope).* Per-archetype quality thresholds calibrated against per-tool-call observability; model routing operational, not architectural.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §6.2 (integration topology and substrate framing)
+- D-070 (Theme 1; constrained interpretation engine; Guardrail 1; failure-loud philosophy)
+- D-071 (Theme 2; semantic_context, governance_context, operational_context separation)
+- D-072 (Theme 2; binary draft/refusal outcome protocol)
+- D-073 (Theme 2; refusal taxonomy with typed structured payloads)
+- D-074 (Theme 2; llm_calls as substrate-3-adjacent operational observability)
+- D-075 (Theme 2; Guardrail 2; explanation_hash)
+- D-077 (Theme 3; reasoning phases — interpretation / grounding / governance)
+- D-083 (Theme 4; Guardrail 3; bounded decomposition; admissibility_layer; cause discipline)
+
+---
+
+
+## D-086 — Thin tool surface schema: three semantic primitives with substrate as admissibility authority [Theme 5]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3]
+**Status:** active
+
+**Decision.** Substrate-3 exposes three thin semantic primitives to the LLM, with substrate-side orchestration internal. The LLM does not author admissibility; the substrate computes admissibility from S1 + substrate-2 taxonomy + the substrate's admissibility logic.
+
+**Three tools:**
+
+**(1) `propose_semantic_intent(requirement_excerpt, intent_descriptor)`**
+
+The LLM proposes what the requirement implies semantically. Parameters:
+
+- `requirement_excerpt: string` — Guardrail 3 anchor. Excerpt from the request's requirement text supporting the proposed intent. Mandatory (Layer A schema enforcement); substrate validates substantive relevance to the proposed intent at Layer B (D-087).
+- `intent_descriptor: typed structure` — substrate-authorized fields:
+  - `archetype_hint: enum` (substrate-2 archetypes, 5 values)
+  - `target_subject_hint: structured reference` (S1 entity ref or descriptive selector)
+  - `polarity_hint: enum` (positive | negative, derived per D-083 c; not authoritative — substrate may reinterpret based on grounding signal)
+  - `failure_mode_framing: optional structured description` (for negatives; identifies the distinct failure mode the requirement implies per D-083 d)
+  - `claim_kind_hint: optional enum` (substrate-2 claim_kinds; substrate may select a different claim_kind if grounding signal is stronger)
+
+Substrate processing on receipt:
+
+1. Validates Layer A schema; rejects malformed calls.
+2. Maps intent_descriptor against substrate-2 taxonomy + Guardrail 1 substantive enforcement (archetype × claim_kind semantically meaningful for target subject).
+3. Validates requirement_excerpt's substantive relevance (Layer B Guardrail 3 enforcement).
+4. Derives candidate(s) internally — candidate enumeration is substrate orchestration, NOT LLM tool calls.
+5. For each derived candidate, computes admissibility against S1 constraint structure using substrate-3's admissibility logic (Layer 1 vs Layer 2 per D-083 e; Guardrail 1 grounding checks).
+6. Records dismissed candidates with typed `dismissal_reason` (D-076) in `attempted_interpretation`.
+7. Returns to LLM with structured response: admissibly-grounded candidates (≥1 → continue; 0 → routes through substrate to refusal emission).
+
+**(2) `select_canonical(candidate_refs, selection_rationale)`**
+
+When the substrate has presented multiple admissibly-grounded candidates for one failure mode, the LLM selects the canonical (per D-083 d highest-specificity discipline). Parameters:
+
+- `candidate_refs: list of path_ids` — refs to substrate-presented admissibly-grounded candidates.
+- `selection_rationale: typed structure` — substrate-authorized:
+  - `selected_path_id: path_id`
+  - `rationale_kind: enum` (highest_specificity | only_admissible | other_substrate_authorized)
+  - `dismissed_alternatives_with_reason: list of (path_id, dismissal_reason)` — uses D-076 enum; typically `lower_specificity` for the highest-specificity discipline.
+
+Substrate processing on receipt:
+
+1. Validates Layer A schema.
+2. Validates Layer B: rationale_kind matches the substrate's view of the candidates; dismissed_alternatives's reasons accurately characterize substrate's reasoning.
+3. Records selection in `attempted_interpretation.selected_path_id`.
+4. Auto-skipped when only one admissibly-grounded candidate exists; substrate auto-selects.
+
+**(3) `emit_outcome(outcome_kind, payload)`**
+
+The LLM emits the final structured outcome per D-072. Parameters:
+
+- `outcome_kind: enum` (`draft` | `refusal`).
+- `payload`:
+  - For `draft`: claim (substrate-2 structured claim ref), recipe (substrate-2 structured recipe ref), admissibility_layer (substrate-authored — LLM transcribes from substrate-presented value, not asserts).
+  - For `refusal`: refusal_kind (D-073 enum, now 8 values), refusal_payload (per D-073's per-kind typed schema; including D-083 cause for `no-admissible-negative-scenario-found` and D-088 budget payload for `operational-budget-exhausted`).
+
+Substrate processing on receipt:
+
+1. Validates Layer A schema.
+2. Validates Layer B: emitted claim references admissibly-grounded candidate from `attempted_interpretation`; emitted recipe respects D-080 recipe-kind discipline; admissibility_layer matches substrate-authored value (D-083 e; not LLM-asserted).
+3. Validates D-072 no-silent-drops invariant: every requirement in the input is explicitly resolved.
+4. Constructs `GenerationOutcome` per D-072 with `attempted_interpretation`, `explanation_hash` (computed per D-088 over semantic substance), and references to operational telemetry in `llm_calls`.
+
+**Substrate-side orchestration internal flow:**
+
+The substrate's per-request lifecycle (not exposed as tools):
+
+1. *Request receipt.* `GenerationRequest` per D-071; semantic_context + governance_context + operational_context parsed.
+2. *Per-requirement orchestration loop.* For each requirement in the batch:
+   a. Solicit `propose_semantic_intent` from LLM.
+   b. Process intent: derive candidates, compute admissibility, record dismissals.
+   c. If ≥2 admissibly-grounded candidates per failure mode, solicit `select_canonical`; else auto-select (or auto-refuse).
+   d. Construct partial `attempted_interpretation` for this requirement.
+3. *Outcome composition.* Across requirements, the substrate composes overall outcome state; verifies no-silent-drops.
+4. *`emit_outcome` solicitation.* Substrate solicits final emission from LLM with full context of resolved interpretations.
+5. *Ledger writes.* `GenerationOutcome` to semantic ledger; `llm_calls` to operational telemetry.
+
+Candidate derivation, admissibility evaluation, dismissal recording, canonical auto-selection — all substrate-internal. Free to evolve per Themes 6/7 calibration without changing the LLM contract.
+
+**Substrate is the admissibility authority.**
+
+Per round 2 TA pushback (item 2): admissibility is substrate governance truth, not LLM-authored interpretation. The mechanical realization:
+
+- `admissibility_layer` is substrate-authored (D-083 e at artifact level).
+- The LLM never has a tool parameter where it asserts a candidate's admissibility_layer; the substrate computes it.
+- In `emit_outcome`, the LLM transcribes the substrate-authored admissibility_layer onto the artifact (Layer A: presence required; Layer B: must match substrate-presented value).
+
+The LLM proposes semantic intent and selects among presented options; the substrate determines what counts as grounding, what layer applies, and which candidates are admissible.
+
+**Rationale.**
+
+The three-tool factorization emerged from the round 2 TA pushback (item 1) to avoid baking phase-shaped reasoning choreography into protocol law. Concretely:
+
+- `propose_semantic_intent` is durably semantic — what the requirement implies. Stable across reasoning topologies.
+- `select_canonical` is durably semantic — judgment among substrate-presented options. Stable across decomposition strategies.
+- `emit_outcome` is durably structural — D-072's binary protocol. Stable across orchestration approaches.
+
+Substrate orchestration (candidate derivation, admissibility evaluation, dismissal recording) lives below the protocol surface, free to evolve.
+
+The substrate-as-admissibility-authority commitment (item 2) follows naturally: admissibility is substrate logic computing against S1; if the LLM asserted admissibility, the substrate would have to second-guess every assertion, which is operationally fragile and semantically wrong (admissibility is substrate truth).
+
+**Alternatives considered.**
+
+- *Phase-shaped six-tool surface (original draft).* Rejected per TA item 1. Bakes current reasoning choreography into protocol; freezes Theme 6/7 experimentation space.
+- *Single-tool emit-everything API.* Rejected. Loses incremental substrate feedback; reverts to structured-JSON-equivalent semantics.
+- *LLM-authored admissibility with substrate validation.* Rejected per TA item 2. Even with validation, the LLM frames the question; substrate authority shifts unacceptably.
+
+**Downstream consequences.**
+
+- *D-087:* Layer A enforcement (schema validation) lives at tool boundary; Layer B enforcement (substantive semantic governance) lives in substrate processing. Theme 5 specifies the Layer B substantive rules per tool.
+- *D-088:* Multi-turn statefulness operates over these three tools; rejected calls categorized per item 3.
+- *Theme 6:* Prompts engineer LLM behavior to use the three tools effectively; eval measures per-tool substantive compliance.
+- *Theme 7:* Substrate orchestration evolution (better candidate derivation, sharper admissibility evaluation) calibrated through per-archetype quality envelopes; tool surface stable.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §6.3 (tool surface schema)
+- D-070 (Theme 1; Guardrail 1; archetype × claim_kind × trigger_kind × recipe_kind)
+- D-071 (Theme 2; request shape)
+- D-072 (Theme 2; outcome protocol)
+- D-073 (Theme 2; refusal taxonomy; typed payloads)
+- D-076 (Theme 2; dismissal_reason vocabulary)
+- D-077 (Theme 3; reasoning phases)
+- D-080 (Theme 3; recipe-kind discipline)
+- D-083 (Theme 4; admissibility_layer; bounded decomposition; cause discipline)
+- D-085 (Theme 5; integration topology and substrate framing)
+
+---
+
+
+## D-087 — Two-layer Guardrail enforcement and clean separation of operational telemetry from semantic provenance [Theme 5]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with downstream consequences for substrate-3 schema design and Theme 6 eval suite]
+**Status:** active
+
+**Decision.** Theme 5 commits substrate-3 to two-layer Guardrail enforcement (schema validation + substrate-side semantic governance validation) and cleanly separates operational telemetry from semantic provenance.
+
+**(a) Two-layer Guardrail enforcement.**
+
+Per round 2 TA pushback (item 5): typed schemas constrain vocabulary, structure, and references — but do not constrain semantic misuse, shallow grounding, misleading decomposition, or weak requirement anchoring. Schemas are *necessary but not sufficient*. Guardrail enforcement is two-layered:
+
+*Layer A — Tool-boundary schema validation (necessary).* Validates at the tool emission boundary:
+
+- *Substrate-authorized vocabulary at vocabulary positions.* All enum-typed parameters bounded to substrate-2 taxonomy or substrate-3 reasoning vocabulary. Archetype ∈ {data-behavior, configuration, permission, ui, integration}; claim_kind ∈ substrate-2 taxonomy; dismissal_reason ∈ D-076 enum (8 values); refusal_kind ∈ D-073 enum (8 values post-Theme 5); cause ∈ D-083 enum (3 values); admissibility_layer ∈ D-083 enum (2 values).
+- *Structural well-formedness.* Required parameters present; types match schemas.
+- *Guardrail 3 syntactic precondition.* `requirement_excerpt` present on every `propose_semantic_intent`; references resolvable to the request's requirement text.
+- *S1 entity refs.* All S1 entity references validated as existing at the current `s1_version_seq` per D-071's semantic_context.
+
+Layer A violations are *operational* — the LLM emitted ill-formed or vocabulary-invalid tool calls. They route to substrate-side typed-feedback correction within the same generation (incremental correction per D-085 rationale 4) or, on persistent violation, to `structural-validation-failure` refusal.
+
+*Layer B — Substrate-side semantic governance validation (sufficient).* Validates during substrate orchestration:
+
+- *Guardrail 1 substantive enforcement.* The proposed archetype × claim_kind combination is semantically meaningful for the referenced S1 entities. Example: `capability-claim` on an S1 Object is meaningful; `capability-claim` on an S1 ValidationRule is not — Layer A would accept both as structurally valid; Layer B rejects the latter.
+- *Guardrail 2 substantive enforcement.* Substrate-3 reasoning artifacts semantically appropriate, not just structurally valid. Example: `lower_specificity` dismissal_reason emitted only when a higher-specificity alternative exists in the substrate's reasoning; not arbitrarily applied.
+- *Guardrail 3 substantive enforcement.* `requirement_excerpt` semantically supports the proposed intent. Substrate verifies excerpt's relevance to the candidate's claim_kind and subject — not just that the excerpt is a syntactic substring of the requirement text.
+- *Bounded decomposition substantive enforcement (D-083 d).* Canonical selection respects highest-specificity discipline; the LLM's `selection_rationale` in `select_canonical` must match the substrate's view of the candidates' specificity.
+- *Admissibility substantive enforcement (D-083 e).* admissibility_layer assignment respects Layer 1 vs Layer 2 distinction's semantic meaning; substrate-authored.
+
+Layer B violations are *semantic findings* — the substrate determined the proposed intent or selection doesn't substantively satisfy the architectural commitment. They route to substrate-orchestrated dismissals (recorded in `attempted_interpretation`) or to typed refusals (per D-073 taxonomy).
+
+Both layers are required. Schema validation alone is insufficient; substrate-side semantic governance is what makes Guardrail enforcement substantive rather than performative.
+
+**(b) Clean separation: operational telemetry vs semantic provenance.**
+
+Per round 2 TA pushback (item 4): `llm_calls` cannot serve simultaneously as operational telemetry and semantic provenance. Theme 5 cleanly separates the two.
+
+*Operational telemetry — `llm_calls` (per D-074 substrate-3-adjacent):*
+
+Schema (specified at Theme 5):
+
+```
+llm_calls: {
+  call_id:               uuid (PK)
+  generation_outcome_id: uuid (FK → generation_outcomes)
+  tool_name:             string (propose_semantic_intent | select_canonical | emit_outcome)
+  raw_parameters:        jsonb (untyped; for debugging)
+  raw_response:          jsonb (untyped; for debugging)
+  operational_outcome:   enum (success | transient_failure | operational_error | rejected_for_correction)
+  attempt_index:         integer (1, 2, ... within the same logical tool emission if Layer A correction loops occurred)
+  timing_start:          timestamp
+  timing_duration_ms:    integer
+  token_count_input:     integer
+  token_count_output:    integer
+  model_identifier:      string (e.g., claude-opus-4-7)
+}
+```
+
+Used for: cost analysis, latency monitoring, error tracking, operational debugging, per-model performance comparison (Theme 7 calibration). NOT used for replay determinism, semantic eval, transparency, or refusal analysis.
+
+*Semantic provenance — `attempted_interpretation` (part of `generation_outcomes`, semantic ledger):*
+
+Schema (refined at Theme 5):
+
+```
+attempted_interpretation: {
+  candidate_paths:        list of structured candidates
+    Each: {
+      path_id:               string
+      archetype:             enum (substrate-2 archetypes)
+      claim_kind:            enum (substrate-2 claim_kinds)
+      subject_refs:          list of S1 entity refs
+      requirement_anchor:    structured (per-Guardrail-3 traceability)
+      admissibility_status:  enum (admissibly_grounded | dismissed)
+      admissibility_layer:   enum (layer_1 | layer_2; populated when admissibly_grounded; substrate-authored)
+      dismissal_reason:      D-076 enum (populated when dismissed)
+    }
+  selected_path_id:       string (refs admissibly_grounded candidate; per D-083 d canonical)
+  dismissed_alternatives_by_reason: structured (D-076 reason → list of dismissed path_ids; bounded set, not ordered list)
+}
+```
+
+Used for: replay determinism (via `explanation_hash` per D-088), semantic eval, transparency surfacing, refusal analysis.
+
+Tension resolved: `llm_calls` is bytes-on-the-wire telemetry; `attempted_interpretation` is the substrate's semantic reasoning record. Different tables; different code paths; different consumers. The "retires to substrate-2 provenance when get_provenance ships" disposition (per D-074) applies to `attempted_interpretation`, not to `llm_calls`.
+
+**Rationale.**
+
+Two-layer enforcement (a) is essential because schema validation alone cannot prevent semantic misuse. The TA's example holds: a propose_semantic_intent with all valid enum values and a technically-valid requirement_excerpt substring could still semantically misuse the requirement. Layer B is what protects substrate-3's mission integrity beyond mere structural compliance.
+
+Telemetry-provenance separation (b) was implicit in D-074 but not mechanically clean. Theme 5 specifies the schema boundary so both consumers — operational analysts and semantic eval engineers — have clean models without cross-contamination.
+
+**Alternatives considered.**
+
+- *Schema-validation-only as Guardrail enforcement.* Rejected per TA item 5. Schemas constrain vocabulary but not semantic substance; substrate-3 mission integrity requires substantive governance.
+- *Single unified `llm_calls`-style table doubling as semantic provenance.* Rejected per TA item 4. Tension between operational and semantic concerns is real; separation is cleaner and matches D-074's destination disposition.
+- *Layer B as optional / progressive enhancement.* Rejected. Layer B is necessary for Guardrail integrity; making it optional erodes substrate-3 mission discipline.
+
+**Downstream consequences.**
+
+- *D-088:* Replay equivalence computed over `attempted_interpretation` semantic substance, not over `llm_calls` operational trace. Sharp tension resolution.
+- *Theme 6 (prompt management).* Prompts engineer LLM behavior to satisfy Layer A and Layer B together; eval suite measures per-Guardrail per-layer compliance (Layer A acceptance rate; Layer B substantive correctness rate).
+- *Theme 7 (quality envelope).* Per-archetype Layer B substantive correctness thresholds calibrated separately from Layer A schema compliance.
+- *Substrate-3 schema design:* `llm_calls` table and `attempted_interpretation` structure both formalized for v1 implementation; both are substrate-3-implementation territory per Theme 5.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §6.4 (two-layer Guardrail enforcement), §6.5 (telemetry vs provenance separation)
+- D-070 (Theme 1; Guardrail 1)
+- D-071 (Theme 2; semantic_context, governance_context, operational_context)
+- D-072 (Theme 2; outcome protocol)
+- D-074 (Theme 2; llm_calls operational observability)
+- D-075 (Theme 2; Guardrail 2)
+- D-076 (Theme 2; dismissal_reason vocabulary)
+- D-083 (Theme 4; Guardrail 3; admissibility_layer; bounded decomposition; cause)
+- D-085 (Theme 5; integration topology)
+- D-086 (Theme 5; tool surface schema)
+
+---
+
+
+## D-088 — Multi-turn statefulness semantics, replay equivalence over semantic substance, eighth refusal kind operational-budget-exhausted [Theme 5]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with downstream consequences for Theme 6 eval suite and Theme 7 quality envelope]
+**Status:** active
+
+**Decision.** Theme 5 clarifies multi-turn tool-use statefulness semantics, tightens D-071/D-075 replay equivalence to semantic substance (not operational trace), and introduces the eighth refusal kind `operational-budget-exhausted` as a third refusal category (operational, alongside invalidity and policy).
+
+**(a) Multi-turn statefulness: rejected tool calls are operational, not semantic.**
+
+Per round 2 TA pushback (item 3): multi-turn tool-use creates conversational statefulness. Theme 5 clarifies which kinds of state are semantic and which are operational.
+
+Rejected tool call categorization:
+
+| Rejection type | Origin | Category | In semantic history? |
+|---|---|---|---|
+| Schema violation (LLM emits malformed tool call) | LLM error | operational | no |
+| Vocabulary violation (LLM emits value outside enum) | LLM error | operational | no |
+| Layer A governance violation (e.g., requirement_excerpt missing on propose_semantic_intent) | LLM error | operational | no |
+| Operational error (timeout, rate limit, model unavailable) | infrastructure | operational | no |
+| Substrate-derived dismissal of a proposed intent | substrate orchestration | semantic | yes — recorded in `attempted_interpretation.dismissed_alternatives_by_reason` |
+| Layer B governance finding (e.g., requirement_excerpt doesn't substantively support proposed intent) | substrate orchestration | semantic | yes — recorded as dismissal with appropriate D-076 reason |
+
+The first four categories are LLM-side or infrastructure errors; they are recorded in operational telemetry (`llm_calls.operational_outcome = rejected_for_correction`) and do not enter semantic provenance. They do not affect `attempted_interpretation`; they do not affect `explanation_hash`.
+
+The last two categories are substrate-derived semantic findings; they are substrate orchestration internal (not LLM tool call rejections under D-086's reshape) and are recorded in `attempted_interpretation`.
+
+Net result: multi-turn statefulness exists operationally (LLM does see prior rejections and adapts); semantic identity is deterministic given semantic_context + governance_context.
+
+**(b) Replay equivalence over semantic substance.**
+
+Per round 2 TA pushback (item 6): the previous framing — same semantic_context + governance_context → same explanation_hash — was too strong if explanation_hash was computed over operational trace. Multi-turn variation would produce false replay regression signals. Theme 5 tightens D-075's explanation_hash semantics and D-071's equivalence algebra to be computed over semantic substance.
+
+*Semantic substance (in scope for explanation_hash):*
+
+- Set of admissibly-grounded candidates per failure mode (unordered set; not ordered list).
+- Canonical selection per failure mode (selected_path_id).
+- Set of dismissed alternatives per failure mode, indexed by dismissal_reason category (D-076 category distribution; not the specific sequence of dismissals).
+- Admissibility_layer per emitted artifact (D-083 e).
+- Outcome kind (draft | refusal) and outcome payload semantics:
+  - For draft: claim ref + recipe ref + admissibility_layer.
+  - For refusal: refusal_kind + refusal payload semantics (cause for `no-admissible-negative-scenario-found`, budget_dimension for `operational-budget-exhausted`, etc.).
+
+*Operational trace (out of scope for explanation_hash):*
+
+- Ordering of LLM tool calls within the generation.
+- Specific tokens in intermediate LLM responses.
+- Number of operational corrections (schema/vocabulary/Layer A violations corrected mid-generation).
+- LLM model identifier (operational_context).
+- Specific timing or token counts.
+
+*Updated D-071 equivalence algebra (refinement, not contradiction):*
+
+- Same semantic_context + same governance_context + different operational_context → expected identity_hash + explanation_hash match.
+- "Match" defined over semantic substance per above; operational trace variation is permitted and expected.
+- Explanation-hash drift events (per D-075) fire on semantic substance divergence, NOT on operational trace divergence.
+
+*Replay equivalence definition:*
+
+Two generations are replay-equivalent iff their identity_hash and explanation_hash match, computed over semantic substance. Replay regressions surface real semantic drift; operational variation is filtered out by construction.
+
+This refinement is a tightening of D-075's commitment, not a reversal. D-075 committed to explanation_hash as a mechanical equivalence primitive; Theme 5 specifies the semantic-substance computation rule. D-071 committed to the equivalence algebra; Theme 5 specifies "match" as semantic substance match.
+
+Forward-compat reservation: the precise computation of explanation_hash over semantic substance may be tuned in Theme 7 quality envelope calibration as substrate-3 observes drift patterns in production.
+
+**(c) Eighth refusal kind: `operational-budget-exhausted`.**
+
+Per round 2 TA pushback (item 7): collapsing budget exhaustion into `structural-validation-failure` pollutes analytics. Budget exhaustion is operational incompletion, not structural invalidity. Taxonomy expansion is justified.
+
+*Updated refusal taxonomy at Theme 5 close (8 kinds across 3 categories):*
+
+| RefusalKind | Category | Origin theme |
+|---|---|---|
+| `underspecified-requirement` | invalidity (input) | Theme 1 |
+| `no-relevant-context` | invalidity (grounding) | Theme 1 |
+| `ambiguous-reference` | invalidity (resolution) | Theme 1 |
+| `ungrounded-claim` | invalidity (admissibility) | Theme 1 |
+| `structural-validation-failure` | invalidity (output) | Theme 1 |
+| `low-generation-confidence` | policy (threshold) | Theme 2 (D-073) |
+| `no-admissible-negative-scenario-found` | policy (scope) | Theme 4 (D-083) |
+| `operational-budget-exhausted` | operational (incompletion) | Theme 5 (this entry) |
+
+The third category axis — operational — is new. Substantive distinction:
+
+- *Invalidity refusals* are about content/structure quality. The substrate examined the request and could not produce a substantively valid output.
+- *Policy refusals* are about substrate-deliberate restraint. The substrate could produce output but chose not to, per policy (confidence threshold; scope of grounded negatives).
+- *Operational refusals* are about substrate-runtime-resource constraints. The substrate ran out of budget before completing reasoning.
+
+All three are genuine refusal causes that downstream consumers should distinguish in eval, analytics, and reliability metrics.
+
+*Feedback payload for `operational-budget-exhausted`:*
+
+```
+operational-budget-exhausted: {
+  budget_dimension:         enum (token | time | tool_call_count)
+  budget_limit:             typed numeric (the cap from operational_context.budgets)
+  budget_consumed:          typed numeric (the amount actually consumed before exhaustion)
+  partial_state_at_exhaustion: {
+    candidates_proposed:       count
+    candidates_admissibly_grounded: count
+    canonicals_selected:       count
+    requirements_resolved:     count
+    requirements_unresolved:   count
+  }
+  recommended_budget_increase: optional typed numeric (substrate-3 may suggest a budget that would have completed based on consumption rate)
+}
+```
+
+The `partial_state_at_exhaustion` preserves semantic substance up to the exhaustion point. Replay equivalence applies: replaying with the same budgets should produce equivalent partial state (same candidates proposed and dismissed up to exhaustion).
+
+**Rationale.**
+
+The three commitments cohere:
+
+- Multi-turn statefulness clarification (a) categorically separates LLM-side / infrastructure operational events from substrate-derived semantic findings. Establishes the foundation for semantic-substance replay equivalence.
+- Replay equivalence over semantic substance (b) filters operational variation out of drift signals, preserving D-075's drift-detection capability while preventing false regressions.
+- Operational refusal category (c) provides downstream consumers with categorically clean refusal analytics, separating operational incompletion from semantic invalidity and policy restraint.
+
+Together they make substrate-3's semantic identity robust to operational variation while preserving sharp signals when real semantic drift occurs.
+
+**Alternatives considered.**
+
+- *Rejected tool calls in semantic history.* Rejected per TA item 3. Pollutes semantic identity with operational variation; breaks replay equivalence.
+- *Replay equivalence over full operational trace.* Rejected per TA item 6. Too fragile; false drift signals from operational variation.
+- *Budget exhaustion as `structural-validation-failure` subtype.* Rejected per TA item 7. Operational incompletion is categorically different from structural invalidity; collapsing them pollutes analytics.
+- *New operational category axis with multiple operational refusal kinds.* Considered. V1 ships with one operational kind (`operational-budget-exhausted`); future operational refusal kinds (e.g., `operational-model-unavailable`, `operational-rate-limit-exhausted`) can be added if Theme 7 quality envelope identifies need.
+
+**Downstream consequences.**
+
+- *Theme 6 (prompt management).* Eval suite measures three categories of refusal separately; per-category rates inform prompt engineering priorities.
+- *Theme 7 (quality envelope).* Per-archetype expected refusal rates broken down by category; operational-budget-exhausted rate informs budget calibration.
+- *Substrate-3 implementation:* explanation_hash computation must operate over `attempted_interpretation` semantic-substance structure (not over `llm_calls` operational trace).
+- *Eval and replay infrastructure:* replay tooling operates over semantic ledger; operational telemetry is parallel concern.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §6.6 (multi-turn statefulness and replay equivalence), §6.7 (eighth refusal kind)
+- D-071 (Theme 2; equivalence algebra; operational_context.budgets)
+- D-072 (Theme 2; outcome protocol)
+- D-073 (Theme 2; refusal taxonomy with typed payloads)
+- D-074 (Theme 2; llm_calls; semantic ledger vs operational observability)
+- D-075 (Theme 2; explanation_hash as mechanical equivalence primitive)
+- D-083 (Theme 4; admissibility_layer; bounded decomposition; cause discipline)
+- D-085 (Theme 5; integration topology)
+- D-086 (Theme 5; tool surface schema)
+- D-087 (Theme 5; telemetry vs provenance separation)
+
+---
+
+
+## D-089 — Prompt management architecture with bounded co-evolution and policy-adjacent surface acknowledgment [Theme 6]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with downstream consequences for substrate-3 evolution discipline and Theme 7 quality envelope]
+**Status:** active
+
+**Decision.** Theme 6 commits substrate-3 to a prompt management architecture covering versioning, composition, lifecycle, and the prompt-substrate-orchestration co-evolution discipline. Prompts are explicitly acknowledged as a policy-adjacent surface within substrate-bounded governance.
+
+**(a) Prompt versioning.**
+
+- Sequential `prompt_template_version` per template file. Increments on any change.
+- Storage in version-controlled repository at `substrate-3/prompts/`. Version tied to git commit.
+- Immutable per version. Once a `prompt_template_version` is referenced by a `GenerationRequest`, that content is frozen. Required for replay determinism.
+- Forward-compat with rollback. When a new version ships, old versions remain available for replay indefinitely. Substrate maintains a prompt registry mapping version → content.
+
+Per D-071: prompts are operational_context. `prompt_template_version` field exists alongside `llm_model_identifier`, `retry_policy`, `budgets` in the operational axis. Per D-088: operational variation does not affect identity_hash; same semantic_context + governance_context + different operational_context (including different prompt_template_version) → expected identity_hash match.
+
+**(b) Prompt composition.**
+
+V1 composition is layered:
+
+- Base system prompt. Describes substrate-3's three-tool surface (D-086), Guardrail commitments, mission as constrained semantic orchestration runtime (D-085). Same across all generations.
+- Per-archetype fragment. Extends base with archetype-specific guidance for grounding sources and admissibility patterns. V1 ships three archetype fragments (data-behavior, configuration, permission); UI and integration fragments deferred to a future Theme 6 calibration cycle.
+- Per-request context. Request-specific content composed at request time (requirements being processed, S1 context, archetype_hint when supplied). Not separately versioned; part of the request itself.
+- Feedback templates. Substrate-emitted feedback for Layer A violations during multi-turn correction loops.
+
+The `prompt_template_version` references the composed (base + active fragments) content. Composition is mechanical; substrate-3 implementation territory.
+
+**(c) Prompt lifecycle.**
+
+- Authoring. Prompts authored by substrate-3 maintainers; reviewed via pull request.
+- Eval gate. New prompt versions must pass the eval suite (per D-090) before merge.
+- Deployment. Merge to main triggers prompt registry update; new version becomes available; existing generations continue using their referenced version (immutability).
+- Deprecation. Old versions remain available for replay indefinitely.
+
+**(d) Prompts as a policy-adjacent surface within bounded governance.**
+
+Per round 2 TA pushback (item 2): prompts encode admissibility heuristics, refusal tendencies, decomposition preferences. They are behavior-shaping policy surfaces, not merely contextual guidance.
+
+Architectural framing:
+
+- Substrate governance authority (governance_context, Layer B enforcement). The substrate enforces what behaviors are permitted — Guardrail 1/2/3 compliance, bounded decomposition, semantic-substance discipline. Governance-owned.
+- Prompts within bounded space (operational_context). Within the substrate-permitted behavior space, prompts influence what behaviors the LLM tends toward — aggressiveness vs conservatism in negative proposal, breadth of candidate generation, decomposition style. Operational but policy-adjacent.
+
+Operational discipline:
+
+1. Prompt review includes governance-implications check. Not just performance ("does this prompt produce better artifacts?") but behavioral consequences ("does this prompt shift refusal aggressiveness in ways inconsistent with substrate's mission?").
+2. Major prompt fragment changes treated like architectural changes. Eval-gated; reviewed for behavior-shaping consequences; Theme 7 quality envelope re-validated.
+3. Minor prompt tuning (typos, clarifications) treated like operational changes. Standard PR review.
+4. Prompt-driven behavior changes documented in EVOLUTION.md. When a prompt change materially alters Layer B-permitted behavior (e.g., shifts refusal-rate distribution beyond calibrated thresholds), the change is recorded as a substrate evolution event.
+
+This does not move prompts to governance_context. Per D-071, prompts remain operational_context. The behavioral classification (policy-adjacent) is metadata about how the team manages this surface, not a structural recategorization.
+
+**(e) Prompt-substrate-orchestration as bounded co-evolution.**
+
+Per round 2 TA pushback (item 6): prompts and substrate orchestration inevitably co-evolve. The contract is not fully decoupled independent evolution but bounded co-evolution.
+
+Co-evolution discipline:
+
+- Each side has its own design cycle. Substrate orchestration evolves through substrate-3 architectural cycles. Prompts evolve through prompt design cycles (D-090 eval-gated PR review).
+- Changes on either side may require co-evolution on the other. Substrate orchestration changes that affect tool-rejection patterns or candidate availability invalidate prompt assumptions. Prompt changes that shift LLM behavior outside Layer B governance bounds will surface as Layer B violations.
+- Major orchestration changes trigger prompt re-validation. The substrate-3 design-cycle process commits to: substantive orchestration changes trigger a prompt re-validation pass before deployment.
+- Major prompt changes trigger orchestration eval. Substantive prompt changes trigger a substrate-side eval re-run before deployment.
+- Migration costs explicitly acknowledged. Substrate evolution and prompt evolution have costs to the other side.
+- Replay corpus shifts during co-evolution. When either side undergoes substantive change, the replay corpus's drift evaluation must account for the change. Drift signals during planned co-evolution are expected, not regressions (per D-090 drift framework).
+
+**Rationale.** Round 2 TA integration accepted: prompts are policy-adjacent (item 2), prompt-substrate contract is bounded co-evolution (item 6). Both refine the operational discipline surrounding substrate-3's locked architectural commitments without changing the architectural categorization (prompts remain operational_context per D-071).
+
+**Alternatives considered.**
+
+- *Move prompts to governance_context.* Rejected. Architectural categorization per D-071 is sound: prompts are operational, not governance. Behavioral classification (policy-adjacent) is metadata about management discipline, not structural recategorization.
+- *Frame prompts as pure guidance, decoupled from policy.* Rejected per TA item 2. Practically inaccurate; prompts shape behavior significantly within Layer B's permitted space.
+- *Frame prompt-substrate as fully decoupled evolution.* Rejected per TA item 6. Inevitable co-evolution; bounded co-evolution is the honest contract.
+- *Ship UI and integration prompt fragments at v1.* Considered. Deferred. UI and integration archetypes are narrower at v1 (per D-081 minimal coverage; D-082 operational-only admissibility); ship base + 3 archetype fragments first, expand when these archetypes have larger production footprint.
+
+**Downstream consequences.**
+
+- *D-090:* Eval suite measures prompt changes for behavior-shaping consequences; drift evaluation distinguishes prompt-driven evolution from semantic regression.
+- *D-091:* Model routing decisions interact with prompt selection; same prompt under different models produces different behaviors.
+- *Theme 7 quality envelope:* Prompt-driven behavior thresholds calibrated per archetype.
+- *Substrate-3 maintenance discipline:* Documented in substrate-3 maintenance docs; prompt PRs follow governance-implications review.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §7.2 (prompt management architecture), §7.3 (prompts as policy-adjacent surface and bounded co-evolution)
+- D-071 (Theme 2; operational_context.prompt_template_version)
+- D-077 (Theme 3; archetype framework)
+- D-081 (Theme 3; UI archetype minimal scope)
+- D-082 (Theme 3; integration archetype operational-only admissibility)
+- D-085 (Theme 5; substrate-3 as constrained semantic orchestration runtime)
+- D-086 (Theme 5; thin tool surface; substrate-side orchestration evolution)
+- D-087 (Theme 5; two-layer Guardrail enforcement)
+- D-088 (Theme 5; explanation_hash semantic substance; operational variation tolerance)
+- D-090 (Theme 6; eval suite architecture)
+
+---
+
+
+## D-090 — Eval suite architecture with two-invariant replay equivalence and drift-as-evolution framework [Theme 6]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with downstream consequences for Theme 7 quality envelope and substrate-3 maintenance discipline]
+**Status:** active
+
+**Decision.** Theme 6 commits substrate-3 to an eval suite spanning four categories (correctness, quality, performance, drift), with explicit separation of two replay invariants (semantic continuity via identity_hash; transparency continuity via explanation_hash) and a drift evaluation framework that distinguishes regression from healthy architectural evolution.
+
+**(a) Four eval categories.**
+
+*Correctness evals (structural compliance).* Measure per-Guardrail Layer A acceptance rate per D-087.
+
+- Layer A acceptance rate by tool (propose_semantic_intent | select_canonical | emit_outcome).
+- Layer A acceptance rate by Guardrail (1: S1 entity refs valid; 2: vocabulary in substrate-authorized enums; 3: requirement_excerpt present).
+- Layer A correction loops per generation.
+
+*Quality evals (semantic appropriateness).* Measure per-Guardrail Layer B substantive correctness, per-archetype emission quality, per-refusal-kind appropriateness.
+
+- Layer B substantive correctness rate by Guardrail.
+- Per-archetype emission quality (does the generated test actually verify what it claims?).
+- Per-claim-kind admissibility precision (does substrate admissibility evaluation match human-expert judgment?).
+- Per-refusal-kind appropriateness (was the refusal correct? cause distribution within `no-admissible-negative-scenario-found` per D-083 b).
+- Per-archetype Layer 1 vs Layer 2 distribution.
+
+*Performance evals (operational).* From `llm_calls` operational telemetry per D-087 b.
+
+- Cost per generation by archetype.
+- Latency per generation by archetype.
+- Per-model performance comparison (per D-091 routing).
+- Budget exhaustion frequency (`operational-budget-exhausted` rate per archetype).
+
+*Drift evals (replay).* From semantic ledger. See (b) and (c) for two-invariant framework and drift judgment discipline.
+
+**(b) Two-invariant replay equivalence.**
+
+Per round 2 TA pushback (item 1): replay equivalence is two invariants, not one. They are treated distinctly in eval.
+
+*`identity_hash` (semantic continuity).* Per D-071's identity_hash commitment + D-088's semantic-substance refinement. Same outcome — same emitted claim, same recipe, same outcome_kind, same refusal_kind + payload semantics if refusal. Strict invariant. Drift indicates semantic regression: same input should produce same emitted output. Presumption of regression unless explained.
+
+*`explanation_hash` (transparency continuity).* Per D-075 + D-088. Same `attempted_interpretation` semantic substance — same candidate set, same canonical selection, same `dismissed_alternatives_by_reason` category distribution, same admissibility_layer per artifact. Weaker invariant. Drift indicates reasoning trajectory varied, but emitted output may still be correct.
+
+Per-archetype drift thresholds calibrated separately by Theme 7 per invariant. identity_hash thresholds tight (semantic regressions are real bugs). explanation_hash thresholds looser and contextualized (reasoning trajectories evolve with prompt refinement, substrate orchestration improvement, model updates).
+
+This refines D-088's drift semantics. D-088 committed semantic-substance computation for both hashes; Theme 6 separates their downstream treatment in eval.
+
+**(c) Drift as evolution framework.**
+
+Per round 2 TA pushback (item 5): drift signals trigger investigation, never auto-failure. Each drift event evaluated against architectural improvement criteria.
+
+Drift evaluation framework:
+
+- identity_hash drift — sharp regression signal. Triggers investigation. Same input previously produced output X; now produces output Y. Judgment criteria:
+  - If Y substantively wrong → regression. Investigated as a bug.
+  - If Y substantively better (sharper refusal, more specific grounding, narrower admissibility) → accepted improvement.
+- explanation_hash drift with identity_hash stable — weaker signal. Investigated, but presumption shifts toward explanation refinement or healthy evolution. Same output emitted; reasoning trajectory changed.
+  - Judgment criteria: did the substrate get sharper (more targeted dismissal reasons, more specific candidate paths)? Likely healthy.
+- explanation_hash drift with identity_hash drift — concurrent signals. Both surfaces affected; investigated together.
+
+Drift events surface in EVOLUTION.md alongside substrate code changes and prompt changes. Each annotated with substrate-3 maintainer judgment: `regression` | `evolution` | `neutral`. Patterns inform Theme 7 quality envelope calibration.
+
+Cultural commitment: substrate-3 maintainers explicitly tasked with judging drift as evolution vs regression, not auto-treating drift as failure. Theme 6 establishes the framework; Theme 7 calibrates judgment thresholds per archetype.
+
+**(d) Ground truth strategy and v1 limits.**
+
+Three sources:
+
+- Curated test corpus. Maintainer-authored requirements with expected outcomes. V1 target: 200–500 cases. Maintained as substrate-3 evolves.
+- Pilot customer feedback. Pilot review feeds back into curated corpus and Theme 7 calibration.
+- Replay corpus. Each shipped generation enters mechanically. Replay evals run continuously.
+
+V1 ground truth quality limits explicitly acknowledged:
+
+- Curated corpus is small (hundreds, not thousands).
+- Pilot customer feedback just starting.
+- Replay corpus empty at v1 launch; only meaningful after 3–6 months accumulation.
+
+V1 eval rigor calibrated to these limits. Layer A correctness mechanically self-validating. Layer B substantive correctness has limited ground truth at v1; relies on curated corpus. Per-archetype emission quality validates against curated expected outcomes initially; pilot feedback over time. Drift evals become meaningful as replay corpus accumulates.
+
+Theme 7 quality envelope work will calibrate per-archetype thresholds against this evolving ground truth.
+
+**(e) Eval cadence.**
+
+- Pre-commit / CI. Every PR runs eval suite subset (correctness fully; quality against curated; performance smoke).
+- Pre-release. Full eval suite before deploying new prompt template version or substrate version. Pass thresholds enforced.
+- Continuous production. Sampling drift evals on every production generation. Aggregated drift event rate dashboard. Threshold-triggered alerts.
+- Post-pilot. Pilot customer feedback batch-processed weekly; feeds into curated corpus and calibration.
+
+**(f) Semantic adjudication theory acknowledged as unresolved.**
+
+Per round 2 TA pushback (item 4): in ambiguous enterprise QA scenarios, two generations may both be grounded, admissible, requirement-supported, review-approved — and yet differ. Substrate-3 currently lacks a theory of canonical semantic correctness in the validity-space sense (correctness as space, not point).
+
+Theme 6 ships eval against substrate-architectural-compliance (Guardrail compliance, admissibility discipline, refusal-kind appropriateness) rather than absolute semantic correctness. Forward-compat reservation in OPEN_QUESTIONS.md. Theme 7 quality envelope work may begin addressing the structural question; full resolution requires production data, longitudinal study, and likely formal work beyond v1 scope.
+
+**Rationale.** Round 2 TA integration accepted: two-invariant separation (item 1), drift as evolution framework (item 5), semantic adjudication unresolved (item 4). Together they refine eval discipline without changing the locked architecture: identity_hash and explanation_hash both computed over semantic substance per D-088, but treated distinctly downstream; drift signals investigated, not auto-failures; eval framework explicit about what it measures (architectural compliance) and what remains unresolved (canonical semantic correctness in ambiguous cases).
+
+**Alternatives considered.**
+
+- *Single replay invariant (explanation_hash carrying all responsibility).* Rejected per TA item 1. Overloads one artifact; conflates semantic continuity with transparency continuity; produces false drift alarms; creates anti-evolution gravity.
+- *Drift as auto-failure.* Rejected per TA item 5. Punishes healthy architectural evolution; substrate-3 maintainers tasked with judgment, not gated by mechanical drift detection.
+- *Resolve semantic adjudication theory at Theme 6.* Rejected per TA item 4. Requires production data and longitudinal study; not blocking v1; forward-compat reservation.
+
+**Downstream consequences.**
+
+- *D-091:* Model routing decisions calibrated against eval framework (per-model behavioral profile, per-model identity_hash stability, per-model explanation_hash variation).
+- *Theme 7 quality envelope:* Per-archetype thresholds for each eval category calibrated against this framework. Two-invariant separation enables tight identity_hash thresholds + contextual explanation_hash thresholds.
+- *Substrate-3 maintenance discipline:* Drift event annotation in EVOLUTION.md becomes standard practice. Regression vs evolution judgments documented longitudinally.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §7.4 (eval suite architecture), §7.5 (two-invariant replay equivalence), §7.6 (drift as evolution)
+- D-071 (Theme 2; identity_hash; equivalence algebra)
+- D-074 (Theme 2; llm_calls operational telemetry)
+- D-075 (Theme 2; explanation_hash; drift events)
+- D-083 (Theme 4; admissibility_layer; cause discipline; bounded decomposition)
+- D-087 (Theme 5; two-layer Guardrail enforcement)
+- D-088 (Theme 5; semantic substance for both hashes)
+- D-089 (Theme 6; prompt management and bounded co-evolution)
+
+---
+
+
+## D-091 — Single-model-per-batch routing with model selection as behavior-shaping decision [Theme 6]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for Theme 7 quality envelope and per-batch operational discipline]
+**Status:** active
+
+**Decision.** Theme 6 commits substrate-3 to single-model-per-batch LLM routing at v1, chosen by dominant archetype, with explicit acknowledgment that model selection is a behavior-shaping operational decision affecting refusal aggressiveness, decomposition style, grounding conservatism, and ambiguity handling.
+
+**(a) Model selection as behavior-shaping operational decision.**
+
+Per round 2 TA pushback (item 3): different models do not merely differ in quality, speed, or token efficiency. They differ in semantic temperament — refusal aggressiveness, decomposition behavior, grounding conservatism, ambiguity handling. Model routing creates substrate-observable behavior variation.
+
+Architectural categorization:
+
+- Model identifier is operational_context (per D-071). Architectural categorization unchanged.
+- Model selection affects substrate-observable behavior. Different models produce different Layer A acceptance rates, different Layer B substantive correctness rates, different per-archetype emission quality, different refusal-kind distributions.
+- Theme 7 quality envelope calibrates per-model behavior expectations. Per-model behavioral profiles tracked alongside per-archetype thresholds.
+
+Replay equivalence under model variation: per D-088, same semantic_context + governance_context + different operational_context (including different model_identifier) → expected identity_hash match. The emitted output should be model-invariant; model behavioral differences fall within Layer B governance bounds. If a different model produces a different emitted output, that's a substrate-governance failure (Layer B should have caught it), not a model-routing failure. In practice: model routing affects explanation_hash (different reasoning trajectories per model) but should not affect identity_hash (same emitted output). Theme 7 calibration validates empirically.
+
+**(b) Single-model-per-batch in v1.**
+
+Per round 2 TA pushback (item 7): different models inside one semantic batch creates instability — different refusal tendencies, decomposition styles, transparency shapes within one generation. Especially problematic given D-077's shared interpretation context across batches.
+
+V1 routing commitment:
+
+- Single model per batch. All requirements in one `GenerationRequest` use the same `operational_context.llm_model_identifier`.
+- Dominant-archetype selection. The batch's model is determined by the most prevalent archetype across its requirements.
+- Mixed-archetype batches default to the "complex" model (Claude Opus 4.7); captures the most demanding archetype's reasoning needs.
+- Per-customer override preserved. `operational_context.llm_model_identifier` may be explicitly set per request, overriding the default.
+
+Cross-archetype consistency benefits:
+
+- Within a batch, all requirements receive consistent model cognition.
+- D-077's shared interpretation context operates over consistent model behavior.
+- Replay determinism easier to validate (model is batch-invariant within batch boundaries).
+
+**(c) V1 model defaults per archetype.**
+
+Calibrated by D-090 eval framework on curated corpus before v1 ships. Initial defaults (subject to refinement):
+
+- Pure data-behavior batch → Claude Opus 4.7 (complex multi-constraint reasoning).
+- Pure configuration batch → Claude Sonnet 4.7 (S1-lookup-dominant).
+- Pure permission batch → Claude Opus 4.7 (recipe-kind discipline requires sharp judgment).
+- Pure UI batch → Claude Sonnet 4.7 (narrow scope at v1).
+- Pure integration batch → Claude Opus 4.7 (interaction complexity).
+- Mixed-archetype batch → Claude Opus 4.7 (default to capability).
+
+Defaults are operational, not architectural. Theme 7 quality envelope refines them as eval data accumulates and model capabilities evolve.
+
+**(d) Future per-archetype within-batch routing deferred.**
+
+V1 commits single-model-per-batch. Post-v1, finer per-archetype routing within batches may be revisited once eval infrastructure matures and per-archetype model behavior is well-characterized within a stable framework. Theme 6 commits this as deferred operational refinement, not architectural capability.
+
+Forward-compat reservation: per-archetype within-batch routing may be enabled in future Theme 6 calibration cycles when:
+
+- Per-archetype × model behavioral profiles are well-characterized via production data.
+- Cross-model coherence within a batch can be validated empirically.
+- The cost of per-archetype routing within batches is justified by quality gains.
+
+**Rationale.** Round 2 TA integration accepted: model selection as behavior-shaping (item 3), single-model-per-batch (item 7). Both refine the operational discipline surrounding model routing without changing the architectural categorization (model_identifier remains operational_context per D-071). Architectural coherence within batches takes priority over theoretical per-archetype optimization at v1.
+
+Cost/latency consequence: some single-archetype batches use Opus where Sonnet would have sufficed; some mixed batches use Opus where archetype-specific Sonnet would have been adequate for simpler components. Acceptable trade-off for architectural coherence; Theme 7 calibrates whether the cost is justified at scale.
+
+**Alternatives considered.**
+
+- *Per-archetype within-batch routing in v1.* Rejected per TA item 7. Creates cross-model semantic incoherence within one generation; problematic for D-077's shared interpretation context.
+- *Single model for all generations (no archetype-based routing at all).* Rejected. Some archetypes (configuration, UI at v1) don't need Opus-level capability; some (data-behavior, permission, integration) do. Per-batch routing captures this without within-batch fracturing.
+- *Model selection as semantic_context.* Rejected. Per D-071, model identifier is operational; same emitted output should result from same semantic + governance + different operational. Recategorizing to semantic_context would invalidate replay equivalence framework.
+
+**Downstream consequences.**
+
+- *D-090 eval framework:* Per-model behavioral profile tracked; per-model identity_hash stability validated; per-model explanation_hash variation expected and acceptable.
+- *Theme 7 quality envelope:* Per-archetype per-model thresholds calibrated; defaults refined as production data accumulates.
+- *Operational tuning:* Cost/latency calibration depends on archetype distribution in actual workloads.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §7.7 (single-model-per-batch routing)
+- D-071 (Theme 2; operational_context.llm_model_identifier)
+- D-077 (Theme 3; shared interpretation context across batches)
+- D-085 (Theme 5; LLM integration topology)
+- D-087 (Theme 5; two-layer Guardrail enforcement)
+- D-088 (Theme 5; explanation_hash; operational variation tolerance)
+- D-090 (Theme 6; eval framework calibrates per-model behavior)
+
+---
+
+
+## D-092 — Quality envelope framework: calibrates behavioral distributions, not architectural invariants [Theme 7]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with downstream consequences for substrate-3 calibration discipline and Phase 1 closeout]
+**Status:** active
+
+**Decision.** Theme 7 commits substrate-3 to a quality envelope that is a structured calibration framework — defining which behavioral dimensions are calibrated per archetype, how v1 initial values are derived, and how thresholds evolve — explicitly bounded so that it calibrates behavioral distributions and never architectural invariants. The quality envelope is conceptually separated from the operational envelope.
+
+**(a) The quality envelope calibrates behavioral distributions, not architectural invariants.**
+
+Per round 2 TA pushback (item 1): not all dimensions are equally calibratable. Some are operational distributions and evolving quality heuristics; others are substrate law. The quality envelope must never blur them.
+
+Architectural invariants (substrate law — NOT envelope surfaces, NOT calibratable):
+
+- identity_hash semantic continuity (D-090 b) — same semantic_context + governance_context yields same emitted output. Not a "tight threshold"; an invariant.
+- Guardrail Layer A validity (D-087) — always holds; not a tunable acceptance rate.
+- Refusal transparency presence (D-073) — every refusal carries its typed payload; not a tunable rate.
+- Grounding requirements (Guardrail 1, D-070) — admissibility requires grounding; not a calibration knob.
+- The three Guardrails, eight-refusal-kind taxonomy, three-context separation, two-layer enforcement, substrate-as-admissibility-authority.
+
+These are enumerated in `SUBSTRATE_3_WORLDVIEW.md` as the canonical invariant registry. The quality envelope observes invariant compliance (an invariant breach is a bug surfaced by eval) but never tunes invariants.
+
+Calibratable surfaces (behavioral distributions — quality envelope dimensions):
+
+- Refusal-rate distribution by semantic category (invalidity 5 kinds + policy 2 kinds; the operational category is the operational envelope per (b)).
+- Layer 1 / Layer 2 admissibility distribution (D-083 e).
+- explanation_hash drift threshold (contextual, D-090 b).
+
+Commitment, verbatim: the quality envelope calibrates behavioral distributions, not architectural invariants. This protects later teams from "tuning" non-negotiable substrate commitments.
+
+**(b) Quality envelope vs operational envelope.**
+
+Per round 2 TA pushback (item 5): budget exhaustion is operational incompletion (D-088's operational refusal category), not semantic quality. Tracking it as archetype semantic behavior over-couples operational tuning to semantic calibration — tighter budgets would falsely read as worse semantic behavior.
+
+Two conceptually separate envelopes:
+
+- Quality envelope (semantic behavioral distributions): refusal-rate by semantic category (invalidity + policy); Layer 1 / Layer 2 admissibility distribution; explanation_hash drift threshold.
+- Operational envelope (operational tuning surface): cost per generation by archetype; latency per generation by archetype; budget caps (token / time / tool_call_count); `operational-budget-exhausted` rate (D-088 operational refusal category).
+
+This maps onto D-088's three-category refusal axis: invalidity and policy refusals are semantic (quality envelope); the operational refusal category is operational (operational envelope). The two are calibrated independently — operational tuning does not pollute semantic calibration. The drift-as-evolution framework and evolution-adjudication governance (D-093) apply to the quality envelope; the operational envelope is operational tuning, not subject to semantic evolution adjudication.
+
+**(c) Envelopes are relative to the canonical routing profile.**
+
+Per round 2 TA pushback (item 4): once model routing is behavior-shaping (D-091 a), the archetype alone no longer defines expected behavior — Opus-data-behavior and Sonnet-data-behavior have different refusal distributions, decomposition patterns, grounding aggressiveness.
+
+Without exploding to archetype×model in v1: each per-archetype quality envelope is defined relative to the archetype's canonical routing profile — the expected behavioral distributions under the archetype's default model (D-091 v1 defaults). Non-canonical model usage (per-customer `operational_context.llm_model_identifier` override) produces distributions outside the canonical envelope's scope; the canonical envelope does not claim to characterize them. Per-archetype×model envelopes are deferred (forward-compat).
+
+**(d) Structure-not-values: per-archetype dimensions and v1 provisional profiles.**
+
+The quality envelope is structure — which dimensions are calibrated, how v1 values are derived, how thresholds evolve — not fixed numerical gates. V1 ships with no production data (replay corpus empty per D-090 d), so fixed thresholds would be false precision; and substrate behavior is expected to improve (D-090 c), so static thresholds would flag healthy evolution as breach.
+
+Per-archetype quality envelope dimensions (per (a) calibratable surfaces), with v1 expected shapes derived from Theme 3 design intent:
+
+- Data-behavior (D-078, refusal-dominant): higher policy-refusal rate; significant Layer 1 share (validation-rule Layer 2 awaits formula parser).
+- Configuration (D-079, cleanest): lowest refusal rate; S1-direct admissibility.
+- Permission (D-080): moderate refusal rate with run-as-disambiguation policy refusals.
+- UI (D-081, minimal v1): higher refusal rate, honest not regression (Lightning composition is S1 Tier 3, absent).
+- Integration (D-082, scoped v1): higher refusal rate (operational-only admissibility; interaction-topology deferred).
+
+These are v1 expected shapes (provisional), not pass/fail gates. They tell the eval framework what distribution to expect per archetype so anomalies surface as signal.
+
+**(e) Calibration mechanism and cadence.**
+
+- v1 initial values (pre-launch): heuristic, derived from per-archetype design intent (D-078–D-082), curated-corpus runs, D-091 model defaults. Explicitly provisional.
+- Pilot-phase refinement: pilot customer feedback (D-090 d) adjusts ranges — where most calibration happens.
+- Production calibration: as the replay corpus accumulates (3–6 months per D-090 d), ranges refined against observed production distributions.
+- Ongoing evolution: range shifts tracked per D-093 evolution-adjudication governance.
+
+Cadence aligns with D-090 eval cadence: pre-commit checks against current ranges; pre-release validates full envelope; continuous production monitors distribution drift; post-pilot feedback refines weekly.
+
+**Rationale.** Round 2 TA integration (items 1, 4, 5) sharpened the quality envelope from a single set of thresholds into a structured framework that protects architectural invariants from calibration pressure, separates semantic from operational calibration, and is honest about model-relativity. The structure is the architectural commitment; the values are instantiation that accumulates against ground truth.
+
+**Alternatives considered.**
+
+- *Fixed numerical thresholds at v1.* Rejected. No production data; false precision; would flag healthy evolution as breach.
+- *Single undifferentiated envelope (semantic + operational together).* Rejected per TA item 5. Operational tuning pollutes semantic calibration.
+- *Per-archetype×model envelopes at v1.* Rejected per TA item 4 (deferred). Combinatorial; per-model profiles not yet characterized. Canonical-routing-profile relativity is the v1 commitment.
+- *Treating identity_hash / Layer A / grounding as tight envelope thresholds.* Rejected per TA item 1. These are architectural invariants, not calibration surfaces.
+
+**Downstream consequences.**
+
+- *D-093:* Threshold evolvability operates on quality envelope ranges, bounded by the invariants enumerated here; evolution adjudication governance.
+- *D-094:* Admissibility-confidence threshold (governance_context) shapes the policy-refusal distribution the quality envelope observes.
+- *SUBSTRATE_3_WORLDVIEW.md:* Canonical registry of the architectural invariants this framework protects.
+- *Phase 1 closeout:* Quality envelope is the bridge converting pilot feedback into substrate calibration.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §8.2 (calibration vs invariants), §8.3 (quality vs operational envelope), §8.4 (per-archetype dimensions and v1 profiles)
+- `substrate_3_generation/SUBSTRATE_3_WORLDVIEW.md` (architectural invariant registry)
+- D-070 (Theme 1; Guardrail 1; grounding)
+- D-073 (Theme 2; refusal taxonomy; transparency)
+- D-078 through D-082 (Theme 3; per-archetype design intent)
+- D-083 (Theme 4; admissibility_layer; Layer 1/2)
+- D-087 (Theme 5; Layer A/B enforcement)
+- D-088 (Theme 5; three-category refusal axis; operational category)
+- D-090 (Theme 6; eval framework; two-invariant replay; drift-as-evolution; ground truth)
+- D-091 (Theme 6; model routing; canonical defaults)
+- D-093 (Theme 7; threshold evolvability and evolution-adjudication governance)
+- D-094 (Theme 7; admissibility-confidence as governance_context)
+
+---
+
+
+## D-093 — Threshold evolvability and evolution-adjudication governance [Theme 7]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with downstream consequences for substrate-3 governance discipline and Phase 1 closeout]
+**Status:** active
+
+**Decision.** Theme 7 commits that quality envelope thresholds are expected ranges subject to evolution, bounded by architectural invariants, with hardened safeguards against rationalizing semantic regression as evolution. Theme 7 also reconciles the validity-space framing with replay determinism via the reproducibility-versus-acceptability distinction.
+
+**(a) Threshold evolvability bounded by architectural invariants.**
+
+Per D-090 c (drift-as-evolution): the substrate's behavior is expected to improve (narrower admissibility, more specific grounding, cleaner refusals). Fixed thresholds would flag improvement as breach. So quality envelope thresholds are expected ranges, not fixed gates:
+
+- A threshold breach triggers investigation, not auto-failure.
+- The breach is adjudicated: `regression` (substrate got worse — gate fails, blocks deployment) | `evolution` (substrate got better — range shifts) | `neutral` (environmental change — range may shift).
+- Range shifts are recorded in EVOLUTION.md with the drift annotation vocabulary.
+
+Per round 2 TA pushback (item 2): this evolvability is bounded. The architectural invariants (D-092 a; enumerated in SUBSTRATE_3_WORLDVIEW.md) are the floor. Evolution adjudication operates only within the space of architecturally-compliant behavioral shifts. A drift that breaches an invariant is regression by definition — not subject to maintainer judgment. Maintainer judgment exists only above the invariant floor.
+
+Commitment: evolution adjudication must preserve substrate-level architectural commitments even when behavioral distributions shift.
+
+**(b) Evolution-adjudication safeguards.**
+
+Per round 2 TA pushback (item 2): maintainer-judged regression-vs-evolution risks gradual semantic-center drift — normalizing drift, rationalizing regressions, overfitting to pilot feedback, preferring prettier explanations or lower refusal rates. Safeguards:
+
+1. Recorded rationale, not just annotation. An `evolution` annotation requires explicit written justification in EVOLUTION.md tying the shift to a specific per-archetype evolution signature (per (c)). "Looks better" is insufficient.
+2. Asymmetric scrutiny on lower-refusal shifts. Given the fail-loud-over-hallucinate philosophy, a drift toward lower refusal rate carries a presumption of regression and requires stronger evidence to ratify as evolution than a drift toward higher refusal. Lower refusal means the substrate asserts more — where hallucination risk lives.
+3. Periodic architectural-invariant audit. Accumulated `evolution` shifts are audited periodically against the full invariant set (SUBSTRATE_3_WORLDVIEW.md) to confirm incremental shifts have not collectively breached an invariant that no single shift breached. Guards against gradual semantic drift.
+4. Design-cycle-weight review. Ratifying an envelope-range shift as evolution is governance-weight, reviewed like an architectural change (consistent with D-089's treatment of major prompt changes), not a routine maintenance action.
+
+A principled, mechanical theory of semantic improvement remains future (forward-compat). The bounding rule + asymmetric scrutiny + invariant audit prevent the worst rationalization paths without pretending the theory exists.
+
+**(c) Per-archetype drift judgment signatures.**
+
+Per D-090 c (Theme 6 deferred formalized judgment criteria to Theme 7). Partial formalization:
+
+- Per-archetype evolution signatures. What healthy evolution looks like per archetype (e.g., data-behavior: shift toward more Layer 2 admissibility as the formula parser ships; UI: lower refusal rate as Lightning composition enters S1 Tier 3). These justify an `evolution` annotation.
+- Per-archetype regression signatures. What regression looks like (e.g., configuration: refusal rate rising on cases that should be clean S1-direct admissibility — signals a substrate bug).
+- Neutral signatures. Environmental changes (org metadata shifts, model updates) that move distributions without indicating substrate quality change.
+
+Full formalization (automated judgment) remains future — v1 ships documented signatures + maintainer judgment, not an automated classifier.
+
+**(d) Validity-space and replay determinism: reproducibility versus acceptability.**
+
+Per round 2 TA pushback (item 6): the per-archetype distribution framing is a validity-space framing (validity as a space, not a point). But the more valid outputs exist, the weaker replay identity / explanation stability / canonical-interpretation expectations become. Validity-space and replay determinism are in natural tension.
+
+The distinction that resolves it at v1:
+
+- Semantic reproducibility (replay determinism, identity_hash) is a substrate-engineering property: same substrate version + same semantic_context + same governance_context yields same emitted output. The substrate deterministically selects one point.
+- Semantic acceptability (validity-space) is a semantic property: which outputs would be correct for a requirement. Often a space.
+
+V1 resolution: the substrate is deterministic (reproducible) within a wider acceptability space. The validity-space may contain multiple acceptable outputs; the substrate deterministically picks one and reproduces that pick on replay. Reproducibility does not require the picked point be the only acceptable point — only that the substrate picks the same point each time.
+
+Forward-compat: when the substrate should legitimately vary its pick within the validity-space versus always reproduce requires the unresolved semantic adjudication theory (D-090 f). V1 commits to reproducibility, full stop, while acknowledging the acceptability space is wider. The reproducibility-versus-acceptability distinction is the architectural handle for that future work.
+
+**Rationale.** Round 2 TA integration (items 2, 6) hardened the evolution-adjudication surface — the deepest governance risk in Theme 7 — by bounding evolvability with invariants and adding rationalization safeguards, and reconciled validity-space with replay determinism by distinguishing reproducibility (engineering property) from acceptability (semantic property). Together they let the quality envelope evolve without eroding Themes 1–5.
+
+**Alternatives considered.**
+
+- *Fixed thresholds (no evolvability).* Rejected per D-090 c. Anti-evolution gravity; flags improvement as breach.
+- *Unbounded maintainer-judged evolvability.* Rejected per TA item 2. Risks gradual semantic-center erosion; invariants must bound judgment.
+- *Symmetric scrutiny on refusal-rate shifts.* Rejected per TA item 2. Lower-refusal shifts carry hallucination risk; asymmetric scrutiny is warranted by the fail-loud philosophy.
+- *Treating validity-space and replay determinism as fully coexistent.* Rejected per TA item 6. They are in tension; reproducibility-versus-acceptability is the v1 reconciliation.
+
+**Downstream consequences.**
+
+- *D-092:* Operates on the quality envelope ranges this entry makes evolvable.
+- *SUBSTRATE_3_WORLDVIEW.md:* The invariant registry that bounds evolution adjudication.
+- *Substrate-3 governance discipline:* Evolution adjudication is a design-cycle action with recorded rationale and periodic invariant audit.
+- *Future semantic adjudication theory:* reproducibility-versus-acceptability is the handle.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §8.5 (threshold evolvability and evolution-adjudication governance), §8.6 (validity-space and replay determinism)
+- `substrate_3_generation/SUBSTRATE_3_WORLDVIEW.md` (architectural invariant registry)
+- D-071 (Theme 2; identity_hash; three-context separation)
+- D-075 (Theme 2; explanation_hash; drift events)
+- D-088 (Theme 5; semantic substance)
+- D-089 (Theme 6; major-change review weight)
+- D-090 (Theme 6; drift-as-evolution; two-invariant replay; semantic adjudication unresolved)
+- D-092 (Theme 7; quality envelope framework; calibration vs invariants)
+
+---
+
+
+## D-094 — Admissibility-confidence threshold as governance_context: semantic risk tolerance [Theme 7]
+
+**Date:** 2026-05-19
+**Substrates affected:** [S3, with consequences for D-071 three-context separation and Phase 1 closeout]
+**Status:** active
+
+**Decision.** Theme 7 categorizes the admissibility-confidence threshold (which governs the `policy_restraint` cause for `no-admissible-negative-scenario-found` per D-083 b) as governance_context — semantic risk tolerance — not operational_context or a quality-envelope-owned parameter. This resolves the Theme 4 forward-compat reservation as a governance resolution.
+
+**(a) Recategorization to governance_context.**
+
+Per round 2 TA pushback (item 3): the admissibility-confidence threshold directly determines what the substrate is willing to assert as truth. That is semantic risk tolerance, which is governance — not operational preference, routing, or prompt strategy.
+
+The decisive argument: same candidate, same grounding, same topology, different threshold yields different refusal behavior. The parameter changes semantic admissibility policy, not generation quality. This is categorically different from D-089's prompts (which shape behavior diffusely within governance bounds) and D-091's model routing (which shapes cognition style). The admissibility-confidence threshold is a direct numerical determinant of the substrate's truth-assertion boundary.
+
+Therefore the threshold is governance_context per D-071's three-axis separation, not operational_context. The Theme 7 opening's lean (operational, quality-envelope-owned) was incorrect; this entry corrects it.
+
+**(b) Semantic risk tolerance framing.**
+
+The threshold is semantic risk tolerance — a governance policy determining how confident the substrate must be before asserting a grounded negative, and by extension the boundary of `policy_restraint` (D-083 b):
+
+- Higher threshold yields more conservative behavior (more `policy_restraint` refusals, fewer speculative negatives).
+- Lower threshold yields more permissive behavior.
+- Substrate-authored governance default: conservative, per the fail-loud-over-hallucinate philosophy.
+- Per-customer governance override: a risk-averse enterprise customer may set a higher threshold (more refusals, fewer speculative asserts). This is a legitimate governance knob, not operational tuning.
+
+**(c) Quality envelope observes, does not own.**
+
+Per D-092 (b) measurement/behavior cleanliness: the quality envelope observes the resulting policy-refusal-rate distribution but does not own or tune the threshold. The envelope is a measurement surface; the threshold is a governance input. This keeps the measurement/behavior line clean — the exact pollution D-092 (b) and TA item 5 also warn against.
+
+**(d) Replay implication.**
+
+Because the threshold is governance_context: per D-088, changing it changes governance_context and is expected to change identity_hash (different refusal behavior is a different emitted output). This is correct — semantic risk tolerance is a semantic-identity-bearing input, confirming it belongs in governance, not operational. An operational parameter changing identity_hash would have been a contradiction (operational variation must preserve identity_hash per D-088); a governance parameter changing it is exactly right. The recategorization strengthens the three-context separation rather than altering it.
+
+**Rationale.** Round 2 TA integration (item 3): the admissibility-confidence threshold determines what the substrate asserts as truth — semantic risk tolerance, which is governance. The replay test confirms it: a parameter that legitimately changes identity_hash must be governance_context (or semantic_context), never operational_context. This is the cleanest categorization argument in the substrate and corrects the opening lean. It resolves the Theme 4 reservation (admissibility-confidence calibration for `policy_restraint`) as governance.
+
+**Alternatives considered.**
+
+- *Operational_context, quality-envelope-owned (opening lean).* Rejected per TA item 3. The threshold determines truth-assertion policy, not generation quality; an operational parameter changing identity_hash contradicts D-088.
+- *Quality-envelope-owned calibration parameter.* Rejected. Conflates measurement with behavior; the envelope observes, governance owns.
+- *Semantic_context.* Rejected. The threshold is a policy applied across requests, not a per-request semantic input; governance_context is the correct axis.
+
+**Downstream consequences.**
+
+- *D-071 three-context separation:* strengthened — admissibility-confidence threshold added to governance_context as semantic risk tolerance.
+- *D-083 (b):* `policy_restraint` cause boundary determined by this governance parameter.
+- *D-092:* Quality envelope observes the policy-refusal distribution shaped by this threshold.
+- *SUBSTRATE_3_WORLDVIEW.md:* governance_context semantic boundary documents semantic risk tolerance.
+- *Per-customer governance:* semantic risk tolerance is a customer-facing governance knob.
+
+**References.**
+
+- `substrate_3_generation/SPEC.md` §8.7 (admissibility-confidence threshold as governance_context)
+- `substrate_3_generation/SUBSTRATE_3_WORLDVIEW.md` (semantic boundaries; governance_context)
+- D-071 (Theme 2; three-context separation; governance_context)
+- D-083 (Theme 4; policy_restraint cause; admissibility_layer)
+- D-088 (Theme 5; operational variation preserves identity_hash; governance variation may change it)
+- D-089 (Theme 6; prompts as behavior-shaping but operational — contrast)
+- D-091 (Theme 6; model routing as behavior-shaping but operational — contrast)
+- D-092 (Theme 7; quality envelope observes, does not own)
+
+---

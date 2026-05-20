@@ -4,43 +4,42 @@ Questions specific to S3's design. Cross-cutting questions live in the top-level
 
 ---
 
-## Resolved in Theme 1 (2026-05-19)
+## Resolved
+
+### Theme 1 (2026-05-19)
 
 - ~~S3-Q-001 — Substrate boundaries, architectural posture, failure-mode philosophy~~ → resolved by D-070 (constrained interpretation engine bounded by S1 ontology and substrate-2 taxonomy; refusal as first-class output; seven structural commitments).
+
+### Theme 2 (2026-05-19)
+
+- ~~S3-Q-002 — Generation request shape, output protocol, refusal taxonomy, generation ledger~~ → resolved by D-071 through D-076 (Theme 2). Request shape with three-axis context separation; binary draft/refusal outcome protocol with no-silent-drops invariant; six-category RefusalKind taxonomy with invalidity-vs-policy distinction; two-surface ledger architecture (semantic + operational observability) with typed cross-substrate provenance; ontology-bound reasoning artifacts (S3 Guardrail 2) with transparency as governed substrate artifact; dismissal_reason taxonomy as substrate-3 reasoning vocabulary.
+
+### Theme 3 (2026-05-19)
+
+- ~~S3-Q-003 — Per-archetype generation strategies~~ → resolved by D-077 through D-082 (Theme 3). Cross-cutting framework with four dimensions per archetype, shared interpretation context, archetype hint as guidance, dismissal_reason applicability by phase; per-archetype strategies for data-behavior, configuration, permission (with recipe-kind selection preserving claim semantics), UI (with honest v1 scope), integration (with operational-only v1 admissibility).
+
+### Theme 4 (2026-05-19)
+
+- ~~S3-Q-004 — Grounded negative test generation~~ → resolved by D-083 and D-084 (Theme 4). Grounded-negative discipline with five architectural commitments (S3 Guardrail 3 requirement-anchored origination; seventh refusal kind `no-admissible-negative-scenario-found` with typed internal cause distinguishing ontology_gap / no_org_constraint / policy_restraint; polarity strictly derived from claim_kind + content with no parallel field; bounded decomposition via canonical-negative-per-failure-mode + highest-specificity grounding + bounded candidate enumeration; Layer 1 admissibility produces artifact-level visibly degraded trust marker). Per-archetype scope operationalizing the discipline within Theme 3 archetype strategies, with integration causal-admissibility reserved as forward-compat.
+
+### Theme 5 (2026-05-19)
+
+- ~~S3-Q-005 — LLM integration architecture~~ → resolved by D-085 through D-088 (Theme 5). Tool-use selected as integration topology; substrate-3 reframed as constrained semantic orchestration runtime with LLM as bounded cognition provider. Three thin semantic primitives (propose_semantic_intent, select_canonical, emit_outcome) replace phase-shaped tool surface; substrate-side orchestration internal. Substrate is admissibility authority (admissibility_layer is substrate-authored). Two-layer Guardrail enforcement (schema validation + substrate-side semantic governance validation). Clean separation of operational telemetry (`llm_calls`) from semantic provenance (`attempted_interpretation`). Multi-turn statefulness clarified (rejected tool calls operational, not semantic). Replay equivalence over semantic substance (refinement of D-071/D-075). Eighth refusal kind `operational-budget-exhausted` introduces third refusal category axis (operational).
+
+### Theme 6 (2026-05-19)
+
+- ~~S3-Q-006 — Prompt management and evaluation~~ → resolved by D-089 through D-091 (Theme 6). Prompt management architecture with bounded co-evolution and policy-adjacent surface acknowledgment (versioning sequential and immutable per version; composition layered with base + 3 v1 archetype fragments; prompt-substrate-orchestration as bounded co-evolution not independent evolution). Eval suite architecture with four categories (correctness, quality, performance, drift), two-invariant replay equivalence (identity_hash for semantic continuity; explanation_hash for transparency continuity), and drift-as-evolution framework distinguishing regression from healthy architectural evolution. Single-model-per-batch routing chosen by dominant archetype, with model selection acknowledged as behavior-shaping operational decision. Semantic adjudication theory in ambiguous enterprise QA acknowledged as unresolved (forward-compat reservation); UI and integration prompt fragments deferred to future cycle.
+
+### Theme 7 (2026-05-19)
+
+- ~~S3-Q-007 — Quality envelope~~ → resolved by D-092 through D-094 (Theme 7), plus the SUBSTRATE_3_WORLDVIEW.md artifact. Quality envelope as structured calibration framework that calibrates behavioral distributions, never architectural invariants (the invariants enumerated in SUBSTRATE_3_WORLDVIEW.md). Quality envelope conceptually separated from operational envelope; envelopes defined relative to the canonical routing profile. Thresholds are evolvable ranges bounded by architectural invariants, with hardened evolution-adjudication safeguards (recorded rationale, asymmetric lower-refusal scrutiny, periodic invariant audit, design-cycle-weight review). Validity-space and replay determinism reconciled via the reproducibility-versus-acceptability distinction. Admissibility-confidence threshold recategorized as governance_context (semantic risk tolerance), resolving the Theme 4 forward-compat reservation as a governance resolution. This is the final Phase 1 theme.
+- ~~S3-Q-008 — Semantic equivalence policy under operational variation~~ → resolved by D-092 and D-093 (Theme 7), building on D-088 (Theme 5). S3-Q-008 asked for the categorization framework for divergence under invariant `(semantic_context, governance_context)`. The framework is the drift-as-evolution adjudication (`regression` / `evolution` / `neutral` per D-090 c + D-093 a–c) bounded by architectural invariants. The two specific divergence cases are handled by the reproducibility-versus-acceptability distinction (D-093 d): (i) explanation_hash drift with stable identity_hash is transparency-continuity variation, presumed refinement; (ii) identity_hash divergence under operational variation is either a governance failure (regression — Layer B should bound the emitted output) or an acceptability-space pick-shift where the substrate's deterministic pick moves within a wider validity-space. The precise rule distinguishing these two — when operational variation (e.g., a model upgrade) may shift the pick versus must preserve it — requires the semantic adjudication theory and is carried as the "Validity-space vs replay-determinism reconciliation" forward-compat reservation. The categorization framework S3-Q-008 explicitly asked for is provided; its full formalization is forward-compat.
 
 ---
 
 ## Open — to be addressed during subsequent themes
 
-### S3-Q-002 — Generation request shape
-
-Theme 2. What does S3 take as input? Structural shape of a generation request — single requirement, batch of requirements, sprint-scoped batch with cross-requirement context. How requests carry forward state across regenerations. How requests invoke or accept Domain Pack context.
-
-Sub-questions surfaced in Theme 1:
-
-- Typed `RefusalKind` discriminator: full taxonomy and per-category actionable-feedback shape.
-- S3-owned generation ledger: schema, lifecycle, substrate-2 forward-compat sanity check (so eventual retirement into substrate-2 provenance is a clean migration, not a forklift).
-- `GenerationOutcome` protocol union: drafts, refusals, partial outcomes — the wire shape that accommodates all three uniformly.
-
-### S3-Q-003 — Per-archetype generation strategies
-
-Theme 3. How S3 generates for each of the five archetypes. Per-archetype admissibility-checking shape. The `capability-claim` recipe-kind selection question (run-as-execution vs metadata-inspection vs both). The UI archetype's honest constraints (Layout-level only at v1). Integration archetype's per-org-implementation variance handling.
-
-### S3-Q-004 — Grounded negative test generation
-
-Theme 4. What "grounded" means concretely per archetype. How the formula-parser deferral shapes v1 grounded-negative scope for claims grounded in validation rules. Structural shape of the `no-admissible-negative-scenario-found` refusal category.
-
-### S3-Q-005 — LLM integration architecture
-
-Theme 5. Tool-use vs single-shot structured JSON (the deferred Q-004 from top-level OPEN_QUESTIONS lives here). Model selection per archetype. Retry / repair strategies. Cost / latency envelope per generation. How the semantic-search-space guardrail (S3 Guardrail 1) shapes prompt design and retrieval scope.
-
-### S3-Q-006 — Prompt management and evaluation
-
-Theme 6. Prompt versioning. Eval infrastructure for generation quality AND refusal quality. Drift detection. How the generation ledger surfaces into eval comparison.
-
-### S3-Q-007 — Quality envelope
-
-Theme 7. What "good S3 output" looks like measurably. Acceptance thresholds for emission quality and refusal quality on parallel dimensions. How quality is observed at v1 without S6.
+_All Phase 1 design questions (S3-Q-001 through S3-Q-008) are resolved. See the Resolved section above and the per-theme entries in EVOLUTION.md. Phase 2 questions will be opened under their own headings when Phase 2 design begins._
 
 ---
 
@@ -52,3 +51,23 @@ Recorded during Theme 1 for downstream consideration:
 - **S6 attribution feedback loop.** When S6 ships, its `report_run_outcome`-driven attribution can inform S3's interpretation layer. S3's interpretation layer should be designed with a clean extension point for this; no v1 dependency.
 - **S8 recipe-evolution handoff.** Recipes S3 emits must be S8-evolvable from day one. Theme 3 (per-archetype strategies) operationalizes what this means structurally.
 - **S1 admissibility ceiling lifting.** When the formula parser ships and `REFERENCES` edges populate (substrate-1 §17), admissibility-checking automatically deepens for validation-rule-grounded claims. When StandardValueSet detection ships (substrate-1 §22), picklist admissibility deepens for standard fields. Both extensions are non-breaking to S3 design.
+- **Explanation canonicalization for prose surfaces.** V1 ships structured-only `attempted_interpretation` (per D-075). When LLM-generated rationale text is added as a transparency surface in some future iteration, explanation canonicalization rules must extend to cover prose. Forward-compat reservation; no v1 dependency.
+- **Operational observability substrate boundary.** The `llm_calls` table is substrate-3-adjacent in v1 per D-074. Provisional commitment — operational observability may eventually move to a future observability substrate without breaking substrate-3 semantics.
+- **Implementation topology of interpretation across the batch.** Theme 3 (D-077) commits to shared interpretation context across the batch — cross-requirement awareness for sprint batches is preserved; multi-archetype decomposition is supported. The orchestration shape that delivers this (one-pass, multi-pass coordinated, planner-style with explicit dependency graph) is resolved in Theme 5.
+- **Run-as-execution upgrade path for permission archetype.** Theme 3 (D-080) commits to recipe-kind selection preserving claim semantics; v1 defaults to metadata-inspection with refusal-with-disambiguation when run-as-execution is required. When S1 Tier 2 ships sharing rules, OWD, and Apex sharing modeling, currently-refused complex permission claims may upgrade to grounded run-as-execution recipes.
+- **Integration archetype interaction-topology admissibility.** Theme 3 (D-082) ships integration archetype with operational-only v1 admissibility (existence + structural connectivity). A future substrate-3 cycle may add interaction-topology admissibility — cross-system causality, external observability discipline, temporal sequencing semantics, protocol semantics — when integration becomes a larger product surface. Substrate-3 architectural slot reserved.
+- **Layer 2 admissibility upgrade for validation-rule-grounded negatives.** Theme 4 (D-083 e) commits to Layer 1 admissibility at v1 for validation-rule-grounded negatives, with artifact-level visibly degraded trust marker. When substrate-1 §17 formula parser ships, validation-rule-grounded negatives upgrade from Layer 1 to Layer 2 automatically — `admissibility_layer` artifact field shifts; substrate-emitted caveat no longer present. Non-breaking.
+- **Integration negative causal admissibility.** Theme 4 (D-084) ships integration negatives with constraint-admissibility framing (entity absence, configuration absence — the simplest cases). The philosophically deeper integration negatives (verifying non-firing of effects under specific causal conditions) require *causal admissibility* — temporal observation, causal interpretation, distributed-state reasoning — categorically different from constraint admissibility. A future substrate-3 cycle may add causal-admissibility framework; will likely converge with the Theme 3 interaction-topology admissibility reservation in the same future cycle.
+- ~~**Substrate-3 admissibility-confidence calibration for negative `policy_restraint` cause.** Theme 4 (D-083 b) introduces the `policy_restraint` internal cause for `no-admissible-negative-scenario-found`. The cause depends on the substrate's admissibility-confidence threshold; Theme 7's quality envelope work calibrates per archetype.~~ → **Resolved by D-094 (Theme 7)** as a governance resolution: the admissibility-confidence threshold is governance_context (semantic risk tolerance), not a quality-envelope-owned operational parameter. The quality envelope observes the resulting policy-refusal distribution but does not own the threshold.
+- **Per-archetype LLM model routing.** Theme 5 (D-085) commits that per-archetype model variation is operational, not architectural. The substrate's typed tool surface accepts any model conforming to the tool-use API contract. Theme 6 (prompt management) and Theme 7 (quality envelope) calibrate which models perform best per archetype through `operational_context.llm_model_identifier`.
+- **Substrate-3 tool surface evolution.** Theme 5 (D-086) commits to three thin semantic primitives as the stable durable tool surface. Future substrate-3 cycles may extend the surface (adding tools for new substrate operations) without breaking existing tools. Phase-shaped or reasoning-specific tools should remain substrate-internal orchestration, not protocol law.
+- **Substrate orchestration algorithm evolution.** Theme 5 (D-086) commits candidate derivation algorithms, admissibility evaluation strategies, dismissal recording patterns, and canonical auto-selection logic as substrate-internal — free to evolve through Themes 6/7 calibration without changing the LLM contract.
+- **Future operational refusal kinds.** Theme 5 (D-088) ships one operational refusal kind (`operational-budget-exhausted`). Future operational kinds (e.g., `operational-model-unavailable`, `operational-rate-limit-exhausted`) may be added if Theme 7 quality envelope identifies need; the third category axis is established.
+- **`explanation_hash` semantic-substance computation tuning.** Theme 5 (D-088) commits the semantic-substance computation rule for `explanation_hash`. The specific computation function may be tuned in Theme 7 quality envelope calibration as substrate-3 observes drift patterns in production. The semantic-substance principle is stable.
+- **Semantic adjudication theory in ambiguous enterprise QA.** Theme 6 (D-090 f) acknowledges that in genuinely ambiguous enterprise QA scenarios, multiple grounded, admissible, requirement-supported, review-approved generations may differ — substrate-3 currently lacks a theory of canonical semantic correctness in the validity-space sense (correctness as space, not point). V1 eval measures adherence to substrate-3's architectural commitments rather than absolute semantic correctness. Full resolution requires production data, longitudinal study, and likely formal work beyond v1 scope. Theme 7 may begin addressing the structural question; full resolution belongs to a future substrate-3 cycle.
+- **Per-archetype within-batch model routing.** Theme 6 (D-091 d) commits to single-model-per-batch in v1, chosen by dominant archetype. Post-v1 finer per-archetype routing within batches may be enabled in future Theme 6 calibration cycles when per-archetype × model behavioral profiles are well-characterized via production data and cross-model coherence within batches can be validated empirically.
+- **UI and integration archetype prompt fragments.** Theme 6 (D-089 b) ships base + 3 archetype fragments at v1 (data-behavior, configuration, permission). UI and integration prompt fragments deferred to a future Theme 6 calibration cycle when these archetypes have larger production footprint per D-081 (UI minimal v1 scope) and D-082 (integration operational-only admissibility).
+- **Drift event judgment framework formalization.** Theme 6 (D-090 c) ships v1 with drift events annotated with `regression` | `evolution` | `neutral` by substrate-3 maintainers. Theme 7 (D-093 c) partially formalized this via documented per-archetype evolution / regression / neutral signatures; full automated formalization (a mechanical theory of semantic improvement) remains future per the reservation below.
+- **Validity-space vs replay-determinism reconciliation.** Theme 7 (D-093 d) commits v1 to reproducibility (determinism) within a wider acceptability space. Principled non-determinism within the validity-space — when the substrate should legitimately vary its pick rather than always reproduce — requires the unresolved semantic adjudication theory (D-090 f). The reproducibility-versus-acceptability distinction is the architectural handle for that future work.
+- **Per-archetype×model quality envelopes.** Theme 7 (D-092 c) defines v1 quality envelopes relative to each archetype's canonical routing profile (default model). Per-archetype×model envelopes are deferred until per-model behavioral profiles are well-characterized via production data, consistent with D-091 d's deferral of per-archetype within-batch routing.
+- **Automated theory of semantic improvement.** Theme 7 (D-093 b) ships maintainer-judged evolution adjudication bounded by architectural invariants with documented safeguards (recorded rationale, asymmetric lower-refusal scrutiny, periodic invariant audit). A principled, mechanical theory of semantic improvement remains future.
