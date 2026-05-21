@@ -44,6 +44,7 @@ from primeqa.generation.protocol import (
     GenerationOutcome,
     RefusalEntry,
 )
+from primeqa.semantic.edges import TIER_1_EDGES
 from primeqa.semantic.query import Entity, SemanticOrgModel
 
 
@@ -311,14 +312,29 @@ class GovernanceCore:
     def check_refs_exist(self, *, intent_input: dict, ctx: ConversationContext) -> RefCheck:
         desc = intent_input.get("intent_descriptor") or {}
         hint = desc.get("target_subject_hint") or {}
+        at = ctx.semantic_context.s1_version_seq
+        if at is None:
+            return RefCheck(ok=False, feedback="no s1_version_seq pinned in semantic_context")
+
+        # configuration metadata-relationship: target_subject_hint carries the
+        # relationship {edge_type, source, target}; both endpoints must resolve.
+        if desc.get("archetype_hint") == "configuration":
+            missing: list[str] = []
+            for label in ("source", "target"):
+                ep = hint.get(label) or {}
+                et, api = ep.get("entity_type"), ep.get("sf_api_name")
+                if not et or not api or not self._admit.resolve_subject(et, api, at):
+                    missing.append(f"{label}:{et}:{api}")
+            if missing:
+                return RefCheck(ok=False, missing_refs=missing,
+                                feedback=f"relationship endpoint(s) not found at s1_version_seq {at}: {missing}")
+            return RefCheck(ok=True)
+
         et, api = hint.get("entity_type"), hint.get("sf_api_name")
         if not et or not api:
             return RefCheck(ok=False, feedback=(
                 "target_subject_hint must be an entity ref {entity_type, sf_api_name}; "
                 "descriptive selectors are not yet supported (query_entities deferred)"))
-        at = ctx.semantic_context.s1_version_seq
-        if at is None:
-            return RefCheck(ok=False, feedback="no s1_version_seq pinned in semantic_context")
         matches = self._admit.resolve_subject(et, api, at)
         if not matches:
             return RefCheck(ok=False, missing_refs=[f"{et}:{api}"],
@@ -330,6 +346,8 @@ class GovernanceCore:
         desc = intent_input.get("intent_descriptor") or {}
         excerpt = intent_input.get("requirement_excerpt", "")
         archetype = desc.get("archetype_hint")
+        if archetype == "configuration":
+            return self._resolve_configuration(intent_input, ctx, state)
         polarity = desc.get("polarity_hint")
         claim_kind = desc.get("claim_kind_hint")
         hint = desc.get("target_subject_hint") or {}
@@ -394,6 +412,75 @@ class GovernanceCore:
         nxt = NextAction.AWAIT_SELECTION if len(grounded) >= 2 else NextAction.PROCEED_TO_EMIT
         return IntentResolution(grounded_candidates=presented, next_action=nxt,
                                 interpretation_delta=delta)
+
+    # -- configuration metadata-relationship admissibility (D-098.1) ----
+    def _resolve_configuration(self, intent_input: dict, ctx: ConversationContext, state: Any) -> IntentResolution:
+        """Edge-existence admissibility for a config metadata-relationship-claim
+        (Layer-1-complete, D-079): resolve both endpoints, verify the asserted
+        Tier-1 edge exists between them. Edge present -> admissible; absent ->
+        the org lacks the assumed relationship -> ungrounded refusal."""
+        desc = intent_input["intent_descriptor"]
+        excerpt = intent_input.get("requirement_excerpt", "")
+        claim_kind = desc.get("claim_kind_hint")
+        hint = desc.get("target_subject_hint") or {}
+        at = ctx.semantic_context.s1_version_seq
+        src, tgt = hint.get("source") or {}, hint.get("target") or {}
+        edge_type = hint.get("edge_type")
+
+        def _cand(reason=None, status="dismissed", layer=None) -> _Candidate:
+            return _Candidate(
+                path_id="c0", archetype="configuration", claim_kind=claim_kind or "",
+                subject_refs=[src, tgt], requirement_anchor=excerpt,
+                status=status, admissibility_layer=layer, dismissal_reason=reason)
+
+        # Only metadata-relationship-claim is built for the config debut (D-098.1).
+        if claim_kind != "metadata-relationship-claim":
+            return IntentResolution([], NextAction.REFUSE, self._delta([], []),
+                                    refusal=self._router.underspecified(
+                                        f"configuration claim_kind {claim_kind!r} not yet supported "
+                                        f"(debut: metadata-relationship-claim)"))
+
+        # edge_type bound verbatim to TIER_1_EDGES — not a real edge -> ungrounded.
+        if edge_type not in TIER_1_EDGES:
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [_cand("type_incompatibility")]),
+                                    refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
+                                        "detail": f"edge_type {edge_type!r} is not a Tier-1 edge type",
+                                        "edge_type": edge_type}))
+
+        src_matches = self._admit.resolve_subject(src.get("entity_type"), src.get("sf_api_name"), at)
+        tgt_matches = self._admit.resolve_subject(tgt.get("entity_type"), tgt.get("sf_api_name"), at)
+        if len(src_matches) > 1 or len(tgt_matches) > 1:
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [_cand("ambiguous_target_resolution")]),
+                                    refusal=self._router.ambiguous(src_matches + tgt_matches))
+        if not src_matches or not tgt_matches:
+            return IntentResolution([], NextAction.REFUSE, self._delta([], []),
+                                    refusal=self._router.no_relevant_context("relationship endpoint did not resolve"))
+        source, target = src_matches[0], tgt_matches[0]
+        subject_refs = [
+            {"entity_type": source.entity_type, "sf_api_name": source.sf_api_name},
+            {"entity_type": target.entity_type, "sf_api_name": target.sf_api_name},
+        ]
+
+        # Layer-1-complete: the asserted edge exists in S1 or it does not.
+        related = self._s1.get_related(source.id, [edge_type], "outbound", at_seq=at)
+        edge_present = any(r.entity.id == target.id for r in related)
+
+        cand = _Candidate(path_id="c0", archetype="configuration", claim_kind=claim_kind,
+                          subject_refs=subject_refs, requirement_anchor=excerpt, status="dismissed")
+        if edge_present:
+            cand.status = "admissibly_grounded"
+            cand.admissibility_layer = AdmissibilityLayer.LAYER_1.value
+            presented = [PresentedCandidate(
+                path_id="c0", admissibility_layer=AdmissibilityLayer.LAYER_1,
+                summary={"edge_type": edge_type, "source": subject_refs[0], "target": subject_refs[1]})]
+            return IntentResolution(grounded_candidates=presented,
+                                    next_action=NextAction.PROCEED_TO_EMIT,
+                                    interpretation_delta=self._delta(related, [cand]))
+        cand.dismissal_reason = "insufficient_grounding"
+        return IntentResolution([], NextAction.REFUSE, self._delta(related, [cand]),
+                                refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
+                                    "detail": "asserted relationship not present in the org",
+                                    "edge_type": edge_type, "source": subject_refs[0], "target": subject_refs[1]}))
 
     # -- refusal materialization ----------------------------------------
     def route_refusal(self, *, directive: RefusalDirective, ctx: ConversationContext, state: Any) -> GenerationOutcome:

@@ -221,6 +221,16 @@ def intent(*, archetype="data_behavior", claim_kind, polarity, sf_api_name,
     return {"requirement_excerpt": excerpt, "intent_descriptor": desc}
 
 
+def rel_intent(*, edge_type, source, target, excerpt="Requirement assumes the relationship exists"):
+    """A configuration metadata-relationship-claim intent (D-098.1). `source`
+    and `target` are {entity_type, sf_api_name} dicts."""
+    return {"requirement_excerpt": excerpt, "intent_descriptor": {
+        "archetype_hint": "configuration", "polarity_hint": "positive",
+        "claim_kind_hint": "metadata-relationship-claim",
+        "target_subject_hint": {"edge_type": edge_type, "source": source, "target": target},
+    }}
+
+
 def query_outcome_rows(tenant_id=TEST_TENANT_ID):
     """Read the persisted ledger (fresh connection, after run)."""
     from primeqa.semantic.connection import get_tenant_connection

@@ -14,7 +14,8 @@ from primeqa.generation.enums import AdmissibilityLayer, OutcomeKind, RefusalKin
 from primeqa.generation.governance_core import GovernanceCore, phase_for_reason
 
 from .conftest import (
-    FakeToolTurn, TEST_TENANT_ID, intent, make_request, propose_turn, query_outcome_rows,
+    FakeToolTurn, TEST_TENANT_ID, intent, make_request, propose_turn,
+    query_outcome_rows, rel_intent,
 )
 
 
@@ -185,3 +186,60 @@ def test_operational_semantic_separation(seeded):
     ai = r.outcome.attempted_interpretation
     assert "no_constraint_supports_negative" in ai.dismissed_alternatives_by_reason
     assert all(c.raw_response is None for c in r.llm_calls)   # no operational rejection feedback
+
+
+# ---------------------------------------------------------------------------
+# Configuration metadata-relationship admissibility (D-098.1 — the C debut)
+# ---------------------------------------------------------------------------
+
+def test_config_metadata_relationship_present_edge_admits(seeded):
+    # Direct resolve_intent (grounded -> PROCEED_TO_EMIT; emission stubbed at ★).
+    # Seeded: ValidationRule "Case.RequireReason" APPLIES_TO Object "Case".
+    from uuid import uuid4
+    from primeqa.semantic.connection import get_tenant_connection
+    from primeqa.semantic.query import SemanticOrgModel
+    from primeqa.generation.governance import ConversationContext, NextAction
+    from primeqa.generation.protocol import (
+        GovernanceContext, OperationalContext, SemanticContext,
+    )
+    from primeqa.generation.runtime import RequirementState
+
+    ri = rel_intent(
+        edge_type="APPLIES_TO",
+        source={"entity_type": "ValidationRule", "sf_api_name": "Case.RequireReason"},
+        target={"entity_type": "Object", "sf_api_name": "Case"})
+    with get_tenant_connection(TEST_TENANT_ID) as conn:
+        gov = GovernanceCore(SemanticOrgModel(conn))
+        ctx = ConversationContext(
+            request_id=uuid4(), requirement_ref={}, requirement_text="x",
+            semantic_context=SemanticContext(s1_version_seq=seeded["v1"]),
+            governance_context=GovernanceContext(), operational_context=OperationalContext(),
+            shared_context={})
+        assert gov.check_refs_exist(intent_input=ri, ctx=ctx).ok   # both endpoints resolve
+        res = gov.resolve_intent(intent_input=ri, ctx=ctx,
+                                 state=RequirementState(request_id=ctx.request_id, requirement_ref={}))
+    assert res.next_action == NextAction.PROCEED_TO_EMIT
+    assert res.grounded_candidates[0].admissibility_layer == AdmissibilityLayer.LAYER_1
+
+
+def test_config_metadata_relationship_absent_edge_refuses(seeded):
+    # The VR does NOT apply to Account -> the org lacks the assumed relationship
+    # -> ungrounded refusal (no silent emit). Both endpoints exist, so this is a
+    # semantic (not operational) refusal.
+    _, res = _run(seeded, [rel_intent(
+        edge_type="APPLIES_TO",
+        source={"entity_type": "ValidationRule", "sf_api_name": "Case.RequireReason"},
+        target={"entity_type": "Object", "sf_api_name": "Account"})])
+    o = res.results[0].outcome
+    assert o.outcome_kind == OutcomeKind.REFUSAL
+    assert o.refusal_kind == RefusalKind.UNGROUNDED_CLAIM
+    assert "insufficient_grounding" in o.attempted_interpretation.dismissed_alternatives_by_reason
+
+
+def test_config_metadata_relationship_bad_edge_type_refuses(seeded):
+    # edge_type not in TIER_1_EDGES -> ungrounded (verbatim edge-type binding).
+    _, res = _run(seeded, [rel_intent(
+        edge_type="NOT_A_REAL_EDGE",
+        source={"entity_type": "ValidationRule", "sf_api_name": "Case.RequireReason"},
+        target={"entity_type": "Object", "sf_api_name": "Case"})])
+    assert res.results[0].outcome.refusal_kind == RefusalKind.UNGROUNDED_CLAIM
