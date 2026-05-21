@@ -6548,3 +6548,23 @@ Because the threshold is governance_context: per D-088, changing it changes gove
 - D-092 (Theme 7; quality envelope observes, does not own)
 
 ---
+
+## D-095 — S3 spine + tool surface — enforcement boundary, runtime control, conversation granularity
+
+**Date:** 2026-05-21
+**Substrates affected:** [S3]
+**Status:** Locked (TA-converged)
+
+**Context:** Phase 2 implementation of the S3 spine + tool surface, realizing Theme 5 (D-085–D-088). Grounding confirmed the LLM gateway is single-shot; the multi-turn orchestration loop is greenfield. Four implementation-time architectural forks, resolved via the TA review loop.
+
+**1. Layer-A enforcement boundary.** All of Layer A is spine-orchestrated and operational. The grounding-free checks (schema well-formedness, vocabulary-at-enum-positions, Guardrail-3 excerpt presence) execute in the spine. The one grounding-dependent Layer-A check — S1 entity refs exist at the pinned s1_version_seq (D-087) — is delegated through a NARROW operational seam method (check_refs_exist), distinct from the semantic resolve_intent. REJECTED: deferring S1-ref-existence behind the semantic seam. Layer-A operational identity is preserved structurally — a ref-existence failure is an operational rejection (rejected_for_correction -> structural-validation-failure, D-088a), never a semantic dismissal; the seam method's return type encodes the distinction. The semantic seam (resolve_intent) is reached only after all of Layer A passes. Keeps the operational/semantic separation (D-087) clean and Layer A enforced as a boundary precondition.
+
+**2. Gateway binding (tool_turn).** The S3 runtime owns the multi-turn loop; the gateway gains a transport-thin primitive (tool_turn) performing exactly one turn over caller-supplied messages/tools/tool_choice. The single-chokepoint discipline is satisfied by SHARED GOVERNANCE INTERNALS, not a single API function: tool_turn shares llm_call's rate-limit, routing, PII-redaction, and cost-logging (llm_usage_log) internals. No orchestration in tool_turn — the spine owns message history, tool_result construction, and turn sequencing. REJECTED: routing the loop through llm_call's prompt-module abstraction; calling provider.invoke raw.
+
+**3. Runtime control (force-per-phase).** The substrate forces the expected tool per phase via tool_choice (propose -> select -> emit), per D-085 (substrate in control; LLM as bounded cognition provider). Refusals remain substrate-routed: the LLM always proposes; the substrate authors admit-or-refuse. The phase choreography is ORCHESTRATION POLICY, not substrate ontology — an evolvable policy of the orchestration engine, not part of the locked tool contract or substrate invariants (consistent with D-086's substrate-internal lifecycle being free to evolve).
+
+**4. Conversation granularity.** One LLM conversation per requirement (1:1 with GenerationOutcome; clean budget attribution and replay isolation). The batch's shared interpretation context (D-077) is computed once and injected as a BOUNDED context into each per-requirement conversation. No hidden shared conversational state across requirements — the shared context is explicit and bounded, not an implicit shared conversation.
+
+**Relationship to Theme 5:** refines the realization of D-085–D-088; does not alter the locked tool contract (D-086) or the two-layer enforcement taxonomy (D-087). The Layer-A/Layer-B taxonomy is unchanged; resolution 1 specifies only the enforcement's code placement and operational identity.
+
+---
