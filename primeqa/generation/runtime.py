@@ -260,6 +260,17 @@ class ToolTurnFn(Protocol):
                  system: Optional[str]) -> Any: ...
 
 
+class LedgerPersisterProtocol(Protocol):
+    """Optional ledger persistence (D-096.6). When injected, the runtime calls
+    ``persist_request`` once at batch start, then ``persist_requirement_result``
+    as each requirement completes (per-requirement transaction). Spine unit
+    tests inject none."""
+
+    def persist_request(self, request: "GenerationRequest") -> None: ...
+    def persist_requirement_result(self, request: "GenerationRequest",
+                                   result: "RequirementResult") -> None: ...
+
+
 # ---------------------------------------------------------------------------
 # Per-requirement state
 # ---------------------------------------------------------------------------
@@ -317,11 +328,16 @@ class GenerationRuntime:
         self, *, request: GenerationRequest, seam: GovernanceProvider,
         tool_turn_fn: ToolTurnFn, requirements: Optional[list[RequirementInput]] = None,
         policy: Optional[PhasePolicy] = None,
+        persister: Optional[LedgerPersisterProtocol] = None,
     ) -> BatchResult:
         policy = policy or PhasePolicy()
         reqs = requirements if requirements is not None else self._derive_requirements(request)
         shared = self._compute_shared_context(request, reqs)   # once, bounded (D-095.4)
         budget = BatchBudget(request.operational_context.budgets)
+
+        # FK target first: the request row must exist before any outcome row.
+        if persister is not None:
+            persister.persist_request(request)
 
         results: list[RequirementResult] = []
         for i, req in enumerate(reqs):
@@ -335,7 +351,12 @@ class GenerationRuntime:
                 shared_context=shared,
             )
             progress = BatchProgress(resolved=i, total=len(reqs))
-            results.append(self._run_requirement(ctx, seam, tool_turn_fn, policy, budget, progress))
+            result = self._run_requirement(ctx, seam, tool_turn_fn, policy, budget, progress)
+            results.append(result)
+            # Per-requirement transaction (D-096.6): each outcome durable as it
+            # completes — partial-failure isolation for later requirements.
+            if persister is not None:
+                persister.persist_requirement_result(request, result)
 
         # No-silent-drops (D-072): exactly one outcome per requirement.
         assert len(results) == len(reqs), "no-silent-drops violated"
