@@ -236,7 +236,9 @@ class AttemptedInterpretation(_Base):
 
     candidate_paths: list[dict[str, Any]] = Field(default_factory=list)
     dismissed_alternatives_by_reason: dict[str, Any] = Field(default_factory=dict)
-    selected_path_id: Optional[int] = None
+    selected_path_id: Optional[str] = None
+    """``path_id`` is a string (D-086 / D-087); this references the canonical
+    candidate's ``path_id``, not a positional integer."""
 
 
 class GenerationOutcome(_Base):

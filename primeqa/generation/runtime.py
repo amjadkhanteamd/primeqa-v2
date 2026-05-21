@@ -1,0 +1,555 @@
+"""Substrate-3 orchestration spine (D-095; the spine proposal).
+
+The substrate starts running here — the constrained semantic orchestration
+runtime (D-085). Per requirement it drives a tool-use conversation
+(propose -> select -> emit), enforces the operational half of the Guardrail
+boundary (all of Layer A; D-095.1), and drives toward exactly one
+:class:`GenerationOutcome` (D-072 no-silent-drops). Governance (admissibility,
+Layer B, refusal routing) lives behind :class:`GovernanceProvider`; the LLM
+behind an injected ``tool_turn`` callable. This module contains NO governance
+logic and makes NO real LLM/DB calls.
+
+Key D-095 properties realized here:
+
+  - **All of Layer A is spine-orchestrated and operational** (D-095.1). The
+    grounding-free checks (``tools.validate_layer_a`` + forced-tool match +
+    Guardrail-3 excerpt presence) run in the spine; the grounding-dependent
+    S1-ref-existence check runs via ``seam.check_refs_exist`` (operational).
+    Any Layer-A failure -> ``rejected_for_correction`` (a corrective
+    ``tool_result``, an ``llm_calls`` row, attempt_index++); persistent ->
+    ``structural-validation-failure``. None of this touches
+    ``attempted_interpretation`` (D-088a) — the operational/semantic line.
+  - **Phase choreography is orchestration policy** (D-095.3): a configurable
+    :class:`PhasePolicy` forces the expected tool per phase. Not ontology.
+  - **One conversation per requirement** (D-095.4); the batch's bounded shared
+    interpretation context is computed once and injected — no hidden shared
+    conversational state.
+
+Out of scope this slice (deferred): real LLM (injected ``tool_turn``); DB
+persistence (produces persistence-ready Slice-0 types); Layer B / admissibility
+/ real S1 grounding / refusal-router internals (mocked seam); replay hashes;
+real prompt management (minimal presenter only).
+"""
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Callable, Optional, Protocol
+from uuid import UUID, uuid4
+
+from primeqa.generation.enums import LlmCallOutcome, RefusalKind
+from primeqa.generation.governance import (
+    ConversationContext,
+    GovernanceProvider,
+    NextAction,
+    RefusalDirective,
+)
+from primeqa.generation.protocol import BudgetSpec, GenerationOutcome, GenerationRequest
+from primeqa.generation import tools as _tools
+from primeqa.generation.tools import TOOLS, TOOL_EMIT, TOOL_PROPOSE, TOOL_SELECT
+
+
+# Default cap on Layer-A corrections within a single logical tool emission
+# (one phase). Exceeding it -> structural-validation-failure (D-087/D-088a).
+DEFAULT_MAX_CORRECTIONS = 3
+# Defensive global cap on turns per requirement (prevents an unbounded loop if
+# a misbehaving seam never terminates a phase).
+DEFAULT_MAX_TURNS = 24
+
+
+# ---------------------------------------------------------------------------
+# Operational telemetry — persistence-ready llm_calls record (D-087)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LlmCallRecord:
+    """One ``llm_calls`` row, in memory (D-087 b). Operational telemetry, NOT
+    semantic provenance. Persisted (with the FK to the outcome) by the
+    governance-core slice; produced here as a persistence-ready structure."""
+
+    call_id: UUID
+    tool_name: str
+    operational_outcome: LlmCallOutcome
+    attempt_index: int
+    model_identifier: str
+    token_count_input: Optional[int] = None
+    token_count_output: Optional[int] = None
+    timing_duration_ms: Optional[int] = None
+    raw_parameters: Optional[dict] = None
+    raw_response: Optional[dict] = None
+
+
+# ---------------------------------------------------------------------------
+# Tool-use block extraction (normalizes SDK objects or dicts)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ToolUseBlock:
+    id: str
+    name: str
+    input: dict
+
+
+def _battr(block: Any, key: str) -> Any:
+    if isinstance(block, dict):
+        return block.get(key)
+    return getattr(block, key, None)
+
+
+def extract_tool_uses(content_blocks: list) -> list[ToolUseBlock]:
+    """Pull tool_use blocks from a turn's content (duck-typed: SDK objects or
+    dicts). The spine reads ``id`` to key the next ``tool_result``."""
+    out: list[ToolUseBlock] = []
+    for b in content_blocks or []:
+        if _battr(b, "type") == "tool_use":
+            out.append(ToolUseBlock(
+                id=_battr(b, "id"), name=_battr(b, "name"),
+                input=_battr(b, "input") or {},
+            ))
+    return out
+
+
+def _assistant_tool_use_msg(tu: ToolUseBlock) -> dict:
+    return {"role": "assistant", "content": [
+        {"type": "tool_use", "id": tu.id, "name": tu.name, "input": tu.input},
+    ]}
+
+
+def _user_tool_result_msg(tu: ToolUseBlock, content: str, is_error: bool = False) -> dict:
+    block = {"type": "tool_result", "tool_use_id": tu.id, "content": content}
+    if is_error:
+        block["is_error"] = True
+    return {"role": "user", "content": [block]}
+
+
+# ---------------------------------------------------------------------------
+# Minimal presenter (real prompt management is Theme 6)
+# ---------------------------------------------------------------------------
+
+_SYSTEM = (
+    "You are substrate-3's bounded cognition provider. Respond ONLY by calling "
+    "the provided tools. Propose semantic intent; the substrate computes "
+    "admissibility and authors admit-or-refuse."
+)
+
+
+def _initial_user_message(ctx: ConversationContext) -> dict:
+    text = (
+        f"Requirement: {ctx.requirement_text}\n"
+        f"Shared interpretation context: {ctx.shared_context}\n"
+        "Call propose_semantic_intent for this requirement."
+    )
+    return {"role": "user", "content": text}
+
+
+# ---------------------------------------------------------------------------
+# Phase choreography policy (D-095.3 — orchestration policy, not ontology)
+# ---------------------------------------------------------------------------
+
+class Phase(str, Enum):
+    PROPOSE = "propose"
+    SELECT = "select"
+    EMIT = "emit"
+
+
+_PHASE_TOOL = {
+    Phase.PROPOSE: TOOL_PROPOSE,
+    Phase.SELECT: TOOL_SELECT,
+    Phase.EMIT: TOOL_EMIT,
+}
+
+
+@dataclass
+class PhasePolicy:
+    """Configurable per-phase tool forcing. Default: force the expected tool
+    via ``tool_choice`` (substrate in control, D-085). Swap for a different
+    control model without touching the spine."""
+
+    force_per_phase: bool = True
+
+    def expected_tool(self, phase: Phase) -> str:
+        return _PHASE_TOOL[phase]
+
+    def tool_choice(self, phase: Phase) -> Optional[dict]:
+        if self.force_per_phase:
+            return {"type": "tool", "name": _PHASE_TOOL[phase]}
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Budget (operational; per-request/batch — D-088c)
+# ---------------------------------------------------------------------------
+
+class BatchBudget:
+    """Tracks token / time / tool-call consumption against the request's
+    :class:`BudgetSpec`. Operational (spine-owned); exhaustion routes through
+    the seam's refusal router."""
+
+    def __init__(self, spec: Optional[BudgetSpec], clock: Callable[[], float] = time.monotonic):
+        self._spec = spec or BudgetSpec()
+        self._clock = clock
+        self._start = clock()
+        self.tokens = 0
+        self.tool_calls = 0
+
+    def consume(self, *, input_tokens: Optional[int], output_tokens: Optional[int]) -> None:
+        self.tokens += (input_tokens or 0) + (output_tokens or 0)
+        self.tool_calls += 1
+
+    @property
+    def elapsed_ms(self) -> int:
+        return int((self._clock() - self._start) * 1000)
+
+    def exceeded_dimension(self) -> Optional[str]:
+        s = self._spec
+        if s.token is not None and self.tokens >= s.token:
+            return "token"
+        if s.tool_call_count is not None and self.tool_calls >= s.tool_call_count:
+            return "tool_call_count"
+        if s.time_ms is not None and self.elapsed_ms >= s.time_ms:
+            return "time"
+        return None
+
+    def limit_for(self, dimension: str) -> Optional[int]:
+        return {"token": self._spec.token, "time": self._spec.time_ms,
+                "tool_call_count": self._spec.tool_call_count}.get(dimension)
+
+    def consumed_for(self, dimension: str) -> int:
+        return {"token": self.tokens, "time": self.elapsed_ms,
+                "tool_call_count": self.tool_calls}.get(dimension, 0)
+
+
+# ---------------------------------------------------------------------------
+# Inputs / results
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RequirementInput:
+    """One requirement to resolve. ``ref`` is the external requirement
+    reference (Slice-0 ``GenerationOutcome.requirement_ref`` shape)."""
+
+    ref: dict[str, Any]
+    text: str = ""
+
+
+@dataclass
+class BatchProgress:
+    resolved: int
+    total: int
+
+
+@dataclass
+class RequirementResult:
+    outcome: GenerationOutcome
+    llm_calls: list[LlmCallRecord]
+
+
+@dataclass
+class BatchResult:
+    results: list[RequirementResult]
+
+
+class ToolTurnFn(Protocol):
+    """Narrow injected transport. The real wiring binds gateway.tool_turn's
+    task/tenant_id/api_key/max_tokens; tests inject a fake. The return value is
+    duck-typed: ``.content_blocks``, ``.input_tokens``, ``.output_tokens``,
+    ``.model``, ``.stop_reason``, ``.latency_ms``."""
+
+    def __call__(self, *, messages: list, tools: list, tool_choice: Optional[dict],
+                 system: Optional[str]) -> Any: ...
+
+
+# ---------------------------------------------------------------------------
+# Per-requirement state
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RequirementState:
+    request_id: Any
+    requirement_ref: dict[str, Any]
+    messages: list = field(default_factory=list)
+    system: str = _SYSTEM
+    llm_calls: list[LlmCallRecord] = field(default_factory=list)
+    # Accumulating semantic provenance — populated ONLY from seam deltas
+    # (spine stores, never authors). Operational rejections never touch this.
+    attempted_interpretation: dict = field(default_factory=lambda: {
+        "candidate_paths": [], "dismissed_alternatives_by_reason": {}, "selected_path_id": None,
+    })
+    # Operational counters (for budget partial_state).
+    candidates_proposed: int = 0
+    candidates_admissibly_grounded: int = 0
+    canonicals_selected: int = 0
+    presented_candidates: list = field(default_factory=list)
+
+    def merge_interpretation(self, delta: Optional[dict]) -> None:
+        """Store a governance-authored semantic-provenance fragment. The spine
+        merges; it never invents semantic content."""
+        if not delta:
+            return
+        ai = self.attempted_interpretation
+        for cp in delta.get("candidate_paths", []) or []:
+            ai["candidate_paths"].append(cp)
+        for reason, ids in (delta.get("dismissed_alternatives_by_reason") or {}).items():
+            ai["dismissed_alternatives_by_reason"].setdefault(reason, []).extend(ids)
+        if delta.get("selected_path_id") is not None:
+            ai["selected_path_id"] = delta["selected_path_id"]
+        for k, v in delta.items():
+            if k not in ("candidate_paths", "dismissed_alternatives_by_reason", "selected_path_id"):
+                ai[k] = v
+
+
+# ---------------------------------------------------------------------------
+# The runtime
+# ---------------------------------------------------------------------------
+
+class GenerationRuntime:
+    """Drives a batch: one conversation per requirement, each to exactly one
+    outcome (D-072 / D-095.4)."""
+
+    def __init__(self, *, max_corrections: int = DEFAULT_MAX_CORRECTIONS,
+                 max_turns: int = DEFAULT_MAX_TURNS):
+        self._max_corrections = max_corrections
+        self._max_turns = max_turns
+
+    # -- public entry ----------------------------------------------------
+    def run(
+        self, *, request: GenerationRequest, seam: GovernanceProvider,
+        tool_turn_fn: ToolTurnFn, requirements: Optional[list[RequirementInput]] = None,
+        policy: Optional[PhasePolicy] = None,
+    ) -> BatchResult:
+        policy = policy or PhasePolicy()
+        reqs = requirements if requirements is not None else self._derive_requirements(request)
+        shared = self._compute_shared_context(request, reqs)   # once, bounded (D-095.4)
+        budget = BatchBudget(request.operational_context.budgets)
+
+        results: list[RequirementResult] = []
+        for i, req in enumerate(reqs):
+            ctx = ConversationContext(
+                request_id=request.request_id,
+                requirement_ref=req.ref,
+                requirement_text=req.text,
+                semantic_context=request.semantic_context,
+                governance_context=request.governance_context,
+                operational_context=request.operational_context,
+                shared_context=shared,
+            )
+            progress = BatchProgress(resolved=i, total=len(reqs))
+            results.append(self._run_requirement(ctx, seam, tool_turn_fn, policy, budget, progress))
+
+        # No-silent-drops (D-072): exactly one outcome per requirement.
+        assert len(results) == len(reqs), "no-silent-drops violated"
+        return BatchResult(results=results)
+
+    # -- per-requirement loop -------------------------------------------
+    def _run_requirement(
+        self, ctx: ConversationContext, seam: GovernanceProvider,
+        tool_turn_fn: ToolTurnFn, policy: PhasePolicy, budget: BatchBudget,
+        progress: BatchProgress,
+    ) -> RequirementResult:
+        state = RequirementState(request_id=ctx.request_id, requirement_ref=ctx.requirement_ref)
+        state.messages = [_initial_user_message(ctx)]
+        phase = Phase.PROPOSE
+        phase_attempt = 1   # == llm_calls.attempt_index within this logical emission (D-087)
+        turns = 0
+
+        while True:
+            # Budget (operational) — checked before each turn (D-088c).
+            dim = budget.exceeded_dimension()
+            if dim is not None:
+                return self._operational_refusal(
+                    RefusalKind.OPERATIONAL_BUDGET_EXHAUSTED, ctx, state, seam,
+                    payload=self._budget_payload(dim, budget, state, progress),
+                )
+            if turns >= self._max_turns:
+                return self._structural_failure(ctx, state, seam)
+            turns += 1
+
+            expected = policy.expected_tool(phase)
+            turn = tool_turn_fn(
+                messages=state.messages, tools=TOOLS,
+                tool_choice=policy.tool_choice(phase), system=state.system,
+            )
+            budget.consume(input_tokens=getattr(turn, "input_tokens", 0),
+                           output_tokens=getattr(turn, "output_tokens", 0))
+            model_id = getattr(turn, "model", "(unknown)")
+            tool_uses = extract_tool_uses(getattr(turn, "content_blocks", []))
+
+            # --- Layer A: a tool call must be present and well-formed ---
+            if not tool_uses:
+                fb = f"You must call {expected}; no tool call was made."
+                self._reject(state, _placeholder_block(expected), fb, phase_attempt, model_id, turn)
+                phase_attempt += 1
+                if phase_attempt > self._max_corrections:
+                    return self._structural_failure(ctx, state, seam)
+                continue
+
+            tu = tool_uses[0]   # forced-tool flow: exactly one call per turn
+            la = _tools.validate_layer_a(tu.name, tu.input)
+            if tu.name != expected:
+                la = _tools.LayerAResult(False, [f"expected tool {expected}, got {tu.name}"])
+            if not la.ok:
+                self._reject(state, tu, la.feedback, phase_attempt, model_id, turn)
+                phase_attempt += 1
+                if phase_attempt > self._max_corrections:
+                    return self._structural_failure(ctx, state, seam)
+                continue
+
+            # --- Layer A: operational S1-ref existence (propose only) ---
+            if tu.name == TOOL_PROPOSE:
+                rc = seam.check_refs_exist(intent_input=tu.input, ctx=ctx)
+                if not rc.ok:
+                    fb = rc.feedback or f"S1 entity refs not found: {rc.missing_refs}"
+                    self._reject(state, tu, fb, phase_attempt, model_id, turn)
+                    phase_attempt += 1
+                    if phase_attempt > self._max_corrections:
+                        return self._structural_failure(ctx, state, seam)
+                    continue
+
+            # --- Layer A passed: record the success llm_call ---
+            self._record_success(state, tu, phase_attempt, model_id, turn)
+
+            # --- Dispatch to the semantic seam ---
+            if tu.name == TOOL_PROPOSE:
+                res = seam.resolve_intent(intent_input=tu.input, ctx=ctx, state=state)
+                state.merge_interpretation(res.interpretation_delta)
+                state.candidates_proposed += 1
+                state.candidates_admissibly_grounded += len(res.grounded_candidates)
+                if res.next_action == NextAction.REFUSE:
+                    return self._route(res.refusal, ctx, state, seam)
+                state.presented_candidates = res.grounded_candidates
+                self._respond(state, tu, _present_candidates(res.grounded_candidates))
+                phase = Phase.SELECT if res.next_action == NextAction.AWAIT_SELECTION else Phase.EMIT
+                phase_attempt = 1
+                continue
+
+            if tu.name == TOOL_SELECT:
+                sv = seam.accept_selection(selection_input=tu.input, ctx=ctx, state=state)
+                state.merge_interpretation(sv.interpretation_delta)
+                if not sv.accepted:
+                    # The select call itself was an operational success (Layer A
+                    # passed; recorded above). A non-accept is a semantic Layer-B
+                    # finding -> substrate-routed refusal.
+                    directive = sv.finding or RefusalDirective(
+                        RefusalKind.STRUCTURAL_VALIDATION_FAILURE,
+                        {"reason": "selection not accepted"},
+                    )
+                    return self._route(directive, ctx, state, seam)
+                state.canonicals_selected += 1
+                self._respond(state, tu, "selection accepted; emit the outcome.")
+                phase = Phase.EMIT
+                phase_attempt = 1
+                continue
+
+            # TOOL_EMIT
+            ov = seam.finalize_outcome(outcome_input=tu.input, ctx=ctx, state=state)
+            state.merge_interpretation(ov.interpretation_delta)
+            if ov.override is not None:
+                return self._route(ov.override, ctx, state, seam)
+            return RequirementResult(outcome=ov.outcome, llm_calls=state.llm_calls)
+
+    # -- helpers ---------------------------------------------------------
+    def _reject(self, state: RequirementState, tu: ToolUseBlock, feedback: str,
+                attempt_index: int, model_id: str, turn: Any) -> None:
+        """Operational rejection (D-088a): append a corrective tool_result +
+        an llm_calls(rejected_for_correction) row. Never touches
+        attempted_interpretation."""
+        state.llm_calls.append(LlmCallRecord(
+            call_id=uuid4(), tool_name=tu.name,
+            operational_outcome=LlmCallOutcome.REJECTED_FOR_CORRECTION,
+            attempt_index=attempt_index, model_identifier=model_id,
+            token_count_input=getattr(turn, "input_tokens", None),
+            token_count_output=getattr(turn, "output_tokens", None),
+            timing_duration_ms=getattr(turn, "latency_ms", None),
+            raw_parameters=tu.input, raw_response={"feedback": feedback},
+        ))
+        state.messages.append(_assistant_tool_use_msg(tu))
+        state.messages.append(_user_tool_result_msg(tu, feedback, is_error=True))
+
+    def _record_success(self, state: RequirementState, tu: ToolUseBlock,
+                        attempt_index: int, model_id: str, turn: Any) -> None:
+        state.llm_calls.append(LlmCallRecord(
+            call_id=uuid4(), tool_name=tu.name,
+            operational_outcome=LlmCallOutcome.SUCCESS,
+            attempt_index=attempt_index, model_identifier=model_id,
+            token_count_input=getattr(turn, "input_tokens", None),
+            token_count_output=getattr(turn, "output_tokens", None),
+            timing_duration_ms=getattr(turn, "latency_ms", None),
+            raw_parameters=tu.input,
+        ))
+
+    def _respond(self, state: RequirementState, tu: ToolUseBlock, content: str) -> None:
+        """Append the assistant tool_use + the substrate's tool_result so the
+        next (forced) phase has the substrate response in context."""
+        state.messages.append(_assistant_tool_use_msg(tu))
+        state.messages.append(_user_tool_result_msg(tu, content, is_error=False))
+
+    def _route(self, directive: RefusalDirective, ctx: ConversationContext,
+               state: RequirementState, seam: GovernanceProvider) -> RequirementResult:
+        outcome = seam.route_refusal(directive=directive, ctx=ctx, state=state)
+        return RequirementResult(outcome=outcome, llm_calls=state.llm_calls)
+
+    def _operational_refusal(self, kind: RefusalKind, ctx: ConversationContext,
+                             state: RequirementState, seam: GovernanceProvider,
+                             payload: dict) -> RequirementResult:
+        return self._route(RefusalDirective(refusal_kind=kind, payload=payload), ctx, state, seam)
+
+    def _structural_failure(self, ctx: ConversationContext, state: RequirementState,
+                            seam: GovernanceProvider) -> RequirementResult:
+        # Persistent Layer-A failure -> structural-validation-failure (D-088a):
+        # operational origin, invalidity(output) refusal kind.
+        return self._operational_refusal(
+            RefusalKind.STRUCTURAL_VALIDATION_FAILURE, ctx, state, seam,
+            payload={"reason": "persistent Layer-A correction failure"},
+        )
+
+    @staticmethod
+    def _budget_payload(dim: str, budget: BatchBudget, state: RequirementState,
+                        progress: BatchProgress) -> dict:
+        return {
+            "budget_dimension": dim,
+            "budget_limit": budget.limit_for(dim),
+            "budget_consumed": budget.consumed_for(dim),
+            "partial_state_at_exhaustion": {
+                "candidates_proposed": state.candidates_proposed,
+                "candidates_admissibly_grounded": state.candidates_admissibly_grounded,
+                "canonicals_selected": state.canonicals_selected,
+                "requirements_resolved": progress.resolved,
+                "requirements_unresolved": progress.total - progress.resolved,
+            },
+        }
+
+    @staticmethod
+    def _derive_requirements(request: GenerationRequest) -> list[RequirementInput]:
+        out: list[RequirementInput] = []
+        for ref in request.semantic_context.requirement_refs or []:
+            text = ref.get("text") or ref.get("summary") or ref.get("requirement_text") or ""
+            out.append(RequirementInput(ref=ref, text=text))
+        return out
+
+    @staticmethod
+    def _compute_shared_context(request: GenerationRequest,
+                                reqs: list[RequirementInput]) -> dict:
+        """Bounded shared interpretation context (D-077 / D-095.4), computed
+        once and injected per requirement. Minimal this slice; real shared
+        interpretation is governance-core."""
+        return {
+            "s1_version_seq": request.semantic_context.s1_version_seq,
+            "s1_version_name": request.semantic_context.s1_version_name,
+            "requirement_count": len(reqs),
+        }
+
+
+def _present_candidates(candidates: list) -> str:
+    items = [
+        {"path_id": c.path_id, "admissibility_layer": c.admissibility_layer.value,
+         "summary": c.summary}
+        for c in candidates
+    ]
+    return f"admissibly_grounded_candidates={items}"
+
+
+def _placeholder_block(expected_tool: str) -> ToolUseBlock:
+    """A synthetic block for the no-tool-call rejection (so the correction
+    tool_result still threads through the message history)."""
+    return ToolUseBlock(id=f"no-tool-{uuid4().hex[:8]}", name=expected_tool, input={})
