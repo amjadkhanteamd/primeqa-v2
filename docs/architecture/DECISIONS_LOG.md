@@ -6592,3 +6592,27 @@ Because the threshold is governance_context: per D-088, changing it changes gove
 **Relationship to Theme 5:** realizes the D-085 engines and the two-layer enforcement (D-087) under the S1/S2 boundaries actually shipped. Does not alter the locked vocabularies (D-076/D-088) or the tool contract (D-086).
 
 ---
+
+## D-097 — Draft vertical (governance emission) close-out
+
+**Date:** 2026-05-21
+**Substrates affected:** [S3]
+**Status:** Locked (TA-converged)
+
+The emission half of S3 governance: an admissible grounded candidate becomes an emitted S2 claim + recipe (a draft `GenerationOutcome`). Builds on D-096 and the draft-vertical grounding (S2 write path; Layer-1-completeness per D-078/D-079). TA-converged.
+
+**.1 Debut = `data_behavior` value-claim positive (Option B).** The first emitted artifact sets the substrate's trust posture, so the debut must be verified, not caveated. B is Layer-1-complete (type + permission verification is the verification), needs no S2 claim-body cycle (the value-claim body ships), exercises the full emission machinery (admissibility, grounding, permission reasoning, identity, recipe, ledger, draft semantics), is the highest-volume archetype (D-078), and is operationally meaningful to QA users (e.g. "Profile X can edit Field Y; accepted values A/B/C" — actionable, org-specific). Configuration (Option C) is the immediate fast-follow — cleaner technically but less convincing as a debut (reads as metadata inspection, not test intelligence); its S2 claim-body cycle (3 bodies) runs in parallel. `data_behavior` negative (Option A) is never the debut — debuting caveated plausibility would anchor PrimeQA as intelligent approximation rather than grounded semantic infrastructure, and that is hard to reverse.
+
+**.2 Standard-picklist grounding gap = explicit degrade-or-refuse, never silent.** B's verified scope is type + permission + custom-picklist values; standard-picklist values are gapped (S1 §22, deferred). The substrate must not silently emit a value-claim touching standard-picklist values as if fully grounded — a hidden grounding asymmetry corrodes trust. On the unsupported path it must refuse (ungrounded) or degrade with an explicit unsupported-dimension marker. Fail loud; no quiet fallback. (v1 lean: refuse on the gapped dimension, so every emitted value-claim is fully verified — implementation call within this envelope.)
+
+**.3 Layer marker ≠ caveat; caveat from a centralized semantic-completeness registry.** `admissibility_layer` records how deep grounding went (the marker). The caveat records whether deeper unimplemented semantics exist for the claim_kind (a Layer 2 defined but unbuilt). Distinct axes: a Layer-1-complete claim_kind (config existence/property, value-claim positive — no deeper layer) carries the marker and no caveat; a Layer-1-plausible claim_kind (`data_behavior` negative — Layer 2 defined, parser-deferred) carries the marker and the mandatory caveat. The "does this claim_kind have a Layer 2?" determination is claim_kind-derived (per D-078), not a new `AdmissibilityLayer` enum value, and lives in one semantic-completeness registry / authority surface — never scattered across emission code.
+
+**.4 A draft is one semantic transaction.** Claim + recipe + draft outcome are atomic — one Session bound to the tenant-scoped connection (the S2 Coordinator writes claim/recipe in that Session; the `generation_*` ledger rows write in the same Session; one commit). The draft is itself the governed artifact, so loosely-coupled writes are wrong. The refusal-vertical persister's raw-connection path is reconciled to this Session-based path now, before the bifurcation hardens.
+
+**.5 Substrate authors semantic assertion; LLM owns linguistic realization (Guardrail 2).** The substrate authors the claim body from the grounded candidate's S1 entities — it owns what is asserted true. The LLM (via `emit_outcome`) phrases / structures / narrates / selects — it owns linguistic realization — and never decides what is true or authors entities. LLM-authored claims would make grounding advisory, weaken ontology boundaries, collapse replay stability, and blur semantic provenance. The substrate remains the author of semantic truth.
+
+**.6 Negative semantic verification is a first-class future milestone (architectural-gravity guard).** Debuting positives, and the cleanliness of verifiable positives (clean replay/eval, no parser dependence, trustworthy appearance), create long-term pressure to privilege positives and perpetually defer Layer 2 — making Layer 1 a comfortable local maximum and starving PrimeQA's real differentiation (semantic negative reasoning, edge-condition generation, admissibility-aware rejection). Layer 2 / negative semantic verification is recorded as a core committed milestone, not a deferred edge feature. Sequencing positives-first is correct; permanent privileging is not.
+
+**Slicing:** implement B end-to-end (the registry, positive admissibility, the standard-picklist handling, `accept_selection`/`finalize_outcome` → `write_claim`/`write_recipe` + `compute_identity_hash`, the conditional marker, the unified transaction with persister reconciliation), tested on local PG. C (configuration) is the immediate fast-follow.
+
+---
