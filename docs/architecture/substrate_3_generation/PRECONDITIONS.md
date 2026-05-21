@@ -92,29 +92,54 @@ source-of-record: `primeqa/semantic/edges.py` `TIER_1_EDGES`.
 
 ### §1.4 Query interfaces
 
-Per substrate-1 SPEC §2.3, S3 has access to three core query
-primitives for traversing the org model:
+Substrate-1's consumer query surface is its designed `SemanticOrgModel`
+(SPEC §12, D-022): a five-primitive interface — `get_entities`,
+`get_related`, `traverse`, `query_entities`, `current_version_seq` — plus
+the §11 diff engine (D-021: `diff_for_entities` / `diff_impact` /
+`diff_window`, with the `TraversalSpec` / `Change` structural shapes). These
+are two distinct surfaces, not one: the diff engine is for change/impact
+analysis; the five primitives are for as-of reads. D-022 fixed the
+invariants — version-aware access only (`at_seq` required; no "current"
+default), explicit edge direction, no raw SQL across the boundary — and
+explicitly left "full ergonomics [to] emerge during Substrate 3 design."
 
-- **`TraversalSpec`** — declarative directionality, max depth,
-  edge category / edge type filters.
-- **`Change`** — event-sourced change-log row exposing diffs
-  between logical version checkpoints.
-- **`DiffEngine.diff_for_entities()`** — produces a `DiffResult`
-  across entity_ids between two checkpoints.
+**Status: realized incrementally.** D-023 (which deferred the interface to a
+Tier-0 `diff_window` scaffold) was superseded by D-024 — S1 ships the full
+Phase 2 SPEC, design-locked — so the interface is designed-and-locked, not
+deferred-away. It is built one increment at a time, each landing with the
+consumer slice that first exercises it.
 
-All queries are version-aware (substrate-1's `version_seq` +
-`version_name` dual identifiers). S3 will use these to:
+**Shipped (this slice — `primeqa/semantic/query.py`):** the read subset S3's
+admissibility grounding consumes —
 
-- Resolve entity references to current `entity_id` values.
-- Walk edges to find related entities.
-- Maintain snapshot consistency across a generation session.
+- **`current_version_seq()`** — the version pin (`MAX(version_seq)`).
+- **`get_entities(entity_type, at_seq, filters=None)`** — entity existence +
+  property inspection, exact-match filters over a whitelist.
+- **`get_related(entity_id, edge_types, direction, at_seq)`** — single-hop
+  typed-edge lookup; far-end entity resolved as-of the same `at_seq`.
 
-Note: substrate-1's design-era language sometimes refers to "five
-primitives." The delivered Phase 2 shape settled at three
-primitives plus two structural concepts (logical versioning +
-bitemporal supersession) that enable them. The consumer-facing
-query surface is not yet fully shipped at S3 design time —
-implementation is deferred per D-023.
+All three apply the bitemporal as-of predicate (`valid_from_seq <= V AND
+(valid_to_seq IS NULL OR valid_to_seq > V)`), are version-aware fail-loud (an
+`at_seq` absent from `logical_versions` raises `VersionNotFoundError`, never a
+silent empty result), and run over an already-tenant-scoped connection
+(`SemanticOrgModel(conn)`, with `conn` from `get_tenant_connection`). The dual
+`version_seq` + `version_name` identifiers and bitemporal supersession are the
+two structural concepts that make the as-of reads work.
+
+**Designed but not yet built** (each lands with its consumer slice):
+
+- **`query_entities`** — condition-based / descriptive-selector resolution
+  (the eventual feed for `ambiguous-reference` /
+  `ambiguous_target_resolution`).
+- **`traverse`** — multi-hop graph walk.
+- **The diff engine** — `diff_for_entities` / `diff_impact` / `diff_window`
+  with `TraversalSpec` / `Change` (SPEC §11) — the drift / impact-analysis
+  surface, for S3's later replay / impact slices.
+
+So S3 admissibility resolves entity references and walks single-hop edges
+against the shipped read subset, version-pinned for snapshot consistency
+across a generation session; descriptive-selector resolution and diff/impact
+traversal arrive with their slices.
 
 ---
 
