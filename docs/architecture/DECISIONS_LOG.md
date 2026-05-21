@@ -6568,3 +6568,27 @@ Because the threshold is governance_context: per D-088, changing it changes gove
 **Relationship to Theme 5:** refines the realization of D-085–D-088; does not alter the locked tool contract (D-086) or the two-layer enforcement taxonomy (D-087). The Layer-A/Layer-B taxonomy is unchanged; resolution 1 specifies only the enforcement's code placement and operational identity.
 
 ---
+
+## D-096 — Governance-core — admissibility model, Layer-1 semantics, Layer-B discipline, slicing
+
+**Date:** 2026-05-21
+**Substrates affected:** [S3]
+**Status:** Locked (TA-converged)
+
+**Context:** Phase 2 governance-core — filling the GovernanceProvider seam (D-095) with real reasoning, realizing the D-085 engines (admissibility, governance / Layer B, decomposition, refusal router) over the S1 SemanticOrgModel boundary (db92aaf). S1 grounding offers get_entities (exact-match) + get_related (single-hop) + current_version_seq only; Layer 2 admissibility (formula semantics) needs the deferred S1 §17 parser. Resolved via the TA review loop.
+
+**1. Admissibility model.** Candidate derivation is requirement-anchored — origination is the requirement excerpt; S1 verifies, never originates (Guardrail 3 / D-083a). Scoped neighborhoods are built from single-hop get_related walks + exact-match get_entities; traverse is NOT built yet — single-hop now, traversal later, because multi-hop without semantic scoping degrades into graph-wandering, and admissibility patterns + neighborhood discipline must mature first. Admissibility is determined per claim_kind (D-078); dismissals are phase-tagged (D-076/D-077). Admissibility is substrate-authored; the LLM never authors it (D-085).
+
+**2. Layer-1 semantics — transitional, plausibility not verification.** At v1 only Layer 1 is available (Layer 2 = formula-semantics confirmation, parser-deferred per D-083/§17). Layer 1 proves a constraint EXISTS and is ACTIVE on the subject — NOT that its formula enforces the specific claimed rejection. Its semantic promise is therefore "constraint-grounded rejection plausibility," NOT semantic negative verification, and it must be framed and sold as such (no internal overselling). The Layer-1 marker is structurally unavoidable in the emitted artifact — artifact-top-level and operationally visible (D-083), never buried metadata; a caveat that is "legally true but operationally invisible" is unacceptable. Layer 1 is explicitly TRANSITIONAL: Layer 2 (the S1 §17 formula parser) is the intended semantic end-state and is preserved as first-class, so the architecture does not ossify around constraint-existence-as-grounding-truth.
+
+**3. Layer-B discipline — sanity filter, not verifier.** Layer B is a semantic SANITY FILTER, not a semantic verifier. It may ONLY reject (structurally weak excerpt support, obvious contradiction, missing anchoring); it may NOT author semantics, reinterpret intent, or upgrade grounding. The proposing model never validates its own proposal (no self-authored semantic legitimacy); no "mini semantic judges" inside Layer B — that path leads to duplicated reasoning, governance ambiguity, and validator/proposer disagreement spirals. v1 is a structural floor with explicit semantic incompleteness; full semantic-support verification is a known deferred capability, gated on the same semantic end-state as Layer 2.
+
+**4. explanation_hash.** Computed now — a refusal outcome is incomplete without it — mechanically over the typed attempted_interpretation per D-075, adapted to the Slice-0/D-087 shape (path_id normalized away by canonical ordering; scoped_neighborhood carried via extra). The full replay/regeneration controller (drift events, lineage comparison, transparency_policy_version migration) is deferred.
+
+**5. Slicing — refusal vertical first.** The cut is at "admissibly-grounded -> emit." The refusal vertical implements the full admissibility engine (it is how no-grounding is determined), Layer-B-for-refusal, the refusal router, explanation_hash, and persistence — end-to-end with real S1 grounding. resolve_intent is built whole (grounded-or-not); finalize_outcome (emission) is stubbed. The emission half (S2 write_claim/write_recipe + identity_hash + draft outcome) and the config-vs-data_behavior claim-body decision are deferred to the draft vertical.
+
+**6. Persistence.** Per-requirement transaction boundary — partial-failure isolation, important for replay and budget-exhaustion partial state; a runtime-invoked persistence module; FK write order generation_requests -> generation_outcomes -> llm_calls.
+
+**Relationship to Theme 5:** realizes the D-085 engines and the two-layer enforcement (D-087) under the S1/S2 boundaries actually shipped. Does not alter the locked vocabularies (D-076/D-088) or the tool contract (D-086).
+
+---
