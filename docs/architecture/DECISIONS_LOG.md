@@ -6616,3 +6616,29 @@ The emission half of S3 governance: an admissible grounded candidate becomes an 
 **Slicing:** implement B end-to-end (the registry, positive admissibility, the standard-picklist handling, `accept_selection`/`finalize_outcome` → `write_claim`/`write_recipe` + `compute_identity_hash`, the conditional marker, the unified transaction with persister reconciliation), tested on local PG. C (configuration) is the immediate fast-follow.
 
 ---
+
+## D-098 — Draft-vertical debut: flip B → C (supersedes D-097.1, on a grounding finding)
+
+**Date:** 2026-05-21
+**Substrates affected:** [S3]
+**Status:** Locked (TA-converged)
+
+The draft-vertical grounding (read-only) contradicted a load-bearing premise of D-097.1's B debut. Recorded as a superseding entry so the reversal and its cause stay on the record. D-097.2 goes moot for the config debut; D-097.3/.4/.5/.6 stand unchanged. TA-converged.
+
+**Finding (why D-097.1 reopened).** (1) A `data_behavior` value-claim's accepted-values dimension is ungroundable today: inline custom picklists are not edge-modeled, GVS-backed fields are absent in the sandbox with their values on an unreachable detail table, standard picklists are unlinked. (2) Field type lives on a detail table, and SPEC §12's query interface (five primitives + diffs) exposes no detail-table data and designs no detail join — detail exposure is not a deferred-but-designed item but unperformed S1 architecture work. So B's verified debut collapses to permission-only (shipped boundary) or permission+type (requiring net-new S1 design); the "verified value-claim with accepted values" artifact overshoots current grounding. B's semantic center was always the value semantics, not the permission assertion; once values/type are ungrounded, B is weak permission metadata or ontology distortion.
+
+**.1 (supersedes D-097.1) Debut = configuration metadata-relationship-claim.** C is genuinely complete over the shipped substrate boundary — the asserted relationship is a Tier-1 edge verified via `get_related`, no S1 change, no detail reads. Preferred over bare existence-claim: a metadata-relationship-claim is a requirement-grounding assertion ("Requirement assumes Validation Rule R on Account — verified: the org contains R") — semantic grounding, org-aware verification, requirement interpretation, not passive metadata reporting. S2 cost is one config claim body (`MetadataRelationshipClaimBody`) + admissibility; bounded and needed eventually regardless.
+
+**.2 Trust principle clarified — semantic completeness, not perceived richness.** The debut artifact is chosen for semantic completeness over the current substrate boundary, not for maximal semantic richness. A smaller, fully-grounded claim is architecturally stronger than richer-but-partially-fictional semantics. Debuting B as a "verified value-claim" it cannot fulfill would be the oversell D-097.1 exists to prevent; C honors the principle that chose B.
+
+**.3 Reject permission-only B as ontology distortion.** "Profile X can read/edit Field Y" is a permissions-archetype assertion; forcing it into a `data_behavior` value-claim body to dodge the S2 cycle is architectural cheating — permission is not value behavior. Not an option.
+
+**.4 S1 detail-read = deliberate future substrate work, not debut patching.** Detail-table exposure is unperformed S1 query-interface design. It is authored deliberately as its own S1 increment when its consumers arrive (config property-claims, value-claim type grounding) — never as a quick debut-driven join. S1 query-interface evolution stays deliberate substrate design.
+
+**.5 Configuration existence is NOT the long-term semantic center of S3.** C is the correct debut because it is the strongest fully-grounded artifact over the current substrate boundary — not because configuration existence is the long-term semantic center of S3. Config claims replay / ground / explain / validate cleanly — an attractive local maximum — and the substrate must not psychologically recenter on metadata existence. PrimeQA's differentiation depends on behavioral semantic verification, explicitly preserved as the long-term center of gravity (reinforcing D-097.6). The grounding gap validates D-097.6: the substrate is discovering where semantic verification genuinely becomes hard, which is evidence the decomposition is correct.
+
+**Net effect on D-097:** .1 flips B → C; .2 (standard-picklist handling) is moot for the config debut; D-097.3 (semantic-completeness registry), .4 (unified transaction), .5 (substrate-authored / LLM-transcribed), .6 (negatives first-class) stand unchanged.
+
+**Slicing:** ship `MetadataRelationshipClaimBody` (config) + config metadata-relationship admissibility (edge-existence via `get_related`, Layer-1-complete) + emission (the unchanged D-097.3–.5 machinery), tested on local PG.
+
+---
