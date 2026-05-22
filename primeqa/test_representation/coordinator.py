@@ -111,6 +111,7 @@ _VALID_TRIGGER_KINDS = frozenset({
     "ui-trigger",
     "time-trigger",
     "configuration-trigger",
+    "inspection-trigger",   # D-099 — invariant-inspective initiation mode
 })
 
 _VALID_RECIPE_KINDS = frozenset({

@@ -156,12 +156,20 @@ def seeded(db_setup) -> dict:
 
 @pytest.fixture(autouse=True)
 def clean_ledger(db_setup):
-    """Clear the generation ledger before each test (S1 seed persists)."""
+    """Clear the generation ledger AND the substrate-2 test tables before each
+    test (the S1 seed persists). The draft vertical writes real S2 claims/recipes
+    via the Coordinator, so a clean S2 slate keeps emission tests isolated (and
+    makes the dedup test's first emit genuinely fresh)."""
     from primeqa.semantic.connection import get_tenant_connection
     with get_tenant_connection(TEST_TENANT_ID) as conn:
         conn.execute(text("DELETE FROM llm_calls"))
         conn.execute(text("DELETE FROM generation_outcomes"))
         conn.execute(text("DELETE FROM generation_requests"))
+        # substrate-2 tables (emission writes here); CASCADE handles FK order.
+        conn.execute(text(
+            "TRUNCATE test_claim_coverage, test_provenance, "
+            "test_recipe_runtime_state, test_requirement_links, "
+            "test_recipes, test_claims CASCADE"))
     yield
 
 

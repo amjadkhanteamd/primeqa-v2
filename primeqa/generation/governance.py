@@ -143,6 +143,11 @@ class OutcomeVerdict:
     outcome: Optional[GenerationOutcome] = None     # validated draft GenerationOutcome
     interpretation_delta: dict[str, Any] = field(default_factory=dict)
     override: Optional[RefusalDirective] = None     # governance override -> refusal
+    # Substrate-authored S2 bodies for the draft (an ``emission.EmissionBundle``;
+    # typed Any to keep this seam free of an S2 import, matching ``state: Any``).
+    # The persister writes them in one Session (D-097.4 / D-099); refs do not
+    # exist until post-write. None on refusal/override.
+    emission: Optional[Any] = None
 
 
 # ---------------------------------------------------------------------------

@@ -31,13 +31,20 @@ from uuid import uuid4
 
 from primeqa.generation.enums import AdmissibilityLayer, OutcomeKind, RefusalKind
 from primeqa.generation.explanation_hash import compute_explanation_hash
+from primeqa.generation.emission import (
+    GroundedEmission,
+    _Endpoint,
+    author_emission,
+)
 from primeqa.generation.governance import (
     ConversationContext,
     IntentResolution,
     NextAction,
+    OutcomeVerdict,
     PresentedCandidate,
     RefCheck,
     RefusalDirective,
+    SelectionVerdict,
 )
 from primeqa.generation.protocol import (
     AttemptedInterpretation,
@@ -470,6 +477,20 @@ class GovernanceCore:
         if edge_present:
             cand.status = "admissibly_grounded"
             cand.admissibility_layer = AdmissibilityLayer.LAYER_1.value
+            # Stash the grounding facts for emission (D-097.5): finalize_outcome
+            # authors the claim + recipe bodies from these S1-resolved endpoints,
+            # never from LLM-supplied data.
+            if state is not None:
+                state.grounded_emission = GroundedEmission(
+                    archetype="configuration", claim_kind=claim_kind,
+                    edge_type=edge_type, version_seq=at,
+                    source=_Endpoint(
+                        entity_id=source.id, entity_type=source.entity_type,
+                        external_id=source.sf_api_name or str(source.id)),
+                    target=_Endpoint(
+                        entity_id=target.id, entity_type=target.entity_type,
+                        external_id=target.sf_api_name or str(target.id)),
+                    requirement_excerpt=excerpt)
             presented = [PresentedCandidate(
                 path_id="c0", admissibility_layer=AdmissibilityLayer.LAYER_1,
                 summary={"edge_type": edge_type, "source": subject_refs[0], "target": subject_refs[1]})]
@@ -497,12 +518,57 @@ class GovernanceCore:
             dismissal_taxonomy_version=ctx.governance_context.dismissal_taxonomy_version,
         )
 
-    # -- emission stubs (draft vertical, D-096.5) -----------------------
-    def accept_selection(self, *, selection_input, ctx, state):
-        raise NotImplementedError("emission deferred to the draft vertical")
+    # -- emission (draft vertical: config metadata-relationship debut) --
+    def accept_selection(self, *, selection_input, ctx, state) -> SelectionVerdict:
+        """Layer-B reject-only floor over the canonical selection. The single-
+        candidate config debut auto-selects (PROCEED_TO_EMIT) and never reaches
+        here; when >=2 candidates are presented, accept iff the chosen path was
+        one the substrate actually presented (never authors/upgrades, D-096.3)."""
+        chosen = (selection_input or {}).get("path_id")
+        presented = {getattr(c, "path_id", None)
+                     for c in getattr(state, "presented_candidates", []) or []}
+        if chosen is not None and presented and chosen not in presented:
+            return SelectionVerdict(accepted=False, finding=RefusalDirective(
+                RefusalKind.STRUCTURAL_VALIDATION_FAILURE,
+                {"reason": f"selected path {chosen!r} was not presented"}))
+        return SelectionVerdict(accepted=True,
+                                interpretation_delta={"selected_path_id": chosen or "c0"})
 
-    def finalize_outcome(self, *, outcome_input, ctx, state):
-        raise NotImplementedError("emission deferred to the draft vertical")
+    def finalize_outcome(self, *, outcome_input, ctx, state) -> OutcomeVerdict:
+        """Author the draft: the substrate builds the S2 claim + recipe bodies
+        from the grounded candidate (Guardrail 2 / D-097.5), applies the marker
+        (D-097.3), and returns an OutcomeVerdict carrying the bodies. The
+        persister writes claim + recipe + ledger atomically (D-097.4 / D-099);
+        the LLM's ``outcome_input`` owns only linguistic realization, never
+        truth or entities."""
+        grounded = getattr(state, "grounded_emission", None)
+        if grounded is None:
+            # Only the configuration metadata-relationship debut emits today
+            # (D-098.1); behavioral emission is the deferred Layer-2 milestone
+            # (D-097.6) — fail loud rather than emit an unauthored draft.
+            raise NotImplementedError(
+                "emission is built for the configuration metadata-relationship "
+                "debut (D-098/D-099); other archetypes are deferred (D-097.6)")
+        bundle = author_emission(grounded)
+
+        # Mark the canonical path selected in the reasoning artifact.
+        ai = dict(state.attempted_interpretation)
+        ai["selected_path_id"] = "c0"
+        outcome = GenerationOutcome(
+            outcome_id=uuid4(), request_id=ctx.request_id,
+            requirement_ref=ctx.requirement_ref,
+            outcome_kind=OutcomeKind.DRAFT,
+            # The marker (D-097.3): how deep grounding actually went —
+            # Layer-1-complete for a config metadata-relationship. The caveat
+            # (bundle.caveat_required) is False here, from the single authority.
+            # claims_written / recipes_written are assigned post-write (D-099).
+            admissibility_layer=AdmissibilityLayer.LAYER_1,
+            attempted_interpretation=AttemptedInterpretation(**ai),
+            explanation_hash=compute_explanation_hash(ai),
+            dismissal_taxonomy_version=ctx.governance_context.dismissal_taxonomy_version,
+        )
+        return OutcomeVerdict(outcome=outcome, emission=bundle,
+                              interpretation_delta={"selected_path_id": "c0"})
 
     # -- interpretation_delta assembly ----------------------------------
     @staticmethod

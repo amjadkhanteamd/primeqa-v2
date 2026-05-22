@@ -243,6 +243,10 @@ class BatchProgress:
 class RequirementResult:
     outcome: GenerationOutcome
     llm_calls: list[LlmCallRecord]
+    # Substrate-authored S2 bodies for a draft (an ``emission.EmissionBundle``;
+    # Any to avoid an S2 import here). The persister writes claim + recipe +
+    # ledger atomically (D-097.4 / D-099). None on refusal.
+    emission: Optional[Any] = None
 
 
 @dataclass
@@ -292,6 +296,10 @@ class RequirementState:
     candidates_admissibly_grounded: int = 0
     canonicals_selected: int = 0
     presented_candidates: list = field(default_factory=list)
+    # Grounding facts stashed by governance during config grounding (an
+    # ``emission.GroundedEmission``); finalize_outcome authors the bodies from
+    # it (D-097.5). None until an admissibly-grounded config candidate forms.
+    grounded_emission: Optional[Any] = None
 
     def merge_interpretation(self, delta: Optional[dict]) -> None:
         """Store a governance-authored semantic-provenance fragment. The spine
@@ -467,7 +475,8 @@ class GenerationRuntime:
             state.merge_interpretation(ov.interpretation_delta)
             if ov.override is not None:
                 return self._route(ov.override, ctx, state, seam)
-            return RequirementResult(outcome=ov.outcome, llm_calls=state.llm_calls)
+            return RequirementResult(outcome=ov.outcome, llm_calls=state.llm_calls,
+                                     emission=ov.emission)
 
     # -- helpers ---------------------------------------------------------
     def _reject(self, state: RequirementState, tu: ToolUseBlock, feedback: str,

@@ -111,6 +111,7 @@ TRIGGER_KIND_ENUM = ENUM(
     "ui-trigger",
     "time-trigger",
     "configuration-trigger",
+    "inspection-trigger",   # D-099 — reopens D-055's five-kind lock
     name="trigger_kind",
     create_type=False,
 )
