@@ -4344,7 +4344,7 @@ This separation enables a clean equivalence algebra:
 - Same semantic + different governance → expected behavior change (different refusals, different dismissed alternatives) by design, not regression.
 - Different semantic → expected semantic divergence by construction.
 
-**Regeneration lineage typed.** `prior_request_id` is the binary discriminator: NULL → fresh request; non-NULL → regeneration. When regeneration, `deltas` carries a typed `regeneration_kind` discriminator over five values:
+**Regeneration lineage typed.** `prior_request_id` is the binary discriminator: NULL → fresh request; non-NULL → regeneration. When regeneration, `deltas` carries a typed `regeneration_kind` discriminator over six values:
 
 | regeneration_kind          | Category             | Semantic continuity edge? |
 |----------------------------|----------------------|---------------------------|
@@ -5734,7 +5734,7 @@ Per round 2 TA pushback (item 5): typed schemas constrain vocabulary, structure,
 
 *Layer A — Tool-boundary schema validation (necessary).* Validates at the tool emission boundary:
 
-- *Substrate-authorized vocabulary at vocabulary positions.* All enum-typed parameters bounded to substrate-2 taxonomy or substrate-3 reasoning vocabulary. Archetype ∈ {data-behavior, configuration, permission, ui, integration}; claim_kind ∈ substrate-2 taxonomy; dismissal_reason ∈ D-076 enum (8 values); refusal_kind ∈ D-073 enum (8 values post-Theme 5); cause ∈ D-083 enum (3 values); admissibility_layer ∈ D-083 enum (2 values).
+- *Substrate-authorized vocabulary at vocabulary positions.* All enum-typed parameters bounded to substrate-2 taxonomy or substrate-3 reasoning vocabulary. Archetype ∈ {data_behavior, configuration, permission, ui, integration}; claim_kind ∈ substrate-2 taxonomy; dismissal_reason ∈ D-076 enum (8 values); refusal_kind ∈ D-073 enum (8 values post-Theme 5); cause ∈ D-083 enum (3 values); admissibility_layer ∈ D-083 enum (2 values).
 - *Structural well-formedness.* Required parameters present; types match schemas.
 - *Guardrail 3 syntactic precondition.* `requirement_excerpt` present on every `propose_semantic_intent`; references resolvable to the request's requirement text.
 - *S1 entity refs.* All S1 entity references validated as existing at the current `s1_version_seq` per D-071's semantic_context.
