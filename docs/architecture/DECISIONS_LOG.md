@@ -6696,3 +6696,19 @@ TA-converged. Debut: `data_behavior` prohibition-claim, negative polarity — th
 **.4 Persistence/dedup — reuse the unified persister verbatim** (claim+recipe+ledger atomic) plus the caveat column; identity/dedup unchanged.
 
 ---
+
+## D-102 — Generation eval suite: v1 realization (deterministic core first)
+
+**Date:** 2026-05-22
+**Substrates affected:** [S3]
+**Status:** Confirmed (no TA — realizes D-090)
+
+Realizes D-090 as a Phase-2-scoped subset; D-090 stays the full target. Confirmed (no TA — realizes D-090; the strategy follows from the governed outcome being deterministic given a fixed intent).
+
+**.1 Two-layer determinism strategy.** The governed outcome is deterministic given a fixed intent + fixture (grounding, admissibility, refusal routing, emission authoring, caveat verdict, and both hashes are substrate-authored and mechanical); the LLM's only outcome-affecting freedom is which intent it proposes and which candidate it selects. So: a deterministic core (scripted/recorded tool-turns → reproducible governed outcome + stable `identity_hash`/`explanation_hash`) is the CI gate and the two-invariant replay net (D-090(d)), asserting exact governed properties — `outcome_kind`, `admissibility_layer`, caveat, `refusal_kind`+cause, claim/recipe shape — never LLM phrasing (D-090(f)); a live-LLM layer (binds the real gateway) tests the LLM's interpretation, asserts with tolerance (governed-outcome family, never phrasing), runs periodically (not PR-gating) at D-090's pre-release/continuous cadence, and its variance feeds D-090(c)'s drift framework (regression|evolution|neutral), not suppressed as noise.
+
+**.2 Sequencing.** The deterministic core lands first (no D-089 dependency — it stubs the LLM) as the regression net protecting the rest of close-out (D-089 prompts, D-091 routing). The live layer lands with/after D-089's prompt registry, since its purpose is to validate real prompt versions (D-089 makes prompts eval-gated by D-090). Scripted intents — representative of real requirements — seed the deterministic corpus; recorded-replay accumulates over time (D-090(d): replay empty at v1).
+
+**.3 v1 scope cut.** A subset of D-090's full vision: a curated, spectrum-representative golden corpus (not the 200–500-case production corpus) + correctness (D-090(a)) + the deterministic replay/regression net + drift hooks. Deferred to Theme 7 / post-pilot: the full corpus, continuous-production drift sampling, and performance evals (cost/latency from `llm_calls`).
+
+---
