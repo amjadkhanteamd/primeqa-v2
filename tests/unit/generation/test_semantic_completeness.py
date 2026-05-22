@@ -7,7 +7,7 @@ claim_kind; and the config debut body binds its kind/archetype verbatim."""
 from __future__ import annotations
 
 from primeqa.generation.semantic_completeness import (
-    _HAS_LAYER_2, has_layer_2, requires_caveat,
+    _HAS_LAYER_2, caveat_kind, has_layer_2, requires_caveat,
 )
 
 
@@ -34,6 +34,29 @@ def test_value_claim_no_caveat():
 def test_unknown_claim_kind_defaults_to_caveat():
     # Fail toward honesty: oversell-avoidance default is "caveat".
     assert requires_caveat("some-future-behavioral-kind") is True
+
+
+# ---------------------------------------------------------------------------
+# caveat_kind — typed posture, sole authority alongside requires_caveat (D-101.3)
+# ---------------------------------------------------------------------------
+
+def test_caveat_kind_typed_posture():
+    from primeqa.generation.enums import CaveatKind
+    # Layer-1-plausible -> the typed deeper-verification-layer-unparsed posture.
+    assert caveat_kind("prohibition-claim") is CaveatKind.DEEPER_VERIFICATION_LAYER_UNPARSED
+    assert caveat_kind("state-transition-claim") is CaveatKind.DEEPER_VERIFICATION_LAYER_UNPARSED
+    # Layer-1-complete -> no posture.
+    assert caveat_kind("metadata-relationship-claim") is None
+    assert caveat_kind("value-claim") is None
+
+
+def test_caveat_kind_set_iff_required():
+    # The persistence CHECK invariant (caveat_required = caveat_kind IS NOT NULL)
+    # holds at the authority: a kind is present exactly when a caveat is required.
+    for ck in ("prohibition-claim", "state-transition-claim", "automation-effect-claim",
+               "metadata-relationship-claim", "value-claim", "existence-claim",
+               "some-future-behavioral-kind"):
+        assert (caveat_kind(ck) is not None) == requires_caveat(ck)
 
 
 # ---------------------------------------------------------------------------

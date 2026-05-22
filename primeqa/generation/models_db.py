@@ -36,6 +36,7 @@ Slice 0 scope: schema only. No behavior.
 from __future__ import annotations
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     Column,
     DateTime,
@@ -70,6 +71,12 @@ ADMISSIBILITY_LAYER_ENUM = ENUM(
     "layer_1",
     "layer_2",
     name="admissibility_layer",
+    create_type=False,
+)
+
+CAVEAT_KIND_ENUM = ENUM(
+    "deeper_verification_layer_unparsed",
+    name="caveat_kind",
     create_type=False,
 )
 
@@ -217,6 +224,18 @@ class GenerationOutcomeRow(Base):
     admissibility_layer = Column(ADMISSIBILITY_LAYER_ENUM, nullable=True)
     """Artifact-level grounding rigor (D-083 e). Populated on drafts."""
 
+    caveat_required = Column(
+        Boolean, nullable=False, server_default=text("false"),
+    )
+    """Emission-time epistemic posture (D-101.3): does the artifact carry a
+    plausibility caveat? Persisted (not derived-on-read) so the ledger row is
+    self-describing and a future Layer-2 rollout cannot silently rewrite the
+    posture of older artifacts. False on refusals and Layer-1-complete drafts."""
+    caveat_kind = Column(CAVEAT_KIND_ENUM, nullable=True)
+    """The typed qualification class when ``caveat_required`` (D-101.3); the
+    semantic-completeness registry verdict snapshot (D-097.3 is the authority).
+    Typed posture only — never rendered prose."""
+
     # --- refusal variant (NULL on draft) ---
     refusal_kind = Column(REFUSAL_KIND_ENUM, nullable=True)
     """Row-level exposed for typed cross-substrate provenance (D-074)."""
@@ -252,6 +271,12 @@ class GenerationOutcomeRow(Base):
         CheckConstraint(
             "(outcome_kind = 'refusal') = (refusal_kind IS NOT NULL)",
             name="ck_generation_outcomes_kind",
+        ),
+        # Caveat posture self-consistency (D-101.3): a typed kind is present
+        # iff a caveat is required.
+        CheckConstraint(
+            "caveat_required = (caveat_kind IS NOT NULL)",
+            name="ck_generation_outcomes_caveat",
         ),
         # Outcomes-by-request lookup (resolve a request's outcomes).
         Index("idx_generation_outcomes_request_id", "request_id"),

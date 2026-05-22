@@ -151,13 +151,15 @@ class LedgerPersister:
             "INSERT INTO generation_outcomes "
             "(outcome_id, request_id, requirement_ref, outcome_kind, "
             " claims_written, recipes_written, equivalent_existing, "
-            " admissibility_layer, refusal_kind, refusal_policy_version, "
+            " admissibility_layer, caveat_required, caveat_kind, "
+            " refusal_kind, refusal_policy_version, "
             " refusal_schema_version, refusals, attempted_interpretation, "
             " explanation_hash, dismissal_taxonomy_version) "
             "VALUES (CAST(:oid AS uuid), CAST(:rid AS uuid), "
             " CAST(:rref AS jsonb), CAST(:okind AS generation_outcome_kind), "
             " CAST(:cw AS jsonb), CAST(:rw AS jsonb), CAST(:ee AS jsonb), "
-            " CAST(:alayer AS admissibility_layer), "
+            " CAST(:alayer AS admissibility_layer), :creq, "
+            " CAST(:ckind AS caveat_kind), "
             " CAST(:rkind AS refusal_kind), :rpv, :rsv, "
             " CAST(:refusals AS jsonb), CAST(:ai AS jsonb), :eh, :dtv)"
         ), {
@@ -169,6 +171,8 @@ class LedgerPersister:
             "rw": _j(o["recipes_written"]),
             "ee": _j(o["equivalent_existing"]),
             "alayer": o["admissibility_layer"],
+            "creq": o["caveat_required"],
+            "ckind": o["caveat_kind"],
             "rkind": o["refusal_kind"],
             "rpv": o["refusal_policy_version"],
             "rsv": o["refusal_schema_version"],

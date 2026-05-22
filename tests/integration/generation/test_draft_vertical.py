@@ -25,13 +25,13 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 
-from primeqa.generation.enums import AdmissibilityLayer, OutcomeKind
+from primeqa.generation.enums import AdmissibilityLayer, CaveatKind, OutcomeKind, RefusalKind
 from primeqa.generation.governance_core import GovernanceCore
 from primeqa.generation.persistence import LedgerPersister
-from primeqa.generation.semantic_completeness import requires_caveat
+from primeqa.generation.semantic_completeness import caveat_kind, requires_caveat
 
 from .conftest import (
-    FakeTurn, FakeToolTurn, TEST_TENANT_ID, make_request, propose_turn, rel_intent,
+    FakeTurn, FakeToolTurn, TEST_TENANT_ID, intent, make_request, propose_turn, rel_intent,
 )
 
 
@@ -87,7 +87,8 @@ def _query():
         )).mappings().all()
         outcomes = conn.execute(text(
             "SELECT outcome_id, outcome_kind, admissibility_layer, claims_written, "
-            "recipes_written FROM generation_outcomes")).mappings().all()
+            "recipes_written, caveat_required, caveat_kind FROM generation_outcomes"
+        )).mappings().all()
     return {"claims": claims, "recipes": recipes, "outcomes": outcomes}
 
 
@@ -106,6 +107,9 @@ def test_draft_emitted_end_to_end(seeded):
     assert o.claims_written and o.recipes_written
     assert o.equivalent_existing is None
 
+    # config is Layer-1-complete -> no caveat (in-memory + persisted, D-101.3 regression)
+    assert o.caveat_required is False and o.caveat_kind is None
+
     rows = _query()
     assert len(rows["claims"]) == 1
     assert len(rows["recipes"]) == 1
@@ -120,9 +124,10 @@ def test_draft_emitted_end_to_end(seeded):
     recipe = rows["recipes"][0]
     assert recipe["trigger_kind"] == "inspection-trigger"
     assert recipe["recipe_kind"] == "metadata-recipe"
-    # the outcome row points at the emitted claim + recipe
-    assert rows["outcomes"][0]["claims_written"] is not None
-    assert rows["outcomes"][0]["recipes_written"] is not None
+    # the outcome row points at the emitted claim + recipe, no caveat columns set
+    out = rows["outcomes"][0]
+    assert out["claims_written"] is not None and out["recipes_written"] is not None
+    assert out["caveat_required"] is False and out["caveat_kind"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -167,3 +172,72 @@ def test_emission_identity_dedup_was_noop(seeded):
     assert len(rows["claims"]) == 1                  # one test, deduped
     # both runs recorded an outcome in the ledger
     assert len(rows["outcomes"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Caveated negative (D-101) — the third outcome type; first caveat firing
+# ---------------------------------------------------------------------------
+
+# A grounded prohibition negative: "Case" HAS a ValidationRule (APPLIES_TO),
+# so the rejection is admissible at Layer-1-plausible.
+def _grounded_negative():
+    return intent(claim_kind="prohibition-claim", polarity="negative",
+                  sf_api_name="Case")
+
+
+def test_caveated_negative_emitted_end_to_end(seeded):
+    _, res = _emit_run(seeded, [_grounded_negative()], persister=LedgerPersister(TEST_TENANT_ID))
+    o = res.results[0].outcome
+    assert o.outcome_kind == OutcomeKind.DRAFT
+    # marker LAYER_1 (constraint exists/active — formula NOT parsed)
+    assert o.admissibility_layer == AdmissibilityLayer.LAYER_1
+    # the caveat fires for the first time: Layer-1-plausible -> required + typed
+    assert requires_caveat("prohibition-claim") is True
+    assert o.caveat_required is True
+    assert o.caveat_kind == CaveatKind.DEEPER_VERIFICATION_LAYER_UNPARSED
+    assert o.claims_written and o.recipes_written
+
+    rows = _query()
+    assert len(rows["claims"]) == 1 and len(rows["recipes"]) == 1
+    # the claim is the data_behavior prohibition negative
+    claim = rows["claims"][0]
+    assert claim["archetype"] == "data_behavior"
+    assert claim["claim_kind"] == "prohibition-claim"
+    # recipe is the reused inspection shape (parser-gated behavioral test deferred)
+    recipe = rows["recipes"][0]
+    assert recipe["trigger_kind"] == "inspection-trigger"
+    assert recipe["recipe_kind"] == "metadata-recipe"
+    # the ledger row is SELF-DESCRIBING (D-101.3): caveat posture stored, not derived
+    out = rows["outcomes"][0]
+    assert out["caveat_required"] is True
+    assert out["caveat_kind"] == "deeper_verification_layer_unparsed"
+
+
+def test_negative_no_constraint_refuses(seeded):
+    # "Account" is a bare Object (no ValidationRule) -> the rejection cannot be
+    # grounded -> no_constraint_supports_negative refusal (no caveated emit).
+    _, res = _emit_run(seeded, [intent(claim_kind="prohibition-claim",
+                                       polarity="negative", sf_api_name="Account")],
+                       persister=LedgerPersister(TEST_TENANT_ID))
+    o = res.results[0].outcome
+    assert o.outcome_kind == OutcomeKind.REFUSAL
+    assert o.refusal_kind == RefusalKind.NO_ADMISSIBLE_NEGATIVE_SCENARIO_FOUND
+    assert o.refusals[0].payload["cause"] == "no_org_constraint"
+    rows = _query()
+    # nothing emitted; the refusal row carries no caveat (self-describing)
+    assert len(rows["claims"]) == 0 and len(rows["recipes"]) == 0
+    assert len(rows["outcomes"]) == 1
+    assert rows["outcomes"][0]["caveat_required"] is False
+    assert rows["outcomes"][0]["caveat_kind"] is None
+
+
+def test_caveated_negative_identity_dedup(seeded):
+    persister = LedgerPersister(TEST_TENANT_ID)
+    _, r1 = _emit_run(seeded, [_grounded_negative()], persister=persister)
+    _, r2 = _emit_run(seeded, [_grounded_negative()], persister=persister)
+    o1, o2 = r1.results[0].outcome, r2.results[0].outcome
+    assert o1.equivalent_existing is None
+    assert o2.equivalent_existing == [o1.claims_written[0].test_id]
+    # both caveated, even the dedup re-emit (posture is per-emission)
+    assert o1.caveat_required is True and o2.caveat_required is True
+    assert len(_query()["claims"]) == 1   # one test, deduped

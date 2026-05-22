@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from primeqa.generation.enums import (
     AdmissibilityLayer,
+    CaveatKind,
     OutcomeKind,
     RefusalKind,
     RegenerationKind,
@@ -270,6 +271,16 @@ class GenerationOutcome(_Base):
     recipes_written: Optional[list[RecipeRef]] = None
     equivalent_existing: Optional[list[UUID]] = None
     admissibility_layer: Optional[AdmissibilityLayer] = None
+
+    # --- caveat posture (D-101.3) — emission-time epistemic snapshot ---
+    caveat_required: bool = False
+    """Whether the emitted artifact carries a plausibility caveat. Persisted
+    (not derived-on-read) so the ledger row is self-describing and historically
+    trustworthy under a future Layer-2 rollout (D-101.3)."""
+    caveat_kind: Optional[CaveatKind] = None
+    """The typed epistemic-qualification class when ``caveat_required``; the
+    registry verdict snapshot (D-097.3 is the authority). Typed posture only —
+    never rendered caveat prose (presentation-layer policy, D-101.3)."""
 
     # --- refusal variant (None on draft) ---
     refusal_kind: Optional[RefusalKind] = None

@@ -45,6 +45,24 @@ class AdmissibilityLayer(str, Enum):
     LAYER_2 = "layer_2"
 
 
+class CaveatKind(str, Enum):
+    """Typed epistemic-qualification class for a caveated emission (D-101.3).
+
+    The caveat the substrate stamps on an emitted artifact records *why* the
+    emission is epistemically qualified — a posture class, not a warning flag.
+    Persisted at emission as the registry verdict snapshot (D-101.3); the
+    semantic-completeness registry (D-097.3) remains the sole authority of the
+    decision. ``caveat_kind`` is an enum, not a boolean, because the substrate
+    models qualification *classes*: one value at v1; future causes (partial
+    grounding, runtime approximation, ...) enter as distinct kinds.
+    """
+
+    # The deeper semantic-verification layer (Layer 2) is defined but its
+    # formula parser is unbuilt (D-096.2 / D-100): grounding proved the
+    # constraint EXISTS, not that its formula enforces the claimed outcome.
+    DEEPER_VERIFICATION_LAYER_UNPARSED = "deeper_verification_layer_unparsed"
+
+
 class RefusalKind(str, Enum):
     """The eight refusal kinds across three categories.
 

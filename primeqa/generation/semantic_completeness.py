@@ -26,6 +26,10 @@ long-term center of gravity.
 """
 from __future__ import annotations
 
+from typing import Optional
+
+from primeqa.generation.enums import CaveatKind
+
 # claim_kind -> a deeper Layer-2 semantic verification exists but is unbuilt.
 # Sourced from D-078 (data_behavior) and D-079 (configuration).
 _HAS_LAYER_2: dict[str, bool] = {
@@ -53,3 +57,17 @@ def requires_caveat(claim_kind: str) -> bool:
     """The conditional plausibility caveat (D-096.2 / D-097.3) is required iff a
     deeper Layer 2 exists for this claim_kind. The ONLY caveat authority."""
     return has_layer_2(claim_kind)
+
+
+def caveat_kind(claim_kind: str) -> Optional[CaveatKind]:
+    """The typed caveat posture for ``claim_kind``, or ``None`` when no caveat
+    is required (D-101.3). Sole authority alongside :func:`requires_caveat` —
+    the persisted ``caveat_kind`` is this registry verdict, never re-derived.
+
+    v1 yields one kind for every Layer-1-plausible claim_kind: the deeper
+    verification layer (Layer 2) is defined but its formula parser is unbuilt
+    (D-100). Future causes (partial grounding, runtime approximation) map to
+    distinct kinds here without touching callers."""
+    if not requires_caveat(claim_kind):
+        return None
+    return CaveatKind.DEEPER_VERIFICATION_LAYER_UNPARSED

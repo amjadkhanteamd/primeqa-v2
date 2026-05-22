@@ -300,6 +300,9 @@ class RequirementState:
     # ``emission.GroundedEmission``); finalize_outcome authors the bodies from
     # it (D-097.5). None until an admissibly-grounded config candidate forms.
     grounded_emission: Optional[Any] = None
+    # Likewise for a grounded prohibition negative (an ``emission.GroundedNegative``,
+    # D-101.1). None until an admissibly-grounded prohibition candidate forms.
+    grounded_negative: Optional[Any] = None
 
     def merge_interpretation(self, delta: Optional[dict]) -> None:
         """Store a governance-authored semantic-provenance fragment. The spine

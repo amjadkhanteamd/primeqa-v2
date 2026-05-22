@@ -33,6 +33,7 @@ from primeqa.generation.enums import AdmissibilityLayer, OutcomeKind, RefusalKin
 from primeqa.generation.explanation_hash import compute_explanation_hash
 from primeqa.generation.emission import (
     GroundedEmission,
+    GroundedNegative,
     _Endpoint,
     author_emission,
 )
@@ -411,6 +412,19 @@ class GovernanceCore:
             return IntentResolution(grounded_candidates=[], next_action=NextAction.REFUSE,
                                     interpretation_delta=delta, refusal=directive)
 
+        # Stash grounding for the caveated prohibition-negative emission
+        # (D-101.1), mirroring config's _resolve_configuration. Only
+        # prohibition-claim emits in Phase 2 step 1; other data_behavior kinds
+        # remain finalize-stubbed (the D-100 carve-out).
+        if state is not None and claim_kind == "prohibition-claim":
+            state.grounded_negative = GroundedNegative(
+                archetype=archetype, claim_kind=claim_kind,
+                operation_hint=hint.get("operation"), version_seq=at,
+                subject=_Endpoint(
+                    entity_id=subject.id, entity_type=subject.entity_type,
+                    external_id=subject.sf_api_name or str(subject.id)),
+                requirement_excerpt=excerpt)
+
         # grounded -> emit deferred (draft vertical). resolve_intent stays whole.
         presented = [PresentedCandidate(path_id=c.path_id,
                                         admissibility_layer=AdmissibilityLayer(c.admissibility_layer),
@@ -541,14 +555,18 @@ class GovernanceCore:
         persister writes claim + recipe + ledger atomically (D-097.4 / D-099);
         the LLM's ``outcome_input`` owns only linguistic realization, never
         truth or entities."""
-        grounded = getattr(state, "grounded_emission", None)
+        # Config metadata-relationship (D-098) or prohibition negative (D-101);
+        # both author from S1 grounding stashed during resolve_intent.
+        grounded = (getattr(state, "grounded_emission", None)
+                    or getattr(state, "grounded_negative", None))
         if grounded is None:
-            # Only the configuration metadata-relationship debut emits today
-            # (D-098.1); behavioral emission is the deferred Layer-2 milestone
-            # (D-097.6) — fail loud rather than emit an unauthored draft.
+            # The remaining data_behavior kinds (value-claim positives,
+            # state-transition, automation-effect) stay stubbed — Phase 3+
+            # (D-100) — rather than emit an unauthored draft.
             raise NotImplementedError(
-                "emission is built for the configuration metadata-relationship "
-                "debut (D-098/D-099); other archetypes are deferred (D-097.6)")
+                "emission is built for the config metadata-relationship debut "
+                "(D-098/D-099) and the prohibition negative (D-101); other "
+                "archetypes/kinds are deferred (D-100)")
         bundle = author_emission(grounded)
 
         # Mark the canonical path selected in the reasoning artifact.
@@ -558,11 +576,14 @@ class GovernanceCore:
             outcome_id=uuid4(), request_id=ctx.request_id,
             requirement_ref=ctx.requirement_ref,
             outcome_kind=OutcomeKind.DRAFT,
-            # The marker (D-097.3): how deep grounding actually went —
-            # Layer-1-complete for a config metadata-relationship. The caveat
-            # (bundle.caveat_required) is False here, from the single authority.
+            # The marker (D-083 e): how deep grounding actually went — LAYER_1
+            # for both the Layer-1-complete config claim and the Layer-1-
+            # plausible negative. The caveat posture (D-101.3) is the registry
+            # verdict: False/None for config, True/<kind> for the negative.
             # claims_written / recipes_written are assigned post-write (D-099).
             admissibility_layer=AdmissibilityLayer.LAYER_1,
+            caveat_required=bundle.caveat_required,
+            caveat_kind=bundle.caveat_kind,
             attempted_interpretation=AttemptedInterpretation(**ai),
             explanation_hash=compute_explanation_hash(ai),
             dismissal_taxonomy_version=ctx.governance_context.dismissal_taxonomy_version,
