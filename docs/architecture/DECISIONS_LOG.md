@@ -6732,3 +6732,25 @@ Realizes D-089's specified design. Confirmed (no TA — realizes D-089; the free
 **.5 Slicing.** Slice 1 = registry (per-version frozen + content-hash guard) + runtime refactor (retire `_SYSTEM`) + v1 prompt; schema-free; deterministic CI unaffected. Slice 2 = the live eval layer (the real gate per .3) + `requirement_text` on live-eligible corpus cases + the now-justified `llm_calls.prompt_version` column. Provenance until slice 2: the request `operational_context.prompt_template_version` (FK-traceable, per D-071).
 
 ---
+
+## D-104 — Live eval prompt gate: ontology-coherence semantics (TA-converged)
+
+**Date:** 2026-05-22
+**Substrates affected:** [S3]
+**Status:** Locked (TA-converged)
+
+Reconciles D-089 ("eval-gated before merge") with D-090(c) ("drift investigated, never auto-failed").
+
+**.1 Principle.** The gate enforces ontology coherence, not output equality — it checks whether the prompt keeps the LLM's interpretation inside the substrate's semantic worldview, not whether output matches a snapshot. Per divergence: could this plausibly be a semantically coherent reinterpretation? Yes → human-judged drift; no (structurally implausible / ontology collapse) → auto-fail. Rejects outcome_kind-only auto-fail (too weak — lets config→data_behavior collapse pass) and global archetype/claim_kind auto-fail (too rigid — auto-fails legitimate reinterpretation, the anti-evolution gravity D-090(c) exists to prevent).
+
+**.2 Encoding: per-probe semantic envelopes.** Each live-eligible probe declares three levels — invariant (must-not-drift; violation auto-fails), acceptable variants (coherent alternate resolutions; human-judged drift), benign variance (ignored). Global field-tier classification is too coarse; ambiguity surfaces differ per probe. Invariants are authored as coherence boundaries (broader than the expected output), never as output snapshots — snapshotting is the rejected output-equality and the overfitting failure mode of .5. Example — "VR R exists on Opportunity": invariant {configuration archetype; verified/non-caveated; not behavioral-negative; no refusal absent ambiguity}; acceptable {existence vs metadata-relationship claim; decomposition}; benign {explanation, phrasing, excerpt}.
+
+**.3 Auto-fail = invariant violation** (structurally implausible reinterpretation / ontology collapse): config→behavioral-negative; permission→metadata-relationship; refusal where strong grounding exists and no ambiguity; caveated negative where verified config expected; archetype shift contradicting requirement topology.
+
+**.4 Human-judged drift = acceptable-variant divergence** (coherent alternate resolution): config existence vs metadata-relationship; value-claim vs configuration-property; refusal_kind refinement; claim decomposition; stricter admissibility; more conservative refusal. Flagged `regression|evolution|neutral`, never auto-failed. Merge gate = (no invariant violations) AND (human reviews + accepts the drift report).
+
+**.5 Review adjudicates coherence, not preference.** The reviewer asks "does this remain semantically coherent within substrate law?", not "which output do I prefer?" — maintainers are semantic governors, not prompt stylists. Forward-caution (architecturally important, not v1-urgent): per-probe envelopes risk the corpus becoming hidden prompt-training fixtures; mitigate later with rotating / hidden / adversarial probes so the gate stays semantic-regression detection, not overfitting infrastructure.
+
+**.6 Confirmed (Claude, no TA).** Pinned model: default-only (Sonnet) gate + optional periodic Opus sweep. Full gateway (production-path fidelity; periodic-eval env has the v2-platform infra). Include the underspecified probe (invariant = must-refuse; loose). requirement_text probes reviewed; naturalistic phrasing broadens coverage as the corpus grows.
+
+---
