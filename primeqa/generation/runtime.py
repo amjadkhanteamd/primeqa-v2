@@ -46,6 +46,7 @@ from primeqa.generation.governance import (
     RefusalDirective,
 )
 from primeqa.generation.protocol import BudgetSpec, GenerationOutcome, GenerationRequest
+from primeqa.generation.prompts import registry as prompts_registry
 from primeqa.generation import tools as _tools
 from primeqa.generation.tools import TOOLS, TOOL_EMIT, TOOL_PROPOSE, TOOL_SELECT
 
@@ -124,14 +125,11 @@ def _user_tool_result_msg(tu: ToolUseBlock, content: str, is_error: bool = False
 
 
 # ---------------------------------------------------------------------------
-# Minimal presenter (real prompt management is Theme 6)
+# System prompt comes from the frozen prompt registry (D-089 / D-103). The
+# version is resolved per-request in _run_requirement; the deterministic eval
+# core + scripted-turn tests ignore ``system`` entirely (D-103.3), so the prompt
+# is a quality input, never a correctness dependency.
 # ---------------------------------------------------------------------------
-
-_SYSTEM = (
-    "You are substrate-3's bounded cognition provider. Respond ONLY by calling "
-    "the provided tools. Propose semantic intent; the substrate computes "
-    "admissibility and authors admit-or-refuse."
-)
 
 
 def _initial_user_message(ctx: ConversationContext) -> dict:
@@ -284,7 +282,7 @@ class RequirementState:
     request_id: Any
     requirement_ref: dict[str, Any]
     messages: list = field(default_factory=list)
-    system: str = _SYSTEM
+    system: str = field(default_factory=lambda: prompts_registry.get())
     llm_calls: list[LlmCallRecord] = field(default_factory=list)
     # Accumulating semantic provenance — populated ONLY from seam deltas
     # (spine stores, never authors). Operational rejections never touch this.
@@ -380,6 +378,12 @@ class GenerationRuntime:
         progress: BatchProgress,
     ) -> RequirementResult:
         state = RequirementState(request_id=ctx.request_id, requirement_ref=ctx.requirement_ref)
+        # Resolve the frozen prompt version for this request (D-089/D-103): the
+        # request pins it (operational_context.prompt_template_version) for
+        # replay; otherwise the registry CURRENT. The substrate reads a frozen
+        # version, never recomposes the working source.
+        _pv = ctx.operational_context.prompt_template_version or prompts_registry.CURRENT
+        state.system = prompts_registry.get(_pv)
         state.messages = [_initial_user_message(ctx)]
         phase = Phase.PROPOSE
         phase_attempt = 1   # == llm_calls.attempt_index within this logical emission (D-087)
