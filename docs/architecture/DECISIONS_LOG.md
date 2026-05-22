@@ -6642,3 +6642,27 @@ The draft-vertical grounding (read-only) contradicted a load-bearing premise of 
 **Slicing:** ship `MetadataRelationshipClaimBody` (config) + config metadata-relationship admissibility (edge-existence via `get_related`, Layer-1-complete) + emission (the unchanged D-097.3–.5 machinery), tested on local PG.
 
 ---
+
+## D-099 — Trigger taxonomy reopened: execution-initiation modes (supersedes D-055's five-kind lock); emission transaction realized
+
+**Date:** 2026-05-22
+**Substrates affected:** [S2, S3]
+**Status:** Locked (TA-converged)
+
+Building the C debut's emission revealed that the trigger taxonomy (D-055, locked at five) cannot represent a verification recipe. TA-converged. Reopens D-055 cleanly; the five existing kinds are unchanged and remain the behavioral core.
+
+**Finding.** A config metadata-relationship verification recipe ("read S1, assert edge R exists") is a static invariant assertion with no Act phase — it has execution, initiation, replayability, and operational semantics, but no causal event. Yet `write_recipe` hard-requires a `causal_initiation` whose `kind` is one of the five D-055 kinds, every one a causal event (inbound / DML / UI / time / metadata-deploy). The observation side already fits (`metadata-recipe`/`metadata_read`); only the trigger layer has the gap. A genuine ontological category miss surfaced under real execution pressure — not convenience or leakage.
+
+**.1 The taxonomy classifies execution-initiation modes, not exclusively causal events.** The original five-kind taxonomy implicitly assumed all executions are reactions to events — an overfit to behavioral testing. Verification recipes reveal the missing half: some executions are inspections of extant state. Recast: the trigger taxonomy classifies execution-initiation modes, not exclusively causal events. Recipes are fundamentally either event-reactive (the five causal kinds) or invariant-inspective (inspection of current state).
+
+**.2 Add a sixth trigger kind: `inspection-trigger`.** Defined as execution initiated by explicit inspection of extant state, not by a causal event — an operator, release gate, verifier, or scheduled inspection pass chooses to inspect current state. A distinct initiation mode, not the absence of a trigger. Minimal body (`kind` + `body_schema_version`). Purely additive: `identity_hash` excludes operational layers, so the new kind cannot perturb any existing claim identity or dedup; the five event kinds are unchanged.
+
+**.3 Inspection means execution-time reinspection, NOT frozen snapshot.** An `inspection-trigger` recipe asserts the org's current state at execution time — S4 actively re-inspects and re-verifies the edge when the recipe runs. It does not mean "assert whatever S3 once observed at grounding." This is the release-gate / drift-detection value: the recipe is the executable re-verification contract, not frozen grounding history. (Why B2 — emit no recipe — was rejected: it would collapse verification into a one-time snapshot and force S4 to re-enter S3 grounding, blurring the S3/S4 boundary.)
+
+**.4 Event triggers remain the behavioral core; inspection-trigger is not a substitute (gravity guard, reinforcing D-097.6 / D-098.5).** `inspection-trigger` is cleaner, replayable, deterministic, and operationally cheap — an attractive local maximum. It exists to represent invariant verification, not to replace behavioral execution semantics. Event triggers must not become an "advanced mode"; behavioral verification, runtime causality, and effect observation remain PrimeQA's center of gravity.
+
+**.5 (Noted, NOT modeled now) inspection-trigger may later bifurcate** — likely invariant inspection (static state assertion) vs observational inspection (read a current runtime artifact without a causal trigger). Single `inspection-trigger` is correct now; do not reopen further. Recorded only so the pressure is anticipated.
+
+**Emission transaction (realizes D-097.4 — recorded for clarity, not a new decision).** `finalize_outcome` authors the claim + recipe bodies during the conversation (substrate owns semantic truth, D-097.5) — no DB writes inside an LLM turn. A post-conversation Session-based persister, bound to the tenant connection, runs `write_claim → write_recipe → ledger` in one Session, one commit; `OutcomeVerdict` carries authored bodies (refs exist only post-write); the refusal-vertical raw-connection persister reconciles onto this path.
+
+---
