@@ -6666,3 +6666,33 @@ Building the C debut's emission revealed that the trigger taxonomy (D-055, locke
 **Emission transaction (realizes D-097.4 — recorded for clarity, not a new decision).** `finalize_outcome` authors the claim + recipe bodies during the conversation (substrate owns semantic truth, D-097.5) — no DB writes inside an LLM turn. A post-conversation Session-based persister, bound to the tenant connection, runs `write_claim → write_recipe → ledger` in one Session, one commit; `OutcomeVerdict` carries authored bodies (refs exist only post-write); the refusal-vertical raw-connection persister reconciles onto this path.
 
 ---
+
+## D-100 — Phase 2 (S3 generation) close-out scope
+
+**Date:** 2026-05-22
+**Substrates affected:** [S3]
+**Status:** Locked (TA-converged)
+
+Phase 2 is complete when the generation engine is structurally whole and demonstrably produces the full outcome spectrum — verified draft, caveated draft, refusal — end-to-end across representative claim shapes, with production scaffolding to trust it (managed prompts D-089, a golden-case eval suite D-090, model routing D-091), tested and documented, and merged to main. This is the pilot-ready bar for the engine.
+
+Explicitly Phase 3+ (carve-out, so the behavioral-verification frontier stays a named commitment per D-098.5/D-099.4, not abandoned at the config local maximum): (1) the formula parser (Layer 2) → verified negatives — the Phase 3 differentiation headline; (2) the expect-rejection recipe observation mode — a second Phase-3 structural prerequisite (the recipe model has no expect-rejection/expect-error step; a behavioral negative is double-gated: parser and this recipe-model addition — Phase 3 is "parser + observational semantics," not just the parser); (3) the S1 detail-read increment + value-claim positives; (4) remaining archetypes (permissions, ui, integration); (5) full replay/regeneration controller, Theme 7 calibration, automation-effect/Apex.
+
+---
+
+## D-101 — Caveated negative (first Layer-1-plausible emission); caveat persistence
+
+**Date:** 2026-05-22
+**Substrates affected:** [S3]
+**Status:** Locked (TA-converged)
+
+TA-converged. Debut: `data_behavior` prohibition-claim, negative polarity — the only inherently-negative claim_kind; its semantic is rejection (1:1 with the plausibility caveat); admit dimension `validation_rule`/`APPLIES_TO` already grounded. Adds the third outcome type (caveated draft) and fires the caveat path for the first time.
+
+**.1 Admissibility — reuse.** `_evaluate_negative` already admits Layer-1-plausible (VR `APPLIES_TO` subject → `LAYER_1`; absent → `no_constraint_supports_negative`). No new admit branch; the gap is `finalize_outcome`'s non-config stub. The negative grounded path stashes its S1 grounding into `state`, mirroring config's `_resolve_configuration`.
+
+**.2 Emission.** `finalize_outcome`'s first non-config branch authors `ProhibitionClaimBody` from the stashed S1 grounding (substrate authors, LLM transcribes, D-097.5): `target` = subject `PinnedRef`; `operation` bound from the intent hint against the closed enum; `prohibition_mechanism = validation_rule`; `expected_rejection = RejectionSignal(error_code="FIELD_CUSTOM_VALIDATION_EXCEPTION")` — the generic code any VR rejection surfaces, derivable from the mechanism without the formula (honest floor; anything more specific without the parser is fabricated specificity); `semantic_conditions = []` (the triggering condition is in the unparsed formula; the caveat covers it). Recipe = inspection (`inspection-trigger` + `metadata_read` asserting the VR `APPLIES_TO` edge), reusing config's shape; the behavioral test is parser-gated (Phase 3, D-100). Marker `LAYER_1`.
+
+**.3 Caveat persistence (the architectural decision).** The caveat is persisted as emission-time epistemic posture, not derived-on-read. Rationale: a provenance ledger row must be self-describing — `admissibility_layer=layer_1` alone is semantically insufficient (it conflates layer-1-complete [no caveat] and layer-1-plausible [caveat], and resolving that needs claim_kind + the app-code registry, which a stored row must not depend on); and re-derived caveat semantics are not historically trustworthy (a future Layer-2 parser rollout must not silently rewrite the posture of older emitted artifacts). So store `caveat_required` + a typed `caveat_kind` on `GenerationOutcome` + a ledger column, written at emission from the registry verdict. The semantic-completeness registry (D-097.3) remains the sole authority of the caveat decision; the stored field is the emitted verdict snapshot, not duplicated logic. Store typed posture only — never rendered caveat prose (human wording is presentation-layer policy that will evolve; storing it creates stale semantics / replay mismatch). `caveat_kind` is an enum, not a boolean, because the substrate models epistemic qualification classes, not warning presence — one value now (the deeper-verification-layer-unparsed class), future causes (partial grounding, runtime approximation, …) as distinct kinds. Caveat persistence records the emission-time epistemic posture of the artifact, not a presentation-layer warning.
+
+**.4 Persistence/dedup — reuse the unified persister verbatim** (claim+recipe+ledger atomic) plus the caveat column; identity/dedup unchanged.
+
+---
