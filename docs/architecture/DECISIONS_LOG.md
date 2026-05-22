@@ -6712,3 +6712,23 @@ Realizes D-090 as a Phase-2-scoped subset; D-090 stays the full target. Confirme
 **.3 v1 scope cut.** A subset of D-090's full vision: a curated, spectrum-representative golden corpus (not the 200–500-case production corpus) + correctness (D-090(a)) + the deterministic replay/regression net + drift hooks. Deferred to Theme 7 / post-pilot: the full corpus, continuous-production drift sampling, and performance evals (cost/latency from `llm_calls`).
 
 ---
+
+## D-103 — D-089 prompt management: realization decisions
+
+**Date:** 2026-05-22
+**Substrates affected:** [S3]
+**Status:** Confirmed (no TA — realizes D-089)
+
+Realizes D-089's specified design. Confirmed (no TA — realizes D-089; the freezing invariant and pin-for-eval are correctness/isolation refinements, not contested forks).
+
+**.1 Immutability via per-version freezing + content-hash.** Each shipped version's composed content is frozen per-version and recoverable independent of later base/fragment edits — replay determinism requires reconstructing vN's exact prompt forever. The working `base` + fragments author the next version only. A content-hash drift-guard records each frozen version's SHA; a unit test asserts the live frozen content still hashes to the recorded value (catches edits to a frozen version, which would corrupt replay). Convention + the hash guard make immutability mechanical, not aspirational.
+
+**.2 All-fragments composition.** A version composes base + all archetype fragments (v1: data-behavior, configuration, permission). Necessary, not merely simpler: the LLM chooses the archetype at propose-time and needs every archetype's guidance before proposing; per-requirement fragment selection is impossible pre-proposal. One composed artifact per version.
+
+**.3 Prompt is a quality component, not correctness-critical.** The substrate guarantees governed-outcome correctness regardless of the prompt (bounded cognition: `tool_choice` forces the phase tool, schemas lock vocabulary, the substrate authors admissibility — the LLM cannot emit a wrong tool, an out-of-vocab value, or assert admissibility). The prompt shapes only the semantic quality of the proposal within the rails. Therefore the deterministic eval core (prompt-bypassing) gates correctness; the live eval layer gates prompt quality; and shipping v1 ungated is safe — an ungated prompt can degrade quality but cannot break correctness. v1 ships marked "pre-live-gate baseline."
+
+**.4 Live eval pins the model; production routing is separate.** The live layer pins a model (`model_override`) to isolate the prompt variable (same prompt × different models → different behavior), records `(prompt_version, model)` per drift annotation, may run against multiple pinned models. Substrate-3 production routing (D-091) is a separate increment; D-089's slices do not depend on it.
+
+**.5 Slicing.** Slice 1 = registry (per-version frozen + content-hash guard) + runtime refactor (retire `_SYSTEM`) + v1 prompt; schema-free; deterministic CI unaffected. Slice 2 = the live eval layer (the real gate per .3) + `requirement_text` on live-eligible corpus cases + the now-justified `llm_calls.prompt_version` column. Provenance until slice 2: the request `operational_context.prompt_template_version` (FK-traceable, per D-071).
+
+---
