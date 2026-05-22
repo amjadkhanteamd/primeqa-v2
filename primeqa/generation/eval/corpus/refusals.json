@@ -1,0 +1,51 @@
+[
+  {
+    "id": "refuse-ambiguous-reference",
+    "description": "Two Objects named Contact -> ambiguous-reference (interpretation phase).",
+    "category": "refusal",
+    "fixture": {"entities": [{"entity_type": "Object", "sf_api_name": "Contact"}, {"entity_type": "Object", "sf_api_name": "Contact"}], "edges": []},
+    "turns": [{"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The system shall reject the operation on Contact.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "negative", "claim_kind_hint": "prohibition-claim", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Contact"}}}}],
+    "expect": {"outcome_kind": "refusal", "refusal_kind": "ambiguous-reference"}
+  },
+  {
+    "id": "refuse-no-org-constraint",
+    "description": "Prohibition negative on bare Account (no Validation Rule) -> no-admissible-negative / no_org_constraint.",
+    "category": "refusal",
+    "fixture": {"entities": [{"entity_type": "Object", "sf_api_name": "Account"}], "edges": []},
+    "turns": [{"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The system shall reject deletion of Account.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "negative", "claim_kind_hint": "prohibition-claim", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Account"}}}}],
+    "expect": {"outcome_kind": "refusal", "refusal_kind": "no-admissible-negative-scenario-found", "cause": "no_org_constraint"}
+  },
+  {
+    "id": "refuse-ontology-gap",
+    "description": "Automation-effect negative on bare Account (no Flow; Apex is Tier-2 unmodeled) -> no-admissible-negative / ontology_gap.",
+    "category": "refusal",
+    "fixture": {"entities": [{"entity_type": "Object", "sf_api_name": "Account"}], "edges": []},
+    "turns": [{"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The automation shall not fire on Account.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "negative", "claim_kind_hint": "automation-effect-claim", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Account"}}}}],
+    "expect": {"outcome_kind": "refusal", "refusal_kind": "no-admissible-negative-scenario-found", "cause": "ontology_gap"}
+  },
+  {
+    "id": "refuse-ungrounded-claim",
+    "description": "Value-claim positive on bare Account (no Field) -> ungrounded-claim.",
+    "category": "refusal",
+    "fixture": {"entities": [{"entity_type": "Object", "sf_api_name": "Account"}], "edges": []},
+    "turns": [{"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "Account holds the expected value.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "positive", "claim_kind_hint": "value-claim", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Account"}}}}],
+    "expect": {"outcome_kind": "refusal", "refusal_kind": "ungrounded-claim"}
+  },
+  {
+    "id": "refuse-underspecified-requirement",
+    "description": "No claim_kind to anchor a candidate -> underspecified-requirement.",
+    "category": "refusal",
+    "fixture": {"entities": [{"entity_type": "Object", "sf_api_name": "Account"}], "edges": []},
+    "turns": [{"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "Account should behave correctly.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "negative", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Account"}}}}],
+    "expect": {"outcome_kind": "refusal", "refusal_kind": "underspecified-requirement"}
+  },
+  {
+    "id": "refuse-structural-validation-failure",
+    "description": "A malformed intent (archetype not in the locked enum) fails Layer A every correction loop -> operational structural-validation-failure.",
+    "category": "refusal",
+    "fixture": {"entities": [{"entity_type": "Object", "sf_api_name": "Account"}], "edges": []},
+    "turns": [{"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "x", "intent_descriptor": {"archetype_hint": "bogus_archetype", "polarity_hint": "negative", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Account"}}}}],
+    "repeat_last_on_exhaust": true,
+    "expect": {"outcome_kind": "refusal", "refusal_kind": "structural-validation-failure"}
+  }
+]

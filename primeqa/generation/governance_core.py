@@ -534,19 +534,27 @@ class GovernanceCore:
 
     # -- emission (draft vertical: config metadata-relationship debut) --
     def accept_selection(self, *, selection_input, ctx, state) -> SelectionVerdict:
-        """Layer-B reject-only floor over the canonical selection. The single-
-        candidate config debut auto-selects (PROCEED_TO_EMIT) and never reaches
-        here; when >=2 candidates are presented, accept iff the chosen path was
-        one the substrate actually presented (never authors/upgrades, D-096.3)."""
-        chosen = (selection_input or {}).get("path_id")
+        """Layer-B reject-only floor over the canonical selection (D-096.3). The
+        single-candidate paths auto-select (PROCEED_TO_EMIT) and never reach
+        here; when >=2 candidates are presented, accept iff the LLM's chosen
+        path is one the substrate actually presented. The chosen path is
+        ``selection_rationale.selected_path_id`` per the D-086 select_canonical
+        schema (the runtime passes that tool input verbatim). Reject-only:
+        never authors or upgrades."""
+        rationale = (selection_input or {}).get("selection_rationale") or {}
+        chosen = rationale.get("selected_path_id")
         presented = {getattr(c, "path_id", None)
                      for c in getattr(state, "presented_candidates", []) or []}
-        if chosen is not None and presented and chosen not in presented:
+        if chosen is None:
+            return SelectionVerdict(accepted=False, finding=RefusalDirective(
+                RefusalKind.STRUCTURAL_VALIDATION_FAILURE,
+                {"reason": "selection carried no selected_path_id"}))
+        if presented and chosen not in presented:
             return SelectionVerdict(accepted=False, finding=RefusalDirective(
                 RefusalKind.STRUCTURAL_VALIDATION_FAILURE,
                 {"reason": f"selected path {chosen!r} was not presented"}))
         return SelectionVerdict(accepted=True,
-                                interpretation_delta={"selected_path_id": chosen or "c0"})
+                                interpretation_delta={"selected_path_id": chosen})
 
     def finalize_outcome(self, *, outcome_input, ctx, state) -> OutcomeVerdict:
         """Author the draft: the substrate builds the S2 claim + recipe bodies
