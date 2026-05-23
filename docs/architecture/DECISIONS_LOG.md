@@ -6754,3 +6754,27 @@ Reconciles D-089 ("eval-gated before merge") with D-090(c) ("drift investigated,
 **.6 Confirmed (Claude, no TA).** Pinned model: default-only (Sonnet) gate + optional periodic Opus sweep. Full gateway (production-path fidelity; periodic-eval env has the v2-platform infra). Include the underspecified probe (invariant = must-refuse; loose). requirement_text probes reviewed; naturalistic phrasing broadens coverage as the corpus grows.
 
 ---
+
+## D-105 — Refuse-not-crash for grounded-but-unbuilt claim_kinds (engine robustness; runner prerequisite)
+
+**Date:** 2026-05-22
+**Substrates affected:** [S3]
+**Status:** Confirmed (no TA)
+
+Surfaced by the production-runner grounding. Confirmed (no TA — realizes fail-loud / no-silent-fallbacks; closes a production crash).
+
+**Problem.** `resolve_intent` `PROCEED_TO_EMIT`s for any grounded claim; `finalize_outcome` authors only config (metadata-relationship) and prohibition (negative), raising `NotImplementedError` for the rest (value / state-transition / automation-effect — D-097.6 deferred). Invisible in eval/verticals (the value-claim probe sits on a bare org → no-grounding refusal). In a real org with the Field present, a grounded value-claim → `PROCEED_TO_EMIT` → `NotImplementedError` → batch abort. A crash, not a graceful fail.
+
+**Decision.**
+
+**.1** A single source of truth for emittable claim_kinds (config metadata-relationship, prohibition negative today; grows as kinds are built).
+
+**.2** Admissibility gates `PROCEED_TO_EMIT` to emittable kinds; a grounded-but-unbuilt kind yields an honest emission-deferred capability refusal (groundable, but emission for this kind isn't built yet — a boundary that lifts as kinds land; the runtime face of D-097.6's deferral). The expected path.
+
+**.3** A drift-guard test binds the resolution-`PROCEED` surface to the emittable source of truth — a future kind added to resolution without emission support fails at build time.
+
+**.4** `finalize_outcome` converts its `NotImplementedError` to a graceful, visible refusal (fail-loud, not batch-destructive) — a should-never-reach backstop given .2, ensuring a gating gap degrades one requirement, not the batch.
+
+**.5** Prerequisite for the production runner; the deterministic eval corpus may later gain a grounded-value-claim → emission-deferred probe to cover the path.
+
+---
