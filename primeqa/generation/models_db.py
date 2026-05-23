@@ -344,6 +344,9 @@ class LlmCall(Base):
     token_count_input = Column(Integer, nullable=True)
     token_count_output = Column(Integer, nullable=True)
     model_identifier = Column(Text, nullable=False)
+    prompt_version = Column(Text, nullable=True)
+    """Frozen prompt version that produced this turn (D-103.5/D-104) — next to
+    model_identifier for drift correlation. NULL when unresolved/pre-column."""
 
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),

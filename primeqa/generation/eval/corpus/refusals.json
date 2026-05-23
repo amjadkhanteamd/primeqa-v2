@@ -5,7 +5,15 @@
     "category": "refusal",
     "fixture": {"entities": [{"entity_type": "Object", "sf_api_name": "Contact"}, {"entity_type": "Object", "sf_api_name": "Contact"}], "edges": []},
     "turns": [{"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The system shall reject the operation on Contact.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "negative", "claim_kind_hint": "prohibition-claim", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Contact"}}}}],
-    "expect": {"outcome_kind": "refusal", "refusal_kind": "ambiguous-reference"}
+    "expect": {"outcome_kind": "refusal", "refusal_kind": "ambiguous-reference"},
+    "live": {
+      "requirement_text": "The system must reject the prohibited operation on the Contact object.",
+      "envelope": {
+        "invariant": [{"field": "outcome_kind", "op": "eq", "value": "refusal"}],
+        "acceptable_variants": [{"field": "refusal_kind", "op": "in", "value": ["ambiguous-reference"]}],
+        "benign": ["explanation", "phrasing", "excerpt", "subject"]
+      }
+    }
   },
   {
     "id": "refuse-no-org-constraint",
@@ -13,7 +21,15 @@
     "category": "refusal",
     "fixture": {"entities": [{"entity_type": "Object", "sf_api_name": "Account"}], "edges": []},
     "turns": [{"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The system shall reject deletion of Account.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "negative", "claim_kind_hint": "prohibition-claim", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Account"}}}}],
-    "expect": {"outcome_kind": "refusal", "refusal_kind": "no-admissible-negative-scenario-found", "cause": "no_org_constraint"}
+    "expect": {"outcome_kind": "refusal", "refusal_kind": "no-admissible-negative-scenario-found", "cause": "no_org_constraint"},
+    "live": {
+      "requirement_text": "Deletion of Account records must be blocked by the platform.",
+      "envelope": {
+        "invariant": [{"field": "outcome_kind", "op": "eq", "value": "refusal"}],
+        "acceptable_variants": [{"field": "refusal_kind", "op": "in", "value": ["no-admissible-negative-scenario-found", "ungrounded-claim"]}],
+        "benign": ["explanation", "phrasing", "excerpt", "subject", "cause"]
+      }
+    }
   },
   {
     "id": "refuse-ontology-gap",
@@ -21,7 +37,15 @@
     "category": "refusal",
     "fixture": {"entities": [{"entity_type": "Object", "sf_api_name": "Account"}], "edges": []},
     "turns": [{"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The automation shall not fire on Account.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "negative", "claim_kind_hint": "automation-effect-claim", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Account"}}}}],
-    "expect": {"outcome_kind": "refusal", "refusal_kind": "no-admissible-negative-scenario-found", "cause": "ontology_gap"}
+    "expect": {"outcome_kind": "refusal", "refusal_kind": "no-admissible-negative-scenario-found", "cause": "ontology_gap"},
+    "live": {
+      "requirement_text": "No automation may run when an Account record is updated.",
+      "envelope": {
+        "invariant": [{"field": "outcome_kind", "op": "eq", "value": "refusal"}],
+        "acceptable_variants": [{"field": "refusal_kind", "op": "in", "value": ["no-admissible-negative-scenario-found", "ungrounded-claim"]}],
+        "benign": ["explanation", "phrasing", "excerpt", "subject", "cause"]
+      }
+    }
   },
   {
     "id": "refuse-ungrounded-claim",
@@ -29,7 +53,15 @@
     "category": "refusal",
     "fixture": {"entities": [{"entity_type": "Object", "sf_api_name": "Account"}], "edges": []},
     "turns": [{"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "Account holds the expected value.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "positive", "claim_kind_hint": "value-claim", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Account"}}}}],
-    "expect": {"outcome_kind": "refusal", "refusal_kind": "ungrounded-claim"}
+    "expect": {"outcome_kind": "refusal", "refusal_kind": "ungrounded-claim"},
+    "live": {
+      "requirement_text": "The Account's Industry field should hold the value Technology.",
+      "envelope": {
+        "invariant": [{"field": "outcome_kind", "op": "eq", "value": "refusal"}],
+        "acceptable_variants": [{"field": "refusal_kind", "op": "in", "value": ["ungrounded-claim", "no-relevant-context"]}],
+        "benign": ["explanation", "phrasing", "excerpt", "subject"]
+      }
+    }
   },
   {
     "id": "refuse-underspecified-requirement",
@@ -37,11 +69,19 @@
     "category": "refusal",
     "fixture": {"entities": [{"entity_type": "Object", "sf_api_name": "Account"}], "edges": []},
     "turns": [{"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "Account should behave correctly.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "negative", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Account"}}}}],
-    "expect": {"outcome_kind": "refusal", "refusal_kind": "underspecified-requirement"}
+    "expect": {"outcome_kind": "refusal", "refusal_kind": "underspecified-requirement"},
+    "live": {
+      "requirement_text": "The Account object should behave correctly.",
+      "envelope": {
+        "invariant": [{"field": "outcome_kind", "op": "eq", "value": "refusal"}],
+        "acceptable_variants": [],
+        "benign": ["explanation", "phrasing", "excerpt", "subject", "refusal_kind", "cause"]
+      }
+    }
   },
   {
     "id": "refuse-structural-validation-failure",
-    "description": "A malformed intent (archetype not in the locked enum) fails Layer A every correction loop -> operational structural-validation-failure.",
+    "description": "A malformed intent (archetype not in the locked enum) fails Layer A every correction loop -> operational structural-validation-failure. Not live-eligible: the LLM cannot emit an out-of-enum archetype.",
     "category": "refusal",
     "fixture": {"entities": [{"entity_type": "Object", "sf_api_name": "Account"}], "edges": []},
     "turns": [{"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "x", "intent_descriptor": {"archetype_hint": "bogus_archetype", "polarity_hint": "negative", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Account"}}}}],

@@ -79,6 +79,7 @@ class LlmCallRecord:
     timing_duration_ms: Optional[int] = None
     raw_parameters: Optional[dict] = None
     raw_response: Optional[dict] = None
+    prompt_version: Optional[str] = None   # resolved frozen prompt version (D-103.5)
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +284,7 @@ class RequirementState:
     requirement_ref: dict[str, Any]
     messages: list = field(default_factory=list)
     system: str = field(default_factory=lambda: prompts_registry.get())
+    prompt_version: str = field(default_factory=lambda: prompts_registry.CURRENT)
     llm_calls: list[LlmCallRecord] = field(default_factory=list)
     # Accumulating semantic provenance — populated ONLY from seam deltas
     # (spine stores, never authors). Operational rejections never touch this.
@@ -384,6 +386,7 @@ class GenerationRuntime:
         # version, never recomposes the working source.
         _pv = ctx.operational_context.prompt_template_version or prompts_registry.CURRENT
         state.system = prompts_registry.get(_pv)
+        state.prompt_version = _pv
         state.messages = [_initial_user_message(ctx)]
         phase = Phase.PROPOSE
         phase_attempt = 1   # == llm_calls.attempt_index within this logical emission (D-087)
@@ -499,6 +502,7 @@ class GenerationRuntime:
             token_count_output=getattr(turn, "output_tokens", None),
             timing_duration_ms=getattr(turn, "latency_ms", None),
             raw_parameters=tu.input, raw_response={"feedback": feedback},
+            prompt_version=state.prompt_version,
         ))
         state.messages.append(_assistant_tool_use_msg(tu))
         state.messages.append(_user_tool_result_msg(tu, feedback, is_error=True))
@@ -513,6 +517,7 @@ class GenerationRuntime:
             token_count_output=getattr(turn, "output_tokens", None),
             timing_duration_ms=getattr(turn, "latency_ms", None),
             raw_parameters=tu.input,
+            prompt_version=state.prompt_version,
         ))
 
     def _respond(self, state: RequirementState, tu: ToolUseBlock, content: str) -> None:

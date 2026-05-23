@@ -190,10 +190,10 @@ class LedgerPersister:
                 "(call_id, generation_outcome_id, tool_name, raw_parameters, "
                 " raw_response, operational_outcome, attempt_index, "
                 " timing_start, timing_duration_ms, token_count_input, "
-                " token_count_output, model_identifier) "
+                " token_count_output, model_identifier, prompt_version) "
                 "VALUES (CAST(:cid AS uuid), CAST(:oid AS uuid), :tool, "
                 " CAST(:rp AS jsonb), CAST(:rr AS jsonb), "
-                " CAST(:oo AS llm_call_outcome), :ai, :ts, :dur, :ti, :to, :model)"
+                " CAST(:oo AS llm_call_outcome), :ai, :ts, :dur, :ti, :to, :model, :pv)"
             ), {
                 "cid": str(rec.call_id),
                 "oid": str(outcome.outcome_id),
@@ -207,4 +207,5 @@ class LedgerPersister:
                 "ti": rec.token_count_input,
                 "to": rec.token_count_output,
                 "model": rec.model_identifier,
+                "pv": getattr(rec, "prompt_version", None),
             })

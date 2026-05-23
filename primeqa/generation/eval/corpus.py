@@ -51,7 +51,17 @@ class GoldenCase:
     expect: dict[str, Any]
     emit_twice: bool = False
     repeat_last_on_exhaust: bool = False
+    # Live-eval block (D-104): {"requirement_text": str, "envelope": {...}}.
+    # Present iff the case is live-eligible (the LLM can interpret a real
+    # requirement into the governed family); absent for cases the LLM cannot
+    # produce (malformed structural-validation-failure) or that need a
+    # deterministic re-proposal (dedup).
+    live: Optional[dict[str, Any]] = None
     source_file: Optional[str] = field(default=None, compare=False)
+
+    @property
+    def live_eligible(self) -> bool:
+        return self.live is not None
 
 
 def load_corpus(corpus_dir: Optional[Path] = None) -> list[GoldenCase]:
@@ -72,6 +82,7 @@ def load_corpus(corpus_dir: Optional[Path] = None) -> list[GoldenCase]:
                 expect=obj["expect"],
                 emit_twice=obj.get("emit_twice", False),
                 repeat_last_on_exhaust=obj.get("repeat_last_on_exhaust", False),
+                live=obj.get("live"),
                 source_file=path.name,
             ))
     cases.sort(key=lambda c: c.id)

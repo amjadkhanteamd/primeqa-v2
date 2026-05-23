@@ -12,10 +12,18 @@ to land with D-089's prompt registry (D-102.2).
 """
 from primeqa.generation.eval.corpus import GoldenCase, load_corpus
 from primeqa.generation.eval.runner import CaseResult, EvalHarness, StabilityResult
-from primeqa.generation.eval.scorer import Report, aggregate
+from primeqa.generation.eval.scorer import (
+    LiveResult, ObservedOutcome, Report, aggregate, observe, render_live, score_live,
+)
+from primeqa.generation.eval.live import (
+    api_key_from_env, build_tool_turn_fn, run_live_corpus,
+)
 
 __all__ = [
     "GoldenCase", "load_corpus",
     "EvalHarness", "CaseResult", "StabilityResult",
     "Report", "aggregate",
+    # live layer (D-104)
+    "ObservedOutcome", "observe", "score_live", "LiveResult", "render_live",
+    "api_key_from_env", "build_tool_turn_fn", "run_live_corpus",
 ]

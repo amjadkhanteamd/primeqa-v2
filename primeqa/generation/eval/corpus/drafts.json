@@ -23,6 +23,21 @@
       "caveat_kind": null,
       "claim": {"archetype": "configuration", "claim_kind": "metadata-relationship-claim"},
       "recipe": {"trigger_kind": "inspection-trigger", "recipe_kind": "metadata-recipe"}
+    },
+    "live": {
+      "requirement_text": "The Case object must carry a validation rule that requires a reason before a Case is saved — Validation Rule Case.RequireReason applies to Case.",
+      "envelope": {
+        "invariant": [
+          {"field": "outcome_kind", "op": "eq", "value": "draft"},
+          {"field": "archetype", "op": "eq", "value": "configuration"},
+          {"field": "caveat_required", "op": "is_false"}
+        ],
+        "acceptable_variants": [
+          {"field": "claim_kind", "op": "in", "value": ["metadata-relationship-claim", "existence-claim", "property-claim"]}
+        ],
+        "benign": ["explanation", "phrasing", "excerpt", "subject"],
+        "_note": "existence-claim/property-claim are coherent config readings but capability-gated: only metadata-relationship-claim is emittable today, so an existence/property proposal surfaces as a refusal and auto-fails the must-draft invariant. They become true acceptable drift when their emission lands."
+      }
     }
   },
   {
@@ -49,6 +64,21 @@
       "caveat_kind": "deeper_verification_layer_unparsed",
       "claim": {"archetype": "data_behavior", "claim_kind": "prohibition-claim"},
       "recipe": {"trigger_kind": "inspection-trigger", "recipe_kind": "metadata-recipe"}
+    },
+    "live": {
+      "requirement_text": "Users must not be able to close a Case without entering a reason; the platform should reject the save.",
+      "envelope": {
+        "invariant": [
+          {"field": "outcome_kind", "op": "eq", "value": "draft"},
+          {"field": "archetype", "op": "eq", "value": "data_behavior"},
+          {"field": "caveat_required", "op": "is_true"}
+        ],
+        "acceptable_variants": [
+          {"field": "claim_kind", "op": "in", "value": ["prohibition-claim", "state-transition-claim"]}
+        ],
+        "benign": ["explanation", "phrasing", "excerpt", "subject", "caveat_kind"],
+        "_note": "caveat_required is_true: a Layer-1-plausible negative must be caveated; a non-caveated data_behavior draft is the D-096.2 overclaim (e.g. a value-claim positive misread). Capability-gated: revisit when the formula parser lands Layer-2 verified negatives, when a non-caveated verified negative becomes legitimate."
+      }
     }
   }
 ]

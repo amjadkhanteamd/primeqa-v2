@@ -138,15 +138,16 @@ class EvalHarness:
                 "et": edge["edge_type"], "ec": edge.get("edge_category", "BEHAVIOR"), "vf": vseq})
         return int(vseq)
 
-    def _make_request(self, vseq: int) -> GenerationRequest:
+    def _make_request(self, vseq: int, *, requirement_text: str = "the requirement",
+                      prompt_version: Optional[str] = None) -> GenerationRequest:
         return GenerationRequest(
             request_id=uuid4(),
             semantic_context=SemanticContext(
-                requirement_refs=[{"key": "R0", "text": "the requirement"}],
+                requirement_refs=[{"key": "R0", "text": requirement_text}],
                 s1_version_seq=vseq, s1_version_name="eval",
             ),
             governance_context=GovernanceContext(),
-            operational_context=OperationalContext(),
+            operational_context=OperationalContext(prompt_template_version=prompt_version),
         )
 
     def _run_once(self, case, vseq: int):
@@ -241,3 +242,27 @@ class EvalHarness:
 
     def run_corpus(self, cases) -> list[CaseResult]:
         return [self.run_case(c) for c in cases]
+
+    # -- live mode (D-104): real LLM proposes from requirement_text ----
+    def run_case_live(self, case, *, tool_turn_fn, prompt_version=None,
+                      model: str = "(live)"):
+        """Run a live-eligible probe: the real LLM (via ``tool_turn_fn``)
+        proposes from the case's ``requirement_text`` — no scripted turns — and
+        the result is adjudicated against the case's semantic envelope (D-104).
+        Returns a ``scorer.LiveResult``. Not persisted (the live run tests
+        adjudication, not the ledger)."""
+        from primeqa.generation.eval.scorer import observe, score_live
+        from primeqa.generation.prompts import registry
+
+        rt = case.live["requirement_text"]
+        with get_tenant_connection(self._tenant_id) as conn:
+            vseq = self._seed(conn, case.fixture)
+        req = self._make_request(vseq, requirement_text=rt, prompt_version=prompt_version)
+        with get_tenant_connection(self._tenant_id) as conn:
+            gov = GovernanceCore(SemanticOrgModel(conn))
+            result = GenerationRuntime().run(
+                request=req, seam=gov, tool_turn_fn=tool_turn_fn, persister=None)
+        r = result.results[0]
+        observed = observe(r.outcome, r.emission)
+        return score_live(case, observed,
+                          prompt_version=prompt_version or registry.CURRENT, model=model)
