@@ -1,0 +1,84 @@
+[
+  {
+    "id": "config-verified-draft",
+    "description": "Config metadata-relationship: VR APPLIES_TO Case is verified -> Layer-1-complete verified draft, no caveat.",
+    "category": "draft",
+    "fixture": {
+      "entities": [
+        {"entity_type": "Object", "sf_api_name": "Case"},
+        {"entity_type": "ValidationRule", "sf_api_name": "Case.RequireReason"}
+      ],
+      "edges": [
+        {"source": "Case.RequireReason", "target": "Case", "edge_type": "APPLIES_TO", "edge_category": "BEHAVIOR"}
+      ]
+    },
+    "turns": [
+      {"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "Requirement assumes Validation Rule Case.RequireReason applies to Case.", "intent_descriptor": {"archetype_hint": "configuration", "polarity_hint": "positive", "claim_kind_hint": "metadata-relationship-claim", "target_subject_hint": {"edge_type": "APPLIES_TO", "source": {"entity_type": "ValidationRule", "sf_api_name": "Case.RequireReason"}, "target": {"entity_type": "Object", "sf_api_name": "Case"}}}}},
+      {"tool": "emit_outcome", "input": {"outcome_kind": "draft", "payload": {"admissibility_layer": "layer_1"}}}
+    ],
+    "expect": {
+      "outcome_kind": "draft",
+      "admissibility_layer": "layer_1",
+      "caveat_required": false,
+      "caveat_kind": null,
+      "claim": {"archetype": "configuration", "claim_kind": "metadata-relationship-claim"},
+      "recipe": {"trigger_kind": "inspection-trigger", "recipe_kind": "metadata-recipe"}
+    },
+    "live": {
+      "requirement_text": "The Case object must carry a validation rule that requires a reason before a Case is saved — Validation Rule Case.RequireReason applies to Case.",
+      "envelope": {
+        "invariant": [
+          {"field": "outcome_kind", "op": "eq", "value": "draft"},
+          {"field": "archetype", "op": "eq", "value": "configuration"},
+          {"field": "caveat_required", "op": "is_false"}
+        ],
+        "acceptable_variants": [
+          {"field": "claim_kind", "op": "in", "value": ["metadata-relationship-claim", "existence-claim", "property-claim"]}
+        ],
+        "benign": ["explanation", "phrasing", "excerpt", "subject"],
+        "_note": "existence-claim/property-claim are coherent config readings but capability-gated: only metadata-relationship-claim is emittable today, so an existence/property proposal surfaces as a refusal and auto-fails the must-draft invariant. They become true acceptable drift when their emission lands."
+      }
+    }
+  },
+  {
+    "id": "caveated-prohibition-negative",
+    "description": "data_behavior prohibition negative on Case (which HAS a VR) -> Layer-1-plausible caveated draft; the first caveat firing.",
+    "category": "caveated_draft",
+    "fixture": {
+      "entities": [
+        {"entity_type": "Object", "sf_api_name": "Case"},
+        {"entity_type": "ValidationRule", "sf_api_name": "Case.RequireReason"}
+      ],
+      "edges": [
+        {"source": "Case.RequireReason", "target": "Case", "edge_type": "APPLIES_TO", "edge_category": "BEHAVIOR"}
+      ]
+    },
+    "turns": [
+      {"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The system shall reject the prohibited operation on Case.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "negative", "claim_kind_hint": "prohibition-claim", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Case"}}}},
+      {"tool": "emit_outcome", "input": {"outcome_kind": "draft", "payload": {"admissibility_layer": "layer_1"}}}
+    ],
+    "expect": {
+      "outcome_kind": "draft",
+      "admissibility_layer": "layer_1",
+      "caveat_required": true,
+      "caveat_kind": "deeper_verification_layer_unparsed",
+      "claim": {"archetype": "data_behavior", "claim_kind": "prohibition-claim"},
+      "recipe": {"trigger_kind": "inspection-trigger", "recipe_kind": "metadata-recipe"}
+    },
+    "live": {
+      "requirement_text": "Users must not be able to close a Case without entering a reason; the platform should reject the save.",
+      "envelope": {
+        "invariant": [
+          {"field": "outcome_kind", "op": "eq", "value": "draft"},
+          {"field": "archetype", "op": "eq", "value": "data_behavior"},
+          {"field": "caveat_required", "op": "is_true"}
+        ],
+        "acceptable_variants": [
+          {"field": "claim_kind", "op": "in", "value": ["prohibition-claim", "state-transition-claim"]}
+        ],
+        "benign": ["explanation", "phrasing", "excerpt", "subject", "caveat_kind"],
+        "_note": "caveat_required is_true: a Layer-1-plausible negative must be caveated; a non-caveated data_behavior draft is the D-096.2 overclaim (e.g. a value-claim positive misread). Capability-gated: revisit when the formula parser lands Layer-2 verified negatives, when a non-caveated verified negative becomes legitimate."
+      }
+    }
+  }
+]

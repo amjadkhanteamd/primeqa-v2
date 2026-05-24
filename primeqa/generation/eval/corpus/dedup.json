@@ -1,0 +1,22 @@
+[
+  {
+    "id": "dedup-config-draft",
+    "description": "Re-emitting the same config metadata-relationship on the same S1 version dedups -> was_noop (equivalent_existing set; identity_hash matched).",
+    "category": "dedup",
+    "fixture": {
+      "entities": [
+        {"entity_type": "Object", "sf_api_name": "Case"},
+        {"entity_type": "ValidationRule", "sf_api_name": "Case.RequireReason"}
+      ],
+      "edges": [
+        {"source": "Case.RequireReason", "target": "Case", "edge_type": "APPLIES_TO", "edge_category": "BEHAVIOR"}
+      ]
+    },
+    "turns": [
+      {"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "Requirement assumes Validation Rule Case.RequireReason applies to Case.", "intent_descriptor": {"archetype_hint": "configuration", "polarity_hint": "positive", "claim_kind_hint": "metadata-relationship-claim", "target_subject_hint": {"edge_type": "APPLIES_TO", "source": {"entity_type": "ValidationRule", "sf_api_name": "Case.RequireReason"}, "target": {"entity_type": "Object", "sf_api_name": "Case"}}}}},
+      {"tool": "emit_outcome", "input": {"outcome_kind": "draft", "payload": {"admissibility_layer": "layer_1"}}}
+    ],
+    "emit_twice": true,
+    "expect": {"outcome_kind": "draft", "equivalent_existing": true}
+  }
+]

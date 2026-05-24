@@ -50,17 +50,25 @@ from primeqa.test_representation.models.claims.data_behavior import (
     StateTransitionClaimBody,
     ValueClaimBody,
 )
+# Importing the configuration subpackage triggers @register_body on its
+# bodies (the S3 draft-vertical debut archetype, D-098.1).
+from primeqa.test_representation.models.claims.configuration import (
+    ConfigurationClaimBody,
+    MetadataRelationshipClaimBody,
+)
 
 
 __all__ = [
     # Per-archetype scoped union (kept for archetype-scoped
     # typing in downstream code).
     "DataBehaviorClaimBody",
+    "ConfigurationClaimBody",
     # Individual body classes (re-exported for direct typing).
     "AutomationEffectClaimBody",
     "ProhibitionClaimBody",
     "StateTransitionClaimBody",
     "ValueClaimBody",
+    "MetadataRelationshipClaimBody",
     # Cross-archetype flat union (the substrate-level
     # dispatch type).
     "ClaimBody",
@@ -73,6 +81,7 @@ ClaimBody = Annotated[
         StateTransitionClaimBody,
         AutomationEffectClaimBody,
         ProhibitionClaimBody,
+        MetadataRelationshipClaimBody,
         # Future archetype body classes extend here. Order is
         # not semantically meaningful — Pydantic dispatches by
         # the ``kind`` discriminator value.

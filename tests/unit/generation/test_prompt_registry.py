@@ -1,0 +1,127 @@
+"""Prompt registry slice 1 (D-089 / D-103): the content-hash freeze guard, the
+CURRENT resolution, and that the runtime loads the frozen prompt into
+``state.system``. No PG — the runtime check drives a Layer-A failure (bad
+archetype), so it never reaches grounding (D-103.3: the prompt is a quality
+input, never a correctness dependency)."""
+from __future__ import annotations
+
+from uuid import uuid4
+
+import pytest
+
+from primeqa.generation.prompts import registry
+
+
+# ---------------------------------------------------------------------------
+# Freeze guard + resolution (D-103.1)
+# ---------------------------------------------------------------------------
+
+def test_frozen_content_hash_matches_recorded():
+    # Every frozen version's live content still hashes to its recorded SHA — an
+    # edit to a frozen version (which would corrupt replay) fails here.
+    for v in registry.versions():
+        assert registry.content_hash(v) == registry.recorded_hash(v), (
+            f"{v}: frozen content drifted from its recorded hash")
+
+
+def test_current_resolves_to_v1():
+    assert registry.CURRENT == "generation@v1"
+    assert registry.get() == registry.get("generation@v1")
+    sys = registry.get()
+    assert len(sys) > 1000                                  # substantive, not a stub
+    # the substance the schemas don't enforce (D-103.3) is present
+    assert "bounded cognition provider" in sys
+    assert "Transcribe admissibility" in sys
+    assert "pre-live-gate baseline" in sys
+
+
+def test_unknown_version_raises():
+    with pytest.raises(KeyError):
+        registry.get("generation@v999")
+
+
+def test_compose_working_has_all_fragments():
+    # All-fragments composition (D-103.2): base + the three v1 archetypes.
+    composed = registry.compose_working()
+    assert "Archetype guidance — data_behavior" in composed
+    assert "Archetype guidance — configuration" in composed
+    assert "Archetype guidance — permission" in composed
+
+
+# ---------------------------------------------------------------------------
+# Runtime wiring: the frozen prompt is what reaches the LLM as `system`
+# ---------------------------------------------------------------------------
+
+class _FakeTurn:
+    def __init__(self, tool, inp):
+        self.content_blocks = [{"type": "tool_use", "id": "tu_x", "name": tool, "input": inp}]
+        self.input_tokens = 1
+        self.output_tokens = 1
+        self.model = "test"
+        self.stop_reason = "tool_use"
+        self.latency_ms = 1
+
+
+class _CapturingToolTurn:
+    """Captures the `system` the runtime passes, then returns a malformed
+    propose (bad archetype) so Layer A rejects it every correction loop — the
+    run resolves to structural-validation-failure WITHOUT touching S1/PG."""
+
+    def __init__(self):
+        self.system = None
+
+    def __call__(self, *, messages, tools, tool_choice, system):
+        self.system = system
+        return _FakeTurn("propose_semantic_intent", {
+            "requirement_excerpt": "x",
+            "intent_descriptor": {
+                "archetype_hint": "bogus_archetype", "polarity_hint": "negative",
+                "target_subject_hint": {"entity_type": "Object", "sf_api_name": "X"},
+            },
+        })
+
+
+def test_runtime_loads_frozen_prompt_into_system():
+    from primeqa.generation.governance_core import GovernanceCore
+    from primeqa.generation.protocol import (
+        GenerationRequest, GovernanceContext, OperationalContext, SemanticContext,
+    )
+    from primeqa.generation.runtime import GenerationRuntime
+
+    req = GenerationRequest(
+        request_id=uuid4(),
+        semantic_context=SemanticContext(
+            requirement_refs=[{"key": "R0", "text": "x"}], s1_version_seq=1),
+        governance_context=GovernanceContext(),
+        operational_context=OperationalContext(),   # no prompt_template_version -> CURRENT
+    )
+    cap = _CapturingToolTurn()
+    # GovernanceCore(None): the bad-archetype turn fails Layer A before any S1
+    # access, so the S1 model is never touched (no PG).
+    GenerationRuntime().run(request=req, seam=GovernanceCore(None),
+                            tool_turn_fn=cap, persister=None)
+
+    assert cap.system == registry.get()              # the frozen CURRENT prompt, verbatim
+    assert "bounded cognition provider" in cap.system
+
+
+def test_runtime_honors_pinned_prompt_version():
+    # A request that pins CURRENT explicitly resolves the same frozen content
+    # (replay determinism path; an unknown pin would raise).
+    from primeqa.generation.governance_core import GovernanceCore
+    from primeqa.generation.protocol import (
+        GenerationRequest, GovernanceContext, OperationalContext, SemanticContext,
+    )
+    from primeqa.generation.runtime import GenerationRuntime
+
+    req = GenerationRequest(
+        request_id=uuid4(),
+        semantic_context=SemanticContext(
+            requirement_refs=[{"key": "R0", "text": "x"}], s1_version_seq=1),
+        governance_context=GovernanceContext(),
+        operational_context=OperationalContext(prompt_template_version="generation@v1"),
+    )
+    cap = _CapturingToolTurn()
+    GenerationRuntime().run(request=req, seam=GovernanceCore(None),
+                            tool_turn_fn=cap, persister=None)
+    assert cap.system == registry.get("generation@v1")

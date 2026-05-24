@@ -31,7 +31,7 @@ These are substrate law. They are NOT calibration surfaces and NOT subject to th
 - **Refusal transparency presence (D-073).** Every refusal carries its typed structured payload. Refusal is never opaque.
 - **Grounding requirements (Guardrail 1, D-070).** Admissibility requires grounding in actual org metadata. Ungrounded claims are refused, not asserted.
 - **The three Guardrails.** Guardrail 1 (semantic search space, D-070); Guardrail 2 (reasoning artifacts, D-075); Guardrail 3 (requirement-anchored origination, D-083).
-- **Eight-refusal-kind taxonomy across three categories.** Invalidity (5), policy (2), operational (1) — D-073, D-083, D-088. Categories are semantically distinct and must remain so.
+- **Nine-refusal-kind taxonomy across three categories.** Invalidity (5), policy (2), operational (2) — D-073, D-083, D-088, D-105. Categories are semantically distinct and must remain so. (Authored as eight at Phase 1 closeout; the ninth, `emission-deferred`, landed in Phase 2 per D-105 — the operational category gained a second kind.)
 - **Three-context separation (D-071).** semantic_context, governance_context, operational_context are distinct axes. semantic + governance determine identity_hash; operational variation preserves it.
 - **Two-layer enforcement (D-087).** Layer A (schema, necessary) + Layer B (substrate-side semantic governance, sufficient). Schemas alone do not prevent semantic misuse.
 - **Substrate as admissibility authority (D-086).** admissibility_layer is substrate-authored; the LLM never asserts it.
@@ -56,6 +56,6 @@ The six engine roles (D-085):
 - **Admissibility engine** — derives admissibility from S1 + substrate-2 taxonomy + Layer 1/2 discipline (D-083). The substrate is the admissibility authority.
 - **Decomposition controller** — enforces canonical-negative-per-failure-mode + highest-specificity + bounded enumeration (D-083).
 - **Replay controller** — computes identity_hash and explanation_hash over semantic substance (D-088); surfaces drift events (D-075, D-090).
-- **Refusal router** — categorizes refusal causes across eight typed kinds in three categories with typed payloads (D-073, D-083, D-088).
+- **Refusal router** — categorizes refusal causes across nine typed kinds in three categories with typed payloads (D-073, D-083, D-088, D-105).
 
 The LLM contributes bounded cognition (semantic intent, selection judgment, outcome emission) within this runtime. The substrate is the locus of architectural authority.

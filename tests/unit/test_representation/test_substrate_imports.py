@@ -6,9 +6,9 @@ to:
 
   - Import every public name listed in ``__all__`` directly from
     the top level.
-  - See the body registry fully populated (16 entries currently —
-    conditions + 4 claims + 5 triggers + execution-environment +
-    5 recipes).
+  - See the body registry fully populated (18 entries currently —
+    conditions + 4 data-behavior claims + 1 configuration claim +
+    6 triggers + execution-environment + 5 recipes).
   - Construct + serialize body instances using only the top-level
     namespace (no need to drill into the deeper module paths).
 
@@ -93,12 +93,15 @@ EXPECTED_REGISTRATIONS = (
     ("state-transition-claim", 1),
     ("automation-effect-claim", 1),
     ("prohibition-claim", 1),
-    # Trigger bodies (B-γ)
+    # Configuration claim bodies (D-098 — the C debut)
+    ("metadata-relationship-claim", 1),
+    # Trigger bodies (B-γ; inspection-trigger added by D-099)
     ("inbound-trigger", 1),
     ("data-mutation-trigger", 1),
     ("ui-trigger", 1),
     ("time-trigger", 1),
     ("configuration-trigger", 1),
+    ("inspection-trigger", 1),
     # Execution environment (B-δ)
     ("execution_environment", 1),
     # Recipe bodies (B-δ)

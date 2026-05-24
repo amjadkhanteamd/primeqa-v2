@@ -6548,3 +6548,253 @@ Because the threshold is governance_context: per D-088, changing it changes gove
 - D-092 (Theme 7; quality envelope observes, does not own)
 
 ---
+
+## D-095 — S3 spine + tool surface — enforcement boundary, runtime control, conversation granularity
+
+**Date:** 2026-05-21
+**Substrates affected:** [S3]
+**Status:** Locked (TA-converged)
+
+**Context:** Phase 2 implementation of the S3 spine + tool surface, realizing Theme 5 (D-085–D-088). Grounding confirmed the LLM gateway is single-shot; the multi-turn orchestration loop is greenfield. Four implementation-time architectural forks, resolved via the TA review loop.
+
+**1. Layer-A enforcement boundary.** All of Layer A is spine-orchestrated and operational. The grounding-free checks (schema well-formedness, vocabulary-at-enum-positions, Guardrail-3 excerpt presence) execute in the spine. The one grounding-dependent Layer-A check — S1 entity refs exist at the pinned s1_version_seq (D-087) — is delegated through a NARROW operational seam method (check_refs_exist), distinct from the semantic resolve_intent. REJECTED: deferring S1-ref-existence behind the semantic seam. Layer-A operational identity is preserved structurally — a ref-existence failure is an operational rejection (rejected_for_correction -> structural-validation-failure, D-088a), never a semantic dismissal; the seam method's return type encodes the distinction. The semantic seam (resolve_intent) is reached only after all of Layer A passes. Keeps the operational/semantic separation (D-087) clean and Layer A enforced as a boundary precondition.
+
+**2. Gateway binding (tool_turn).** The S3 runtime owns the multi-turn loop; the gateway gains a transport-thin primitive (tool_turn) performing exactly one turn over caller-supplied messages/tools/tool_choice. The single-chokepoint discipline is satisfied by SHARED GOVERNANCE INTERNALS, not a single API function: tool_turn shares llm_call's rate-limit, routing, PII-redaction, and cost-logging (llm_usage_log) internals. No orchestration in tool_turn — the spine owns message history, tool_result construction, and turn sequencing. REJECTED: routing the loop through llm_call's prompt-module abstraction; calling provider.invoke raw.
+
+**3. Runtime control (force-per-phase).** The substrate forces the expected tool per phase via tool_choice (propose -> select -> emit), per D-085 (substrate in control; LLM as bounded cognition provider). Refusals remain substrate-routed: the LLM always proposes; the substrate authors admit-or-refuse. The phase choreography is ORCHESTRATION POLICY, not substrate ontology — an evolvable policy of the orchestration engine, not part of the locked tool contract or substrate invariants (consistent with D-086's substrate-internal lifecycle being free to evolve).
+
+**4. Conversation granularity.** One LLM conversation per requirement (1:1 with GenerationOutcome; clean budget attribution and replay isolation). The batch's shared interpretation context (D-077) is computed once and injected as a BOUNDED context into each per-requirement conversation. No hidden shared conversational state across requirements — the shared context is explicit and bounded, not an implicit shared conversation.
+
+**Relationship to Theme 5:** refines the realization of D-085–D-088; does not alter the locked tool contract (D-086) or the two-layer enforcement taxonomy (D-087). The Layer-A/Layer-B taxonomy is unchanged; resolution 1 specifies only the enforcement's code placement and operational identity.
+
+---
+
+## D-096 — Governance-core — admissibility model, Layer-1 semantics, Layer-B discipline, slicing
+
+**Date:** 2026-05-21
+**Substrates affected:** [S3]
+**Status:** Locked (TA-converged)
+
+**Context:** Phase 2 governance-core — filling the GovernanceProvider seam (D-095) with real reasoning, realizing the D-085 engines (admissibility, governance / Layer B, decomposition, refusal router) over the S1 SemanticOrgModel boundary (db92aaf). S1 grounding offers get_entities (exact-match) + get_related (single-hop) + current_version_seq only; Layer 2 admissibility (formula semantics) needs the deferred S1 §17 parser. Resolved via the TA review loop.
+
+**1. Admissibility model.** Candidate derivation is requirement-anchored — origination is the requirement excerpt; S1 verifies, never originates (Guardrail 3 / D-083a). Scoped neighborhoods are built from single-hop get_related walks + exact-match get_entities; traverse is NOT built yet — single-hop now, traversal later, because multi-hop without semantic scoping degrades into graph-wandering, and admissibility patterns + neighborhood discipline must mature first. Admissibility is determined per claim_kind (D-078); dismissals are phase-tagged (D-076/D-077). Admissibility is substrate-authored; the LLM never authors it (D-085).
+
+**2. Layer-1 semantics — transitional, plausibility not verification.** At v1 only Layer 1 is available (Layer 2 = formula-semantics confirmation, parser-deferred per D-083/§17). Layer 1 proves a constraint EXISTS and is ACTIVE on the subject — NOT that its formula enforces the specific claimed rejection. Its semantic promise is therefore "constraint-grounded rejection plausibility," NOT semantic negative verification, and it must be framed and sold as such (no internal overselling). The Layer-1 marker is structurally unavoidable in the emitted artifact — artifact-top-level and operationally visible (D-083), never buried metadata; a caveat that is "legally true but operationally invisible" is unacceptable. Layer 1 is explicitly TRANSITIONAL: Layer 2 (the S1 §17 formula parser) is the intended semantic end-state and is preserved as first-class, so the architecture does not ossify around constraint-existence-as-grounding-truth.
+
+**3. Layer-B discipline — sanity filter, not verifier.** Layer B is a semantic SANITY FILTER, not a semantic verifier. It may ONLY reject (structurally weak excerpt support, obvious contradiction, missing anchoring); it may NOT author semantics, reinterpret intent, or upgrade grounding. The proposing model never validates its own proposal (no self-authored semantic legitimacy); no "mini semantic judges" inside Layer B — that path leads to duplicated reasoning, governance ambiguity, and validator/proposer disagreement spirals. v1 is a structural floor with explicit semantic incompleteness; full semantic-support verification is a known deferred capability, gated on the same semantic end-state as Layer 2.
+
+**4. explanation_hash.** Computed now — a refusal outcome is incomplete without it — mechanically over the typed attempted_interpretation per D-075, adapted to the Slice-0/D-087 shape (path_id normalized away by canonical ordering; scoped_neighborhood carried via extra). The full replay/regeneration controller (drift events, lineage comparison, transparency_policy_version migration) is deferred.
+
+**5. Slicing — refusal vertical first.** The cut is at "admissibly-grounded -> emit." The refusal vertical implements the full admissibility engine (it is how no-grounding is determined), Layer-B-for-refusal, the refusal router, explanation_hash, and persistence — end-to-end with real S1 grounding. resolve_intent is built whole (grounded-or-not); finalize_outcome (emission) is stubbed. The emission half (S2 write_claim/write_recipe + identity_hash + draft outcome) and the config-vs-data_behavior claim-body decision are deferred to the draft vertical.
+
+**6. Persistence.** Per-requirement transaction boundary — partial-failure isolation, important for replay and budget-exhaustion partial state; a runtime-invoked persistence module; FK write order generation_requests -> generation_outcomes -> llm_calls.
+
+**Relationship to Theme 5:** realizes the D-085 engines and the two-layer enforcement (D-087) under the S1/S2 boundaries actually shipped. Does not alter the locked vocabularies (D-076/D-088) or the tool contract (D-086).
+
+---
+
+## D-097 — Draft vertical (governance emission) close-out
+
+**Date:** 2026-05-21
+**Substrates affected:** [S3]
+**Status:** Locked (TA-converged)
+
+The emission half of S3 governance: an admissible grounded candidate becomes an emitted S2 claim + recipe (a draft `GenerationOutcome`). Builds on D-096 and the draft-vertical grounding (S2 write path; Layer-1-completeness per D-078/D-079). TA-converged.
+
+**.1 Debut = `data_behavior` value-claim positive (Option B).** The first emitted artifact sets the substrate's trust posture, so the debut must be verified, not caveated. B is Layer-1-complete (type + permission verification is the verification), needs no S2 claim-body cycle (the value-claim body ships), exercises the full emission machinery (admissibility, grounding, permission reasoning, identity, recipe, ledger, draft semantics), is the highest-volume archetype (D-078), and is operationally meaningful to QA users (e.g. "Profile X can edit Field Y; accepted values A/B/C" — actionable, org-specific). Configuration (Option C) is the immediate fast-follow — cleaner technically but less convincing as a debut (reads as metadata inspection, not test intelligence); its S2 claim-body cycle (3 bodies) runs in parallel. `data_behavior` negative (Option A) is never the debut — debuting caveated plausibility would anchor PrimeQA as intelligent approximation rather than grounded semantic infrastructure, and that is hard to reverse.
+
+**.2 Standard-picklist grounding gap = explicit degrade-or-refuse, never silent.** B's verified scope is type + permission + custom-picklist values; standard-picklist values are gapped (S1 §22, deferred). The substrate must not silently emit a value-claim touching standard-picklist values as if fully grounded — a hidden grounding asymmetry corrodes trust. On the unsupported path it must refuse (ungrounded) or degrade with an explicit unsupported-dimension marker. Fail loud; no quiet fallback. (v1 lean: refuse on the gapped dimension, so every emitted value-claim is fully verified — implementation call within this envelope.)
+
+**.3 Layer marker ≠ caveat; caveat from a centralized semantic-completeness registry.** `admissibility_layer` records how deep grounding went (the marker). The caveat records whether deeper unimplemented semantics exist for the claim_kind (a Layer 2 defined but unbuilt). Distinct axes: a Layer-1-complete claim_kind (config existence/property, value-claim positive — no deeper layer) carries the marker and no caveat; a Layer-1-plausible claim_kind (`data_behavior` negative — Layer 2 defined, parser-deferred) carries the marker and the mandatory caveat. The "does this claim_kind have a Layer 2?" determination is claim_kind-derived (per D-078), not a new `AdmissibilityLayer` enum value, and lives in one semantic-completeness registry / authority surface — never scattered across emission code.
+
+**.4 A draft is one semantic transaction.** Claim + recipe + draft outcome are atomic — one Session bound to the tenant-scoped connection (the S2 Coordinator writes claim/recipe in that Session; the `generation_*` ledger rows write in the same Session; one commit). The draft is itself the governed artifact, so loosely-coupled writes are wrong. The refusal-vertical persister's raw-connection path is reconciled to this Session-based path now, before the bifurcation hardens.
+
+**.5 Substrate authors semantic assertion; LLM owns linguistic realization (Guardrail 2).** The substrate authors the claim body from the grounded candidate's S1 entities — it owns what is asserted true. The LLM (via `emit_outcome`) phrases / structures / narrates / selects — it owns linguistic realization — and never decides what is true or authors entities. LLM-authored claims would make grounding advisory, weaken ontology boundaries, collapse replay stability, and blur semantic provenance. The substrate remains the author of semantic truth.
+
+**.6 Negative semantic verification is a first-class future milestone (architectural-gravity guard).** Debuting positives, and the cleanliness of verifiable positives (clean replay/eval, no parser dependence, trustworthy appearance), create long-term pressure to privilege positives and perpetually defer Layer 2 — making Layer 1 a comfortable local maximum and starving PrimeQA's real differentiation (semantic negative reasoning, edge-condition generation, admissibility-aware rejection). Layer 2 / negative semantic verification is recorded as a core committed milestone, not a deferred edge feature. Sequencing positives-first is correct; permanent privileging is not.
+
+**Slicing:** implement B end-to-end (the registry, positive admissibility, the standard-picklist handling, `accept_selection`/`finalize_outcome` → `write_claim`/`write_recipe` + `compute_identity_hash`, the conditional marker, the unified transaction with persister reconciliation), tested on local PG. C (configuration) is the immediate fast-follow.
+
+---
+
+## D-098 — Draft-vertical debut: flip B → C (supersedes D-097.1, on a grounding finding)
+
+**Date:** 2026-05-21
+**Substrates affected:** [S3]
+**Status:** Locked (TA-converged)
+
+The draft-vertical grounding (read-only) contradicted a load-bearing premise of D-097.1's B debut. Recorded as a superseding entry so the reversal and its cause stay on the record. D-097.2 goes moot for the config debut; D-097.3/.4/.5/.6 stand unchanged. TA-converged.
+
+**Finding (why D-097.1 reopened).** (1) A `data_behavior` value-claim's accepted-values dimension is ungroundable today: inline custom picklists are not edge-modeled, GVS-backed fields are absent in the sandbox with their values on an unreachable detail table, standard picklists are unlinked. (2) Field type lives on a detail table, and SPEC §12's query interface (five primitives + diffs) exposes no detail-table data and designs no detail join — detail exposure is not a deferred-but-designed item but unperformed S1 architecture work. So B's verified debut collapses to permission-only (shipped boundary) or permission+type (requiring net-new S1 design); the "verified value-claim with accepted values" artifact overshoots current grounding. B's semantic center was always the value semantics, not the permission assertion; once values/type are ungrounded, B is weak permission metadata or ontology distortion.
+
+**.1 (supersedes D-097.1) Debut = configuration metadata-relationship-claim.** C is genuinely complete over the shipped substrate boundary — the asserted relationship is a Tier-1 edge verified via `get_related`, no S1 change, no detail reads. Preferred over bare existence-claim: a metadata-relationship-claim is a requirement-grounding assertion ("Requirement assumes Validation Rule R on Account — verified: the org contains R") — semantic grounding, org-aware verification, requirement interpretation, not passive metadata reporting. S2 cost is one config claim body (`MetadataRelationshipClaimBody`) + admissibility; bounded and needed eventually regardless.
+
+**.2 Trust principle clarified — semantic completeness, not perceived richness.** The debut artifact is chosen for semantic completeness over the current substrate boundary, not for maximal semantic richness. A smaller, fully-grounded claim is architecturally stronger than richer-but-partially-fictional semantics. Debuting B as a "verified value-claim" it cannot fulfill would be the oversell D-097.1 exists to prevent; C honors the principle that chose B.
+
+**.3 Reject permission-only B as ontology distortion.** "Profile X can read/edit Field Y" is a permissions-archetype assertion; forcing it into a `data_behavior` value-claim body to dodge the S2 cycle is architectural cheating — permission is not value behavior. Not an option.
+
+**.4 S1 detail-read = deliberate future substrate work, not debut patching.** Detail-table exposure is unperformed S1 query-interface design. It is authored deliberately as its own S1 increment when its consumers arrive (config property-claims, value-claim type grounding) — never as a quick debut-driven join. S1 query-interface evolution stays deliberate substrate design.
+
+**.5 Configuration existence is NOT the long-term semantic center of S3.** C is the correct debut because it is the strongest fully-grounded artifact over the current substrate boundary — not because configuration existence is the long-term semantic center of S3. Config claims replay / ground / explain / validate cleanly — an attractive local maximum — and the substrate must not psychologically recenter on metadata existence. PrimeQA's differentiation depends on behavioral semantic verification, explicitly preserved as the long-term center of gravity (reinforcing D-097.6). The grounding gap validates D-097.6: the substrate is discovering where semantic verification genuinely becomes hard, which is evidence the decomposition is correct.
+
+**Net effect on D-097:** .1 flips B → C; .2 (standard-picklist handling) is moot for the config debut; D-097.3 (semantic-completeness registry), .4 (unified transaction), .5 (substrate-authored / LLM-transcribed), .6 (negatives first-class) stand unchanged.
+
+**Slicing:** ship `MetadataRelationshipClaimBody` (config) + config metadata-relationship admissibility (edge-existence via `get_related`, Layer-1-complete) + emission (the unchanged D-097.3–.5 machinery), tested on local PG.
+
+---
+
+## D-099 — Trigger taxonomy reopened: execution-initiation modes (supersedes D-055's five-kind lock); emission transaction realized
+
+**Date:** 2026-05-22
+**Substrates affected:** [S2, S3]
+**Status:** Locked (TA-converged)
+
+Building the C debut's emission revealed that the trigger taxonomy (D-055, locked at five) cannot represent a verification recipe. TA-converged. Reopens D-055 cleanly; the five existing kinds are unchanged and remain the behavioral core.
+
+**Finding.** A config metadata-relationship verification recipe ("read S1, assert edge R exists") is a static invariant assertion with no Act phase — it has execution, initiation, replayability, and operational semantics, but no causal event. Yet `write_recipe` hard-requires a `causal_initiation` whose `kind` is one of the five D-055 kinds, every one a causal event (inbound / DML / UI / time / metadata-deploy). The observation side already fits (`metadata-recipe`/`metadata_read`); only the trigger layer has the gap. A genuine ontological category miss surfaced under real execution pressure — not convenience or leakage.
+
+**.1 The taxonomy classifies execution-initiation modes, not exclusively causal events.** The original five-kind taxonomy implicitly assumed all executions are reactions to events — an overfit to behavioral testing. Verification recipes reveal the missing half: some executions are inspections of extant state. Recast: the trigger taxonomy classifies execution-initiation modes, not exclusively causal events. Recipes are fundamentally either event-reactive (the five causal kinds) or invariant-inspective (inspection of current state).
+
+**.2 Add a sixth trigger kind: `inspection-trigger`.** Defined as execution initiated by explicit inspection of extant state, not by a causal event — an operator, release gate, verifier, or scheduled inspection pass chooses to inspect current state. A distinct initiation mode, not the absence of a trigger. Minimal body (`kind` + `body_schema_version`). Purely additive: `identity_hash` excludes operational layers, so the new kind cannot perturb any existing claim identity or dedup; the five event kinds are unchanged.
+
+**.3 Inspection means execution-time reinspection, NOT frozen snapshot.** An `inspection-trigger` recipe asserts the org's current state at execution time — S4 actively re-inspects and re-verifies the edge when the recipe runs. It does not mean "assert whatever S3 once observed at grounding." This is the release-gate / drift-detection value: the recipe is the executable re-verification contract, not frozen grounding history. (Why B2 — emit no recipe — was rejected: it would collapse verification into a one-time snapshot and force S4 to re-enter S3 grounding, blurring the S3/S4 boundary.)
+
+**.4 Event triggers remain the behavioral core; inspection-trigger is not a substitute (gravity guard, reinforcing D-097.6 / D-098.5).** `inspection-trigger` is cleaner, replayable, deterministic, and operationally cheap — an attractive local maximum. It exists to represent invariant verification, not to replace behavioral execution semantics. Event triggers must not become an "advanced mode"; behavioral verification, runtime causality, and effect observation remain PrimeQA's center of gravity.
+
+**.5 (Noted, NOT modeled now) inspection-trigger may later bifurcate** — likely invariant inspection (static state assertion) vs observational inspection (read a current runtime artifact without a causal trigger). Single `inspection-trigger` is correct now; do not reopen further. Recorded only so the pressure is anticipated.
+
+**Emission transaction (realizes D-097.4 — recorded for clarity, not a new decision).** `finalize_outcome` authors the claim + recipe bodies during the conversation (substrate owns semantic truth, D-097.5) — no DB writes inside an LLM turn. A post-conversation Session-based persister, bound to the tenant connection, runs `write_claim → write_recipe → ledger` in one Session, one commit; `OutcomeVerdict` carries authored bodies (refs exist only post-write); the refusal-vertical raw-connection persister reconciles onto this path.
+
+---
+
+## D-100 — Phase 2 (S3 generation) close-out scope
+
+**Date:** 2026-05-22
+**Substrates affected:** [S3]
+**Status:** Locked (TA-converged)
+
+Phase 2 is complete when the generation engine is structurally whole and demonstrably produces the full outcome spectrum — verified draft, caveated draft, refusal — end-to-end across representative claim shapes, with production scaffolding to trust it (managed prompts D-089, a golden-case eval suite D-090, model routing D-091), tested and documented, and merged to main. This is the pilot-ready bar for the engine.
+
+Explicitly Phase 3+ (carve-out, so the behavioral-verification frontier stays a named commitment per D-098.5/D-099.4, not abandoned at the config local maximum): (1) the formula parser (Layer 2) → verified negatives — the Phase 3 differentiation headline; (2) the expect-rejection recipe observation mode — a second Phase-3 structural prerequisite (the recipe model has no expect-rejection/expect-error step; a behavioral negative is double-gated: parser and this recipe-model addition — Phase 3 is "parser + observational semantics," not just the parser); (3) the S1 detail-read increment + value-claim positives; (4) remaining archetypes (permissions, ui, integration); (5) full replay/regeneration controller, Theme 7 calibration, automation-effect/Apex.
+
+---
+
+## D-101 — Caveated negative (first Layer-1-plausible emission); caveat persistence
+
+**Date:** 2026-05-22
+**Substrates affected:** [S3]
+**Status:** Locked (TA-converged)
+
+TA-converged. Debut: `data_behavior` prohibition-claim, negative polarity — the only inherently-negative claim_kind; its semantic is rejection (1:1 with the plausibility caveat); admit dimension `validation_rule`/`APPLIES_TO` already grounded. Adds the third outcome type (caveated draft) and fires the caveat path for the first time.
+
+**.1 Admissibility — reuse.** `_evaluate_negative` already admits Layer-1-plausible (VR `APPLIES_TO` subject → `LAYER_1`; absent → `no_constraint_supports_negative`). No new admit branch; the gap is `finalize_outcome`'s non-config stub. The negative grounded path stashes its S1 grounding into `state`, mirroring config's `_resolve_configuration`.
+
+**.2 Emission.** `finalize_outcome`'s first non-config branch authors `ProhibitionClaimBody` from the stashed S1 grounding (substrate authors, LLM transcribes, D-097.5): `target` = subject `PinnedRef`; `operation` bound from the intent hint against the closed enum; `prohibition_mechanism = validation_rule`; `expected_rejection = RejectionSignal(error_code="FIELD_CUSTOM_VALIDATION_EXCEPTION")` — the generic code any VR rejection surfaces, derivable from the mechanism without the formula (honest floor; anything more specific without the parser is fabricated specificity); `semantic_conditions = []` (the triggering condition is in the unparsed formula; the caveat covers it). Recipe = inspection (`inspection-trigger` + `metadata_read` asserting the VR `APPLIES_TO` edge), reusing config's shape; the behavioral test is parser-gated (Phase 3, D-100). Marker `LAYER_1`.
+
+**.3 Caveat persistence (the architectural decision).** The caveat is persisted as emission-time epistemic posture, not derived-on-read. Rationale: a provenance ledger row must be self-describing — `admissibility_layer=layer_1` alone is semantically insufficient (it conflates layer-1-complete [no caveat] and layer-1-plausible [caveat], and resolving that needs claim_kind + the app-code registry, which a stored row must not depend on); and re-derived caveat semantics are not historically trustworthy (a future Layer-2 parser rollout must not silently rewrite the posture of older emitted artifacts). So store `caveat_required` + a typed `caveat_kind` on `GenerationOutcome` + a ledger column, written at emission from the registry verdict. The semantic-completeness registry (D-097.3) remains the sole authority of the caveat decision; the stored field is the emitted verdict snapshot, not duplicated logic. Store typed posture only — never rendered caveat prose (human wording is presentation-layer policy that will evolve; storing it creates stale semantics / replay mismatch). `caveat_kind` is an enum, not a boolean, because the substrate models epistemic qualification classes, not warning presence — one value now (the deeper-verification-layer-unparsed class), future causes (partial grounding, runtime approximation, …) as distinct kinds. Caveat persistence records the emission-time epistemic posture of the artifact, not a presentation-layer warning.
+
+**.4 Persistence/dedup — reuse the unified persister verbatim** (claim+recipe+ledger atomic) plus the caveat column; identity/dedup unchanged.
+
+---
+
+## D-102 — Generation eval suite: v1 realization (deterministic core first)
+
+**Date:** 2026-05-22
+**Substrates affected:** [S3]
+**Status:** Confirmed (no TA — realizes D-090)
+
+Realizes D-090 as a Phase-2-scoped subset; D-090 stays the full target. Confirmed (no TA — realizes D-090; the strategy follows from the governed outcome being deterministic given a fixed intent).
+
+**.1 Two-layer determinism strategy.** The governed outcome is deterministic given a fixed intent + fixture (grounding, admissibility, refusal routing, emission authoring, caveat verdict, and both hashes are substrate-authored and mechanical); the LLM's only outcome-affecting freedom is which intent it proposes and which candidate it selects. So: a deterministic core (scripted/recorded tool-turns → reproducible governed outcome + stable `identity_hash`/`explanation_hash`) is the CI gate and the two-invariant replay net (D-090(d)), asserting exact governed properties — `outcome_kind`, `admissibility_layer`, caveat, `refusal_kind`+cause, claim/recipe shape — never LLM phrasing (D-090(f)); a live-LLM layer (binds the real gateway) tests the LLM's interpretation, asserts with tolerance (governed-outcome family, never phrasing), runs periodically (not PR-gating) at D-090's pre-release/continuous cadence, and its variance feeds D-090(c)'s drift framework (regression|evolution|neutral), not suppressed as noise.
+
+**.2 Sequencing.** The deterministic core lands first (no D-089 dependency — it stubs the LLM) as the regression net protecting the rest of close-out (D-089 prompts, D-091 routing). The live layer lands with/after D-089's prompt registry, since its purpose is to validate real prompt versions (D-089 makes prompts eval-gated by D-090). Scripted intents — representative of real requirements — seed the deterministic corpus; recorded-replay accumulates over time (D-090(d): replay empty at v1).
+
+**.3 v1 scope cut.** A subset of D-090's full vision: a curated, spectrum-representative golden corpus (not the 200–500-case production corpus) + correctness (D-090(a)) + the deterministic replay/regression net + drift hooks. Deferred to Theme 7 / post-pilot: the full corpus, continuous-production drift sampling, and performance evals (cost/latency from `llm_calls`).
+
+---
+
+## D-103 — D-089 prompt management: realization decisions
+
+**Date:** 2026-05-22
+**Substrates affected:** [S3]
+**Status:** Confirmed (no TA — realizes D-089)
+
+Realizes D-089's specified design. Confirmed (no TA — realizes D-089; the freezing invariant and pin-for-eval are correctness/isolation refinements, not contested forks).
+
+**.1 Immutability via per-version freezing + content-hash.** Each shipped version's composed content is frozen per-version and recoverable independent of later base/fragment edits — replay determinism requires reconstructing vN's exact prompt forever. The working `base` + fragments author the next version only. A content-hash drift-guard records each frozen version's SHA; a unit test asserts the live frozen content still hashes to the recorded value (catches edits to a frozen version, which would corrupt replay). Convention + the hash guard make immutability mechanical, not aspirational.
+
+**.2 All-fragments composition.** A version composes base + all archetype fragments (v1: data-behavior, configuration, permission). Necessary, not merely simpler: the LLM chooses the archetype at propose-time and needs every archetype's guidance before proposing; per-requirement fragment selection is impossible pre-proposal. One composed artifact per version.
+
+**.3 Prompt is a quality component, not correctness-critical.** The substrate guarantees governed-outcome correctness regardless of the prompt (bounded cognition: `tool_choice` forces the phase tool, schemas lock vocabulary, the substrate authors admissibility — the LLM cannot emit a wrong tool, an out-of-vocab value, or assert admissibility). The prompt shapes only the semantic quality of the proposal within the rails. Therefore the deterministic eval core (prompt-bypassing) gates correctness; the live eval layer gates prompt quality; and shipping v1 ungated is safe — an ungated prompt can degrade quality but cannot break correctness. v1 ships marked "pre-live-gate baseline."
+
+**.4 Live eval pins the model; production routing is separate.** The live layer pins a model (`model_override`) to isolate the prompt variable (same prompt × different models → different behavior), records `(prompt_version, model)` per drift annotation, may run against multiple pinned models. Substrate-3 production routing (D-091) is a separate increment; D-089's slices do not depend on it.
+
+**.5 Slicing.** Slice 1 = registry (per-version frozen + content-hash guard) + runtime refactor (retire `_SYSTEM`) + v1 prompt; schema-free; deterministic CI unaffected. Slice 2 = the live eval layer (the real gate per .3) + `requirement_text` on live-eligible corpus cases + the now-justified `llm_calls.prompt_version` column. Provenance until slice 2: the request `operational_context.prompt_template_version` (FK-traceable, per D-071).
+
+---
+
+## D-104 — Live eval prompt gate: ontology-coherence semantics (TA-converged)
+
+**Date:** 2026-05-22
+**Substrates affected:** [S3]
+**Status:** Locked (TA-converged)
+
+Reconciles D-089 ("eval-gated before merge") with D-090(c) ("drift investigated, never auto-failed").
+
+**.1 Principle.** The gate enforces ontology coherence, not output equality — it checks whether the prompt keeps the LLM's interpretation inside the substrate's semantic worldview, not whether output matches a snapshot. Per divergence: could this plausibly be a semantically coherent reinterpretation? Yes → human-judged drift; no (structurally implausible / ontology collapse) → auto-fail. Rejects outcome_kind-only auto-fail (too weak — lets config→data_behavior collapse pass) and global archetype/claim_kind auto-fail (too rigid — auto-fails legitimate reinterpretation, the anti-evolution gravity D-090(c) exists to prevent).
+
+**.2 Encoding: per-probe semantic envelopes.** Each live-eligible probe declares three levels — invariant (must-not-drift; violation auto-fails), acceptable variants (coherent alternate resolutions; human-judged drift), benign variance (ignored). Global field-tier classification is too coarse; ambiguity surfaces differ per probe. Invariants are authored as coherence boundaries (broader than the expected output), never as output snapshots — snapshotting is the rejected output-equality and the overfitting failure mode of .5. Example — "VR R exists on Opportunity": invariant {configuration archetype; verified/non-caveated; not behavioral-negative; no refusal absent ambiguity}; acceptable {existence vs metadata-relationship claim; decomposition}; benign {explanation, phrasing, excerpt}.
+
+**.3 Auto-fail = invariant violation** (structurally implausible reinterpretation / ontology collapse): config→behavioral-negative; permission→metadata-relationship; refusal where strong grounding exists and no ambiguity; caveated negative where verified config expected; archetype shift contradicting requirement topology.
+
+**.4 Human-judged drift = acceptable-variant divergence** (coherent alternate resolution): config existence vs metadata-relationship; value-claim vs configuration-property; refusal_kind refinement; claim decomposition; stricter admissibility; more conservative refusal. Flagged `regression|evolution|neutral`, never auto-failed. Merge gate = (no invariant violations) AND (human reviews + accepts the drift report).
+
+**.5 Review adjudicates coherence, not preference.** The reviewer asks "does this remain semantically coherent within substrate law?", not "which output do I prefer?" — maintainers are semantic governors, not prompt stylists. Forward-caution (architecturally important, not v1-urgent): per-probe envelopes risk the corpus becoming hidden prompt-training fixtures; mitigate later with rotating / hidden / adversarial probes so the gate stays semantic-regression detection, not overfitting infrastructure.
+
+**.6 Confirmed (Claude, no TA).** Pinned model: default-only (Sonnet) gate + optional periodic Opus sweep. Full gateway (production-path fidelity; periodic-eval env has the v2-platform infra). Include the underspecified probe (invariant = must-refuse; loose). requirement_text probes reviewed; naturalistic phrasing broadens coverage as the corpus grows.
+
+---
+
+## D-105 — Refuse-not-crash for grounded-but-unbuilt claim_kinds (engine robustness; runner prerequisite)
+
+**Date:** 2026-05-22
+**Substrates affected:** [S3]
+**Status:** Confirmed (no TA)
+
+Surfaced by the production-runner grounding. Confirmed (no TA — realizes fail-loud / no-silent-fallbacks; closes a production crash).
+
+**Problem.** `resolve_intent` `PROCEED_TO_EMIT`s for any grounded claim; `finalize_outcome` authors only config (metadata-relationship) and prohibition (negative), raising `NotImplementedError` for the rest (value / state-transition / automation-effect — D-097.6 deferred). Invisible in eval/verticals (the value-claim probe sits on a bare org → no-grounding refusal). In a real org with the Field present, a grounded value-claim → `PROCEED_TO_EMIT` → `NotImplementedError` → batch abort. A crash, not a graceful fail.
+
+**Decision.**
+
+**.1** A single source of truth for emittable claim_kinds (config metadata-relationship, prohibition negative today; grows as kinds are built).
+
+**.2** Admissibility gates `PROCEED_TO_EMIT` to emittable kinds; a grounded-but-unbuilt kind yields an honest emission-deferred capability refusal (groundable, but emission for this kind isn't built yet — a boundary that lifts as kinds land; the runtime face of D-097.6's deferral). The expected path.
+
+**.3** A drift-guard test binds the resolution-`PROCEED` surface to the emittable source of truth — a future kind added to resolution without emission support fails at build time.
+
+**.4** `finalize_outcome` converts its `NotImplementedError` to a graceful, visible refusal (fail-loud, not batch-destructive) — a should-never-reach backstop given .2, ensuring a gating gap degrades one requirement, not the batch.
+
+**.5** Prerequisite for the production runner; the deterministic eval corpus may later gain a grounded-value-claim → emission-deferred probe to cover the path.
+
+---
+
+## D-106 — Production generation runner + D-091 routing realization
+
+**Date:** 2026-05-24
+**Substrates affected:** [S3]
+**Status:** Confirmed (no TA)
+
+Realizes the runner grounding + D-091. Confirmed (no TA — realizes settled design; forks resolved in the runner HOLD).
+
+**.1 Runner.** `run_generation(request, *, tenant_id, api_key, tenant_policy=None, tool_turn_fn=None) -> BatchResult`: routes the model once per batch (`route_model`), binds the routed `gateway.tool_turn` closure (default; `tool_turn_fn` override = test seam), opens a tenant connection (`GovernanceCore` over `SemanticOrgModel`), runs `GenerationRuntime().run` with `LedgerPersister`. In-process orchestration generalizing `live.py` (production task, routed model, persistence ON).
+
+**.2 route_model (D-091).** Pure `route_model(request[, tenant_policy]) -> model_id`: explicit `operational_context.llm_model_identifier` wins; else the D-091 archetype table on `semantic_context.archetype_hint` (`configuration`/`ui` → Sonnet, `data_behavior`/`permission`/`integration` → Opus); else Opus (default-to-capability); tenant `always_use_opus` honored. One model per batch, bound as `model_override`; reuses `router.SONNET`/`OPUS`. Forks 2–4: `model_override` mechanism (not `_CHAINS`); tenant `always_use_opus` honored; `archetype_hint` reliability — Opus-default safe, the Sonnet cost win contingent on callers setting the hint (pilot-integration note).
+
+**.3 Error policy (pilot).** Abort-on-error with per-requirement-committed isolation (D-096.6). With D-105's refuse-not-crash, the remaining uncaught-error source is provider `LLMError` → aborts the batch, earlier requirements stay committed. Best-effort-continue deferred (needs a runtime error hook).
+
+**.4 Deferred** to the production-integration phase (the HTTP/worker layer wrapping the runner): the trigger/intake (Jira → request building), auth, async job queue, retry/idempotency (re-running an aborted batch conflicts on the `request_id` PK — fresh id per attempt or upsert, an API-layer strategy). Connection held across LLM latency is pilot-acceptable (keepalives + small batches); flagged for scale.
+
+**.5 Provenance.** `llm_calls.model_identifier` records the actual routed model (`turn.model`); `prompt_version` threaded (slice 2). `route_model` may write the resolved model back to `operational_context.llm_model_identifier` for request-level provenance.
+
+---
