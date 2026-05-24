@@ -16,6 +16,11 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+# The one builder (D-106.1): live PINS a model here, the runner ROUTES one in
+# run.py. Re-exported so ``eval.build_tool_turn_fn`` keeps resolving (now to the
+# shared closure — no duplicated gateway.tool_turn wiring).
+from primeqa.generation.gateway_binding import build_tool_turn_fn
+
 # Default pinned model for the gate (Sonnet-class, D-104.6 — Opus is an optional
 # periodic sweep, not the gate). Override via env to the deployed model id.
 DEFAULT_LIVE_MODEL = os.environ.get("LIVE_EVAL_MODEL", "claude-sonnet-4-5")
@@ -27,30 +32,12 @@ def api_key_from_env() -> Optional[str]:
     return os.environ.get("ANTHROPIC_API_KEY")
 
 
-def build_tool_turn_fn(*, tenant_id: int, api_key: str, model: str,
-                       task: str = LIVE_TASK, max_tokens: int = 2048):
-    """A ``gateway.tool_turn`` closure shaped as the runtime's ``ToolTurnFn``.
-    Pins the model (``model_override``, D-104.6). ``ToolTurnResult`` duck-types
-    the runtime's expected turn (content_blocks / *_tokens / model / stop_reason
-    / latency_ms). The gateway is imported lazily."""
-    from primeqa.intelligence.llm import gateway
-
-    def fn(*, messages, tools, tool_choice, system):
-        return gateway.tool_turn(
-            task=task, tenant_id=tenant_id, api_key=api_key, max_tokens=max_tokens,
-            model_override=model, messages=messages, tools=tools,
-            tool_choice=tool_choice, system=system,
-        )
-
-    return fn
-
-
 def run_live_corpus(harness, cases, *, tenant_id: int, api_key: str,
                     model: str = DEFAULT_LIVE_MODEL, prompt_version: Optional[str] = None):
     """Run every live-eligible probe through the live binding; returns the list
     of ``scorer.LiveResult``. The gate is: no ``invariant_ok=False`` results
     (auto-fail); drift rows are for human adjudication (D-104.4)."""
-    fn = build_tool_turn_fn(tenant_id=tenant_id, api_key=api_key, model=model)
+    fn = build_tool_turn_fn(tenant_id=tenant_id, api_key=api_key, model=model, task=LIVE_TASK)
     results = []
     for case in cases:
         if not case.live_eligible:
