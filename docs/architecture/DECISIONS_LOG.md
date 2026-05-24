@@ -6778,3 +6778,23 @@ Surfaced by the production-runner grounding. Confirmed (no TA — realizes fail-
 **.5** Prerequisite for the production runner; the deterministic eval corpus may later gain a grounded-value-claim → emission-deferred probe to cover the path.
 
 ---
+
+## D-106 — Production generation runner + D-091 routing realization
+
+**Date:** 2026-05-24
+**Substrates affected:** [S3]
+**Status:** Confirmed (no TA)
+
+Realizes the runner grounding + D-091. Confirmed (no TA — realizes settled design; forks resolved in the runner HOLD).
+
+**.1 Runner.** `run_generation(request, *, tenant_id, api_key, tenant_policy=None, tool_turn_fn=None) -> BatchResult`: routes the model once per batch (`route_model`), binds the routed `gateway.tool_turn` closure (default; `tool_turn_fn` override = test seam), opens a tenant connection (`GovernanceCore` over `SemanticOrgModel`), runs `GenerationRuntime().run` with `LedgerPersister`. In-process orchestration generalizing `live.py` (production task, routed model, persistence ON).
+
+**.2 route_model (D-091).** Pure `route_model(request[, tenant_policy]) -> model_id`: explicit `operational_context.llm_model_identifier` wins; else the D-091 archetype table on `semantic_context.archetype_hint` (`configuration`/`ui` → Sonnet, `data_behavior`/`permission`/`integration` → Opus); else Opus (default-to-capability); tenant `always_use_opus` honored. One model per batch, bound as `model_override`; reuses `router.SONNET`/`OPUS`. Forks 2–4: `model_override` mechanism (not `_CHAINS`); tenant `always_use_opus` honored; `archetype_hint` reliability — Opus-default safe, the Sonnet cost win contingent on callers setting the hint (pilot-integration note).
+
+**.3 Error policy (pilot).** Abort-on-error with per-requirement-committed isolation (D-096.6). With D-105's refuse-not-crash, the remaining uncaught-error source is provider `LLMError` → aborts the batch, earlier requirements stay committed. Best-effort-continue deferred (needs a runtime error hook).
+
+**.4 Deferred** to the production-integration phase (the HTTP/worker layer wrapping the runner): the trigger/intake (Jira → request building), auth, async job queue, retry/idempotency (re-running an aborted batch conflicts on the `request_id` PK — fresh id per attempt or upsert, an API-layer strategy). Connection held across LLM latency is pilot-acceptable (keepalives + small batches); flagged for scale.
+
+**.5 Provenance.** `llm_calls.model_identifier` records the actual routed model (`turn.model`); `prompt_version` threaded (slice 2). `route_model` may write the resolved model back to `operational_context.llm_model_identifier` for request-level provenance.
+
+---
