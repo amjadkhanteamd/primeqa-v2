@@ -1,8 +1,8 @@
 # Substrate 3 — Generation Engine — SPEC
 
-**Status:** Phase 1 in progress (Theme 1 complete; Themes 2–7 pending).
+**Status:** Phase 1 (design) complete — Themes 1–7 (D-070–D-094). Phase 2 (implementation) complete — D-095–D-106. See §9 for realized state.
 
-**Last substantive update:** 2026-05-19 (Theme 1 — substrate boundaries and architectural posture).
+**Last substantive update:** 2026-05-24 (§9 Realized State — Phase 2 implementation pass).
 
 ---
 
@@ -10,10 +10,10 @@
 
 This spec defines Substrate 3: PrimeQA's generation engine — the substrate that interprets requirements (JIRA tickets in v1; architected to admit other requirement sources later) into substrate-2 test representations (claims plus recipes), grounded in substrate-1's semantic org model.
 
-Design proceeds in two phases:
+Design proceeded in two phases, both now complete:
 
-- **Phase 1 (in progress):** Conceptual shape across seven themes: substrate boundaries, generation request shape, per-archetype strategies, grounded-negative discipline, LLM integration architecture, prompt management, quality envelope.
-- **Phase 2 (deferred):** Concrete implementation surfaces — request types, ledger schema, prompt versioning, eval infrastructure, retry mechanics. Lands when Phase 1 design is complete and Substrate 3 implementation is scheduled in the product roadmap.
+- **Phase 1 (design — complete):** Conceptual shape across seven themes: substrate boundaries, generation request shape, per-archetype strategies, grounded-negative discipline, LLM integration architecture, prompt management, quality envelope. Locked across D-070–D-094 (§§2–8).
+- **Phase 2 (implementation — complete):** Concrete implementation surfaces — request types, ledger schema, prompt versioning, eval infrastructure, routing, the production runner. Built across D-095–D-106. **§9 (Realized State) is the authoritative record of what is actually built**; §§2–8 below remain the design-era record, including the theme-close refusal-taxonomy snapshots (6/7/8 kinds) that §9 supersedes with the realized 9.
 
 See `BACKGROUND.md` for why this substrate exists. See `PRECONDITIONS.md` for the ground state at Phase 1 design start. See `OPEN_QUESTIONS.md` for design surfaces under deliberation. See `DECISIONS_LOG.md` D-070 onward for full design rationale.
 
@@ -882,6 +882,70 @@ Per D-094. The admissibility-confidence threshold (governing the `policy_restrai
 
 ---
 
+## 9. Realized State (Phase 2)
+
+**Resolution.** Per D-095 through D-106: Phase 2 implemented the architecture §§2–8 lock. This section is the authoritative record of **what is actually built**; §§2–8 remain the design-era record. The realized surface is deliberately a thin vertical — two emittable claim kinds carried end to end — proving the spine, governance, emission, persistence, eval, routing, and runner against real S1/S2, with the remainder of the designed 16-kind × 5-archetype surface deferred and catalogued in `DEFERRED_ITEMS.md`.
+
+### 9.1 Emittable surface — the C-debut (2 of 16 claim kinds)
+
+The debut flipped from the data-behavior value-claim originally sketched (D-097.1) to **configuration metadata-relationship-claim** (D-098), the cleanest Layer-1-complete grounding. Two `(archetype, claim_kind)` pairs are emittable:
+
+- **`configuration` / `metadata-relationship-claim`** (D-098) — emission authored from a verified Tier-1 edge; verified draft, Layer-1-complete, no caveat (D-099).
+- **`data_behavior` / `prohibition-claim`** (negative polarity, D-101) — the first **caveated draft**: Layer-1-plausible (a ValidationRule `APPLIES_TO` the subject exists; its formula is unparsed → typed caveat).
+
+The emittable set is the single source of truth in `emission.EMITTABLE`, gated at resolution (D-105). The other 14 designed kinds (value-claim positives, state-transition, automation-effect, configuration existence/property, all permission/UI/integration kinds) are deferred per `DEFERRED_ITEMS.md`.
+
+### 9.2 Outcome spectrum and the realized refusal taxonomy (9 kinds)
+
+Three outcome types ship: **verified draft** (config; Layer-1-complete; no caveat), **caveated draft** (data_behavior negative; Layer-1-plausible; typed `caveat_kind = deeper_verification_layer_unparsed`, persisted as emission-time posture per D-101.3), and **refusal**.
+
+The refusal taxonomy is realized at **nine kinds across three categories** — this supersedes the theme-close 6/7/8 snapshots in §3.4, §5.3, §6.7:
+
+- **Invalidity (5):** `underspecified-requirement`, `no-relevant-context`, `ambiguous-reference`, `ungrounded-claim`, `structural-validation-failure` (D-073).
+- **Policy (2):** `low-generation-confidence` (D-073), `no-admissible-negative-scenario-found` (D-083).
+- **Operational (2):** `operational-budget-exhausted` (D-088), **`emission-deferred` (D-105)**.
+
+`emission-deferred` is the runtime face of D-097.6: a grounded-but-unbuilt claim_kind refuses gracefully (an honest capability boundary that lifts as kinds land) rather than crashing `finalize_outcome`.
+
+### 9.3 Recipe and trigger taxonomy — `inspection-trigger` (6th kind)
+
+Both emittable shapes author an **inspection recipe** (`metadata_read` + assert-edge-exists). Realizing this reopened substrate-2's trigger taxonomy from five to **six kinds** to add **`inspection-trigger`** (D-099, reopening D-055's lock): the invariant-inspective (no-causal-event) verification mode. Migration `20260522_0010` adds it to the `trigger_kind` enum.
+
+### 9.4 Governance spine and the emittability gate
+
+- **Spine:** `resolve_intent` (data_behavior path + `_resolve_configuration`), `finalize_outcome`, `accept_selection`, `route_refusal`; reasoning phases interpretation → grounding → governance (D-077d).
+- **Seam:** `GovernanceCore` over `SemanticOrgModel` — real S1 grounding via single-hop neighborhood walk (D-096.1).
+- **Emittability gate (D-105):** resolution gates `PROCEED_TO_EMIT` to `emission.EMITTABLE`; `finalize_outcome` carries a graceful refuse-not-crash backstop. A drift-guard binds `EMITTABLE` to `author_emission`'s dispatch.
+- **Layer B is a reject-only sanity floor** (excerpt-anchoring length, D-096.3) — full semantic-support verification is deferred (gated on the same end-state as Layer 2).
+- **Multi-candidate flow is dormant:** the ≥2-grounded → `select_canonical` → `accept_selection` path is built and `accept_selection` is implemented + tested, but the `DecompositionController` emits one canonical candidate per failure mode in v1 (D-086 / D-095.3), so the selection turn never fires.
+
+### 9.5 Prompt registry and eval
+
+- **Prompt registry (D-103, realizing D-089 slice 1):** per-version frozen composed prompts (base + the three shipped archetype fragments) with a content-hash guard; `CURRENT = "generation@v1"`. Prompt version threads onto `llm_calls.prompt_version`.
+- **Deterministic eval core (D-102, realizing D-090):** scripted tool-turns bypass the LLM to gate correctness; two-invariant replay (identity_hash strict / explanation_hash weaker); drift-as-evolution (never auto-fail).
+- **Live ontology-coherence gate (D-104, D-089 slice 2):** real-gateway probes adjudicated against per-probe semantic envelopes (invariant = auto-fail / acceptable-variant = drift / benign = ignored). Periodic and API-key-gated — **not a PR-gate**.
+
+### 9.6 Routing and the production runner
+
+- **`route_model` (D-091 realized via D-106.2):** pure; precedence explicit pin → tenant `always_use_opus` → archetype table → Opus (default-to-capability). Bound once per batch as `model_override` (not the gateway `_CHAINS`). Realized model constants: `router.OPUS = "claude-opus-4-7"`, `router.SONNET = "claude-sonnet-4-5-20250929"` (the §7.7 "Sonnet 4.7" design label predates the pinned id). The §7.7 archetype→model table is realized as designed (configuration / ui → Sonnet; data_behavior / permission / integration / mixed → Opus).
+- **`run_generation` (D-106.1):** the in-process production entry point — route → bind the routed `gateway.tool_turn` closure (or a test seam) → `GovernanceCore` over a tenant connection → `GenerationRuntime` with `LedgerPersister`. Abort-on-error; per-requirement-committed isolation (D-096.6). The HTTP/worker layer that wraps it (Jira → request intake, auth, async queue, retry/idempotency) is deferred (D-106.4).
+
+### 9.7 Persistence and migrations
+
+- **`LedgerPersister`:** per-requirement transaction (D-096.6); atomic claim + recipe + ledger write in one tenant-bound Session (D-097.4 / D-099).
+- **Ledger schema (D-074):** `generation_requests` / `generation_outcomes` (semantic ledger) + `llm_calls` (operational telemetry, S3-adjacent).
+- **Migrations `20260520_0010` → `20260522_0040`:** ledger creation; caveat persistence (`caveat_required` + `caveat_kind`, D-101.3); `llm_calls.prompt_version` (D-103.5); `emission-deferred` added to `refusal_kind` (D-105). Plus substrate-2 `20260522_0010` for `inspection-trigger`.
+
+### 9.8 What §9 supersedes in §§2–8
+
+- The realized refusal taxonomy is **9 kinds**, not the 6/7/8 theme-close snapshots (§3.4, §5.3, §6.7).
+- The v1 emittable debut is **configuration metadata-relationship + data_behavior prohibition** (D-098), not the data-behavior-first framing of §2.8 / §4.3.
+
+Everything else in §§2–8 stands as designed; the gap between the designed surface and the realized surface is catalogued in `DEFERRED_ITEMS.md`.
+
+---
+
 ## Status
 
-Theme 1 complete (D-070). Themes 2–7 pending.
+**Phase 1 (design) complete** — Themes 1–7, D-070–D-094 (§§2–8).
+**Phase 2 (implementation) complete** — D-095–D-106; realized state in §9; build arc in `EVOLUTION.md` (2026-05-24).
