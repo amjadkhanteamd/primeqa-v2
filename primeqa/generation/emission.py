@@ -80,6 +80,31 @@ _DEFAULT_OPERATION = "modify_record"
 
 
 # ---------------------------------------------------------------------------
+# Emittable claim_kinds — the single source of truth (D-105.1)
+# ---------------------------------------------------------------------------
+# The (archetype, claim_kind) pairs the substrate can author + persist an
+# emission for today. Resolution gates PROCEED_TO_EMIT to this set; a
+# grounded-but-unbuilt kind refuses (emission-deferred) rather than crashing
+# in finalize_outcome (D-105). This set grows as emission for more kinds is
+# built (the runtime face of D-097.6's deferral). MUST stay in lockstep with
+# what author_emission can dispatch (GroundedEmission -> config metadata-
+# relationship; GroundedNegative -> data_behavior prohibition) — a drift-guard
+# test binds the two.
+
+EMITTABLE: frozenset = frozenset({
+    ("configuration", "metadata-relationship-claim"),   # D-098 (GroundedEmission)
+    ("data_behavior", "prohibition-claim"),              # D-101 (GroundedNegative)
+})
+
+
+def is_emittable(archetype: str, claim_kind: str) -> bool:
+    """Whether the substrate can author + persist an emission for this
+    (archetype, claim_kind) today (D-105.1). The authority both resolution (the
+    PROCEED gate) and finalize_outcome (the backstop) consult."""
+    return (archetype, claim_kind) in EMITTABLE
+
+
+# ---------------------------------------------------------------------------
 # Grounding facts (stashed by governance during grounding)
 # ---------------------------------------------------------------------------
 

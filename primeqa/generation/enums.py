@@ -64,14 +64,14 @@ class CaveatKind(str, Enum):
 
 
 class RefusalKind(str, Enum):
-    """The eight refusal kinds across three categories.
+    """The nine refusal kinds across three categories.
 
     Refusals are first-class outputs (D-070). Five invalidity kinds
-    (D-073, Theme 1), two policy kinds (D-073 / D-083), one operational
-    kind (D-088). Each carries a typed feedback payload — deferred to the
-    governance-core slice; this enum is the discriminator only. The
-    category axis is documented inline, not modelled as a separate enum
-    at this slice.
+    (D-073, Theme 1), two policy kinds (D-073 / D-083), two operational
+    kinds (D-088 budget; D-105 emission-deferred). Each carries a typed
+    feedback payload — deferred to the governance-core slice; this enum is
+    the discriminator only. The category axis is documented inline, not
+    modelled as a separate enum at this slice.
     """
 
     # invalidity — content / structure quality
@@ -83,8 +83,9 @@ class RefusalKind(str, Enum):
     # policy — substrate-deliberate restraint
     LOW_GENERATION_CONFIDENCE = "low-generation-confidence"
     NO_ADMISSIBLE_NEGATIVE_SCENARIO_FOUND = "no-admissible-negative-scenario-found"
-    # operational — substrate-runtime-resource constraint
+    # operational — substrate-runtime constraint
     OPERATIONAL_BUDGET_EXHAUSTED = "operational-budget-exhausted"
+    EMISSION_DEFERRED = "emission-deferred"   # D-105: groundable, but emission for this kind isn't built
 
 
 class DismissalCategory(str, Enum):

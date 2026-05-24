@@ -1,11 +1,20 @@
 """Pure unit tests for governance-core internals (no PG): the S1 edge-type
-drift-guard, dismissal phase-tagging (D-077), and explanation_hash mechanics
-(D-075) — determinism, prose-freeness, typed-field sensitivity."""
+drift-guard, the emittable-set drift-guard (D-105), dismissal phase-tagging
+(D-077), and explanation_hash mechanics (D-075) — determinism, prose-freeness,
+typed-field sensitivity."""
 from __future__ import annotations
 
 import json
+from uuid import uuid4
 
 from primeqa.generation import governance_core as gc
+from primeqa.generation.emission import (
+    EMITTABLE,
+    GroundedEmission,
+    GroundedNegative,
+    _Endpoint,
+    author_emission,
+)
 from primeqa.generation.explanation_hash import canonicalize, compute_explanation_hash
 from primeqa.semantic.edges import TIER_1_EDGES
 
@@ -30,6 +39,50 @@ def test_flow_and_grant_edge_shapes():
     assert "Object" in TIER_1_EDGES[gc.EDGE_FLOW].target_entity_types
     grant = TIER_1_EDGES[gc.EDGE_OBJECT_GRANT]
     assert "Object" in grant.target_entity_types
+
+
+# ---------------------------------------------------------------------------
+# Emittable-set drift-guard (D-105.1/.3) — EMITTABLE and author_emission lockstep
+# ---------------------------------------------------------------------------
+# This guard binds the source of truth to the authoring capability: EMITTABLE
+# can't claim a kind author_emission can't handle (a constructable grounded shape
+# per pair, and no extras). Since the gate admits only EMITTABLE pairs, a *gated*
+# PROCEED therefore always reaches an authorable finalize. It does NOT prove the
+# no-crash guarantee for an *ungated* resolution path (a gating gap) — that is the
+# runtime backstop in finalize_outcome (D-105.4). Adding an emittable kind MUST
+# update this map with a real shape author_emission handles.
+
+def _ep(entity_type: str, external_id: str) -> _Endpoint:
+    return _Endpoint(entity_id=uuid4(), entity_type=entity_type, external_id=external_id)
+
+
+_EMITTABLE_SHAPES = {
+    ("configuration", "metadata-relationship-claim"): lambda: GroundedEmission(
+        archetype="configuration", claim_kind="metadata-relationship-claim",
+        edge_type="APPLIES_TO", version_seq=1,
+        source=_ep("ValidationRule", "Case.RequireReason"),
+        target=_ep("Object", "Case"), requirement_excerpt="x"),
+    ("data_behavior", "prohibition-claim"): lambda: GroundedNegative(
+        archetype="data_behavior", claim_kind="prohibition-claim",
+        operation_hint=None, version_seq=1,
+        subject=_ep("Object", "Case"), requirement_excerpt="x"),
+}
+
+
+def test_emittable_set_matches_author_emission_shapes():
+    # Lockstep: every EMITTABLE pair has a constructable grounded shape here,
+    # and the map carries no pair absent from EMITTABLE. A new emittable kind
+    # that forgets either side trips this.
+    assert set(_EMITTABLE_SHAPES) == set(EMITTABLE)
+
+
+def test_every_emittable_pair_is_authorable():
+    # The PROCEED gate only lets EMITTABLE pairs through; each MUST author into a
+    # bundle (no TypeError) whose (archetype, claim_kind) round-trips the pair —
+    # so a gated PROCEED can never reach an unauthorable finalize.
+    for pair, make in _EMITTABLE_SHAPES.items():
+        bundle = author_emission(make())
+        assert (bundle.archetype, bundle.claim_kind) == pair
 
 
 # ---------------------------------------------------------------------------

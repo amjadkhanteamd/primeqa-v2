@@ -150,8 +150,14 @@ def seeded(db_setup) -> dict:
         case = _entity(conn, "Object", "Case", v1)
         vr = _entity(conn, "ValidationRule", "Case.RequireReason", v1)
         _edge(conn, vr, case, "APPLIES_TO", "BEHAVIOR", v1)
+        # Object WITH a Field (BELONGS_TO) -> a positive value-claim GROUNDS here
+        # (unlike bare Account), so it reaches the D-105 emittability gate and
+        # refuses emission-deferred rather than crashing finalize.
+        invoice = _entity(conn, "Object", "Invoice", v1)
+        amount = _entity(conn, "Field", "Invoice.Amount", v1)
+        _edge(conn, amount, invoice, "BELONGS_TO", "STRUCTURAL", v1)
 
-    return {"v1": int(v1), "account": account, "case": case}
+    return {"v1": int(v1), "account": account, "case": case, "invoice": invoice}
 
 
 @pytest.fixture(autouse=True)

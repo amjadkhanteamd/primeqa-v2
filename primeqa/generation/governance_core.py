@@ -36,6 +36,7 @@ from primeqa.generation.emission import (
     GroundedNegative,
     _Endpoint,
     author_emission,
+    is_emittable,
 )
 from primeqa.generation.governance import (
     ConversationContext,
@@ -274,6 +275,18 @@ class RefusalRouter:
     def no_relevant_context(self, detail: str) -> RefusalDirective:
         return RefusalDirective(RefusalKind.NO_RELEVANT_CONTEXT, {"detail": detail})
 
+    def emission_deferred(self, archetype: str, claim_kind: str) -> RefusalDirective:
+        """A groundable claim whose emission for this claim_kind isn't built yet
+        (D-105). Operational/substrate-runtime: the requirement is admissible,
+        but the emission machinery is deferred (D-097.6) — an honest capability
+        boundary that lifts as kinds land, NOT an input-quality invalidity."""
+        return RefusalDirective(RefusalKind.EMISSION_DEFERRED, {
+            "detail": (f"{archetype}/{claim_kind} is groundable, but emission for "
+                       f"this claim_kind is not yet built"),
+            "archetype": archetype,
+            "claim_kind": claim_kind,
+        })
+
     def from_dismissed(self, cand: _Candidate, *, is_negative: bool) -> RefusalDirective:
         """Map an all-dismissed reasoning outcome to the outcome-level
         refusal_kind (D-083b aggregate)."""
@@ -411,6 +424,15 @@ class GovernanceCore:
             directive = self._router.from_dismissed(base, is_negative=is_neg)
             return IntentResolution(grounded_candidates=[], next_action=NextAction.REFUSE,
                                     interpretation_delta=delta, refusal=directive)
+
+        # Emittability gate (D-105.2): a grounded-but-unbuilt claim_kind refuses
+        # (emission-deferred) instead of PROCEED_TO_EMIT -> finalize crash. The
+        # expected path for value / state-transition / automation-effect until
+        # their emission is built — the runtime face of D-097.6's deferral.
+        if not is_emittable(archetype, claim_kind):
+            return IntentResolution(grounded_candidates=[], next_action=NextAction.REFUSE,
+                                    interpretation_delta=delta,
+                                    refusal=self._router.emission_deferred(archetype, claim_kind))
 
         # Stash grounding for the caveated prohibition-negative emission
         # (D-101.1), mirroring config's _resolve_configuration. Only
@@ -568,13 +590,15 @@ class GovernanceCore:
         grounded = (getattr(state, "grounded_emission", None)
                     or getattr(state, "grounded_negative", None))
         if grounded is None:
-            # The remaining data_behavior kinds (value-claim positives,
-            # state-transition, automation-effect) stay stubbed — Phase 3+
-            # (D-100) — rather than emit an unauthored draft.
-            raise NotImplementedError(
-                "emission is built for the config metadata-relationship debut "
-                "(D-098/D-099) and the prohibition negative (D-101); other "
-                "archetypes/kinds are deferred (D-100)")
+            # Backstop (D-105.4): the emittability gate in resolve_intent should
+            # have already refused a grounded-but-unbuilt kind. If we still reach
+            # here (a gating gap), refuse gracefully — fail-loud, NOT batch-
+            # destructive: a NotImplementedError would abort the whole batch,
+            # whereas an emission-deferred refusal degrades just this requirement.
+            paths = state.attempted_interpretation.get("candidate_paths") or [{}]
+            p = paths[0]
+            return OutcomeVerdict(override=self._router.emission_deferred(
+                p.get("archetype", "(unknown)"), p.get("claim_kind", "(unknown)")))
         bundle = author_emission(grounded)
 
         # Mark the canonical path selected in the reasoning artifact.

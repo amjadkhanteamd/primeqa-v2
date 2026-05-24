@@ -89,6 +89,7 @@ REFUSAL_KIND_ENUM = ENUM(
     "low-generation-confidence",
     "no-admissible-negative-scenario-found",
     "operational-budget-exhausted",
+    "emission-deferred",   # D-105: groundable, but emission for this kind isn't built
     name="refusal_kind",
     create_type=False,
 )

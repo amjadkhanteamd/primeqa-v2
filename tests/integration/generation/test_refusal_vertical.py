@@ -120,6 +120,37 @@ def test_grounded_candidate_proceeds_to_emit(seeded):
 
 
 # ---------------------------------------------------------------------------
+# Emission-deferred (D-105) — a grounded-but-unbuilt kind refuses, not crashes
+# ---------------------------------------------------------------------------
+
+def test_grounded_value_claim_refuses_emission_deferred(seeded):
+    # "Invoice" HAS a Field (BELONGS_TO) -> a positive value-claim GROUNDS, so it
+    # reaches the emittability gate. value-claim emission is unbuilt, so the gate
+    # refuses emission-deferred instead of PROCEED_TO_EMIT -> finalize crash. The
+    # bare-Account value-claim (test_ungrounded_claim) instead refuses ungrounded
+    # *before* the gate — the two are distinct paths.
+    from primeqa.generation.persistence import LedgerPersister
+    _, res = _run(seeded, [intent(claim_kind="value-claim", polarity="positive",
+                                  sf_api_name="Invoice")],
+                  persister=LedgerPersister(TEST_TENANT_ID))
+    o = res.results[0].outcome
+    assert o.outcome_kind == OutcomeKind.REFUSAL
+    assert o.refusal_kind == RefusalKind.EMISSION_DEFERRED
+    # the candidate GROUNDED (admissibly_grounded), then deferred — NOT dismissed.
+    paths = o.attempted_interpretation.candidate_paths
+    assert paths and paths[0]["admissibility_status"] == "admissibly_grounded"
+    assert not o.attempted_interpretation.dismissed_alternatives_by_reason
+    # the operational refusal names the unbuilt capability.
+    payload = o.refusals[0].payload
+    assert payload["archetype"] == "data_behavior" and payload["claim_kind"] == "value-claim"
+    # persisted end to end -> the new PG enum value round-trips (proves the
+    # 20260522_0040 ADD VALUE migration applied + models_db enum accepts it).
+    rows = query_outcome_rows()
+    assert len(rows["outcomes"]) == 1
+    assert rows["outcomes"][0]["refusal_kind"] == "emission-deferred"
+
+
+# ---------------------------------------------------------------------------
 # Persistence (FK order, per-requirement transaction, partial-failure)
 # ---------------------------------------------------------------------------
 
