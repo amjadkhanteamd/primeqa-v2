@@ -16,6 +16,7 @@ harness owns ledger/S2 reset). Not for production tenants.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from uuid import uuid4
@@ -123,11 +124,14 @@ class EvalHarness:
             "UPDATE entities SET valid_to_seq = :v WHERE valid_to_seq IS NULL"), {"v": vseq})
         name_to_id: dict[str, Any] = {}
         for ent in fixture.get("entities", []):
+            # attributes default to {} but a fixture may carry e.g. a VR's
+            # formula_text (D-107 verified-negative probe).
             eid = conn.execute(text(
                 "INSERT INTO entities (entity_type, sf_id, sf_api_name, display_name, "
                 "attributes, valid_from_seq, valid_to_seq, last_synced_at) "
-                "VALUES (:et,NULL,:api,:api,'{}'::jsonb,:vf,NULL,NOW()) RETURNING id"
-            ), {"et": ent["entity_type"], "api": ent["sf_api_name"], "vf": vseq}).scalar()
+                "VALUES (:et,NULL,:api,:api,CAST(:attrs AS jsonb),:vf,NULL,NOW()) RETURNING id"
+            ), {"et": ent["entity_type"], "api": ent["sf_api_name"], "vf": vseq,
+                "attrs": json.dumps(ent.get("attributes") or {})}).scalar()
             name_to_id[ent["sf_api_name"]] = eid
         for edge in fixture.get("edges", []):
             conn.execute(text(

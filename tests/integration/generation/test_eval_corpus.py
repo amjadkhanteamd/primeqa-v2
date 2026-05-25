@@ -25,11 +25,12 @@ def test_eval_corpus_full_spectrum(seeded):
         f"  {r.case_id}: {'; '.join(r.mismatches)}" for r in failed)
 
     # spectrum coverage — the full governed-outcome range (D-102.3)
-    assert report.by_category.get("draft", (0, 0))[1] >= 1            # verified draft
+    assert report.by_category.get("draft", (0, 0))[1] >= 1            # verified config draft
     assert report.by_category.get("caveated_draft", (0, 0))[1] >= 1   # caveated negative
+    assert report.by_category.get("verified_negative", (0, 0))[1] >= 1  # D-107 Layer-2 verified negative
     assert report.by_category.get("refusal", (0, 0))[1] >= 6          # refusal kinds/causes
     assert report.by_category.get("dedup", (0, 0))[1] >= 1            # was_noop
-    assert report.total >= 9
+    assert report.total >= 10
     # both no-admissible-negative causes + the caveated draft are present
     assert "no-admissible-negative-scenario-found" in report.by_refusal_kind
     assert "ungrounded-claim" in report.by_refusal_kind
@@ -45,6 +46,6 @@ def test_eval_replay_two_invariant_stable(seeded):
         # transparency continuity (D-090(b)): same input -> same explanation_hash
         assert st.explanation_stable, f"{c.id}: explanation_hash drift"
         # semantic continuity (D-090(b)): drafts re-emit to the same identity
-        if c.category in ("draft", "caveated_draft", "dedup"):
+        if c.category in ("draft", "caveated_draft", "verified_negative", "dedup"):
             assert st.identity_stable, (
                 f"{c.id}: identity_hash drift — same-version re-run did not dedup")

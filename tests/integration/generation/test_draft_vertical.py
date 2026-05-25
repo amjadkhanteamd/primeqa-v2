@@ -241,3 +241,46 @@ def test_caveated_negative_identity_dedup(seeded):
     # both caveated, even the dedup re-emit (posture is per-emission)
     assert o1.caveat_required is True and o2.caveat_required is True
     assert len(_query()["claims"]) == 1   # one test, deduped
+
+
+# ---------------------------------------------------------------------------
+# Verified negative (D-107) — the fourth outcome posture; first LAYER_2 firing
+# ---------------------------------------------------------------------------
+
+# "Lead" HAS a VR whose formula (ISBLANK(Reason__c)) parses AND yields a certain
+# violating value -> the negative is Layer-2-VERIFIED, no caveat. Same grounding
+# shape as the caveated "Case" negative; the ONLY difference is a derivable
+# formula on the VR (Option C: the derived payload is the gate, not persisted).
+def _verified_negative():
+    return intent(claim_kind="prohibition-claim", polarity="negative",
+                  sf_api_name="Lead")
+
+
+def test_verified_negative_emitted_end_to_end(seeded):
+    _, res = _emit_run(seeded, [_verified_negative()], persister=LedgerPersister(TEST_TENANT_ID))
+    o = res.results[0].outcome
+    assert o.outcome_kind == OutcomeKind.DRAFT
+    # marker LAYER_2 (formula parsed + violating value derived with certainty)
+    assert o.admissibility_layer == AdmissibilityLayer.LAYER_2
+    # verified -> the caveat is DROPPED (the D-107 verified-vs-caveated line)
+    assert requires_caveat("prohibition-claim", verified=True) is False
+    assert o.caveat_required is False
+    assert o.caveat_kind is None
+    assert o.claims_written and o.recipes_written
+
+    rows = _query()
+    assert len(rows["claims"]) == 1 and len(rows["recipes"]) == 1
+    # still the data_behavior prohibition negative — the claim body is identical
+    # to a caveated one (Option C: only the marker + caveat posture differ).
+    claim = rows["claims"][0]
+    assert claim["archetype"] == "data_behavior"
+    assert claim["claim_kind"] == "prohibition-claim"
+    # recipe stays the inspection shape (behavioral construct+observe is D-100.2)
+    recipe = rows["recipes"][0]
+    assert recipe["trigger_kind"] == "inspection-trigger"
+    assert recipe["recipe_kind"] == "metadata-recipe"
+    # the ledger row is SELF-DESCRIBING (D-101.3): verified posture is stored
+    out = rows["outcomes"][0]
+    assert out["admissibility_layer"] == "layer_2"
+    assert out["caveat_required"] is False
+    assert out["caveat_kind"] is None
