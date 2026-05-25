@@ -1,0 +1,77 @@
+"""Substrate-3 production-integration intake (D-106.4, slice 2).
+
+Assembles the :class:`GenerationRequest` the queue consumer (slice 3) hands to
+``run_generation``, from per-tenant inputs.
+
+S3 intake is **caller-fed**: ``GenerationRequest.requirement_refs`` is
+caller-supplied ``{key, text}`` by design — the substrate *receives* requirement
+text, it does not fetch it. Requirement-text resolution from the v1
+``public.requirements`` table lives at the enqueue boundary (slice 4, v1-side),
+NOT here — honoring the substrate contract and Fork A's anti-coupling rule (no
+S3 → v1 schema dependency).
+
+This slice is resolver + assembler ONLY — no requirement read (slice 4), no
+enqueue (slice 4), no consumer (slice 3), no ``run_generation`` invocation.
+"""
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from sqlalchemy import text
+
+from primeqa.generation.protocol import (
+    GenerationRequest,
+    GovernanceContext,
+    OperationalContext,
+    RequestId,
+    SemanticContext,
+)
+from primeqa.semantic.connection import get_tenant_connection
+from primeqa.semantic.query import SemanticOrgModel
+
+
+def resolve_current_s1_version(tenant_id: int) -> tuple[int, str]:
+    """The tenant's current S1 snapshot to pin a run against: the latest
+    ``logical_version`` (``MAX(version_seq)``, the canonical S1 primitive) and
+    its name.
+
+    Raises ``VersionNotFoundError`` (via
+    :meth:`SemanticOrgModel.current_version_seq`) when the tenant has no S1
+    version — fail-loud, since there is no org snapshot to generate against.
+    """
+    with get_tenant_connection(tenant_id) as conn:
+        seq = SemanticOrgModel(conn).current_version_seq()
+        name = conn.execute(
+            text("SELECT version_name FROM logical_versions WHERE version_seq = :seq"),
+            {"seq": seq},
+        ).scalar()
+        return seq, name
+
+
+def build_generation_request(
+    *,
+    requirement_ref: dict[str, Any],
+    s1_version_seq: int,
+    s1_version_name: Optional[str],
+    request_id: RequestId,
+) -> GenerationRequest:
+    """Pure assembly of a **fresh single-requirement** ``GenerationRequest`` in
+    the shape ``run_generation`` accepts.
+
+    The caller supplies ``request_id`` (minted by the job's ``start_attempt``,
+    D-106.4 .B) — intake does NOT mint it. A fresh request carries no lineage
+    (``prior_request_id`` / ``deltas`` / ``regeneration_kind`` all ``None``), so
+    it is CHECK-valid against ``generation_requests``'s
+    ``(prior_request_id IS NULL) = (deltas IS NULL)``. ``archetype_hint`` is left
+    unset (the router defaults to Opus, D-106.2); a later slice may set it.
+    """
+    return GenerationRequest(
+        request_id=request_id,
+        semantic_context=SemanticContext(
+            requirement_refs=[requirement_ref],
+            s1_version_seq=s1_version_seq,
+            s1_version_name=s1_version_name,
+        ),
+        governance_context=GovernanceContext(),
+        operational_context=OperationalContext(),
+    )
