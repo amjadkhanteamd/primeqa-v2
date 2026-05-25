@@ -234,6 +234,22 @@ def _materialize_chunk(
                 conn, detail_table_name, detail_rows,
             )
 
+        # 4c. ValidationRule REFERENCES: populate validation_rule_field_refs
+        # from the parsed formula (D-107 slice 2, approach B; closes §17 for
+        # same-object refs). Runs after the detail row exists (FK + the
+        # references_status UPDATE target) and reuses the same parent_resolver.
+        # derivation.py emits the REFERENCES edges from the junction.
+        if entity_type == "ValidationRule":
+            from primeqa.sync.validation_rule_refs import (
+                write_field_refs_for_validation_rules,
+            )
+            vr_pairs = [
+                (e.normalized, eid)
+                for e, eid in (list(zip(buckets.new, new_entity_ids))
+                               + list(zip(buckets.changed, changed_new_ids)))
+            ]
+            write_field_refs_for_validation_rules(conn, vr_pairs, parent_resolver)
+
     # 5. Batched UPSERT to enrichment queue for new + changed.
     # Every entity gets an embedding row; only SUMMARY_ENABLED_ENTITY_
     # TYPES get a summary row — so summaries_queued is only bumped for

@@ -121,12 +121,13 @@ def db_setup(test_db_url: str):
 def seeded(db_setup) -> dict:
     from primeqa.semantic.connection import get_tenant_connection
 
-    def _entity(conn, etype, api, vfrom, sf_id=None):
+    def _entity(conn, etype, api, vfrom, sf_id=None, attrs=None):
         return conn.execute(text(
             "INSERT INTO entities (entity_type, sf_id, sf_api_name, display_name, "
             "attributes, valid_from_seq, valid_to_seq, last_synced_at) "
-            "VALUES (:et,:sfid,:api,:api,'{}'::jsonb,:vf,NULL,NOW()) RETURNING id"
-        ), {"et": etype, "sfid": sf_id, "api": api, "vf": vfrom}).scalar()
+            "VALUES (:et,:sfid,:api,:api,CAST(:attrs AS jsonb),:vf,NULL,NOW()) RETURNING id"
+        ), {"et": etype, "sfid": sf_id, "api": api, "vf": vfrom,
+            "attrs": json.dumps(attrs or {})}).scalar()
 
     def _edge(conn, src, tgt, etype, ecat, vfrom):
         conn.execute(text(
@@ -156,6 +157,14 @@ def seeded(db_setup) -> dict:
         invoice = _entity(conn, "Object", "Invoice", v1)
         amount = _entity(conn, "Field", "Invoice.Amount", v1)
         _edge(conn, amount, invoice, "BELONGS_TO", "STRUCTURAL", v1)
+        # Object WITH a VR carrying a DERIVABLE formula (D-107): the negative is
+        # Layer-2-VERIFIED (a violating value derives with certainty) -> no caveat.
+        # Contrast with "Case" above, whose VR has empty attributes (no formula)
+        # and stays Layer-1-plausible / caveated.
+        lead = _entity(conn, "Object", "Lead", v1)
+        lead_vr = _entity(conn, "ValidationRule", "Lead.RequireReason", v1,
+                          attrs={"formula_text": "ISBLANK(Reason__c)"})
+        _edge(conn, lead_vr, lead, "APPLIES_TO", "BEHAVIOR", v1)
 
     return {"v1": int(v1), "account": account, "case": case, "invoice": invoice}
 

@@ -13,9 +13,12 @@ Grounding facts come in per-shape dataclasses, stashed into the conversation
   - :class:`GroundedEmission` — config metadata-relationship (D-098): a verified
     Tier-1 edge between two endpoints. ``caveat_required=False`` (Layer-1-
     complete; reading S1 IS the verification).
-  - :class:`GroundedNegative` — data_behavior prohibition negative (D-101): a
-    ValidationRule ``APPLIES_TO`` the subject grounds the rejection at Layer-1-
-    *plausible* (the formula is not parsed). ``caveat_required=True``.
+  - :class:`GroundedNegative` — data_behavior prohibition negative (D-101 /
+    D-107): a ValidationRule ``APPLIES_TO`` the subject grounds the rejection.
+    When a grounding VR's formula parses AND a violating value derives with
+    certainty, the negative is Layer-2-*verified* (``caveat_required=False``);
+    otherwise it stays Layer-1-*plausible* (``caveat_required=True``). The
+    verified-vs-caveated line IS the derivable/not-derivable line.
 
 :func:`author_emission` dispatches on the grounded shape and returns an
 :class:`EmissionBundle` the persister writes in one Session (D-097.4 / D-099),
@@ -25,8 +28,12 @@ Both shapes emit an *inspection* recipe (D-099): ``inspection-trigger`` (no
 causal event) + a ``metadata_read`` read-and-assert over the grounding edge —
 an execution-time re-inspection contract (D-099.3), not a frozen snapshot. The
 behavioral negative (construct a violating mutation, observe the rejection) is
-double-gated on the formula parser AND an expect-rejection recipe mode, both
-Phase 3 (D-100).
+double-gated on the formula parser AND an expect-rejection recipe mode. The
+parser landed (D-107): it now discharges the verified *marker* (LAYER_2 vs. the
+caveat) by deriving a violating value with certainty. The behavioral *recipe*
+(construct + observe) is still deferred (D-100.2) — under Option C the derived
+payload is the verified-vs-caveated gate only and is NOT persisted, so the
+prohibition claim's identity_hash is unchanged (no premature D-088 break).
 """
 from __future__ import annotations
 
@@ -34,8 +41,10 @@ from dataclasses import dataclass
 from typing import Optional
 from uuid import UUID
 
-from primeqa.generation.enums import CaveatKind
+from primeqa.generation.enums import AdmissibilityLayer, CaveatKind
 from primeqa.generation.semantic_completeness import caveat_kind, requires_caveat
+from primeqa.generation.verified_negative import VerifiedNegative, derive
+from primeqa.semantic.formula import parse
 from primeqa.test_representation.models.claims.configuration import (
     MetadataRelationshipClaimBody,
 )
@@ -144,6 +153,10 @@ class GroundedNegative:
     version_seq: int
     subject: _Endpoint          # the Object the prohibited op would act on
     requirement_excerpt: str
+    # Formula texts of the grounding ValidationRules (D-107). Authoring attempts
+    # violating-value derivation over these to decide verified vs. caveated.
+    # Empty (the default) -> no derivable formula -> caveated fallback unchanged.
+    vr_formulas: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +181,12 @@ class EmissionBundle:
     causal_initiation: InspectionTriggerBody
     observation_realization: MetadataRecipeBody
     execution_environment: ExecutionEnvironmentBody
+    # Admissibility marker (D-097.3 / D-107): how deep grounding actually went —
+    # LAYER_1 (constraint exists/active) or LAYER_2 (formula-verified: a violating
+    # value derived with certainty). finalize_outcome stamps this verbatim.
+    admissibility_layer: AdmissibilityLayer
     # Caveat posture (D-101.3): the registry verdict, stamped on the outcome.
+    # Paired with the marker — LAYER_2 <=> caveat dropped (the D-107 invariant).
     caveat_required: bool
     caveat_kind: Optional[CaveatKind]
 
@@ -245,9 +263,25 @@ def _author_config(g: GroundedEmission) -> EmissionBundle:
         trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
         causal_initiation=trigger, observation_realization=recipe,
         execution_environment=env,
+        # Config metadata-relationship is Layer-1-complete (D-079): reading S1 IS
+        # the verification. No Layer 2 exists, so no caveat regardless of verified.
+        admissibility_layer=AdmissibilityLayer.LAYER_1,
         caveat_required=requires_caveat(g.claim_kind),
         caveat_kind=caveat_kind(g.claim_kind),
     )
+
+
+def _formula_verifies(formulas: tuple[str, ...]) -> bool:
+    """The verified-vs-caveated gate (D-107): whether ANY grounding VR formula
+    yields a *certain* violating value. A derivable violating payload means we
+    can construct an input the org will reject -> Layer 2 (the deeper semantic
+    verification) is discharged. Multiple VRs apply at-least-one semantics: a
+    single derivable formula suffices, since any one VR firing produces the
+    rejection (others can only add rejections, never suppress one). Option C: the
+    payload is the gate ONLY — never persisted (that would shift the prohibition
+    claim's identity_hash; persistence is deferred to the D-100.2 behavioral
+    recipe slice)."""
+    return any(isinstance(derive(parse(text)), VerifiedNegative) for text in formulas)
 
 
 def _author_negative(g: GroundedNegative) -> EmissionBundle:
@@ -259,17 +293,24 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
     # to a safe generic when unspecified/invalid (D-101.2).
     operation = (g.operation_hint if g.operation_hint in _PROHIBITION_OPERATIONS
                  else _DEFAULT_OPERATION)
+    # Verified-vs-caveated gate (D-107): does a grounding VR formula yield a
+    # certain violating value? Decides the marker + caveat posture below. Under
+    # Option C the derived payload is consulted but NOT persisted, so the claim
+    # body is byte-identical whether verified or not (no identity_hash shift).
+    verified = _formula_verifies(g.vr_formulas)
     claim = ProhibitionClaimBody(
         target=subject_ref,
         operation=operation,
         prohibition_mechanism="validation_rule",
-        # Generic VR rejection code — derivable from the mechanism without the
-        # formula (D-101.2 honest floor). Specific message/field is parser- /
-        # detail-gated (Phase 3, D-100); the caveat covers the gap.
+        # Generic VR rejection code — derivable from the mechanism alone (D-101.2
+        # honest floor). Even a verified negative keeps this generic signal: the
+        # LAYER_2 marker certifies "a rejecting input exists," not the specific
+        # error message/field. Persisting the derived field/value is the D-100.2
+        # behavioral-recipe slice (Option C).
         expected_rejection=RejectionSignal(error_code=_VR_REJECTION_ERROR_CODE),
     )
-    # The triggering condition lives in the unparsed formula (Layer 1); the
-    # caveat covers it. Unconditional at this layer.
+    # The triggering condition lives in the formula; whether or not it parsed, the
+    # claim is unconditional at this layer (the marker/caveat carry the verdict).
     conditions = SemanticConditionsBody(conditions=[])
     # Inspection recipe: re-verify a ValidationRule APPLIES_TO the subject.
     trigger, recipe, env = _inspection_recipe(
@@ -285,8 +326,12 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
         trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
         causal_initiation=trigger, observation_realization=recipe,
         execution_environment=env,
-        caveat_required=requires_caveat(g.claim_kind),
-        caveat_kind=caveat_kind(g.claim_kind),
+        # Verified -> LAYER_2 + no caveat; otherwise LAYER_1 + the caveat (D-107).
+        # The marker and the caveat move together: LAYER_2 <=> caveat dropped.
+        admissibility_layer=(AdmissibilityLayer.LAYER_2 if verified
+                             else AdmissibilityLayer.LAYER_1),
+        caveat_required=requires_caveat(g.claim_kind, verified=verified),
+        caveat_kind=caveat_kind(g.claim_kind, verified=verified),
     )
 
 

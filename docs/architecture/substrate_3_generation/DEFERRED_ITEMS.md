@@ -8,6 +8,17 @@ Authored at Phase-2 closeout (2026-05-24). Append corrections as a dated note; d
 
 ---
 
+## Update 2026-05-25 — D-107 (verified negatives) landed; residual deferrals
+
+**§1's "Formula parser → Layer-2 verified negatives" (D-100.1) LANDED — as *static* Layer-2 verification.** Validation-rule negatives whose formula parses and yields a derivable violating value now emit `LAYER_2` with the caveat dropped (SPEC §10; DECISIONS_LOG D-107). The §1 bullet stays as the historical statement of the deferral; this note records its resolution. Still open from this phase:
+
+- **Conservative derivation bail-cases.** `derive()` (D-107 slice 3) returns not-derivable → caveated for: non-numeric ordering (`<` / `>` on string or boolean literals), `NOT(ISBLANK)` / `NOT(ISPICKVAL)` (no certain non-blank / alternate value), bare-boolean predicates, field-to-field comparisons, cross-object dotted refs, and org-state functions (`PRIORVALUE` / `ISCHANGED` / `ISNEW`). These are *correct, honest* caveats today — the bar is single-object / create-time / certain — expandable as derivation coverage grows. — **D-107.1 / D-100.1**
+- **D-100.2 — the behavioral expect-rejection recipe (the double-gate's other half).** §1 already lists this; reframed post-D-107: the parser half landed, so what remains is (i) a recipe-model expect-rejection / expect-error step so the recipe *constructs* the violating mutation and *observes* the rejection (today it stays inspection), and (ii) a **v2 `ProhibitionClaimBody` carrying the violating payload** — deferred under Option C to avoid shifting `identity_hash` on existing negatives (D-107 slice-4 amendment). — **D-100.2**
+
+The §3 capability-gated probe-envelope item: the verified-negative half now has a passing live-eligible probe (`verified-prohibition-negative`); the existence / property config half remains. S1-side residuals (cross-object dotted REFERENCES; `references_status` backfill; the Fork-C junction framework) live in S1 `PHASE_2_PLAN_corrections.md` §17.
+
+---
+
 ## 1. Emission and claim-kinds
 
 The realized emittable set (`emission.EMITTABLE`) is 2 of substrate-2's 16 claim kinds: `configuration / metadata-relationship-claim` and `data_behavior / prohibition-claim`. The rest:

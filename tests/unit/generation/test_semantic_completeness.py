@@ -60,6 +60,46 @@ def test_caveat_kind_set_iff_required():
 
 
 # ---------------------------------------------------------------------------
+# Per-emission verified discharge (D-107) — verified=True drops the caveat
+# ---------------------------------------------------------------------------
+
+def test_verified_drops_caveat_for_layer2_kind():
+    # The deeper layer (Layer 2) was discharged for THIS emission (a violating
+    # value derived with certainty) -> no caveat, even though the claim_kind
+    # structurally HAS a Layer 2.
+    assert requires_caveat("prohibition-claim", verified=True) is False
+    assert caveat_kind("prohibition-claim", verified=True) is None
+    # has_layer_2 is the structural fact and is unchanged by the per-emission axis.
+    assert has_layer_2("prohibition-claim") is True
+
+
+def test_unverified_keeps_caveat_is_the_default():
+    from primeqa.generation.enums import CaveatKind
+    # Default verified=False preserves the Layer-1-plausible caveat (the existing
+    # caveated-negative behavior — backward compatible).
+    assert requires_caveat("prohibition-claim", verified=False) is True
+    assert caveat_kind("prohibition-claim", verified=False) is \
+        CaveatKind.DEEPER_VERIFICATION_LAYER_UNPARSED
+
+
+def test_verified_is_a_noop_for_layer1_complete_kind():
+    # A Layer-1-complete kind has no Layer 2 to discharge: verified must not
+    # invert anything (still no caveat either way).
+    assert requires_caveat("metadata-relationship-claim", verified=True) is False
+    assert requires_caveat("metadata-relationship-claim", verified=False) is False
+    assert caveat_kind("value-claim", verified=True) is None
+
+
+def test_caveat_kind_set_iff_required_holds_on_verified_axis():
+    # The persistence CHECK invariant survives the new axis: a kind is present
+    # exactly when a caveat is required, for every (claim_kind, verified) pair.
+    for ck in ("prohibition-claim", "state-transition-claim", "value-claim",
+               "metadata-relationship-claim", "some-future-behavioral-kind"):
+        for verified in (True, False):
+            assert (caveat_kind(ck, verified) is not None) == requires_caveat(ck, verified)
+
+
+# ---------------------------------------------------------------------------
 # Claim-kind-general, not config-special-cased (D-098.5 gravity guard)
 # ---------------------------------------------------------------------------
 

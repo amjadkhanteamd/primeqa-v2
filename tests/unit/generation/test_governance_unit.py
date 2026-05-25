@@ -5,9 +5,11 @@ typed-field sensitivity."""
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from uuid import uuid4
 
 from primeqa.generation import governance_core as gc
+from primeqa.generation.enums import AdmissibilityLayer, CaveatKind
 from primeqa.generation.emission import (
     EMITTABLE,
     GroundedEmission,
@@ -83,6 +85,78 @@ def test_every_emittable_pair_is_authorable():
     for pair, make in _EMITTABLE_SHAPES.items():
         bundle = author_emission(make())
         assert (bundle.archetype, bundle.claim_kind) == pair
+
+
+# ---------------------------------------------------------------------------
+# D-107 formula capture at grounding — _grounding_vr_formulas
+# ---------------------------------------------------------------------------
+
+def _rel(edge_type: str, entity_type: str, attributes: dict):
+    """A minimal stand-in for a RelatedEntity (only the fields the capture reads)."""
+    return SimpleNamespace(
+        edge_type=edge_type,
+        entity=SimpleNamespace(entity_type=entity_type, attributes=attributes))
+
+
+def test_grounding_vr_formulas_captures_matched_vrs_only():
+    # Same (edge_type, far_type) the Layer-1 dimension matches: APPLIES_TO ->
+    # ValidationRule. A Field on a different edge is ignored; a matched VR with no
+    # formula_text contributes nothing; order is neighborhood order.
+    nb = [
+        _rel("APPLIES_TO", "ValidationRule", {"formula_text": "Amount < 0"}),
+        _rel("BELONGS_TO", "Field", {"formula_text": "ignored — wrong edge/type"}),
+        _rel("APPLIES_TO", "ValidationRule", {}),                 # VR, no formula
+        _rel("APPLIES_TO", "ValidationRule", {"formula_text": "ISBLANK(R__c)"}),
+    ]
+    assert gc._grounding_vr_formulas("prohibition-claim", nb) == ("Amount < 0", "ISBLANK(R__c)")
+
+
+def test_grounding_vr_formulas_unknown_dim_is_empty():
+    # A claim_kind without a negative Layer-1 dimension has nothing to capture.
+    assert gc._grounding_vr_formulas("value-claim", [_rel("APPLIES_TO", "ValidationRule",
+                                                          {"formula_text": "Amount < 0"})]) == ()
+
+
+# ---------------------------------------------------------------------------
+# D-107 verified-vs-caveated drift-guard: LAYER_2 <=> caveat-dropped (Option C)
+# ---------------------------------------------------------------------------
+
+def _neg(formulas: tuple[str, ...]) -> GroundedNegative:
+    return GroundedNegative(
+        archetype="data_behavior", claim_kind="prohibition-claim",
+        operation_hint=None, version_seq=1,
+        subject=_ep("Object", "Case"), requirement_excerpt="x", vr_formulas=formulas)
+
+
+def test_verified_negative_is_layer2_no_caveat():
+    # A derivable grounding formula discharges Layer 2 -> verified marker, caveat
+    # dropped.
+    b = author_emission(_neg(("Amount < 0",)))
+    assert b.admissibility_layer is AdmissibilityLayer.LAYER_2
+    assert b.caveat_required is False and b.caveat_kind is None
+
+
+def test_caveated_negative_is_layer1_with_caveat():
+    # No derivable formula (empty; field-to-field; or unparsed) -> the Layer-1-
+    # plausible caveated fallback (D-101), unchanged.
+    for formulas in ((), ("Amount < Other__c",), ('REGEX(Name, "x")',)):
+        b = author_emission(_neg(formulas))
+        assert b.admissibility_layer is AdmissibilityLayer.LAYER_1
+        assert b.caveat_required is True
+        assert b.caveat_kind is CaveatKind.DEEPER_VERIFICATION_LAYER_UNPARSED
+
+
+def test_layer2_iff_caveat_dropped_invariant():
+    # The slice-4 drift-guard: across the verified/caveated split the marker and
+    # the caveat move together — LAYER_2 exactly when no caveat. Under Option C
+    # the gate is derivability ALONE (no payload-present clause). Includes a
+    # multi-VR object where one of two formulas derives (at-least-one).
+    for formulas in ((), ("Amount < 0",), ("Amount < Other__c",), ("ISBLANK(R__c)",),
+                     ('REGEX(Name, "x")',), ("Amount < 0", 'Name < "M"')):
+        b = author_emission(_neg(formulas))
+        is_l2 = b.admissibility_layer is AdmissibilityLayer.LAYER_2
+        assert is_l2 == (not b.caveat_required)
+        assert is_l2 == (b.caveat_kind is None)
 
 
 # ---------------------------------------------------------------------------

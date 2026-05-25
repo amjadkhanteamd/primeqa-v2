@@ -120,6 +120,26 @@ def phase_for_reason(reason: str) -> Optional[str]:
     return DISMISSAL_PHASE.get(reason)
 
 
+def _grounding_vr_formulas(claim_kind: str, neighborhood: list) -> tuple[str, ...]:
+    """Formula texts of the ValidationRules that ground this negative — matched by
+    the same (edge_type, far_type) the Layer-1 dimension uses (D-078). Carried
+    onto the grounding so emission can attempt D-107 violating-value derivation
+    (the verified-vs-caveated gate). Empty when no matched VR carries a formula,
+    which keeps the caveated fallback (D-101) unchanged. Multi-VR objects
+    contribute every formula; emission uses at-least-one-derivable semantics."""
+    dim = _NEGATIVE_LAYER1_DIM.get(claim_kind)
+    if dim is None:
+        return ()
+    edge_type, far_type = dim
+    formulas: list[str] = []
+    for r in neighborhood:
+        if r.edge_type == edge_type and r.entity.entity_type == far_type:
+            text = r.entity.attributes.get("formula_text")
+            if text:
+                formulas.append(text)
+    return tuple(formulas)
+
+
 # ---------------------------------------------------------------------------
 # Internal candidate
 # ---------------------------------------------------------------------------
@@ -445,7 +465,11 @@ class GovernanceCore:
                 subject=_Endpoint(
                     entity_id=subject.id, entity_type=subject.entity_type,
                     external_id=subject.sf_api_name or str(subject.id)),
-                requirement_excerpt=excerpt)
+                requirement_excerpt=excerpt,
+                # Carry the grounding VRs' formulas so authoring can run the
+                # D-107 verified-vs-caveated gate (re-found from the same
+                # in-scope neighborhood Layer-1 grounding matched).
+                vr_formulas=_grounding_vr_formulas(claim_kind, neighborhood))
 
         # grounded -> emit deferred (draft vertical). resolve_intent stays whole.
         presented = [PresentedCandidate(path_id=c.path_id,
@@ -608,12 +632,15 @@ class GovernanceCore:
             outcome_id=uuid4(), request_id=ctx.request_id,
             requirement_ref=ctx.requirement_ref,
             outcome_kind=OutcomeKind.DRAFT,
-            # The marker (D-083 e): how deep grounding actually went — LAYER_1
-            # for both the Layer-1-complete config claim and the Layer-1-
-            # plausible negative. The caveat posture (D-101.3) is the registry
-            # verdict: False/None for config, True/<kind> for the negative.
+            # The marker (D-083 e / D-107): how deep grounding actually went,
+            # read from the bundle (authoring is the one site that knows). LAYER_1
+            # for the Layer-1-complete config claim and for a caveated negative
+            # (formula unparsed/underivable); LAYER_2 when the negative's VR
+            # formula parsed and a violating value derived with certainty. The
+            # caveat posture (D-101.3) is the registry verdict the bundle carries
+            # and moves with the marker: LAYER_2 <=> caveat dropped.
             # claims_written / recipes_written are assigned post-write (D-099).
-            admissibility_layer=AdmissibilityLayer.LAYER_1,
+            admissibility_layer=bundle.admissibility_layer,
             caveat_required=bundle.caveat_required,
             caveat_kind=bundle.caveat_kind,
             attempted_interpretation=AttemptedInterpretation(**ai),

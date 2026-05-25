@@ -1018,7 +1018,7 @@ make_parent_resolver" — the extractor has no parent_resolver;
 the resolution happens in-phase, and the fetcher is the new
 `fetch_profile_layouts` (not a make_parent_resolver call).
 
-## §17: ValidationRule REFERENCES edge deferred — formula parser unbuilt
+## §17: ValidationRule REFERENCES edge — RESOLVED (same-object); cross-object dotted deferred
 
 **Date:** 2026-05-12
 **Step:** ValidationRule phase (7 of 12)
@@ -1054,6 +1054,34 @@ fetch_custom_field_metadata), §14 (CONSTRAINS_PICKLIST_VALUES
 needs §10 + design resolution), §16 (ASSIGNED_TO_PROFILE_RT
 needs Profile entities) — each waits for unbuilt
 infrastructure.
+
+**Status: RESOLVED 2026-05-25 (same-object) — D-107 slices 1–2.** The formula
+parser landed (`primeqa/semantic/formula/`, hand-written recursive descent →
+typed AST, fail-loud `NotParsed`). The sync-time writer
+(`primeqa/sync/validation_rule_refs.py`) parses `errorConditionFormula`, resolves
+**same-object** refs, and writes `validation_rule_field_refs` rows
+(`read` / `priorvalue` / `ischanged`, multi-row per field); `derivation.py` emits
+the REFERENCES edges from the junction. `references_status` (migration
+`20260525_0010`) is 4-state — `pending` (honest default, never conflated with a
+parse verdict) / `complete` / `partial` / `unparsed`. Re-sync is version-scoped:
+`errorConditionFormula` is in `hash_normalized`, so a formula change supersedes
+the VR (new `entity_id`) and the new version gets fresh refs while the old id
+keeps its historical refs — no stale current edges. See DECISIONS_LOG D-107
+(slice-2 amendment).
+
+**Still deferred (Phase-3+):**
+
+1. **Cross-object dotted REFERENCES.** The dotted segment (`Account.Industry`) is
+   a relationship name, not an object; resolving it needs cross-object
+   relationship resolution at sync (a separate S1 capability). Skipped today →
+   `references_status = partial`.
+2. **`references_status` backfill.** Existing VRs stay `pending` until re-synced
+   (the writer overwrites on the next sync); no backfill migration ships. A
+   backfill pass is a separate operational task.
+3. **Fork-C property-bearing junction framework.** REFERENCES owns a
+   single-purpose writer + `derivation.py` today; generalizing the
+   property-bearing junction mirror is deferred to the next such junction
+   (extract-on-recurrence). See D-107 slice-2 amendment.
 
 ## §18: Bulk-fetcher child phases require explicit parent-scope filter
 

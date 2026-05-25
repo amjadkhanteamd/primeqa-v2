@@ -15,8 +15,11 @@ Distinct axes (D-097.3):
 A Layer-1-complete claim_kind (config existence / property / metadata-
 relationship; value-claim positive — no deeper layer) → ``has_layer_2=False``
 → marker, no caveat. A Layer-1-plausible claim_kind (`data_behavior` negative —
-Layer 2 defined, parser-deferred) → ``has_layer_2=True`` → marker + mandatory
-caveat.
+Layer 2 defined) → ``has_layer_2=True`` → marker + caveat UNLESS that layer was
+discharged for this emission (D-107: the VR formula parsed and a violating value
+was derived with certainty → a verified negative, marker LAYER_2, no caveat).
+The structural fact (a Layer 2 EXISTS) lives here; the per-emission discharge is
+the ``verified`` argument the caller passes.
 
 **Claim-kind-general by construction (D-098.5 gravity guard).** The registry
 spans archetypes; configuration metadata-relationship just happens to be
@@ -53,21 +56,28 @@ def has_layer_2(claim_kind: str) -> bool:
     return _HAS_LAYER_2.get(claim_kind, True)
 
 
-def requires_caveat(claim_kind: str) -> bool:
+def requires_caveat(claim_kind: str, verified: bool = False) -> bool:
     """The conditional plausibility caveat (D-096.2 / D-097.3) is required iff a
-    deeper Layer 2 exists for this claim_kind. The ONLY caveat authority."""
-    return has_layer_2(claim_kind)
+    deeper Layer 2 exists for this claim_kind AND it was not discharged for this
+    emission. ``verified=True`` (D-107) means the deeper layer was actually
+    satisfied — the VR formula parsed and a violating value was derived with
+    certainty — so the negative is verified and carries no caveat. Default
+    ``verified=False`` preserves every existing caller (config is Layer-1-
+    complete; an unverified negative stays caveated). The ONLY caveat authority."""
+    return has_layer_2(claim_kind) and not verified
 
 
-def caveat_kind(claim_kind: str) -> Optional[CaveatKind]:
+def caveat_kind(claim_kind: str, verified: bool = False) -> Optional[CaveatKind]:
     """The typed caveat posture for ``claim_kind``, or ``None`` when no caveat
-    is required (D-101.3). Sole authority alongside :func:`requires_caveat` —
-    the persisted ``caveat_kind`` is this registry verdict, never re-derived.
+    is required (D-101.3) — including when ``verified=True`` discharged the deeper
+    layer for this emission (D-107). Sole authority alongside
+    :func:`requires_caveat` — the persisted ``caveat_kind`` is this registry
+    verdict, never re-derived.
 
-    v1 yields one kind for every Layer-1-plausible claim_kind: the deeper
-    verification layer (Layer 2) is defined but its formula parser is unbuilt
+    v1 yields one kind for every still-caveated Layer-1-plausible claim_kind: the
+    deeper verification layer (Layer 2) is defined but unparsed for THIS emission
     (D-100). Future causes (partial grounding, runtime approximation) map to
     distinct kinds here without touching callers."""
-    if not requires_caveat(claim_kind):
+    if not requires_caveat(claim_kind, verified):
         return None
     return CaveatKind.DEEPER_VERIFICATION_LAYER_UNPARSED
