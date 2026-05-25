@@ -19,11 +19,63 @@ from datetime import datetime, timezone
 
 import requests as http_requests
 
+from primeqa.integrations.exceptions import (
+    SFAuthError,
+    SFRateLimitError,
+    SFRequestError,
+)
 from primeqa.runs import streams as run_streams
 
 log = logging.getLogger(__name__)
 
 CRITICAL_FIELDS = {"StageName", "Status", "OwnerId", "Amount", "CloseDate", "IsWon", "IsClosed"}
+
+
+def classify_sf_exception(e: Exception) -> tuple[str | None, str | None]:
+    """Map a transport-layer Salesforce exception to a
+    ``(failure_class, error_message)`` pair (item 2 — structured access-error
+    attribution). Pure + unit-testable; no I/O.
+
+    failure_class values (free strings, consistent with the existing
+    ``RunStepResult.failure_class`` convention; durable, may seed a future
+    taxonomy): ``auth_error`` (OAuth scope / token), ``insufficient_access``
+    (FLS / field permission), ``invalid_field``, ``transient_error`` (rate
+    limit / 5xx), ``step_error`` (other / unparseable). Deterministic access
+    errors are surfaced here; sf_client already declines to retry non-transient
+    4xx, so this adds no retry.
+
+    Returns ``(None, None)`` for a non-SF exception so the caller keeps its
+    generic ``str(e)`` path unchanged.
+    """
+    if isinstance(e, SFAuthError):
+        return "auth_error", f"Salesforce authentication / OAuth-scope error: {e}"
+    if isinstance(e, SFRateLimitError):
+        return "transient_error", f"Salesforce rate limit (retries exhausted): {e}"
+    if isinstance(e, SFRequestError):
+        code = e.error_code or ""
+        flds = e.fields
+        fld_txt = f" on field(s): {', '.join(flds)}" if flds else ""
+        if code.startswith("INSUFFICIENT_ACCESS") or e.status_code == 403:
+            return "insufficient_access", (
+                f"Insufficient access — FLS / field permission or OAuth scope"
+                f"{fld_txt} (SF errorCode={code or 'n/a'}, HTTP {e.status_code})."
+            )
+        if code.startswith("INVALID_FIELD"):
+            return "invalid_field", (
+                f"Invalid field{fld_txt} (SF errorCode={code}, HTTP {e.status_code})."
+            )
+        if e.status_code is not None and 500 <= e.status_code < 600:
+            return "transient_error", (
+                f"Salesforce server error (HTTP {e.status_code}): {e}"
+            )
+        # Other / unparseable 4xx (bare 400, 404, …): not silently str(e)'d —
+        # preserve status_code + raw body, classify generic.
+        body = (e.response_body or "")[:300]
+        return "step_error", (
+            f"Salesforce request error (HTTP {e.status_code}, "
+            f"errorCode={code or 'n/a'}): {body or e}"
+        )
+    return None, None
 
 
 class SalesforceExecutionClient:
@@ -236,6 +288,7 @@ class StepExecutor:
         error_message = None
         status = "passed"
         target_record_id = None
+        failure_class = None   # item 2: structured SF access-error attribution
 
         try:
             resolved = self._resolve_refs(step_def.get("field_values", {}))
@@ -360,6 +413,19 @@ class StepExecutor:
                 if before_state and after_state:
                     field_diff = self._compute_diff(before_state, after_state)
 
+        # Item 2: structured SF access-error attribution. Catch the typed
+        # transport exceptions BEFORE the generic Exception so FLS / field-
+        # permission / OAuth-scope errors get a categorized failure_class + an
+        # attributed message (naming the field) rather than collapsing to an
+        # undifferentiated str(e). The mapping is a pure helper
+        # (classify_sf_exception) so it is unit-testable without a live SF call.
+        # Deterministic 4xx are already not retried by sf_client; nothing here
+        # adds retry.
+        except (SFAuthError, SFRateLimitError, SFRequestError) as e:
+            status = "error"
+            if isinstance(e, SFRequestError) and e.status_code is not None:
+                http_status = e.status_code
+            failure_class, error_message = classify_sf_exception(e)
         except Exception as e:
             status = "error"
             error_message = str(e)
@@ -420,8 +486,12 @@ class StepExecutor:
             "error_message": error_message,
             "duration_ms": duration_ms,
         }
-        if expect_fail_class:
-            update_payload["failure_class"] = expect_fail_class
+        # expect_fail classification wins (preserves the negative-test
+        # semantics exactly); otherwise the item-2 SF access classification
+        # applies. None on a clean pass → no failure_class written.
+        final_failure_class = expect_fail_class or failure_class
+        if final_failure_class:
+            update_payload["failure_class"] = final_failure_class
         # Fix 3: surface structured verify mismatches onto the dedicated
         # comparison_details column (migration 046) so the UI + copy-
         # diagnosis can render per-field rows without parsing api_response.

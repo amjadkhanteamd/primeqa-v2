@@ -70,7 +70,7 @@ tenant, excluded from the 20-user cap).
 
 ## Documentation
 - `CLAUDE.md` — project context for Claude Code / AI agents
-- `PROJECT_STATE.md` — current build progress, database tables, endpoints, pages
+- `docs/archive/project_state/PROJECT_STATE.md` — historical build-progress snapshot (archived; see CLAUDE.md for current state)
 - `docs/design/run-experience.md` — R1–R7 design doc with Q1–Q14 decision ledger
 - `docs/design/system-validation.md` — self-validation step grammar + canonical suite roadmap
 - `PRIMEQA_ARCHITECTURE_SPEC_v2.2.md` — original architecture spec (legacy; still operational; see `docs/architecture/PLATFORM_VISION.md` for the current substrate-based architecture)

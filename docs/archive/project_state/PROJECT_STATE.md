@@ -1,3 +1,7 @@
+> **ARCHIVED — historical snapshot (frozen ~migration 049).** For current
+> project state see `CLAUDE.md`. Known-stale here: test counts, the migrations
+> list, and Domain Packs / story-view status.
+
 # PrimeQA v2 — Project State
 
 ## Deployment
