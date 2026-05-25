@@ -1,6 +1,6 @@
 # Substrate 3 — Generation Engine — SPEC
 
-**Status:** Phase 1 (design) complete — Themes 1–7 (D-070–D-094). Phase 2 (implementation) complete — D-095–D-106. See §9 for realized state.
+**Status:** Phase 1 (design) complete — Themes 1–7 (D-070–D-094). Phase 2 (implementation) complete — D-095–D-106. Phase 3 increment: verified negatives — D-107. See §9–§10 for realized state.
 
 **Last substantive update:** 2026-05-24 (§9 Realized State — Phase 2 implementation pass).
 
@@ -891,13 +891,13 @@ Per D-094. The admissibility-confidence threshold (governing the `policy_restrai
 The debut flipped from the data-behavior value-claim originally sketched (D-097.1) to **configuration metadata-relationship-claim** (D-098), the cleanest Layer-1-complete grounding. Two `(archetype, claim_kind)` pairs are emittable:
 
 - **`configuration` / `metadata-relationship-claim`** (D-098) — emission authored from a verified Tier-1 edge; verified draft, Layer-1-complete, no caveat (D-099).
-- **`data_behavior` / `prohibition-claim`** (negative polarity, D-101) — the first **caveated draft**: Layer-1-plausible (a ValidationRule `APPLIES_TO` the subject exists; its formula is unparsed → typed caveat).
+- **`data_behavior` / `prohibition-claim`** (negative polarity, D-101) — the first **caveated draft**: Layer-1-plausible (a ValidationRule `APPLIES_TO` the subject exists; its formula is unparsed → typed caveat). **Now also emits a verified (`LAYER_2`) draft** when the grounding VR's formula parses and a violating value derives with certainty (D-107) — the caveat drops; see §10.
 
 The emittable set is the single source of truth in `emission.EMITTABLE`, gated at resolution (D-105). The other 14 designed kinds (value-claim positives, state-transition, automation-effect, configuration existence/property, all permission/UI/integration kinds) are deferred per `DEFERRED_ITEMS.md`.
 
 ### 9.2 Outcome spectrum and the realized refusal taxonomy (9 kinds)
 
-Three outcome types ship: **verified draft** (config; Layer-1-complete; no caveat), **caveated draft** (data_behavior negative; Layer-1-plausible; typed `caveat_kind = deeper_verification_layer_unparsed`, persisted as emission-time posture per D-101.3), and **refusal**.
+Three outcome types ship: **verified draft** (config; Layer-1-complete; no caveat), **caveated draft** (data_behavior negative; Layer-1-plausible; typed `caveat_kind = deeper_verification_layer_unparsed`, persisted as emission-time posture per D-101.3), and **refusal**. (D-107 adds a fourth posture — the **verified negative**: a data_behavior negative whose VR formula derives a violating value, emitted `LAYER_2` with the caveat dropped; see §10.)
 
 The refusal taxonomy is realized at **nine kinds across three categories** — this supersedes the theme-close 6/7/8 snapshots in §3.4, §5.3, §6.7:
 
@@ -943,9 +943,22 @@ Both emittable shapes author an **inspection recipe** (`metadata_read` + assert-
 
 Everything else in §§2–8 stands as designed; the gap between the designed surface and the realized surface is catalogued in `DEFERRED_ITEMS.md`.
 
+## 10. Realized State — Phase 3 increment: verified negatives (D-107)
+
+D-107 lands the **formula parser → verified negatives** differentiation (`DEFERRED_ITEMS.md` §1, D-100.1) as **static Layer-2 verification**. One phase branch, sliced S1-first: (1) the SF validation-rule formula parser (`primeqa/semantic/formula/`); (2) REFERENCES-edge field extraction closing S1 §17 for same-object refs; (3) violating-value derivation (`primeqa/generation/verified_negative.py`); (4) emission integration.
+
+- **`LAYER_2` is now active.** A grounded `data_behavior` prohibition negative whose grounding VR formula *parses* and yields a *derivable* violating create-payload is emitted `admissibility_layer = layer_2` with the caveat **dropped**; everything the parser/derivation does not fully resolve keeps the Layer-1-plausible **caveated** draft (D-101), unchanged. The verified-vs-caveated line **is** the derivable/not-derivable line. This realizes the design-era prediction in §§2–8 (the automatic Layer-1 → Layer-2 upgrade for validation-rule-grounded negatives when the §17 parser ships) — non-breaking: older artifacts keep their persisted posture (D-101.3).
+- **Static, not behavioral (scope honesty).** Layer 2 here is *static* — a violating input is derivable *with certainty* from the formula. The recipe stays **inspection** (re-verify a VR `APPLIES_TO` the subject); it does **not** construct the violating mutation and observe the rejection. The behavioral half — an expect-rejection recipe step plus a v2 `ProhibitionClaimBody` carrying the payload — is the other side of D-100's double-gate, deferred to **D-100.2** (`DEFERRED_ITEMS.md` §1).
+- **Option C — the payload is the gate, not persisted.** `derive()` decides verified-ness; the derived payload is discarded, not written onto the claim. Persisting it would shift the identity-bearing `ProhibitionClaimBody`'s `identity_hash` (the S2 canonicalizer folds every field, `None` included), breaking the D-090(b) continuity invariant for existing negatives. The claim body is byte-identical whether verified or caveated — only `admissibility_layer` and the caveat posture differ (DECISIONS_LOG D-107 slice-4 amendment).
+- **Mechanism.** Per-emission caveat — `requires_caveat(claim_kind, verified)` / `caveat_kind(claim_kind, verified)` = `has_layer_2(claim_kind) AND NOT verified` (the claim_kind-general registry is unchanged; `verified` is the per-formula discharge). `GroundedNegative.vr_formulas` carries the grounding VRs' `formula_text`; `EmissionBundle.admissibility_layer` carries the marker; `finalize_outcome` reads it (no longer hardcoded `LAYER_1`).
+- **Eval.** The deterministic corpus gains `verified-prohibition-negative` (a VR with `ISBLANK(Reason__c)` → `layer_2`, no caveat); the drift-guard invariant is `LAYER_2 ⟺ caveat-dropped`.
+
+Residual deferrals from this phase: `DEFERRED_ITEMS.md` (conservative derivation bail-cases; the D-100.2 behavioral recipe + v2 body) and S1 `PHASE_2_PLAN_corrections.md` §17 (cross-object dotted REFERENCES; `references_status` backfill; the Fork-C junction framework).
+
 ---
 
 ## Status
 
 **Phase 1 (design) complete** — Themes 1–7, D-070–D-094 (§§2–8).
 **Phase 2 (implementation) complete** — D-095–D-106; realized state in §9; build arc in `EVOLUTION.md` (2026-05-24).
+**Phase 3 increment (verified negatives) complete** — D-107; realized state in §10; build arc in `EVOLUTION.md` (2026-05-25).
