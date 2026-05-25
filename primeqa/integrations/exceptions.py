@@ -1,6 +1,8 @@
 """Exceptions raised by primeqa.integrations clients."""
 from __future__ import annotations
 
+import json
+
 
 class SFClientError(Exception):
     """Base for all Salesforce client errors."""
@@ -26,3 +28,38 @@ class SFRequestError(SFClientError):
         super().__init__(message)
         self.status_code = status_code
         self.response_body = response_body
+
+    def _parsed(self) -> dict | None:
+        """First Salesforce error object parsed from ``response_body``.
+
+        SF REST errors come back as a JSON list of ``{message, errorCode,
+        fields}`` objects (occasionally a single object). Fail-safe: the body
+        is captured truncated (``resp.text[:500]``), so a cut-off / malformed /
+        empty body returns ``None`` rather than raising — callers then fall back
+        to ``status_code`` classification.
+        """
+        if not self.response_body:
+            return None
+        try:
+            data = json.loads(self.response_body)
+        except (ValueError, TypeError):
+            return None
+        if isinstance(data, list):
+            data = data[0] if data and isinstance(data[0], dict) else None
+        return data if isinstance(data, dict) else None
+
+    @property
+    def error_code(self) -> str | None:
+        """The SF ``errorCode`` (e.g. ``INSUFFICIENT_ACCESS_OR_READONLY``,
+        ``INVALID_FIELD``) or ``None`` when absent / unparseable."""
+        obj = self._parsed()
+        code = obj.get("errorCode") if obj else None
+        return code if isinstance(code, str) else None
+
+    @property
+    def fields(self) -> list[str]:
+        """The SF ``fields`` implicated in the error, or ``[]`` when absent /
+        unparseable."""
+        obj = self._parsed()
+        raw = obj.get("fields") if obj else None
+        return [f for f in raw if isinstance(f, str)] if isinstance(raw, list) else []
