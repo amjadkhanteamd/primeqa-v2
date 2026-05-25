@@ -6798,3 +6798,23 @@ Realizes the runner grounding + D-091. Confirmed (no TA — realizes settled des
 **.5 Provenance.** `llm_calls.model_identifier` records the actual routed model (`turn.model`); `prompt_version` threaded (slice 2). `route_model` may write the resolved model back to `operational_context.llm_model_identifier` for request-level provenance.
 
 ---
+
+## D-107 — Formula parser → verified negatives: phase design (S1 sub-feature feeding S3)
+
+**Date:** 2026-05-25
+**Substrates affected:** [S1, S3] (S2 behavioral-recipe follow-on flagged)
+**Status:** Active — Fork 2 (caveat semantics) OPEN, gates slice 4
+
+Realizes D-100.1 (the formula parser → verified negatives, the Phase 3 differentiation headline), grounded against corrections-log §17, D-083 (grounded-negative discipline), D-101 (the caveated negative), and SF validation-rule formula reality. The arc: a pure formula parser produces a typed AST consumed by two sides — S1 REFERENCES-edge field extraction (closes §17) and S3 verified-negative violating-value derivation. This is an **S1 sub-feature feeding an S3 phase**: the parser + REFERENCES edge is independently mergeable S1 value (closes a Tier-1 edge gap with no S3 dependency); the verified negative is the S3 consumer. One phase branch, sliced S1-first.
+
+**.1 The verified bar (fail-loud, grounded-only).** A verified negative is emitted only when the formula is *fully parsed* AND the predicate is *create-time / single-object / field-value* AND a violating create-payload is *derivable with certainty*. "Fully parsed" is necessary, not sufficient: `PRIORVALUE` / `ISCHANGED` / `ISNEW` (org-state / update scenarios) and cross-object refs parse but are not statically derivable to a create → caveated fallback (D-101), unchanged. Anything the parser does not fully understand → caveated fallback. No guessed semantics.
+
+**.2 Forks locked.** **Fork 1 = A:** the parser is a shared pure library; S1 and S3 each re-parse `formula_text` at use — no persisted AST (re-parse is cheap + deterministic). **Fork 3 = hand-written recursive descent** (bounded grammar, no dependency, deterministic). **Fork 4 =** the parser lives in `primeqa/semantic/` (S1 owns the VR formula data + §17; S3 imports it, consistent with existing S3→S1 imports).
+
+**.3 Fork 2 — OPEN (gates slice 4).** What "verified" does to the caveat: (2a) static parse-verification drops the caveat fully → marker `LAYER_2`, no caveat (the caveat's stated reason — "formula unparsed", D-101.3 `DEEPER_VERIFICATION_LAYER_UNPARSED` — is genuinely resolved); (2b) keep a caveat under a new kind ("statically-verified, not behaviorally-executed"), reserving full drop for the behavioral recipe. Leaning 2a; locked with the maintainer before slice 4. Either way the integration mechanism is a **per-emission** caveat decision: `has_layer_2(claim_kind) AND NOT verified_this_formula` (vs today's claim_kind-general `semantic_completeness` verdict).
+
+**.4 D-100.2 behavioral expect-rejection recipe — out of phase.** A fully *behavioral* verified negative (the recipe performs the prohibited op and asserts SF rejects) needs a substrate-2 recipe-model expect-rejection / expect-error step (the executor already has step-level `expect_fail`; the recipe *artifact* cannot express it). Flagged as an S2 follow-on, not this phase. This phase delivers **static** Layer-2 verification.
+
+**.5 Ordered slices.** (1) parser library — tokenizer + recursive-descent → typed AST for the covered grammar, fail-loud not-fully-parsed sentinel; (2) REFERENCES-edge field extraction → `validation_rule_field_refs` → existing `derivation.py` edges (closes §17 — standalone S1 value); (3) violating-value derivation (AST → verified payload | not-derivable, encoding the .1 bar); (4) emission integration (per-emission caveat, `LAYER_2` marker, caveated fallback) — gated on Fork 2.
+
+---
