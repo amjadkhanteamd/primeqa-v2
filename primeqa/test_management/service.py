@@ -1418,10 +1418,33 @@ class TestManagementService:
             tcv = self.test_case_repo.db.query(TestCaseVersion).filter_by(
                 id=review.test_case_version_id,
             ).first()
-            if tcv:
+            # Item 1 (draft-status stickiness): the promotion must never
+            # silently no-op. update_test_case returns (tc, status) — a
+            # superseded / soft-deleted (or otherwise missing) TC yields
+            # (None, "not_found"). If the promotion didn't happen, fail loud
+            # rather than reporting an approval that never promoted.
+            promoted, promote_status = (
                 self.test_case_repo.update_test_case(
                     tcv.test_case_id, review.tenant_id,
                     {"status": "approved", "visibility": "shared"},
+                )
+                if tcv is not None else (None, "version_not_found")
+            )
+            if promoted is None or promote_status != "ok":
+                log.warning(
+                    "review %s approved but TC promotion did not happen "
+                    "(promote_status=%s, version_id=%s); surfacing as conflict "
+                    "rather than reporting false success",
+                    review_id, promote_status, review.test_case_version_id,
+                )
+                raise ConflictError(
+                    "Cannot promote test case: it was superseded or no longer "
+                    "exists.",
+                    details={
+                        "review_id": review_id,
+                        "test_case_version_id": review.test_case_version_id,
+                        "promotion_status": promote_status,
+                    },
                 )
 
         # Phase 7: wire the dead `ba_rejected` signal. BA rejection is

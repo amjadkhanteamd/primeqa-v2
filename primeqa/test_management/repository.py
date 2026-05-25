@@ -478,6 +478,26 @@ class TestCaseRepository:
             # Release module absent in narrow tests \u2014 TC delete still
             # succeeds regardless.
             pass
+        # Cancel pending BA reviews on this TC's versions (item 1, draft-status
+        # stickiness). A soft-deleted TC can't be promoted, so a still-pending
+        # review would let an approval silently no-op against a gone TC. Mirror
+        # the release-plan cascade above: same transaction, same commit. Covers
+        # every soft-delete caller (supersession in generate_test_plan, the UI
+        # single delete, bulk soft-delete). BAReview is same-module \u2014 not
+        # swallowed; a failure here should surface, not silently pass.
+        version_ids = [
+            row[0] for row in self.db.query(TestCaseVersion.id).filter(
+                TestCaseVersion.test_case_id == test_case_id,
+            ).all()
+        ]
+        if version_ids:
+            self.db.query(BAReview).filter(
+                BAReview.test_case_version_id.in_(version_ids),
+                BAReview.deleted_at.is_(None),
+            ).update(
+                {BAReview.deleted_at: _now(), BAReview.deleted_by: user_id},
+                synchronize_session=False,
+            )
         self.db.commit()
         return tc
 
