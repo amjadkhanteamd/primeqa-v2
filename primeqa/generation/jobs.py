@@ -33,10 +33,10 @@ from primeqa.semantic.connection import get_tenant_connection
 
 # Read-back column list for s3_generation_jobs (one source of truth).
 _JOB_COLS = (
-    "id, requirement_key, s1_version_seq, s1_version_name, status, "
-    "current_request_id, attempt_count, progress_pct, progress_msg, "
-    "claimed_at, started_at, completed_at, heartbeat_at, error_code, "
-    "error_message, created_by, created_at, updated_at"
+    "id, requirement_key, requirement_text, s1_version_seq, s1_version_name, "
+    "environment_id, status, current_request_id, attempt_count, progress_pct, "
+    "progress_msg, claimed_at, started_at, completed_at, heartbeat_at, "
+    "error_code, error_message, created_by, created_at, updated_at"
 )
 
 
@@ -46,8 +46,10 @@ class GenerationJob:
 
     id: int
     requirement_key: str
+    requirement_text: Optional[str]      # enqueue-pinned (option B: caller-fed)
     s1_version_seq: int
     s1_version_name: Optional[str]
+    environment_id: Optional[int]        # api_key resolution handle (worker-side)
     status: str
     current_request_id: Optional[str]
     attempt_count: int
@@ -79,7 +81,9 @@ def _job(row) -> Optional[GenerationJob]:
     rid = row["current_request_id"]
     return GenerationJob(
         id=row["id"], requirement_key=row["requirement_key"],
+        requirement_text=row["requirement_text"],
         s1_version_seq=row["s1_version_seq"], s1_version_name=row["s1_version_name"],
+        environment_id=row["environment_id"],
         status=row["status"], current_request_id=str(rid) if rid else None,
         attempt_count=row["attempt_count"], progress_pct=row["progress_pct"],
         progress_msg=row["progress_msg"], claimed_at=row["claimed_at"],
@@ -117,6 +121,28 @@ class GenerationJobStore:
                 "WHERE requirement_key = :rk AND s1_version_seq = :sv"
             ), {"rk": requirement_key, "sv": s1_version_seq}).mappings().first()
             return _job(row)
+
+    # -- Consumer claim (slice 3): SELECT FOR UPDATE SKIP LOCKED ----------
+    def claim_next_queued_job(self) -> Optional[GenerationJob]:
+        """Atomically claim the oldest ``queued`` job (``queued`` -> ``claimed``)
+        via ``SELECT … FOR UPDATE SKIP LOCKED`` — concurrent workers never grab
+        the same row. Returns the claimed job, or ``None`` when the queue is
+        empty. One job per call (the consumer processes one per tenant per tick)."""
+        with get_tenant_connection(self._tenant_id) as conn:
+            row = conn.execute(text(
+                "SELECT id FROM s3_generation_jobs WHERE status = 'queued' "
+                "ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1"
+            )).mappings().first()
+            if row is None:
+                return None
+            conn.execute(text(
+                "UPDATE s3_generation_jobs SET status = 'claimed', "
+                "claimed_at = NOW(), updated_at = NOW() WHERE id = :id"
+            ), {"id": row["id"]})
+            full = conn.execute(text(
+                f"SELECT {_JOB_COLS} FROM s3_generation_jobs WHERE id = :id"
+            ), {"id": row["id"]}).mappings().first()
+            return _job(full)
 
     # -- Idempotency layer 2: fresh request_id per attempt ----------------
     def start_attempt(self, job_id: int) -> JobAttempt:

@@ -1183,6 +1183,58 @@ def enrichment_tick(db_factory=None) -> bool:
     return did_work
 
 
+def _default_s3_api_key_resolver(db_factory):
+    """Worker-side api_key resolution (D-106.4 slice-3 amendment): the Anthropic
+    key is environment -> connection-scoped (Fernet-decrypted via the v1
+    connection store), so resolve it through the v1 repos. Returns a closure
+    `(tenant_id, environment_id) -> api_key`."""
+    from primeqa.core.repository import ConnectionRepository, EnvironmentRepository
+
+    def _resolve(tenant_id, environment_id):
+        if environment_id is None:
+            raise ValueError(f"s3 job for tenant {tenant_id} has no environment_id")
+        db = db_factory()
+        try:
+            env = EnvironmentRepository(db).get_environment(environment_id, tenant_id)
+            if env is None or not env.llm_connection_id:
+                raise ValueError(
+                    f"environment {environment_id} has no llm_connection_id")
+            conn = ConnectionRepository(db).get_connection_decrypted(
+                env.llm_connection_id, tenant_id)
+            return (conn or {}).get("config", {}).get("api_key", "")
+        finally:
+            db.close()
+
+    return _resolve
+
+
+def s3_generation_tick(db_factory=None, *, tool_turn_fn=None, api_key_resolver=None) -> dict:
+    """Drive the substrate-3 generation queue (D-106.4 slice 3): one job per
+    tenant per tick off ``s3_generation_jobs`` (per-tenant). Discovers tenant
+    schemas (the enrichment pattern) and delegates to the resilient per-tenant
+    loop. The queue is empty until the slice-4 enqueue ships, so this no-ops
+    today. ``api_key_resolver`` defaults to the worker-side v1-repo resolver;
+    tests inject a stub."""
+    if db_factory is None:
+        from primeqa.db import SessionLocal
+        db_factory = SessionLocal
+
+    disc = db_factory()
+    try:
+        tenants = _discover_tenant_schemas(disc)
+    finally:
+        disc.close()
+    tenant_ids = [tid for _, tid in tenants]
+    if not tenant_ids:
+        return {}
+
+    if api_key_resolver is None:
+        api_key_resolver = _default_s3_api_key_resolver(db_factory)
+    from primeqa.generation.consumer import run_s3_generation_tick
+    return run_s3_generation_tick(
+        tenant_ids, api_key_resolver=api_key_resolver, tool_turn_fn=tool_turn_fn)
+
+
 def worker_tick(ctx):
     """Single poll iteration: drive pipeline runs AND metadata syncs."""
     # 1) Pipeline runs (existing)
@@ -1224,6 +1276,15 @@ def worker_tick(ctx):
             process_job(gen_job, db_factory=SessionLocal)
     except Exception as e:
         log.warning("generation worker tick failed: %s", e)
+
+    # 3b) S3 generation jobs (D-106.4). Per-tenant queue (s3_generation_jobs),
+    # mirroring the v1 generation tick but per-tenant. One job per tenant per
+    # tick; resilient per-tenant. The queue is empty until the slice-4 enqueue
+    # ships, so this no-ops today.
+    try:
+        s3_generation_tick()
+    except Exception as e:
+        log.warning("s3 generation worker tick failed: %s", e)
 
     # 4) Enrichment queue (§23). Drains ai_enrichment_queue across all
     # tenant schemas — embeddings via the Voyage API (batched up to
