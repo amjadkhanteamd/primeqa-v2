@@ -104,18 +104,22 @@ class GenerationJobStore:
     def create_or_get_job(
         self, *, requirement_key: str, s1_version_seq: int,
         s1_version_name: Optional[str] = None, created_by: Optional[int] = None,
+        requirement_text: Optional[str] = None, environment_id: Optional[int] = None,
     ) -> GenerationJob:
         """Return the existing job for ``(requirement_key, s1_version_seq)`` or
         create a fresh ``queued`` one. Idempotent: the same key always maps to
-        the same job row (D-106.4 .B layer 1)."""
+        the same job row (D-106.4 .B layer 1). ``requirement_text`` +
+        ``environment_id`` are the enqueue-pinned fields (slice 4); they are
+        optional so slice-1/3 callers are unaffected."""
         with get_tenant_connection(self._tenant_id) as conn:
             conn.execute(text(
                 "INSERT INTO s3_generation_jobs "
-                "(requirement_key, s1_version_seq, s1_version_name, created_by) "
-                "VALUES (:rk, :sv, :svn, :cb) "
+                "(requirement_key, requirement_text, s1_version_seq, "
+                " s1_version_name, environment_id, created_by) "
+                "VALUES (:rk, :rt, :sv, :svn, :eid, :cb) "
                 "ON CONFLICT (requirement_key, s1_version_seq) DO NOTHING"
-            ), {"rk": requirement_key, "sv": s1_version_seq,
-                "svn": s1_version_name, "cb": created_by})
+            ), {"rk": requirement_key, "rt": requirement_text, "sv": s1_version_seq,
+                "svn": s1_version_name, "eid": environment_id, "cb": created_by})
             row = conn.execute(text(
                 f"SELECT {_JOB_COLS} FROM s3_generation_jobs "
                 "WHERE requirement_key = :rk AND s1_version_seq = :sv"

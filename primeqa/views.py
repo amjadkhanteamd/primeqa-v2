@@ -5840,6 +5840,98 @@ def api_generation_job_cancel(job_id):
         db.close()
 
 
+# --- Substrate-3 generation jobs (D-106.4 slice 4) ------------------------
+# Thin bridge: v1-side resolve (requirement + env) -> substrate enqueue. The
+# substrate queue (s3_generation_jobs) is per-tenant; status/cancel read it via
+# GenerationJobStore (schema isolation), not a public-schema ORM query.
+
+@views_bp.route("/api/s3-generation-jobs", methods=["POST"])
+@_require_auth_api
+def api_s3_generation_enqueue():
+    """Enqueue an S3 generation job. Authed; gated on the v1 generation role
+    (admin / tester, superadmin bypass — mirrors /requirements/<id>/generate).
+    Resolves the requirement (v1-side) + validates the environment, then pins a
+    queued job and returns immediately; the worker's s3_generation_tick runs it."""
+    if request.user.get("role") not in ("admin", "tester", "superadmin"):
+        return ({"error": {"code": "FORBIDDEN",
+                           "message": "Generation requires the tester or admin role."}}, 403)
+    body = request.get_json(silent=True) or {}
+    try:
+        requirement_id = int(body["requirement_id"])
+        environment_id = int(body["environment_id"])
+    except (KeyError, TypeError, ValueError):
+        return ({"error": {"code": "BAD_REQUEST",
+                           "message": "requirement_id and environment_id (ints) are required."}}, 400)
+
+    tenant_id = request.user["tenant_id"]
+    db = next(get_db())
+    try:
+        from primeqa.core.repository import EnvironmentRepository
+        from primeqa.intelligence.s3_enqueue import resolve_requirement
+        ref = resolve_requirement(db, requirement_id, tenant_id)
+        if ref is None:
+            return ({"error": {"code": "NOT_FOUND", "message": "Requirement not found."}}, 404)
+        if EnvironmentRepository(db).get_environment(environment_id, tenant_id) is None:
+            return ({"error": {"code": "NOT_FOUND", "message": "Environment not found."}}, 404)
+    finally:
+        db.close()
+
+    from primeqa.generation.intake import enqueue_s3_generation
+    try:
+        job = enqueue_s3_generation(
+            tenant_id=tenant_id, requirement_ref=ref,
+            environment_id=environment_id, created_by=request.user["id"])
+    except Exception as e:
+        # e.g. no S1 version pinned yet (VersionNotFoundError) — nothing to
+        # generate against. Fail-loud, not a 500.
+        return ({"error": {"code": "NO_S1_VERSION",
+                           "message": f"Cannot enqueue: {e}"}}, 409)
+    return ({"job_id": job.id, "status": job.status}, 202)
+
+
+@views_bp.route("/api/s3-generation-jobs/<int:job_id>", methods=["GET"])
+@_require_auth_api
+def api_s3_generation_status(job_id):
+    """Poll an S3 generation job (per-tenant; schema-isolated by tenant)."""
+    from primeqa.generation.jobs import GenerationJobStore
+    job = GenerationJobStore(request.user["tenant_id"]).get_job(job_id)
+    if job is None:
+        return ({"error": {"code": "NOT_FOUND", "message": "Job not found"}}, 404)
+    body = {
+        "job_id": job.id, "status": job.status,
+        "progress_pct": job.progress_pct or 0, "progress_msg": job.progress_msg,
+        "requirement_key": job.requirement_key, "environment_id": job.environment_id,
+        "s1_version_seq": job.s1_version_seq, "attempt_count": job.attempt_count,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
+    if job.status in ("failed", "cancelled"):
+        body["error_code"] = job.error_code
+        body["error_message"] = job.error_message
+    return (body, 200)
+
+
+@views_bp.route("/api/s3-generation-jobs/<int:job_id>/cancel", methods=["POST"])
+@_require_auth_api
+def api_s3_generation_cancel(job_id):
+    """Cancel a non-terminal S3 generation job (creator or admin/superadmin)."""
+    from primeqa.generation.jobs import GenerationJobStore
+    store = GenerationJobStore(request.user["tenant_id"])
+    job = store.get_job(job_id)
+    if job is None:
+        return ({"error": {"code": "NOT_FOUND", "message": "Job not found"}}, 404)
+    if (job.created_by != request.user["id"]
+            and request.user.get("role") not in ("admin", "superadmin")):
+        return ({"error": {"code": "FORBIDDEN",
+                           "message": "Only the creator or an admin can cancel."}}, 403)
+    if job.status in ("completed", "failed", "cancelled"):
+        return ({"error": {"code": "JOB_TERMINAL",
+                           "message": f"Job already {job.status}."},
+                 "status": job.status}, 400)
+    store.cancel(job_id)
+    return ({"job_id": job_id, "status": "cancelled"}, 200)
+
+
 # --- Suites ---
 
 @views_bp.route("/suites")

@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from sqlalchemy import text
 
+from primeqa.generation.jobs import GenerationJob, GenerationJobStore
 from primeqa.generation.protocol import (
     GenerationRequest,
     GovernanceContext,
@@ -74,4 +75,26 @@ def build_generation_request(
         ),
         governance_context=GovernanceContext(),
         operational_context=OperationalContext(),
+    )
+
+
+def enqueue_s3_generation(
+    *, tenant_id: int, requirement_ref: dict[str, Any], environment_id: int,
+    created_by: Optional[int] = None,
+) -> GenerationJob:
+    """Pin a **resolved** requirement + the tenant's current S1 snapshot into a
+    queued job (D-106.4 slice 4, substrate side). **Caller-fed** (option B): takes
+    a resolved ``requirement_ref`` ``{key, text}`` (the v1 read happens route-side)
+    and a route-validated ``environment_id`` — no v1 read here. Resolves the
+    current ``s1_version`` (``MAX(version_seq)``; fail-loud if the tenant has no
+    S1 version) and get-or-creates the job. Idempotent on
+    ``(requirement_key, s1_version_seq)``."""
+    seq, name = resolve_current_s1_version(tenant_id)
+    return GenerationJobStore(tenant_id).create_or_get_job(
+        requirement_key=requirement_ref["key"],
+        s1_version_seq=seq,
+        s1_version_name=name,
+        created_by=created_by,
+        requirement_text=requirement_ref.get("text"),
+        environment_id=environment_id,
     )
