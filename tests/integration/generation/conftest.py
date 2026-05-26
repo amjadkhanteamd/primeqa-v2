@@ -185,6 +185,10 @@ def clean_ledger(db_setup):
             "TRUNCATE test_claim_coverage, test_provenance, "
             "test_recipe_runtime_state, test_requirement_links, "
             "test_recipes, test_claims CASCADE"))
+        # D-106.4 slice-3: clear the S3 job queue so the consumer's claim-oldest
+        # semantics are deterministic per test (attempts first — FK child).
+        conn.execute(text("DELETE FROM s3_generation_job_attempts"))
+        conn.execute(text("DELETE FROM s3_generation_jobs"))
     yield
 
 

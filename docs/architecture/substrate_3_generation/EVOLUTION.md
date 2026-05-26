@@ -233,3 +233,19 @@ The first Phase-3 landing and the differentiation headline (D-100.1): **static L
 **Slice 4 — emission integration (S3, Option C).** Fork 2 resolved = 2a: a derivable formula drops the caveat and marks `LAYER_2`; otherwise the Layer-1-plausible caveated draft (D-101) is unchanged. The verified-vs-caveated line **is** the derivable/not-derivable line. **Option C:** `derive()` is the gate; the violating payload is *not* persisted (persisting it would shift the identity-bearing `ProhibitionClaimBody`'s `identity_hash` — a D-090(b) break), deferred to the D-100.2 behavioral recipe. Per-emission caveat (`requires_caveat(claim_kind, verified)`); `EmissionBundle.admissibility_layer` carries the marker; `finalize_outcome` reads it. Drift-guard: `LAYER_2 ⟺ caveat-dropped`. Eval corpus gains `verified-prohibition-negative`.
 
 **Static, not behavioral.** Layer 2 here is static (a violating input is derivable with certainty); the recipe stays *inspection*. The behavioral construct-and-observe half is D-100.2 (deferred). Realized state: SPEC §10. Decisions: DECISIONS_LOG D-107 (+ slice-2 / Fork-2 = 2a / slice-4 amendments). Deferrals: `DEFERRED_ITEMS.md` (2026-05-25 note) + S1 `PHASE_2_PLAN_corrections.md` §17.
+
+## 2026-05-25 — D-106.4 phase: production integration (five slices) — PHASE-3 INCREMENT
+
+Wraps the in-process `run_generation` core (D-106.1) in the **service layer** that makes generation pilot-drivable. One branch (`s3-production-integration`), five slices. **Fork A = mirror, not reuse** (an S3-owned queue sharing no code with the v1 `generation_jobs` — the substrate never depends on the legacy v1 runtime); **Fork B = two-layer idempotency** (job-level get-or-create + a fresh `request_id` per attempt).
+
+**Slice 1 — job model + idempotency.** Per-tenant `s3_generation_jobs` (+ `s3_generation_job_attempts`), `UNIQUE (requirement_key, s1_version_seq)`; `create_or_get_job` + `start_attempt` (mint a fresh `request_id`, no PK collision; attempt lineage is job-level — B-job, so the ledger's `prior_request_id` stays semantic).
+
+**Slice 2 — intake (caller-fed).** `resolve_current_s1_version` (pins `MAX(version_seq)`) + `build_generation_request` (fresh single-requirement). The substrate receives requirement text, never fetches it (option B).
+
+**Slice 3 — worker consumer.** Per-tenant claim (`SELECT … FOR UPDATE SKIP LOCKED`) → `run_generation` → complete/fail, in `worker_tick`, resilient per-tenant. The api_key is environment→connection-scoped, resolved worker-side (the job pins `environment_id`); the substrate core stays api_key-param-pure.
+
+**Slice 4 — enqueue endpoint (the layer split).** v1-side `resolve_requirement` (reads `public.requirements`) + thin `views.py` routes bridge to the substrate `enqueue_s3_generation`. Substrate pure / caller-fed; the v1 read stays v1-side. The **first full vertical** (enqueue → consume → complete → ledger) goes green.
+
+**Slice 5 — stale-job reaper.** Scheduler-hosted `s3_reaper_tick`; stale `claimed`/`running` → `failed` via a race-safe `fail()`, with a generous timeout (the consumer has no mid-run heartbeat).
+
+**Pilot-drivable end-to-end**, with idempotency, per-tenant isolation, and stale-job recovery. A *static* service layer — abort-on-error (D-106.3); best-effort-continue + scale mitigations deferred. Realized state: SPEC §11. Decisions: DECISIONS_LOG D-106.4 (+ slice 1–5 amendments). Deferrals: `DEFERRED_ITEMS.md` (2026-05-25 D-106.4 note).

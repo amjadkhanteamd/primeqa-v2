@@ -19,6 +19,22 @@ The §3 capability-gated probe-envelope item: the verified-negative half now has
 
 ---
 
+## Update 2026-05-25 — D-106.4 (production integration) landed; deferred/tracked
+
+**D-106.4 — the S3 production-integration service layer LANDED.** `run_generation` (D-106.1) is now wrapped by a per-tenant job queue (`s3_generation_jobs` + attempts, two-layer idempotency), caller-fed intake, a worker consumer, a v1-side enqueue endpoint, and a stale-job reaper — pilot-drivable end-to-end (enqueue → consume → complete → ledger). See SPEC §11; DECISIONS_LOG D-106.4 (+ slice 1–5 amendments). Deferred / tracked from this phase:
+
+- **HTTP-route test.** A Flask-client test of the enqueue / status / cancel routes needs a combined v1+substrate test DB (the test infra splits v1/Railway from the substrate/governance DB; production is one DB). Behavior is covered at the service level. — **D-106.4 (slice-4 amendment)**
+- **Requeue-with-cap.** Stale/failed jobs are terminal today; automatic requeue bounded by `attempt_count` is a clean future increment (the `s3_generation_job_attempts` machinery exists). — **D-106.4 (slice-5 amendment)**
+- **Tenant-enumeration unify.** The worker discovers tenants via `information_schema`; the reaper via `shared.tenants`. Both are resilient; unify on one source. — **D-106.4 (slices 3 / 5)**
+- **Mid-run heartbeat.** The consumer heartbeats only at claim/start (`run_generation` is one blocking call, no hook); a mid-run heartbeat needs threading. The reaper's generous timeout compensates. — **D-106.4 (slice-3 amendment)**
+- **Connection-held-across-LLM-latency scale mitigation.** The S1-read connection is held across the batch (pilot-acceptable; keepalives + small batches). — **D-106.4 / D-106.1**
+- **Batch-claiming / finer granularity.** One job per (requirement, version), claimed one-per-tenant-per-tick; batch claiming + finer progress is deferred. — **D-106.4**
+- **Dedicated generation process.** The consumer co-locates in the existing worker (Fork A); a dedicated process is deferred. — **D-106.4**
+
+Not included (by design): **best-effort-continue** — abort-on-error is retained (D-106.3).
+
+---
+
 ## 1. Emission and claim-kinds
 
 The realized emittable set (`emission.EMITTABLE`) is 2 of substrate-2's 16 claim kinds: `configuration / metadata-relationship-claim` and `data_behavior / prohibition-claim`. The rest:

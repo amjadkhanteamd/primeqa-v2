@@ -955,6 +955,22 @@ D-107 lands the **formula parser → verified negatives** differentiation (`DEFE
 
 Residual deferrals from this phase: `DEFERRED_ITEMS.md` (conservative derivation bail-cases; the D-100.2 behavioral recipe + v2 body) and S1 `PHASE_2_PLAN_corrections.md` §17 (cross-object dotted REFERENCES; `references_status` backfill; the Fork-C junction framework).
 
+## 11. Realized State — Phase 3 increment: production integration (D-106.4)
+
+D-106.4 wraps the in-process `run_generation` core (D-106.1) in a **service layer** — the queue, intake, consumer, enqueue endpoint, and reaper that make generation pilot-drivable. Five slices on one branch; the v1 `generation_jobs` *lifecycle* is **mirrored, not reused** (Fork A — an S3-owned queue sharing no code, so the substrate never depends on the legacy v1 runtime).
+
+- **Per-tenant job queue.** `s3_generation_jobs` (+ `s3_generation_job_attempts`), tenant-schema-isolated (no `tenant_id` column). **Two-layer idempotency** (Fork B): job-level get-or-create on `UNIQUE (requirement_key, s1_version_seq)`; a fresh `request_id` per attempt (`start_attempt`), so a re-run never collides on the `generation_requests` PK and the ledger's `prior_request_id` stays reserved for *semantic* regeneration (attempt lineage is job-level — B-job).
+- **Caller-fed intake.** `resolve_current_s1_version` pins the tenant's current `MAX(version_seq)`; `build_generation_request` assembles a fresh single-requirement `GenerationRequest`. The substrate *receives* requirement text — it never fetches it (option B).
+- **Worker consumer.** Per-tenant claim (`SELECT … FOR UPDATE SKIP LOCKED`) → `start_attempt` → `run_generation` → `complete`/`fail`, one job per tenant per tick in `worker_tick`, with per-tenant try/except resilience. The Anthropic api_key is **environment → connection-scoped**, resolved worker-side via the v1 repos (the job pins an `environment_id` handle); `run_generation` stays api_key-param-pure.
+- **Enqueue endpoint — the layer split.** A thin bridge: v1-side `resolve_requirement` (reads `public.requirements`) + env validation, then the substrate `enqueue_s3_generation` (pure, caller-fed). `POST /api/s3-generation-jobs` (role-gated, reusing the v1 generation gate) + `GET …/<id>` status + `POST …/<id>/cancel`. The substrate core stays v1-read-free.
+- **Stale-job reaper.** Scheduler-hosted (`s3_reaper_tick` in `scheduler_tick`); stale `claimed`/`running` jobs (`COALESCE(heartbeat_at, claimed_at)` past a **generous** timeout — the consumer has no mid-run heartbeat) → `failed` via a race-safe `fail()`, finalizing the open attempt.
+
+**Pilot-drivable end-to-end:** enqueue → consume → complete → ledger, with idempotency, per-tenant isolation, and stale-job recovery.
+
+**Scope honesty (no overclaim):** a *static* service layer with **abort-on-error** (D-106.3) — best-effort-continue is **not** included. Deferred (`DEFERRED_ITEMS.md`): the HTTP-route test (combined v1+substrate test DB), requeue-with-cap, tenant-enumeration unify, mid-run heartbeat, the connection-held-across-LLM-latency scale mitigation, batch-claiming, and a dedicated generation process.
+
+Decisions + per-slice refinements: `DECISIONS_LOG.md` D-106.4 (+ slice 1–5 amendments — per-tenant placement, B-job lineage, the api_key correction, the layer split, the reaper).
+
 ---
 
 ## Status
@@ -962,3 +978,4 @@ Residual deferrals from this phase: `DEFERRED_ITEMS.md` (conservative derivation
 **Phase 1 (design) complete** — Themes 1–7, D-070–D-094 (§§2–8).
 **Phase 2 (implementation) complete** — D-095–D-106; realized state in §9; build arc in `EVOLUTION.md` (2026-05-24).
 **Phase 3 increment (verified negatives) complete** — D-107; realized state in §10; build arc in `EVOLUTION.md` (2026-05-25).
+**Phase 3 increment (production integration) complete** — D-106.4; realized state in §11; build arc in `EVOLUTION.md` (2026-05-25).

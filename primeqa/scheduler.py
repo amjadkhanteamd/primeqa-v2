@@ -285,6 +285,7 @@ def scheduler_tick(ctx):
     dead_mans_switch_check(ctx)
     reap_stalled_metadata_jobs(ctx)
     reap_stale_generation_jobs(ctx)   # migration 044 / Prompt 11
+    s3_reaper_tick(ctx)               # D-106.4 slice 5 (substrate-3 queue)
     trim_run_events(ctx)
 
 
@@ -305,6 +306,30 @@ def reap_stale_generation_jobs(ctx):
             log.warning("reaped %d stale generation job(s)", n)
     except Exception as e:
         log.warning("reap_stale_generation_jobs failed: %s", e)
+
+
+def s3_reaper_tick(ctx):
+    """Reap stale substrate-3 generation jobs (D-106.4 slice 5).
+
+    s3_generation_jobs is per-tenant, so enumerate active tenants from
+    shared.tenants and reap each — per-tenant try/except (in run_s3_reaper_tick)
+    so one tenant's failure never starves the others. The timeout is generous:
+    the consumer heartbeats only at claim/start (run_generation is a single
+    blocking call, no mid-run hook), so a stuck claimed/running job is failed
+    only well past the longest legitimate run.
+    """
+    try:
+        from primeqa.generation.consumer import run_s3_reaper_tick
+        from primeqa.semantic.connection import admin_run_in_shared_schema
+        with admin_run_in_shared_schema() as conn:
+            tenant_ids = [r[0] for r in conn.execute(text(
+                "SELECT id FROM shared.tenants WHERE deleted_at IS NULL ORDER BY id"
+            )).fetchall()]
+        total = sum(run_s3_reaper_tick(tenant_ids).values())
+        if total:
+            log.warning("reaped %d stale s3 generation job(s)", total)
+    except Exception as e:
+        log.warning("s3_reaper_tick failed: %s", e)
 
 
 _last_trim = {"at": 0}
