@@ -23,7 +23,7 @@ Two-layer idempotency (D-106.4 .B):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import uuid4
 
@@ -193,12 +193,16 @@ class GenerationJobStore:
     def fail(self, job_id: int, *, error_code: Optional[str] = None,
              error_message: Optional[str] = None) -> None:
         """Terminal failure (abort-on-error, D-106.3): job ``failed`` with a thin
-        classified ``error_code`` + finalize the open attempt."""
+        classified ``error_code`` + finalize the open attempt. The job-UPDATE is
+        guarded ``status NOT IN (terminal)`` so a job that reached a terminal
+        state concurrently (e.g. completed between the reaper's select and this
+        call) is never clobbered back to failed — race-safe for the reaper."""
         with get_tenant_connection(self._tenant_id) as conn:
             conn.execute(text(
                 "UPDATE s3_generation_jobs SET status = 'failed', "
                 "completed_at = NOW(), error_code = :ec, error_message = :em, "
-                "updated_at = NOW() WHERE id = :jid"
+                "updated_at = NOW() WHERE id = :jid "
+                "AND status NOT IN ('completed', 'failed', 'cancelled')"
             ), {"jid": job_id, "ec": error_code, "em": error_message})
             conn.execute(text(
                 "UPDATE s3_generation_job_attempts SET status = 'failed', "
@@ -228,6 +232,31 @@ class GenerationJobStore:
                 "UPDATE s3_generation_job_attempts SET status = :st, "
                 "finished_at = NOW() WHERE job_id = :jid AND finished_at IS NULL"
             ), {"jid": job_id, "st": attempt_status})
+
+    # -- Reaper (slice 5): fail jobs stuck past the heartbeat timeout -----
+    def reap_stale_jobs(self, *, stale_minutes: int = 10) -> int:
+        """Fail jobs stuck in ``claimed``/``running`` whose last activity
+        (``COALESCE(heartbeat_at, claimed_at)``) is older than ``stale_minutes``
+        — the worker likely died mid-run. Reuses :meth:`fail` so each open
+        attempt is finalized like a normal failure (``error_code='stale_timeout'``).
+        Returns the number reaped.
+
+        The timeout is GENEROUS: the consumer heartbeats only at claim/start
+        (``run_generation`` is one blocking call, no mid-run hook), so it must
+        exceed the longest legitimate run — unlike the v1 reaper's 2 min."""
+        threshold = datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
+        with get_tenant_connection(self._tenant_id) as conn:
+            rows = conn.execute(text(
+                "SELECT id FROM s3_generation_jobs "
+                "WHERE status IN ('claimed', 'running') "
+                "AND COALESCE(heartbeat_at, claimed_at) < :threshold"
+            ), {"threshold": threshold}).mappings().all()
+        stale_ids = [r["id"] for r in rows]
+        for jid in stale_ids:
+            self.fail(jid, error_code="stale_timeout",
+                      error_message="Generation timed out — the worker may have "
+                                    "crashed mid-run. Re-enqueue to retry.")
+        return len(stale_ids)
 
     # -- Reads ------------------------------------------------------------
     def get_job(self, job_id: int) -> Optional[GenerationJob]:

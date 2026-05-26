@@ -93,3 +93,18 @@ def run_s3_generation_tick(
             log.warning("s3_generation_tick: tenant %s failed: %s", tid, exc)
             outcomes[tid] = f"error:{type(exc).__name__}"
     return outcomes
+
+
+def run_s3_reaper_tick(tenant_ids, *, stale_minutes: int = 10) -> dict[int, int]:
+    """The scheduler's counterpart to the consumer tick (D-106.4 slice 5): fail
+    jobs stuck past the heartbeat timeout, per tenant, with the same per-tenant
+    isolation (one tenant's failure never starves the others). Returns
+    ``{tenant_id: reaped_count}`` (a tenant whose reap raises records 0)."""
+    reaped: dict[int, int] = {}
+    for tid in tenant_ids:
+        try:
+            reaped[tid] = GenerationJobStore(tid).reap_stale_jobs(stale_minutes=stale_minutes)
+        except Exception as exc:
+            log.warning("s3_reaper_tick: tenant %s failed: %s", tid, exc)
+            reaped[tid] = 0
+    return reaped
