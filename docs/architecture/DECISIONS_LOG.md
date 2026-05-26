@@ -6877,3 +6877,25 @@ Expands D-106.4 (flagged-deferred in D-106) into its design. **Context:** `run_g
 **Phase status:** all five slices landed (job model + idempotency → intake → consumer → enqueue → reaper). Phase close-out (SPEC §-realized / DEFERRED_ITEMS / EVOLUTION reconciliation, per the D-107 pattern) + the tracked HTTP-route test are the remaining, separate steps.
 
 ---
+
+## D-108 — Substrate 4 (Execution): foundational design
+
+**Date:** 2026-05-26
+**Substrates affected:** [S4] (reuses neutralized v1 mechanics; feeds S6)
+**Status:** Active — F1 / F2 / F3 locked (TA-reviewed); F4–F7 triaged. First vertical (metadata-inspection) pending.
+
+Opens Substrate 4, the **execution engine**: S2 recipe → execution → captured truth → S6. Execution **captures** truth; intelligence **interprets** it (the substrate boundary). Architecture: `substrate_4_execution/SPEC.md`.
+
+**F1 — v1 reuse boundary (LOCKED; TA-reviewed + code-verified).** The v1 mechanics are cleanly separable from v1 semantics — at the layer *beneath* `execute_step` (itself an entangled monolith: mechanical dispatch + `success→status` + the inline `expect_fail` flip + `run_step_results` persistence + v1 SSE, in one function). **Reuse** the pure mechanical primitives — the REST transport client (`SalesforceExecutionClient`), `integrations/` retry/auth + the pure `classify_sf_exception`, the `$var` resolvers, the `data_engine` factory/template primitives, the cleanup mechanism (reverse-order + `PQA_%` sweep) — **lifted to a neutral shared module** where pure (resolving the substrate→v1 dependency direction; `integrations/` is already neutral). **Own** the orchestration, outcome interpretation, the result model, and the negative-test semantics. **Out:** the `execute_step` monolith, the `expect_fail` shallow-negative, `run_step_results`, `TestCaseDataBinding`'s TC-link. The lift is a **small incremental v1 refactor**, per-increment, not up front.
+
+**F2 — result model (LOCKED philosophy; schema deliberately NOT locked).** **Evidence-first, S4-owned:** capture raw observations richly + honestly (timestamps + ordering, request/response, before/after state, error surfaces, env context, per-step outcomes) — an **extensible** schema that grows with the first vertical and richer recipe kinds. **Posture, not evidence, crosses to S2:** S2 receives a compact posture (executed / verified / failed / caveated; latest refs; coverage freshness); the raw evidence stays S4-owned and is **S6's** raw material. **Mine v1 for lessons, not inheritance:** v1's run/result schema (api_request/response, before/after, `comparison_details`, `failure_class`, timings) informs *what* to capture, not the schema (welded to v1's `expect_fail`/run model).
+
+**F3 — first vertical = metadata-inspection (LOCKED).** The only kind S3 emits today (inspection-trigger + metadata-recipe, D-099 / D-107): live-read the org and assert the grounded claim still holds (execution-time re-inspection, D-099.3). No test data (F6), no browser (F4) — the thinnest end-to-end spine: bridge → executor → evidence → posture.
+
+**F4–F7 (triaged; leans, not locked).**
+- **F4 — recipe-kind scope.** Defer `ui-recipe` (browser), `event-subscription-recipe`, `callout-intercept-recipe`; start metadata, then CRUD (`data-recipe`). The behavioral expect-rejection negative (D-100.2) lands with CRUD.
+- **F5 — capability matching.** Minimal `ExecutionEnvironmentBody`→env match for the first vertical (metadata-inspection assumes only read access); rich capability-fit selection deferred.
+- **F6 — test-data provisioning.** None for the first vertical (inspection needs no prerequisite records); provisioning (reusing/evolving `data_engine` + cleanup) lands with the CRUD increment.
+- **F7 — failure-path / remediation.** S4 **captures failure-truth and does not remediate.** The dormant fix-and-rerun agent (G-001) stays a v1 concern; the S4-execution-failure ↔ agent relationship is settled later (S4 produces the evidence a remediation loop would consume).
+
+---
