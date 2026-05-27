@@ -6899,3 +6899,23 @@ Opens Substrate 4, the **execution engine**: S2 recipe → execution → capture
 - **F7 — failure-path / remediation.** S4 **captures failure-truth and does not remediate.** The dormant fix-and-rerun agent (G-001) stays a v1 concern; the S4-execution-failure ↔ agent relationship is settled later (S4 produces the evidence a remediation loop would consume).
 
 ---
+
+## D-108.1 — S4 slice 2: thin S4-local Tooling-read client + translator/transport boundary (F1 realization)
+
+**Date:** 2026-05-27
+**Substrates affected:** [S4] (reuses v1 credential plumbing; feeds S6)
+**Status:** Active — slice-2 design (TA-reviewed). Sub-decision of D-108 F1.
+
+Resolves F1's "authenticated Tooling transport" question for the metadata-inspection executor. **Grounding finding:** the S1-sync Tooling *fetchers* (`integrations.sf_client.SalesforceClient.fetch_validation_rules`) ride a **refresh_token** client wired only in tests; the **production-credentialed** Tooling path is the D-106.4 one — env → `ConnectionRepository.get_connection_decrypted` → `_oauth_token` (client_credentials / password per `auth_flow`) → access token → a generic `query_tooling(soql)`. So the reusable unit is the **credential plumbing** + the **encoded edge→SOQL translation knowledge**, **not the fetcher object** (which carries sync-world assumptions — bulk two-phase fetch, syncability filtering, normalize/materialize).
+
+**Decision 1 = (a): an S4-local thin Tooling-read client reusing `_oauth_token`.**
+- **Reject (b)** (import the v1 metadata `SalesforceClient`): an S4→v1 dependency inversion — the direction F1 explicitly resolves by lifting to neutral.
+- **Defer (c)** (lift a neutral transport now): only once the neutral transport's shape is visible under CRUD / broader-read pressure — not because a single consumer exists.
+
+**Boundary (slice-2 realization of F1).** Credential resolution → **reused** (`_oauth_token` / D-106.4); Tooling transport → **thin S4-local** (authenticated read + pagination + typed error mapping, *nothing more* — never entity semantics, edge logic, metadata interpretation, or traversal policy); edge→SOQL translation → **S4 operational mapping** (finite, edge-keyed); semantic interpretation → **S6**; ontology authority → **S1 / S2**. *S4 reuses operational credential plumbing, not metadata-sync semantics or semantic execution assumptions.*
+
+**Realization principle (translator is operational, not semantic).** Edge→SOQL mappings are operational realization rules, not semantic authority: the query reflects only what the recipe's assertion carries; a semantic filter (active-ness, object identity) **must trace to the recipe/claim, never a translator default.** Consequence for slice 2: the emitted inspection recipe asserts plain `exists`, so the `APPLIES_TO` translation carries **no `Active` filter** — active-ness, if required, is an S3/emission concern, not a translator injection. Slice 2 verifies where active-ness lives.
+
+**Guards.** Result-model schema stays unlocked (slice 3); the translator stays operational (no ontology); the no-interpretation boundary (S4 records absences, S6 interprets them) stays hard.
+
+---
