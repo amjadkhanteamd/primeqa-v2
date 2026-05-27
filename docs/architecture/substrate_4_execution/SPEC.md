@@ -10,7 +10,7 @@
 
 Substrate 4 is PrimeQA's **execution engine**: it takes the **recipes** Substrate 2 represents (and Substrate 3 generates), runs them against a real Salesforce org, and **captures what actually happened** as durable evidence. It is the bridge from a *represented* test to a *run* test.
 
-The substrate boundary is sharp: **S4 captures truth — including the grounded outcome — but does not *interpret* it.** Execution runs the recipe, captures rich evidence (what was sent, what came back, what state changed, in what order, what errored), and **evaluates the recipe's grounded assertion** → a **grounded outcome** (verified / failed / caveated / error). That outcome *plus* the evidence is S4's captured truth. What S4 does **not** do is *interpret* the outcome — failure classification, root-cause attribution, explanation, and clustering are Substrate 6 (Observation & Interpretation), which reasons over the evidence to decide what the outcome *means*.
+The substrate boundary is sharp: **S4 captures truth — including the grounded outcome — but does not *interpret* it.** Execution runs the recipe, captures rich evidence (what was sent, what came back, what state changed, in what order, what errored), and **evaluates the recipe's grounded assertion** → a **grounded run outcome** (`passed` / `failed` / `errored` / `skipped`; §4) — *grounded* because it tests the specific S3 claim, not because the value is "verified" (that is the claim's static posture, a separate layer — §4). That outcome *plus* the evidence is S4's captured truth. What S4 does **not** do is *interpret* the outcome — failure classification, root-cause attribution, explanation, and clustering are Substrate 6 (Observation & Interpretation), which reasons over the evidence to decide what the outcome *means*.
 
 The v1 mistake was not *rendering* an outcome — it was rendering an **ungrounded** one: the `expect_fail` runtime flag-flip, a pass/fail verdict divorced from any semantic claim. S4's outcome is **grounded** — it verifies the specific S3-generated claim the recipe operationalizes (§3 / F1). Capturing the grounded outcome is not interpretation; attributing *why* it came out that way is.
 
@@ -39,9 +39,10 @@ S3 (Generation) --writes--> S2 recipe (test_recipes)
 
 1. **S2-recipe → executable-plan bridge.** Read a `test_recipes` row (+ its trigger/recipe bodies, per-tenant) and resolve it into an executable plan. The contract boundary — S4's input is an S2 recipe, never a v1 `TestCaseVersion.steps` blob.
 2. **Per-`recipe_kind` executors.** Dispatch on `recipe_kind`: `metadata-recipe` (Metadata/Tooling read + assert — the first vertical), then `data-recipe` (CRUD), `ui-recipe` (browser), `event-subscription-recipe`, `callout-intercept-recipe`. Each kind has a distinct runtime; the executors share the reused mechanical primitives (§3) but own their step semantics.
-3. **Environment binding + capability matching.** Bind to a target org (connection / credential, sandbox vs production) and match a recipe's `ExecutionEnvironmentBody` capability assumptions against the env's actual capabilities ("pick the recipe that fits"). v1's connection / OAuth is reused; rich capability-matching is deferred (F5).
-4. **The captured-truth result model (F2).** S4-owned, evidence-first (§4).
-5. **The S2 posture callback.** After a run, S4 reports **posture** back to S2 (executed / verified / failed / caveated; latest refs; coverage freshness) — never raw evidence (§4).
+3. **The edge→live-read translator.** A recipe's `fields_to_capture` carries **S1-edge vocabulary** (e.g. `APPLIES_TO`), not raw Salesforce fields. Verifying it against the live org means translating the edge into a live query — e.g. `APPLIES_TO` (ValidationRule → Object) becomes `ValidationRule WHERE EntityDefinition=<Object>`. The translator is **finite and structured** (keyed on the TIER_1 edge types), built by **reusing the read-half of the S1-sync Tooling fetchers** — each fetcher already encodes an edge's live query when it builds that edge during sync, so S4 reuses the *live-read*, not the S1 *write*. It **lives in the executor**: the bridge's plan stays semantic (it references the edge), and the executor translates to a live query at run time.
+4. **Environment binding + capability matching.** Bind to a target org (connection / credential, sandbox vs production) and match a recipe's `ExecutionEnvironmentBody` capability assumptions against the env's actual capabilities ("pick the recipe that fits") — the built S2 `select_recipe_for_execution` already performs this match. v1's connection / OAuth is reused; rich capability-matching is deferred (F5).
+5. **The captured-truth result model (F2).** S4-owned, evidence-first (§4).
+6. **The S2 posture callback.** After a run, S4 reports **posture** to S2 via the built `report_run_outcome(actor='s4', …)` surface — the **run outcome** (`passed` / `failed` / `errored` / `skipped`) plus latest refs + coverage freshness — never raw evidence. The claim's `verified` / `caveated` posture is an upstream S3 property, *not* a run outcome (§4).
 
 ## 3. F1 — the reuse boundary (LOCKED; D-108)
 
@@ -64,13 +65,27 @@ The lift-to-neutral is a **small, incremental v1 refactor** — done per increme
 
 **Evidence-first, S4-owned.** A run captures raw observations *richly* and *honestly*: timestamps + ordering, request / response, before / after state, error surfaces, environment context, and per-step outcomes — an **extensible** schema that grows with the first vertical and richer recipe kinds. The schema is deliberately **not locked**: capture breadth expands as recipe kinds land (e.g. browser traces / screenshots for `ui-recipe`).
 
-**Posture, not evidence, crosses to S2.** S4 *determines* the **grounded outcome** (it evaluated the recipe's assertion, §Purpose) and sends it to S2 as a compact **posture**: executed; the grounded outcome (verified / failed / caveated / error); latest version refs; coverage freshness — never the raw evidence. The rich evidence *and* the uninterpreted outcome stay S4-owned; **S6** interprets that evidence — the *why* behind the outcome (classification, root-cause, explanation, clustering) — it does not re-derive the outcome.
+**Posture, not evidence, crosses to S2 — and posture is two orthogonal layers.** S4 sends S2 a compact **posture** (never the raw evidence — that stays S4-owned for S6). Two layers coexist in it and must **never** be conflated or mapped onto each other:
+
+- **Run outcome (S4, live, this run):** `passed` / `failed` / `errored` / `skipped` — the assertion held / didn't hold / couldn't be evaluated / didn't run. This is what S4 *produces*, and it feeds the built `report_run_outcome(actor='s4', …)` → `test_recipe_runtime_state` (latest refs + coverage freshness). It reconciles to the existing S2 surface verbatim.
+- **Claim posture (S3, static, set at generation):** `verified` / `caveated` — properties of the *claim* (whether S3 statically verified the formula, D-107). S4 **neither produces nor maps to** these; they are upstream of execution.
+
+The signal that matters lives in the **combination**: a **`verified` claim with a `failed` run** — well-grounded at generation, yet it did not hold against the live org — is exactly what S4 surfaces for **S6** to interpret. S4 records both layers truthfully and renders the grounded run outcome; **S6** interprets the *why* (classification, root-cause, explanation, clustering) — it does not re-derive the outcome, nor collapse the two layers into one verdict.
 
 **Mine v1 for lessons, not inheritance.** v1's `run_test_results` / `run_step_results` (api_request / response, before / after state, `comparison_details`, `failure_class`, timings, correlation_id) is a rich source of *operational lessons* about what is worth capturing — S4 adopts the lessons, not the schema (which is welded to v1's `expect_fail` / run model).
 
 ## 5. First vertical — metadata-inspection (F3, LOCKED)
 
 The first executable recipe is the only kind S3 emits today: the **inspection-trigger + metadata-recipe** (D-099 / D-107). The executor **live-reads the org** (Metadata / Tooling) and **asserts the grounded claim still holds** (e.g. the ValidationRule `APPLIES_TO` the subject is present and active) — an execution-time re-inspection (D-099.3), not a frozen snapshot. It needs no test data (F6) and no browser (F4). It is the thinnest end-to-end vertical that exercises the whole spine: **bridge → executor → evidence capture → posture callback.**
+
+**Slice arc (the plan, not locked contracts):**
+
+1. **Recipe → executable-plan bridge.** Read a `test_recipes` row (per-tenant), decode `observation_realization` (+ trigger + the linked claim via `claim_test_id`), and resolve it into a *semantic* executable plan (ordered read + assert over a `LogicalRef`). The plan stays in edge vocabulary; the executor translates at run time.
+2. **Executor + assertion evaluation.** Resolve the SF-org connection (the D-106.4 env→connection→decrypt pattern) → token → live-read via the edge→live-read translator (§2.3) → evaluate the `AssertionPredicate` → the grounded **run outcome** (`passed` / `failed` / `errored`). Produces the evidence **in-memory**.
+3. **Evidence-first result capture.** The S4-owned result store persists slice 2's in-memory evidence — the **first concrete result-model shape** is designed here (F2-unlocked until then).
+4. **Posture callback.** Map the run outcome → `report_run_outcome(actor='s4', …)` → `test_recipe_runtime_state` (coverage freshness). **No new S2 method** (the surface is built).
+
+**Order note:** slice 2's executor produces evidence **in-memory** *before* slice 3's store persists it — so the executor can be built and tested against the live read (or a stub) ahead of the result schema. Slices 2 / 3 / 4 each get their own read-only grounding + HOLD-and-show before building.
 
 ---
 
