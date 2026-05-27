@@ -10,27 +10,64 @@ model; it reuses v1's mechanical primitives only beneath that seam (F1).
 Slice 1 (D-108): the recipe -> executable-plan bridge for the
 metadata-inspection vertical. Given substrate-2's typed ``RecipeRead`` it
 produces a :class:`MetadataInspectionPlan` — the semantic, S1-edge-vocabulary
-contract that later slices consume (executor + assertion evaluation; evidence
-capture; the S2 posture callback).
+contract later slices consume.
+
+Slice 2 (D-108.1): the executor. The plan is translated edge->SOQL
+(:func:`translate_read`), read via a thin S4-local Tooling client
+(:class:`ToolingReadClient`, credentialed by :func:`resolve_tooling_client`),
+its `exists` assertion evaluated, and a grounded run outcome + in-memory
+:class:`RunEvidence` produced by :func:`execute_metadata_inspection`.
 """
 from primeqa.execution_engine.bridge import build_metadata_inspection_plan
+from primeqa.execution_engine.credentials import resolve_tooling_client
 from primeqa.execution_engine.errors import (
+    AssertionResolutionError,
+    CredentialResolutionError,
     ExecutionEngineError,
     PlanTranslationError,
+    UnsupportedEdgeError,
+    UnsupportedPredicateError,
 )
+from primeqa.execution_engine.evidence import (
+    AssertEvidence,
+    ErrorSurface,
+    ReadEvidence,
+    RunEvidence,
+    StepEvidence,
+)
+from primeqa.execution_engine.executor import execute_metadata_inspection
 from primeqa.execution_engine.plan import (
     MetadataInspectionPlan,
     PlannedAssertion,
     PlannedRead,
     PlanStep,
 )
+from primeqa.execution_engine.tooling_client import ToolingReadClient
+from primeqa.execution_engine.translator import ToolingQuery, translate_read
 
 __all__ = [
+    # slice 1 — bridge + plan
     "build_metadata_inspection_plan",
-    "ExecutionEngineError",
-    "PlanTranslationError",
     "MetadataInspectionPlan",
     "PlannedAssertion",
     "PlannedRead",
     "PlanStep",
+    # slice 2 — executor
+    "translate_read",
+    "ToolingQuery",
+    "ToolingReadClient",
+    "resolve_tooling_client",
+    "execute_metadata_inspection",
+    "RunEvidence",
+    "ReadEvidence",
+    "AssertEvidence",
+    "StepEvidence",
+    "ErrorSurface",
+    # errors
+    "ExecutionEngineError",
+    "PlanTranslationError",
+    "CredentialResolutionError",
+    "UnsupportedEdgeError",
+    "UnsupportedPredicateError",
+    "AssertionResolutionError",
 ]

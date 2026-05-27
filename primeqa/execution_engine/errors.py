@@ -40,3 +40,35 @@ class PlanTranslationError(ExecutionEngineError):
     ) -> None:
         super().__init__(message)
         self.recipe_id = recipe_id
+
+
+class CredentialResolutionError(ExecutionEngineError):
+    """Could not resolve an authenticated client for a target environment —
+    the environment / connection is missing, or the OAuth flow yielded no
+    token. A binding failure, not a run outcome (the run never started)."""
+
+
+class UnsupportedEdgeError(ExecutionEngineError):
+    """The translator has no edge→SOQL mapping for the edge a read captures.
+
+    Fail-loud: a representation/realization gap (this vertical doesn't yet
+    translate this edge), never a silent empty query or a run outcome.
+    """
+
+
+class UnsupportedPredicateError(ExecutionEngineError):
+    """The executor cannot evaluate an assertion's predicate (only ``exists``
+    is supported in slice 2).
+
+    Fail-loud: a representation gap in the recipe, not a run outcome. S4
+    realizes only what it can faithfully evaluate; it never guesses.
+    """
+
+
+class AssertionResolutionError(ExecutionEngineError):
+    """An assertion's ``subject_ref`` does not resolve to a prior read step's
+    captured output.
+
+    Fail-loud: a malformed plan (the read/assert graph is incoherent), not a
+    run outcome.
+    """
