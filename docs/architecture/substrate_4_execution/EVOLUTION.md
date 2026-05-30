@@ -33,3 +33,7 @@ Merged `s4-execution` → `main` (`--no-ff`, `46839b4`); gate 1317 passed (sandb
 ## 2026-05-27 — First-vertical phase close-out
 
 SPEC §Status flipped from "Phase 0 opening" to the realized first vertical (F1/F2/F3 realized; F4–F7 status enumerated). `DEFERRED_ITEMS.md` + `EVOLUTION.md` created (this file). `OPEN_QUESTIONS.md` S4-Q-001 (active-ness, S3-owned) carried forward.
+
+## 2026-05-27 — CRUD phase opened (PR-based, forks open)
+
+The second S4 vertical — CRUD / `data-recipe` (data mutation) — opened on the feature branch `phase-5-substrate-4-crud`, built **PR-based** per the CONVENTIONS working agreement (substrate work → feature branch → merge to main via PR; the inspection vertical's direct local merge was the deviation). D-109 records the landscape grounding (read-only): the phase is **cross-substrate** (unlike inspection's S4-only) — it needs S2 (recipe-model expect-rejection, for the negative), S3 (data-recipe emission — none today), and S4 (data executor + provisioning + cleanup + result-model extension). Five forks are **open** (polarity, cross-substrate sequencing, provisioning/cleanup lift, data-client lift, result-model extension) — leans noted, resolved next into the PR. No code yet.

@@ -7001,3 +7001,32 @@ Slices 1–4 built the spine's components (bridge → executor → result store 
 **Guards.** No new S2 method; no migration; persist + posture stay atomic (finalize, D-108.3); boundary A is sync-only with the async restructure explicitly reserved.
 
 ---
+
+## D-109 — Substrate 4 CRUD phase: opening + landscape (forks open)
+
+**Date:** 2026-05-27
+**Substrates affected:** [S4] (the data-mutation vertical); [S3] (data-recipe emission — prerequisite); [S2] (recipe-model expect-rejection — for the behavioral negative)
+**Status:** Active — phase opening. Landscape grounded (read-only); the polarity + sequencing forks are **open** (leans noted, not locked). No build yet.
+
+Opens the second S4 vertical: **CRUD / `data-recipe`** (data mutation — the first mutation recipe kind), broadening S4 from the metadata-inspection vertical (D-108 → D-108.4). Built PR-based on `phase-5-substrate-4-crud` per the CONVENTIONS working agreement (substrate work → feature branch → merge to main at phase completion via PR).
+
+**The reshape (vs the inspection vertical).** Inspection was **S4-only** — S2 + S3 already had everything (S3 emits inspection recipes; the bridge/executor/store/finalize were the gap). CRUD is **cross-substrate**: it needs S2 (the recipe-model expect-rejection, for the negative), S3 (data-recipe emission — none exists today), and S4 (the data executor + provisioning + cleanup + result-model extension). Sequencing across substrates is the first decision.
+
+**Landscape (grounded read-only):**
+- **S2 — ready, with one gap.** `DataRecipeBody` is fully designed (6 steps: create/read/update/delete/assert/apex; `api_choice` rest/bulk/composite; `identity_context`; `execution_mechanism`); `DataMutationTriggerBody` is ready. **Gap:** the `AssertStep` uses the same `AssertionPredicate` as inspection (`exists`/`equals`/…) — there is **no expect-rejection step**, so the behavioral negative (D-100.2) has no recipe-model expression.
+- **S3 — emits inspection only.** Both `EMITTABLE` paths author `metadata-recipe`/`inspection-trigger`; **no data-recipe is emitted today**. CRUD input requires new S3 emission (positive data-recipe, and/or the D-100.2 behavioral negative).
+- **S4 lift surface (F1) — small.** `SalesforceExecutionClient` (v1 data REST: create/update/delete/query/get/convert → normalized envelope, built from instance_url/api_version/token, no DB) is pure transport — the data-REST analog of slice-2's `ToolingReadClient`; cleanly liftable or rebuilt thin. `classify_sf_exception` already neutral.
+- **Provisioning + cleanup (F6) — split.** Pure/liftable: `data_engine.generate_value` (factories, no DB), `cleanup.classify_failure` + `_build_deletion_order` (reverse-order children-then-parents), the `PQA_%` emergency sweep, multi-pass dependency retry. v1-welded: the `DataTemplate`/`DataFactory`/`RunCreatedEntity`/`RunCleanupAttempt` tables + repos (FKs to tenants/users/test_case_versions/pipeline_runs). Confirms F1's "reuse the mechanism, own the created-record tracking (re-keyed)" — S4 needs a new tracking table.
+- **D-100.2 behavioral negative — designed, not expressible.** `ProhibitionClaimBody` carries `expected_rejection: RejectionSignal`; the recipe has no expect-rejection step. Gaps: (a) S2 model (a recipe-level expect-rejection — new step kind or a flag on mutation steps); (b) S3 emission (`_author_negative` emits inspection today, not a behavioral mutation); (c) S4 expect-rejection eval (a mutation that *should* fail → `passed`).
+- **Executor extensibility.** Plan gains mutation steps; executor dispatches create/update/delete via a data client + captures before/after state (the `evidence.py` reserved N/As fill in here) + field diffs; assert eval reuses `exists`/`equals`; expect-rejection eval is new; cleanup (delete created records) is a new post-run phase inspection never needed.
+
+**Open forks (leans noted, NOT locked — resolved next, into this PR):**
+- **Fork A — polarity first.** The two polarities have *inverted* cost: the **behavioral negative** (a create a VR rejects → creates nothing → no provisioning/cleanup) is mechanically thinnest but scaffolding-heavy (S2 expect-rejection model + S3 emission + S4 eval — the D-100.2 differentiator); the **positive** (create→read→assert) reuses the assertion model but needs provisioning + cleanup.
+- **Fork B — cross-substrate sequencing.** S3 emission leads, **or** S4 builds + tests against **seeded** data-recipes (the inspection precedent — Coordinator-authored recipes decoupled S4 from S3 emission timing). *Lean B (seed first).*
+- **Fork C — provisioning/cleanup: lift-to-neutral now vs S4-own** (and how much of the v1 mechanism).
+- **Fork D — data client: lift `SalesforceExecutionClient` vs build a thin S4 data client** (the `ToolingReadClient` precedent *leans build-thin*).
+- **Fork E — result model: extend the `evidence` JSONB (reserved before/after N/As) vs trigger the A→B child table now** (CRUD's N-step shape is exactly the D-108.2 B-trigger).
+
+**Guards.** This entry records the landscape + open forks; it locks nothing. Fork resolutions land as design amendments (the inspection-vertical pattern). No code yet.
+
+---
