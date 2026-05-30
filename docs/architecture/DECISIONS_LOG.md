@@ -6946,3 +6946,30 @@ Unlocks F2's first concrete schema for the metadata-inspection vertical: where S
 **Guards.** §4 concretizes but the JSONB trace stays extensible (grows per kind); the A→B path is recorded; append-only DECISIONS_LOG.
 
 ---
+
+## D-108.3 — S4 slice 4: finalize step (persist + posture callback), the S4→S2 write boundary
+
+**Date:** 2026-05-27
+**Substrates affected:** [S4] (writes to its own result store + to S2's runtime-state surface); [S2] (consumed via `report_run_outcome`, no new method)
+**Status:** Active — slice-4 design (TA-reviewed). Completes the first vertical's four components (bridge → executor → result store → posture callback).
+
+Closes the first vertical's spine: the grounded run outcome + evidence flows back to S2 as posture.
+
+**Finalize orchestration (persist → posture, atomic on one session).** A thin `finalize_run(session, evidence, *, coordinator=None) → RecipeRuntimeState` in `execution_engine/finalize.py`:
+1. `persist_run_evidence(session, evidence)` — the slice-3 result-store write (`s4_execution_runs` row; the run's durable truth).
+2. `coordinator.report_run_outcome(session, actor='s4', recipe_id=evidence.recipe_id, last_run_id=evidence.run_id, last_run_at=evidence.finished_at, last_run_outcome=evidence.outcome, last_run_recipe_version_seq=evidence.recipe_version_seq)` — the S2 boundary callback (`test_recipe_runtime_state`; coverage freshness).
+
+Both calls `flush()` (never `commit()`) on the **same caller-provided session**, so persist + posture are **one atomic unit** — the caller owns the commit boundary (the substrate D-β contract). `report_run_outcome` is idempotent first-write-wins on `last_run_id`, so a re-finalize of the same run is a safe no-op.
+
+**Grounding finding (no precondition surprise).** `report_run_outcome` validates *only* actor authority (`actor='s4'` is purpose-built — the `ActorKind` taxonomy scopes S4 to this one call); it does **not** check recipe existence or state (logical FK; upsert keyed on `recipe_id`). S4 supplies a real `recipe_id` (carried by the plan from the `RecipeRead`), so no precondition gap.
+
+**The S4→S2 write boundary completes the read-through.** Slice 1 (D-108.1) established the **read** side — S4 reads S2 recipes through the Coordinator (`select_recipe_for_execution`). This adds the **write** side: S4 reports posture through the Coordinator (`report_run_outcome`). The new dependency `execution_engine → SemanticTransactionCoordinator` is the sanctioned S4↔S2 direction; the Coordinator is **injectable with a default** (`coordinator or SemanticTransactionCoordinator()`) so unit tests spy the exact `report_run_outcome` kwargs without a DB.
+
+**Decisions recorded:**
+- `finalize.py` is **separate from `result_store.py`** — persistence (the store) and orchestration (persist + posture) are distinct concerns.
+- **Coordinator injectable, default-constructed** — testable without a DB; the Coordinator is stateless (`SemanticTransactionCoordinator()`, no args).
+- **Scope boundary:** slice 4 = the finalize **seam** + tests. The production **trigger** — a worker / route running `resolve_tooling_client → build plan → execute → finalize` against a real recipe + live org — is **deferred** (nothing calls the executor yet; the spine is built bottom-up). It is the next piece after the vertical's four components land.
+
+**Guards.** No new S2 method; no migration; persist + posture atomic on one session; the read-through boundary now covers both directions.
+
+---
