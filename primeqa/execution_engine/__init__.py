@@ -23,9 +23,15 @@ in-memory :class:`RunEvidence` to an :class:`S4ExecutionRun` row (per-tenant
 ``s4_execution_runs`` — typed identity/outcome columns + an ``evidence`` JSONB
 captured-trace). The executor stays produce-only; the persister is the only
 writer.
+
+Slice 4 (D-108.3): the finalize step. :func:`finalize_run` persists the
+evidence then reports the grounded outcome as posture to S2
+(`report_run_outcome`, actor='s4') on the same session — atomically. The
+write-side of the S4↔S2 read-through boundary; closes the first vertical's spine.
 """
 from primeqa.execution_engine.bridge import build_metadata_inspection_plan
 from primeqa.execution_engine.credentials import resolve_tooling_client
+from primeqa.execution_engine.finalize import finalize_run
 from primeqa.execution_engine.errors import (
     AssertionResolutionError,
     CredentialResolutionError,
@@ -76,6 +82,8 @@ __all__ = [
     # slice 3 — result store
     "S4ExecutionRun",
     "persist_run_evidence",
+    # slice 4 — finalize (persist + posture callback)
+    "finalize_run",
     # errors
     "ExecutionEngineError",
     "PlanTranslationError",
