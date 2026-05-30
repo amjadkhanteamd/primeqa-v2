@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import uuid4
 
 from primeqa.execution_engine.errors import AssertionResolutionError
 from primeqa.execution_engine.errors import UnsupportedPredicateError
@@ -54,6 +55,7 @@ def execute_metadata_inspection(
     evidence. Reads precede the assertions that reference them; a read
     transport failure stops the walk (downstream asserts can't be evaluated).
     """
+    run_id = uuid4()        # the run self-identifies from birth (slice 3 PK)
     started = _now()
     steps: list[StepEvidence] = []
     captures: dict[str, list[dict]] = {}    # read step_id -> rows
@@ -78,6 +80,7 @@ def execute_metadata_inspection(
 
     finished = _now()
     return RunEvidence(
+        run_id=run_id,
         recipe_id=plan.recipe_id,
         recipe_version_seq=plan.recipe_version_seq,
         claim_test_id=plan.claim_test_id,

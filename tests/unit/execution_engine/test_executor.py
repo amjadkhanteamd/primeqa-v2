@@ -138,6 +138,17 @@ def test_errored_when_read_transport_fails():
     assert ev.error is not None and ev.error.error_type == "SFRequestError"
 
 
+def test_run_id_is_minted_at_run_start_and_carried():
+    # The run self-identifies from birth: the executor mints a fresh run_id
+    # (uuid4) per call, carried on the evidence (slice-3 PK / slice-4 last_run_id).
+    from uuid import UUID
+    client = _StubClient(rows=[{"Id": "1"}])
+    ev1 = execute_metadata_inspection(_emitted_plan(), client=client, environment_id=_ENV_ID)
+    ev2 = execute_metadata_inspection(_emitted_plan(), client=client, environment_id=_ENV_ID)
+    assert isinstance(ev1.run_id, UUID)
+    assert ev1.run_id != ev2.run_id        # fresh per run
+
+
 def test_evidence_carries_recipe_and_claim_identity():
     rid, ctid = uuid4(), uuid4()
     ev = execute_metadata_inspection(

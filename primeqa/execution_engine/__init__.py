@@ -17,6 +17,12 @@ Slice 2 (D-108.1): the executor. The plan is translated edge->SOQL
 (:class:`ToolingReadClient`, credentialed by :func:`resolve_tooling_client`),
 its `exists` assertion evaluated, and a grounded run outcome + in-memory
 :class:`RunEvidence` produced by :func:`execute_metadata_inspection`.
+
+Slice 3 (D-108.2): the result store. :func:`persist_run_evidence` maps an
+in-memory :class:`RunEvidence` to an :class:`S4ExecutionRun` row (per-tenant
+``s4_execution_runs`` — typed identity/outcome columns + an ``evidence`` JSONB
+captured-trace). The executor stays produce-only; the persister is the only
+writer.
 """
 from primeqa.execution_engine.bridge import build_metadata_inspection_plan
 from primeqa.execution_engine.credentials import resolve_tooling_client
@@ -42,6 +48,10 @@ from primeqa.execution_engine.plan import (
     PlannedRead,
     PlanStep,
 )
+from primeqa.execution_engine.result_store import (
+    S4ExecutionRun,
+    persist_run_evidence,
+)
 from primeqa.execution_engine.tooling_client import ToolingReadClient
 from primeqa.execution_engine.translator import ToolingQuery, translate_read
 
@@ -63,6 +73,9 @@ __all__ = [
     "AssertEvidence",
     "StepEvidence",
     "ErrorSurface",
+    # slice 3 — result store
+    "S4ExecutionRun",
+    "persist_run_evidence",
     # errors
     "ExecutionEngineError",
     "PlanTranslationError",

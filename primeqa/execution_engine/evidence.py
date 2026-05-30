@@ -81,10 +81,15 @@ StepEvidence = Union[ReadEvidence, AssertEvidence]
 class RunEvidence:
     """One metadata-inspection run's captured truth + grounded outcome.
 
+    ``run_id`` is the run's own identity — minted by the executor at run start
+    (the run self-identifies from birth). It becomes the result-store PK
+    (slice 3) and S2's ``last_run_id`` at the posture callback (slice 4).
+
     ``outcome`` is the **run result** — assertion held (`passed`) / didn't hold
     (`failed`) / couldn't be evaluated (`errored`). It is *not* an
     interpretation: nothing here classifies, attributes, or explains *why*."""
 
+    run_id: UUID
     recipe_id: UUID
     recipe_version_seq: int
     claim_test_id: UUID
