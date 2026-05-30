@@ -7030,3 +7030,28 @@ Opens the second S4 vertical: **CRUD / `data-recipe`** (data mutation — the fi
 **Guards.** This entry records the landscape + open forks; it locks nothing. Fork resolutions land as design amendments (the inspection-vertical pattern). No code yet.
 
 ---
+
+## D-110 — S4 CRUD broadening: behavioral-negative-first programme
+
+**Date:** 2026-05-27
+**Substrates affected:** [S2] (recipe-model expect-rejection — the precursor); [S4] (the behavioral-negative vertical); [S3] (negative emission — last)
+**Status:** Active — programme decision. Resolves the forks D-109 opened. Built on `phase-5-substrate-4-crud` (PR #5).
+
+Resolves the open forks of D-109 (CRUD phase opening) and locks the broadening sequence.
+
+**Cross-substrate (the headline reshape).** Unlike the inspection vertical (S4-only — S2 + S3 already had everything), CRUD spans **S2** (the expect-rejection model — the data-recipe can't express "this mutation should be rejected" today), **S3** (data-recipe emission — none exists), and **S4** (executor / provisioning / cleanup / result-model). The sequencing across substrates is the programme's spine.
+
+**Fork A = negative-first (a create-rejected behavioral negative).** The differentiator — it verifies the constraint *actually enforces* (does the VR reject the violating mutation?), the question inspection cannot answer (inspection only re-confirms the VR `APPLIES_TO` exists). And it is **mechanically thinnest**: a rejected create **creates nothing** → no provisioning, no cleanup, no created-record tracking table. Positive CRUD follows as the **mechanical-completion** vertical (it needs provisioning + cleanup). The thinnest negative is **create-rejected**; **update/delete-rejected need a provisioned record first → deferred** with positive CRUD. The expect-rejection scaffolding is **D-100.2** (built eventually regardless of order).
+
+**Fork B = seed-first.** S4 builds + tests against a **Coordinator-seeded** behavioral-negative recipe (the inspection precedent — seeding decoupled S4 from S3 emission timing). The **S2 expect-rejection model is the precursor**: you cannot seed a behavioral-negative recipe without a recipe-level way to express the expected rejection.
+
+**Sequence: S2 → S4 → S3.** (1) S2 — the recipe-model expect-rejection representation. (2) S4 — the behavioral-negative vertical, against seeded recipes. (3) S3 — negative emission (`_author_negative` authors the behavioral recipe instead of/alongside the inspection one).
+
+**Cascade (C / D / E from D-109):**
+- **C — provisioning/cleanup: deferred.** The create-rejected negative provisions nothing and creates nothing, so F6 is not on the critical path; it lands with positive CRUD.
+- **D — data client: build-thin.** A thin S4-local data-mutation client (create + the rejection envelope), per the slice-2 `ToolingReadClient` precedent (reject the S4→v1 inversion; defer the neutral lift).
+- **E — result model: extend the `evidence` JSONB** to capture the rejection signal (the attempted mutation + the org's rejection — error code / message / field). The **A→B child table stays deferred** (a create-attempt + an expect-rejection assert is ~2 steps, not the N-step shape that is the D-108.2 B-trigger).
+
+**Guards.** Programme decision only — locks the sequence + the cascade leans; the S2 expect-rejection representation itself is grounded + designed next (read-only first). No code yet.
+
+---
