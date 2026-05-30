@@ -126,6 +126,32 @@ The first executable recipe is the only kind S3 emits today: the **inspection-tr
 
 **Order note:** slice 2's executor produces evidence **in-memory** *before* slice 3's store persists it — so the executor can be built and tested against the live read (or a stub) ahead of the result schema. Slices 2 / 3 / 4 each get their own read-only grounding + HOLD-and-show before building.
 
+## 6. The run path — end-to-end recipe execution (D-108.4)
+
+Slices 1–4 built the spine's components; nothing wired them into a runnable path (the slice-4 grounding found no caller of the executor). The **run path** is that caller — a synchronous "execute this recipe" orchestrator.
+
+**Orchestrator.** `run_recipe_execution(session, test_id, *, environment_id, available_environment=None, client=None, coordinator=None) → RunPathResult` chains the four components:
+
+```
+select_recipe_for_execution(session, test_id, available_environment) → RecipeRead | None
+  → build_metadata_inspection_plan(recipe)            (bridge, slice 1)
+  → resolve_tooling_client(session, environment_id)    (or an injected client)
+  → execute_metadata_inspection(plan, client, environment_id)  (executor, slice 2)
+  → finalize_run(session, evidence, coordinator)        (persist + posture, slices 3–4)
+```
+
+Defaults (all injectable — the executor/finalize discipline): `available_environment` → a **minimal inspection env** (`auth_kind="metadata_api_user"`, the only assumption the emitted inspection recipe makes); `client` → `resolve_tooling_client`; `coordinator` → `SemanticTransactionCoordinator()`. A thin outer `run_recipe_execution_for_tenant(tenant_id, …)` owns the `get_tenant_connection` context + the single commit (the production entry).
+
+**`RunPathResult`** distinguishes two outcomes: **ran** (carries `evidence` + `runtime_state`) vs **no-eligible-recipe** (carries a reason; no run happened — `select_recipe_for_execution` returned `None` because no approved claim / no approved recipe / no environment match).
+
+**Transaction boundary — A (single transaction).** One tenant-scoped session/transaction spans `select → execute → finalize`, committed **once** on clean exit — the `LedgerPersister` idiom (`with get_tenant_connection(tenant_id) as conn: session = Session(bind=conn)`; the context commits atomically). One session suffices for both data domains because `get_tenant_connection` sets `search_path = "tenant_<id>", public` — per-tenant tables (`test_recipes`, `s4_execution_runs`, `test_recipe_runtime_state`) resolve unqualified to `tenant_N`, and the v1 public tables `resolve_tooling_client` reads (`environments`, `connections`) resolve via `public`. The S2 Coordinator's third production caller (this read/select side; `LedgerPersister` and `finalize.py` are the write side).
+
+*Caveat (and its bound):* **A holds the DB transaction open across the live Tooling read** (~1–2 s). Acceptable for this **bounded, low-concurrency synchronous** path. It does **not** generalize: the **async orchestration** (the future worker-driven, higher-concurrency path) **must not hold a DB transaction across external I/O** — it will bracket the live read with brief transactions (orchestrating the components — select / persist / posture — directly rather than under one umbrella). Boundary A here does not preclude that restructure; it is the right call for the sync path only.
+
+**Errored runs still finalize.** The executor catches `SFClientError` → an `errored` `RunEvidence` (it does **not** raise) — an errored run is *truth*, so it persists + reports posture like any other outcome. Only an **unexpected** exception (a code bug, or a fail-loud `UnsupportedPredicateError` / `AssertionResolutionError`) propagates and rolls the transaction back — correct: a half-run from a defect is never persisted.
+
+**Live-test note (inject the client).** The local substrate test DB (alembic-migrated) has **no `environments` / `connections` tables** — those are v1 `migrations/*.sql` public-schema tables, not in the alembic shared branch — so `resolve_tooling_client` cannot run there. The whole-spine live test therefore **injects** a real `ToolingReadClient` (built from `SF_*` env creds, the slice-2 pattern) and bypasses credential resolution (already unit-tested in slice 2). This drives the injectable-`client` parameter — it is necessary, not merely convenient.
+
 ---
 
 ## Status

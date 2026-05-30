@@ -6975,3 +6975,29 @@ Both calls `flush()` (never `commit()`) on the **same caller-provided session**,
 **Guards.** No new S2 method; no migration; persist + posture atomic on one session; the read-through boundary now covers both directions.
 
 ---
+
+## D-108.4 — S4 run path: the end-to-end recipe-execution orchestrator (third Coordinator caller)
+
+**Date:** 2026-05-27
+**Substrates affected:** [S4] (orchestrates the spine); [S2] (read via `select_recipe_for_execution`, no new method)
+**Status:** Active — run-path design (TA-reviewed). Wires slices 1–4 into a runnable synchronous path; the async-orchestration restructure is deferred.
+
+Slices 1–4 built the spine's components (bridge → executor → result store → finalize) but **nothing called them** (the slice-4 grounding found no caller). The run path is that caller.
+
+**Orchestrator.** `run_recipe_execution(session, test_id, *, environment_id, available_environment=None, client=None, coordinator=None) → RunPathResult` chains `select_recipe_for_execution` → `build_metadata_inspection_plan` → `resolve_tooling_client` (or injected `client`) → `execute_metadata_inspection` → `finalize_run`. A thin outer `run_recipe_execution_for_tenant(tenant_id, …)` owns the `get_tenant_connection` context + the single commit (the production entry). Defaults are injectable (the executor/finalize discipline): `available_environment` → minimal inspection env (`auth_kind="metadata_api_user"`); `client` → `resolve_tooling_client`; `coordinator` → `SemanticTransactionCoordinator()`.
+
+**Third Coordinator caller — the read/select side.** S4 now uses the S2 Coordinator on both sides of the read-through boundary: **read** via `select_recipe_for_execution` (this run path) — joining the **write** side (`finalize.py` → `report_run_outcome`, D-108.3). The S2 Coordinator's production callers are now `generation/persistence.py` (LedgerPersister — claim/recipe write), `execution_engine/finalize.py` (posture write), and `execution_engine/run.py` (recipe read).
+
+**`RunPathResult`.** Distinguishes **ran** (carries `evidence` + `runtime_state`) from **no-eligible-recipe** (carries a reason; no run happened — `select_recipe_for_execution` returned `None`: no approved claim / no approved recipe / no environment match). "No recipe" is not an error and not a run — it is a first-class, distinguishable result.
+
+**Transaction boundary = A (single transaction), with the async restructure deferred.** One tenant-scoped session/transaction spans `select → execute → finalize`, committed once on clean exit (the `LedgerPersister` idiom). One session spans both data domains because `get_tenant_connection` sets `search_path = "tenant_<id>", public` (per-tenant S2/S4 tables unqualified → `tenant_N`; v1 `environments`/`connections` → `public`). **A holds the DB transaction open across the live Tooling read (~1–2 s)** — acceptable for this **bounded, low-concurrency synchronous** path. It does **not** generalize: the future **async orchestration must not hold DB across external I/O** and will bracket the live read with brief transactions (orchestrating the components directly). A here is the right sync-path call and does not preclude that restructure.
+
+**Errored runs still finalize.** The executor catches `SFClientError` → an `errored` `RunEvidence` (does not raise); an errored run is truth, so it persists + reports posture. Only an *unexpected* exception (code bug / fail-loud predicate) propagates and rolls back — a half-run from a defect is never persisted.
+
+**Inject-client driven by a schema gap (live-test finding).** The local substrate test DB has **no `environments`/`connections` tables** (those are v1 `migrations/*.sql` public-schema tables, not in the alembic shared branch), so `resolve_tooling_client` cannot run there. The whole-spine live test injects a real `ToolingReadClient` (slice-2 pattern, from `SF_*` creds) and bypasses credential resolution (already unit-tested in slice 2). This *necessitates* the injectable `client` parameter.
+
+**Scope.** This is the synchronous run path + its tests. The **async/worker orchestration** (higher concurrency, brief-transaction bracketing) and any v1 route/scheduler wiring are deferred — they consume this orchestrator's components.
+
+**Guards.** No new S2 method; no migration; persist + posture stay atomic (finalize, D-108.3); boundary A is sync-only with the async restructure explicitly reserved.
+
+---
