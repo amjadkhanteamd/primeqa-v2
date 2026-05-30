@@ -7055,3 +7055,25 @@ Resolves the open forks of D-109 (CRUD phase opening) and locks the broadening s
 **Guards.** Programme decision only — locks the sequence + the cascade leans; the S2 expect-rejection representation itself is grounded + designed next (read-only first). No code yet.
 
 ---
+
+## D-110.1 — S2 expect-rejection model (RejectionExpectation projection; flag on the mutation step)
+
+**Date:** 2026-05-27
+**Substrates affected:** [S2] (the recipe-model expect-rejection — the D-110 precursor)
+**Status:** Active — S2 design (sub-decision of D-110). The first build step of the behavioral-negative programme.
+
+The data-recipe cannot express "this mutation should be rejected" today (the `AssertStep` carries the same `AssertionPredicate` as inspection). This adds that, as the S2 precursor D-110 named (S2 → S4 → S3).
+
+**Representation — a flag on the mutation step, not a separate step kind.** `expect_rejection` lives on the mutation step (`CreateStep` first). It is **intrinsic to the mutation's outcome** — self-describing ("this create should be rejected with X"), no look-ahead, the executor judges at the step. A separate `ExpectRejectionStep` would re-introduce a mutation↔expectation disconnect (the executor couldn't tell "expected rejection" from "broken recipe" until a later step) — the exact shape of the v1 `expect_fail` sin. The flag *carries the signal* (not a bare boolean), so it is grounded — that is what distinguishes it from the v1 sin, not the step-vs-flag choice.
+
+**Operational primitive — `RejectionExpectation` (new), the semantic/operational boundary.** Scalars only: `error_code` / `error_message_pattern`, ≥1-required (same discipline as `RejectionSignal`), **no `IdentityBearingRef`**. This exists because operational-layer bodies forbid `IdentityBearingRef` (`_verify_no_identity_bearing_refs`, recursive), and the claim's `RejectionSignal.error_field` *is* one. So the two layers split cleanly: the **claim's `RejectionSignal`** (identity-bearing) is the *semantic* assertion; the **recipe's `RejectionExpectation`** is its *operational projection*. The constraint is the semantic/operational boundary asserting itself, not an obstacle. S3's `_author_negative` (later) authors both from one grounded source — the recipe projecting the claim (dropping / stringifying `error_field`); for the v1 VR negative both carry `error_code=FIELD_CUSTOM_VALIDATION_EXCEPTION` (the D-101.2 honest floor — no fabricated field/message).
+
+**Versioning — additive v1.** Greenfield (no data-recipes emitted or persisted), so `expect_rejection` is an optional field on v1 — no `body_schema_version` bump, no migration, no compat surface.
+
+**Invariant — at-most-one `expect_rejection` per recipe.** 0 (non-negative recipe) / 1 (behavioral negative) / ≥2 → reject. **At-most-one, not exactly-one** — exactly-one would forbid future positive data-recipes (which carry zero). One prohibition per recipe.
+
+**Carry-forward (S4, later).** The executor attempts the create → a rejection matching `error_code` → **`passed`**; a success (no rejection) → **`failed`** (the prohibition did not enforce — the grounded analog of v1's `expected_fail_unverified`); an unexpected error → `failed` / `errored`. The S2 model carries exactly what that eval needs.
+
+**Guards.** Additive v1; the projection (not reuse) keeps the operational layer free of `IdentityBearingRef`; at-most-one preserves room for positives; no Coordinator change (the registry + Pydantic discriminated union decode it).
+
+---

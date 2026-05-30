@@ -679,6 +679,29 @@ intentionally not a recipe-kind; it's classified by trigger-kind.
 See `DECISIONS_LOG.md` D-054 for per-kind sub-discriminators,
 capability assumptions, and the inbound-injection rationale.
 
+**Data-recipe expect-rejection (D-110.1).** A `data-recipe`
+mutation step (`CreateStep` first; update/delete deferred) may
+carry an `expect_rejection` flag — the operational expression of a
+behavioral negative ("this mutation should be rejected"). It is a
+field *on the mutation step* (intrinsic to the operation's
+outcome, self-describing), not a separate step kind. The flag
+carries a **`RejectionExpectation`** primitive — scalars only
+(`error_code` / `error_message_pattern`, ≥1 required), with **no
+`IdentityBearingRef`**. This is the **operational projection** of
+the claim's `expected_rejection: RejectionSignal`: the claim
+(identity-bearing layer) carries the *semantic* assertion; the
+recipe (operational layer) carries its projection — the two are
+authored from one grounded source, the recipe dropping /
+stringifying the claim's identity-bearing `error_field`. The
+projection is the semantic/operational boundary asserting itself —
+operational bodies forbid `IdentityBearingRef`
+(`_verify_no_identity_bearing_refs`), so the recipe cannot reuse
+`RejectionSignal` directly. Invariant: **at-most-one**
+`expect_rejection` per recipe (0 = non-negative, 1 = behavioral
+negative; ≥2 rejected) — at-most-one, not exactly-one, so positive
+data-recipes (zero) remain valid. Additive on `data-recipe` v1
+(greenfield; optional field, no version bump).
+
 **Trigger-kind taxonomy (locked per D-055).** Five trigger-kinds.
 The Plane column distinguishes runtime-plane triggers from
 model-plane triggers.
