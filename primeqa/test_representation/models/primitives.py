@@ -328,6 +328,67 @@ class RejectionSignal(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# RejectionExpectation — the operational projection of RejectionSignal
+#
+# Per D-110.1. Carried by a data-recipe mutation step's
+# ``expect_rejection`` flag to express a behavioral negative ("this
+# mutation should be rejected with this signal").
+#
+# This is the OPERATIONAL-layer counterpart of :class:`RejectionSignal`:
+#   - RejectionSignal (claim layer) is identity-bearing — its
+#     ``error_field`` is an IdentityBearingRef.
+#   - RejectionExpectation (recipe layer) is scalars only — NO
+#     IdentityBearingRef — because operational bodies forbid
+#     identity-bearing refs (D-058 §5; the Coordinator's
+#     ``_verify_no_identity_bearing_refs`` walk enforces it). Reusing
+#     RejectionSignal in a recipe step would fail that check whenever
+#     ``error_field`` is set.
+#
+# S3's emission (later) authors both from one grounded source: the
+# recipe's RejectionExpectation is the projection of the claim's
+# RejectionSignal (dropping / stringifying ``error_field``). For the
+# v1 validation-rule negative both carry ``error_code =
+# FIELD_CUSTOM_VALIDATION_EXCEPTION`` (the D-101.2 honest floor).
+# ---------------------------------------------------------------------------
+
+
+class RejectionExpectation(BaseModel):
+    """A recipe-level expectation that a mutation is rejected.
+
+    Scalars only — the operational projection of a claim's
+    :class:`RejectionSignal` (D-110.1). At least one of (error_code,
+    error_message_pattern) MUST be non-None: an empty expectation
+    degrades to "rejected somehow", which the executor cannot verify
+    — the ungrounded shape the v1 ``expect_fail`` flag had. Carrying
+    the signal is what makes the negative *grounded*.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    error_code: Optional[str] = None
+    """Expected Salesforce error code (e.g.
+    ``"FIELD_CUSTOM_VALIDATION_EXCEPTION"``). Machine-checkable by the
+    executor against the rejection envelope."""
+
+    error_message_pattern: Optional[str] = None
+    """Regex the surfaced error message must match. Applied by the
+    executor at run time; diagnostic-only at this layer."""
+
+    @model_validator(mode="after")
+    def _at_least_one_signal(self) -> "RejectionExpectation":
+        if (
+            self.error_code is None
+            and self.error_message_pattern is None
+        ):
+            raise ValueError(
+                "RejectionExpectation requires at least one of "
+                "error_code, error_message_pattern; an empty "
+                "expectation cannot be verified by a recipe."
+            )
+        return self
+
+
+# ---------------------------------------------------------------------------
 # AssertionPredicate — used inside recipe AssertStep variants
 #
 # Per SPEC §3 (recipes observe and assert) + D-054 (recipe-kinds

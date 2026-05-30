@@ -20,7 +20,10 @@ from primeqa.test_representation.models.common import (
     ArraySemantics,
     BodyBase,
 )
-from primeqa.test_representation.models.primitives import AssertionPredicate
+from primeqa.test_representation.models.primitives import (
+    AssertionPredicate,
+    RejectionExpectation,
+)
 from primeqa.test_representation.models.references import OperationalRef
 from primeqa.test_representation.models.registry import register_body
 
@@ -47,11 +50,23 @@ class _StepBase(BaseModel):
 
 
 class CreateStep(_StepBase):
-    """Insert a new record."""
+    """Insert a new record.
+
+    ``expect_rejection`` (D-110.1) makes this a *behavioral-negative*
+    step: when set, the create is expected to be **rejected** by the
+    org (a validation rule / constraint), and the recipe verifies the
+    rejection matches the carried :class:`RejectionExpectation`. It is
+    the operational projection of the prohibition claim's
+    ``expected_rejection`` — scalars only (no IdentityBearingRef), so
+    the recipe stays in the operational layer. ``None`` (the default)
+    is an ordinary create. (Update / delete expect-rejection deferred
+    per D-110.)
+    """
 
     kind: Literal["create"] = "create"
     target_object: OperationalRef
     field_values: dict[str, Any]
+    expect_rejection: Optional[RejectionExpectation] = None
 
 
 class ReadStep(_StepBase):
@@ -163,4 +178,26 @@ class DataRecipeBody(BodyBase):
                     "identity_context='system' forbids run_as_user; "
                     "got a non-None reference"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _at_most_one_expect_rejection(self) -> "DataRecipeBody":
+        """At-most-one ``expect_rejection`` across mutation steps
+        (D-110.1): 0 = ordinary recipe, 1 = behavioral negative; ≥2
+        rejected — a recipe asserts at most one prohibition.
+
+        At-most-one (not exactly-one) so positive data-recipes (zero
+        expect_rejection) stay valid. ``getattr`` keeps it
+        forward-compatible: when update / delete steps gain the flag,
+        they are counted automatically without touching this check.
+        """
+        n = sum(
+            1 for s in self.steps
+            if getattr(s, "expect_rejection", None) is not None
+        )
+        if n > 1:
+            raise ValueError(
+                f"at most one step may carry expect_rejection (a recipe "
+                f"asserts at most one prohibition); found {n}"
+            )
         return self
