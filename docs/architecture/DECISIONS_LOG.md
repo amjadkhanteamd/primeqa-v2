@@ -7077,3 +7077,41 @@ The data-recipe cannot express "this mutation should be rejected" today (the `As
 **Guards.** Additive v1; the projection (not reuse) keeps the operational layer free of `IdentityBearingRef`; at-most-one preserves room for positives; no Coordinator change (the registry + Pydantic discriminated union decode it).
 
 ---
+
+## D-110.2 — S4 behavioral-negative vertical (grounded create-reject eval; parallel bridge/plan/executor; minimal-cleanup)
+
+**Date:** 2026-05-27
+**Substrates affected:** [S4] (the behavioral-negative data-recipe vertical)
+**Status:** Active — S4 design (sub-decision of D-110). The second build step (S2 → **S4** → S3); executes a seeded behavioral-negative data-recipe (a create the org rejects).
+
+The S4 half of D-110: run a `data-recipe` whose `CreateStep` carries `expect_rejection` (D-110.1) and verify the org rejects it as asserted. Mirrors the inspection vertical's S4 build, for a mutation-attempt + expect-rejection.
+
+**Slice arc (leaner than inspection — store + finalize reused unchanged).**
+1. **Bridge + plan** — `build_data_recipe_plan` → `DataRecipePlan` / `PlannedCreate`.
+2. **Thin data client + executor + evidence** — `DataMutationClient`, `execute_data_recipe` (the grounded eval), `CreateAttemptEvidence`.
+3. **Run-path dispatch + live test** — `run_recipe_execution` dispatches on `recipe_kind`; `finalize_run` reused.
+
+**Parallel, not generalize (N-1 / N-2 / N-3).** New `build_data_recipe_plan` → new `DataRecipePlan` / `PlannedCreate`; new `execute_data_recipe`; the run path dispatches on `recipe_kind`. It **shares** the read-through-Coordinator pattern + the plan → execute → finalize spine, but **projects + evaluates a different shape** (create + expect-rejection, not read + assert). Parallel now; generalization deferred to recipe-kind-family growth (rule of three).
+
+**Grounded eval — strictly stronger than v1's `expect_fail` sin.** The v1 sin: a bare boolean that flips *any* failure to passed, never checking *why*. The grounded eval, against the step's `RejectionExpectation`:
+- create **rejected** AND `error_code` **matches** → **`passed`** (the prohibition enforced as asserted);
+- create **succeeds** (2xx) → **`failed`** (the prohibition did **not** enforce — the grounded analog of v1's `expected_fail_unverified`);
+- create **rejected but `error_code` doesn't match** → **`failed`** (rejected for the *wrong* reason — **the exact case v1 wrongly flips to passed**);
+- create **couldn't be attempted** (auth / transport) → **`errored`**.
+The **match-the-code** step is what makes it grounded. Match is robust to a **multi-error body** (match if *any* error's `errorCode` matches; optional `error_message_pattern` too); evidence captures the **full** error body.
+
+**Thin data client (Fork D = build-thin).** `DataMutationClient` (create + delete), reusing `_oauth_token` + the neutral `integrations.exceptions` — the `ToolingReadClient` precedent; `resolve_data_mutation_client` (the `resolve_tooling_client` analog). `delete` exists **only** for the N-5 cleanup.
+
+**Evidence (Fork E = extend JSONB).** A new `CreateAttemptEvidence` `StepEvidence` variant: the attempted mutation (sobject, field_values), the rejection captured (`error_code`, `message`, `http_status`, `matched: bool`, full body), cleanup (`attempted`, `succeeded`, `record_id`), timings; `before/after_state` + `field_diff` stay N/A. **No migration, no new persister** — it serializes via `persist_run_evidence`; the store + finalize are reused.
+
+**N-5 — cleanup refinement (corrects D-110 Fork C).** "No cleanup (a rejected create creates nothing)" holds for the **passing** path. The **failing** path (create *succeeds*) DOES create a record (the envelope returns `record_id`) → a **targeted best-effort delete** of that one record (not the full F6 machinery). Best-effort: logged-not-fatal, the outcome stays `failed`, the evidence records the cleanup attempt. The negative vertical is **minimal-cleanup**, not zero. **F6** (full provisioning / cleanup with a tracking table) stays deferred.
+
+**N-4 — live test.**
+- **(c) stub-prove the four outcomes** — the eval logic, unit-tested against a stub client, regardless of live.
+- **(d) live spine proof** — a **self-contained deterministic rejection** (a required-field miss → `REQUIRED_FIELD_MISSING`): reliable, no sandbox dependency, proves the whole spine end-to-end. Labeled a **mechanism proof**, distinct from the product use case (a VR firing).
+- **(a) opportunistic VR probe** — a read-only sandbox probe for a firing VR; if found, a VR-specific live test (product-realistic `FIELD_CUSTOM_VALIDATION_EXCEPTION`); else the VR-specific live proof is **deferred** (the spine is already proven via (d)).
+- Optional live cleanup proof (a controlled create-that-succeeds → targeted delete) — deferred / nice-to-have.
+
+**Guards.** Parallel (not premature generalization); the grounded match-the-code eval (not the v1 bare flag); minimal-cleanup only (F6 deferred); the store + finalize reused (no migration). The seam is read-through-Coordinator, as inspection.
+
+---
