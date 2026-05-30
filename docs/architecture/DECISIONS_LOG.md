@@ -6877,3 +6877,127 @@ Expands D-106.4 (flagged-deferred in D-106) into its design. **Context:** `run_g
 **Phase status:** all five slices landed (job model + idempotency → intake → consumer → enqueue → reaper). Phase close-out (SPEC §-realized / DEFERRED_ITEMS / EVOLUTION reconciliation, per the D-107 pattern) + the tracked HTTP-route test are the remaining, separate steps.
 
 ---
+
+## D-108 — Substrate 4 (Execution): foundational design
+
+**Date:** 2026-05-26
+**Substrates affected:** [S4] (reuses neutralized v1 mechanics; feeds S6)
+**Status:** Active — F1 / F2 / F3 locked (TA-reviewed); F4–F7 triaged. First vertical (metadata-inspection) pending.
+
+Opens Substrate 4, the **execution engine**: S2 recipe → execution → captured truth → S6. Execution **captures** truth; intelligence **interprets** it (the substrate boundary). Architecture: `substrate_4_execution/SPEC.md`.
+
+**F1 — v1 reuse boundary (LOCKED; TA-reviewed + code-verified).** The v1 mechanics are cleanly separable from v1 semantics — at the layer *beneath* `execute_step` (itself an entangled monolith: mechanical dispatch + `success→status` + the inline `expect_fail` flip + `run_step_results` persistence + v1 SSE, in one function). **Reuse** the pure mechanical primitives — the REST transport client (`SalesforceExecutionClient`), `integrations/` retry/auth + the pure `classify_sf_exception`, the `$var` resolvers, the `data_engine` factory/template primitives, the cleanup mechanism (reverse-order + `PQA_%` sweep) — **lifted to a neutral shared module** where pure (resolving the substrate→v1 dependency direction; `integrations/` is already neutral). **Own** the orchestration, outcome interpretation, the result model, and the negative-test semantics. **Out:** the `execute_step` monolith, the `expect_fail` shallow-negative, `run_step_results`, `TestCaseDataBinding`'s TC-link. The lift is a **small incremental v1 refactor**, per-increment, not up front.
+
+**F2 — result model (LOCKED philosophy; schema deliberately NOT locked).** **Evidence-first, S4-owned:** capture raw observations richly + honestly (timestamps + ordering, request/response, before/after state, error surfaces, env context, per-step outcomes) — an **extensible** schema that grows with the first vertical and richer recipe kinds. **Posture, not evidence, crosses to S2:** S2 receives a compact posture (executed / verified / failed / caveated; latest refs; coverage freshness); the raw evidence stays S4-owned and is **S6's** raw material. **Mine v1 for lessons, not inheritance:** v1's run/result schema (api_request/response, before/after, `comparison_details`, `failure_class`, timings) informs *what* to capture, not the schema (welded to v1's `expect_fail`/run model).
+
+**F3 — first vertical = metadata-inspection (LOCKED).** The only kind S3 emits today (inspection-trigger + metadata-recipe, D-099 / D-107): live-read the org and assert the grounded claim still holds (execution-time re-inspection, D-099.3). No test data (F6), no browser (F4) — the thinnest end-to-end spine: bridge → executor → evidence → posture.
+
+**F4–F7 (triaged; leans, not locked).**
+- **F4 — recipe-kind scope.** Defer `ui-recipe` (browser), `event-subscription-recipe`, `callout-intercept-recipe`; start metadata, then CRUD (`data-recipe`). The behavioral expect-rejection negative (D-100.2) lands with CRUD.
+- **F5 — capability matching.** Minimal `ExecutionEnvironmentBody`→env match for the first vertical (metadata-inspection assumes only read access); rich capability-fit selection deferred.
+- **F6 — test-data provisioning.** None for the first vertical (inspection needs no prerequisite records); provisioning (reusing/evolving `data_engine` + cleanup) lands with the CRUD increment.
+- **F7 — failure-path / remediation.** S4 **captures failure-truth and does not remediate.** The dormant fix-and-rerun agent (G-001) stays a v1 concern; the S4-execution-failure ↔ agent relationship is settled later (S4 produces the evidence a remediation loop would consume).
+
+---
+
+## D-108.1 — S4 slice 2: thin S4-local Tooling-read client + translator/transport boundary (F1 realization)
+
+**Date:** 2026-05-27
+**Substrates affected:** [S4] (reuses v1 credential plumbing; feeds S6)
+**Status:** Active — slice-2 design (TA-reviewed). Sub-decision of D-108 F1.
+
+Resolves F1's "authenticated Tooling transport" question for the metadata-inspection executor. **Grounding finding:** the S1-sync Tooling *fetchers* (`integrations.sf_client.SalesforceClient.fetch_validation_rules`) ride a **refresh_token** client wired only in tests; the **production-credentialed** Tooling path is the D-106.4 one — env → `ConnectionRepository.get_connection_decrypted` → `_oauth_token` (client_credentials / password per `auth_flow`) → access token → a generic `query_tooling(soql)`. So the reusable unit is the **credential plumbing** + the **encoded edge→SOQL translation knowledge**, **not the fetcher object** (which carries sync-world assumptions — bulk two-phase fetch, syncability filtering, normalize/materialize).
+
+**Decision 1 = (a): an S4-local thin Tooling-read client reusing `_oauth_token`.**
+- **Reject (b)** (import the v1 metadata `SalesforceClient`): an S4→v1 dependency inversion — the direction F1 explicitly resolves by lifting to neutral.
+- **Defer (c)** (lift a neutral transport now): only once the neutral transport's shape is visible under CRUD / broader-read pressure — not because a single consumer exists.
+
+**Boundary (slice-2 realization of F1).** Credential resolution → **reused** (`_oauth_token` / D-106.4); Tooling transport → **thin S4-local** (authenticated read + pagination + typed error mapping, *nothing more* — never entity semantics, edge logic, metadata interpretation, or traversal policy); edge→SOQL translation → **S4 operational mapping** (finite, edge-keyed); semantic interpretation → **S6**; ontology authority → **S1 / S2**. *S4 reuses operational credential plumbing, not metadata-sync semantics or semantic execution assumptions.*
+
+**Realization principle (translator is operational, not semantic).** Edge→SOQL mappings are operational realization rules, not semantic authority: the query reflects only what the recipe's assertion carries; a semantic filter (active-ness, object identity) **must trace to the recipe/claim, never a translator default.** Consequence for slice 2: the emitted inspection recipe asserts plain `exists`, so the `APPLIES_TO` translation carries **no `Active` filter** — active-ness, if required, is an S3/emission concern, not a translator injection. Slice 2 verifies where active-ness lives.
+
+**Guards.** Result-model schema stays unlocked (slice 3); the translator stays operational (no ontology); the no-interpretation boundary (S4 records absences, S6 interprets them) stays hard.
+
+---
+
+## D-108.2 — S4 slice 3: result-store schema (run-entity + JSONB captured-trace, per-tenant)
+
+**Date:** 2026-05-27
+**Substrates affected:** [S4] (owns the result store; hands run identity to S2 at slice 4; feeds S6)
+**Status:** Active — slice-3 design (TA-reviewed). Concretizes D-108 F2 (the result model's first schema).
+
+Unlocks F2's first concrete schema for the metadata-inspection vertical: where S4's captured truth is persisted, and in what shape.
+
+**Placement — per-tenant.** The result store is execution truth for one tenant's recipes against one tenant's orgs — isolated tenant data. It lands in the **per-tenant schema** (alembic tenant branch, unqualified, **no `tenant_id` column** — isolation by schema, the substrate-1/-2/-3 convention), beside `test_recipes` / `test_recipe_runtime_state`. New tenant-branch migration chains off the head `20260525_0030`.
+
+**Schema = A: a run-entity with typed columns + a JSONB captured-trace.** One **kind-agnostic** table `s4_execution_runs`:
+- **Typed identity / outcome columns (queryable):** `run_id` UUID **PK** · `recipe_id` · `recipe_version_seq` · `claim_test_id` · `claim_version_seq` (NULL) · `environment_id` · `outcome` · `started_at` · `finished_at` · `duration_ms`.
+- **`evidence` JSONB:** the per-step captured trace (translated queries, structured filters, returned rows, per-step timings + error surfaces) — *raw observation*, the extensible part that grows per recipe kind (F2).
+- **`outcome` enum:** reuses the existing `run_outcome` PG enum (`passed`/`failed`/`errored`/`skipped`, `create_type=False`) — **verified** to match the S4 vocabulary AND slice 4's `report_run_outcome` signature exactly (no v1 `error`-vs-`errored` divergence). The run column reconciles to the S2 boundary verbatim.
+
+**Why A fits the DB philosophy (not a bent rule).** The run **is an entity** — its identity + outcome are typed, queryable columns, never buried in JSONB. The JSONB carries *only* the captured trace (raw observation). The no-JSONB-blob discipline targets the **semantic store** (claims/recipes — meaning must be columnar, queryable, hashable); execution truth is not semantic data, so JSONB-for-trace is the right tool, not an exception. One table serves all recipe kinds; only the JSONB grows — CRUD/UI reuse the same identity columns without schema churn.
+
+**Decisions recorded:**
+- **Schema A**, kind-agnostic (`s4_execution_runs`), per-tenant.
+- **B-trigger (A→B is a reversible forward migration, not a lock):** promote per-step facts to a structured child table when a real per-step query need emerges — S6's concrete query patterns, or CRUD's N-step shape. Additive (a child table beside the run row); deferring it costs no rework.
+- **`run_id` executor-minted** (`uuid4()` at run start; the run self-identifies from birth) — a small slice-2-shape extension to `RunEvidence` (F2-expected). Flows produce → persist (PK) → slice 4's `report_run_outcome(last_run_id=run_id, …)`.
+- **Produce/persist boundary:** the executor stays produce-only (in-memory `RunEvidence`, no DB import); a separate persister (`persist_run_evidence(session, evidence) → run_id`) writes. Slice 2's no-DB unit tests stay untouched.
+
+**Guards.** §4 concretizes but the JSONB trace stays extensible (grows per kind); the A→B path is recorded; append-only DECISIONS_LOG.
+
+---
+
+## D-108.3 — S4 slice 4: finalize step (persist + posture callback), the S4→S2 write boundary
+
+**Date:** 2026-05-27
+**Substrates affected:** [S4] (writes to its own result store + to S2's runtime-state surface); [S2] (consumed via `report_run_outcome`, no new method)
+**Status:** Active — slice-4 design (TA-reviewed). Completes the first vertical's four components (bridge → executor → result store → posture callback).
+
+Closes the first vertical's spine: the grounded run outcome + evidence flows back to S2 as posture.
+
+**Finalize orchestration (persist → posture, atomic on one session).** A thin `finalize_run(session, evidence, *, coordinator=None) → RecipeRuntimeState` in `execution_engine/finalize.py`:
+1. `persist_run_evidence(session, evidence)` — the slice-3 result-store write (`s4_execution_runs` row; the run's durable truth).
+2. `coordinator.report_run_outcome(session, actor='s4', recipe_id=evidence.recipe_id, last_run_id=evidence.run_id, last_run_at=evidence.finished_at, last_run_outcome=evidence.outcome, last_run_recipe_version_seq=evidence.recipe_version_seq)` — the S2 boundary callback (`test_recipe_runtime_state`; coverage freshness).
+
+Both calls `flush()` (never `commit()`) on the **same caller-provided session**, so persist + posture are **one atomic unit** — the caller owns the commit boundary (the substrate D-β contract). `report_run_outcome` is idempotent first-write-wins on `last_run_id`, so a re-finalize of the same run is a safe no-op.
+
+**Idempotency model — two layers (refines the "safe no-op" shorthand above).** `finalize_run` is **not** a whole no-op on a repeated `run_id`. It persists first, and `s4_execution_runs` has a `run_id` **PK**, so a true re-finalize of the same run is **fail-loud** (`IntegrityError`) — runs are never silently duplicated (each run mints a fresh `run_id`, so a double-finalize is a bug, caught not swallowed). The no-op idempotency lives at the **posture layer only**: `report_run_outcome` is first-write-wins on `last_run_id`, so a *posture-only retry* (re-reporting an already-recorded run) is the safe no-op. The two layers: persist = fail-loud on duplicate `run_id`; posture = idempotent on `last_run_id`.
+
+**Grounding finding (no precondition surprise).** `report_run_outcome` validates *only* actor authority (`actor='s4'` is purpose-built — the `ActorKind` taxonomy scopes S4 to this one call); it does **not** check recipe existence or state (logical FK; upsert keyed on `recipe_id`). S4 supplies a real `recipe_id` (carried by the plan from the `RecipeRead`), so no precondition gap.
+
+**The S4→S2 write boundary completes the read-through.** Slice 1 (D-108.1) established the **read** side — S4 reads S2 recipes through the Coordinator (`select_recipe_for_execution`). This adds the **write** side: S4 reports posture through the Coordinator (`report_run_outcome`). The new dependency `execution_engine → SemanticTransactionCoordinator` is the sanctioned S4↔S2 direction; the Coordinator is **injectable with a default** (`coordinator or SemanticTransactionCoordinator()`) so unit tests spy the exact `report_run_outcome` kwargs without a DB.
+
+**Decisions recorded:**
+- `finalize.py` is **separate from `result_store.py`** — persistence (the store) and orchestration (persist + posture) are distinct concerns.
+- **Coordinator injectable, default-constructed** — testable without a DB; the Coordinator is stateless (`SemanticTransactionCoordinator()`, no args).
+- **Scope boundary:** slice 4 = the finalize **seam** + tests. The production **trigger** — a worker / route running `resolve_tooling_client → build plan → execute → finalize` against a real recipe + live org — is **deferred** (nothing calls the executor yet; the spine is built bottom-up). It is the next piece after the vertical's four components land.
+
+**Guards.** No new S2 method; no migration; persist + posture atomic on one session; the read-through boundary now covers both directions.
+
+---
+
+## D-108.4 — S4 run path: the end-to-end recipe-execution orchestrator (third Coordinator caller)
+
+**Date:** 2026-05-27
+**Substrates affected:** [S4] (orchestrates the spine); [S2] (read via `select_recipe_for_execution`, no new method)
+**Status:** Active — run-path design (TA-reviewed). Wires slices 1–4 into a runnable synchronous path; the async-orchestration restructure is deferred.
+
+Slices 1–4 built the spine's components (bridge → executor → result store → finalize) but **nothing called them** (the slice-4 grounding found no caller). The run path is that caller.
+
+**Orchestrator.** `run_recipe_execution(session, test_id, *, environment_id, available_environment=None, client=None, coordinator=None) → RunPathResult` chains `select_recipe_for_execution` → `build_metadata_inspection_plan` → `resolve_tooling_client` (or injected `client`) → `execute_metadata_inspection` → `finalize_run`. A thin outer `run_recipe_execution_for_tenant(tenant_id, …)` owns the `get_tenant_connection` context + the single commit (the production entry). Defaults are injectable (the executor/finalize discipline): `available_environment` → minimal inspection env (`auth_kind="metadata_api_user"`); `client` → `resolve_tooling_client`; `coordinator` → `SemanticTransactionCoordinator()`.
+
+**Third Coordinator caller — the read/select side.** S4 now uses the S2 Coordinator on both sides of the read-through boundary: **read** via `select_recipe_for_execution` (this run path) — joining the **write** side (`finalize.py` → `report_run_outcome`, D-108.3). The S2 Coordinator's production callers are now `generation/persistence.py` (LedgerPersister — claim/recipe write), `execution_engine/finalize.py` (posture write), and `execution_engine/run.py` (recipe read).
+
+**`RunPathResult`.** Distinguishes **ran** (carries `evidence` + `runtime_state`) from **no-eligible-recipe** (carries a reason; no run happened — `select_recipe_for_execution` returned `None`: no approved claim / no approved recipe / no environment match). "No recipe" is not an error and not a run — it is a first-class, distinguishable result.
+
+**Transaction boundary = A (single transaction), with the async restructure deferred.** One tenant-scoped session/transaction spans `select → execute → finalize`, committed once on clean exit (the `LedgerPersister` idiom). One session spans both data domains because `get_tenant_connection` sets `search_path = "tenant_<id>", public` (per-tenant S2/S4 tables unqualified → `tenant_N`; v1 `environments`/`connections` → `public`). **A holds the DB transaction open across the live Tooling read (~1–2 s)** — acceptable for this **bounded, low-concurrency synchronous** path. It does **not** generalize: the future **async orchestration must not hold DB across external I/O** and will bracket the live read with brief transactions (orchestrating the components directly). A here is the right sync-path call and does not preclude that restructure.
+
+**Errored runs still finalize.** The executor catches `SFClientError` → an `errored` `RunEvidence` (does not raise); an errored run is truth, so it persists + reports posture. Only an *unexpected* exception (code bug / fail-loud predicate) propagates and rolls back — a half-run from a defect is never persisted.
+
+**Inject-client driven by a schema gap (live-test finding).** The local substrate test DB has **no `environments`/`connections` tables** (those are v1 `migrations/*.sql` public-schema tables, not in the alembic shared branch), so `resolve_tooling_client` cannot run there. The whole-spine live test injects a real `ToolingReadClient` (slice-2 pattern, from `SF_*` creds) and bypasses credential resolution (already unit-tested in slice 2). This *necessitates* the injectable `client` parameter.
+
+**Scope.** This is the synchronous run path + its tests. The **async/worker orchestration** (higher concurrency, brief-transaction bracketing) and any v1 route/scheduler wiring are deferred — they consume this orchestrator's components.
+
+**Guards.** No new S2 method; no migration; persist + posture stay atomic (finalize, D-108.3); boundary A is sync-only with the async restructure explicitly reserved.
+
+---
