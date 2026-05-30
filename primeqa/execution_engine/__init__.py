@@ -28,6 +28,11 @@ Slice 4 (D-108.3): the finalize step. :func:`finalize_run` persists the
 evidence then reports the grounded outcome as posture to S2
 (`report_run_outcome`, actor='s4') on the same session — atomically. The
 write-side of the S4↔S2 read-through boundary; closes the first vertical's spine.
+
+Run path (D-108.4): :func:`run_recipe_execution` wires all four components into
+a synchronous end-to-end "execute this recipe" path (select → bridge → resolve
+client → execute → finalize); :func:`run_recipe_execution_for_tenant` is the
+thin production entry owning the tenant connection + the single commit.
 """
 from primeqa.execution_engine.bridge import build_metadata_inspection_plan
 from primeqa.execution_engine.credentials import resolve_tooling_client
@@ -58,6 +63,11 @@ from primeqa.execution_engine.result_store import (
     S4ExecutionRun,
     persist_run_evidence,
 )
+from primeqa.execution_engine.run import (
+    RunPathResult,
+    run_recipe_execution,
+    run_recipe_execution_for_tenant,
+)
 from primeqa.execution_engine.tooling_client import ToolingReadClient
 from primeqa.execution_engine.translator import ToolingQuery, translate_read
 
@@ -84,6 +94,10 @@ __all__ = [
     "persist_run_evidence",
     # slice 4 — finalize (persist + posture callback)
     "finalize_run",
+    # run path — end-to-end recipe execution
+    "run_recipe_execution",
+    "run_recipe_execution_for_tenant",
+    "RunPathResult",
     # errors
     "ExecutionEngineError",
     "PlanTranslationError",
