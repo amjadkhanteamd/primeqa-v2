@@ -1,8 +1,8 @@
 # Substrate 4 — Execution Engine — SPEC
 
-**Status:** Phase 0 (foundational design) — opening. F1 / F2 / F3 locked (DECISIONS_LOG D-108); F4–F7 triaged. First vertical (metadata-inspection) is the next build.
+**Status:** First vertical realized — **metadata-inspection**, built + merged + live-proven against the sandbox (bridge → executor → result store → finalize → run path). F1 / F2 / F3 realized; F4–F7 still triaged/deferred (DECISIONS_LOG D-108 → D-108.4). See the footer Status block, `DEFERRED_ITEMS.md`, and `EVOLUTION.md`.
 
-**Last substantive update:** 2026-05-26 (substrate opened)
+**Last substantive update:** 2026-05-27 (first-vertical phase close-out)
 
 ---
 
@@ -156,4 +156,16 @@ Defaults (all injectable — the executor/finalize discipline): `available_envir
 
 ## Status
 
-**Phase 0 (foundational design) — opening (2026-05-26).** F1 (reuse boundary), F2 (evidence-first result model), F3 (first vertical = metadata-inspection) locked (D-108); F4–F7 triaged (defer ui / event / callout; minimal capability-match; no test-data until the CRUD increment; S4 captures failure-truth, does not remediate). Next: design + build the metadata-inspection executor + its evidence-first capture.
+**First vertical realized — metadata-inspection (2026-05-27).** Built across four design+impl slices + the run path (D-108.1 → D-108.4), merged to `main`, and **proven live** against the Salesforce sandbox (`select → bridge → execute-live → finalize`, grounded outcomes Account/Lead). Realized surface: the recipe→plan bridge (`build_metadata_inspection_plan`), the edge→SOQL translator (`APPLIES_TO`, no semantic injection), the thin S4-local Tooling client (auth read + pagination + typed errors), credential resolution (`resolve_tooling_client` via the D-106.4 path), the executor + `exists` evaluation → grounded run outcome (`passed`/`failed`/`errored`), in-memory evidence capture, the per-tenant result store (`s4_execution_runs`, run-entity + JSONB trace), the finalize step (persist + S2 posture callback, atomic), and the end-to-end run path (`run_recipe_execution` / `…_for_tenant`).
+
+**F-status:**
+
+- **F1 — reuse boundary: realized** (D-108 / D-108.1). The executor owns orchestration + outcome + result model; it reuses the neutral `integrations/` typed exceptions and the `_oauth_token` credential plumbing. The broader lift-to-neutral of v1's mechanical primitives (transport client, `$var` resolvers, `data_engine`, cleanup) stays **per-increment** — only the inspection vertical's needs were lifted; the CRUD-driven lift is deferred.
+- **F2 — evidence-first result model: realized** (D-108 / D-108.2). Schema A (`s4_execution_runs`: typed identity/outcome columns + an extensible `evidence` JSONB trace). The A→B promotion (per-step structured child table) is deferred to its trigger.
+- **F3 — first vertical = metadata-inspection: realized** (D-108 / D-108.3 / D-108.4). The full spine, live-proven.
+- **F4 — recipe-kind scope: deferred.** Only `metadata-recipe` is built; `data-recipe` (CRUD — the next vertical, carrying the D-100.2 expect-rejection negative), `ui-recipe`, `event-subscription-recipe`, `callout-intercept-recipe` are deferred.
+- **F5 — capability matching: minimal realized.** `select_recipe_for_execution`'s membership match is used (the run path feeds a minimal inspection env); richer capability-fit selection deferred.
+- **F6 — test-data provisioning: deferred.** None needed for inspection; provisioning lands with the CRUD increment.
+- **F7 — failure-path / remediation: held (by design).** S4 captures failure-truth and does not remediate; the S4-failure ↔ dormant-agent (G-001) relationship is settled later.
+
+The full deferred ledger is `DEFERRED_ITEMS.md`; the build arc is `EVOLUTION.md`; the one parked question (active-ness, S3-owned) is `OPEN_QUESTIONS.md` S4-Q-001. **Next:** the async/worker orchestration (D-108.4's scaling restructure) or the second (CRUD) vertical.

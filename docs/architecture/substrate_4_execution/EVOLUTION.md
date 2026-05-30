@@ -1,0 +1,35 @@
+# Substrate 4 — Execution Engine — Evolution Log
+
+Append-only. One entry per session that made substantive changes to this substrate's docs or code.
+
+---
+
+## 2026-05-26 — Substrate opened; foundational design (D-108)
+
+Substrate 4 opened — the execution engine: it takes the recipes S2 represents (and S3 generates), runs them against a real Salesforce org, and captures what actually happened as durable evidence. The substrate boundary is sharp: **S4 captures truth — including the grounded outcome — but does not interpret it** (classification / root-cause / explanation / clustering is S6). The v1 mistake was not *rendering* an outcome but rendering an **ungrounded** one (the `expect_fail` flag-flip); S4's outcome is grounded — it verifies the specific S3 claim the recipe operationalizes.
+
+`SPEC.md` written (§Purpose → §5). D-108 committed: **F1** (v1 reuse boundary — reuse the mechanical primitives at the layer *beneath* `execute_step`, own orchestration + outcome + result model), **F2** (evidence-first, S4-owned result model; schema deliberately not locked), **F3** (first vertical = metadata-inspection) locked, TA-reviewed; **F4–F7** triaged (defer ui / event / callout; minimal capability-match; no test-data until CRUD; S4 captures failure-truth, does not remediate).
+
+**The grounded-outcome / interpretation boundary** was sharpened in review: S4 *does* render a grounded run outcome (`passed`/`failed`/`errored`/`skipped`) — capturing it is not interpretation; attributing *why* it came out that way is (S6). The first-vertical grounding surfaced two refinements (an edge→live-read translator; the posture vocabulary is two orthogonal layers) and one win (the S2 posture surface `report_run_outcome` / `select_recipe_for_execution` already exists).
+
+## 2026-05-27 — First vertical built, merged, live-proven (D-108.1 → D-108.4)
+
+The metadata-inspection vertical built across four design+impl slices + the run path, each design-then-impl, each HOLD-and-shown, then merged to `main` (`46839b4`) and **proven live against the Salesforce sandbox**.
+
+**Slice 1 — recipe→plan bridge (D-108.1 framing).** `build_metadata_inspection_plan(RecipeRead) → MetadataInspectionPlan`: narrow + validate + project an S2 recipe into a semantic, S1-edge-vocabulary plan (ordered read + assert over a `LogicalRef`). Established the **S4↔S2 read-through boundary** — S4 consumes S2's typed `RecipeRead` via the Coordinator (`select_recipe_for_execution`), never re-decoding raw JSONB.
+
+**Slice 2 — the executor (D-108.1).** Translator (edge→SOQL, `APPLIES_TO`) + thin S4-local Tooling client (auth read + pagination + typed errors, reusing the neutral `integrations/` exceptions) + credential resolution (`resolve_tooling_client` via the D-106.4 `_oauth_token` path) + `exists` evaluation → grounded run outcome + in-memory evidence. Decision 1 = (a): an **S4-local thin client** (reject the S4→v1 inversion; defer the neutral lift). The **operational-realization principle** locked: edge→SOQL mappings are operational realization, **not semantic authority** — the query reflects only what the recipe asserts, so the `APPLIES_TO` translation carries **no `Active` filter** (the recipe asserts plain `exists`; active-ness parked as S4-Q-001, S3-owned). Decision 2 (scoped query) **live-verified** against the sandbox — no bulk fallback built.
+
+**Slice 3 — the result store (D-108.2).** Schema **A** (run-entity typed identity/outcome columns + an extensible `evidence` JSONB captured-trace), per-tenant `s4_execution_runs` (tenant-branch migration; `outcome` reuses the existing `run_outcome` enum, verified to match slice 4's `report_run_outcome` exactly). The run is an entity (queryable columns); JSONB holds only the raw observation — the no-JSONB-blob rule targets the semantic store, and execution truth is not semantic data. The A→B promotion (per-step child table) is recorded with its trigger, reversible. The executor stays produce-only; a separate persister writes — the slice-2 no-DB unit-test boundary held.
+
+**Slice 4 — the finalize step (D-108.3).** `finalize_run(session, evidence, *, coordinator=None)`: persist the evidence then `report_run_outcome(actor='s4', …)` on the same session — atomic (both flush, the caller owns the commit). Completes the **S4→S2 write boundary** (the read side was slice 1). The **idempotency model is two layers**: persist is fail-loud on a duplicate `run_id` (PK — runs are never silently duplicated, each mints a fresh `run_id`); the no-op idempotency is `report_run_outcome`'s first-write-wins on `last_run_id` (a posture-only retry). The loose "re-finalize → no-op" shorthand was corrected to this two-layer model in both the SPEC ledger and the code docstring.
+
+**Run path (D-108.4).** `run_recipe_execution(session, …) → RunPathResult` chains select → bridge → resolve-client → execute → finalize; `run_recipe_execution_for_tenant(tenant_id, …)` owns the `get_tenant_connection` context + the single commit. **Transaction boundary A** (one tenant-scoped session/transaction across the whole path, the `LedgerPersister` idiom) — one session spans both data domains because `search_path = "tenant_<id>", public` (per-tenant S2/S4 tables + v1 `environments`/`connections`). A holds the DB transaction across the bounded live read — sync-path-acceptable; the async restructure (brief-transaction bracketing) is deferred. `RunPathResult` distinguishes **ran** from **no-eligible-recipe**. The S2 Coordinator now has three production callers: `LedgerPersister` (write), `finalize.py` (write), `run.py` (read). The **inject-client** parameter is necessitated by a schema gap (the local substrate test DB has no `environments`/`connections`), so the whole-spine live test injects a real `ToolingReadClient`.
+
+**Live proof.** The whole spine ran end-to-end against the real sandbox (`select → bridge → execute-LIVE → finalize`), discriminating real org state: Opportunity → `passed` (3 VRs), Account / Lead → `failed` (0 VRs) — grounded outcomes, no interpretation, both result rows persisted, posture reported.
+
+Merged `s4-execution` → `main` (`--no-ff`, `46839b4`); gate 1317 passed (sandbox/live opt-in); branch safe-deleted.
+
+## 2026-05-27 — First-vertical phase close-out
+
+SPEC §Status flipped from "Phase 0 opening" to the realized first vertical (F1/F2/F3 realized; F4–F7 status enumerated). `DEFERRED_ITEMS.md` + `EVOLUTION.md` created (this file). `OPEN_QUESTIONS.md` S4-Q-001 (active-ness, S3-owned) carried forward.
