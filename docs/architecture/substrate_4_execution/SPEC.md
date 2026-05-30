@@ -75,9 +75,19 @@ The lift-to-neutral is a **small, incremental v1 refactor** — done per increme
 
 **S4 reuses operational credential plumbing, not metadata-sync semantics or semantic execution assumptions.**
 
-## 4. F2 — the result model (LOCKED philosophy; schema NOT locked; D-108)
+## 4. F2 — the result model (LOCKED philosophy; first schema concretized at slice 3; D-108 / D-108.2)
 
-**Evidence-first, S4-owned.** A run captures raw observations *richly* and *honestly*: timestamps + ordering, request / response, before / after state, error surfaces, environment context, and per-step outcomes — an **extensible** schema that grows with the first vertical and richer recipe kinds. The schema is deliberately **not locked**: capture breadth expands as recipe kinds land (e.g. browser traces / screenshots for `ui-recipe`).
+**Evidence-first, S4-owned.** A run captures raw observations *richly* and *honestly*: timestamps + ordering, request / response, before / after state, error surfaces, environment context, and per-step outcomes — an **extensible** schema that grows with the first vertical and richer recipe kinds. The capture breadth is deliberately **not frozen**: it expands as recipe kinds land (e.g. browser traces / screenshots for `ui-recipe`).
+
+**First realized schema — `s4_execution_runs` (slice 3, D-108.2).** The result store is **one kind-agnostic, per-tenant table** (tenant-branch migration; created unqualified with **no `tenant_id` column** — isolation by schema, the substrate-1/-2/-3 convention). Shape:
+
+- **Typed identity / outcome columns (queryable):** `run_id` UUID **PK** · `recipe_id` UUID · `recipe_version_seq` int · `claim_test_id` UUID · `claim_version_seq` int NULL · `environment_id` int · `outcome` · `started_at` · `finished_at` · `duration_ms`.
+- **`evidence` JSONB (the captured trace):** the full per-step trace — translated queries, structured filters, returned rows, per-step timings, per-step error surfaces — the **extensible** part that grows with recipe kinds (F2). This is *raw observation* (what the org returned), never semantic data.
+- **`outcome` enum:** the column **reuses the existing `run_outcome` PG enum** (`'passed' / 'failed' / 'errored' / 'skipped'`, `create_type=False`) — verified to match the S4 vocabulary *and* slice 4's `report_run_outcome` signature exactly (no v1 `error`-vs-`errored` divergence; no dedicated S4 enum needed). The run column therefore reconciles to the S2 boundary verbatim.
+
+**Schema decision = A (run-entity + JSONB trace), and why it fits the DB philosophy.** The **run is an entity** — its identity + outcome are *typed, queryable columns*, never buried in JSONB. The JSONB holds **only the captured trace** (raw observation), so the no-JSONB-blob rule — which targets the **semantic store** (claims / recipes, where meaning must be columnar + queryable + hashable) — is honored, not bent: execution *truth* is not semantic data. One table serves **all** recipe kinds; only the JSONB grows (F2 extensibility preserved) — CRUD / UI verticals reuse the same identity columns without schema churn.
+
+**B-trigger (A→B is a forward migration, reversible — not a lock).** Promote per-step facts (edge, subject, `row_count`, `held`, …) to a **structured child table** when a *real* per-step query need emerges — S6's concrete query patterns, or CRUD's N-step shape making per-step rows earn their keep. Until then, A pays nothing for child rows the fixed 1-read-1-assert vertical doesn't query. The move is additive (a child table beside the run row), so deferring it costs no rework.
 
 **Posture, not evidence, crosses to S2 — and posture is two orthogonal layers.** S4 sends S2 a compact **posture** (never the raw evidence — that stays S4-owned for S6). Two layers coexist in it and must **never** be conflated or mapped onto each other:
 
@@ -105,7 +115,11 @@ The first executable recipe is the only kind S3 emits today: the **inspection-tr
    - **`executor.py`** — walk the plan → translate → live-read → evaluate the `AssertionPredicate` (`exists` now; other predicates deferred) → the grounded **run outcome** (`passed` / `failed` / `errored`) + evidence. The client is **injected** (a stub drives unit tests with no org / no PG; a **gated live integration test** covers the real read).
 
    **Decision 2 — `APPLIES_TO` query:** scoped (`WHERE EntityDefinition.QualifiedApiName = <Object>`), **live-verified** in slice 2, with the bulk-fetch + client-side filter as a zero-risk fallback. Produces the evidence **in-memory** (slice 3 persists it).
-3. **Evidence-first result capture.** The S4-owned result store persists slice 2's in-memory evidence — the **first concrete result-model shape** is designed here (F2-unlocked until then).
+3. **Evidence-first result capture.** The S4-owned result store persists slice 2's in-memory evidence — the **first concrete result-model shape** (§4, schema A; D-108.2):
+   - **Migration** — a **tenant-branch** migration chaining off the current head `20260525_0030`, creating `s4_execution_runs` (typed identity/outcome columns + `evidence` JSONB; `outcome` reuses the `run_outcome` enum, `create_type=False`).
+   - **`result_store.py`** — the `s4_execution_runs` SQLAlchemy model on the **project `Base`** (unqualified, no `tenant_id` — substrate convention) + `persist_run_evidence(session, evidence) → run_id` (session-provided per substrate convention).
+   - **`RunEvidence` gains `run_id: UUID`** — the executor mints `uuid4()` at run start (a small slice-2-shape extension, F2-expected; the run self-identifies from birth). It flows produce → persist (PK) → slice 4's callback, so the run row hands S2 exactly what `report_run_outcome` wants (`run_id`→`last_run_id`, `recipe_id`, `recipe_version_seq`→`last_run_recipe_version_seq`, `outcome`→`last_run_outcome`, `finished_at`→`last_run_at`).
+   - **Persistence boundary** — the **executor stays produce-only** (returns in-memory `RunEvidence`, **no DB import**); a **separate persister** writes the row. Slice 2's no-DB unit tests stay untouched; the persister is covered by a governance-DB integration test (+ a fake-session mapping unit test).
 4. **Posture callback.** Map the run outcome → `report_run_outcome(actor='s4', …)` → `test_recipe_runtime_state` (coverage freshness). **No new S2 method** (the surface is built).
 
 **Order note:** slice 2's executor produces evidence **in-memory** *before* slice 3's store persists it — so the executor can be built and tested against the live read (or a stub) ahead of the result schema. Slices 2 / 3 / 4 each get their own read-only grounding + HOLD-and-show before building.

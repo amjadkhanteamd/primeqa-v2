@@ -6919,3 +6919,30 @@ Resolves F1's "authenticated Tooling transport" question for the metadata-inspec
 **Guards.** Result-model schema stays unlocked (slice 3); the translator stays operational (no ontology); the no-interpretation boundary (S4 records absences, S6 interprets them) stays hard.
 
 ---
+
+## D-108.2 — S4 slice 3: result-store schema (run-entity + JSONB captured-trace, per-tenant)
+
+**Date:** 2026-05-27
+**Substrates affected:** [S4] (owns the result store; hands run identity to S2 at slice 4; feeds S6)
+**Status:** Active — slice-3 design (TA-reviewed). Concretizes D-108 F2 (the result model's first schema).
+
+Unlocks F2's first concrete schema for the metadata-inspection vertical: where S4's captured truth is persisted, and in what shape.
+
+**Placement — per-tenant.** The result store is execution truth for one tenant's recipes against one tenant's orgs — isolated tenant data. It lands in the **per-tenant schema** (alembic tenant branch, unqualified, **no `tenant_id` column** — isolation by schema, the substrate-1/-2/-3 convention), beside `test_recipes` / `test_recipe_runtime_state`. New tenant-branch migration chains off the head `20260525_0030`.
+
+**Schema = A: a run-entity with typed columns + a JSONB captured-trace.** One **kind-agnostic** table `s4_execution_runs`:
+- **Typed identity / outcome columns (queryable):** `run_id` UUID **PK** · `recipe_id` · `recipe_version_seq` · `claim_test_id` · `claim_version_seq` (NULL) · `environment_id` · `outcome` · `started_at` · `finished_at` · `duration_ms`.
+- **`evidence` JSONB:** the per-step captured trace (translated queries, structured filters, returned rows, per-step timings + error surfaces) — *raw observation*, the extensible part that grows per recipe kind (F2).
+- **`outcome` enum:** reuses the existing `run_outcome` PG enum (`passed`/`failed`/`errored`/`skipped`, `create_type=False`) — **verified** to match the S4 vocabulary AND slice 4's `report_run_outcome` signature exactly (no v1 `error`-vs-`errored` divergence). The run column reconciles to the S2 boundary verbatim.
+
+**Why A fits the DB philosophy (not a bent rule).** The run **is an entity** — its identity + outcome are typed, queryable columns, never buried in JSONB. The JSONB carries *only* the captured trace (raw observation). The no-JSONB-blob discipline targets the **semantic store** (claims/recipes — meaning must be columnar, queryable, hashable); execution truth is not semantic data, so JSONB-for-trace is the right tool, not an exception. One table serves all recipe kinds; only the JSONB grows — CRUD/UI reuse the same identity columns without schema churn.
+
+**Decisions recorded:**
+- **Schema A**, kind-agnostic (`s4_execution_runs`), per-tenant.
+- **B-trigger (A→B is a reversible forward migration, not a lock):** promote per-step facts to a structured child table when a real per-step query need emerges — S6's concrete query patterns, or CRUD's N-step shape. Additive (a child table beside the run row); deferring it costs no rework.
+- **`run_id` executor-minted** (`uuid4()` at run start; the run self-identifies from birth) — a small slice-2-shape extension to `RunEvidence` (F2-expected). Flows produce → persist (PK) → slice 4's `report_run_outcome(last_run_id=run_id, …)`.
+- **Produce/persist boundary:** the executor stays produce-only (in-memory `RunEvidence`, no DB import); a separate persister (`persist_run_evidence(session, evidence) → run_id`) writes. Slice 2's no-DB unit tests stay untouched.
+
+**Guards.** §4 concretizes but the JSONB trace stays extensible (grows per kind); the A→B path is recorded; append-only DECISIONS_LOG.
+
+---
