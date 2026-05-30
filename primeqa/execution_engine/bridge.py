@@ -24,14 +24,20 @@ from __future__ import annotations
 
 from primeqa.execution_engine.errors import PlanTranslationError
 from primeqa.execution_engine.plan import (
+    DataRecipePlan,
     MetadataInspectionPlan,
     PlannedAssertion,
+    PlannedCreate,
     PlannedRead,
     PlanStep,
 )
 from primeqa.test_representation.coordinator import RecipeRead
 from primeqa.test_representation.models.environment import (
     ExecutionEnvironmentBody,
+)
+from primeqa.test_representation.models.recipes.data_recipe import (
+    CreateStep,
+    DataRecipeBody,
 )
 from primeqa.test_representation.models.recipes.metadata_recipe import (
     AssertStep,
@@ -41,6 +47,9 @@ from primeqa.test_representation.models.recipes.metadata_recipe import (
     RetrieveStep,
 )
 from primeqa.test_representation.models.references import LogicalRef
+from primeqa.test_representation.models.triggers.data_mutation import (
+    DataMutationTriggerBody,
+)
 from primeqa.test_representation.models.triggers.inspection import (
     InspectionTriggerBody,
 )
@@ -51,6 +60,11 @@ from primeqa.test_representation.models.triggers.inspection import (
 _METADATA_RECIPE_KIND = "metadata-recipe"
 _INSPECTION_TRIGGER_KIND = "inspection-trigger"
 _READ_ONLY_MODE = "metadata_read"
+
+# The behavioral-negative vertical (SPEC §7, D-110.2): a data-mutation-trigger
+# paired with a data-recipe whose single step is a create the org rejects.
+_DATA_RECIPE_KIND = "data-recipe"
+_DATA_MUTATION_TRIGGER_KIND = "data-mutation-trigger"
 
 
 def build_metadata_inspection_plan(recipe: RecipeRead) -> MetadataInspectionPlan:
@@ -192,4 +206,116 @@ def _plan_step(step: object, *, recipe_id) -> PlanStep:
     raise PlanTranslationError(
         f"unsupported metadata-recipe step type: {type(step).__name__}",
         recipe_id=recipe_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# The data-recipe behavioral-negative bridge (D-110.2) — parallel to the
+# inspection bridge above. Same read-through-Coordinator seam (a typed
+# ``RecipeRead``, no raw-JSONB re-decode); a different shape projected (a
+# create + expect-rejection, not a read + assert).
+# ---------------------------------------------------------------------------
+
+def build_data_recipe_plan(recipe: RecipeRead) -> DataRecipePlan:
+    """Resolve an S2 ``RecipeRead`` into a :class:`DataRecipePlan` — the
+    behavioral-negative create-rejected vertical (D-110.2).
+
+    Validates that ``recipe`` is the thinnest behavioral negative (a
+    data-mutation trigger + a data-recipe whose single step is a ``CreateStep``
+    carrying ``expect_rejection``), narrows its bodies, and projects the create
+    into a :class:`PlannedCreate`.
+
+    Raises :class:`PlanTranslationError` if ``recipe`` is not a shape this slice
+    can plan (the message names the specific mismatch). Multi-step / provisioned
+    negatives and positive data-recipes are deferred (D-110).
+    """
+    rid = recipe.recipe_id
+
+    # 1. recipe_kind gate — this is the data-recipe bridge.
+    if recipe.recipe_kind != _DATA_RECIPE_KIND:
+        raise PlanTranslationError(
+            f"data-recipe bridge expects recipe_kind={_DATA_RECIPE_KIND!r}; "
+            f"got {recipe.recipe_kind!r}",
+            recipe_id=rid,
+        )
+
+    # 2. trigger gate — the behavioral negative fires on a data mutation.
+    if recipe.trigger_kind != _DATA_MUTATION_TRIGGER_KIND:
+        raise PlanTranslationError(
+            f"data-recipe bridge expects trigger_kind="
+            f"{_DATA_MUTATION_TRIGGER_KIND!r}; got {recipe.trigger_kind!r}",
+            recipe_id=rid,
+        )
+    if not isinstance(recipe.causal_initiation, DataMutationTriggerBody):
+        raise PlanTranslationError(
+            f"causal_initiation must decode to a DataMutationTriggerBody; "
+            f"got {type(recipe.causal_initiation).__name__}",
+            recipe_id=rid,
+        )
+
+    # 3. observation_realization must be a data recipe body.
+    body = recipe.observation_realization
+    if not isinstance(body, DataRecipeBody):
+        raise PlanTranslationError(
+            f"observation_realization must decode to a DataRecipeBody; "
+            f"got {type(body).__name__}",
+            recipe_id=rid,
+        )
+
+    # 4. environment — defensive type narrowing (capability matching is the
+    #    Coordinator's, upstream of the bridge).
+    if not isinstance(recipe.execution_environment, ExecutionEnvironmentBody):
+        raise PlanTranslationError(
+            f"execution_environment must decode to an ExecutionEnvironmentBody; "
+            f"got {type(recipe.execution_environment).__name__}",
+            recipe_id=rid,
+        )
+
+    # 5. behavioral-negative shape — the thinnest negative is a single
+    #    CreateStep carrying expect_rejection. Multi-step / provisioned
+    #    negatives and positive (no-expect_rejection) recipes are deferred.
+    if len(body.steps) != 1:
+        raise PlanTranslationError(
+            f"data-recipe behavioral-negative vertical plans a single "
+            f"create-rejected step; got {len(body.steps)} steps "
+            f"(multi-step / provisioned negatives are deferred)",
+            recipe_id=rid,
+        )
+    step = body.steps[0]
+    if not isinstance(step, CreateStep):
+        raise PlanTranslationError(
+            f"the behavioral-negative step must be a CreateStep; got "
+            f"{type(step).__name__}",
+            recipe_id=rid,
+        )
+    if step.expect_rejection is None:
+        raise PlanTranslationError(
+            f"CreateStep {step.step_id!r} carries no expect_rejection; this "
+            f"vertical handles behavioral negatives only (a positive create is "
+            f"a later vertical)",
+            recipe_id=rid,
+        )
+
+    # 6. narrow the create target to a LogicalRef (the sobject is referenced by
+    #    name; operational bodies are logical by default).
+    if not isinstance(step.target_object, LogicalRef):
+        raise PlanTranslationError(
+            f"create {step.step_id!r} must target a LogicalRef (the sobject by "
+            f"name); got a {type(step.target_object).__name__}",
+            recipe_id=rid,
+        )
+
+    planned = PlannedCreate(
+        step_id=step.step_id,
+        target_object=step.target_object,
+        field_values=dict(step.field_values),
+        expect_rejection=step.expect_rejection,
+    )
+    return DataRecipePlan(
+        recipe_id=recipe.recipe_id,
+        recipe_version_seq=recipe.version_seq,
+        claim_test_id=recipe.claim_test_id,
+        claim_version_seq=recipe.claim_version_seq,
+        api_choice=body.api_choice,
+        steps=(planned,),
     )

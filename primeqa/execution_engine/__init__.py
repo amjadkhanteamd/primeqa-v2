@@ -34,7 +34,10 @@ a synchronous end-to-end "execute this recipe" path (select → bridge → resol
 client → execute → finalize); :func:`run_recipe_execution_for_tenant` is the
 thin production entry owning the tenant connection + the single commit.
 """
-from primeqa.execution_engine.bridge import build_metadata_inspection_plan
+from primeqa.execution_engine.bridge import (
+    build_data_recipe_plan,
+    build_metadata_inspection_plan,
+)
 from primeqa.execution_engine.credentials import resolve_tooling_client
 from primeqa.execution_engine.finalize import finalize_run
 from primeqa.execution_engine.errors import (
@@ -54,8 +57,10 @@ from primeqa.execution_engine.evidence import (
 )
 from primeqa.execution_engine.executor import execute_metadata_inspection
 from primeqa.execution_engine.plan import (
+    DataRecipePlan,
     MetadataInspectionPlan,
     PlannedAssertion,
+    PlannedCreate,
     PlannedRead,
     PlanStep,
 )
@@ -78,6 +83,10 @@ __all__ = [
     "PlannedAssertion",
     "PlannedRead",
     "PlanStep",
+    # data-recipe behavioral-negative — bridge + plan (D-110.2)
+    "build_data_recipe_plan",
+    "DataRecipePlan",
+    "PlannedCreate",
     # slice 2 — executor
     "translate_read",
     "ToolingQuery",

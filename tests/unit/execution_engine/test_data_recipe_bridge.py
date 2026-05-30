@@ -1,0 +1,190 @@
+"""Unit tests for the S4 data-recipe behavioral-negative bridge (D-110.2 slice 1)
+— pure, no PG.
+
+`build_data_recipe_plan` turns an S2 `RecipeRead` (a data-mutation trigger + a
+data-recipe whose single step is a create carrying `expect_rejection`) into a
+`DataRecipePlan` / `PlannedCreate`. These tests exercise the decode path
+(bodies round-trip through JSONB via the registry, as the Coordinator does on
+read), the gates (fail-loud on the wrong shape), and that `expect_rejection` is
+projected intact. No DB, no live org.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from uuid import uuid4
+
+import pytest
+
+from primeqa.execution_engine import (
+    DataRecipePlan,
+    PlannedCreate,
+    PlanTranslationError,
+    build_data_recipe_plan,
+)
+from primeqa.test_representation.coordinator import RecipeRead
+from primeqa.test_representation.models.environment import ExecutionEnvironmentBody
+from primeqa.test_representation.models.recipes.data_recipe import DataRecipeBody
+from primeqa.test_representation.models.registry import get_body_model
+from primeqa.test_representation.models.triggers.data_mutation import (
+    DataMutationTriggerBody,
+)
+
+_NOW = datetime(2026, 5, 27, tzinfo=timezone.utc)
+_VR_CODE = "FIELD_CUSTOM_VALIDATION_EXCEPTION"
+
+
+# ---------------------------------------------------------------------------
+# Builders — the S2 bodies a behavioral-negative data-recipe carries
+# ---------------------------------------------------------------------------
+
+def _trigger() -> DataMutationTriggerBody:
+    return DataMutationTriggerBody.model_validate({
+        "operation": "create",
+        "target": {"ref_kind": "logical", "entity_type": "Object", "external_id": "Lead"},
+        "identity_context": "system",
+        "volume": "single",
+    })
+
+
+def _negative_body(*, expect_rejection=True, extra_steps=None, target_pinned=False) -> DataRecipeBody:
+    target = ({"ref_kind": "pinned", "entity_type": "Object", "entity_id": str(uuid4()),
+               "version_seq": 1, "external_id": "Lead"} if target_pinned
+              else {"ref_kind": "logical", "entity_type": "Object", "external_id": "Lead"})
+    create = {"kind": "create", "step_id": "create-violating",
+              "target_object": target, "field_values": {"Company": "Acme"}}
+    if expect_rejection:
+        create["expect_rejection"] = {"error_code": _VR_CODE}
+    steps = [create] + list(extra_steps or [])
+    return DataRecipeBody.model_validate({
+        "api_choice": "rest", "identity_context": "system",
+        "execution_mechanism": "direct_api", "steps": steps,
+    })
+
+
+def _env() -> ExecutionEnvironmentBody:
+    return ExecutionEnvironmentBody.model_validate({})
+
+
+def _roundtrip(body):
+    """Dump + re-decode via the registry — what the Coordinator does on read."""
+    dumped = body.model_dump(mode="json")
+    cls = get_body_model(dumped["kind"], dumped["body_schema_version"])
+    return cls.model_validate(dumped)
+
+
+def _recipe_read(
+    *, recipe_id=None, version_seq=3, claim_test_id=None, claim_version_seq=None,
+    trigger_kind="data-mutation-trigger", recipe_kind="data-recipe",
+    causal_initiation=None, observation_realization=None, execution_environment=None,
+    roundtrip=True,
+):
+    causal = causal_initiation if causal_initiation is not None else _trigger()
+    obs = observation_realization if observation_realization is not None else _negative_body()
+    env = execution_environment if execution_environment is not None else _env()
+    if roundtrip:
+        causal, obs, env = _roundtrip(causal), _roundtrip(obs), _roundtrip(env)
+    return RecipeRead(
+        recipe_id=recipe_id or uuid4(), version_seq=version_seq, valid_from=_NOW,
+        valid_to=None, claim_test_id=claim_test_id or uuid4(),
+        claim_version_seq=claim_version_seq, trigger_kind=trigger_kind,
+        recipe_kind=recipe_kind, causal_initiation=causal,
+        observation_realization=obs, execution_environment=env, priority=0,
+        status="approved", created_at=_NOW, updated_at=_NOW)
+
+
+# ---------------------------------------------------------------------------
+# Happy path
+# ---------------------------------------------------------------------------
+
+def test_decodes_negative_recipe_to_plan():
+    plan = build_data_recipe_plan(_recipe_read())
+
+    assert isinstance(plan, DataRecipePlan)
+    assert plan.api_choice == "rest"
+    assert len(plan.steps) == 1
+    create = plan.steps[0]
+    assert isinstance(create, PlannedCreate)
+    assert create.kind == "create"
+    assert create.step_id == "create-violating"
+    assert create.target_object.external_id == "Lead"
+    assert create.field_values == {"Company": "Acme"}
+
+
+def test_expect_rejection_projected_intact():
+    plan = build_data_recipe_plan(_recipe_read())
+    assert plan.steps[0].expect_rejection.error_code == _VR_CODE
+
+
+def test_plan_carries_recipe_and_claim_identity():
+    rid, ctid = uuid4(), uuid4()
+    plan = build_data_recipe_plan(_recipe_read(
+        recipe_id=rid, version_seq=5, claim_test_id=ctid, claim_version_seq=2))
+    assert plan.recipe_id == rid
+    assert plan.recipe_version_seq == 5
+    assert plan.claim_test_id == ctid
+    assert plan.claim_version_seq == 2
+
+
+# ---------------------------------------------------------------------------
+# Shape gates — fail-loud (mirroring the inspection bridge)
+# ---------------------------------------------------------------------------
+
+def test_rejects_non_data_recipe_kind():
+    with pytest.raises(PlanTranslationError, match="recipe_kind"):
+        build_data_recipe_plan(_recipe_read(recipe_kind="metadata-recipe"))
+
+
+def test_rejects_non_data_mutation_trigger():
+    with pytest.raises(PlanTranslationError, match="trigger_kind"):
+        build_data_recipe_plan(_recipe_read(trigger_kind="inspection-trigger"))
+
+
+def test_rejects_create_without_expect_rejection():
+    # A positive create (no expect_rejection) is a later vertical.
+    recipe = _recipe_read(observation_realization=_negative_body(expect_rejection=False))
+    with pytest.raises(PlanTranslationError, match="expect_rejection"):
+        build_data_recipe_plan(recipe)
+
+
+def test_rejects_multi_step_recipe():
+    # Multi-step / provisioned negatives are deferred (D-110).
+    extra = [{"kind": "read", "step_id": "read-back",
+              "target": {"ref_kind": "logical", "entity_type": "Object", "external_id": "Lead"}}]
+    recipe = _recipe_read(observation_realization=_negative_body(extra_steps=extra))
+    with pytest.raises(PlanTranslationError, match="single create-rejected step"):
+        build_data_recipe_plan(recipe)
+
+
+def test_rejects_non_create_single_step():
+    # A lone read (no create) is not a behavioral negative.
+    body = DataRecipeBody.model_validate({
+        "api_choice": "rest", "identity_context": "system",
+        "execution_mechanism": "direct_api",
+        "steps": [{"kind": "read", "step_id": "r",
+                   "target": {"ref_kind": "logical", "entity_type": "Object", "external_id": "Lead"}}],
+    })
+    with pytest.raises(PlanTranslationError, match="must be a CreateStep"):
+        build_data_recipe_plan(_recipe_read(observation_realization=body))
+
+
+def test_rejects_pinned_create_target():
+    recipe = _recipe_read(observation_realization=_negative_body(target_pinned=True))
+    with pytest.raises(PlanTranslationError, match="LogicalRef"):
+        build_data_recipe_plan(recipe)
+
+
+def test_translation_error_carries_recipe_id():
+    rid = uuid4()
+    with pytest.raises(PlanTranslationError) as exc:
+        build_data_recipe_plan(_recipe_read(recipe_id=rid, recipe_kind="ui-recipe"))
+    assert exc.value.recipe_id == rid
+
+
+# ---------------------------------------------------------------------------
+# Plan-model structure
+# ---------------------------------------------------------------------------
+
+def test_planned_create_is_frozen():
+    plan = build_data_recipe_plan(_recipe_read())
+    with pytest.raises(Exception):
+        plan.steps[0].step_id = "mutated"  # type: ignore[misc]

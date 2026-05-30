@@ -31,7 +31,10 @@ from dataclasses import dataclass
 from typing import Literal, Optional, Union
 from uuid import UUID
 
-from primeqa.test_representation.models.primitives import AssertionPredicate
+from primeqa.test_representation.models.primitives import (
+    AssertionPredicate,
+    RejectionExpectation,
+)
 from primeqa.test_representation.models.references import LogicalRef
 
 
@@ -107,3 +110,53 @@ class MetadataInspectionPlan:
     claim_version_seq: Optional[int]
     api_choice: Literal["metadata_api", "tooling_api"]
     steps: tuple[PlanStep, ...]
+
+
+# ---------------------------------------------------------------------------
+# Data-recipe behavioral-negative plan (D-110.2) — parallel to the inspection
+# plan above, not a generalization (the projected shape differs: a create +
+# expect-rejection, not a read + assert). Generalization is deferred to
+# recipe-kind-family growth (rule of three).
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PlannedCreate:
+    """A planned record create that the org is expected to **reject**
+    (D-110.2 — the behavioral negative).
+
+    Narrowed from the recipe's ``CreateStep``. ``target_object`` is a
+    :class:`LogicalRef` (the sobject is referenced by name — operational
+    bodies are logical by default, D-058 §5.1). ``field_values`` is carried
+    verbatim (the payload the executor POSTs). ``expect_rejection`` is the S2
+    :class:`RejectionExpectation` the executor matches the org's rejection
+    against — this plan kind is **gated on it being present** (a create with no
+    expectation is not a behavioral negative; that is a later, positive
+    vertical).
+    """
+
+    step_id: str
+    target_object: LogicalRef
+    field_values: dict
+    expect_rejection: RejectionExpectation
+    kind: Literal["create"] = "create"
+
+
+@dataclass(frozen=True)
+class DataRecipePlan:
+    """The executor's input contract for one data-recipe behavioral-negative
+    run (D-110.2).
+
+    Produced by :func:`primeqa.execution_engine.bridge.build_data_recipe_plan`;
+    consumed by slice 2's ``execute_data_recipe`` (attempt the create →
+    evaluate the rejection against the carried ``RejectionExpectation``). Same
+    identity-carried-not-resolved discipline as :class:`MetadataInspectionPlan`.
+    Slice 1 plans the **thinnest** negative — a single create-rejected step;
+    multi-step / provisioned negatives are deferred (D-110).
+    """
+
+    recipe_id: UUID
+    recipe_version_seq: int
+    claim_test_id: UUID
+    claim_version_seq: Optional[int]
+    api_choice: Literal["rest", "bulk", "composite"]
+    steps: tuple[PlannedCreate, ...]
