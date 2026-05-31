@@ -142,6 +142,17 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return json.loads(value)
 
 
+def _detail_table_for(entity_type: str) -> Optional[str]:
+    """The per-type detail-table name from the trusted Tier-1 registry, or None
+    for an unknown entity_type. Used by :meth:`SemanticOrgModel.get_entity_details`
+    — the name is registry-sourced, never caller input."""
+    from primeqa.semantic.entity_attributes import get_entity_metadata
+    try:
+        return get_entity_metadata(entity_type).detail_table
+    except KeyError:
+        return None
+
+
 def _row_to_entity(m: Any) -> Entity:
     return Entity(
         id=_as_uuid(m["id"]),
@@ -321,3 +332,40 @@ class SemanticOrgModel:
             properties=_as_dict(m["properties"]),
             entity=_row_to_entity(m),
         )
+
+    # -- detail-table access (consumer-driven increment; D-022 / D-111.1) ----
+    def get_entity_details(
+        self,
+        entity_id: UUID,
+        at_seq: int,
+    ) -> Optional[dict[str, Any]]:
+        """The entity's per-type **detail-table** row — the hot columns that
+        live *outside* ``attributes`` (e.g. a ValidationRule's ``is_active``),
+        or ``None`` when the type has no detail table or no row.
+
+        Surfaces detail columns the ``entities`` / ``attributes`` read does not.
+        Per D-022, deferred reads land with the consumer slice that first
+        exercises them — Substrate-6 attribution (D-111.1) is the first consumer
+        of detail-column access. Detail rows are keyed 1:1 by ``entity_id``
+        (the version is already pinned by the id the caller obtained as-of
+        ``at_seq``); ``at_seq`` is validated for a consistent fail-loud contract
+        with the other reads. The detail-table name comes from the **trusted**
+        Tier-1 registry, never caller input (no raw-SQL injection surface).
+        """
+        self._validate_version(at_seq)
+        type_row = self._conn.execute(
+            text("SELECT entity_type FROM entities "
+                 "WHERE id = CAST(:eid AS uuid)"),
+            {"eid": str(entity_id)},
+        ).mappings().first()
+        if type_row is None:
+            return None
+        detail_table = _detail_table_for(type_row["entity_type"])
+        if detail_table is None:
+            return None
+        row = self._conn.execute(
+            text(f"SELECT * FROM {detail_table} "  # noqa: S608 — table from trusted registry
+                 "WHERE entity_id = CAST(:eid AS uuid)"),
+            {"eid": str(entity_id)},
+        ).mappings().first()
+        return dict(row) if row is not None else None

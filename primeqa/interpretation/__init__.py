@@ -23,6 +23,7 @@ from primeqa.interpretation.attribution import (
     attribute_run,
 )
 from primeqa.interpretation.interpreter import interpret_run
+from primeqa.interpretation.s1_reader import S1ValidationRuleReader
 from primeqa.interpretation.model import (
     Cause,
     CauseKind,
@@ -43,4 +44,5 @@ __all__ = [
     "CauseKind",
     "S1VrReader",
     "VrMeta",
+    "S1ValidationRuleReader",
 ]
