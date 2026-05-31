@@ -49,6 +49,10 @@ The synchronous run path is realized (`run_recipe_execution` + `run_recipe_execu
 - **`claim_version_seq` plumbing.** Carried through the plan / result store as nullable; v1 resolves the claim logically (recipe follows claim evolution). Pinning is reserved. — **D-108.2** (cf. S2 §6.4)
 - **`select_recipe_for_execution` replay modes.** Only `replay_mode='live'` is supported; historical / semantic replay is reserved by S2. — **S2 SPEC §6.8**
 
+## 7. Run-path orchestration scope
+
+- **The run-path now conducts three substrates (S2 → S4 → S6).** `run.py` selects (S2), executes + finalizes (S4), then interprets + persists (S6) — the cross-substrate wiring lives in `execution_engine`. The S4↔S6 import cycle this created (`interpretation.attribution` imports `execution_engine.evidence`; `execution_engine/__init__` imports `run`) is resolved with a **call-time lazy import** in `_interpret_and_persist` — the convention `run_recipe_execution_for_tenant` already uses for the tenant connection. Proportionate at two consumers. If cross-substrate wiring grows (more stages, or a substrate that sequences across >3 others — e.g. an S8 evolution loop reading S6), a **dedicated orchestration layer above the substrates** may be warranted, so the run-path stops being both S4's executor *and* the cross-substrate conductor. Watch for: a third lazy-import cycle, or a stage that needs to sequence across more than three substrates. — **D-111.2**
+
 ---
 
 ## Cross-references (not S4-owned, tracked elsewhere)
