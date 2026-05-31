@@ -7140,3 +7140,20 @@ The S2 precursor (D-110.1) + the S4 vertical (D-110.2) are done. This is the S3 
 **Guards.** The violating payload lives in the **recipe** (operational), never the claim — so `ProhibitionClaimBody` is byte-identical and the claim `identity_hash` stays stable (the Option-C invariant); only the *recipe's* identity is the new behavioral one (expected). Caveated path unchanged. No S2/S4 changes (both built). S3-A + augment + the master-detail/provisioning wall stay deferred.
 
 ---
+
+## D-110.3 — Result (2026-05-27): S3-thin proven live; S3-A deferred-not-needed
+
+The live necessity experiment ran (the deferred N-4 VR-specific live proof, now committed gated). **S3-thin is the live differentiator** for the common VR-enforced class:
+
+- **Observed (raw org response).** A violating-value-only create on `CHANNEL_ORDERS__Service_Order__c` (`{CHANNEL_ORDERS__Partner_Contract_Rules__c: None}`, the D-107-derived payload of the `ISBLANK(...)` VR) → HTTP 400, **two errors, both `FIELD_CUSTOM_VALIDATION_EXCEPTION`** ("Contract is a required field." + "You must select an Order Type."), **zero `REQUIRED_FIELD_MISSING`**, no record created. The full S3→S2→S4 spine computed **`passed`** (`matched=True` via the multi-error match; no cleanup).
+- **Why.** This object enforces required-ness via **validation rules** (returning `FIELD_CUSTOM_VALIDATION_EXCEPTION`), not platform required-field constraints — so the create trips the VR immediately. No short-circuit, no provisioning, no F6.
+- **S3-A deferred-not-needed.** Required-field population is **not** on the critical path for VR-enforced prohibitions. It remains a narrow, deferred refinement only for a hypothetical object where a *platform*-required field blocks before any VR.
+
+**⚑ Honest scope (recorded):**
+- (a) Behavioral emission covers the **derivable-formula subset** (verified negatives); **caveated** negatives (org-state `PRIORVALUE`/`ISCHANGED`/`ISNEW`, cross-object dotted, field-to-field, non-numeric ordering, NOT-ISBLANK) **stay inspection** — widening the subset is the formula parser's future work (S1 §17).
+- (b) The platform-required-field short-circuit is **inferred, not proven**: SF returned *multiple* validation errors in one body (it did not short-circuit on the first VR), which strongly implies it would surface a VR error *alongside* `REQUIRED_FIELD_MISSING` → the multi-error match still passes. Confirmable via a standard-object VR (a sandbox-content task).
+- (c) The 5 derivable VRs in this sandbox are all **managed-package** rules; a standard-object **product-demo** VR is a separate sandbox-content task.
+
+**Status: the behavioral-negative vertical (S2 → S4 → S3) is realized + live-proven end-to-end** with a real VR rejection. Open PR #5.
+
+---
