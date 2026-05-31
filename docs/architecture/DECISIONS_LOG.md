@@ -7179,3 +7179,32 @@ Opens **Substrate 6**, the interpretation layer: it takes S4's captured truth (a
 **Guards.** S6 never recomputes the outcome (S4 owns it). Deterministic attribution only in slice 1 (no LLM). Produce-only (persistence is a later slice). The interpreter reads the *real* `RunEvidence` shape, not a parallel copy.
 
 ---
+
+## D-111.1 — S6 deeper attribution: the differentiating *why* for failed behavioral verdicts
+
+**Date:** 2026-05-27
+**Substrates affected:** [S6] (the enrichment step); [S1] (read through its query interface, possibly extended)
+**Status:** Active — S6 slice-2 design (sub-decision of D-111). Deterministic deeper attribution; no LLM.
+
+Slice 1's `interpret_run` produces the basic `Interpretation` (verdict + evidence-derived attribution). Slice 2 deepens the **why** for the two *failed* behavioral verdicts, deterministically, by reading S1's validation-rule metadata.
+
+**The seam — enrichment, not re-judgment.** `interpret_run` (slice 1) stays **pure** (DB-free). A new `attribute_run(interpretation, evidence, *, s1) → Interpretation` enriches **only** `prohibition_not_enforced` + `rejected_unasserted_reason` (pass-through for `prohibition_enforced`, the inspection verdicts, and `not_evaluated`). It reads S1 **read-only** and **never re-judges the outcome** — it deepens `attribution` and attaches a structured `cause`; the S4-owned outcome is untouched.
+
+**Structured `cause` (S6-2).** An optional frozen field on `Interpretation`: a `cause_kind` literal (`vr_inactive` / `vr_formula_drift` / `enforcement_gap` / `other_vr_fired` / `platform_constraint`) + the supporting VR reference. `attribution` stays prose; `cause` is the machine-structured companion (so the interpretation is both reviewer-readable and queryable/clusterable downstream).
+
+**`prohibition_not_enforced` (create succeeded — the defect) → three deterministic distinctions:**
+- **(a) `vr_inactive`** — `is_active = False` on the grounding VR. It's disabled; it didn't enforce.
+- **(b) `vr_formula_drift`** — re-derive the violating payload via the D-107 parser from the VR's *current* `formula_text`; if it differs from the create's `field_values`, the VR was edited since generation (the stored payload no longer matches the current condition). Reliable given the deterministic parser. **Full payload-vs-formula *evaluation* (does this arbitrary assignment satisfy this formula) is deferred (S6-1)** — it needs an evaluator the parser doesn't have; the re-derivation drift-signal covers the common case.
+- **(c) `enforcement_gap`** — VR active + the payload still violates the current formula + the create *succeeded*. The genuine, highest-signal defect: the rule should have blocked it and didn't.
+
+**`rejected_unasserted_reason` (rejected, wrong code) → which constraint fired:**
+- Map each `rejection_body` **message** to S1's per-VR `error_message` → `other_vr_fired` (a *different* validation rule blocked it; cite the VR).
+- A non-VR code (`REQUIRED_FIELD_MISSING`, `DUPLICATE_VALUE`, …) → `platform_constraint` (a platform rule, not a configurable VR).
+
+**S6→S1 read boundary (S6-3).** S6 reads S1's VR metadata **through S1's query interface** (S1 owns its read API), **not** a raw S6-local query over S1's tables — the inter-substrate read-through pattern (mirroring S4→S2 via the Coordinator). The narrow `S1VrReader` port (`vrs_for_object(external_id) → (VrMeta…)`, `VrMeta = {name, is_active, formula_text, error_message}`) is a **test port**; production delegates to S1's query interface, **extending S1's read API** if it doesn't already expose the VR attributes. (The S4-local SF-client precedent is *external* org access — not an inter-substrate read — so it does not apply here.)
+
+**Split (S6-4).** **2a** — model `cause` + the `S1VrReader` port + `attribute_run`'s (a)/(b)/(c) + other-VR/platform classification, driven by a **stub** `S1VrReader` (offline, no real S1). **2b** — the production `S1VrReader` through S1's query interface (+ extend S1's read API if needed) + an integration test. 2a is offline/safe; 2b touches S1 (integration → HOLD-and-show).
+
+**Guards.** Enrichment never mutates the carried outcome (S4 owns it). Deterministic — no LLM (the D-111 invariant). The S6→S1 read goes through S1's interface, not raw table access. Full formula-evaluation (S6-1) deferred.
+
+---
