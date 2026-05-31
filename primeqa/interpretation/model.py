@@ -43,11 +43,13 @@ class EvidenceRef:
 # The structured deeper-attribution cause (D-111.1, slice 2) — the *why* behind
 # a failed behavioral verdict, derived deterministically from S1's VR metadata.
 CauseKind = Literal[
-    "vr_inactive",          # prohibition_not_enforced: the grounding VR is disabled
-    "vr_formula_drift",     # prohibition_not_enforced: no active VR's current formula is violated (VR edited)
-    "enforcement_gap",      # prohibition_not_enforced: VR active + violated, yet the create succeeded (the defect)
-    "other_vr_fired",       # rejected_unasserted_reason: a different validation rule rejected it
-    "platform_constraint",  # rejected_unasserted_reason: a platform rule (not a VR) rejected it
+    "vr_inactive",               # prohibition_not_enforced: the grounding VR is disabled
+    "vr_formula_drift",          # prohibition_not_enforced: an active VR's current formula is EVALUABLE but not violated (VR edited)
+    "vr_formula_indeterminate",  # prohibition_not_enforced: the current formula could NOT be evaluated on the payload (org-state / unset fields) — indeterminate, the rule may have been edited
+    "no_active_vr",              # prohibition_not_enforced: no active VR on the object enforces the prohibition (removed / deactivated) — matches S8's no_active_vr
+    "enforcement_gap",           # prohibition_not_enforced: VR active + current formula violated, yet the create succeeded (the defect)
+    "other_vr_fired",            # rejected_unasserted_reason: a different validation rule rejected it
+    "platform_constraint",       # rejected_unasserted_reason: a platform rule (not a VR) rejected it
 ]
 
 

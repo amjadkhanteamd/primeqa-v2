@@ -20,8 +20,7 @@ from typing import Optional, Protocol
 
 from primeqa.execution_engine.evidence import CreateAttemptEvidence, RunEvidence
 from primeqa.interpretation.model import Cause, Interpretation
-from primeqa.semantic.formula import parse
-from primeqa.generation.verified_negative import VerifiedNegative, derive
+from primeqa.semantic.formula import NonEvaluable, evaluate, parse
 
 # The generic validation-rule rejection code (S3 / emission.py — the D-101.2
 # honest floor). A rejection carrying it is a VR firing; anything else is a
@@ -77,31 +76,65 @@ def attribute_run(
 
 
 # ---------------------------------------------------------------------------
-# prohibition_not_enforced — (a) inactive / (b) drift / (c) enforcement gap
+# prohibition_not_enforced — (a) inactive / (b) drift / (c) enforcement gap /
+# (d) indeterminate. Each active/inactive VR's CURRENT formula is evaluated
+# against the create's payload via the neutral `formula.evaluate` primitive
+# (D-114 — the shared sibling of S3's `derive`; S6 ↛ S8). Three-valued:
+# True = the payload violates the current formula; False = it does not
+# (evaluable); NonEvaluable = the current formula left the single-object subset
+# (org-state / unset fields) so violation can't be computed.
 # ---------------------------------------------------------------------------
 
 def _attribute_not_enforced(create: CreateAttemptEvidence, vrs) -> Cause:
-    matching_active, matching_inactive = [], []
+    violated_active, violated_inactive, indeterminate = [], [], []
+    active_not_violated = False
     for vr in vrs:
         if not vr.formula_text:
             continue
-        d = derive(parse(vr.formula_text))
-        if isinstance(d, VerifiedNegative) and _payload_violates(
-                d.violating_payload, create.field_values):
-            (matching_active if vr.is_active else matching_inactive).append(vr)
+        result = evaluate(parse(vr.formula_text), create.field_values)
+        if result is True:
+            (violated_active if vr.is_active else violated_inactive).append(vr)
+        elif isinstance(result, NonEvaluable):
+            indeterminate.append(vr)
+        elif vr.is_active:
+            active_not_violated = True   # active rule, formula evaluable + not violated
+        # inactive + not violated → no bucket (an inactive rule doesn't enforce anyway).
 
-    if matching_active:
-        vr = matching_active[0]
+    # A confirmed violation wins (it fixes the loosened-still-violating false-drift:
+    # `99` violates a current `Amount < 200`, so this is an enforcement gap, not drift).
+    if violated_active:
+        vr = violated_active[0]
         return Cause("enforcement_gap", vr_name=vr.name,
-                     detail="the VR is active and its condition was violated, yet "
-                            "the create succeeded — a real enforcement gap")
-    if matching_inactive:
-        vr = matching_inactive[0]
+                     detail="the VR is active and its current formula is violated by "
+                            "the create payload, yet the create succeeded — a real "
+                            "enforcement gap")
+    if violated_inactive:
+        vr = violated_inactive[0]
         return Cause("vr_inactive", vr_name=vr.name,
                      detail="the grounding validation rule is inactive (disabled)")
-    return Cause("vr_formula_drift",
-                 detail="no active VR's current formula is violated by the create "
-                        "payload — the rule was likely edited since generation")
+    # Nothing violated. Don't guess: if any VR's current formula was non-evaluable,
+    # whether it should have fired is indeterminate (the old NotDerivable→drift
+    # collapse is fixed here).
+    if indeterminate:
+        vr = indeterminate[0]
+        return Cause("vr_formula_indeterminate", vr_name=vr.name,
+                     detail="the VR's current formula could not be evaluated on the "
+                            "create payload (it references org-state or unset fields) — "
+                            "whether it should have fired is indeterminate; the rule may "
+                            "have been edited since generation")
+    # An active VR is evaluable and not violated → confirmed drift (the rule was edited
+    # so the payload no longer trips it).
+    if active_not_violated:
+        return Cause("vr_formula_drift",
+                     detail="an active VR's current formula is evaluable but not "
+                            "violated by the create payload — the rule was edited "
+                            "since generation")
+    # The residual: no active VR enforces the prohibition (removed / deactivated, and
+    # no matching inactive rule). The old code mis-labeled this as drift; closed here,
+    # matching S8's `no_active_vr`.
+    return Cause("no_active_vr",
+                 detail="no active validation rule on the object enforces the "
+                        "prohibition (it was removed or deactivated)")
 
 
 # ---------------------------------------------------------------------------
@@ -134,13 +167,6 @@ def _match_vr_by_message(messages, vrs) -> Optional[VrMeta]:
 # ---------------------------------------------------------------------------
 # Shared
 # ---------------------------------------------------------------------------
-
-def _payload_violates(derived: dict, field_values: dict) -> bool:
-    """Whether the create's ``field_values`` carry the VR's derived violating
-    assignment (subset match — robust to extra required-field population)."""
-    return all(k in field_values and field_values[k] == v
-               for k, v in derived.items())
-
 
 def _create_step(evidence: RunEvidence):
     for s in evidence.steps:

@@ -96,16 +96,61 @@ def test_enforcement_gap():
 
 
 def test_vr_formula_drift():
-    # no active VR's current formula is violated by the payload → the rule was edited.
+    # the active VR's current formula is EVALUABLE on the payload but NOT violated
+    # → confirmed drift (the rule was edited). Adjusted (D-114): the old absent-field
+    # formula `Amount__c = 99` is `NonEvaluable` under `evaluate` (not confirmed-False)
+    # — that case is now `vr_formula_indeterminate` (see below). A genuinely-evaluable
+    # not-violated formula tests *confirmed* drift.
     ev = _run(outcome="failed", create=_create(
         success=True, matched=False, http_status=201, body=[], record_id="001Z",
-        field_values={"Reason__c": None}))
-    s1 = _StubS1([VrMeta(name="RequireReason", is_active=True,
-                         formula_text="Amount__c = 99", error_message="x")])  # different field
+        field_values={"Status__c": "Final"}))
+    s1 = _StubS1([VrMeta(name="RequireDraft", is_active=True,
+                         formula_text='ISPICKVAL(Status__c, "Draft")', error_message="x")])
     interp = _interp(ev, s1)
     assert interp.cause.cause_kind == "vr_formula_drift"
     assert interp.cause.vr_name is None
     assert "edited since generation" in interp.attribution
+
+
+def test_enforcement_gap_loosened_still_violating():
+    # THE false-drift fix (D-114): the stored payload (Amount=99) STILL violates a
+    # *loosened* current formula (Amount < 200), and the active VR didn't fire →
+    # enforcement_gap, not drift. The old `derive` + subset-match proxy re-derived
+    # `199`, missed the match, and mis-reported this as `vr_formula_drift`.
+    ev = _run(outcome="failed", create=_create(
+        success=True, matched=False, http_status=201, body=[], record_id="001Z",
+        field_values={"Amount": 99}))
+    s1 = _StubS1([VrMeta(name="AmountCap", is_active=True,
+                         formula_text="Amount < 200", error_message="x")])
+    interp = _interp(ev, s1)
+    assert interp.cause.cause_kind == "enforcement_gap"
+    assert interp.cause.vr_name == "AmountCap"
+
+
+def test_vr_formula_indeterminate():
+    # the active VR's current formula left the single-object evaluable subset
+    # (org-state ISCHANGED) → violation can't be computed → indeterminate, NOT a
+    # guessed drift (the old NotDerivable → drift collapse — D-114 fix). Carries the VR.
+    ev = _run(outcome="failed", create=_create(
+        success=True, matched=False, http_status=201, body=[], record_id="001Z",
+        field_values={"Reason__c": None}))
+    s1 = _StubS1([VrMeta(name="ChangedGuard", is_active=True,
+                         formula_text="ISCHANGED(Status__c)", error_message="x")])
+    interp = _interp(ev, s1)
+    assert interp.cause.cause_kind == "vr_formula_indeterminate"
+    assert interp.cause.vr_name == "ChangedGuard"
+    assert "indeterminate" in interp.attribution
+
+
+def test_no_active_vr():
+    # no active VR enforces the prohibition (none on the object) → the residual the
+    # old code mis-labeled as drift is now closed → no_active_vr (matches S8's leg).
+    ev = _run(outcome="failed", create=_create(
+        success=True, matched=False, http_status=201, body=[], record_id="001Z",
+        field_values={"Reason__c": None}))
+    interp = _interp(ev, _StubS1([]))                          # no VRs at all
+    assert interp.cause.cause_kind == "no_active_vr"
+    assert "deactivated" in interp.attribution
 
 
 # ---------------------------------------------------------------------------
