@@ -25,8 +25,9 @@ inject a real client because the local substrate test DB has no
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from uuid import UUID
 
 from primeqa.execution_engine.bridge import build_metadata_inspection_plan
@@ -48,6 +49,14 @@ from primeqa.test_representation.models.environment import (
     AuthAssumption,
     ExecutionEnvironmentBody,
 )
+
+if TYPE_CHECKING:  # annotations only — the runtime S6 imports are lazy (inside
+    # _interpret_and_persist) to avoid an execution_engine <-> interpretation
+    # import cycle: interpretation.attribution imports execution_engine.evidence,
+    # and execution_engine/__init__ imports this run module.
+    from primeqa.interpretation.model import Interpretation
+
+_log = logging.getLogger(__name__)
 
 # The capabilities the run path's verticals assume: a Metadata-API reader
 # (inspection — generation/emission.py `_inspection_recipe`) and a Data-API
@@ -71,7 +80,9 @@ class RunPathResult:
     """The outcome of a run-path invocation — two distinguishable shapes.
 
     - **ran** (``ran=True``): a recipe was selected and executed;
-      ``selected_recipe_id`` / ``evidence`` / ``runtime_state`` are set.
+      ``selected_recipe_id`` / ``evidence`` / ``runtime_state`` are set, and
+      ``interpretation`` carries the S6 reading of the run (or ``None`` if the
+      best-effort interpret step failed — the run truth is unaffected, D-111.2).
     - **no-eligible-recipe** (``ran=False``): ``select_recipe_for_execution``
       returned ``None`` (no approved claim / no approved recipe / no env match);
       ``reason`` is set and nothing ran. Not an error — a first-class result.
@@ -82,6 +93,7 @@ class RunPathResult:
     selected_recipe_id: Optional[UUID] = None
     evidence: Optional[RunEvidence] = None
     runtime_state: Optional[object] = None     # RecipeRuntimeState when ran
+    interpretation: Optional[Interpretation] = None  # S6 reading (None if the best-effort interpret step failed)
 
 
 def run_recipe_execution(
@@ -97,10 +109,10 @@ def run_recipe_execution(
 
     Selects (S2) → **dispatches on ``recipe_kind``** to the right vertical
     (inspection or behavioral-negative) → bridges → resolves/uses a client →
-    executes live → finalizes (persist + posture). Returns a
-    :class:`RunPathResult`. All writes join the caller's transaction (flush, not
-    commit); the caller owns the commit boundary (boundary A — see module
-    docstring).
+    executes live → finalizes (persist + posture) → **interprets + persists**
+    (S6, best-effort — D-111.2). Returns a :class:`RunPathResult`. All writes
+    join the caller's transaction (flush, not commit); the caller owns the
+    commit boundary (boundary A — see module docstring).
 
     ``available_environment`` defaults to the minimal env advertising both
     verticals' capabilities; ``client`` defaults to the kind's resolver
@@ -120,12 +132,14 @@ def run_recipe_execution(
 
     evidence = _execute_for_kind(recipe, session, environment_id, client)
     state = finalize_run(session, evidence, coordinator=coord)
+    interpretation = _interpret_and_persist(session, evidence)
 
     return RunPathResult(
         ran=True,
         selected_recipe_id=recipe.recipe_id,
         evidence=evidence,
         runtime_state=state,
+        interpretation=interpretation,
     )
 
 
@@ -154,6 +168,52 @@ def _execute_for_kind(recipe, session, environment_id: int, client):
         f"(only metadata-recipe + data-recipe are wired)",
         recipe_id=recipe.recipe_id,
     )
+
+
+def _interpret_and_persist(session, evidence: RunEvidence) -> Optional[Interpretation]:
+    """The S6 interpret stage for a finalized run — eager + best-effort (D-111.2).
+
+    ``interpret_run`` (pure) → ``attribute_run`` (deeper cause, reading
+    *contemporaneous* S1 through the run-path's own connection — so the
+    attribution reflects the org model the run executed against) →
+    ``persist_interpretation``, **all inside one SAVEPOINT** (``begin_nested``) +
+    a ``try/except``.
+
+    Evidence-first (B): any failure — an S1-read SELECT error, a persist flush
+    violation, or an interpreter defect — rolls back to the savepoint and
+    returns ``None``. The run truth ``finalize_run`` already flushed (the
+    ``s4_execution_runs`` row + the S2 posture callback) lives *outside* the
+    savepoint, so it survives and the outer transaction still commits. The
+    savepoint is load-bearing: a persist flush failure would otherwise poison
+    the whole transaction and lose the captured truth. The failure is logged
+    loudly; the caller surfaces the ``None`` on ``RunPathResult.interpretation``.
+
+    ``attribute_run`` self-limits the S1 read to the failed behavioral verdicts;
+    the reader is constructed always (cheap — no query) but only queries when a
+    failed behavioral verdict needs it.
+    """
+    # Lazy imports (call-time) break an execution_engine <-> interpretation
+    # module cycle — the same convention run_recipe_execution_for_tenant uses
+    # for Session/get_tenant_connection. See the TYPE_CHECKING note up top.
+    from primeqa.interpretation.attribution import attribute_run
+    from primeqa.interpretation.interpreter import interpret_run
+    from primeqa.interpretation.result_store import persist_interpretation
+    from primeqa.interpretation.s1_reader import S1ValidationRuleReader
+    from primeqa.semantic.query import SemanticOrgModel
+
+    try:
+        with session.begin_nested():
+            interpretation = interpret_run(evidence)
+            s1_reader = S1ValidationRuleReader(
+                SemanticOrgModel(session.connection()))
+            interpretation = attribute_run(interpretation, evidence, s1=s1_reader)
+            persist_interpretation(session, interpretation)
+        return interpretation
+    except Exception:
+        _log.exception(
+            "S6 interpretation failed for run %s; run truth preserved, "
+            "interpretation=None (D-111.2 best-effort)", evidence.run_id)
+        return None
 
 
 def run_recipe_execution_for_tenant(
