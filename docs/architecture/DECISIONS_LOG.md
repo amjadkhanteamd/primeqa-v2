@@ -7115,3 +7115,28 @@ The **match-the-code** step is what makes it grounded. Match is robust to a **mu
 **Guards.** Parallel (not premature generalization); the grounded match-the-code eval (not the v1 bare flag); minimal-cleanup only (F6 deferred); the store + finalize reused (no migration). The seam is read-through-Coordinator, as inspection.
 
 ---
+
+## D-110.3 — S3 emission: the third leg (use the parser's violating payload; behavioral replaces inspection; S3-thin-first)
+
+**Date:** 2026-05-27
+**Substrates affected:** [S3] (emits the behavioral negative); [S2]/[S4] (consume it — both built)
+**Status:** Active — S3 design (sub-decision of D-110). Completes the S2 → S4 → **S3** sequence; lets a *generated* negative flow S3 → S2 → S4 end-to-end (replacing the manually-seeded recipe the S4 vertical already proves).
+
+The S2 precursor (D-110.1) + the S4 vertical (D-110.2) are done. This is the S3 half: `_author_negative` authoring a **behavioral** data-recipe (a violating create + `expect_rejection`) instead of today's inspection re-verify.
+
+**The parser is the foundation.** D-107's `derive(parse(formula))` already yields the **violating field assignment** (`VerifiedNegative.violating_payload = {field: value}`) for a formula subset (comparisons, AND/OR/NOT, ISBLANK/ISNULL, ISPICKVAL; bails → caveated on org-state / cross-object / field-to-field / non-numeric-ordering / NOT-ISBLANK / bare-field). Today it is computed inside `_formula_verifies` and **discarded** — only the boolean gate is used, under Option C, to protect the claim's `identity_hash`. The third leg **uses** that same payload (the hard semantic half is already built).
+
+**Replace, not augment (the S3-recipe fork).** A **verified** negative emits the **behavioral** recipe (violating create + `expect_rejection`) *instead of* the inspection re-verify — behavioral subsumes structural for a verified negative (it tests that the VR *enforces*, not merely that it is *configured*). **Caveated** negatives stay inspection (the parser couldn't derive a violation, so there is nothing to construct). Single-recipe. **Augment** (emit *both* inspection + behavioral for one claim) needs an N-recipe `EmissionBundle` and is **deferred** — a future S6-disambiguation play, not v1.
+
+**The projection (D-110.1) is trivial.** Both the claim's `RejectionSignal` and the recipe's `RejectionExpectation` carry `error_code = FIELD_CUSTOM_VALIDATION_EXCEPTION` (the VR-mechanism source — the D-101.2 honest floor); the recipe's drops `error_field`. One grounded source.
+
+**⚑ The reshape (recorded).** The parser gives the violating *value*, not a valid *record*. A meaningful VR create must be **valid-except-the-violation** — else `REQUIRED_FIELD_MISSING` fires first and the VR is never reached. The required-field metadata **exists** (S1 `field_details.is_required` / `is_nillable` / `is_createable`); a **field-type → valid-value generator** is a small new build (call it **S3-A**; v1's `generate_value` is pure but factory-typed, not SF-field-typed, so it is new, not reuse). Deeper wall: a required **master-detail / required-lookup** field needs a **parent record** → **provisioning (F6, deferred)**. And the **necessity is empirical**: S4's `_matches` is multi-error-robust (matches if *any* error's code matches), so **if** Salesforce returns the VR code *alongside* `REQUIRED_FIELD_MISSING` on an incomplete create, the violating value alone suffices and S3-A is unnecessary — a live question, not derivable from the code.
+
+**The plan: S3-thin first + a live experiment.**
+- **S3-thin** — author the violating-value-**only** behavioral create (the parser's `violating_payload`, no required-field population). Smallest increment; proves the S3 → S2 → S4 emission flow.
+- **The live experiment** (the deferred D-110.2 N-4 VR-specific live test) resolves the necessity question: does the sandbox's VR surface `FIELD_CUSTOM_VALIDATION_EXCEPTION` on an *incomplete* create? **Yes** → S3-thin is the working differentiator now (no S3-A needed). **No** → scope **S3-A** (required-field population, gated to objects without required relationships; required-lookup objects → F6) off the measured result.
+- **Skip S3-B** (a required-field-omission "negative" doesn't fit the VR-formula grounding and is product-tautological).
+
+**Guards.** The violating payload lives in the **recipe** (operational), never the claim — so `ProhibitionClaimBody` is byte-identical and the claim `identity_hash` stays stable (the Option-C invariant); only the *recipe's* identity is the new behavioral one (expected). Caveated path unchanged. No S2/S4 changes (both built). S3-A + augment + the master-detail/provisioning wall stay deferred.
+
+---
