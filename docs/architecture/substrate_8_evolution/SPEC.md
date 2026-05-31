@@ -35,7 +35,7 @@ grounding_validity(artifact, current_org) → intact | drifted | broken
 
 - **intact** — every grounding assumption still holds: the subject resolves, the recipe's payload still violates the current rule, the admissibility verdict is unchanged.
 - **drifted** — an assumption changed in a way that *may* alter truth (the formula was edited; a required-ness changed) — the verdict must be re-evaluated, and re-grounding *may* be warranted.
-- **broken** — an assumption no longer holds at all (the object/field was deleted; the rule deactivated) — the grounding is definitively stale.
+- **broken** — an assumption no longer holds at all (the object/field was deleted; *no active rule remains to ground against*) — definitively stale. *Deactivation is `broken` only when nothing else active catches the payload; if another active rule still rejects it, the verdict is `intact` (D-113).*
 
 It is **on-demand** and **stateless**: computed when asked, from the grounding references already embedded per-artifact (the `IdentityBearingRef.version_seq` pins, the recipe's derived payload). No standing dependency manifest, no recorded verdict, no trigger (§6). This mirrors S6's `attribute_run` shape — a pure function over `(artifact, current-org reader)`, the substrate's read-through to S1.
 
@@ -44,7 +44,7 @@ It is **on-demand** and **stateless**: computed when asked, from the grounding r
 | Leg | The question | Re-consumes |
 |---|---|---|
 | **claim-grounding** | does the subject still resolve? | S1 entity-resolution |
-| **recipe-grounding** | does the payload still *violate*? | S3 `derive` / D-107 |
+| **recipe-grounding** | does the payload still *violate*? | the neutral `formula.evaluate` primitive (D-113 — **not** `derive`) |
 | **admissibility** | LAYER_1 ↔ LAYER_2 — is the negative still (un)derivable? | S3 admissibility logic |
 
 The admissibility leg **closes G3**: `caveat_required` / `admissibility_layer` stop being a frozen emission-time snapshot and become a **re-evaluable function of `(claim, current org)`** — a formula becoming derivable lifts a caveat; ceasing to be derivable imposes one.
@@ -52,6 +52,8 @@ The admissibility leg **closes G3**: `caveat_required` / `admissibility_layer` s
 **The leg set grows.** The change taxonomy (§5) already hints a fourth: a **field-value-validity** leg for the *picklist-value-removed* case — the payload's value no longer *exists*, which is distinct from no-longer-*violates* (a create rejected for an invalid value is not the same as a create the rule lets through). Whether re-derivation subsumes it or it is its own leg is the **full taxonomy → leg mapping**, a later design pass; this SPEC names the principle, the known legs, and that the set is open.
 
 **Two-level — the verdict is composed, not collapsed (Fork C).** Claim-grounding and recipe-grounding depend on **different org facts and drift independently** — and one claim has many recipes. A claim's subject can still resolve (claim **intact**) while a recipe's payload no longer violates (recipe **drifted**). So grounding-validity is evaluated **claim-level (one)** and **recipe-level (per-recipe)**, composed — never collapsed into a single verdict.
+
+**Realized — recipe-grounding leg (D-113).** The first leg is built, **object-level + evaluate-based**: it reads the recipe's stored payload (S2 — `CreateStep.field_values` + `target_object`) and the current **active** VR formula(s) on that object (S1, via the `APPLIES_TO` reader), and asks the neutral `formula.evaluate` primitive whether the payload still fires an active rule. **intact** = ≥1 active VR's current formula evaluates `True`; **drifted** = none triggered but ≥1 active *evaluable* VR exists (re-groundable); **broken** (reason-tagged) = no active VR triggered and no re-groundable foundation — `no_active_vr` *or* `formula_non_evaluable`. Two bounds the leg makes explicit: it is **object-level** (the recipe pins no VR — only a generic `FIELD_CUSTOM_VALIDATION_EXCEPTION` — so an `intact` can mask the loss of one *specific* VR when another active VR catches the payload; a VR-pin is the deferred generation-side sharpening), and its **`broken/formula_non_evaluable` is *structural only*** (the formula left the single-object subset). The other "can't evaluate" sources stay with later legs: **field/object-gone → claim-grounding** (schema resolution), and **picklist-value-removed → field-value-validity** (a known false-`intact` here — the formula still evaluates `True` on the now-invalid value).
 
 ## 3. The dependency law (the keystone boundary)
 
@@ -67,6 +69,8 @@ The decisive reason is **epistemic** (not dependency-direction): S6's drift attr
 We **do not** rest this boundary on the value-chain-grain argument ("S6 depending on S8 inverts the flow"): the platform vision is ambiguous there — its graph draws an S8→S6 arrow, while its prose lists S6's dependencies as S4 + S1 only — and a keystone boundary cannot rest on a contestable reading.
 
 **Code-confirmed, not aspirational.** The shared primitive is S3's `derive` (D-107), and it already has exactly two importers: `emission.py` (S3, grounding-time) and `attribution.py` (S6, post-run). S8 lands as the **third sibling** on the same primitive — the parallel-consumer structure already exists in the tree.
+
+**Refinement (D-113).** The recipe-grounding leg's *precise* dependency is a new **neutral `formula.evaluate` primitive** (added beside `parse` / `walk` / `nodes` in `primeqa/semantic/formula/`), **not** `S3 derive` — D-112's line was approximate (`derive` *solves* formula → a violating assignment; the leg needs *evaluate*, formula + payload → fires?). The parallel-siblings law holds and is **cleaner**: `evaluate` is a neutral formula-semantics primitive that S6 (post-run drift) and S8 (pre-run grounding) consume independently — S6 ↛ S8 either way. (S6's `_attribute_not_enforced` still uses the older `derive` + subset-compare *proxy*; aligning it to consume `evaluate` — which removes a latent false-drift misattribution — is a flagged **small follow-up**, not this slice.)
 
 ## 4. The supersession law
 
