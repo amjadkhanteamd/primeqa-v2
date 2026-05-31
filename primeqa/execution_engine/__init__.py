@@ -38,7 +38,12 @@ from primeqa.execution_engine.bridge import (
     build_data_recipe_plan,
     build_metadata_inspection_plan,
 )
-from primeqa.execution_engine.credentials import resolve_tooling_client
+from primeqa.execution_engine.credentials import (
+    resolve_data_mutation_client,
+    resolve_tooling_client,
+)
+from primeqa.execution_engine.data_executor import execute_data_recipe
+from primeqa.execution_engine.data_mutation_client import DataMutationClient
 from primeqa.execution_engine.finalize import finalize_run
 from primeqa.execution_engine.errors import (
     AssertionResolutionError,
@@ -50,6 +55,8 @@ from primeqa.execution_engine.errors import (
 )
 from primeqa.execution_engine.evidence import (
     AssertEvidence,
+    CleanupRecord,
+    CreateAttemptEvidence,
     ErrorSurface,
     ReadEvidence,
     RunEvidence,
@@ -83,10 +90,15 @@ __all__ = [
     "PlannedAssertion",
     "PlannedRead",
     "PlanStep",
-    # data-recipe behavioral-negative — bridge + plan (D-110.2)
+    # data-recipe behavioral-negative — bridge + plan + executor (D-110.2)
     "build_data_recipe_plan",
     "DataRecipePlan",
     "PlannedCreate",
+    "execute_data_recipe",
+    "DataMutationClient",
+    "resolve_data_mutation_client",
+    "CreateAttemptEvidence",
+    "CleanupRecord",
     # slice 2 — executor
     "translate_read",
     "ToolingQuery",

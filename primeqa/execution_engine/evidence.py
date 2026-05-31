@@ -26,7 +26,7 @@ class ErrorSurface:
     S4 *records* it; it does not classify or attribute it (that is S6's job).
     ``error_type`` is the exception class name, not an interpreted category."""
 
-    phase: Literal["translate", "read", "assert"]
+    phase: Literal["translate", "read", "assert", "create"]
     error_type: str
     message: str
 
@@ -74,7 +74,54 @@ class AssertEvidence:
     error: Optional[ErrorSurface] = None
 
 
-StepEvidence = Union[ReadEvidence, AssertEvidence]
+@dataclass(frozen=True)
+class CleanupRecord:
+    """The targeted best-effort cleanup of a record an *unexpectedly-successful*
+    behavioral-negative create produced (D-110.2, the N-5 minimal-cleanup).
+
+    Only the failing path (the prohibition didn't enforce → a real record was
+    created) has anything to clean. ``attempted=False`` is the normal case (the
+    create was rejected → nothing created). Best-effort: a failed delete never
+    changes the run outcome — it is recorded here, not raised."""
+
+    attempted: bool
+    succeeded: Optional[bool] = None     # None when not attempted
+    record_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class CreateAttemptEvidence:
+    """Evidence for one behavioral-negative create attempt (D-110.2).
+
+    Captures the attempted mutation, the org's response (the rejection signal,
+    or the unexpected success), whether it *matched* the recipe's
+    ``expect_rejection``, and the targeted cleanup. ``before/after_state`` +
+    ``field_diff`` stay N/A — a rejected create produces no state, and an
+    unexpected success is cleaned up rather than diffed."""
+
+    step_id: str
+    ordinal: int
+    sobject: str
+    field_values: dict              # the attempted payload (api_request analog)
+    http_status: Optional[int]      # None when the create couldn't be attempted
+    success: bool                   # was the create accepted (2xx)?
+    error_code: Optional[str]       # convenience: an errorCode from the body
+    message: Optional[str]          # convenience: an error message from the body
+    rejection_body: tuple           # the FULL error body (api_response analog)
+    matched: Optional[bool]         # did the rejection match expect_rejection? (None if success/errored)
+    cleanup: CleanupRecord
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int
+    kind: Literal["create"] = "create"
+    error: Optional[ErrorSurface] = None
+    # N/As, reserved (a rejected create produces no state; a success is deleted):
+    before_state: None = None
+    after_state: None = None
+    field_diff: None = None
+
+
+StepEvidence = Union[ReadEvidence, AssertEvidence, CreateAttemptEvidence]
 
 
 @dataclass(frozen=True)

@@ -13,12 +13,14 @@ imports are kept function-local to keep the S4→v1 coupling shallow and explici
 """
 from __future__ import annotations
 
+from primeqa.execution_engine.data_mutation_client import DataMutationClient
 from primeqa.execution_engine.errors import CredentialResolutionError
 from primeqa.execution_engine.tooling_client import ToolingReadClient
 
 
-def resolve_tooling_client(db, environment_id: int) -> ToolingReadClient:
-    """Resolve an authenticated Tooling-read client for ``environment_id``.
+def _resolve_org_token(db, environment_id: int):
+    """Shared D-106.4 path: environment → SF-org connection (decrypted) →
+    ``_oauth_token``. Returns ``(env, access_token)``.
 
     Raises :class:`CredentialResolutionError` when the environment / connection
     is missing or the OAuth flow yields no token — a binding failure, distinct
@@ -46,5 +48,21 @@ def resolve_tooling_client(db, environment_id: int) -> ToolingReadClient:
         raise CredentialResolutionError(
             f"OAuth for environment {environment_id} returned no access_token")
 
+    return env, access_token
+
+
+def resolve_tooling_client(db, environment_id: int) -> ToolingReadClient:
+    """Resolve an authenticated Tooling-read client for ``environment_id``
+    (the metadata-inspection vertical, D-108.1)."""
+    env, access_token = _resolve_org_token(db, environment_id)
     return ToolingReadClient(
+        env.sf_instance_url, env.sf_api_version, access_token)
+
+
+def resolve_data_mutation_client(db, environment_id: int) -> DataMutationClient:
+    """Resolve an authenticated data-mutation client for ``environment_id``
+    (the behavioral-negative vertical, D-110.2). Same D-106.4 credential path
+    as :func:`resolve_tooling_client`; a different thin transport."""
+    env, access_token = _resolve_org_token(db, environment_id)
+    return DataMutationClient(
         env.sf_instance_url, env.sf_api_version, access_token)
