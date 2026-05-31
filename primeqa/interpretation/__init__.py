@@ -11,17 +11,36 @@ explains it, never re-judging it (the SPEC lives at
 Slice 1 (D-111): the deterministic interpreter. ``interpret_run(RunEvidence) →
 Interpretation`` maps structured evidence to a verdict + attribution with **no
 LLM** — attribution is derived from the evidence, never generated.
+
+Slice 2 (D-111.1): deeper attribution. ``attribute_run(interpretation, evidence,
+*, s1)`` enriches the failed behavioral verdicts with a structured
+:class:`Cause`, read deterministically from S1's VR metadata through the
+:class:`S1VrReader` port. Never re-judges the outcome.
 """
+from primeqa.interpretation.attribution import (
+    S1VrReader,
+    VrMeta,
+    attribute_run,
+)
 from primeqa.interpretation.interpreter import interpret_run
 from primeqa.interpretation.model import (
+    Cause,
+    CauseKind,
     EvidenceRef,
     Interpretation,
     Verdict,
 )
 
 __all__ = [
+    # slice 1 — the interpreter
     "interpret_run",
     "Interpretation",
     "EvidenceRef",
     "Verdict",
+    # slice 2 — deeper attribution
+    "attribute_run",
+    "Cause",
+    "CauseKind",
+    "S1VrReader",
+    "VrMeta",
 ]

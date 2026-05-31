@@ -40,6 +40,29 @@ class EvidenceRef:
     detail: str                      # what at that location supports the verdict
 
 
+# The structured deeper-attribution cause (D-111.1, slice 2) — the *why* behind
+# a failed behavioral verdict, derived deterministically from S1's VR metadata.
+CauseKind = Literal[
+    "vr_inactive",          # prohibition_not_enforced: the grounding VR is disabled
+    "vr_formula_drift",     # prohibition_not_enforced: no active VR's current formula is violated (VR edited)
+    "enforcement_gap",      # prohibition_not_enforced: VR active + violated, yet the create succeeded (the defect)
+    "other_vr_fired",       # rejected_unasserted_reason: a different validation rule rejected it
+    "platform_constraint",  # rejected_unasserted_reason: a platform rule (not a VR) rejected it
+]
+
+
+@dataclass(frozen=True)
+class Cause:
+    """The structured deeper-attribution cause attached by ``attribute_run``
+    (slice 2). Machine-structured companion to the prose ``attribution`` — so an
+    interpretation is queryable / clusterable downstream. ``vr_name`` is the
+    implicated validation rule when a specific one is identified."""
+
+    cause_kind: CauseKind
+    vr_name: Optional[str] = None
+    detail: Optional[str] = None
+
+
 @dataclass(frozen=True)
 class Interpretation:
     """One S6 interpretation of one S4 run.
@@ -57,3 +80,6 @@ class Interpretation:
     # a deterministic, evidence-derived explanation (what + why) — never generated.
     attribution: str
     evidence_refs: tuple[EvidenceRef, ...] = field(default_factory=tuple)
+    # the structured deeper-attribution cause (slice 2 enrichment); None until
+    # ``attribute_run`` enriches a failed behavioral verdict.
+    cause: Optional[Cause] = None
