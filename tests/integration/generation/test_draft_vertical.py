@@ -271,14 +271,17 @@ def test_verified_negative_emitted_end_to_end(seeded):
     rows = _query()
     assert len(rows["claims"]) == 1 and len(rows["recipes"]) == 1
     # still the data_behavior prohibition negative — the claim body is identical
-    # to a caveated one (Option C: only the marker + caveat posture differ).
+    # to a caveated one (Option C: only the marker + caveat posture differ; the
+    # violating payload lives in the recipe, never the claim).
     claim = rows["claims"][0]
     assert claim["archetype"] == "data_behavior"
     assert claim["claim_kind"] == "prohibition-claim"
-    # recipe stays the inspection shape (behavioral construct+observe is D-100.2)
+    # D-110.3: a VERIFIED negative now emits the BEHAVIORAL recipe (the violating
+    # create + expect_rejection), replacing the inspection re-verify — the parser
+    # derived the violation, so we construct + observe it.
     recipe = rows["recipes"][0]
-    assert recipe["trigger_kind"] == "inspection-trigger"
-    assert recipe["recipe_kind"] == "metadata-recipe"
+    assert recipe["trigger_kind"] == "data-mutation-trigger"
+    assert recipe["recipe_kind"] == "data-recipe"
     # the ledger row is SELF-DESCRIBING (D-101.3): verified posture is stored
     out = rows["outcomes"][0]
     assert out["admissibility_layer"] == "layer_2"

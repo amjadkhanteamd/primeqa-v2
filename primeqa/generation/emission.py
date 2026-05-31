@@ -59,7 +59,12 @@ from primeqa.test_representation.models.environment import (
 )
 from primeqa.test_representation.models.primitives import (
     AssertionPredicate,
+    RejectionExpectation,
     RejectionSignal,
+)
+from primeqa.test_representation.models.recipes.data_recipe import (
+    CreateStep,
+    DataRecipeBody,
 )
 from primeqa.test_representation.models.recipes.metadata_recipe import (
     AssertStep,
@@ -69,6 +74,9 @@ from primeqa.test_representation.models.recipes.metadata_recipe import (
 from primeqa.test_representation.models.references import (
     IdentityBearingRef,
     LogicalRef,
+)
+from primeqa.test_representation.models.triggers.data_mutation import (
+    DataMutationTriggerBody,
 )
 from primeqa.test_representation.models.triggers.inspection import (
     InspectionTriggerBody,
@@ -271,17 +279,57 @@ def _author_config(g: GroundedEmission) -> EmissionBundle:
     )
 
 
-def _formula_verifies(formulas: tuple[str, ...]) -> bool:
-    """The verified-vs-caveated gate (D-107): whether ANY grounding VR formula
-    yields a *certain* violating value. A derivable violating payload means we
-    can construct an input the org will reject -> Layer 2 (the deeper semantic
-    verification) is discharged. Multiple VRs apply at-least-one semantics: a
-    single derivable formula suffices, since any one VR firing produces the
-    rejection (others can only add rejections, never suppress one). Option C: the
-    payload is the gate ONLY — never persisted (that would shift the prohibition
-    claim's identity_hash; persistence is deferred to the D-100.2 behavioral
-    recipe slice)."""
-    return any(isinstance(derive(parse(text)), VerifiedNegative) for text in formulas)
+def _derive_violation(formulas: tuple[str, ...]) -> Optional[VerifiedNegative]:
+    """The verified-vs-caveated gate AND the violating-payload source (D-107 /
+    D-110.3). Returns the first grounding VR formula whose error-condition
+    *certainly* derives a violating field assignment (a
+    :class:`VerifiedNegative` carrying ``violating_payload``), or ``None`` when
+    no formula is derivable (the caveated fallback).
+
+    Multiple VRs apply at-least-one semantics: a single derivable formula
+    suffices, since any one VR firing produces the rejection (others can only
+    add rejections, never suppress one). D-110.3 *uses* the payload (the
+    behavioral create's field_values); it is carried in the **recipe**
+    (operational), never the claim — so the Option-C claim-identity invariant
+    holds (the claim body is byte-identical whether verified or caveated)."""
+    for text in formulas:
+        result = derive(parse(text))
+        if isinstance(result, VerifiedNegative):
+            return result
+    return None
+
+
+def _behavioral_recipe(
+    *, subject_entity_type: str, subject_external_id: str,
+    violating_payload: dict, env_detail: str,
+) -> tuple[DataMutationTriggerBody, DataRecipeBody, ExecutionEnvironmentBody]:
+    """Build the (trigger, recipe, env) triple for a **behavioral** negative
+    (D-110.3): a create the org should reject. The ``CreateStep`` carries the
+    parser-derived ``violating_payload`` as its ``field_values`` and an
+    ``expect_rejection`` projecting the claim's ``RejectionSignal`` (the generic
+    VR code; ``error_field`` dropped — operational bodies forbid it). The target
+    is logical (resolve-by-name)."""
+    target = LogicalRef(
+        entity_type=subject_entity_type, external_id=subject_external_id)
+    trigger = DataMutationTriggerBody(
+        operation="create", target=target,
+        identity_context="system", volume="single",
+    )
+    recipe = DataRecipeBody(
+        api_choice="rest", identity_context="system",
+        execution_mechanism="direct_api",
+        steps=[CreateStep(
+            step_id="create-violating",
+            target_object=target,
+            field_values=dict(violating_payload),
+            expect_rejection=RejectionExpectation(
+                error_code=_VR_REJECTION_ERROR_CODE),
+        )],
+    )
+    env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
+        auth_kind="data_api_user", details=env_detail,
+    )])
+    return trigger, recipe, env
 
 
 def _author_negative(g: GroundedNegative) -> EmissionBundle:
@@ -293,11 +341,13 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
     # to a safe generic when unspecified/invalid (D-101.2).
     operation = (g.operation_hint if g.operation_hint in _PROHIBITION_OPERATIONS
                  else _DEFAULT_OPERATION)
-    # Verified-vs-caveated gate (D-107): does a grounding VR formula yield a
-    # certain violating value? Decides the marker + caveat posture below. Under
-    # Option C the derived payload is consulted but NOT persisted, so the claim
-    # body is byte-identical whether verified or not (no identity_hash shift).
-    verified = _formula_verifies(g.vr_formulas)
+    # Verified-vs-caveated gate (D-107) + the violating-payload source (D-110.3):
+    # does a grounding VR formula certainly derive a violating value? The payload
+    # rides the RECIPE (operational), never the claim — so the claim body is
+    # byte-identical whether verified or caveated (the Option-C identity_hash
+    # invariant; verified below by a stability test).
+    violation = _derive_violation(g.vr_formulas)
+    verified = violation is not None
     claim = ProhibitionClaimBody(
         target=subject_ref,
         operation=operation,
@@ -305,25 +355,42 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
         # Generic VR rejection code — derivable from the mechanism alone (D-101.2
         # honest floor). Even a verified negative keeps this generic signal: the
         # LAYER_2 marker certifies "a rejecting input exists," not the specific
-        # error message/field. Persisting the derived field/value is the D-100.2
-        # behavioral-recipe slice (Option C).
+        # error message/field. The specific field/value lives in the behavioral
+        # recipe (D-110.3), not the claim.
         expected_rejection=RejectionSignal(error_code=_VR_REJECTION_ERROR_CODE),
     )
     # The triggering condition lives in the formula; whether or not it parsed, the
     # claim is unconditional at this layer (the marker/caveat carry the verdict).
     conditions = SemanticConditionsBody(conditions=[])
-    # Inspection recipe: re-verify a ValidationRule APPLIES_TO the subject.
-    trigger, recipe, env = _inspection_recipe(
-        read_entity_type=g.subject.entity_type,
-        read_external_id=g.subject.external_id,
-        capture_field="APPLIES_TO",
-        env_detail=(f"read {g.subject.external_id} metadata to verify a "
-                    f"validation rule applies (rejection plausibility)"),
-    )
+
+    # D-110.3 (S3-thin): a VERIFIED negative emits the BEHAVIORAL recipe — a
+    # create carrying the parser-derived violating payload + expect_rejection
+    # (behavioral subsumes structural: it tests the VR *enforces*). A CAVEATED
+    # negative (no derivable formula) stays the INSPECTION re-verify (there is no
+    # violation to construct). Replace, not augment (single-recipe; D-110.3).
+    if verified:
+        trigger, recipe, env = _behavioral_recipe(
+            subject_entity_type=g.subject.entity_type,
+            subject_external_id=g.subject.external_id,
+            violating_payload=violation.violating_payload,
+            env_detail=(f"create a {g.subject.external_id} record violating the "
+                        f"grounding validation rule (expect rejection)"),
+        )
+        trigger_kind, recipe_kind = "data-mutation-trigger", "data-recipe"
+    else:
+        trigger, recipe, env = _inspection_recipe(
+            read_entity_type=g.subject.entity_type,
+            read_external_id=g.subject.external_id,
+            capture_field="APPLIES_TO",
+            env_detail=(f"read {g.subject.external_id} metadata to verify a "
+                        f"validation rule applies (rejection plausibility)"),
+        )
+        trigger_kind, recipe_kind = "inspection-trigger", "metadata-recipe"
+
     return EmissionBundle(
         archetype=g.archetype, claim_kind=g.claim_kind,
         asserted_truth=claim, semantic_conditions=conditions,
-        trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
+        trigger_kind=trigger_kind, recipe_kind=recipe_kind,
         causal_initiation=trigger, observation_realization=recipe,
         execution_environment=env,
         # Verified -> LAYER_2 + no caveat; otherwise LAYER_1 + the caveat (D-107).

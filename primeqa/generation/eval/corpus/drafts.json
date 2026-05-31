@@ -104,7 +104,7 @@
       "caveat_required": false,
       "caveat_kind": null,
       "claim": {"archetype": "data_behavior", "claim_kind": "prohibition-claim"},
-      "recipe": {"trigger_kind": "inspection-trigger", "recipe_kind": "metadata-recipe"}
+      "recipe": {"trigger_kind": "data-mutation-trigger", "recipe_kind": "data-recipe"}
     },
     "live": {
       "requirement_text": "Users must not be able to save a Lead without entering a reason; the platform should reject the save.",
