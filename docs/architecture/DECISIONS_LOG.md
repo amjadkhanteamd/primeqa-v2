@@ -7157,3 +7157,25 @@ The live necessity experiment ran (the deferred N-4 VR-specific live proof, now 
 **Status: the behavioral-negative vertical (S2 → S4 → S3) is realized + live-proven end-to-end** with a real VR rejection. Open PR #5.
 
 ---
+
+## D-111 — Substrate 6 (Observation & Interpretation): foundational design
+
+**Date:** 2026-05-27
+**Substrates affected:** [S6] (new — interprets S4's captured truth); [S4] (consumed, unchanged)
+**Status:** Active — substrate opening. The boundary + deterministic-first are locked; slice 1 (Interpretation model + deterministic interpreter) is the first build. Architecture: `substrate_6_intelligence/SPEC.md`.
+
+Opens **Substrate 6**, the interpretation layer: it takes S4's captured truth (a grounded run outcome + evidence) and produces a structured, QA-readable **interpretation** — what was tested, what happened, the semantic attribution. The v1 product moment (a release reviewer reads an answer) lives here.
+
+**The boundary — S4 captures truth, S6 interprets it (LOCKED).** S4 executes, captures evidence, and renders the **grounded outcome** — which is S4's, final, and not S6's to recompute. S6 **consumes `evidence.outcome`** and explains it (classification / attribution / explanation / clustering); it **never executes, re-runs, or re-judges** the outcome. The signal S6 exists to surface is the combination S4 records but does not interpret: a **`verified` claim with a `failed` run** (well-grounded at generation, yet it didn't hold live). One-directional: `S4 RunEvidence → S6 Interpretation`.
+
+**Deterministic-first (LOCKED).** The interpreter maps structured evidence → a structured `Interpretation` with **no LLM**. Attribution is *derived from the evidence*, never generated — S6 does not invent root causes. LLMs enter later, in **separate slices, for phrasing + clustering only** (reviewer prose; cross-run grouping) — additive presentation/aggregation over the deterministic core, never the attribution source. (The same capture-vs-interpret discipline S4 holds, one level up: the deterministic interpreter attributes; an LLM only phrases.)
+
+**The `Interpretation` (structured, evidence-referencing).** Reviewable / editable / versionable (the S2-claim lifecycle discipline, one substrate over). Carries: identity/provenance (the `run_id` + claim/recipe refs); the **outcome carried verbatim** (restated, not recomputed); a semantic **verdict** (e.g. `prohibition_enforced` / `prohibition_not_enforced` / `rejected_unasserted_reason` / `not_evaluated` / `asserted_metadata_present`/`…_absent`); the **attribution** (what + why, derived from the evidence); and **supporting evidence refs** into the `RunEvidence` (auditable, not opaque).
+
+**Slice arc.** (1) `Interpretation` model + deterministic `interpret_run` over both built verticals' outcomes — produce-only, no LLM (mirrors how the S4 executor started). (2) Deeper attribution (S1 cross-ref for a non-enforcing VR — inactive/misconfigured). (3) Clustering across runs. (4) LLM phrasing. (5) Interpretation persistence + the reviewer edit/version lifecycle.
+
+**Gate (RunEvidence shape — verified).** Slice 1 consumes S4's `RunEvidence` verbatim: run-level (`run_id`, `recipe_id`/`recipe_version_seq`, `claim_test_id`/`claim_version_seq`, `environment_id`, `outcome` ∈ {passed, failed, errored}, `error`); `StepEvidence` variants (`ReadEvidence` + `AssertEvidence` for inspection — `held`, `row_count`, `subject_external_id`; `CreateAttemptEvidence` for behavioral — `success`, `matched`, `error_code`, `message`, `rejection_body` full body, `http_status`, `cleanup`). The four behavioral verdicts disambiguate from those fields without S6 re-judging.
+
+**Guards.** S6 never recomputes the outcome (S4 owns it). Deterministic attribution only in slice 1 (no LLM). Produce-only (persistence is a later slice). The interpreter reads the *real* `RunEvidence` shape, not a parallel copy.
+
+---
