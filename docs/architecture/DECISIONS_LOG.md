@@ -7274,3 +7274,30 @@ The first leg of the grounding-validity predicate (D-112 SPEC §2): **does a beh
 **Guards.** Produce-only (a pure verdict; nothing wired, no persistence). `evaluate` never raises on a recognized AST. The leg consumes the neutral `evaluate` + reads S1 through its own duck-typed port (S6's `VrMeta` satisfies it, but S8 does **not** import S6 — parallel-siblings). Recipe-grounding axis ONLY — claim-grounding / admissibility / field-value-validity are later legs, and their territory is kept clean (the non-evaluable split + the picklist false-`intact` are named, not silently absorbed).
 
 ---
+
+## D-114 — F3 resolved: S6 attribution on the shared `evaluate` (3-way) + the `vr_formula_indeterminate` / `no_active_vr` causes
+
+**Date:** 2026-05-31
+**Substrates affected:** [S6] (`_attribute_not_enforced` rewrite + two new causes); [S1-semantic] (S6 consumes the neutral `formula.evaluate`); [S3] (S6 drops its `verified_negative.derive` dependency)
+**Status:** Active — resolves the F3 follow-up flagged in D-113 §3. Localized: no migration (causes ride `s6_interpretations.detail` JSONB), no exhaustive `CauseKind` consumer (`_prose` formats generically).
+
+D-113 §3 flagged S6's `_attribute_not_enforced` as still using the `derive` + subset-match **proxy** — which mis-reports a *loosened-but-still-violating* formula as `vr_formula_drift` (the proxy re-derives the canonical violating value `199` from a current `Amount < 200`, misses the subset-match against the stored `99`, and calls it drift — when `99` still violates `< 200`, so it is really an `enforcement_gap`). This resolves it: S6 now consumes the neutral `formula.evaluate` (D-113) — three-valued — and its over-broad drift bucket is split precisely.
+
+**The rewrite (3-way, 5-precedence).** Per active/inactive VR: `evaluate(parse(current_formula), create.field_values) → True | False | NonEvaluable`. Precedence:
+1. any **active** VR violated (`True`) → `enforcement_gap` — **closes the loosened-still-violating false-drift**.
+2. an **inactive** VR violated → `vr_inactive`.
+3. any **NonEvaluable**, nothing violated → **`vr_formula_indeterminate`** (new) — **closes the old `NotDerivable → drift` collapse**: a current formula that left the single-object subset (org-state / unset fields) is *indeterminate*, not a guessed drift. Ahead of drift (don't guess). Carries the VR.
+4. an **active** VR evaluable + not violated (`False`) → `vr_formula_drift` — now *confirmed* drift (the rule was edited so the payload no longer trips it).
+5. else → **`no_active_vr`** (new) — the residual: no active VR enforces (removed / deactivated, no matching inactive rule). **The old code mis-labeled this as drift; closed here** — matching S8's `no_active_vr` reason (parallel verdict vocabulary across the two faculties). (An inactive VR that is *not* violated gets no bucket — an inactive rule does not enforce.)
+
+**Two new causes (`model.py`).** `vr_formula_indeterminate` + `no_active_vr` added to the `CauseKind` Literal. Same localized profile as D-113's reason tags: no migration (cause rides `s6_interpretations.detail` JSONB), no exhaustive consumer.
+
+**Boundary consolidation.** S6 now stands on the neutral `evaluate`, **off S3's `derive`** (the `verified_negative` import is removed; the `_payload_violates` proxy deleted). `derive` returns to S3-internal (`emission.py`); the parallel-siblings law (D-112) is realized **on `evaluate`** — its two consumers are S6 `attribution.py` (post-run) + S8 `recipe_grounding.py` (pre-run). **S6 ↛ S8** (both on the neutral primitive, never each other's verdict).
+
+**Tests.** Preserved: `vr_inactive`, `enforcement_gap`, the `_attribute_unasserted` set (`other_vr_fired` / `platform_constraint`), passthroughs. **Adjusted** `vr_formula_drift`: its proxy-era absent-field formula (`Amount__c = 99` on `{Reason__c:None}`) is `NonEvaluable` under `evaluate` (not confirmed-`False`); swapped to a genuinely-evaluable-`False` `ISPICKVAL` so it tests *confirmed* drift. **Added**: `enforcement_gap_loosened_still_violating`, `vr_formula_indeterminate`, `no_active_vr`.
+
+**Flagged next — S6↔S8 NonEvaluable symmetry.** S8's recipe-grounding leg (D-113 slice 1) does `≥1 False → drifted`, *skipping* `NonEvaluable` — so a `False` + `NonEvaluable` mix → `drifted`. S6's conservative line (this decision) puts any `NonEvaluable` ahead of drift (→ indeterminate). For symmetry, S8 should match — `NonEvaluable` present + nothing violated → `broken/formula_non_evaluable` ahead of `drifted`. A focused symmetry pass, **grounded on frequency first** (measure how often the mix actually occurs before touching the tested leg). Not in this slice.
+
+**Guards.** Deterministic, no LLM. S6 consumes the neutral `evaluate` only (S6 ↛ S8). The outcome is still carried verbatim (S6 never re-judges). The drift bucket is now precise — it no longer absorbs `enforcement_gap` (violated), `vr_formula_indeterminate` (non-evaluable), or `no_active_vr` (no enforcer) as guesses.
+
+---
