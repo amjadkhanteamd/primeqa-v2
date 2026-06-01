@@ -121,5 +121,46 @@
         "_note": "caveat_required is_false: the grounding VR formula (ISBLANK(Reason__c)) parses and derives a certain violating value, so the negative is Layer-2-verified (D-107) and carries no caveat. A state-transition reading is emission-deferred (capability-gated, as in the caveated probe), so only prohibition-claim is an acceptable variant."
       }
     }
+  },
+  {
+    "id": "value-claim-positive-draft",
+    "description": "data_behavior value-claim positive on Account.Status: the named field grounds (verify-at-grounding, D-115.3) and the requirement-sourced value carries verbatim -> Layer-1 draft, no caveat. The first positive emit; the LLM supplies the fully-qualified field_name + expected_value (D-115.4 prompt v2 guidance).",
+    "category": "value_claim",
+    "fixture": {
+      "entities": [
+        {"entity_type": "Object", "sf_api_name": "Account"},
+        {"entity_type": "Field", "sf_api_name": "Account.Status"}
+      ],
+      "edges": [
+        {"source": "Account.Status", "target": "Account", "edge_type": "BELONGS_TO", "edge_category": "STRUCTURAL"}
+      ]
+    },
+    "turns": [
+      {"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "A new Account's Status must be set to Active.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "positive", "claim_kind_hint": "value-claim", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Account", "field_name": "Account.Status", "expected_value": "Active"}}}},
+      {"tool": "emit_outcome", "input": {"outcome_kind": "draft", "payload": {"admissibility_layer": "layer_1"}}}
+    ],
+    "expect": {
+      "outcome_kind": "draft",
+      "admissibility_layer": "layer_1",
+      "caveat_required": false,
+      "caveat_kind": null,
+      "claim": {"archetype": "data_behavior", "claim_kind": "value-claim"},
+      "recipe": {"trigger_kind": "data-mutation-trigger", "recipe_kind": "data-recipe"}
+    },
+    "live": {
+      "requirement_text": "When a new Account is created, its Status field must be set to 'Active'.",
+      "envelope": {
+        "invariant": [
+          {"field": "outcome_kind", "op": "eq", "value": "draft"},
+          {"field": "archetype", "op": "eq", "value": "data_behavior"},
+          {"field": "caveat_required", "op": "is_false"}
+        ],
+        "acceptable_variants": [
+          {"field": "claim_kind", "op": "in", "value": ["value-claim"]}
+        ],
+        "benign": ["explanation", "phrasing", "excerpt", "subject", "caveat_kind"],
+        "_note": "The live LLM (prompt generation@v2) must propose a value-claim naming the field as the fully-qualified Account.Status with expected_value 'Active' (D-115.4). value-claim is a Layer-1 positive, uncaveated. A bare unqualified field_name would miss grounding -> not a draft -> this probe fails, surfacing the format gap. A state-transition reading is emission-deferred (not yet emittable), so only value-claim is an acceptable variant."
+      }
+    }
   }
 ]

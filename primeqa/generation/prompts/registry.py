@@ -28,11 +28,12 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v1"
+CURRENT = "generation@v2"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
     "generation@v1": _VERSIONS_DIR / "generation_v1.md",
+    "generation@v2": _VERSIONS_DIR / "generation_v2.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -40,6 +41,7 @@ _FILES = {
 # diverges from this value and the guard test fails.
 RECORDED_HASHES = {
     "generation@v1": "a486cebfa3d5a91e15dd3c20bebb39f287ed114881e4537563d2423f52fccdef",
+    "generation@v2": "4618fc0c0e62ae5bf4e648c2c8d69c3a4458396826f14a528745b8381d1eb0e7",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).
