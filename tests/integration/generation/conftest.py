@@ -113,6 +113,31 @@ def db_setup(test_db_url: str):
         admin.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _rebind_production_engine(db_setup, test_db_url):
+    """Re-assert the production DB binding before EVERY generation test — robust
+    to cross-suite co-running, regardless of test order.
+
+    Only this suite repoints the process-global ``DATABASE_URL`` + resets
+    ``primeqa.semantic.connection``'s cached engine (the test_representation /
+    semantic suites use private ``create_engine`` fixtures and never touch these
+    globals). ``db_setup`` does it once per session — fine under the current
+    deterministic collection order, but fragile if anything (a co-running suite,
+    or ambient ``os.environ`` at import) leaves the cached engine pointed at a
+    different DB: a generation test would then read a DB without its S1 seed and
+    refuse instead of draft. Re-pinning ``DATABASE_URL`` and dropping a drifted
+    cached engine here makes every generation test deterministically resolve to
+    the governance DB. No-op when the binding is already correct (the common
+    case: it only disposes/rebuilds when the cached engine has actually drifted)."""
+    from primeqa.semantic import connection as _conn
+    os.environ["DATABASE_URL"] = test_db_url
+    want_db = test_db_url.rsplit("/", 1)[-1]
+    if _conn._engine is not None and _conn._engine.url.database != want_db:
+        _conn._engine.dispose()
+        _conn._engine = None
+    yield
+
+
 # ---------------------------------------------------------------------------
 # Seed S1 entities/edges (committed, session-scoped, read-only for tests)
 # ---------------------------------------------------------------------------
