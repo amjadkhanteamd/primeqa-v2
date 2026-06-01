@@ -37,10 +37,10 @@ Not included (by design): **best-effort-continue** — abort-on-error is retaine
 
 ## 1. Emission and claim-kinds
 
-The realized emittable set (`emission.EMITTABLE`) is 2 of substrate-2's 16 claim kinds: `configuration / metadata-relationship-claim` and `data_behavior / prohibition-claim`. The rest:
+The realized emittable set (`emission.EMITTABLE`) is 3 of substrate-2's 16 claim kinds: `configuration / metadata-relationship-claim`, `data_behavior / prohibition-claim`, and `data_behavior / value-claim` (D-115.3). The rest:
 
 - **Non-config emission (the umbrella).** Authoring for the remaining data_behavior + other-archetype claim kinds. `emission-deferred` (D-105) is its runtime face — grounded-but-unbuilt kinds refuse gracefully. — **D-097.6** (runtime face **D-105.2**)
-- **`value-claim` positives.** Grounds today on a present Field but is not emittable. — **D-100.3**
+- **`value-claim` positives — FULLY LANDED (D-115.3 mechanism + D-115.4 live reach); only the periodic live confirmation remains.** The S3 path is complete: `_author_positive` (side A) + the **governance grounding stash** (`resolve_intent` grounds a field-and-value `GroundedPositive` — verify-at-grounding on the **named** field; the value rides `target_subject_hint.expected_value` verbatim) + `EMITTABLE += value-claim` + the **propose prompt** (frozen `generation@v2`: supply `field_name` as the fully-qualified `Object.Field` + `expected_value`; no fabrication when no value is stated) + an **offline+live eval probe** (`value-claim-positive-draft`). A real grounded value-claim now `PROCEED`s to emit; field-but-no-value → `EMISSION_DEFERRED`; unknown field → `insufficient_grounding`. **Residual:** only the *periodic* live confirmation — a real-LLM run (with `ANTHROPIC_API_KEY`) proving a requirement emits end-to-end; the live probe is authored but skipped in CI, exactly as the verified-negative's live twin. — **D-100.3 / D-115 / D-115.1 / D-115.3 / D-115.4**
 - **`state-transition-claim` and `automation-effect-claim` emission.** (automation-effect also Apex-tier-gated — see §6.) — **D-100.3 / D-100.5**
 - **Configuration `existence-claim` / `property-claim`.** Tied to the S1 detail-read increment (§6). — **D-098.4 / D-100.3**
 - **Remaining archetypes — permission, UI, integration.** No emittable kinds today. — **D-100.4** (D-080 / D-081 / D-082)

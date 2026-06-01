@@ -247,3 +247,29 @@ existing commitments, not new commitments.
 (D-051 through D-065), eleven SPEC sections, six tables in the
 data model (four core + two boundary), seven structural guardrails,
 twelve forward-compatibility reservations. Next: implementation.
+
+---
+
+## 2026-05-27 — Expect-rejection model: the operational projection of a prohibition (D-110.1)
+
+First substrate-2 increment of the implementation phase, opened by the CRUD
+behavioral-negative programme (D-110, cross-substrate S2→S4→S3). A prohibition
+claim asserts a rejection **semantically** — the claim's `RejectionSignal`, which
+may carry an `error_field` IdentityBearingRef. To *execute* that prohibition, the
+recipe needs the same expectation as an **operational** projection: scalars only,
+no identity-bearing refs (operational-layer bodies forbid them). Additive,
+greenfield — no identity-hash impact (the expectation rides the operational
+recipe, not the identity-bearing claim).
+
+- **`RejectionExpectation`** (`models/primitives.py`) — the operational projection
+  of `RejectionSignal`: `error_code` / `error_message_pattern`, at-least-one
+  required, frozen, scalars only.
+- **`CreateStep.expect_rejection: Optional[RejectionExpectation]`**
+  (`models/recipes/data_recipe.py`) — flags a create as a *behavioral negative*
+  (the org should reject it); `None` (default) is an ordinary create.
+- **`DataRecipeBody._at_most_one_expect_rejection`** — a recipe asserts at most
+  one prohibition (0 = ordinary, 1 = behavioral negative); forward-compatible via
+  `getattr` so update/delete steps gain the flag without touching the check.
+
+The shape the S4 behavioral-negative vertical (D-110.2) + S3 behavioral emission
+(D-110.3) consume.

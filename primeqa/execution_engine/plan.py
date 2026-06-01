@@ -121,37 +121,69 @@ class MetadataInspectionPlan:
 
 @dataclass(frozen=True)
 class PlannedCreate:
-    """A planned record create that the org is expected to **reject**
-    (D-110.2 — the behavioral negative).
+    """A planned record create.
 
     Narrowed from the recipe's ``CreateStep``. ``target_object`` is a
     :class:`LogicalRef` (the sobject is referenced by name — operational
     bodies are logical by default, D-058 §5.1). ``field_values`` is carried
-    verbatim (the payload the executor POSTs). ``expect_rejection`` is the S2
-    :class:`RejectionExpectation` the executor matches the org's rejection
-    against — this plan kind is **gated on it being present** (a create with no
-    expectation is not a behavioral negative; that is a later, positive
-    vertical).
+    verbatim (the payload the executor POSTs).
+
+    ``expect_rejection`` discriminates the two data verticals:
+      - **set** (D-110.2 — the behavioral negative): the executor matches the
+        org's rejection against this :class:`RejectionExpectation`;
+      - **``None``** (D-115 — the positive create-and-verify): an ordinary
+        create the org should *accept*; the executor pads the required fields
+        (k16), creates, reads the record back, and grounds ``field == V``.
     """
 
     step_id: str
     target_object: LogicalRef
     field_values: dict
-    expect_rejection: RejectionExpectation
+    expect_rejection: Optional[RejectionExpectation] = None
     kind: Literal["create"] = "create"
 
 
 @dataclass(frozen=True)
+class PlannedDataRead:
+    """A planned data read-back (D-115 — the positive create-and-verify).
+
+    Narrowed from the recipe's ``ReadStep``. Unlike the metadata vertical's
+    :class:`PlannedRead` (S1-edge vocabulary, no live query), a data read carries
+    the recipe's raw ``soql`` — including the cross-step ``$<step_id>.id``
+    reference the executor resolves against the run's state at run time
+    (``refs.resolve_step_refs``) — plus the real field names to capture.
+    ``target`` is the FROM object (a :class:`LogicalRef`; resolve-by-name)."""
+
+    step_id: str
+    target: LogicalRef
+    soql: Optional[str]
+    fields_to_capture: tuple[str, ...]
+    kind: Literal["read"] = "read"
+
+
+DataPlanStep = Union[PlannedCreate, PlannedDataRead, PlannedAssertion]
+"""One ordered step of a data-recipe plan: a create, a read-back, or an
+assertion. The behavioral negative (D-110.2) is a single :class:`PlannedCreate`
+(``expect_rejection`` set); the positive create-and-verify (D-115) is a
+:class:`PlannedCreate` (no ``expect_rejection``) → :class:`PlannedDataRead` →
+:class:`PlannedAssertion`. ``isinstance`` dispatch in the executor; ``kind`` is
+the explicit serialization label."""
+
+
+@dataclass(frozen=True)
 class DataRecipePlan:
-    """The executor's input contract for one data-recipe behavioral-negative
-    run (D-110.2).
+    """The executor's input contract for one data-recipe run — both data
+    verticals (D-110.2 behavioral negative + D-115 positive create-and-verify).
 
     Produced by :func:`primeqa.execution_engine.bridge.build_data_recipe_plan`;
-    consumed by slice 2's ``execute_data_recipe`` (attempt the create →
-    evaluate the rejection against the carried ``RejectionExpectation``). Same
-    identity-carried-not-resolved discipline as :class:`MetadataInspectionPlan`.
-    Slice 1 plans the **thinnest** negative — a single create-rejected step;
-    multi-step / provisioned negatives are deferred (D-110).
+    consumed by ``execute_data_recipe``, which dispatches on the first step's
+    ``expect_rejection``: present → the behavioral negative (attempt the create →
+    evaluate the rejection against the carried ``RejectionExpectation``); absent →
+    the positive create-and-verify (pad → create → read back → ground
+    ``field == V``). Same identity-carried-not-resolved discipline as
+    :class:`MetadataInspectionPlan`. The negative is a single create-rejected
+    step; the positive is create → read → assert. Multi-step / provisioned
+    negatives remain deferred (D-110).
     """
 
     recipe_id: UUID
@@ -159,4 +191,4 @@ class DataRecipePlan:
     claim_test_id: UUID
     claim_version_seq: Optional[int]
     api_choice: Literal["rest", "bulk", "composite"]
-    steps: tuple[PlannedCreate, ...]
+    steps: tuple[DataPlanStep, ...]

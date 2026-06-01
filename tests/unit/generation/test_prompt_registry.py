@@ -24,15 +24,19 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v1():
-    assert registry.CURRENT == "generation@v1"
-    assert registry.get() == registry.get("generation@v1")
+def test_current_resolves_to_v2():
+    # D-115.4: CURRENT bumped to v2 (the value-claim live-reach prompt). v1 stays
+    # frozen + pinned-resolvable (test_runtime_honors_pinned_prompt_version).
+    assert registry.CURRENT == "generation@v2"
+    assert registry.get() == registry.get("generation@v2")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # the substance the schemas don't enforce (D-103.3) is present
     assert "bounded cognition provider" in sys
     assert "Transcribe admissibility" in sys
-    assert "pre-live-gate baseline" in sys
+    assert "value-claim live-reach" in sys                  # v2's title
+    # v2's added value-claim guidance — supply the qualified field + value
+    assert "fully-qualified" in sys and "expected_value" in sys
 
 
 def test_unknown_version_raises():

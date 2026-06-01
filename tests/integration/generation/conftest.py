@@ -264,10 +264,19 @@ def make_request(*, s1_version_seq: int, requirement_text: str = "the requiremen
     )
 
 
+_UNSET = object()
+
+
 def intent(*, archetype="data_behavior", claim_kind, polarity, sf_api_name,
-           entity_type="Object", excerpt="the system shall reject the operation"):
+           entity_type="Object", excerpt="the system shall reject the operation",
+           field_name=None, expected_value=_UNSET):
+    tsh = {"entity_type": entity_type, "sf_api_name": sf_api_name}
+    if field_name is not None:               # value-claim: the named field (D-115.3)
+        tsh["field_name"] = field_name
+    if expected_value is not _UNSET:         # the requirement-sourced value (verbatim)
+        tsh["expected_value"] = expected_value
     desc = {"archetype_hint": archetype, "polarity_hint": polarity,
-            "target_subject_hint": {"entity_type": entity_type, "sf_api_name": sf_api_name}}
+            "target_subject_hint": tsh}
     if claim_kind is not None:
         desc["claim_kind_hint"] = claim_kind
     return {"requirement_excerpt": excerpt, "intent_descriptor": desc}

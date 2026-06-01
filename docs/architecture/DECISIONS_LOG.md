@@ -7301,3 +7301,103 @@ D-113 §3 flagged S6's `_attribute_not_enforced` as still using the `derive` + s
 **Guards.** Deterministic, no LLM. S6 consumes the neutral `evaluate` only (S6 ↛ S8). The outcome is still carried verbatim (S6 never re-judges). The drift bucket is now precise — it no longer absorbs `enforcement_gap` (violated), `vr_formula_indeterminate` (non-evaluable), or `no_active_vr` (no enforcer) as guesses.
 
 ---
+
+## D-115 — S4 Slice 1: positive create-and-verify (directly-set state)
+
+**Date:** 2026-06-01
+**Substrates affected:** [S4] (the first positive data-execution vertical — the first true *semantic-execution* slice); [S3] (`GroundedPositive` + value-claim emission); [S2] (`value-claim` + Create/Read/Assert-equals — already modeled, no change); [S1] (read: object requiredness + field grounding)
+**Status:** Active — S4 Slice 1 design. **Design-only; no impl.** Full design: `docs/architecture/substrate_4_execution/SLICE_1_POSITIVE_CREATE_VERIFY_DESIGN.md`.
+
+The first vertical where the weight is on **constructing a valid operational world** on the live org + **policing the S3/S4 boundary**, not the create call. It verifies that a requirement's stated field value is *operationally achievable* and *persists* on the current org (catching VR / FLS / type conflicts at execution time), and it lays the **positive execution spine** that automation-effect positives reuse later.
+
+**Governing boundary (k16, TA-locked) — operational validity, never semantic meaning.** S4 resolves operational validity against the live org but never changes the recipe's semantic meaning, **enforced structurally**: (1) the recipe carries the semantic field-value (the claim's, S3-set) + the target object; (2) **S4's writable set = (the object's required fields) − (the semantic fields)** — S4 fills only that *operational padding* with valid filler (validity checked vs. the live org), and the semantic field-under-test is recipe-set and **never enters S4's writable set**, so S4 *structurally cannot choose the value under test*; (3) grounding compares observed vs. the claim's targets **verbatim** (carried, not recomputed), so S4 cannot reinterpret or soften the verification. Both halves — what is set and what counts as verified — are closed by construction, not by discipline.
+
+**Value-sourcing (resolved seam).** The value-claim's `expected_value` is **requirement-sourced** (carried from synthesis); `_author_positive` threads the one value into both the `CreateStep` (`field = V`) and the `AssertStep` (`field == V`). **S3 never fabricates a value** — no stated value → no value-claim grounds (stays `EMISSION_DEFERRED`). No representative / invented values. (Contrast the negative, which *derives* its value via D-107; the positive is *given* one or does not emit.)
+
+**Scope fence (directly-set-state only).** IN: create, read back, ground the observed *directly-set* value vs. the claim. OUT (deferred): automation effects / branch-sensitive flows / async observation / entanglement detection (**k8**); prerequisite-parent construction — **no required lookups** (scalars / simple-picklist padding only); complex / async teardown; multi-step composition (**k15**).
+
+**Two-sided build.** **(A) S3:** a `GroundedPositive` (object + field + sourced value) grounded on S1; `_author_positive` emits a value-claim + `CreateStep` (**no `expect_rejection`**) → `ReadStep` → `AssertStep(equals)`; `EMITTABLE += ("data_behavior", "value-claim")`; `author_emission` dispatch + governance stash. The S2 model needs no change. **(B) S4:** construct the operational world (S1 requiredness → padding fill) → create-expect-success → **observe as a distinct phase** (async-ready; *no immediate-consistency assumption baked into finalization / grounding*) → ground `field == V` → structured-trace evidence → teardown framed as **execution-isolation (k14)**.
+
+**Closes generate → run.** For the first time a *positive data recipe* flows the whole chain — synthesis → S3 emission → live S4 execution → grounded verification — end to end; S4 executes a genuinely S3-emitted positive recipe.
+
+**Guards.** Structural boundary (the writable-set difference + the verbatim-carried assertion target) is the enforcement, not reviewer trust. S3 never invents values. Observation is a distinct, async-ready phase (no immediate-consistency assumption). Scope-fenced to directly-set state; k8 / k15 / required-lookup parents / complex teardown deferred. Design-only — no impl until GO.
+
+---
+
+## D-115.1 — Slice 1 side A realized: positive emission-authoring + the EMITTABLE-deferral (Option Q)
+
+**Date:** 2026-06-01
+**Substrates affected:** [S3] (positive value-claim emission-authoring); [S4] (consumes the recipe in side B); [S2] (no change — the model already sufficed)
+**Status:** Active — D-115 slice 1 side A realized (the author-capability half). On `phase-6-substrate-4-positive`. The governance grounding stash is held (the next S3-grounding decision).
+
+Side A of D-115's two-sided build — the **emission-authoring half**, the recipe S4 side B executes — is realized. `GroundedPositive` (target object + field + value; the value carried **verbatim** from the value-claim's `expected_value`) + `_author_positive` (a `ValueClaimBody` + a data recipe `CreateStep(field_values={field: V})` no-`expect_rejection` → `ReadStep` → `AssertStep(equals, field == V)`) + the `author_emission` dispatch + a dormant `finalize_outcome` read of `grounded_positive`. The CreateStep carries the **semantic field only** (k16 — S4 pads required fields at execution). The S2 model needed no change (`ValueClaimBody`, `CreateStep`/`ReadStep`/`AssertStep`, the `equals` predicate all already existed). Tested via a directly-constructed `GroundedPositive`, mirroring how the negative emission is tested.
+
+**Option Q — `EMITTABLE += value-claim` deferred to land with the held grounding stash.** A side-A planning pass surfaced a coupling the side-A spec missed: `EMITTABLE` drives `resolve_intent`'s **proceed-gate** (`governance_core.py`), not only `author_emission`'s dispatch. Adding `("data_behavior", "value-claim")` to `EMITTABLE` *without* a grounding stash would flip a real grounded value-claim from a graceful resolve-time `EMISSION_DEFERRED` to `PROCEED_TO_EMIT` → the EMIT phase — which (a) **crashes** the propose-only emission-deferred integration test (`FakeToolTurn` over-call: it feeds one propose turn, the runtime now needs an emit turn) and (b) burns an emit LLM call in production before `finalize_outcome` defers. So `EMITTABLE += value-claim` is **coupled to the grounding stash** and lands *with* it, not in the authoring half. The drift-guard (`test_emittable_set_matches_author_emission_shapes`) stays green **unchanged** — the extra `author_emission` `GroundedPositive` dispatch is invisible to it; and a real grounded value-claim keeps deferring `EMISSION_DEFERRED` gracefully at resolve (the existing test passes unmodified). Option P (decouple the resolve-gate from `EMITTABLE` now via two sets) was rejected as the broader expansion this slice is scoped against.
+
+**Held — the governance grounding stash.** `resolve_intent` does not yet build a `GroundedPositive` from a real intent: today the value-claim grounding is **object-level** (it confirms the object *has* a field via `BELONGS_TO`) and the intent descriptor carries no specific field or value. Producing a field-and-value-specific `GroundedPositive` requires extending the **synthesis→intent contract** so synthesis threads `{field, expected_value}` to grounding. That contract decision — the production-reachability piece — is the next S3-grounding step, after the S4 execution spine (side B). Until it lands, value-claims stay `EMISSION_DEFERRED`.
+
+**Guards.** Value carried verbatim (S3 never invents). The author-capability is independently testable + **dormant** from real intents (no production reach until the stash). The drift-guard + the emission-deferred behaviour are preserved unchanged.
+
+---
+
+## D-115.2 — Slice 1 side B: positive execution spine — read-resolution + 400-outcome seams resolved
+
+**Date:** 2026-06-01
+**Substrates affected:** [S4] (the positive execution spine — construct-world → create → observe → ground → teardown); [S1] (read: object requiredness + field types for the operational padding); [S3] (no change — side B consumes side A's recipe)
+**Status:** Active — D-115 slice 1 side B. Design for the two seams the SLICE_1 design left "side B's to define"; impl follows on `phase-6-substrate-4-positive` (HOLD-and-show per commit).
+
+The SLICE_1 design (D-115 §5(B)) named two mechanisms as side B's to define. Both are resolved here; the rest of side B is the §5(B) spine made concrete.
+
+**(1) Read-resolution = SOQL substitution (not by-id retrieve).** Side A's `ReadStep` carries `soql = "SELECT {field} FROM {object} WHERE Id = '$create-record.id'"`. Side B *defines* `$create-record.id`: after the create succeeds the executor binds `state["create-record"] = {"id": <sf-id>}` and substitutes `$<step_id>.id` → the literal Id in the SOQL (`refs.resolve_step_refs`, **fail-loud** on an unresolved `$ref`), then issues the SOQL **verbatim** via a new data `query(soql)` (REST `/query`). Executing the authored SOQL as written honors the recipe and makes the substitution a real, reusable convention. By-id retrieve was rejected — it would leave the authored SOQL vestigial and *bypass* the convention rather than define it. (v1's `_resolve_soql_refs` is the reference pattern, substrate-owned, never imported.)
+
+**(2) 400-rejection outcome = disambiguate by offending field.** A create the org rejects (HTTP 400 business rejection) is graded by *which field the org names*: the **semantic** field named → `failed` (the requirement's value is not operationally achievable — the slice's headline finding, §4); only S4's **padding** field(s) named, or none → `errored` (S4's own operational-world construction failed — not a verdict on the value under test). The split is **structural, not heuristic**: side A's `CreateStep` carries the semantic field *only* (k16), so the semantic set = the recipe create's `field_values` keys and the padding set = the executor-added filler keys are cleanly separable, and the executor tests the rejection body's named `fields` against each. The full rejection body is captured in evidence regardless (evidence-first; S6 attributes). Always-`failed` (symmetric with the negative) was rejected — a padding-caused rejection would post a false "value doesn't hold"; always-`errored` was rejected — it buries the real finding.
+
+**The outcome grammar (the semantic core).** create-success + observed `== V` → `passed`; observed `≠ V` → `failed`; read returns 0 rows or transport-fails → `errored` (observation is a **distinct async-ready phase** — *no immediate-consistency assumption*, so a 0-row read is "couldn't observe," never silently "wrong value"); create transport-raise / non-400 (401/403/429/5xx) → `errored`; create-400 → the (2) disambiguation; operational world unfillable (a required lookup / unfillable type) → `errored` *pre-create*. **k14 teardown:** any 2xx create is **always** best-effort-deleted (leave the org as found) on every downstream path — never part of the verdict.
+
+**Operational padding (k16 realized).** S4 reads the target object's fields from S1 (`field_details`: `is_nillable` / `is_required`, `field_type`, `references_object_entity_id`, `is_calculated`, `picklist_value_set_entity_id`) and fills the *required-writable-non-lookup-non-semantic* set with type-valid filler (simple-picklist via the value set's default / first-active value). The semantic field-under-test is **structurally excluded** from the writable set (k16) — there is no code path by which S4 writes the field it verifies. A required field S4 cannot fill (a lookup parent — the §3 scope fence — or an unknown type) makes the recipe unrunnable in this slice → `errored`, never a guessed value.
+
+**No migration / no persister change.** `persist_run_evidence` is `dataclasses.asdict`-generic and the `run_outcome` enum already carries `passed/failed/errored/skipped`; `finalize_run` reports `evidence.outcome` verbatim. The positive vertical's evidence (a lean `DataReadEvidence` + reused `AssertEvidence` / `CreateAttemptEvidence`) serializes unchanged.
+
+**Guards.** Read-resolution is a verbatim substitution, fail-loud on an unresolved ref (no silent ungrounded read). The 400-disambiguation is structural off the k16 field-set split, not a heuristic. The observation phase bakes in no immediate-consistency assumption. The padding filler never chooses the value under test (k16) and *refuses* (errored) rather than guessing when it cannot construct a valid world. Teardown is best-effort and never changes the verdict (k14).
+
+---
+
+## D-115.3 — Value-claim grounding stash: production-reachable positive (Option Q resolved)
+
+**Date:** 2026-06-01
+**Substrates affected:** [S3] (the governance grounding stash + `EMITTABLE` — the production-reachability seam); [S4] (consumes the emitted recipe — side B, no change); [S2] (no change — the model already sufficed)
+**Status:** Active — D-115 slice 1 grounding stash. On `phase-6-substrate-4-positive` (same slice as A+B). Mechanism + tests; the LLM propose-guidance + the live eval probe are deferred (below).
+
+The third piece of D-115's positive value-claim. Side A authored the emission (`_author_positive`), side B built the S4 execution spine — but `resolve_intent` could not build a `GroundedPositive` from a real intent, so no real requirement reached the positive path. This slice closes it: a field-and-value `GroundedPositive` is grounded + stashed during `resolve_intent`, and `EMITTABLE += ("data_behavior","value-claim")` opens the proceed-gate. The mechanism was pre-wired — `finalize_outcome` already reads `state.grounded_positive` and authors it; `target_subject_hint` is an open object that already accepts `field_name` / `expected_value` (exactly as the negative's `operation` rides it). **No S2 model change, no tools-schema change, no migration** (the `EMISSION_DEFERRED` enum shipped in `20260522_0040`).
+
+**Option Q resolved (the coupled landing).** D-115.1 deferred `EMITTABLE += value-claim` because, alone, it flips the resolve-gate from `EMISSION_DEFERRED` → `PROCEED_TO_EMIT` — which routes to the emit phase and (a) crashes the propose-only emission-deferred test (`FakeToolTurn` over-call) and (b) burns an emit call in production. The resolution lands the gate-flip **in lockstep** with: the grounding stash (so a *gated* PROCEED always reaches an authorable finalize — the `test_every_emittable_pair_is_authorable` invariant), the drift-guard map (`_EMITTABLE_SHAPES += value-claim → GroundedPositive`, keeping `set(_EMITTABLE_SHAPES) == set(EMITTABLE)`), and the integration test (the incomplete-intent case re-aimed to the stash-level refuse).
+
+**Verify-at-grounding (Q1).** A value-claim asserts `field == V`, so grounding must verify the **named** field exists. `_evaluate_positive` gains a `field_hint`: a value-claim grounds iff a Field whose `sf_api_name == field_hint` `BELONGS_TO` the object; an unknown named field (or none) → `insufficient_grounding` (mirrors the negative's "no constraint supports it"). Other positive claim_kinds keep the object-level any-field proxy (backward-compatible). The rejected alternative (ground object-level + catch in the stash) conflated "named field absent" with "no value" and left a grounded-then-refused candidate.
+
+**The refusal taxonomy.** field exists + value carried → `PROCEED_TO_EMIT` (emits the value-claim + the create→read→assert recipe side A/B own); field exists, **no value** → `EMISSION_DEFERRED` (S3 never fabricates a value — D-115 §2; grounded-then-deferred at the stash); field **absent** / none named → `insufficient_grounding` → `UNGROUNDED_CLAIM`; object has no fields → `UNGROUNDED_CLAIM` (unchanged).
+
+**Scope (Q2) — mechanism + tests; LLM-guidance + eval deferred.** This lands the governance mechanism + the unit/integration coverage. The positive is reachable the instant the LLM supplies `field_name` + `expected_value` in `target_subject_hint`; **telling** it to (the propose tool-description / prompt guidance) and a **live eval probe** confirming a real requirement emits end-to-end are a deferred follow-up (mirrors the negative — mechanism first, the verified-prohibition eval probe separate). Until then a complete value-claim is exercised by the unit/integration suites, not the live model.
+
+**Guards.** Grounded ⟺ the named field exists. The value is carried verbatim from the intent — S3 never fabricates one (no value → deferred). The gate-flip lands only with the stash + the drift-guard, preserving "a gated PROCEED is always authorable." The propose-only test's incomplete-intent case stays `EMISSION_DEFERRED` (re-aimed to the stash-level refuse), keeping the enum round-trip coverage.
+
+---
+
+## D-115.4 — Value-claim live reach: prompt v2 guidance + eval probe
+
+**Date:** 2026-06-01
+**Substrates affected:** [S3] (the propose prompt + the eval corpus — the live reach); no governance / S2 change
+**Status:** Active — D-115 slice 1 live reach. On `phase-6-substrate-4-positive`. Mechanism + offline probe are CI-gating; the live probe is authored + periodic (skipped without `ANTHROPIC_API_KEY`).
+
+The last gap of D-115's positive value-claim. D-115.3 made it production-reachable — `resolve_intent` grounds + stashes a `GroundedPositive` and emits — **but only if the LLM supplies `field_name` + `expected_value`** in the propose intent's `target_subject_hint`, and the frozen prompt `generation@v1` never told it to. This slice closes the reach: a new frozen prompt version that guides the model + an eval-corpus probe.
+
+**Prompt `generation@v2` (the freeze ritual).** Frozen prompt versions are immutable + SHA-256 hash-guarded (replay determinism, D-103.1), so the prompt change authors a **new version**, never edits v1. The working source — `base.md` (title) + `fragments/data_behavior.md` (the "Positives" bullet) — is edited, `compose_working()` freezes `versions/generation_v2.md`, the registry records its hash + bumps `CURRENT = "generation@v2"`. v1 stays frozen + valid (a pinned-v1 request still resolves it); v2 differs from v1 only in the value-claim guidance + the version title.
+
+**Prompt-only, strict field matching (Q1).** S1 stores field API names **qualified** (`Account.Status`) and grounding does exact-match (`sf_api_name == field_hint`), so v2's "Positives" bullet instructs the LLM to supply `field_name` as the **fully-qualified `Object.Field`** name + `expected_value` verbatim, and — when the requirement states no concrete value — to **not invent one** (propose the Object-level claim, let the substrate defer; D-115 §2). The grounding is unchanged (no leniency); a bare unqualified field would miss, which the live probe is positioned to catch. (The rejected alternative — grounding leniency matching a bare `Status` against `Account.Status` — would have softened the strict verify-at-grounding precision.)
+
+**Eval probe — offline + live (Q2), mirroring `verified-prohibition-negative`.** A `value-claim-positive-draft` corpus case carries both tiers: an **offline scripted probe** (a value-claim intent with a qualified `field_name` + value replayed through governance → `draft` / `value-claim` / `data-recipe`) — deterministic, CI-gating, no LLM; and a **`live` block** (a real requirement + semantic-envelope invariants) — the actual prompt-effect confirmation, periodic (skipped without `ANTHROPIC_API_KEY`). The offline tier guards the governance + emission chain in the canonical corpus; the live tier is the only thing that confirms the real model, given v2, emits a value-claim — and would surface a field-name-format miss.
+
+**Scope honesty.** This lands the CI-verifiable mechanism (prompt freeze + the offline probe + the registry/hash guards). The live confirmation is **periodic, not gating** — the positive value-claim's end-to-end LLM reach is authored here but proven on a periodic live run, exactly as the verified-negative's live twin is.
+
+**Guards.** v1 stays byte-frozen (hash guard); v2 self-describes its version + carries only the additive value-claim guidance. The grounding is untouched (strict). The offline probe is deterministic; the live probe never gates CI (it auto-fails only on a live run with a key).
+
+---

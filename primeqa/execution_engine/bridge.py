@@ -28,6 +28,7 @@ from primeqa.execution_engine.plan import (
     MetadataInspectionPlan,
     PlannedAssertion,
     PlannedCreate,
+    PlannedDataRead,
     PlannedRead,
     PlanStep,
 )
@@ -36,8 +37,10 @@ from primeqa.test_representation.models.environment import (
     ExecutionEnvironmentBody,
 )
 from primeqa.test_representation.models.recipes.data_recipe import (
+    AssertStep as DataAssertStep,
     CreateStep,
     DataRecipeBody,
+    ReadStep,
 )
 from primeqa.test_representation.models.recipes.metadata_recipe import (
     AssertStep,
@@ -217,17 +220,20 @@ def _plan_step(step: object, *, recipe_id) -> PlanStep:
 # ---------------------------------------------------------------------------
 
 def build_data_recipe_plan(recipe: RecipeRead) -> DataRecipePlan:
-    """Resolve an S2 ``RecipeRead`` into a :class:`DataRecipePlan` — the
-    behavioral-negative create-rejected vertical (D-110.2).
+    """Resolve an S2 ``RecipeRead`` into a :class:`DataRecipePlan` — both data
+    verticals: the behavioral negative (D-110.2) and the positive
+    create-and-verify (D-115 side B).
 
-    Validates that ``recipe`` is the thinnest behavioral negative (a
-    data-mutation trigger + a data-recipe whose single step is a ``CreateStep``
-    carrying ``expect_rejection``), narrows its bodies, and projects the create
-    into a :class:`PlannedCreate`.
+    Validates the common envelope (a data-mutation trigger + a data-recipe body
+    beginning with a ``CreateStep`` on a :class:`LogicalRef`), then dispatches on
+    the first create's ``expect_rejection``: **set** → the thinnest behavioral
+    negative (a single create-rejected step); **absent** → the positive triple
+    (``CreateStep`` → ``ReadStep`` → ``AssertStep``). Narrows + projects each
+    shape's steps into the S4-owned plan.
 
-    Raises :class:`PlanTranslationError` if ``recipe`` is not a shape this slice
+    Raises :class:`PlanTranslationError` if ``recipe`` is not a shape this bridge
     can plan (the message names the specific mismatch). Multi-step / provisioned
-    negatives and positive data-recipes are deferred (D-110).
+    negatives and multi-step positives are deferred (D-110 / D-115).
     """
     rid = recipe.recipe_id
 
@@ -271,51 +277,98 @@ def build_data_recipe_plan(recipe: RecipeRead) -> DataRecipePlan:
             recipe_id=rid,
         )
 
-    # 5. behavioral-negative shape — the thinnest negative is a single
-    #    CreateStep carrying expect_rejection. Multi-step / provisioned
-    #    negatives and positive (no-expect_rejection) recipes are deferred.
-    if len(body.steps) != 1:
+    # 5. common shape floor — both verticals begin with a CreateStep on a
+    #    LogicalRef target (operational bodies are logical by default). The
+    #    first create's expect_rejection discriminates negative vs positive.
+    if not body.steps or not isinstance(body.steps[0], CreateStep):
+        got = "an empty step list" if not body.steps else type(body.steps[0]).__name__
         raise PlanTranslationError(
-            f"data-recipe behavioral-negative vertical plans a single "
-            f"create-rejected step; got {len(body.steps)} steps "
-            f"(multi-step / provisioned negatives are deferred)",
+            f"a data-recipe must begin with a CreateStep; got {got}",
             recipe_id=rid,
         )
-    step = body.steps[0]
-    if not isinstance(step, CreateStep):
+    create = body.steps[0]
+    if not isinstance(create.target_object, LogicalRef):
         raise PlanTranslationError(
-            f"the behavioral-negative step must be a CreateStep; got "
-            f"{type(step).__name__}",
-            recipe_id=rid,
-        )
-    if step.expect_rejection is None:
-        raise PlanTranslationError(
-            f"CreateStep {step.step_id!r} carries no expect_rejection; this "
-            f"vertical handles behavioral negatives only (a positive create is "
-            f"a later vertical)",
+            f"create {create.step_id!r} must target a LogicalRef (the sobject by "
+            f"name); got a {type(create.target_object).__name__}",
             recipe_id=rid,
         )
 
-    # 6. narrow the create target to a LogicalRef (the sobject is referenced by
-    #    name; operational bodies are logical by default).
-    if not isinstance(step.target_object, LogicalRef):
-        raise PlanTranslationError(
-            f"create {step.step_id!r} must target a LogicalRef (the sobject by "
-            f"name); got a {type(step.target_object).__name__}",
-            recipe_id=rid,
-        )
+    # 6. dispatch on expect_rejection → project the vertical's steps.
+    if create.expect_rejection is not None:
+        steps = _project_negative(body.steps, recipe_id=rid)
+    else:
+        steps = _project_positive(body.steps, recipe_id=rid)
 
-    planned = PlannedCreate(
-        step_id=step.step_id,
-        target_object=step.target_object,
-        field_values=dict(step.field_values),
-        expect_rejection=step.expect_rejection,
-    )
     return DataRecipePlan(
         recipe_id=recipe.recipe_id,
         recipe_version_seq=recipe.version_seq,
         claim_test_id=recipe.claim_test_id,
         claim_version_seq=recipe.claim_version_seq,
         api_choice=body.api_choice,
-        steps=(planned,),
+        steps=steps,
+    )
+
+
+def _project_negative(steps, *, recipe_id) -> tuple:
+    """Project the behavioral negative (D-110.2): the thinnest negative is a
+    single create-rejected step. Multi-step / provisioned negatives deferred.
+    ``steps[0]`` is already validated as a ``CreateStep`` on a ``LogicalRef``."""
+    if len(steps) != 1:
+        raise PlanTranslationError(
+            f"data-recipe behavioral-negative vertical plans a single "
+            f"create-rejected step; got {len(steps)} steps "
+            f"(multi-step / provisioned negatives are deferred)",
+            recipe_id=recipe_id,
+        )
+    create = steps[0]
+    return (
+        PlannedCreate(
+            step_id=create.step_id,
+            target_object=create.target_object,
+            field_values=dict(create.field_values),
+            expect_rejection=create.expect_rejection,
+        ),
+    )
+
+
+def _project_positive(steps, *, recipe_id) -> tuple:
+    """Project the positive create-and-verify (D-115 side B): a ``CreateStep``
+    (no expect_rejection) → ``ReadStep`` → ``AssertStep``. The slice plans
+    exactly this triple; multi-step / multi-read positives are deferred.
+    ``steps[0]`` is already validated as a ``CreateStep`` on a ``LogicalRef``."""
+    if (len(steps) != 3
+            or not isinstance(steps[1], ReadStep)
+            or not isinstance(steps[2], DataAssertStep)):
+        shape = ", ".join(type(s).__name__ for s in steps) or "(empty)"
+        raise PlanTranslationError(
+            f"positive data-recipe (a create with no expect_rejection) must be "
+            f"CreateStep -> ReadStep -> AssertStep; got [{shape}] "
+            f"(multi-step positives are deferred)",
+            recipe_id=recipe_id,
+        )
+    create, read, assertion = steps
+    if not isinstance(read.target, LogicalRef):
+        raise PlanTranslationError(
+            f"read {read.step_id!r} must target a LogicalRef (the FROM object by "
+            f"name); got a {type(read.target).__name__}",
+            recipe_id=recipe_id,
+        )
+    return (
+        PlannedCreate(
+            step_id=create.step_id,
+            target_object=create.target_object,
+            field_values=dict(create.field_values),
+            expect_rejection=None,
+        ),
+        PlannedDataRead(
+            step_id=read.step_id,
+            target=read.target,
+            soql=read.soql,
+            fields_to_capture=tuple(read.fields_to_capture),
+        ),
+        PlannedAssertion(
+            step_id=assertion.step_id,
+            predicate=assertion.predicate,
+        ),
     )

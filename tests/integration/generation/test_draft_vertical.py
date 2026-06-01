@@ -287,3 +287,37 @@ def test_verified_negative_emitted_end_to_end(seeded):
     assert out["admissibility_layer"] == "layer_2"
     assert out["caveat_required"] is False
     assert out["caveat_kind"] is None
+
+
+# ---------------------------------------------------------------------------
+# Positive value-claim (D-115) — the fifth outcome shape; first positive emit
+# ---------------------------------------------------------------------------
+
+# "Invoice.Amount" BELONGS_TO "Invoice" -> a value-claim naming it + carrying a
+# value GROUNDS (verify-at-grounding, D-115.3) and emits the positive recipe.
+def _grounded_positive():
+    return intent(claim_kind="value-claim", polarity="positive",
+                  sf_api_name="Invoice", field_name="Invoice.Amount",
+                  expected_value="100")
+
+
+def test_positive_value_claim_emitted_end_to_end(seeded):
+    _, res = _emit_run(seeded, [_grounded_positive()], persister=LedgerPersister(TEST_TENANT_ID))
+    o = res.results[0].outcome
+    assert o.outcome_kind == OutcomeKind.DRAFT
+    # value-claim is a Layer-1 positive (directly-set state; no Layer-2 marker)
+    assert o.admissibility_layer == AdmissibilityLayer.LAYER_1
+    assert requires_caveat("value-claim") is False
+    assert o.caveat_required is False and o.caveat_kind is None
+    assert o.claims_written and o.recipes_written
+
+    rows = _query()
+    assert len(rows["claims"]) == 1 and len(rows["recipes"]) == 1
+    claim = rows["claims"][0]
+    assert claim["archetype"] == "data_behavior"
+    assert claim["claim_kind"] == "value-claim"
+    # the positive create-and-verify recipe side A authors: a data-mutation trigger
+    # + a data-recipe (create -> read -> assert), end to end from a real intent.
+    recipe = rows["recipes"][0]
+    assert recipe["trigger_kind"] == "data-mutation-trigger"
+    assert recipe["recipe_kind"] == "data-recipe"

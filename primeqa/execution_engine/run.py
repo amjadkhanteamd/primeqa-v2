@@ -160,8 +160,18 @@ def _execute_for_kind(recipe, session, environment_id: int, client):
     if recipe.recipe_kind == _DATA_RECIPE_KIND:
         plan = build_data_recipe_plan(recipe)
         data_client = client or resolve_data_mutation_client(session, environment_id)
+        # The positive vertical (D-115) reads S1 requiredness to construct the
+        # operational world (k16 padding); the behavioral negative does not.
+        # Build the read-through port **only for the positive plan**, from the
+        # run-path's own connection — the same idiom as the S6 interpret stage —
+        # so the padding reflects the org the run executes against. (The negative
+        # never touches the connection here.)
+        s1 = None
+        if plan.steps[0].expect_rejection is None:
+            from primeqa.semantic.query import SemanticOrgModel
+            s1 = SemanticOrgModel(session.connection())
         return execute_data_recipe(
-            plan, client=data_client, environment_id=environment_id)
+            plan, client=data_client, environment_id=environment_id, s1=s1)
 
     raise PlanTranslationError(
         f"run path has no executor for recipe_kind={recipe.recipe_kind!r} "

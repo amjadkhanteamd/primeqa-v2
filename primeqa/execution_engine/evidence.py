@@ -26,7 +26,7 @@ class ErrorSurface:
     S4 *records* it; it does not classify or attribute it (that is S6's job).
     ``error_type`` is the exception class name, not an interpreted category."""
 
-    phase: Literal["translate", "read", "assert", "create"]
+    phase: Literal["translate", "read", "assert", "create", "construct"]
     error_type: str
     message: str
 
@@ -121,7 +121,37 @@ class CreateAttemptEvidence:
     field_diff: None = None
 
 
-StepEvidence = Union[ReadEvidence, AssertEvidence, CreateAttemptEvidence]
+@dataclass(frozen=True)
+class DataReadEvidence:
+    """Evidence for one data read-back (D-115 — the positive create-and-verify).
+
+    The **resolved** SOQL actually issued (``$<step>.id`` substituted), the object
+    queried, the fields captured, and the row(s) returned. A 0-row read is an
+    honest "couldn't observe" (no immediate-consistency assumption is baked in) —
+    distinguished downstream from a transport ``error``. Distinct from the
+    metadata vertical's :class:`ReadEvidence` (S1-edge vocabulary); a data read
+    speaks SOQL + real field names."""
+
+    step_id: str
+    ordinal: int
+    soql: str                       # the resolved SOQL issued (api_request analog)
+    sobject: str
+    fields_captured: tuple[str, ...]
+    row_count: int
+    rows: tuple[dict, ...]          # the records (api_response analog)
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int
+    kind: Literal["read"] = "read"
+    error: Optional[ErrorSurface] = None
+    # mutation N/As, reserved (a read mutates nothing):
+    before_state: None = None
+    after_state: None = None
+    field_diff: None = None
+
+
+StepEvidence = Union[
+    ReadEvidence, AssertEvidence, CreateAttemptEvidence, DataReadEvidence]
 
 
 @dataclass(frozen=True)

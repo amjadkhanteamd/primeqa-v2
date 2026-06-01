@@ -1,4 +1,4 @@
-"""The data-recipe behavioral-negative executor (SPEC §7, D-110.2 slice 2).
+"""The data-recipe executor — behavioral negative (D-110.2) + positive create-and-verify (D-115).
 
 Attempts the planned create against a live org and renders the **grounded run
 outcome** by matching the org's response to the recipe's ``RejectionExpectation``
@@ -19,6 +19,15 @@ The **match-the-code** step is what grounds it. Produce-only: no DB import (the
 inspection-executor discipline); mints its own ``run_id``; returns a
 :class:`RunEvidence` with a :class:`CreateAttemptEvidence` step that the existing
 ``persist_run_evidence`` serializes unchanged.
+
+The **positive** vertical (D-115) dispatches on a create with *no*
+``expect_rejection``: construct the operational world (pad the required fields S4
+can fill — k16) → create-expect-success → observe the record back (a distinct,
+async-ready phase) → ground ``field == V`` → teardown (k14, always). The outcome
+grammar — incl. the 400-rejection disambiguation by offending field (semantic →
+``failed`` / padding → ``errored``) — is DECISIONS_LOG D-115.2. Still produce-only;
+it reads S1 requiredness through an injected ``SemanticOrgModel`` port (``s1=``),
+never its own SQL.
 """
 from __future__ import annotations
 
@@ -27,13 +36,22 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
+from primeqa.execution_engine.errors import (
+    AssertionResolutionError,
+    PlanTranslationError,
+    UnsupportedPredicateError,
+)
 from primeqa.execution_engine.evidence import (
+    AssertEvidence,
     CleanupRecord,
     CreateAttemptEvidence,
+    DataReadEvidence,
     ErrorSurface,
     RunEvidence,
 )
 from primeqa.execution_engine.plan import DataRecipePlan
+from primeqa.execution_engine.refs import resolve_step_refs
+from primeqa.execution_engine.world import resolve_operational_padding
 from primeqa.integrations.exceptions import SFClientError
 
 # A Salesforce **business** rejection (validation rule, required-field,
@@ -44,15 +62,34 @@ _BUSINESS_REJECTION_STATUS = 400
 
 
 def execute_data_recipe(
+    plan: DataRecipePlan, *, client, environment_id: int, s1=None,
+) -> RunEvidence:
+    """Execute a data-recipe plan against ``client``; dispatch on the first
+    step's ``expect_rejection``.
+
+    ``client`` is anything with ``create`` / ``delete`` (+ ``query`` for the
+    positive read-back) returning the normalized envelope (injected; unit tests
+    drive a stub). ``s1`` is a ``SemanticOrgModel``-shaped requiredness reader,
+    **required for the positive vertical** (the run path injects it; the negative
+    ignores it). Returns a :class:`RunEvidence` carrying the grounded outcome +
+    per-step evidence."""
+    create = plan.steps[0]
+    if getattr(create, "expect_rejection", None) is not None:
+        return _execute_negative(
+            plan, client=client, environment_id=environment_id)
+    if s1 is None:
+        raise PlanTranslationError(
+            "a positive data-recipe needs an S1 requiredness reader (s1=); none "
+            "was injected", recipe_id=plan.recipe_id)
+    return _run_positive(
+        plan, client=client, environment_id=environment_id, s1=s1)
+
+
+def _execute_negative(
     plan: DataRecipePlan, *, client, environment_id: int,
 ) -> RunEvidence:
-    """Execute a behavioral-negative data-recipe plan against ``client``.
-
-    ``client`` is anything with ``create(sobject, field_values) -> envelope``
-    and ``delete(sobject, record_id) -> envelope`` (injected; unit tests drive a
-    stub). Returns a :class:`RunEvidence` carrying the grounded outcome + the
-    create-attempt evidence. Slice 1 guarantees the plan has exactly one
-    :class:`PlannedCreate`."""
+    """The behavioral-negative path (D-110.2): a single create the org should
+    reject; the 4-way create-reject eval grounds the outcome."""
     run_id = uuid4()
     started = _now()
     create = plan.steps[0]
@@ -74,6 +111,209 @@ def execute_data_recipe(
         finished_at=finished,
         steps=(step,),
         error=top_error,
+    )
+
+
+# Predicates the positive ground step can faithfully evaluate. Side A emits
+# `equals`; others are deferred (fail-loud until built).
+_SUPPORTED_DATA_PREDICATES = frozenset({"equals"})
+
+
+def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> RunEvidence:
+    """The positive create-and-verify path (D-115): construct-world →
+    create-expect-success → observe → ground ``field == V`` → teardown (k14).
+
+    The plan is the bridge-guaranteed triple ``(PlannedCreate, PlannedDataRead,
+    PlannedAssertion)``. The full outcome grammar is DECISIONS_LOG D-115.2."""
+    run_id = uuid4()
+    started = _now()
+    create, read, assertion = plan.steps
+    sobject = create.target_object.external_id
+    semantic_fields = set(create.field_values)      # the recipe-set keys (k16)
+
+    # 1. Construct the operational world — pad the required fields S4 can fill.
+    at_seq = s1.current_version_seq()
+    padding = resolve_operational_padding(
+        sobject, semantic_fields, s1=s1, at_seq=at_seq)
+    if padding.unfillable:
+        err = ErrorSurface(
+            phase="construct", error_type="UnfillableWorld",
+            message=("required field(s) S4 cannot synthesize in slice 1: "
+                     + ", ".join(padding.unfillable)))
+        return _result(plan, run_id, started, environment_id, (), "errored", err)
+
+    field_values = {**create.field_values, **padding.filler}
+
+    # 2. Create — expect success.
+    c_start = _now()
+    try:
+        env = client.create(sobject, field_values)
+    except SFClientError as e:
+        err = ErrorSurface("create", type(e).__name__, str(e))
+        ev = _evidence(
+            create, sobject, c_start, _now(), http_status=None, success=False,
+            rejection_body=(), matched=None, cleanup=CleanupRecord(attempted=False),
+            error=err, field_values=field_values)
+        return _result(plan, run_id, started, environment_id, (ev,), "errored", err)
+
+    http_status = env["http_status"]
+    success = env["success"]
+    body = env["api_response"]["body"]
+    record_id = env["record_id"]
+    rejection_body = _as_error_tuple(body)
+
+    if not success:
+        # The create the recipe specified did not land — no record was made.
+        outcome, top_error = _grade_rejected_create(
+            http_status, rejection_body, semantic_fields)
+        ev = _evidence(
+            create, sobject, c_start, _now(), http_status=http_status,
+            success=False, rejection_body=rejection_body, matched=None,
+            cleanup=CleanupRecord(attempted=False),
+            error=(top_error if outcome == "errored" else None),
+            field_values=field_values)
+        return _result(
+            plan, run_id, started, environment_id, (ev,), outcome, top_error)
+
+    # 3. Create succeeded → observe the record back (a distinct, async-ready
+    #    phase: no immediate-consistency assumption is baked in here).
+    c_end = _now()
+    state = {create.step_id: {"id": record_id}}
+    read_ev, read_err = _run_read_back(read, sobject, state, client, ordinal=1)
+
+    # 4. Teardown (k14) — the record exists and has been observed; leave the org
+    #    as found *before* grading, so a later fail-loud ground never leaks it.
+    cleanup = _best_effort_delete(client, sobject, record_id)
+    create_ev = _evidence(
+        create, sobject, c_start, c_end, http_status=http_status, success=True,
+        rejection_body=(), matched=None, cleanup=cleanup, field_values=field_values)
+
+    # 5. Ground field == V (or errored when the record could not be observed).
+    if read_err is not None:
+        return _result(
+            plan, run_id, started, environment_id,
+            (create_ev, read_ev), "errored", read_err)
+    if read_ev.row_count == 0:
+        err = ErrorSurface(
+            phase="read", error_type="RecordNotObserved",
+            message=("read-back returned 0 rows; cannot evaluate field == V "
+                     "(no immediate-consistency assumption)"))
+        return _result(
+            plan, run_id, started, environment_id,
+            (create_ev, read_ev), "errored", err)
+
+    assert_ev = _run_ground(assertion, read_ev, ordinal=2)
+    outcome = "passed" if assert_ev.held else "failed"
+    return _result(
+        plan, run_id, started, environment_id,
+        (create_ev, read_ev, assert_ev), outcome, None)
+
+
+def _grade_rejected_create(http_status, rejection_body, semantic_fields):
+    """Grade a create the org refused. A 400 business rejection is disambiguated
+    by offending field: the **semantic** field named → ``failed`` (the value is
+    not achievable — the finding); only **padding** named → ``errored`` (S4's own
+    operational gap); none named → ``errored`` (ambiguous). Any other non-2xx →
+    ``errored`` (the org did not business-evaluate). Returns (outcome, top_error|
+    None — None only when the outcome is a clean ``failed``)."""
+    if http_status != _BUSINESS_REJECTION_STATUS:
+        return "errored", ErrorSurface(
+            "create", "UnexpectedResponse",
+            f"create returned HTTP {http_status} (not a business rejection)")
+    offending = _offending_fields(rejection_body)
+    if offending & semantic_fields:
+        return "failed", None       # the requirement's value is not achievable
+    if offending:
+        return "errored", ErrorSurface(
+            "create", "PaddingRejection",
+            f"create rejected on operational field(s) {sorted(offending)}; none "
+            f"is the semantic field under test")
+    return "errored", ErrorSurface(
+        "create", "AmbiguousRejection",
+        "create rejected with no field attribution; cannot ascribe it to the "
+        "value under test")
+
+
+def _offending_fields(rejection_body) -> set:
+    """The union of all ``fields`` arrays across a (possibly multi-error) DML
+    rejection body."""
+    out: set = set()
+    for e in rejection_body:
+        if isinstance(e, dict):
+            for f in (e.get("fields") or []):
+                out.add(f)
+    return out
+
+
+def _run_read_back(read, sobject, state, client, *, ordinal):
+    """Resolve the read's ``$<step>.id`` reference(s), issue the SOQL, capture
+    the row(s). Returns (:class:`DataReadEvidence`, error|None). A transport
+    failure → error → the caller renders ``errored``; an unresolved reference
+    fail-loud (:class:`StepRefResolutionError`) propagates (a recipe defect)."""
+    soql = resolve_step_refs(read.soql or "", state)    # fail-loud on a bad ref
+    start = _now()
+    try:
+        rows = client.query(soql)
+    except SFClientError as e:
+        end = _now()
+        err = ErrorSurface("read", type(e).__name__, str(e))
+        ev = DataReadEvidence(
+            step_id=read.step_id, ordinal=ordinal, soql=soql, sobject=sobject,
+            fields_captured=tuple(read.fields_to_capture), row_count=0, rows=(),
+            started_at=start, finished_at=end, duration_ms=_ms(start, end),
+            error=err)
+        return ev, err
+    end = _now()
+    ev = DataReadEvidence(
+        step_id=read.step_id, ordinal=ordinal, soql=soql, sobject=sobject,
+        fields_captured=tuple(read.fields_to_capture), row_count=len(rows),
+        rows=tuple(rows), started_at=start, finished_at=end,
+        duration_ms=_ms(start, end))
+    return ev, None
+
+
+def _run_ground(assertion, read_ev, *, ordinal) -> AssertEvidence:
+    """Ground ``field == V``: resolve the predicate's ``subject_ref``
+    (``<read_step>.<field>``) to the observed value in the read's single row and
+    compare it to the carried ``value`` verbatim. Fail-loud (raise) on a
+    non-equals predicate or a ``subject_ref`` that does not reference this read —
+    a recipe defect (teardown has already run, so no record leaks)."""
+    pred = assertion.predicate
+    if pred.predicate not in _SUPPORTED_DATA_PREDICATES:
+        raise UnsupportedPredicateError(
+            f"assertion {assertion.step_id!r} uses predicate {pred.predicate!r}; "
+            f"the positive vertical evaluates only "
+            f"{sorted(_SUPPORTED_DATA_PREDICATES)}")
+    step_ref, _, field = pred.subject_ref.partition(".")
+    if not field or step_ref != read_ev.step_id:
+        raise AssertionResolutionError(
+            f"assertion {assertion.step_id!r} subject_ref {pred.subject_ref!r} "
+            f"must be '{read_ev.step_id}.<field>' (the read-back's captured field)")
+    start = _now()
+    observed = read_ev.rows[0].get(field)
+    held = observed == pred.value
+    end = _now()
+    return AssertEvidence(
+        step_id=assertion.step_id, ordinal=ordinal, predicate=pred.predicate,
+        subject_ref=pred.subject_ref, evaluated_row_count=read_ev.row_count,
+        held=held, started_at=start, finished_at=end, duration_ms=_ms(start, end))
+
+
+def _result(plan, run_id, started, environment_id, steps, outcome, error) -> RunEvidence:
+    """Assemble the positive vertical's :class:`RunEvidence` envelope."""
+    return RunEvidence(
+        run_id=run_id,
+        recipe_id=plan.recipe_id,
+        recipe_version_seq=plan.recipe_version_seq,
+        claim_test_id=plan.claim_test_id,
+        claim_version_seq=plan.claim_version_seq,
+        environment_id=environment_id,
+        api_choice=plan.api_choice,
+        outcome=outcome,
+        started_at=started,
+        finished_at=_now(),
+        steps=steps,
+        error=error,
     )
 
 
@@ -132,11 +372,16 @@ def _run_create(create, sobject, client):
 
 
 def _evidence(create, sobject, start, end, *, http_status, success,
-              rejection_body, matched, cleanup, error=None) -> CreateAttemptEvidence:
+              rejection_body, matched, cleanup, error=None,
+              field_values=None) -> CreateAttemptEvidence:
     first = rejection_body[0] if rejection_body else {}
+    # The actual posted payload — for the positive vertical that is the semantic
+    # field + S4's operational padding; for the negative it is the create's own
+    # field_values (the default).
+    posted = field_values if field_values is not None else create.field_values
     return CreateAttemptEvidence(
         step_id=create.step_id, ordinal=0, sobject=sobject,
-        field_values=dict(create.field_values), http_status=http_status,
+        field_values=dict(posted), http_status=http_status,
         success=success,
         error_code=(first.get("errorCode") if isinstance(first, dict) else None),
         message=(first.get("message") if isinstance(first, dict) else None),

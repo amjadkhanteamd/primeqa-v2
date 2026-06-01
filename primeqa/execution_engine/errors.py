@@ -72,3 +72,14 @@ class AssertionResolutionError(ExecutionEngineError):
     Fail-loud: a malformed plan (the read/assert graph is incoherent), not a
     run outcome.
     """
+
+
+class StepRefResolutionError(ExecutionEngineError):
+    """A ``$<step_id>.<attr>`` reference in a data read's SOQL does not resolve
+    against the run's accumulated state (D-115 — the read-resolution convention).
+
+    Fail-loud: a malformed recipe (the read references a step / attribute that the
+    run never produced), not a run outcome. The positive vertical sets
+    ``state["create-record"]["id"]`` after a successful create, so an unresolved
+    ref is an authoring defect, surfaced — never a silently ungrounded read.
+    """
