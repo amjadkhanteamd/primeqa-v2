@@ -19,6 +19,32 @@ If you find yourself on a worktree pointing at a non-`main` branch, the correct 
 
 (Substrate work follows a different pattern — feature branches per phase, HOLD-and-show before commits. See `docs/CONVENTIONS.md`.)
 
+## Working rules for Claude Code
+
+### Ground truth & no hallucination
+- **Read before you assert.** Never state what a file, function, schema, or query does without opening it this session — no claims about code you haven't read.
+- **The code is ground truth.** If a spec, comment, doc, or prompt conflicts with what the code actually does, the code wins — surface the discrepancy, don't reinterpret to fit.
+- **Never invent identifiers** — file paths, symbols, table/column names, API fields, commit hashes, config keys. Grep for the real one; if it doesn't exist, say so plainly.
+- **Mark verified vs. assumed.** If you didn't check it, say so. Never present an inference as a confirmed fact.
+- **Runtime claims require a run.** For any behavior ("does this query return X?", "does this rule fire?"), run it and report the *observed* result, not the expected. Never report a test outcome you didn't actually run.
+- **Canonical state** lives in each SPEC's `Status:` line + `DECISIONS_LOG.md` — not in any single roadmap/state doc. The live retrieval discriminator is `content_type` (flat varchar), not `doc_type`.
+
+### How to work
+- **Root cause only — no workarounds.** Diagnose the actual mechanism before any fix; address the cause, never mask the symptom. If the real fix is large, HOLD and say so rather than patching around it.
+- **Smallest correct change.** Solve the task and nothing more — don't refactor or widen scope uninvited. Note adjacent work and HOLD instead of folding it in.
+- **HOLD when the premise breaks.** If a task's assumption is false against the code (shape differs, a dependency is missing, the spec was stale), stop and report the gap with options + a lean. Don't improvise to make a broken premise work.
+- **Respect the architecture.** Don't cross substrate boundaries (S1–S8) or contradict a logged decision (`DECISIONS_LOG`) to get something working — if a task seems to need it, HOLD and flag it.
+- **Surface real forks.** At any decision with architectural consequences, present the options, the tradeoff, and your lean — don't silently pick a path.
+- **Show your verification.** Before a HOLD, show what proves it — test output, the diff, the grep result — so it's checkable, not asserted.
+
+### Commits & branches
+- HOLD before every commit; commit only on an explicit GO.
+- One cohesive commit per logical unit; **design commit separate from impl commit**. No micro-commits mid-cycle.
+- Author `AK <amjad.khan@teamd.co.in>`; **zero `Co-Authored-By`** (verify 0). `--no-verify` is prohibited.
+- `DECISIONS_LOG.md` is **append-only** — never edit prior entries.
+- Branch strategy follows **Branch conventions** above (v2 runtime → `main`; substrate work → a `phase-N-substrate-M` branch off `main`). On a feature branch, accumulate commits and push only at milestones (phase close / merge-readiness) or when asked.
+- A merge gate means a real green run — never merge on a red or unverified suite.
+
 ## What is this project?
 PrimeQA is a **Release Intelligence System** for Salesforce. It connects to
 Salesforce orgs, captures versioned metadata, AI-generates test cases from
@@ -644,7 +670,7 @@ one. Migrations 016+ are idempotent (use `ADD COLUMN IF NOT EXISTS` and
 - Tenant isolation: every new table includes `tenant_id`, every query filters by it
 - AI outputs carry structured reasoning so Phase 11 explainability can surface them
 - Use summary tables (test_case_risk_factors, etc.) instead of heavy joins for dashboards
-- Commit messages are descriptive, prefixed with phase/feature name, signed with `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`
+- Commit messages are descriptive, prefixed with phase/feature name. **Author `AK <amjad.khan@teamd.co.in>`; no `Co-Authored-By` trailer** (see _Working rules → Commits & branches_)
 - Every destructive/admin action writes to `activity_log` via the service layer
 - All lists paginate with per_page capped at 50 — there are no unbounded list endpoints anymore
 - **Section create is idempotent** — `create_section` returns an existing active row if one matches `(tenant_id, parent_id, name)`. Prevents duplicate-tree regrowth from integration tests.
