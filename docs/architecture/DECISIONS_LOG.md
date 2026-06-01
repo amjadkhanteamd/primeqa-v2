@@ -7381,3 +7381,23 @@ The third piece of D-115's positive value-claim. Side A authored the emission (`
 **Guards.** Grounded ⟺ the named field exists. The value is carried verbatim from the intent — S3 never fabricates one (no value → deferred). The gate-flip lands only with the stash + the drift-guard, preserving "a gated PROCEED is always authorable." The propose-only test's incomplete-intent case stays `EMISSION_DEFERRED` (re-aimed to the stash-level refuse), keeping the enum round-trip coverage.
 
 ---
+
+## D-115.4 — Value-claim live reach: prompt v2 guidance + eval probe
+
+**Date:** 2026-06-01
+**Substrates affected:** [S3] (the propose prompt + the eval corpus — the live reach); no governance / S2 change
+**Status:** Active — D-115 slice 1 live reach. On `phase-6-substrate-4-positive`. Mechanism + offline probe are CI-gating; the live probe is authored + periodic (skipped without `ANTHROPIC_API_KEY`).
+
+The last gap of D-115's positive value-claim. D-115.3 made it production-reachable — `resolve_intent` grounds + stashes a `GroundedPositive` and emits — **but only if the LLM supplies `field_name` + `expected_value`** in the propose intent's `target_subject_hint`, and the frozen prompt `generation@v1` never told it to. This slice closes the reach: a new frozen prompt version that guides the model + an eval-corpus probe.
+
+**Prompt `generation@v2` (the freeze ritual).** Frozen prompt versions are immutable + SHA-256 hash-guarded (replay determinism, D-103.1), so the prompt change authors a **new version**, never edits v1. The working source — `base.md` (title) + `fragments/data_behavior.md` (the "Positives" bullet) — is edited, `compose_working()` freezes `versions/generation_v2.md`, the registry records its hash + bumps `CURRENT = "generation@v2"`. v1 stays frozen + valid (a pinned-v1 request still resolves it); v2 differs from v1 only in the value-claim guidance + the version title.
+
+**Prompt-only, strict field matching (Q1).** S1 stores field API names **qualified** (`Account.Status`) and grounding does exact-match (`sf_api_name == field_hint`), so v2's "Positives" bullet instructs the LLM to supply `field_name` as the **fully-qualified `Object.Field`** name + `expected_value` verbatim, and — when the requirement states no concrete value — to **not invent one** (propose the Object-level claim, let the substrate defer; D-115 §2). The grounding is unchanged (no leniency); a bare unqualified field would miss, which the live probe is positioned to catch. (The rejected alternative — grounding leniency matching a bare `Status` against `Account.Status` — would have softened the strict verify-at-grounding precision.)
+
+**Eval probe — offline + live (Q2), mirroring `verified-prohibition-negative`.** A `value-claim-positive-draft` corpus case carries both tiers: an **offline scripted probe** (a value-claim intent with a qualified `field_name` + value replayed through governance → `draft` / `value-claim` / `data-recipe`) — deterministic, CI-gating, no LLM; and a **`live` block** (a real requirement + semantic-envelope invariants) — the actual prompt-effect confirmation, periodic (skipped without `ANTHROPIC_API_KEY`). The offline tier guards the governance + emission chain in the canonical corpus; the live tier is the only thing that confirms the real model, given v2, emits a value-claim — and would surface a field-name-format miss.
+
+**Scope honesty.** This lands the CI-verifiable mechanism (prompt freeze + the offline probe + the registry/hash guards). The live confirmation is **periodic, not gating** — the positive value-claim's end-to-end LLM reach is authored here but proven on a periodic live run, exactly as the verified-negative's live twin is.
+
+**Guards.** v1 stays byte-frozen (hash guard); v2 self-describes its version + carries only the additive value-claim guidance. The grounding is untouched (strict). The offline probe is deterministic; the live probe never gates CI (it auto-fails only on a live run with a key).
+
+---
