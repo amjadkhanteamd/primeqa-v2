@@ -7339,3 +7339,25 @@ Side A of D-115's two-sided build — the **emission-authoring half**, the recip
 **Guards.** Value carried verbatim (S3 never invents). The author-capability is independently testable + **dormant** from real intents (no production reach until the stash). The drift-guard + the emission-deferred behaviour are preserved unchanged.
 
 ---
+
+## D-115.2 — Slice 1 side B: positive execution spine — read-resolution + 400-outcome seams resolved
+
+**Date:** 2026-06-01
+**Substrates affected:** [S4] (the positive execution spine — construct-world → create → observe → ground → teardown); [S1] (read: object requiredness + field types for the operational padding); [S3] (no change — side B consumes side A's recipe)
+**Status:** Active — D-115 slice 1 side B. Design for the two seams the SLICE_1 design left "side B's to define"; impl follows on `phase-6-substrate-4-positive` (HOLD-and-show per commit).
+
+The SLICE_1 design (D-115 §5(B)) named two mechanisms as side B's to define. Both are resolved here; the rest of side B is the §5(B) spine made concrete.
+
+**(1) Read-resolution = SOQL substitution (not by-id retrieve).** Side A's `ReadStep` carries `soql = "SELECT {field} FROM {object} WHERE Id = '$create-record.id'"`. Side B *defines* `$create-record.id`: after the create succeeds the executor binds `state["create-record"] = {"id": <sf-id>}` and substitutes `$<step_id>.id` → the literal Id in the SOQL (`refs.resolve_step_refs`, **fail-loud** on an unresolved `$ref`), then issues the SOQL **verbatim** via a new data `query(soql)` (REST `/query`). Executing the authored SOQL as written honors the recipe and makes the substitution a real, reusable convention. By-id retrieve was rejected — it would leave the authored SOQL vestigial and *bypass* the convention rather than define it. (v1's `_resolve_soql_refs` is the reference pattern, substrate-owned, never imported.)
+
+**(2) 400-rejection outcome = disambiguate by offending field.** A create the org rejects (HTTP 400 business rejection) is graded by *which field the org names*: the **semantic** field named → `failed` (the requirement's value is not operationally achievable — the slice's headline finding, §4); only S4's **padding** field(s) named, or none → `errored` (S4's own operational-world construction failed — not a verdict on the value under test). The split is **structural, not heuristic**: side A's `CreateStep` carries the semantic field *only* (k16), so the semantic set = the recipe create's `field_values` keys and the padding set = the executor-added filler keys are cleanly separable, and the executor tests the rejection body's named `fields` against each. The full rejection body is captured in evidence regardless (evidence-first; S6 attributes). Always-`failed` (symmetric with the negative) was rejected — a padding-caused rejection would post a false "value doesn't hold"; always-`errored` was rejected — it buries the real finding.
+
+**The outcome grammar (the semantic core).** create-success + observed `== V` → `passed`; observed `≠ V` → `failed`; read returns 0 rows or transport-fails → `errored` (observation is a **distinct async-ready phase** — *no immediate-consistency assumption*, so a 0-row read is "couldn't observe," never silently "wrong value"); create transport-raise / non-400 (401/403/429/5xx) → `errored`; create-400 → the (2) disambiguation; operational world unfillable (a required lookup / unfillable type) → `errored` *pre-create*. **k14 teardown:** any 2xx create is **always** best-effort-deleted (leave the org as found) on every downstream path — never part of the verdict.
+
+**Operational padding (k16 realized).** S4 reads the target object's fields from S1 (`field_details`: `is_nillable` / `is_required`, `field_type`, `references_object_entity_id`, `is_calculated`, `picklist_value_set_entity_id`) and fills the *required-writable-non-lookup-non-semantic* set with type-valid filler (simple-picklist via the value set's default / first-active value). The semantic field-under-test is **structurally excluded** from the writable set (k16) — there is no code path by which S4 writes the field it verifies. A required field S4 cannot fill (a lookup parent — the §3 scope fence — or an unknown type) makes the recipe unrunnable in this slice → `errored`, never a guessed value.
+
+**No migration / no persister change.** `persist_run_evidence` is `dataclasses.asdict`-generic and the `run_outcome` enum already carries `passed/failed/errored/skipped`; `finalize_run` reports `evidence.outcome` verbatim. The positive vertical's evidence (a lean `DataReadEvidence` + reused `AssertEvidence` / `CreateAttemptEvidence`) serializes unchanged.
+
+**Guards.** Read-resolution is a verbatim substitution, fail-loud on an unresolved ref (no silent ungrounded read). The 400-disambiguation is structural off the k16 field-set split, not a heuristic. The observation phase bakes in no immediate-consistency assumption. The padding filler never chooses the value under test (k16) and *refuses* (errored) rather than guessing when it cannot construct a valid world. Teardown is best-effort and never changes the verdict (k14).
+
+---

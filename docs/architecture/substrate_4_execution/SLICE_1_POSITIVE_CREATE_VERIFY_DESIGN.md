@@ -60,6 +60,17 @@ The fence keeps the slice to the one thing it proves: a directly-set field value
 
 ---
 
+## 7. Side B — seam resolutions (D-115.2)
+
+The two mechanisms §5(B) left "side B's to define" are resolved (full record: `DECISIONS_LOG.md` D-115.2):
+
+- **Read-resolution = SOQL substitution.** After the create, bind `state["create-record"] = {"id": <id>}` and substitute `$<step_id>.id` → the literal Id in the `ReadStep.soql` (`refs.resolve_step_refs`, fail-loud on an unresolved ref), then execute it **verbatim** via a new data `query(soql)`. The authored SOQL runs as written; the substitution is the defined convention. (By-id retrieve rejected — it would leave the SOQL vestigial.)
+- **400-rejection outcome = disambiguate by offending field.** Semantic field named → `failed` (value not achievable, §4); only padding / none named → `errored` (S4 operational gap). Structural off the k16 field-set split (semantic = recipe-create keys; padding = executor-added filler keys), not a heuristic.
+
+**Outcome grammar.** `passed` (observed == V) · `failed` (observed ≠ V) · `errored` (0-row / read transport / create transport / non-400 / unfillable world) · the 400 split above. Observation is async-ready (no immediate-consistency assumption: a 0-row read is "couldn't observe," not "wrong value"). **k14:** any 2xx create is always best-effort-deleted, never part of the verdict.
+
+---
+
 ## Status
 
-Design locked (**D-115**). **No impl.** The build is two-sided (S3 emission + S4 execution) and gated behind the structural boundary of §1; HOLD before any build.
+Design locked (**D-115**); the two side-B seams resolved (**D-115.2**, §7). Side A built (`e715846`); side B — the positive execution spine — now in implementation on `phase-6-substrate-4-positive` (HOLD-and-show per commit).
