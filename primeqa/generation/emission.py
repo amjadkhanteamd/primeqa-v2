@@ -38,7 +38,7 @@ prohibition claim's identity_hash is unchanged (no premature D-088 break).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from primeqa.generation.enums import AdmissibilityLayer, CaveatKind
@@ -51,6 +51,9 @@ from primeqa.test_representation.models.claims.configuration import (
 from primeqa.test_representation.models.claims.data_behavior.prohibition_claim import (
     ProhibitionClaimBody,
 )
+from primeqa.test_representation.models.claims.data_behavior.value_claim import (
+    ValueClaimBody,
+)
 from primeqa.test_representation.models.common import BodyBase
 from primeqa.test_representation.models.conditions import SemanticConditionsBody
 from primeqa.test_representation.models.environment import (
@@ -59,12 +62,15 @@ from primeqa.test_representation.models.environment import (
 )
 from primeqa.test_representation.models.primitives import (
     AssertionPredicate,
+    LiteralValue,
     RejectionExpectation,
     RejectionSignal,
 )
 from primeqa.test_representation.models.recipes.data_recipe import (
+    AssertStep as DataAssertStep,
     CreateStep,
     DataRecipeBody,
+    ReadStep,
 )
 from primeqa.test_representation.models.recipes.metadata_recipe import (
     AssertStep,
@@ -165,6 +171,28 @@ class GroundedNegative:
     # violating-value derivation over these to decide verified vs. caveated.
     # Empty (the default) -> no derivable formula -> caveated fallback unchanged.
     vr_formulas: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class GroundedPositive:
+    """data_behavior value-claim positive grounding (D-115 slice 1): a Field
+    ``BELONGS_TO`` an Object, with the requirement-sourced value the create sets
+    and the read-back asserts.
+
+    ``value`` is carried **verbatim** from the value-claim's ``expected_value`` —
+    never derived or invented (contrast :class:`GroundedNegative`, whose violating
+    value is *derived* via D-107). ``target_object`` is the field's parent
+    (resolved via S1 ``BELONGS_TO`` at grounding time — the *held* governance
+    stash; in this slice the fact is constructed directly). Authored-from, never
+    LLM-supplied (D-097.5)."""
+
+    archetype: str              # "data_behavior"
+    claim_kind: str             # "value-claim"
+    version_seq: int            # the pinned S1 version grounding ran against
+    target_object: _Endpoint    # the Object to create on (the field's parent)
+    field: _Endpoint            # the Field whose value is asserted
+    value: Any                  # the requirement-sourced expected value (verbatim)
+    requirement_excerpt: str
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +430,85 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
     )
 
 
+def _author_positive(g: GroundedPositive) -> EmissionBundle:
+    """Author the positive create-and-verify bundle for a value-claim (D-115
+    slice 1): a value-claim asserting ``field == V``, plus a **data** recipe that
+    creates a record with the semantic field set to V, reads it back, and asserts
+    the observed value equals V.
+
+    The value V is carried **verbatim** from the grounding (the requirement-sourced
+    ``expected_value``); the substrate never derives or invents it. The
+    ``CreateStep`` carries **only the semantic field** — not a complete valid
+    payload; S4 fills the operational required-field padding at execution (the k16
+    boundary: S4 resolves operational validity, never the value under test)."""
+    field_api = g.field.external_id
+    object_api = g.target_object.external_id
+
+    field_ref = IdentityBearingRef(
+        entity_type=g.field.entity_type, entity_id=g.field.entity_id,
+        version_seq=g.version_seq, external_id=field_api,
+    )
+    claim = ValueClaimBody(
+        subject=field_ref, expected_value=LiteralValue(value=g.value),
+    )
+    # Directly-set value-claim is unconditional at this layer (no when-condition).
+    conditions = SemanticConditionsBody(conditions=[])
+
+    target = LogicalRef(entity_type=g.target_object.entity_type,
+                        external_id=object_api)
+    trigger = DataMutationTriggerBody(
+        operation="create", target=target,
+        identity_context="system", volume="single",
+    )
+    recipe = DataRecipeBody(
+        api_choice="rest", identity_context="system",
+        execution_mechanism="direct_api",
+        steps=[
+            CreateStep(
+                step_id="create-record",
+                target_object=target,
+                # The SEMANTIC field only (k16) — S4 pads required fields at run.
+                field_values={field_api: g.value},
+            ),
+            ReadStep(
+                step_id="read-created",
+                target=target,
+                # Read the just-created record back. '$create-record.id' is the
+                # cross-step reference to the create step's record Id; S4 resolves
+                # the substitution at execution (the read-resolution mechanism is
+                # side B's to define).
+                soql=(f"SELECT {field_api} FROM {object_api} "
+                      f"WHERE Id = '$create-record.id'"),
+                fields_to_capture=[field_api],
+            ),
+            DataAssertStep(
+                step_id="assert-value",
+                predicate=AssertionPredicate(
+                    subject_ref=f"read-created.{field_api}",
+                    predicate="equals", value=g.value,
+                ),
+            ),
+        ],
+    )
+    env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
+        auth_kind="data_api_user",
+        details=(f"create a {object_api} record with {field_api}={g.value!r}, "
+                 f"read it back, assert the value persisted"),
+    )])
+
+    return EmissionBundle(
+        archetype=g.archetype, claim_kind=g.claim_kind,
+        asserted_truth=claim, semantic_conditions=conditions,
+        trigger_kind="data-mutation-trigger", recipe_kind="data-recipe",
+        causal_initiation=trigger, observation_realization=recipe,
+        execution_environment=env,
+        # value-claim is a Layer-1 positive (directly-set state; no Layer-2 marker).
+        admissibility_layer=AdmissibilityLayer.LAYER_1,
+        caveat_required=requires_caveat(g.claim_kind),
+        caveat_kind=caveat_kind(g.claim_kind),
+    )
+
+
 def author_emission(grounded: object) -> EmissionBundle:
     """Author the claim + recipe bodies for a grounded candidate. The single
     site that constructs S2 body models for generation (D-097.5); dispatches on
@@ -410,4 +517,6 @@ def author_emission(grounded: object) -> EmissionBundle:
         return _author_config(grounded)
     if isinstance(grounded, GroundedNegative):
         return _author_negative(grounded)
+    if isinstance(grounded, GroundedPositive):
+        return _author_positive(grounded)
     raise TypeError(f"author_emission: unsupported grounding {type(grounded).__name__}")

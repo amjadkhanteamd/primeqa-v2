@@ -609,10 +609,14 @@ class GovernanceCore:
         persister writes claim + recipe + ledger atomically (D-097.4 / D-099);
         the LLM's ``outcome_input`` owns only linguistic realization, never
         truth or entities."""
-        # Config metadata-relationship (D-098) or prohibition negative (D-101);
-        # both author from S1 grounding stashed during resolve_intent.
+        # Config metadata-relationship (D-098), prohibition negative (D-101), or
+        # positive value-claim (D-115); all author from S1 grounding stashed
+        # during resolve_intent. (grounded_positive is dormant until the value-
+        # claim grounding stash lands — D-115 slice 1 side A holds it; the read is
+        # ready so the backstop stays correct when it does.)
         grounded = (getattr(state, "grounded_emission", None)
-                    or getattr(state, "grounded_negative", None))
+                    or getattr(state, "grounded_negative", None)
+                    or getattr(state, "grounded_positive", None))
         if grounded is None:
             # Backstop (D-105.4): the emittability gate in resolve_intent should
             # have already refused a grounded-but-unbuilt kind. If we still reach
