@@ -34,6 +34,7 @@ from primeqa.generation.explanation_hash import compute_explanation_hash
 from primeqa.generation.emission import (
     GroundedEmission,
     GroundedNegative,
+    GroundedPositive,
     _Endpoint,
     author_emission,
     is_emittable,
@@ -208,7 +209,7 @@ class AdmissibilityEngine:
 
     def evaluate(self, *, archetype: str, claim_kind: str, polarity_hint: str,
                  subject: Entity, neighborhood: list, excerpt: str,
-                 path_id: str = "c0") -> _Candidate:
+                 path_id: str = "c0", field_hint: Optional[str] = None) -> _Candidate:
         """Derive the requirement-anchored candidate and determine Layer-1
         admissibility. Substrate-authored; returns a single _Candidate."""
         cand = _Candidate(
@@ -230,7 +231,7 @@ class AdmissibilityEngine:
 
         if self.is_negative(claim_kind, polarity_hint):
             return self._evaluate_negative(cand, claim_kind, neighborhood)
-        return self._evaluate_positive(cand, claim_kind, neighborhood)
+        return self._evaluate_positive(cand, claim_kind, neighborhood, field_hint)
 
     def _evaluate_negative(self, cand: _Candidate, claim_kind: str, neighborhood: list) -> _Candidate:
         dim = _NEGATIVE_LAYER1_DIM.get(claim_kind)
@@ -248,13 +249,22 @@ class AdmissibilityEngine:
             cand.dismissal_reason = "no_constraint_supports_negative"
         return cand
 
-    def _evaluate_positive(self, cand: _Candidate, claim_kind: str, neighborhood: list) -> _Candidate:
-        # v1 positive grounding (refusal-vertical proxy): a positive claim needs
-        # supporting structure (a Field) in the neighborhood. Full positive
-        # grounding is draft-vertical territory.
+    def _evaluate_positive(self, cand: _Candidate, claim_kind: str, neighborhood: list,
+                           field_hint: Optional[str] = None) -> _Candidate:
+        # Positive grounding needs supporting structure (a Field BELONGS_TO the
+        # subject Object). A **value-claim** asserts ``field == V``, so it grounds
+        # only when the *named* field exists (verify-at-grounding, D-115.3): an
+        # unknown named field (or none named) is ``insufficient_grounding``, never
+        # an any-field pass. Other positive claim_kinds keep the object-level
+        # any-field proxy (the refusal-vertical floor).
         fields = [r for r in neighborhood
                   if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"]
-        if fields:
+        if claim_kind == "value-claim":
+            grounds = bool(field_hint) and any(
+                r.entity.sf_api_name == field_hint for r in fields)
+        else:
+            grounds = bool(fields)
+        if grounds:
             cand.status = "admissibly_grounded"
             cand.admissibility_layer = AdmissibilityLayer.LAYER_1.value
         else:
@@ -434,7 +444,8 @@ class GovernanceCore:
         neighborhood = self._admit.scoped_neighborhood(subject, at)
         base = self._admit.evaluate(archetype=archetype, claim_kind=claim_kind,
                                     polarity_hint=polarity, subject=subject,
-                                    neighborhood=neighborhood, excerpt=excerpt)
+                                    neighborhood=neighborhood, excerpt=excerpt,
+                                    field_hint=hint.get("field_name"))
         candidates = self._decomp.enumerate_candidates(base)
         grounded = [c for c in candidates if c.status == "admissibly_grounded"]
         delta = self._delta(neighborhood, candidates)
@@ -470,6 +481,32 @@ class GovernanceCore:
                 # D-107 verified-vs-caveated gate (re-found from the same
                 # in-scope neighborhood Layer-1 grounding matched).
                 vr_formulas=_grounding_vr_formulas(claim_kind, neighborhood))
+
+        # Stash grounding for the positive value-claim (D-115.3). Grounding has
+        # already verified the NAMED field exists, so re-resolve it from the same
+        # neighborhood. The value is carried verbatim from the intent — S3 never
+        # fabricates one (D-115 §2): a value-claim with no value defers
+        # (grounded-then-deferred) rather than inventing a value.
+        if state is not None and claim_kind == "value-claim":
+            field_ent = next(
+                (r.entity for r in neighborhood
+                 if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"
+                 and r.entity.sf_api_name == hint.get("field_name")), None)
+            expected_value = hint.get("expected_value")
+            if field_ent is None or expected_value is None:
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(archetype, claim_kind))
+            state.grounded_positive = GroundedPositive(
+                archetype=archetype, claim_kind=claim_kind, version_seq=at,
+                target_object=_Endpoint(
+                    entity_id=subject.id, entity_type=subject.entity_type,
+                    external_id=subject.sf_api_name or str(subject.id)),
+                field=_Endpoint(
+                    entity_id=field_ent.id, entity_type=field_ent.entity_type,
+                    external_id=field_ent.sf_api_name or str(field_ent.id)),
+                value=expected_value, requirement_excerpt=excerpt)
 
         # grounded -> emit deferred (draft vertical). resolve_intent stays whole.
         presented = [PresentedCandidate(path_id=c.path_id,

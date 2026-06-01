@@ -14,6 +14,7 @@ from primeqa.generation.emission import (
     EMITTABLE,
     GroundedEmission,
     GroundedNegative,
+    GroundedPositive,
     _Endpoint,
     author_emission,
 )
@@ -68,6 +69,10 @@ _EMITTABLE_SHAPES = {
         archetype="data_behavior", claim_kind="prohibition-claim",
         operation_hint=None, version_seq=1,
         subject=_ep("Object", "Case"), requirement_excerpt="x"),
+    ("data_behavior", "value-claim"): lambda: GroundedPositive(
+        archetype="data_behavior", claim_kind="value-claim", version_seq=1,
+        target_object=_ep("Object", "Invoice"), field=_ep("Field", "Invoice.Amount"),
+        value="100", requirement_excerpt="x"),
 }
 
 

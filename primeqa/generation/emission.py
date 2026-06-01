@@ -117,6 +117,7 @@ _DEFAULT_OPERATION = "modify_record"
 EMITTABLE: frozenset = frozenset({
     ("configuration", "metadata-relationship-claim"),   # D-098 (GroundedEmission)
     ("data_behavior", "prohibition-claim"),              # D-101 (GroundedNegative)
+    ("data_behavior", "value-claim"),                    # D-115 (GroundedPositive)
 })
 
 

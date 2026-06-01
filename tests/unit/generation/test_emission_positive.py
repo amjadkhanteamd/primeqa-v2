@@ -88,10 +88,10 @@ def test_positive_is_layer1_uncaveated():
     assert b.caveat_kind is None
 
 
-def test_value_claim_stays_out_of_emittable_dormancy_guard():
-    # The grounding stash is HELD: value-claim is NOT emittable, so resolve_intent
-    # keeps deferring a real grounded value-claim (EMISSION_DEFERRED) at the gate
-    # rather than proceeding to emit with no stashed GroundedPositive. The
-    # author-capability exists but is unreachable from a real intent until the
-    # stash + the EMITTABLE entry land together.
-    assert ("data_behavior", "value-claim") not in EMITTABLE
+def test_value_claim_is_emittable_after_grounding_stash():
+    # D-115.3 (Option Q resolved): the grounding stash + the EMITTABLE entry landed
+    # together. A real grounded value-claim now reaches PROCEED_TO_EMIT (resolve_intent
+    # stashes a GroundedPositive); the gate admits it because author_emission can author
+    # it. The EMITTABLE <-> author_emission lockstep is bound by the drift-guard
+    # (test_governance_unit.test_emittable_set_matches_author_emission_shapes).
+    assert ("data_behavior", "value-claim") in EMITTABLE

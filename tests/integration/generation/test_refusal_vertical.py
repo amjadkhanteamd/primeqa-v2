@@ -124,14 +124,15 @@ def test_grounded_candidate_proceeds_to_emit(seeded):
 # ---------------------------------------------------------------------------
 
 def test_grounded_value_claim_refuses_emission_deferred(seeded):
-    # "Invoice" HAS a Field (BELONGS_TO) -> a positive value-claim GROUNDS, so it
-    # reaches the emittability gate. value-claim emission is unbuilt, so the gate
-    # refuses emission-deferred instead of PROCEED_TO_EMIT -> finalize crash. The
-    # bare-Account value-claim (test_ungrounded_claim) instead refuses ungrounded
-    # *before* the gate — the two are distinct paths.
+    # "Invoice.Amount" exists (BELONGS_TO Invoice) -> a value-claim naming it GROUNDS
+    # (verify-at-grounding, D-115.3). But the intent carries NO expected_value, so S3
+    # won't fabricate one (D-115 §2): the value-claim defers EMISSION_DEFERRED at the
+    # stash (grounded-then-deferred), NOT PROCEED_TO_EMIT. A value-claim naming a field
+    # that doesn't exist instead dismisses insufficient_grounding *before* the gate
+    # (test_value_claim_unknown_field) — distinct paths.
     from primeqa.generation.persistence import LedgerPersister
     _, res = _run(seeded, [intent(claim_kind="value-claim", polarity="positive",
-                                  sf_api_name="Invoice")],
+                                  sf_api_name="Invoice", field_name="Invoice.Amount")],
                   persister=LedgerPersister(TEST_TENANT_ID))
     o = res.results[0].outcome
     assert o.outcome_kind == OutcomeKind.REFUSAL
@@ -148,6 +149,54 @@ def test_grounded_value_claim_refuses_emission_deferred(seeded):
     rows = query_outcome_rows()
     assert len(rows["outcomes"]) == 1
     assert rows["outcomes"][0]["refusal_kind"] == "emission-deferred"
+
+
+def test_value_claim_unknown_field(seeded):
+    # A value-claim naming a field that does NOT exist on Invoice -> grounding can't
+    # verify it (verify-at-grounding, D-115.3) -> insufficient_grounding ->
+    # UNGROUNDED_CLAIM, *before* the emittability gate. The named field gates grounding.
+    _, res = _run(seeded, [intent(claim_kind="value-claim", polarity="positive",
+                                  sf_api_name="Invoice", field_name="Invoice.Nope",
+                                  expected_value="x")])
+    o = res.results[0].outcome
+    assert o.refusal_kind == RefusalKind.UNGROUNDED_CLAIM
+    assert "insufficient_grounding" in o.attempted_interpretation.dismissed_alternatives_by_reason
+
+
+def test_complete_value_claim_proceeds_and_stashes(seeded):
+    # A value-claim naming an existing field + carrying a value -> grounds + stashes a
+    # GroundedPositive (field/value/object) -> PROCEED_TO_EMIT (D-115.3). Direct
+    # resolve_intent, mirroring test_grounded_candidate_proceeds_to_emit.
+    from uuid import uuid4
+    from primeqa.semantic.connection import get_tenant_connection
+    from primeqa.semantic.query import SemanticOrgModel
+    from primeqa.generation.governance import ConversationContext, NextAction
+    from primeqa.generation.protocol import (
+        GovernanceContext, OperationalContext, SemanticContext,
+    )
+    from primeqa.generation.runtime import RequirementState
+
+    with get_tenant_connection(TEST_TENANT_ID) as conn:
+        gov = GovernanceCore(SemanticOrgModel(conn))
+        ctx = ConversationContext(
+            request_id=uuid4(), requirement_ref={}, requirement_text="x",
+            semantic_context=SemanticContext(s1_version_seq=seeded["v1"]),
+            governance_context=GovernanceContext(), operational_context=OperationalContext(),
+            shared_context={},
+        )
+        state = RequirementState(request_id=ctx.request_id, requirement_ref={})
+        res = gov.resolve_intent(
+            intent_input=intent(claim_kind="value-claim", polarity="positive",
+                                sf_api_name="Invoice", field_name="Invoice.Amount",
+                                expected_value="100"),
+            ctx=ctx, state=state,
+        )
+    assert res.next_action == NextAction.PROCEED_TO_EMIT
+    gp = state.grounded_positive
+    assert gp is not None
+    assert gp.target_object.external_id == "Invoice"
+    assert gp.field.external_id == "Invoice.Amount"
+    assert gp.value == "100"
 
 
 # ---------------------------------------------------------------------------
