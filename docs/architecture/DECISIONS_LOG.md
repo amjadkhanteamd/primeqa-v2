@@ -7401,3 +7401,23 @@ The last gap of D-115's positive value-claim. D-115.3 made it production-reachab
 **Guards.** v1 stays byte-frozen (hash guard); v2 self-describes its version + carries only the additive value-claim guidance. The grounding is untouched (strict). The offline probe is deterministic; the live probe never gates CI (it auto-fails only on a live run with a key).
 
 ---
+
+## D-116 — S6 cross-run clustering (deterministic): cause / VR / flapping patterns
+
+**Date:** 2026-06-01
+**Substrates affected:** [S6] (the cross-run clustering layer — promote `cause_kind` / `vr_name` + a deterministic grouping service); no LLM, no v1, no other substrate
+**Status:** Active — S6 phase-7 slice (clustering). On `phase-7-substrate-6-interpretation`. Pure substrate, deterministic; S6 stays write-only (the clusters are queryable, no consumer yet).
+
+The next held S6 layer (S6 `DEFERRED_ITEMS` §2). S6 produces a deterministic per-run `Interpretation` (verdict + attribution + a structured `Cause` = `{cause_kind, vr_name}`), persisted to `s6_interpretations` (D-111.2). Clustering aggregates *across* runs into release-level patterns: recurring non-enforcement, the same VR failing across runs, flapping outcomes. The `s6_interpretations` migration explicitly anticipated this — *"cause_kind / vr_name promote to columns when cause-clustering lands"*; this slice is that trigger.
+
+**Chosen over LLM-phrasing.** The two held S6 layers are phrasing (LLM prose over the interpretation) and clustering. Clustering is the cleaner opener: **pure substrate, deterministic SQL grouping, no LLM, no v1 coupling, fully testable** (seed interpretations → assert clusters), and it keeps `interpretation/` LLM-free (the deterministic-first principle). Phrasing — which pulls the v1 LLM gateway across the substrate↔v1 boundary, is nondeterministic, and is dormant until a consumer reads it — is deferred (still S6 `DEFERRED` §2).
+
+**Promote, not index-in-place.** `cause_kind` + `vr_name` move from the `detail` JSONB to typed (TEXT, nullable) columns on `s6_interpretations` + b-tree indexes — the queryable axes the GROUP BYs need. `detail.cause` stays the structured source of truth; the columns are the clustering index (back-filled from existing rows; written by `persist_interpretation` going forward). This is the migration authors' stated plan, not an expression index.
+
+**The service (read-only).** `clustering.py` — module fns mirroring the `result_store` style, each on a caller-provided tenant-scoped session (isolation by schema), read-only `text()` SELECTs, optional `recipe_id` filter + `min_runs` threshold: `cluster_recurring_causes` (GROUP BY cause_kind), `cluster_by_vr` (GROUP BY vr_name, carrying the distinct outcomes), `cluster_flapping` (GROUP BY claim_test_id HAVING COUNT(DISTINCT outcome) > 1 — uses the typed `outcome` column). Frozen result dataclasses.
+
+**S6-Q-007 (clustering grain) resolved.** Per-cause / per-VR / per-claim, scoped tenant-wide or by `recipe_id`. **Release-grain deferred** — `s6_interpretations` has no release→runs key; a release-level view waits on that link (and a consumer dashboard).
+
+**Guards.** Deterministic (no LLM); `interpretation/` stays LLM-free. Read-only service (clustering never writes). The persist promotion is additive — the existing run-path interpret stage just writes two more columns; the JSONB `cause` is unchanged. S6 stays write-only — the clusters are built + tested, consumer-surfacing deferred (the dormant-substrate posture).
+
+---
