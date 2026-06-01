@@ -7361,3 +7361,23 @@ The SLICE_1 design (D-115 §5(B)) named two mechanisms as side B's to define. Bo
 **Guards.** Read-resolution is a verbatim substitution, fail-loud on an unresolved ref (no silent ungrounded read). The 400-disambiguation is structural off the k16 field-set split, not a heuristic. The observation phase bakes in no immediate-consistency assumption. The padding filler never chooses the value under test (k16) and *refuses* (errored) rather than guessing when it cannot construct a valid world. Teardown is best-effort and never changes the verdict (k14).
 
 ---
+
+## D-115.3 — Value-claim grounding stash: production-reachable positive (Option Q resolved)
+
+**Date:** 2026-06-01
+**Substrates affected:** [S3] (the governance grounding stash + `EMITTABLE` — the production-reachability seam); [S4] (consumes the emitted recipe — side B, no change); [S2] (no change — the model already sufficed)
+**Status:** Active — D-115 slice 1 grounding stash. On `phase-6-substrate-4-positive` (same slice as A+B). Mechanism + tests; the LLM propose-guidance + the live eval probe are deferred (below).
+
+The third piece of D-115's positive value-claim. Side A authored the emission (`_author_positive`), side B built the S4 execution spine — but `resolve_intent` could not build a `GroundedPositive` from a real intent, so no real requirement reached the positive path. This slice closes it: a field-and-value `GroundedPositive` is grounded + stashed during `resolve_intent`, and `EMITTABLE += ("data_behavior","value-claim")` opens the proceed-gate. The mechanism was pre-wired — `finalize_outcome` already reads `state.grounded_positive` and authors it; `target_subject_hint` is an open object that already accepts `field_name` / `expected_value` (exactly as the negative's `operation` rides it). **No S2 model change, no tools-schema change, no migration** (the `EMISSION_DEFERRED` enum shipped in `20260522_0040`).
+
+**Option Q resolved (the coupled landing).** D-115.1 deferred `EMITTABLE += value-claim` because, alone, it flips the resolve-gate from `EMISSION_DEFERRED` → `PROCEED_TO_EMIT` — which routes to the emit phase and (a) crashes the propose-only emission-deferred test (`FakeToolTurn` over-call) and (b) burns an emit call in production. The resolution lands the gate-flip **in lockstep** with: the grounding stash (so a *gated* PROCEED always reaches an authorable finalize — the `test_every_emittable_pair_is_authorable` invariant), the drift-guard map (`_EMITTABLE_SHAPES += value-claim → GroundedPositive`, keeping `set(_EMITTABLE_SHAPES) == set(EMITTABLE)`), and the integration test (the incomplete-intent case re-aimed to the stash-level refuse).
+
+**Verify-at-grounding (Q1).** A value-claim asserts `field == V`, so grounding must verify the **named** field exists. `_evaluate_positive` gains a `field_hint`: a value-claim grounds iff a Field whose `sf_api_name == field_hint` `BELONGS_TO` the object; an unknown named field (or none) → `insufficient_grounding` (mirrors the negative's "no constraint supports it"). Other positive claim_kinds keep the object-level any-field proxy (backward-compatible). The rejected alternative (ground object-level + catch in the stash) conflated "named field absent" with "no value" and left a grounded-then-refused candidate.
+
+**The refusal taxonomy.** field exists + value carried → `PROCEED_TO_EMIT` (emits the value-claim + the create→read→assert recipe side A/B own); field exists, **no value** → `EMISSION_DEFERRED` (S3 never fabricates a value — D-115 §2; grounded-then-deferred at the stash); field **absent** / none named → `insufficient_grounding` → `UNGROUNDED_CLAIM`; object has no fields → `UNGROUNDED_CLAIM` (unchanged).
+
+**Scope (Q2) — mechanism + tests; LLM-guidance + eval deferred.** This lands the governance mechanism + the unit/integration coverage. The positive is reachable the instant the LLM supplies `field_name` + `expected_value` in `target_subject_hint`; **telling** it to (the propose tool-description / prompt guidance) and a **live eval probe** confirming a real requirement emits end-to-end are a deferred follow-up (mirrors the negative — mechanism first, the verified-prohibition eval probe separate). Until then a complete value-claim is exercised by the unit/integration suites, not the live model.
+
+**Guards.** Grounded ⟺ the named field exists. The value is carried verbatim from the intent — S3 never fabricates one (no value → deferred). The gate-flip lands only with the stash + the drift-guard, preserving "a gated PROCEED is always authorable." The propose-only test's incomplete-intent case stays `EMISSION_DEFERRED` (re-aimed to the stash-level refuse), keeping the enum round-trip coverage.
+
+---
