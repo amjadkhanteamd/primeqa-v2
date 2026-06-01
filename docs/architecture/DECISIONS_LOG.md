@@ -7301,3 +7301,25 @@ D-113 §3 flagged S6's `_attribute_not_enforced` as still using the `derive` + s
 **Guards.** Deterministic, no LLM. S6 consumes the neutral `evaluate` only (S6 ↛ S8). The outcome is still carried verbatim (S6 never re-judges). The drift bucket is now precise — it no longer absorbs `enforcement_gap` (violated), `vr_formula_indeterminate` (non-evaluable), or `no_active_vr` (no enforcer) as guesses.
 
 ---
+
+## D-115 — S4 Slice 1: positive create-and-verify (directly-set state)
+
+**Date:** 2026-06-01
+**Substrates affected:** [S4] (the first positive data-execution vertical — the first true *semantic-execution* slice); [S3] (`GroundedPositive` + value-claim emission); [S2] (`value-claim` + Create/Read/Assert-equals — already modeled, no change); [S1] (read: object requiredness + field grounding)
+**Status:** Active — S4 Slice 1 design. **Design-only; no impl.** Full design: `docs/architecture/substrate_4_execution/SLICE_1_POSITIVE_CREATE_VERIFY_DESIGN.md`.
+
+The first vertical where the weight is on **constructing a valid operational world** on the live org + **policing the S3/S4 boundary**, not the create call. It verifies that a requirement's stated field value is *operationally achievable* and *persists* on the current org (catching VR / FLS / type conflicts at execution time), and it lays the **positive execution spine** that automation-effect positives reuse later.
+
+**Governing boundary (k16, TA-locked) — operational validity, never semantic meaning.** S4 resolves operational validity against the live org but never changes the recipe's semantic meaning, **enforced structurally**: (1) the recipe carries the semantic field-value (the claim's, S3-set) + the target object; (2) **S4's writable set = (the object's required fields) − (the semantic fields)** — S4 fills only that *operational padding* with valid filler (validity checked vs. the live org), and the semantic field-under-test is recipe-set and **never enters S4's writable set**, so S4 *structurally cannot choose the value under test*; (3) grounding compares observed vs. the claim's targets **verbatim** (carried, not recomputed), so S4 cannot reinterpret or soften the verification. Both halves — what is set and what counts as verified — are closed by construction, not by discipline.
+
+**Value-sourcing (resolved seam).** The value-claim's `expected_value` is **requirement-sourced** (carried from synthesis); `_author_positive` threads the one value into both the `CreateStep` (`field = V`) and the `AssertStep` (`field == V`). **S3 never fabricates a value** — no stated value → no value-claim grounds (stays `EMISSION_DEFERRED`). No representative / invented values. (Contrast the negative, which *derives* its value via D-107; the positive is *given* one or does not emit.)
+
+**Scope fence (directly-set-state only).** IN: create, read back, ground the observed *directly-set* value vs. the claim. OUT (deferred): automation effects / branch-sensitive flows / async observation / entanglement detection (**k8**); prerequisite-parent construction — **no required lookups** (scalars / simple-picklist padding only); complex / async teardown; multi-step composition (**k15**).
+
+**Two-sided build.** **(A) S3:** a `GroundedPositive` (object + field + sourced value) grounded on S1; `_author_positive` emits a value-claim + `CreateStep` (**no `expect_rejection`**) → `ReadStep` → `AssertStep(equals)`; `EMITTABLE += ("data_behavior", "value-claim")`; `author_emission` dispatch + governance stash. The S2 model needs no change. **(B) S4:** construct the operational world (S1 requiredness → padding fill) → create-expect-success → **observe as a distinct phase** (async-ready; *no immediate-consistency assumption baked into finalization / grounding*) → ground `field == V` → structured-trace evidence → teardown framed as **execution-isolation (k14)**.
+
+**Closes generate → run.** For the first time a *positive data recipe* flows the whole chain — synthesis → S3 emission → live S4 execution → grounded verification — end to end; S4 executes a genuinely S3-emitted positive recipe.
+
+**Guards.** Structural boundary (the writable-set difference + the verbatim-carried assertion target) is the enforcement, not reviewer trust. S3 never invents values. Observation is a distinct, async-ready phase (no immediate-consistency assumption). Scope-fenced to directly-set state; k8 / k15 / required-lookup parents / complex teardown deferred. Design-only — no impl until GO.
+
+---
