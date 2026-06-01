@@ -15,6 +15,7 @@ from primeqa.intelligence.llm.prompts import (
     agent_fix,
     connection_test,
     story_view,
+    interpretation_phrasing,
     entity_summary_flow,
     entity_summary_validation_rule,
 )
@@ -28,6 +29,9 @@ _REGISTRY: Dict[str, object] = {
     "connection_test":        connection_test,
     # Migration 048 — BA-facing story-view summarisation, Haiku, best-effort
     "story_view_generation":  story_view,
+    # D-117 — S6 interpretation phrasing (deterministic Interpretation -> QA
+    # prose), Haiku, best-effort, invent-nothing. interpretation/ stays LLM-free.
+    "interpretation_phrasing_generation":  interpretation_phrasing,
     # §23 enrichment worker — per-entity-type plain-English summaries,
     # Haiku, best-effort. Summary scope is Flow + ValidationRule for v1.
     "entity_summary_flow":             entity_summary_flow,

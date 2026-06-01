@@ -117,6 +117,14 @@ _CHAINS: Dict[str, Dict[str, List[str]]] = {
         "default":      [HAIKU],
     },
 
+    # Interpretation phrasing (D-117) — restates S6's deterministic
+    # interpretation into QA prose. Haiku-class, NO fallback: a failed phrasing
+    # caches nothing and the caller falls back to the deterministic attribution.
+    "interpretation_phrasing_generation": {
+        COMPLEXITY_LOW: [HAIKU],
+        "default":      [HAIKU],
+    },
+
     # §23 enrichment worker — per-entity-type plain-English summaries
     # (Flow, ValidationRule). Haiku-class summarisation, like
     # story_view. NO fallback: a failed summary is re-queued by the
