@@ -21,6 +21,7 @@ from primeqa.execution_engine import (
     PlanTranslationError,
     build_data_recipe_plan,
 )
+from primeqa.execution_engine.plan import PlannedAssertion, PlannedDataRead
 from primeqa.test_representation.coordinator import RecipeRead
 from primeqa.test_representation.models.environment import ExecutionEnvironmentBody
 from primeqa.test_representation.models.recipes.data_recipe import DataRecipeBody
@@ -55,6 +56,32 @@ def _negative_body(*, expect_rejection=True, extra_steps=None, target_pinned=Fal
     if expect_rejection:
         create["expect_rejection"] = {"error_code": _VR_CODE}
     steps = [create] + list(extra_steps or [])
+    return DataRecipeBody.model_validate({
+        "api_choice": "rest", "identity_context": "system",
+        "execution_mechanism": "direct_api", "steps": steps,
+    })
+
+
+def _positive_body(
+    *, field="Status__c", value="Active", object_api="Account",
+    omit_read=False, omit_assert=False, read_pinned=False,
+) -> DataRecipeBody:
+    """The S2 body a positive create-and-verify carries (D-115): a create with no
+    expect_rejection → read-back → assert(equals)."""
+    target = {"ref_kind": "logical", "entity_type": "Object", "external_id": object_api}
+    read_target = ({"ref_kind": "pinned", "entity_type": "Object",
+                    "entity_id": str(uuid4()), "version_seq": 1, "external_id": object_api}
+                   if read_pinned else target)
+    steps = [{"kind": "create", "step_id": "create-record",
+              "target_object": target, "field_values": {field: value}}]
+    if not omit_read:
+        steps.append({"kind": "read", "step_id": "read-created", "target": read_target,
+                      "soql": f"SELECT {field} FROM {object_api} WHERE Id = '$create-record.id'",
+                      "fields_to_capture": [field]})
+    if not omit_assert:
+        steps.append({"kind": "assert", "step_id": "assert-value",
+                      "predicate": {"subject_ref": f"read-created.{field}",
+                                    "predicate": "equals", "value": value}})
     return DataRecipeBody.model_validate({
         "api_choice": "rest", "identity_context": "system",
         "execution_mechanism": "direct_api", "steps": steps,
@@ -126,6 +153,47 @@ def test_plan_carries_recipe_and_claim_identity():
 
 
 # ---------------------------------------------------------------------------
+# Positive create-and-verify projection (D-115 side B)
+# ---------------------------------------------------------------------------
+
+def test_decodes_positive_recipe_to_plan():
+    plan = build_data_recipe_plan(_recipe_read(observation_realization=_positive_body()))
+
+    assert isinstance(plan, DataRecipePlan)
+    assert len(plan.steps) == 3
+    create, read, assertion = plan.steps
+    assert isinstance(create, PlannedCreate) and create.expect_rejection is None
+    assert create.step_id == "create-record"
+    assert create.field_values == {"Status__c": "Active"}     # semantic field only (k16)
+    assert isinstance(read, PlannedDataRead)
+    assert read.step_id == "read-created"
+    assert read.soql.endswith("'$create-record.id'")
+    assert read.fields_to_capture == ("Status__c",)
+    assert isinstance(assertion, PlannedAssertion)
+    assert assertion.predicate.predicate == "equals"
+    assert assertion.predicate.value == "Active"
+    assert assertion.predicate.subject_ref == "read-created.Status__c"
+
+
+def test_rejects_positive_missing_assert():
+    recipe = _recipe_read(observation_realization=_positive_body(omit_assert=True))
+    with pytest.raises(PlanTranslationError, match="CreateStep -> ReadStep -> AssertStep"):
+        build_data_recipe_plan(recipe)
+
+
+def test_rejects_positive_missing_read():
+    recipe = _recipe_read(observation_realization=_positive_body(omit_read=True))
+    with pytest.raises(PlanTranslationError, match="CreateStep -> ReadStep -> AssertStep"):
+        build_data_recipe_plan(recipe)
+
+
+def test_rejects_positive_pinned_read_target():
+    recipe = _recipe_read(observation_realization=_positive_body(read_pinned=True))
+    with pytest.raises(PlanTranslationError, match="LogicalRef"):
+        build_data_recipe_plan(recipe)
+
+
+# ---------------------------------------------------------------------------
 # Shape gates — fail-loud (mirroring the inspection bridge)
 # ---------------------------------------------------------------------------
 
@@ -139,10 +207,11 @@ def test_rejects_non_data_mutation_trigger():
         build_data_recipe_plan(_recipe_read(trigger_kind="inspection-trigger"))
 
 
-def test_rejects_create_without_expect_rejection():
-    # A positive create (no expect_rejection) is a later vertical.
+def test_rejects_lone_positive_create():
+    # A create with no expect_rejection is now a *positive* (D-115) — but a lone
+    # create (no read + assert) is an incomplete positive: the triple is required.
     recipe = _recipe_read(observation_realization=_negative_body(expect_rejection=False))
-    with pytest.raises(PlanTranslationError, match="expect_rejection"):
+    with pytest.raises(PlanTranslationError, match="CreateStep -> ReadStep -> AssertStep"):
         build_data_recipe_plan(recipe)
 
 
@@ -163,7 +232,7 @@ def test_rejects_non_create_single_step():
         "steps": [{"kind": "read", "step_id": "r",
                    "target": {"ref_kind": "logical", "entity_type": "Object", "external_id": "Lead"}}],
     })
-    with pytest.raises(PlanTranslationError, match="must be a CreateStep"):
+    with pytest.raises(PlanTranslationError, match="begin with a CreateStep"):
         build_data_recipe_plan(_recipe_read(observation_realization=body))
 
 
