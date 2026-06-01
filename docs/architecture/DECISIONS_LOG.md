@@ -7421,3 +7421,21 @@ The next held S6 layer (S6 `DEFERRED_ITEMS` §2). S6 produces a deterministic pe
 **Guards.** Deterministic (no LLM); `interpretation/` stays LLM-free. Read-only service (clustering never writes). The persist promotion is additive — the existing run-path interpret stage just writes two more columns; the JSONB `cause` is unchanged. S6 stays write-only — the clusters are built + tested, consumer-surfacing deferred (the dormant-substrate posture).
 
 ---
+
+## D-117 — S6 LLM-phrasing (presentation layer): invent-nothing prose over the interpretation
+
+**Date:** 2026-06-01
+**Substrates affected:** [S6] (the LLM-phrasing presentation layer — a v1 enricher + a substrate column + a pure write-helper); [v1 `intelligence`] (the enricher + the prompt task — the LLM lives here)
+**Status:** Active — S6 phase-7 slice (phrasing). On `phase-7-substrate-6-interpretation`. The capability is built + stub-tested; the live trigger is **dormant** (S6 is write-only — no consumer reads interpretations yet).
+
+The second held S6 layer (S6 `DEFERRED_ITEMS` §2 / S6-Q-006). S6 produces a deterministic per-run `Interpretation` (verdict + attribution + a structured `Cause`); phrasing turns it into QA-readable prose — a `headline` + a 2–3-sentence plain-English `explanation`. It is a **presentation layer**: it **phrases what the deterministic core already attributed and invents nothing** — it never produces the attribution (the deterministic core stays the source of truth, the S6-Q-002 invariant).
+
+**The boundary (the key decision).** Phrasing needs the LLM, but `interpretation/` is deliberately LLM-free (deterministic-first) and imports nothing from v1's `intelligence`. The substrate's own LLM path is forced-tool-use (structured output), wrong for prose. So the split: the **LLM lives in v1** — a `StoryViewEnricher`-shaped `InterpretationPhrasingEnricher` over `gateway.llm_call` + a Haiku prompt module (`interpretation_phrasing@v1`, no cache / no escalation), mirroring the migration-048 story_view pattern (best-effort, never-raises, hard caps, a per-tenant flag); the **schema + a pure-SQL write-helper live in the substrate** (`result_store.set_phrasing`, an `UPDATE`, no LLM). `interpretation/` stays LLM-free; v1 annotates the substrate row (the allowed consumer→producer direction).
+
+**Storage = a column on `s6_interpretations`** (the S6-Q-006 "nullable field" lean, chosen over a separate v1 cache table): a nullable `phrasing JSONB` column, NULL until phrased. **On-demand + cache:** `get_or_phrase(run_id)` returns the cached prose, or (per-tenant flag on) phrases once + caches via `set_phrasing`. The trigger is a future consumer's; today it is dormant (S6 write-only) — the enricher + helper are built + tested, not live-fired.
+
+**S6-Q-006 resolved.** Runs **on-demand + cache** (a v1 enricher), stored in a **nullable `s6_interpretations.phrasing` column**; invention is prevented **structurally** — the prompt is handed only the deterministic `{outcome, verdict, attribution, cause}` and instructed to paraphrase them, and the enricher validates / caps the output (it can echo + shorten, never source new facts). The deterministic `attribution` remains the single source of truth.
+
+**Guards.** `interpretation/` gains no LLM import (the deterministic core stays pure; the LLM is confined to `intelligence/`). Phrasing never produces the attribution — it paraphrases the deterministic facts (invent-nothing). Best-effort: a failed phrasing returns None and caches nothing (the interpretation is unaffected). Stub-tested in CI (shape / validation / caps deterministic); the real-Haiku output is periodic, as story_view's is. The column is additive — `persist_interpretation` is unchanged.
+
+---
