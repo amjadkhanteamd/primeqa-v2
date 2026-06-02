@@ -13,8 +13,10 @@ from primeqa.generation.enums import AdmissibilityLayer, CaveatKind
 from primeqa.generation.emission import (
     EMITTABLE,
     GroundedEmission,
+    GroundedExistence,
     GroundedNegative,
     GroundedPositive,
+    GroundedProperty,
     _Endpoint,
     author_emission,
 )
@@ -65,6 +67,13 @@ _EMITTABLE_SHAPES = {
         edge_type="APPLIES_TO", version_seq=1,
         source=_ep("ValidationRule", "Case.RequireReason"),
         target=_ep("Object", "Case"), requirement_excerpt="x"),
+    ("configuration", "existence-claim"): lambda: GroundedExistence(
+        archetype="configuration", claim_kind="existence-claim", version_seq=1,
+        subject=_ep("Field", "Account.Industry"), requirement_excerpt="x"),
+    ("configuration", "property-claim"): lambda: GroundedProperty(
+        archetype="configuration", claim_kind="property-claim", version_seq=1,
+        subject=_ep("Field", "Account.Industry"), property_name="is_required",
+        expected_value=True, requirement_excerpt="x"),
     ("data_behavior", "prohibition-claim"): lambda: GroundedNegative(
         archetype="data_behavior", claim_kind="prohibition-claim",
         operation_hint=None, version_seq=1,

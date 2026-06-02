@@ -46,7 +46,9 @@ from primeqa.generation.semantic_completeness import caveat_kind, requires_cavea
 from primeqa.generation.verified_negative import VerifiedNegative, derive
 from primeqa.semantic.formula import parse
 from primeqa.test_representation.models.claims.configuration import (
+    ExistenceClaimBody,
     MetadataRelationshipClaimBody,
+    PropertyClaimBody,
 )
 from primeqa.test_representation.models.claims.data_behavior.prohibition_claim import (
     ProhibitionClaimBody,
@@ -63,6 +65,7 @@ from primeqa.test_representation.models.environment import (
 from primeqa.test_representation.models.primitives import (
     AssertionPredicate,
     LiteralValue,
+    NullValue,
     RejectionExpectation,
     RejectionSignal,
 )
@@ -116,6 +119,8 @@ _DEFAULT_OPERATION = "modify_record"
 
 EMITTABLE: frozenset = frozenset({
     ("configuration", "metadata-relationship-claim"),   # D-098 (GroundedEmission)
+    ("configuration", "existence-claim"),                # D-122 (GroundedExistence)
+    ("configuration", "property-claim"),                 # D-122 (GroundedProperty)
     ("data_behavior", "prohibition-claim"),              # D-101 (GroundedNegative)
     ("data_behavior", "value-claim"),                    # D-115 (GroundedPositive)
 })
@@ -196,6 +201,36 @@ class GroundedPositive:
     requirement_excerpt: str
 
 
+@dataclass(frozen=True)
+class GroundedExistence:
+    """configuration existence-claim grounding (D-122): an S1 entity verified to
+    exist (Layer-1-complete — the non-empty ``get_entities`` result IS the
+    verification, D-079). Authored-from, never LLM-supplied (D-097.5)."""
+
+    archetype: str              # "configuration"
+    claim_kind: str             # "existence-claim"
+    version_seq: int            # the pinned S1 version grounding ran against
+    subject: _Endpoint          # the entity asserted to exist
+    requirement_excerpt: str
+
+
+@dataclass(frozen=True)
+class GroundedProperty:
+    """configuration property-claim grounding (D-122): an S1-modeled detail
+    property of an entity, read verbatim from ``get_entity_details`` (Layer-1-
+    complete, D-079). ``expected_value`` is the value READ from S1 — never the
+    requirement's assertion on faith; a mismatch refuses at grounding rather than
+    emit a false claim (invent-nothing, Guardrail 2)."""
+
+    archetype: str              # "configuration"
+    claim_kind: str             # "property-claim"
+    version_seq: int
+    subject: _Endpoint          # the entity whose property is asserted
+    property_name: str          # the S1 detail column (e.g. "is_required")
+    expected_value: Any         # the value read from the S1 detail row (raw scalar)
+    requirement_excerpt: str
+
+
 # ---------------------------------------------------------------------------
 # Authored bodies (couriered to the persister)
 # ---------------------------------------------------------------------------
@@ -235,6 +270,7 @@ class EmissionBundle:
 def _inspection_recipe(
     *, read_entity_type: str, read_external_id: str,
     capture_field: str, env_detail: str,
+    assert_predicate: str = "exists", assert_value: Any = None,
 ) -> tuple[InspectionTriggerBody, MetadataRecipeBody, ExecutionEnvironmentBody]:
     """Build the (trigger, recipe, env) triple for a verification by inspection.
     Reads ``read_entity_type``/``read_external_id``'s metadata and asserts the
@@ -256,7 +292,8 @@ def _inspection_recipe(
             AssertStep(
                 step_id="assert-edge",
                 predicate=AssertionPredicate(
-                    subject_ref="read-subject", predicate="exists",
+                    subject_ref="read-subject", predicate=assert_predicate,
+                    value=assert_value,
                 ),
             ),
         ],
@@ -302,6 +339,72 @@ def _author_config(g: GroundedEmission) -> EmissionBundle:
         execution_environment=env,
         # Config metadata-relationship is Layer-1-complete (D-079): reading S1 IS
         # the verification. No Layer 2 exists, so no caveat regardless of verified.
+        admissibility_layer=AdmissibilityLayer.LAYER_1,
+        caveat_required=requires_caveat(g.claim_kind),
+        caveat_kind=caveat_kind(g.claim_kind),
+    )
+
+
+def _author_existence(g: GroundedExistence) -> EmissionBundle:
+    """Author a config existence-claim (D-122): an inspection recipe that reads
+    the subject's metadata and asserts it surfaces. Layer-1-complete, no caveat —
+    a non-empty read IS the verification (D-079)."""
+    subject_ref = IdentityBearingRef(
+        entity_type=g.subject.entity_type, entity_id=g.subject.entity_id,
+        version_seq=g.version_seq, external_id=g.subject.external_id,
+    )
+    claim = ExistenceClaimBody(subject=subject_ref)
+    conditions = SemanticConditionsBody(conditions=[])
+    trigger, recipe, env = _inspection_recipe(
+        read_entity_type=g.subject.entity_type,
+        read_external_id=g.subject.external_id,
+        capture_field="sf_api_name",
+        env_detail=f"read {g.subject.external_id} metadata to verify it exists",
+    )
+    return EmissionBundle(
+        archetype=g.archetype, claim_kind=g.claim_kind,
+        asserted_truth=claim, semantic_conditions=conditions,
+        trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
+        causal_initiation=trigger, observation_realization=recipe,
+        execution_environment=env,
+        admissibility_layer=AdmissibilityLayer.LAYER_1,
+        caveat_required=requires_caveat(g.claim_kind),
+        caveat_kind=caveat_kind(g.claim_kind),
+    )
+
+
+def _author_property(g: GroundedProperty) -> EmissionBundle:
+    """Author a config property-claim (D-122): an inspection recipe that reads the
+    subject's ``property_name`` and asserts it equals the S1-read value. Layer-1-
+    complete, no caveat (D-079). The value was read from S1 at grounding, never
+    invented — a NULL property asserts ``is_null``, else ``equals``."""
+    subject_ref = IdentityBearingRef(
+        entity_type=g.subject.entity_type, entity_id=g.subject.entity_id,
+        version_seq=g.version_seq, external_id=g.subject.external_id,
+    )
+    expected = NullValue() if g.expected_value is None else LiteralValue(value=g.expected_value)
+    claim = PropertyClaimBody(
+        subject=subject_ref, property_name=g.property_name, expected_value=expected,
+    )
+    conditions = SemanticConditionsBody(conditions=[])
+    if g.expected_value is None:
+        assert_predicate, assert_value = "is_null", None
+    else:
+        assert_predicate, assert_value = "equals", g.expected_value
+    trigger, recipe, env = _inspection_recipe(
+        read_entity_type=g.subject.entity_type,
+        read_external_id=g.subject.external_id,
+        capture_field=g.property_name,
+        env_detail=(f"read {g.subject.external_id}.{g.property_name} to verify "
+                    f"it equals {g.expected_value!r}"),
+        assert_predicate=assert_predicate, assert_value=assert_value,
+    )
+    return EmissionBundle(
+        archetype=g.archetype, claim_kind=g.claim_kind,
+        asserted_truth=claim, semantic_conditions=conditions,
+        trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
+        causal_initiation=trigger, observation_realization=recipe,
+        execution_environment=env,
         admissibility_layer=AdmissibilityLayer.LAYER_1,
         caveat_required=requires_caveat(g.claim_kind),
         caveat_kind=caveat_kind(g.claim_kind),
@@ -516,6 +619,10 @@ def author_emission(grounded: object) -> EmissionBundle:
     the grounding shape."""
     if isinstance(grounded, GroundedEmission):
         return _author_config(grounded)
+    if isinstance(grounded, GroundedExistence):
+        return _author_existence(grounded)
+    if isinstance(grounded, GroundedProperty):
+        return _author_property(grounded)
     if isinstance(grounded, GroundedNegative):
         return _author_negative(grounded)
     if isinstance(grounded, GroundedPositive):

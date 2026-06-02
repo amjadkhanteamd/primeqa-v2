@@ -54,7 +54,9 @@ from primeqa.test_representation.models.claims.data_behavior import (
 # bodies (the S3 draft-vertical debut archetype, D-098.1).
 from primeqa.test_representation.models.claims.configuration import (
     ConfigurationClaimBody,
+    ExistenceClaimBody,
     MetadataRelationshipClaimBody,
+    PropertyClaimBody,
 )
 
 
@@ -69,6 +71,8 @@ __all__ = [
     "StateTransitionClaimBody",
     "ValueClaimBody",
     "MetadataRelationshipClaimBody",
+    "ExistenceClaimBody",
+    "PropertyClaimBody",
     # Cross-archetype flat union (the substrate-level
     # dispatch type).
     "ClaimBody",
@@ -82,6 +86,8 @@ ClaimBody = Annotated[
         AutomationEffectClaimBody,
         ProhibitionClaimBody,
         MetadataRelationshipClaimBody,
+        ExistenceClaimBody,
+        PropertyClaimBody,
         # Future archetype body classes extend here. Order is
         # not semantically meaningful — Pydantic dispatches by
         # the ``kind`` discriminator value.
