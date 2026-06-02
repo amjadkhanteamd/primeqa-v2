@@ -369,3 +369,42 @@ class SemanticOrgModel:
             {"eid": str(entity_id)},
         ).mappings().first()
         return dict(row) if row is not None else None
+
+    # -- detail read: a value-set's values (D-119) -----------------------
+    def get_picklist_values(
+        self,
+        picklist_value_set_id: UUID,
+        at_seq: int,
+    ) -> list[dict[str, Any]]:
+        """The PicklistValue rows of a PicklistValueSet, valid at ``at_seq`` and
+        ordered by ``sort_order`` — each a ``picklist_value_details`` row
+        (``entity_id`` / ``value_api_name`` / ``value_label`` / ``is_active`` /
+        ``is_default`` / ``sort_order``). ``[]`` when the set has no values (or
+        the id is not a value set).
+
+        The middle hop of value-claim accepted-values grounding (D-119): a
+        PicklistValueSet's PicklistValue children are linked only by the
+        ``picklist_value_details.picklist_value_set_entity_id`` FK — there is no
+        containment *edge* (the D-019 edge taxonomy is locked at 14 types) and
+        ``get_entities`` filters only identity columns, so this targeted read is
+        the way to enumerate them. The detail table carries no version columns,
+        so the as-of window applies to each value's ``entities`` row (the
+        ``get_entities`` idiom): a superseded value drops out at an earlier
+        ``at_seq``. The table name is a trusted module literal — no caller-input
+        SQL surface (consistent with ``get_entity_details``).
+        """
+        self._validate_version(at_seq)
+        sql = (
+            "SELECT pvd.entity_id, pvd.value_api_name, pvd.value_label, "
+            "pvd.is_active, pvd.is_default, pvd.sort_order "
+            "FROM picklist_value_details pvd "
+            "JOIN entities e ON e.id = pvd.entity_id "
+            "WHERE pvd.picklist_value_set_entity_id = CAST(:pvs_id AS uuid) "
+            "AND " + _as_of("e") + " "
+            "ORDER BY pvd.sort_order"
+        )
+        rows = self._conn.execute(
+            text(sql),
+            {"pvs_id": str(picklist_value_set_id), "at_seq": at_seq},
+        ).mappings().all()
+        return [dict(r) for r in rows]
