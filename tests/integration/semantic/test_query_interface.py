@@ -299,3 +299,53 @@ def test_get_picklist_values_via_field_edge_chain(conn, seed):
                 for r in s1.get_picklist_values(related[0].entity.id, at_seq=v1)
                 if r["is_active"]}
     assert accepted == {"Banking", "Retail"}
+
+
+# ---------------------------------------------------------------------------
+# Phase-0 breadth-unblock readiness (D-120): permission-claim + config grounding
+# already work over EXISTING primitives + already-synced edges/details — no new
+# S1 primitive needed. These tests pin that so Phase 2 (S3 breadth) can rely on it.
+# ---------------------------------------------------------------------------
+
+def test_get_related_grants_field_access_surfaces_read_edit(conn, seed):
+    # S3 grounds "Profile P grants read on Field F" by reading the
+    # GRANTS_FIELD_ACCESS edge's properties — get_related already returns them.
+    v1 = seed.version()
+    profile = seed.entity("Profile", "Admin", v1)
+    field = seed.entity("Field", "Account.AnnualRevenue", v1)
+    seed.edge(profile, field, "GRANTS_FIELD_ACCESS", "PERMISSION", v1,
+              properties={"can_read": True, "can_edit": False})
+    s1 = SemanticOrgModel(conn)
+
+    grants = s1.get_related(profile, ["GRANTS_FIELD_ACCESS"], "outbound", at_seq=v1)
+    assert len(grants) == 1
+    assert grants[0].entity.id == field
+    assert grants[0].properties == {"can_read": True, "can_edit": False}
+
+
+def test_get_related_grants_object_access_surfaces_flags(conn, seed):
+    v1 = seed.version()
+    ps = seed.entity("PermissionSet", "Sales_PS", v1)
+    obj = seed.entity("Object", "Opportunity", v1)
+    seed.edge(ps, obj, "GRANTS_OBJECT_ACCESS", "PERMISSION", v1,
+              properties={"can_read": True, "can_create": True, "can_edit": False})
+    s1 = SemanticOrgModel(conn)
+
+    grants = s1.get_related(ps, ["GRANTS_OBJECT_ACCESS"], "outbound", at_seq=v1)
+    assert len(grants) == 1
+    assert grants[0].entity.entity_type == "Object" and grants[0].entity.id == obj
+    assert grants[0].properties["can_create"] is True
+    assert grants[0].properties["can_edit"] is False
+
+
+def test_config_existence_grounding_via_get_entities(conn, seed):
+    # config existence-claim ("object/field X exists") grounds on get_entities
+    # (existence == a non-empty result) — no new S1 work. (config property-claim
+    # rides get_entity_details, proven in test_s6_s1_reader.)
+    v1 = seed.version()
+    seed.entity("Object", "Custom_Obj__c", v1)
+    s1 = SemanticOrgModel(conn)
+    assert len(s1.get_entities("Object", at_seq=v1,
+                               filters={"sf_api_name": "Custom_Obj__c"})) == 1
+    assert s1.get_entities("Object", at_seq=v1,
+                           filters={"sf_api_name": "Nope__c"}) == []
