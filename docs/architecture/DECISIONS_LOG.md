@@ -7495,3 +7495,24 @@ Phase 0's purpose was to unblock S3 breadth on the **S1 side**. The slice-2/3 su
 **So Phase 0 ships:** the value-claim S1 grounding (built, D-118 / D-119) + a **tested readiness map** confirming permission + config are already groundable. No new S1 primitive in this close — three deterministic tests pin the existing capability so Phase 2 can rely on it. **Merge exit-gate:** the live-sandbox probe of the built slices (D-118 edge-count 0→~N; D-119 `get_picklist_values` on a real SVS), run before the phase merge. The deferred Tier-2 reopens as S1 Phase-3 when the design-lock lifts.
 
 ---
+
+## D-121 — Substrate-2 readiness ratification: the S3/S4-breadth contract is settled [Phase 1]
+
+**Date:** 2026-06-02
+**Substrates affected:** [S2] (a readiness ratification — no build); [S3, S4] (the consumers — confirmed the breadth surface they call is complete)
+**Status:** Active — Phase 1 of the program roadmap, on `phase-9-substrate-2-readiness`. A ratification + an executable contract pin; no new method / table / enum / migration.
+
+Phase 1's purpose: confirm Substrate-2 (Test Representation) is ready for the S3 (generation) and S4 (execution) **breadth** phases before they build on it, and ratify two deferred-handoff decisions. The finding: **S2 is complete and there is no gap** — Phase 1 is a ratification, not a build.
+
+**Coverage — the breadth surface S3/S4 call is fully present.**
+- The **22-method Semantic Transaction Coordinator** (`primeqa/test_representation/coordinator.py`; Phase 4 / D-064 / 1148 tests) is the single read/write entry point — the write / read / discovery / resolution / boundary groups.
+- The **taxonomies already cover every breadth kind**: `CLAIM_KIND_ENUM` holds all **16 claim-kinds** (value / state-transition / automation-effect / prohibition / existence / property / metadata-relationship / capability / sharing-rule / element-state / navigation / layout / platform-event / outbound-message / callout / inbound-effect); `RECIPE_KIND_ENUM` all **5** recipe verticals; `TRIGGER_KIND_ENUM` all **6** triggers (`models_db.py:82/108/119`). So S3 emitting the remaining 13 claim-kinds (Phase 2) and S4 running any recipe vertical hit **no** unlisted kind — `claim_kind` / `recipe_kind` are *parameters* to the same `write_claim` / `write_recipe`, not per-kind code.
+- **S3** routes through `query_equivalent_claims` → `write_claim` → `write_recipe` (`primeqa/generation/persistence.py:118/124/137`); **S4** through `select_recipe_for_execution` + `report_run_outcome`. The **e2e round-trip is already proven** (`tests/integration/test_representation/e2e/{lifecycle,s4_boundary,multi_recipe}.py`). **No coverage gap.**
+
+**Ratify §11 disposition (D-065).** The v2.2 test-management tables' dispositions stand: ABSORB (`test_cases` → claims/recipes) / DROP (`test_case_versions`, `requirements`, `metadata_impacts`) / **MIGRATE** (`test_suites` / `sections` / `suite_test_cases` / `ba_reviews` → future "test catalog" + "review workflow" substrates). The MIGRATE gap is a **deliberate boundary**, not a defect — short-term v2.2 parity traded for long-term substrate coherence. No v2-GA product reason to renegotiate surfaces here; if one arises it is a substrate-boundary decision, not Phase-1 work. Migration execution stays post-cutover.
+
+**Ratify the provenance retirement (D-074).** S3's **semantic ledger** (`generation_requests` + `generation_outcomes`) retires into S2 provenance when the typed read API `get_provenance` / `get_recipe_provenance` ships — reserved in SPEC §10.2; the `test_provenance` rows are **already written** by every Coordinator mutation, so only the typed read surface is pending. Target: the **Phase-7 greenfield cutover**, where S3's ledger retires alongside v1. `llm_calls` (operational observability) **stays in S3 permanently** — it does NOT migrate (D-074). Until then S3 owns the semantic ledger as a v1 shim.
+
+**Deliverable.** No product code: an executable **taxonomy-contract drift-guard** (`tests/unit/test_representation/test_taxonomy_contract.py`) pins `CLAIM_KIND_ENUM` (16) + `RECIPE_KIND_ENUM` (5) + `TRIGGER_KIND_ENUM` (6) as the S3/S4 breadth contract — a future edit that drops or renames a kind fails loud. The standing S2 proof (1148 tests + the e2e round-trip) is unchanged. **Merge gate is deterministic** (Phase 1 touches no Salesforce — no live probe).
+
+---

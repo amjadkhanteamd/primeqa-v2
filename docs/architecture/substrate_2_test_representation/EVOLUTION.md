@@ -273,3 +273,17 @@ recipe, not the identity-bearing claim).
 
 The shape the S4 behavioral-negative vertical (D-110.2) + S3 behavioral emission
 (D-110.3) consume.
+
+---
+
+## 2026-06-02 — Phase 1: readiness ratification — the S3/S4-breadth contract is settled (D-121)
+
+Phase 1 of the program roadmap (breadth-first: confirm each substrate complete before the next builds on it). **A ratification, not a build** — S2 is already complete (Phase 4: 22 Coordinator methods, 1148 tests), and verification this cycle found **no gap** for the S3 (generation) + S4 (execution) breadth phases.
+
+**Coverage confirmed.** The 22-method Semantic Transaction Coordinator + the complete taxonomies — `CLAIM_KIND_ENUM` (all **16** claim-kinds), `RECIPE_KIND_ENUM` (**5** recipe verticals), `TRIGGER_KIND_ENUM` (**6** triggers) — cover every breadth call. S3 emitting the remaining 13 claim-kinds (Phase 2) and S4 running any recipe vertical hit no unlisted kind: the kinds are *parameters* to `write_claim` / `write_recipe` / `select_recipe_for_execution`, not per-kind code. S3 routes through `query_equivalent_claims` → `write_claim` → `write_recipe`; S4 through `select_recipe_for_execution` + `report_run_outcome`; the e2e round-trip is already proven (`tests/integration/test_representation/e2e/{lifecycle,s4_boundary,multi_recipe}.py`). A new **taxonomy-contract drift-guard** (`tests/unit/test_representation/test_taxonomy_contract.py`) pins 16/5/6 by set-equality so a future edit that drops / renames / adds a kind fails loud.
+
+**Two handoffs ratified.** (1) The §11 v2.2-table disposition (D-065) stands — `test_suites` / `sections` / `ba_reviews` **MIGRATE** to future catalog / review substrates (a deliberate boundary, not a gap). (2) The provenance retirement (D-074): S3's semantic ledger (`generation_requests` + `generation_outcomes`) retires into S2 `get_provenance` / `get_recipe_provenance` at the **Phase-7 greenfield cutover** (the typed read API is reserved in SPEC §10.2; `test_provenance` rows are already written by every Coordinator mutation); `llm_calls` (operational observability) stays in S3 permanently.
+
+**Forward-compat reserved slots confirmed non-blocking for v1 breadth:** semantic-conditions graphification, the operational-linkage layer, richer runtime-state resolution, run-history-beyond-last-run, recipe-approval auto-preservation, merge / rebase semantics, registry-based `external_system`, replay-sensitive recipe selection. None is hit by S3 / S4 v1 breadth; each reopens with its own consumer.
+
+No product code; deterministic merge gate (Phase 1 touches no Salesforce). See D-121. On `phase-9-substrate-2-readiness`.
