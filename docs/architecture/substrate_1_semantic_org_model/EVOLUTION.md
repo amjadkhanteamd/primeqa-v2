@@ -93,3 +93,11 @@ Structural commitments D-014 through D-022 remain design-locked but their implem
 The forensic codebase report's Phase A (3–4 weeks of foundation plumbing) is bypassed. Phase D's generation-pipeline integration (`generation.py:316`) is also bypassed in this milestone — the first customer-visible surface is the release-detail "Org changes since last green run" panel, which only reads the diff output and does not touch `worker.py` or `generation_jobs.py`.
 
 See D-023.
+
+---
+
+## 2026-06-02 — D-118: Tier-2 implementation begins (slice 1 — standard-field → SVS)
+
+First Tier-2 increment, opening Phase 0 of the program roadmap (the S1-Tier-2 unblocker for Substrate-3 breadth). Note: S1's Phase-2 *implementation* build-arc — D-024's full Phase-2 ship plus the §1–§25 increments — was logged in `PHASE_2_PLAN_corrections.md`, not here; this EVOLUTION log paused at D-023 (the design era). This entry resumes it for the Tier-2 cycle.
+
+**Slice 1 (D-118): standard picklist field → StandardValueSet `HAS_PICKLIST_VALUES` edge.** Resolves corrections-log §22 (the deferred standard-field SVS detection). No Salesforce API exposes the field→SVS link, so it is detected by **content-matching** the field's active describe values against the synced SVS value-sets — **exact set-equality, fail-closed** (0 / ambiguous → no edge). A match populates the existing `field_details.picklist_value_set_entity_id` (via the same `_value_set_external_id` marker the §10 GVS path uses, SVS-prefixed), so the existing `_edges_from_field_row` derivation emits the **already-locked** `HAS_PICKLIST_VALUES` edge — **no new edge type / column / migration** (the D-019 taxonomy and the D-024 design-lock untouched). Exact-match is high-confidence and self-healing (an admin value-edit drops the edge on the next sync); the subset/overlap tolerance is deferred. Unblocks Substrate-3's `value-claim` accepted-values grounding (D-097.2). 12 unit tests; live-sandbox edge-count probe is the slice exit-gate. On `phase-8-substrate-1-tier2`. See D-118 + corrections-log §22.
