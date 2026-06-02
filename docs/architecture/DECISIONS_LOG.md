@@ -7473,3 +7473,25 @@ D-118 created the Field → PicklistValueSet `HAS_PICKLIST_VALUES` edge, but S3 
 **Guards / verification.** Additive — no edge, no schema, no migration (diff-checkable). Unit: version-scoped rows on seeded data (a superseded value excluded at the old seq, present at the new) + the fail-loud-version + no-raw-SQL contract mirrored from `get_entity_details`. Read-chain integration: Field → `get_related(HAS_PICKLIST_VALUES)` → PVS → `get_picklist_values` → the value set. Live-sandbox: `get_picklist_values` on a real standard field's SVS (e.g. `Account.Industry`) returns its values — the slice exit-gate.
 
 ---
+
+## D-120 — Phase-0 (S1 breadth-unblock) closure: the verified S3-readiness map; Tier-2 remainder → S1 Phase-3
+
+**Date:** 2026-06-02
+**Substrates affected:** [S1] (Phase-0 close — a readiness verification + a scope decision, no new primitive); [S3] (the consumer — which claim-kinds are S1-groundable for Phase-2 emission)
+**Status:** Active — Phase-0 close, on `phase-8-substrate-1-tier2`. A scope decision + verification tests; no `query.py` change.
+
+Phase 0's purpose was to unblock S3 breadth on the **S1 side**. The slice-2/3 surveys found the S1 foundation already covers more than the roadmap assumed — `get_entity_details` (D-111.1) and `get_related` (which returns edge properties) plus the already-synced permission grant edges already ground three of the data-present claim-kinds. So Phase 0 **closes here with a verified readiness map**, not more Tier-2 slices.
+
+**The S1 grounding map (what Phase 2 / S3 breadth can rely on):**
+- **`value-claim` (accepted-values) — BUILT this phase.** D-118 (standard-field → SVS `HAS_PICKLIST_VALUES` edge via content-match) + D-119 (`get_picklist_values`). The Field → PVS → values chain is proven (the D-119 chain test).
+- **`permission-claim` (capability) — ALREADY READY.** The five PERMISSION edges (`GRANTS_FIELD_ACCESS` / `GRANTS_OBJECT_ACCESS` / `HAS_PERMISSION_SET` / `INHERITS_PERMISSION_SET` / `HAS_PROFILE`) exist and are synced (real sandbox data: ~11K FieldPermissions + ~2.6K ObjectPermissions), and `get_related` already returns the far-end entity **and** the edge's `can_read` / `can_edit` properties. No S1 work needed — verified by test (`get_related` over a `GRANTS_*_ACCESS` edge surfaces the grant flags).
+- **`config` existence / property — ALREADY READY.** Existence via `get_entities` (a non-empty result), property via `get_entity_details` (the field/object detail row). Both pre-existing; existence newly tested here, property already tested (`test_s6_s1_reader`).
+
+**What defers, and why Phase 0 closes without it:**
+- **automation-effect ← Flow logic interpretation.** The Flow entry-condition parse is **dormant on this sandbox** (zero record-triggered flows — all AutoLaunched), so it unblocks nothing now; the work goes to **S1 Phase-3**, firing automatically when a future org has record-triggered flows (the TRIGGERS_ON correctness-complete-despite-zero-edges precedent).
+- **permission run-as / sharing rules / OWD / Apex sharing; approval-process modeling.** The heavier Tier-2 graph, explicitly **beyond the D-024 lock window** → **S1 Phase-3** (post-~2026-07-20). Their S3 kinds (complex / run-as permission, integration topology) defer with them (D-080 / D-082). The **D-020 `effective_field_permissions`** materialized view (inheritance aggregation) is Phase-2-scoped per the D-024 phase plan and unneeded for the simplest single-edge permission-claim — deferred.
+- **Phase-0 ops** (refresh scheduling, observability, tenant onboarding). Operational hardening, **not breadth-blocking** → folded into S1 Phase-3.
+
+**So Phase 0 ships:** the value-claim S1 grounding (built, D-118 / D-119) + a **tested readiness map** confirming permission + config are already groundable. No new S1 primitive in this close — three deterministic tests pin the existing capability so Phase 2 can rely on it. **Merge exit-gate:** the live-sandbox probe of the built slices (D-118 edge-count 0→~N; D-119 `get_picklist_values` on a real SVS), run before the phase merge. The deferred Tier-2 reopens as S1 Phase-3 when the design-lock lifts.
+
+---
