@@ -7516,3 +7516,27 @@ Phase 1's purpose: confirm Substrate-2 (Test Representation) is ready for the S3
 **Deliverable.** No product code: an executable **taxonomy-contract drift-guard** (`tests/unit/test_representation/test_taxonomy_contract.py`) pins `CLAIM_KIND_ENUM` (16) + `RECIPE_KIND_ENUM` (5) + `TRIGGER_KIND_ENUM` (6) as the S3/S4 breadth contract — a future edit that drops or renames a kind fails loud. The standing S2 proof (1148 tests + the e2e round-trip) is unchanged. **Merge gate is deterministic** (Phase 1 touches no Salesforce — no live probe).
 
 ---
+
+## D-122 — Configuration breadth: existence-claim + property-claim emission (Phase 2 slice 1)
+
+**Date:** 2026-06-02
+**Substrates affected:** [S3] (emission — two new configuration claim-kinds become emittable); [S2] (two new claim-body Pydantic models — additive, no migration)
+**Status:** Active — Phase 2 (S3 generation breadth) slice 1, on `phase-10-substrate-3-breadth`. The emission path; the prompt live-reach (the LLM *proposing* these) is slice 1b.
+
+Phase 2 grows the emittable surface from 3 of 16 toward all groundable kinds. Slice 1 — the cleanest entry (S1-ready, Layer-1-complete, no caveat machinery) — adds the two configuration claim-kinds D-098 / D-098.4 deferred to the S1 detail-read increment (now shipped, Phase 0 / D-119–D-120):
+
+- **`existence-claim`** — "Object / Field / Flow X exists in this org."
+- **`property-claim`** — "Field X is required / has length N; RecordType RT exists on Object" — an S1-Tier-1-modeled property holds.
+
+**Mirror the proven `_author_config` pattern.** Both are **Layer-1-complete, no caveat** — reading the metadata *is* the verification (D-079, as for `metadata-relationship-claim`). The shape is the existing `_inspection_recipe` (a metadata-read + an assert), `inspection-trigger` + `metadata-recipe`, `LAYER_1`. The extension points (the established add-a-kind pattern):
+- **S2** — two claim bodies in `test_representation/models/claims/configuration/`: `ExistenceClaimBody(subject)` and `PropertyClaimBody(subject, property_name, expected_value)`, `@register_body`-registered. **Additive, no migration** — `CLAIM_KIND_ENUM` already holds both (D-121); the body is just the JSONB `asserted_truth` shape.
+- **S3 `emission.py`** — `GroundedExistence` / `GroundedProperty` dataclasses (mirror `GroundedEmission`); `_author_existence` / `_author_property` (reuse `_inspection_recipe`); two `author_emission` dispatch arms; `EMITTABLE += {(configuration, existence-claim), (configuration, property-claim)}`.
+- **S3 `governance_core.py`** — open the `_resolve_configuration` gate (today it refuses everything but metadata-relationship): **existence** grounds via `self._s1.get_entities(entity_type, filters)` (found → `GroundedExistence`; absent → `no_relevant_context` refusal); **property** grounds via `self._s1.get_entity_details(entity_id)` (the property is an S1-modeled detail column carrying the asserted value → `GroundedProperty`; unmodeled column → `ungrounded-claim` / `ontology_gap` — the honest Tier-1 ceiling, D-079).
+
+**Grounding is invent-nothing (Guardrail 2).** Existence is the non-empty `get_entities` result; the property value is read from the S1 detail row — never the requirement's assertion on faith. A mismatch (asserted ≠ S1) refuses rather than emit a false claim.
+
+**Drift-guard kept lockstep.** `EMITTABLE` and the `_EMITTABLE_SHAPES` map (the `set(_EMITTABLE_SHAPES) == set(EMITTABLE)` test) update together — the mechanical guard against a kind in the gate with no author arm (or vice-versa). Deterministic emit probes assert the bundle shape / recipe / `LAYER_1`-no-caveat for both.
+
+**Scope boundary.** Slice 1 is the **emission path** — the two kinds become emittable + grounded + deterministically tested. The **prompt live-reach** (a `configuration` fragment line so the LLM proposes existence/property + a live ontology-coherence probe) is **slice 1b** (the D-115.4-style activation), kept separate so the prompt freeze ritual doesn't entangle the emission build. No S1 change (the reads shipped in Phase 0); no migration.
+
+---
