@@ -321,3 +321,37 @@ def test_positive_value_claim_emitted_end_to_end(seeded):
     recipe = rows["recipes"][0]
     assert recipe["trigger_kind"] == "data-mutation-trigger"
     assert recipe["recipe_kind"] == "data-recipe"
+
+
+# ---------------------------------------------------------------------------
+# Configuration breadth (D-122): existence-claim grounds + emits end to end
+# ---------------------------------------------------------------------------
+
+def _existence_intent(entity_type: str, sf_api_name: str):
+    """A config existence-claim intent (D-122) — the flat target_subject_hint
+    convention {entity_type, sf_api_name}."""
+    return {"requirement_excerpt": f"{sf_api_name} exists in the org",
+            "intent_descriptor": {
+                "archetype_hint": "configuration", "polarity_hint": "positive",
+                "claim_kind_hint": "existence-claim",
+                "target_subject_hint": {"entity_type": entity_type, "sf_api_name": sf_api_name}}}
+
+
+def test_existence_claim_grounds_and_emits(seeded):
+    # "Account" exists in the seeded S1 -> existence-claim grounds (get_entities),
+    # emits the inspection recipe, persists whole (Layer-1-complete, no caveat).
+    _, res = _emit_run(seeded, [_existence_intent("Object", "Account")],
+                       persister=LedgerPersister(TEST_TENANT_ID))
+    o = res.results[0].outcome
+    assert o.outcome_kind == OutcomeKind.DRAFT
+    assert o.admissibility_layer == AdmissibilityLayer.LAYER_1
+    assert o.caveat_required is False and o.caveat_kind is None
+    assert o.claims_written and o.recipes_written
+
+    rows = _query()
+    assert len(rows["claims"]) == 1 and len(rows["recipes"]) == 1
+    claim = rows["claims"][0]
+    assert claim["archetype"] == "configuration"
+    assert claim["claim_kind"] == "existence-claim"
+    assert rows["recipes"][0]["recipe_kind"] == "metadata-recipe"
+    assert rows["recipes"][0]["trigger_kind"] == "inspection-trigger"

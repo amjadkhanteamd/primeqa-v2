@@ -33,8 +33,10 @@ from primeqa.generation.enums import AdmissibilityLayer, OutcomeKind, RefusalKin
 from primeqa.generation.explanation_hash import compute_explanation_hash
 from primeqa.generation.emission import (
     GroundedEmission,
+    GroundedExistence,
     GroundedNegative,
     GroundedPositive,
+    GroundedProperty,
     _Endpoint,
     author_emission,
     is_emittable,
@@ -370,6 +372,13 @@ class GovernanceCore:
         # configuration metadata-relationship: target_subject_hint carries the
         # relationship {edge_type, source, target}; both endpoints must resolve.
         if desc.get("archetype_hint") == "configuration":
+            # existence / property (D-122): a flat subject ref, not source/target.
+            if desc.get("claim_kind_hint") in ("existence-claim", "property-claim"):
+                et, api = hint.get("entity_type"), hint.get("sf_api_name")
+                if not et or not api or not self._admit.resolve_subject(et, api, at):
+                    return RefCheck(ok=False, missing_refs=[f"{et}:{api}"],
+                                    feedback=f"subject not found at s1_version_seq {at}: {et}:{api}")
+                return RefCheck(ok=True)
             missing: list[str] = []
             for label in ("source", "target"):
                 ep = hint.get(label) or {}
@@ -537,12 +546,16 @@ class GovernanceCore:
                 subject_refs=[src, tgt], requirement_anchor=excerpt,
                 status=status, admissibility_layer=layer, dismissal_reason=reason)
 
-        # Only metadata-relationship-claim is built for the config debut (D-098.1).
+        # Configuration kinds: metadata-relationship (D-098); existence + property
+        # (D-122). Others (e.g. sharing-rule -> S1 Tier-2) not yet built.
+        if claim_kind == "existence-claim":
+            return self._resolve_existence(intent_input, excerpt, at, state)
+        if claim_kind == "property-claim":
+            return self._resolve_property(intent_input, excerpt, at, state)
         if claim_kind != "metadata-relationship-claim":
             return IntentResolution([], NextAction.REFUSE, self._delta([], []),
                                     refusal=self._router.underspecified(
-                                        f"configuration claim_kind {claim_kind!r} not yet supported "
-                                        f"(debut: metadata-relationship-claim)"))
+                                        f"configuration claim_kind {claim_kind!r} not yet supported"))
 
         # edge_type bound verbatim to TIER_1_EDGES — not a real edge -> ungrounded.
         if edge_type not in TIER_1_EDGES:
@@ -599,6 +612,84 @@ class GovernanceCore:
                                 refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
                                     "detail": "asserted relationship not present in the org",
                                     "edge_type": edge_type, "source": subject_refs[0], "target": subject_refs[1]}))
+
+    def _resolve_existence(self, intent_input: dict, excerpt: str, at: int, state: Any) -> IntentResolution:
+        """existence-claim (D-122): the asserted S1 entity exists (Layer-1-complete,
+        D-079). A non-empty resolve grounds it; absent -> the org lacks it ->
+        refuse (we never emit a false 'exists')."""
+        hint = intent_input["intent_descriptor"].get("target_subject_hint") or {}
+        entity_type, api = hint.get("entity_type"), hint.get("sf_api_name")
+        subj = {"entity_type": entity_type, "sf_api_name": api}
+        matches = self._admit.resolve_subject(entity_type, api, at)
+        cand = _Candidate(path_id="c0", archetype="configuration", claim_kind="existence-claim",
+                          subject_refs=[subj], requirement_anchor=excerpt, status="dismissed")
+        if len(matches) > 1:
+            cand.dismissal_reason = "ambiguous_target_resolution"
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [cand]),
+                                    refusal=self._router.ambiguous(matches))
+        if not matches:
+            cand.dismissal_reason = "no_relevant_context"
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [cand]),
+                                    refusal=self._router.no_relevant_context(
+                                        f"{entity_type} {api!r} does not exist in the org"))
+        e = matches[0]
+        cand.status, cand.admissibility_layer = "admissibly_grounded", AdmissibilityLayer.LAYER_1.value
+        if state is not None:
+            state.grounded_emission = GroundedExistence(
+                archetype="configuration", claim_kind="existence-claim", version_seq=at,
+                subject=_Endpoint(entity_id=e.id, entity_type=e.entity_type,
+                                  external_id=e.sf_api_name or str(e.id)),
+                requirement_excerpt=excerpt)
+        presented = [PresentedCandidate(path_id="c0", admissibility_layer=AdmissibilityLayer.LAYER_1,
+                     summary={"entity_type": e.entity_type, "sf_api_name": e.sf_api_name})]
+        return IntentResolution(presented, NextAction.PROCEED_TO_EMIT, self._delta([], [cand]))
+
+    def _resolve_property(self, intent_input: dict, excerpt: str, at: int, state: Any) -> IntentResolution:
+        """property-claim (D-122): an S1-modeled detail property holds the asserted
+        value (Layer-1-complete, D-079). Reads ``get_entity_details``; an unmodeled
+        column (Tier-1 ceiling) or a value mismatch refuses — invent-nothing, the
+        grounded value is READ from S1, never the assertion taken on faith."""
+        hint = intent_input["intent_descriptor"].get("target_subject_hint") or {}
+        entity_type, api = hint.get("entity_type"), hint.get("sf_api_name")
+        property_name, asserted = hint.get("property_name"), hint.get("expected_value")
+        subj = {"entity_type": entity_type, "sf_api_name": api}
+        matches = self._admit.resolve_subject(entity_type, api, at)
+        cand = _Candidate(path_id="c0", archetype="configuration", claim_kind="property-claim",
+                          subject_refs=[subj], requirement_anchor=excerpt, status="dismissed")
+        if len(matches) > 1:
+            cand.dismissal_reason = "ambiguous_target_resolution"
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [cand]),
+                                    refusal=self._router.ambiguous(matches))
+        if not matches:
+            cand.dismissal_reason = "no_relevant_context"
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [cand]),
+                                    refusal=self._router.no_relevant_context(f"{entity_type} {api!r} did not resolve"))
+        e = matches[0]
+        details = self._s1.get_entity_details(e.id, at) or {}
+        if property_name not in details:
+            cand.dismissal_reason = "ontology_gap"
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [cand]),
+                                    refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
+                                        "detail": f"property {property_name!r} is not S1-modeled on "
+                                                  f"{e.entity_type} (Tier-1 ceiling)", "property": property_name}))
+        s1_value = details[property_name]
+        if asserted is not None and s1_value != asserted:
+            cand.dismissal_reason = "insufficient_grounding"
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [cand]),
+                                    refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
+                                        "detail": f"asserted {property_name}={asserted!r} but S1 holds {s1_value!r}",
+                                        "property": property_name}))
+        cand.status, cand.admissibility_layer = "admissibly_grounded", AdmissibilityLayer.LAYER_1.value
+        if state is not None:
+            state.grounded_emission = GroundedProperty(
+                archetype="configuration", claim_kind="property-claim", version_seq=at,
+                subject=_Endpoint(entity_id=e.id, entity_type=e.entity_type,
+                                  external_id=e.sf_api_name or str(e.id)),
+                property_name=property_name, expected_value=s1_value, requirement_excerpt=excerpt)
+        presented = [PresentedCandidate(path_id="c0", admissibility_layer=AdmissibilityLayer.LAYER_1,
+                     summary={"entity_type": e.entity_type, "sf_api_name": e.sf_api_name,
+                              "property": property_name, "value": s1_value})]
+        return IntentResolution(presented, NextAction.PROCEED_TO_EMIT, self._delta([], [cand]))
 
     # -- refusal materialization ----------------------------------------
     def route_refusal(self, *, directive: RefusalDirective, ctx: ConversationContext, state: Any) -> GenerationOutcome:
