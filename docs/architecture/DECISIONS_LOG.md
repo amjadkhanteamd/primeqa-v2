@@ -7439,3 +7439,59 @@ The second held S6 layer (S6 `DEFERRED_ITEMS` §2 / S6-Q-006). S6 produces a det
 **Guards.** `interpretation/` gains no LLM import (the deterministic core stays pure; the LLM is confined to `intelligence/`). Phrasing never produces the attribution — it paraphrases the deterministic facts (invent-nothing). Best-effort: a failed phrasing returns None and caches nothing (the interpretation is unaffected). Stub-tested in CI (shape / validation / caps deterministic); the real-Haiku output is periodic, as story_view's is. The column is additive — `persist_interpretation` is unchanged.
 
 ---
+
+## D-118 — S1 Tier-2 slice 1: standard-field → StandardValueSet `HAS_PICKLIST_VALUES` via content-match
+
+**Date:** 2026-06-02
+**Substrates affected:** [S1] (Tier-2 slice 1 — populate the existing `HAS_PICKLIST_VALUES` edge for standard picklist fields); [S3] (the unblocked consumer — `value-claim` accepted-values grounding, D-097.2 / D-098.1)
+**Status:** Active — Phase-0 (S1 Tier-2) slice 1, on `phase-8-substrate-1-tier2`. Design only; impl is the next HOLD. Resolves S1 `PHASE_2_PLAN_corrections` §22 (the deferred standard-field SVS detection).
+
+The first Tier-2 increment, chosen as the cleanest S3-breadth unblocker. The gap (§22): a **standard** picklist field (`Account.Industry`, `Lead.LeadSource`) draws its values from a StandardValueSet, which **does** materialize as a `PicklistValueSet` entity (external_id `SVS:{FullName}`) — but **no Salesforce API exposes the field → SVS linkage** (REST describe carries inline `picklistValues` only; standard fields are absent from Tooling `CustomField`; `FieldDefinition` 400s at v66.0). So the ~95 synced SVSes carry **0 `HAS_PICKLIST_VALUES` edges** to the standard fields that use them, and S3 cannot enumerate a standard field's accepted values to ground a `value-claim`.
+
+**Approach — additive fill of the locked edge, no schema change (lock-clean).** Slice 1 adds a **content-match** step in the field-sync path: for a standard picklist field, set the **existing** `field_details.picklist_value_set_entity_id` to the matched SVS entity; the **existing** `_edges_from_field_row` derivation (`derivation.py:163`) then emits the **already-locked** `HAS_PICKLIST_VALUES` edge (Field → PicklistValueSet, `edges.py:319`, D-019) with no change to the edge layer. **No new edge type, no new column, no migration** — the D-019 taxonomy is untouched and the D-024 design-lock is honored. This is the D-027 "additive fill" spirit applied to the very edge whose live 0-count §22 explicitly attributed to this deferral.
+
+**Matching policy — exact set-equality, fail-closed.** A field's active describe value api-name set is linked **only when exactly one** synced SVS's active value api-name set is **set-equal**. **0 matches → no edge** (honest absence); **>1 → no edge, logged** (two SVSes with identical value lists — ambiguous; refuse rather than guess). Chosen over §22's looser "subset/overlap threshold" because S1 is a **foundation feeding S3 grounding**: a *false* link (wrong accepted-values → a wrong test) is worse than a *missing* one. Exact-match is high-confidence, produces zero false links, and is **self-healing** — if an admin edits the field's values, the next sync's match fails and the edge correctly drops (the §22 fragility becomes correct behavior, not a bug). The **subset/overlap tolerance** for admin-customized standard fields is a **deliberate deferral** to a follow-up slice with its own disambiguation analysis (per §22's "heuristics earn their own cycle"). Ordering: the SVS `PicklistValueSet`s sync before the field content-match (the `fetch_standard_value_sets()` catalog-pin runs in the value-set phase) — verified in impl.
+
+**Guards / verification.** Lock-safety is diff-checkable: no new edge type, no new column, no migration. Unit — the matcher picks the right SVS on set-equality, returns None on 0-or-many. Live sandbox — the `HAS_PICKLIST_VALUES` count moves 0 → ~N (one per un-customized standard picklist field), a spot-check field (e.g. `Account.Industry`) links to its SVS, and a value-customized field stays unlinked. **Downstream caveat (not slice 1):** S3's *full* `value-claim` accepted-values grounding also needs detail-table exposure in the §12 query interface (D-097 — reading the matched SVS's `picklist_value_details`); slice 1 produces the **link**, the detail-read is a separate S1 query-interface item.
+
+---
+
+## D-119 — S1 query-interface read: `get_picklist_values` (value-claim accepted-values)
+
+**Date:** 2026-06-02
+**Substrates affected:** [S1] (a new additive query-interface read primitive); [S3] (the consumer — `value-claim` accepted-values admissibility, lands in Phase 2)
+**Status:** Active — Phase-0 (S1 query-interface) slice 2, on `phase-8-substrate-1-tier2`. Design only; impl is the next HOLD. The S1 half of the "finish value-claim" unblock (the S3 consumption is Phase 2).
+
+D-118 created the Field → PicklistValueSet `HAS_PICKLIST_VALUES` edge, but S3 still cannot **enumerate** a standard field's accepted values. The read chain is Field →`get_related(HAS_PICKLIST_VALUES)`→ PicklistValueSet → its PicklistValue children → `get_entity_details` per value, and the **middle hop is missing**: a PicklistValueSet's PicklistValue children are linked only by the `picklist_value_details.picklist_value_set_entity_id` FK — *not* a `BELONGS_TO` edge (its sources are Field / RecordType / ValidationRule / Layout → Object; there is no `_edges_from_picklist_value_row`), and *not* reachable via `get_entities` (which filters id / sf_id / sf_api_name / display_name only). `query_entities` (detail-column conditions) is deferred (D-022). So there is no way to list a value set's values today. (Note: `get_entity_details` already exists — added D-111.1 for the S6 consumer — so D-097 / D-098's "the §12 query interface exposes no detail-table data" is now **stale**; only the children-enumeration is missing.)
+
+**Decision — one additive read primitive.** Add `SemanticOrgModel.get_picklist_values(picklist_value_set_id, at_seq) -> list[dict]`: the version-current `picklist_value_details` rows for the value set (each carrying `value_api_name` / `is_active` / `sort_order`), ordered by `sort_order`, `[]` when none. It mirrors `get_entity_details`'s contract — `_validate_version(at_seq)`, a **trusted hardcoded table** (no caller-input SQL surface) — but reads a *set* of children version-scoped via the `valid_from_seq` / `valid_to_seq` window join to `entities` (the `get_entities` idiom), since the children aren't the 1:1-by-id row `get_entity_details` returns. It completes the chain: Field → PicklistValueSet (the D-118 edge) → `get_picklist_values` → the accepted value set.
+
+**Why a read primitive, not an edge.** A PVS→PicklistValue containment edge would be the "natural" graph model, but the edge taxonomy is **D-019-locked at 14 types** — a 15th contradicts a locked decision (unlike D-118, which *populated* an existing edge). A new *read primitive* is **additive and uncovered** by D-022's five primitives, so it lands under D-024's "new decisions D-025+ may be added for matters not covered, but may not contradict locked decisions" — the same carve-out `get_entity_details` used (D-111.1). Consumer-driven, per D-022's "full ergonomics emerge with the consumer slice": the `value-claim` grounder is the consumer surfacing this read.
+
+**Phase boundary.** Slice 2 is the **S1 read** only — a field's accepted values become enumerable and the chain is proven end-to-end. The **S3 consumption** (wiring `get_picklist_values` into `value-claim` *admissibility* — is the requirement's `V` in the accepted set?) is **Phase 2** (S3-breadth, the value-claim kind's completion), keeping the breadth-first boundary intact. Slice 2 ships value-claim *groundable-from-S1*; the kind finishes when S3 consumes it.
+
+**Guards / verification.** Additive — no edge, no schema, no migration (diff-checkable). Unit: version-scoped rows on seeded data (a superseded value excluded at the old seq, present at the new) + the fail-loud-version + no-raw-SQL contract mirrored from `get_entity_details`. Read-chain integration: Field → `get_related(HAS_PICKLIST_VALUES)` → PVS → `get_picklist_values` → the value set. Live-sandbox: `get_picklist_values` on a real standard field's SVS (e.g. `Account.Industry`) returns its values — the slice exit-gate.
+
+---
+
+## D-120 — Phase-0 (S1 breadth-unblock) closure: the verified S3-readiness map; Tier-2 remainder → S1 Phase-3
+
+**Date:** 2026-06-02
+**Substrates affected:** [S1] (Phase-0 close — a readiness verification + a scope decision, no new primitive); [S3] (the consumer — which claim-kinds are S1-groundable for Phase-2 emission)
+**Status:** Active — Phase-0 close, on `phase-8-substrate-1-tier2`. A scope decision + verification tests; no `query.py` change.
+
+Phase 0's purpose was to unblock S3 breadth on the **S1 side**. The slice-2/3 surveys found the S1 foundation already covers more than the roadmap assumed — `get_entity_details` (D-111.1) and `get_related` (which returns edge properties) plus the already-synced permission grant edges already ground three of the data-present claim-kinds. So Phase 0 **closes here with a verified readiness map**, not more Tier-2 slices.
+
+**The S1 grounding map (what Phase 2 / S3 breadth can rely on):**
+- **`value-claim` (accepted-values) — BUILT this phase.** D-118 (standard-field → SVS `HAS_PICKLIST_VALUES` edge via content-match) + D-119 (`get_picklist_values`). The Field → PVS → values chain is proven (the D-119 chain test).
+- **`permission-claim` (capability) — ALREADY READY.** The five PERMISSION edges (`GRANTS_FIELD_ACCESS` / `GRANTS_OBJECT_ACCESS` / `HAS_PERMISSION_SET` / `INHERITS_PERMISSION_SET` / `HAS_PROFILE`) exist and are synced (real sandbox data: ~11K FieldPermissions + ~2.6K ObjectPermissions), and `get_related` already returns the far-end entity **and** the edge's `can_read` / `can_edit` properties. No S1 work needed — verified by test (`get_related` over a `GRANTS_*_ACCESS` edge surfaces the grant flags).
+- **`config` existence / property — ALREADY READY.** Existence via `get_entities` (a non-empty result), property via `get_entity_details` (the field/object detail row). Both pre-existing; existence newly tested here, property already tested (`test_s6_s1_reader`).
+
+**What defers, and why Phase 0 closes without it:**
+- **automation-effect ← Flow logic interpretation.** The Flow entry-condition parse is **dormant on this sandbox** (zero record-triggered flows — all AutoLaunched), so it unblocks nothing now; the work goes to **S1 Phase-3**, firing automatically when a future org has record-triggered flows (the TRIGGERS_ON correctness-complete-despite-zero-edges precedent).
+- **permission run-as / sharing rules / OWD / Apex sharing; approval-process modeling.** The heavier Tier-2 graph, explicitly **beyond the D-024 lock window** → **S1 Phase-3** (post-~2026-07-20). Their S3 kinds (complex / run-as permission, integration topology) defer with them (D-080 / D-082). The **D-020 `effective_field_permissions`** materialized view (inheritance aggregation) is Phase-2-scoped per the D-024 phase plan and unneeded for the simplest single-edge permission-claim — deferred.
+- **Phase-0 ops** (refresh scheduling, observability, tenant onboarding). Operational hardening, **not breadth-blocking** → folded into S1 Phase-3.
+
+**So Phase 0 ships:** the value-claim S1 grounding (built, D-118 / D-119) + a **tested readiness map** confirming permission + config are already groundable. No new S1 primitive in this close — three deterministic tests pin the existing capability so Phase 2 can rely on it. **Merge exit-gate:** the live-sandbox probe of the built slices (D-118 edge-count 0→~N; D-119 `get_picklist_values` on a real SVS), run before the phase merge. The deferred Tier-2 reopens as S1 Phase-3 when the design-lock lifts.
+
+---

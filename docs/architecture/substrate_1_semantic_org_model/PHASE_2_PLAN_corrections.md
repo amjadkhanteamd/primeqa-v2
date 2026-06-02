@@ -1365,7 +1365,11 @@ is correctness-complete and unit-tested across the record-trigger
 types — a future org with record-triggered flows produces
 TRIGGERS_ON edges automatically without code change.
 
-## §22: HAS_PICKLIST_VALUES standard-field → SVS detection deferred
+## §22: HAS_PICKLIST_VALUES standard-field → SVS detection — RESOLVED (D-118)
+
+**Status: RESOLVED 2026-06-02 — D-118** (Phase-0 / S1 Tier-2
+slice 1; see RESOLUTION at the end of this section). The
+original deferral rationale is preserved below.
 
 Date: 2026-05-14
 Step: §10+§14 cycle — survey (decision 3B)
@@ -1422,6 +1426,32 @@ future reader doesn't mistake the 0 for a bug.
 API exposes it directly, a content-matching heuristic is the
 fallback — but heuristics earn their own cycle with their own
 fragility analysis, not a rider on an unrelated wiring cycle.
+
+**RESOLUTION (D-118, 2026-06-02 — Phase-0 / S1 Tier-2 slice 1).**
+This is the focused cycle §22 anticipated. Shipped the content-
+match: `primeqa/sync/standard_value_set_match.py` (pure) links a
+standard picklist field to the one synced StandardValueSet whose
+**active value set is exactly equal** — fail-closed on empty / 0 /
+ambiguous (two SVSes with identical value lists). `phase_field`
+step 2c-bis builds the SVS index once from `ctx.svs_metadata_cache`
+and, for a `custom=False` picklist field with no GVS marker, sets
+`_value_set_external_id = "SVS:{full_name}"` — the SAME marker the
+§10 GVS path uses, so the existing `_map_field_details` resolution
++ `HAS_PICKLIST_VALUES` derivation emit the edge unchanged. Inline
+CUSTOM picklists stay a true absence (the `custom` guard keeps them
+out). **Exact set-equality, not the subset/overlap tolerance this
+section floated** — a false link (wrong accepted-values → a wrong
+downstream test) is worse than a missing one; exact-match is high-
+confidence, produces zero false links, and self-heals (an admin
+value-edit makes the next sync's match fail → the edge correctly
+drops, the fragility turned into correct behavior). The subset/
+overlap tolerance for admin-customized standard fields is deferred
+to a follow-up slice with its own disambiguation. **Lock-clean:**
+no new edge type / column / migration — the D-019 taxonomy and the
+D-024 design-lock are untouched. 12 unit tests; the live-sandbox
+edge-count probe (0 → ~N; `Account.Industry` → its SVS; a value-
+customized field stays unlinked) is the slice exit-gate, before
+the phase merge.
 
 ## §23: Enrichment queue worker — RESOLVED
 

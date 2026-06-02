@@ -36,6 +36,11 @@ from primeqa.sync.materialize import (
     materialize_edges_for_entities,
 )
 from primeqa.sync.result import PhaseResult
+from primeqa.sync.standard_value_set_match import (
+    build_svs_index,
+    field_active_value_names,
+    match_standard_value_set,
+)
 
 
 # A phase function receives (ctx, conn) where conn is the SQLAlchemy
@@ -406,8 +411,9 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
          - HAS_RELATIONSHIP_TO → each referenceTo target Object
            (none for non-reference fields, one for standard refs,
            N for polymorphic refs)
-         - HAS_PICKLIST_VALUES → PicklistValueSet (only for
-           GVS-backed custom picklist fields — see §10 below)
+         - HAS_PICKLIST_VALUES → PicklistValueSet (GVS-backed
+           custom picklist fields via §10; standard picklist
+           fields via §22 content-match per D-118 — see below)
 
     HAS_PICKLIST_VALUES resolution (§10): REST describe doesn't
     expose a picklist field's value-set reference. For each custom
@@ -421,8 +427,10 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
     `_value_set_external_id` marker. _map_field_details reads the
     same marker into field_details.picklist_value_set_entity_id;
     the HAS_PICKLIST_VALUES edge extractor reads it for the edge.
-    Inline-picklist fields (valueSetName None) and standard picklist
-    fields (SVS detection deferred per §22) get no marker → no edge.
+    Inline-picklist custom fields (valueSetName None) get no marker
+    → no edge (a true absence per §22). Standard picklist fields are
+    linked to their StandardValueSet by the §22 content-match (D-118,
+    step 2c-bis below) — exact set-equality, fail-closed.
 
     High-cardinality phase: 146 Objects × ~30-150 fields each
     ≈ 4500-15000 Field entities + ≈ same BELONGS_TO + ~500-1500
@@ -499,6 +507,21 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
     # GlobalValueSet FullName == the PicklistValueSet external_id).
     # Both markers survive _strip_volatile and land in the
     # normalized payload for the detail mapper + edge extractor.
+    # 2c-bis (D-118, S1 Tier-2 slice 1): standard picklist field → SVS link.
+    # No API exposes it (§22); content-match the field's active describe values
+    # against the synced SVS value-sets (exact set-equality, fail-closed). A
+    # match sets the SAME _value_set_external_id marker the GVS path uses
+    # (SVS:-prefixed) → the existing detail mapper + edge extractor emit
+    # HAS_PICKLIST_VALUES unchanged. Index built once from the cache
+    # phase_picklist_value_set populated (PVS phase runs before Field phase).
+    svs_index = build_svs_index(ctx.svs_metadata_cache)
+    if not svs_index:
+        logger.info(
+            "phase_field: svs_metadata_cache empty; skipping standard-field "
+            "content-match (no SVS edges this run). Expected on resumed syncs "
+            "that skipped the PicklistValueSet phase."
+        )
+
     field_payloads: list[dict[str, Any]] = []
     for object_api_name, fields in fields_by_object.items():
         for f in fields:
@@ -514,6 +537,20 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
                     # GlobalValueSet. Inline picklists have
                     # valueSetName None → no marker → no edge.
                     f["_value_set_external_id"] = value_set_name
+            # Standard picklist fields (custom=False, no GVS marker): try the
+            # §22 content-match. The custom guard excludes inline CUSTOM
+            # picklists — their values aren't a shared set (a "true absence"
+            # per §22), so they must never be false-linked to an SVS.
+            if (
+                "_value_set_external_id" not in f
+                and not f.get("custom", False)
+                and f.get("type") in ("picklist", "multipicklist")
+            ):
+                svs_full_name = match_standard_value_set(
+                    field_active_value_names(f), svs_index,
+                )
+                if svs_full_name is not None:
+                    f["_value_set_external_id"] = f"SVS:{svs_full_name}"
             field_payloads.append(f)
 
     if not field_payloads:

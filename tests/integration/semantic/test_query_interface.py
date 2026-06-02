@@ -11,6 +11,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import text
 
 from primeqa.semantic.query import (
     Entity,
@@ -211,3 +212,140 @@ def test_validated_seq_is_cached(conn, seed):
     s1.get_entities("Object", at_seq=v1)
     assert v1 in s1._validated_seqs
     s1.get_entities("Object", at_seq=v1)  # no raise
+
+
+# ---------------------------------------------------------------------------
+# get_picklist_values (D-119) — value-set value enumeration (the value-claim
+# accepted-values read; the middle hop edges + get_entity_details can't cover)
+# ---------------------------------------------------------------------------
+
+def _pv(seed, conn, pvs_id, api_name, vfrom, vto=None, sort_order=0, is_active=True):
+    """Seed a PicklistValue entity + its picklist_value_details row under a PVS."""
+    eid = seed.entity("PicklistValue", f"PV.{api_name}", vfrom, valid_to_seq=vto)
+    conn.execute(
+        text(
+            "INSERT INTO picklist_value_details "
+            "(entity_id, picklist_value_set_entity_id, value_label, "
+            " value_api_name, is_active, is_default, sort_order) "
+            "VALUES (CAST(:eid AS uuid), CAST(:pvs AS uuid), :label, "
+            " :api, :active, FALSE, :ord)"
+        ),
+        {"eid": str(eid), "pvs": str(pvs_id), "label": api_name,
+         "api": api_name, "active": is_active, "ord": sort_order},
+    )
+    return eid
+
+
+def test_get_picklist_values_ordered_with_flags(conn, seed):
+    v1 = seed.version()
+    pvs = seed.entity("PicklistValueSet", "SVS:Industry", v1)
+    _pv(seed, conn, pvs, "Banking", v1, sort_order=1)
+    _pv(seed, conn, pvs, "Agriculture", v1, sort_order=0)
+    _pv(seed, conn, pvs, "Retired", v1, sort_order=2, is_active=False)
+    s1 = SemanticOrgModel(conn)
+
+    rows = s1.get_picklist_values(pvs, at_seq=v1)
+    assert [r["value_api_name"] for r in rows] == ["Agriculture", "Banking", "Retired"]
+    # flags surface so the caller (S3) filters is_active for the accepted set
+    assert [r["is_active"] for r in rows] == [True, True, False]
+    assert {"entity_id", "value_label", "is_default", "sort_order"} <= set(rows[0].keys())
+
+
+def test_get_picklist_values_empty_for_no_values(conn, seed):
+    v1 = seed.version()
+    pvs = seed.entity("PicklistValueSet", "SVS:Empty", v1)
+    s1 = SemanticOrgModel(conn)
+    assert s1.get_picklist_values(pvs, at_seq=v1) == []
+    # an unrelated/unknown id -> empty, not an error
+    assert s1.get_picklist_values(uuid4(), at_seq=v1) == []
+
+
+def test_get_picklist_values_as_of_supersession(conn, seed):
+    v1 = seed.version()
+    v2 = seed.version()
+    pvs = seed.entity("PicklistValueSet", "SVS:Status", v1)
+    _pv(seed, conn, pvs, "Open", v1, sort_order=0)             # spans both versions
+    _pv(seed, conn, pvs, "Legacy", v1, vto=v2, sort_order=1)   # closes at v2
+    _pv(seed, conn, pvs, "New", v2, sort_order=2)              # opens at v2
+    s1 = SemanticOrgModel(conn)
+
+    # As of v1: Open + Legacy (New not yet valid).
+    assert {r["value_api_name"] for r in s1.get_picklist_values(pvs, at_seq=v1)} == {"Open", "Legacy"}
+    # As of v2: Open + New (Legacy closed at v2 — strict > window excludes it).
+    assert {r["value_api_name"] for r in s1.get_picklist_values(pvs, at_seq=v2)} == {"Open", "New"}
+
+
+def test_get_picklist_values_validates_at_seq(conn, seed):
+    seed.version()  # some version exists, but not the one queried
+    s1 = SemanticOrgModel(conn)
+    with pytest.raises(VersionNotFoundError):
+        s1.get_picklist_values(uuid4(), at_seq=987654321)
+
+
+def test_get_picklist_values_via_field_edge_chain(conn, seed):
+    # The end-to-end chain S3 walks to enumerate a field's accepted values:
+    # Field --HAS_PICKLIST_VALUES--> PicklistValueSet --get_picklist_values--> values.
+    v1 = seed.version()
+    field = seed.entity("Field", "Account.Industry", v1)
+    pvs = seed.entity("PicklistValueSet", "SVS:Industry", v1)
+    seed.edge(field, pvs, "HAS_PICKLIST_VALUES", "CONFIG", v1)
+    _pv(seed, conn, pvs, "Banking", v1, sort_order=0)
+    _pv(seed, conn, pvs, "Retail", v1, sort_order=1)
+    s1 = SemanticOrgModel(conn)
+
+    related = s1.get_related(field, ["HAS_PICKLIST_VALUES"], "outbound", at_seq=v1)
+    assert len(related) == 1
+    accepted = {r["value_api_name"]
+                for r in s1.get_picklist_values(related[0].entity.id, at_seq=v1)
+                if r["is_active"]}
+    assert accepted == {"Banking", "Retail"}
+
+
+# ---------------------------------------------------------------------------
+# Phase-0 breadth-unblock readiness (D-120): permission-claim + config grounding
+# already work over EXISTING primitives + already-synced edges/details — no new
+# S1 primitive needed. These tests pin that so Phase 2 (S3 breadth) can rely on it.
+# ---------------------------------------------------------------------------
+
+def test_get_related_grants_field_access_surfaces_read_edit(conn, seed):
+    # S3 grounds "Profile P grants read on Field F" by reading the
+    # GRANTS_FIELD_ACCESS edge's properties — get_related already returns them.
+    v1 = seed.version()
+    profile = seed.entity("Profile", "Admin", v1)
+    field = seed.entity("Field", "Account.AnnualRevenue", v1)
+    seed.edge(profile, field, "GRANTS_FIELD_ACCESS", "PERMISSION", v1,
+              properties={"can_read": True, "can_edit": False})
+    s1 = SemanticOrgModel(conn)
+
+    grants = s1.get_related(profile, ["GRANTS_FIELD_ACCESS"], "outbound", at_seq=v1)
+    assert len(grants) == 1
+    assert grants[0].entity.id == field
+    assert grants[0].properties == {"can_read": True, "can_edit": False}
+
+
+def test_get_related_grants_object_access_surfaces_flags(conn, seed):
+    v1 = seed.version()
+    ps = seed.entity("PermissionSet", "Sales_PS", v1)
+    obj = seed.entity("Object", "Opportunity", v1)
+    seed.edge(ps, obj, "GRANTS_OBJECT_ACCESS", "PERMISSION", v1,
+              properties={"can_read": True, "can_create": True, "can_edit": False})
+    s1 = SemanticOrgModel(conn)
+
+    grants = s1.get_related(ps, ["GRANTS_OBJECT_ACCESS"], "outbound", at_seq=v1)
+    assert len(grants) == 1
+    assert grants[0].entity.entity_type == "Object" and grants[0].entity.id == obj
+    assert grants[0].properties["can_create"] is True
+    assert grants[0].properties["can_edit"] is False
+
+
+def test_config_existence_grounding_via_get_entities(conn, seed):
+    # config existence-claim ("object/field X exists") grounds on get_entities
+    # (existence == a non-empty result) — no new S1 work. (config property-claim
+    # rides get_entity_details, proven in test_s6_s1_reader.)
+    v1 = seed.version()
+    seed.entity("Object", "Custom_Obj__c", v1)
+    s1 = SemanticOrgModel(conn)
+    assert len(s1.get_entities("Object", at_seq=v1,
+                               filters={"sf_api_name": "Custom_Obj__c"})) == 1
+    assert s1.get_entities("Object", at_seq=v1,
+                           filters={"sf_api_name": "Nope__c"}) == []
