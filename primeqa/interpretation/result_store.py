@@ -50,8 +50,17 @@ class S6Interpretation(Base):
     # the semantic verdict (TEXT — the Python Verdict Literal is the source of
     # truth; the taxonomy grows with recipe kinds).
     verdict = Column(Text, nullable=False)
+    # promoted from detail->'cause' for cross-run clustering (D-116) — the
+    # queryable axes (recurring causes, the same VR across runs). NULL when the
+    # interpretation has no deeper cause (``cause`` is Optional).
+    cause_kind = Column(Text, nullable=True)
+    vr_name = Column(Text, nullable=True)
     # the rich part: {attribution, evidence_refs, cause}.
     detail = Column(JSONB, nullable=False)
+    # the LLM-phrased presentation layer (D-117) — {headline, explanation, model,
+    # prompt_version, generated_at}, or NULL until phrased on-demand. Written by
+    # the v1 enricher via set_phrasing (the LLM stays out of interpretation/).
+    phrasing = Column(JSONB, nullable=True)
 
 
 def persist_interpretation(session, interpretation: Interpretation):
@@ -62,17 +71,33 @@ def persist_interpretation(session, interpretation: Interpretation):
     transaction, the substrate convention), and returns the ``run_id``. Mirrors
     :func:`primeqa.execution_engine.result_store.persist_run_evidence`.
     """
+    cause = interpretation.cause
     row = S6Interpretation(
         run_id=interpretation.run_id,
         recipe_id=interpretation.recipe_id,
         claim_test_id=interpretation.claim_test_id,
         outcome=interpretation.outcome,
         verdict=interpretation.verdict,
+        # promoted cause axes for clustering (D-116); None when no cause.
+        cause_kind=(cause.cause_kind if cause is not None else None),
+        vr_name=(cause.vr_name if cause is not None else None),
         detail=_detail(interpretation),
     )
     session.add(row)
     session.flush()
     return interpretation.run_id
+
+
+def set_phrasing(session, run_id, phrasing: dict) -> None:
+    """Cache the LLM-phrased presentation (D-117) onto an existing
+    ``s6_interpretations`` row — a pure ``UPDATE`` (no LLM, no commit; the caller
+    owns the transaction). The phrasing dict is produced by the v1 enricher
+    (``intelligence.interpretation_phrasing``); this writer keeps the LLM out of
+    ``interpretation/`` — the substrate owns its table's persistence while the
+    presentation layer lives in v1."""
+    session.query(S6Interpretation).filter(
+        S6Interpretation.run_id == run_id).update(
+        {S6Interpretation.phrasing: phrasing}, synchronize_session="fetch")
 
 
 def _detail(interpretation: Interpretation) -> dict:
