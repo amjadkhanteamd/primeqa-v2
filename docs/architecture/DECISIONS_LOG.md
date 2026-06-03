@@ -7882,4 +7882,26 @@ Phase 5 brings S6 current with the **realized S4 execution surface** (Phase-3 cl
 
 ---
 
+## D-139 — S8 claim-grounding leg: does the claim's subject still resolve? (Phase 6 slice 1)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S8] (the claim-grounding leg — the second built leg of the grounding-validity predicate), reading S1 entity-resolution through S8's own port. **No migration** (pure, produce-only).
+**Status:** Active — Phase 6 (S8 evolution) slice 1, on `phase-14-substrate-8-evolution`.
+
+The grounding-validity predicate's recipe-grounding leg (D-113) asks "does the payload still violate?"; the **claim-grounding leg** asks the prior question — **does the claim's subject still resolve in the current org?** It re-asks generation's own resolution step (`resolve_subject` → `SemanticOrgModel.get_entities(type, at_seq, filters={"sf_api_name": external_id})`) against today's S1 active set. A subject that no longer resolves (a renamed/deleted Field or Object) means the test can no longer address what it claims — broken grounding, independent of any VR.
+
+**Realized — verified against the code.** Claim subjects are `IdentityBearingRef(entity_type, external_id, …)` in `asserted_truth` (every kind carries ≥1: value/property/existence/state-transition `subject`, prohibition `target`, metadata-relationship `source`+`target`, capability `granting_subject`+`target`, automation-effect `automation`, layout `layout`+`field`). S1 re-resolves by `(entity_type, external_id)` — the exact key generation used. **By external_id, not entity_id:** a rename supersedes the S1 entity (entity_id persists, external_id changes) and execution addresses the org by api-name (external_id), so the execution-faithful "still resolves" is by-external_id — it catches the rename-break that by-entity_id would mask.
+
+**Shape (mirrors `recipe_grounding.py` exactly — pure fn + S8's own port + adapter):**
+- `ClaimGroundingResult(verdict: Literal["intact","broken"], reason, unresolved: tuple[(entity_type, external_id), …])` — **two-valued** (resolution is binary; the value/formula *drift* axes belong to the other legs). `reason="subject_not_resolved"` + `unresolved` are load-bearing on broken (which subject(s) broke).
+- `SubjectResolver` Protocol — `resolves(entity_type, external_id) -> bool`. S8's OWN port (parallel-siblings, D-112); the production adapter over `SemanticOrgModel` lands with the composition (slice 3, `s1_reader.py`); slice-1 tests inject a stub.
+- `claim_grounding_validity(entity_type, external_id, *, s1)` — resolves → intact; not → broken.
+- `claim_grounding_validity_for_claim(asserted_truth: BodyBase, *, s1)` — walks the body for **every** `IdentityBearingRef` (claim-kind-agnostic), resolves each; **broken if any** unresolved (a claim grounded on a deleted Field *or* Object is broken). A local `_identity_bearing_refs` walk mirrors `coverage._walk` (the D-058 §5.4 pattern) projected to (entity_type, external_id) — `coverage.extract_coverage` projects to `entity_id` (the wrong key here), so the walk is re-expressed locally rather than refactoring `coverage.py` (shared-walker extraction = tracked adjacent work).
+
+**Boundary.** `asserted_truth` only (the subject — what the claim is *about*); `semantic_conditions` scoping refs are a noted later extension. No `entity_id`/version-pin check (by-external_id is the execution-faithful resolution). A degenerate claim with no identity-bearing ref → vacuously intact. No migration; produce-only; no composition yet (slice 3). The recipe-grounding leg is untouched.
+
+**Verification.** Pure unit tests (no DB, stub resolver): subject resolves → intact; subject gone → broken/`subject_not_resolved` + `unresolved` populated; adapter extracts + resolves from a prohibition (`target`), a value-claim (`subject` Field, dotted external_id), a capability (two refs, one gone → broken); multi-ref all-resolve → intact. Mirrors `test_recipe_grounding.py`.
+
+---
+
 ---
