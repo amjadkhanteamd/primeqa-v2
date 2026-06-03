@@ -17,7 +17,7 @@ PLATFORM_VISION §"Substrate 5" lists knowledge S5 *includes* that is **not yet 
 
 ## 3. Substrate-package hygiene (the relocation)
 
-- **Physical relocation `primeqa/intelligence/knowledge/` → a top-level `primeqa/knowledge/` substrate package.** Every other substrate has its own top-level package (S1 `semantic/`, S2 `test_representation/`, S3 `generation/`, S4 `execution_engine/`, S6 `interpretation/`); S5 living under the v1 `intelligence/` tree is anomalous. Deferred to the **Phase-7 greenfield cutover**, which reorganizes packages anyway — relocating now would churn the live v1 import graph (`test_plan_generation.py`, `generation.py`, the gateway, tests) for no functional gain. — **D-134**
+- **Physical relocation `primeqa/intelligence/knowledge/` → a top-level `primeqa/knowledge/` substrate package — LANDED (D-148, cutover Step 1).** S5 now has its own top-level package like every other substrate (S1 `semantic/`, S2 `test_representation/`, …). `git mv` (renames preserved) + the import-graph rewrite across the 6 importers; `feedback_rules.py` stayed in `intelligence/llm/` (wrapped via `LearnedRulesProvider`). A `system_rules.py` `__file__`-relative default-path fix (one fewer `..` for the up-one-level move) was caught + fixed by the suite. — **D-134 / D-148**
 - Feedback aggregation (`llm/feedback_rules.py`) likewise stays put; it is wrapped into the S5 port via `LearnedRulesProvider`. Whether it physically moves under S5 is part of the same cutover relocation. — **D-134**
 
 ## 4. Channel-shape evolutions (noted, not urgent)

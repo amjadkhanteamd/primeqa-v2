@@ -17,7 +17,7 @@ Make S1 the *live* metadata source: fire `primeqa/sync/` (`SyncEngine.run_sync`)
 - **Exit-gate:** `entities`/`edges` populated from live orgs for the pilot tenants; the cadence runs; a parity probe (S1 entity/field counts vs `meta_*`) agrees within tolerance.
 - **Rollback:** trivial — S1 is additive; disable the trigger, v1 is untouched.
 
-## Step 1 — Relocations *(zero-risk; independent of step 0)*
+## Step 1 — Relocations *(zero-risk; independent of step 0)* — ✅ DONE (D-148)
 
 Move S5 to its own top-level package, the one concrete relocation the cutover owns.
 
@@ -25,6 +25,7 @@ Move S5 to its own top-level package, the one concrete relocation the cutover ow
 - **Work:** `primeqa/intelligence/knowledge/` → `primeqa/knowledge/`; decide + apply whether `primeqa/intelligence/llm/feedback_rules.py` moves with it; update the live import graph (`test_plan_generation.py`, `generation.py`, the gateway, the tests). *(Carries: S5 relocation + the `feedback_rules` move — D-134.)*
 - **Exit-gate:** imports updated; the full suite green; no behaviour change.
 - **Rollback:** revert the move.
+- **Landed (D-148):** `git mv` (renames preserved) + the import rewrite across the 6 importers; **`feedback_rules.py` STAYED** in `intelligence/llm/` (wrapped via `LearnedRulesProvider` — moving it would churn 13 importers for no gain). A `system_rules.py` `__file__`-relative default-path fix (`..`×3 → ×2 for the up-one-level move) was caught + fixed by the suite. 29 relocation tests green; app import OK.
 
 ## Step 2 — Additive substrate consumers *(no v1 removal)*
 
@@ -71,7 +72,7 @@ Every "deferred to the cutover" item across the substrate docs, mapped to its st
 | Deferred item | Source | Step |
 |---|---|---|
 | S1-sync production trigger (populate `entities` from live Salesforce) | readiness audit / D-012 | **0** |
-| S5 relocation `intelligence/knowledge/` → `primeqa/knowledge/` | D-134 | **1** |
+| S5 relocation `intelligence/knowledge/` → `primeqa/knowledge/` ✅ **done (D-148)** | D-134 | **1** |
 | `feedback_rules.py` move (part of the same relocation) | D-134 | **1** |
 | S6 user-facing UI/dashboard consumer + always-on trigger | D-137 | **2** |
 | S6 clustering release-grain view + dashboard/route consumer | D-137 | **2** |

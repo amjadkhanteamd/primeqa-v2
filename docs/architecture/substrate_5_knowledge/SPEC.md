@@ -16,7 +16,7 @@ S5 is **cross-cutting** (dependency graph: `S3 ←— S5`): it shapes generation
 
 ## 2. The realized surface (the three channels)
 
-S5's code lives today at `primeqa/intelligence/knowledge/` (+ `primeqa/intelligence/llm/feedback_rules.py`). It is consumed by **v1 test-case generation** (`intelligence/generation.py` → the LLM gateway → `prompts/test_plan_generation.py`); the S3 *substrate* generation does not consume it yet (see §6 / DEFERRED).
+S5's code lives at `primeqa/knowledge/` (its top-level package since the cutover Step-1 relocation, D-148) + `primeqa/intelligence/llm/feedback_rules.py` (the feedback aggregator stays in the v1 LLM layer, wrapped via `LearnedRulesProvider`). It is consumed by **v1 test-case generation** (`intelligence/generation.py` → the LLM gateway → `prompts/test_plan_generation.py`); the S3 *substrate* generation does not consume it yet (see §6 / DEFERRED).
 
 ### 2.1 The provider port — short proscriptive rules (`knowledge/provider.py`)
 - **`Rule`** (frozen): `id` (dedup key), `object_name`/`field_name` (None = applies everywhere), `category` (`field_behaviour`/`operation`/`assertion`), `rule_text` (compressed imperative, ≤~140 chars), `source` (`system`/`curated`/`learned`), `confidence` (0–1), `scope` (`global`/`org`).
@@ -47,4 +47,4 @@ Aggregates `generation_quality_signals` (validator criticals, user thumbs/edits,
 
 **Realized (ratified at D-134):** the provider port + assembler; the system-rules channel (33 rules); the learned/feedback channel; the Domain Packs channel; the v1-generation consumption. **Unified public API** + a **contract drift-guard** land in Phase 4 Slice 2.
 
-**Deferred** (see `DEFERRED_ITEMS.md`): the S3-substrate generation forward-seam (needs a semantic-fit design — substrate gen emits *claims*, not test cases); the physical relocation to a top-level `primeqa/knowledge/` package (to the Phase-7 cutover); the unbuilt vision pieces ("learned facts specific to a tenant's org" + "cross-tenant patterns"); serving S6 interpretation (a failure-pattern channel); org-curated rules (`source="curated"` is defined but has no provider yet).
+**Relocation — LANDED (D-148):** the physical move to the top-level `primeqa/knowledge/` package (cutover Step 1). **Deferred** (see `DEFERRED_ITEMS.md`): the S3-substrate generation forward-seam (needs a semantic-fit design — substrate gen emits *claims*, not test cases); the unbuilt vision pieces ("learned facts specific to a tenant's org" + "cross-tenant patterns"); serving S6 interpretation (a failure-pattern channel); org-curated rules (`source="curated"` is defined but has no provider yet).

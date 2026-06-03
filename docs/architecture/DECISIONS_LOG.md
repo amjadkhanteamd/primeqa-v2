@@ -8113,4 +8113,20 @@ S5 alone lived under the v1 `intelligence/` tree — every other substrate is to
 
 ---
 
+## D-149 — Cutover Step 1 close: S5 relocated to `primeqa/knowledge/`
+
+**Date:** 2026-06-03
+**Substrates affected:** [S5] (relocated) + the v1 import graph. No migration; a pure refactor.
+**Status:** Active — greenfield-cutover Step 1 close, merging `phase-16-cutover-step1-relocation` → `main`. Executes + closes D-148 (the relocation D-134 deferred to the cutover).
+
+The cutover's first *executed* step (the zero-risk, independent relocation). `primeqa/intelligence/knowledge/` → top-level `primeqa/knowledge/` (`git mv`, renames preserved; 7 files) + the import-graph rewrite across the 6 importers + the package self-imports. **`feedback_rules.py` stayed** in `intelligence/llm/` — D-134's open sub-decision resolved: it is LLM-feedback machinery with 13 importers (gateway / dashboard / views / worker / test_management); the knowledge package consumes it only through the `LearnedRulesProvider` adapter, so relocating it would churn the dependency graph for no gain.
+
+**A regression caught + fixed by the verify gate.** `system_rules.py` resolved its default `salesforce_knowledge/system_rules.json` path by `__file__`-relative parent navigation (`..`×3 — correct from the 3-deep `intelligence/knowledge/` home); the up-one-level move made it overshoot the repo root → an empty rule list. The pre-commit suite surfaced it (3 `test_knowledge_architecture` failures), it was root-caused + fixed to `..`×2. The discipline (run before commit) earned its keep.
+
+**Doc currency.** S5 `SPEC.md` (location → `primeqa/knowledge/`; relocation moved from Deferred → LANDED) + `DEFERRED_ITEMS.md` (the relocation bullet → LANDED). The cutover `SEQUENCE.md` Step 1 + coverage row marked ✅ done; `SPEC.md` spine list updated; `EVOLUTION.md` Step-1 entry appended.
+
+**Merge gate.** The relocation-relevant suites green — `test_s5_knowledge_contract` + `test_domain_packs` + `test_knowledge_architecture` + `test_generation_quality_gate` (29 passed) — + `primeqa.app` import. `test_llm_architecture`'s 12 failures are **pre-existing environmental** (`JWT_SECRET` / DB unset in this shell; proven identical on clean `main` via a stash run), not relocation-caused. No migration; the only runtime delta is the module path. Merge `phase-16-cutover-step1-relocation` → `main` via PR.
+
+---
+
 ---
