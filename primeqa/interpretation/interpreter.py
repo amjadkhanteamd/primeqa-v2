@@ -25,7 +25,14 @@ def interpret_run(evidence: RunEvidence) -> Interpretation:
     `RunEvidence` S4 produced; the returned `Interpretation` carries the
     outcome verbatim + a semantic verdict + an evidence-derived attribution."""
     create = _create_step(evidence)
-    if create is not None:
+    assertion = _assert_step(evidence)
+    if create is not None and assertion is not None:
+        # positive create-and-verify (D-136): create-expect-success → read-back →
+        # value assert. The negative emits a *single* create step (no assert), so the
+        # presence of an assert alongside the create is the robust discriminator.
+        verdict, attribution, refs = _interpret_positive(evidence, create, assertion)
+    elif create is not None:
+        # behavioral negative: a single create the org should reject.
         verdict, attribution, refs = _interpret_behavioral(evidence, create)
     else:
         verdict, attribution, refs = _interpret_inspection(evidence)
@@ -83,8 +90,46 @@ def _interpret_behavioral(evidence: RunEvidence, create: CreateAttemptEvidence):
 
 
 # ---------------------------------------------------------------------------
-# Inspection (metadata-recipe)
+# Positive value-claim (data-recipe, create-and-verify) — D-136
 # ---------------------------------------------------------------------------
+
+def _interpret_positive(evidence: RunEvidence, create: CreateAttemptEvidence, assertion):
+    """The positive create-and-verify (D-115): a record is created, read back, and
+    its value asserted. ``passed`` → the value persisted; ``failed`` → created but
+    the read-back value differs; ``errored`` → the create failed or the read-back
+    couldn't be evaluated."""
+    if evidence.outcome == "errored":
+        return _not_evaluated(evidence, create.step_id)
+
+    refs = (
+        EvidenceRef(create.step_id, f"create succeeded (http {create.http_status})"),
+        EvidenceRef(assertion.step_id,
+                    f"assert {assertion.predicate} held={assertion.held}"),
+    )
+    if evidence.outcome == "passed":
+        return (
+            "value_persisted",
+            (f"A record was created on {create.sobject} and the read-back confirmed the "
+             f"asserted value (assert {assertion.predicate} held). The value persists."),
+            refs,
+        )
+    return (
+        "value_not_persisted",
+        (f"A record was created on {create.sobject}, but the read-back value did not "
+         f"match the assertion (assert {assertion.predicate} held=False). The value did "
+         f"not persist as asserted."),
+        refs,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Inspection (metadata-recipe) — presence (`exists`) vs value (`equals`/`is_null`)
+# ---------------------------------------------------------------------------
+
+# Inspection assert predicates that check a metadata VALUE (property), not mere
+# presence (existence / metadata-relationship). D-136.
+_VALUE_PREDICATES = frozenset({"equals", "is_null"})
+
 
 def _interpret_inspection(evidence: RunEvidence):
     if evidence.outcome == "errored":
@@ -92,18 +137,39 @@ def _interpret_inspection(evidence: RunEvidence):
 
     assertion = _assert_step(evidence)
     subject = _read_subject(evidence)
+    refs = _inspection_refs(evidence, assertion)
+    predicate = assertion.predicate if assertion is not None else "exists"
+
+    # property — a value assert (equals / is_null): the field is present; its VALUE
+    # is what was checked, so a mismatch is "value differs", not "metadata absent".
+    if predicate in _VALUE_PREDICATES:
+        if evidence.outcome == "passed":
+            return (
+                "asserted_value_matches",
+                (f"The asserted value for {subject} matches "
+                 f"(the inspection read {predicate!r} held)."),
+                refs,
+            )
+        return (
+            "asserted_value_differs",
+            (f"The asserted value for {subject} differs "
+             f"(the inspection read {predicate!r} did not hold)."),
+            refs,
+        )
+
+    # presence — existence / metadata-relationship (`exists`).
     if evidence.outcome == "passed":
         return (
             "asserted_metadata_present",
             (f"The asserted metadata for {subject} is present "
              f"(the inspection read returned it)."),
-            _inspection_refs(evidence, assertion),
+            refs,
         )
     return (
         "asserted_metadata_absent",
         (f"The asserted metadata for {subject} is absent "
          f"(the inspection read returned nothing)."),
-        _inspection_refs(evidence, assertion),
+        refs,
     )
 
 
