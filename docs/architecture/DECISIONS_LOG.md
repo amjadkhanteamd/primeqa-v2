@@ -7582,3 +7582,28 @@ The third Phase-2 slice and the **UI-archetype debut**. `layout-claim` asserts "
 **Verification + boundary.** Emit-probes (bundle shape / metadata-recipe / Layer-1-no-caveat) + the drift-guard + two integration grounding tests on real seeded S1 (seed a Layout + an `INCLUDES_FIELD` edge → resolve → check-refs → emit → persist; edge-absent → refuse) + the `test_substrate_imports` registry guard (+`layout-claim`). The **prompt live-reach** (the LLM *proposing* layout-claim) is **slice 4 (D-125)** — batched with existence/property/capability into one prompt freeze. No S1 change; no migration.
 
 ---
+
+## D-125 — Prompt live-reach + eval corpus for the Tier-1 breadth set (Phase 2 slice 4)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S3] (prompts — the freeze ritual; eval corpus). No S2/S1 change; no migration.
+**Status:** Active — Phase 2 (S3 generation breadth) slice 4, on `phase-10-substrate-3-breadth`. The cross-cutting live-reach for slices 1–3's four new kinds.
+
+The fourth Phase-2 slice — the **end-to-end live-reach** for the kinds slices 1–3 made emittable + groundable (`existence-claim` / `property-claim` D-122, `capability-claim` D-123, `layout-claim` D-124). Until now those kinds ground + emit when *handed* an intent, but the LLM has no guidance to *propose* them — so they're unreachable from a real requirement. This slice closes that, batched into a single prompt freeze (the value-claim live-reach precedent, D-115.4).
+
+**The de-risking finding — the tool schema is already permissive.** `propose_semantic_intent`'s `_ARCHETYPES` / `_CLAIM_KINDS` already enumerate `permission`/`ui` + `capability`/`layout`/`existence`/`property` (verbatim from S2's enums, D-095.A), and `target_subject_hint` is a free-form `{"type":"object"}` (no fixed key set, no `additionalProperties:false`). So **zero tool-schema / Layer-A change** — the live-reach is purely prompt fragments + the freeze + eval probes.
+
+**Prompt fragments (the live-reach).** Each fragment names the *exact* `target_subject_hint` keys the resolver reads — the precision bar `data_behavior.md` set for value-claim:
+- `configuration.md` — **add** existence-claim (flat `{entity_type, sf_api_name}`) + property-claim (flat + `property_name` + `expected_value`). Was metadata-relationship-only.
+- `permission.md` — **sharpen** to the precise keys: `grantee` / `target` as `{entity_type, sf_api_name}`, `granted_capability` (read/edit), `grant_type` (object/field).
+- `ui.md` (**new**) — layout-claim: `layout` / `field` as `{entity_type, sf_api_name}`.
+
+**The freeze (`generation@v2` → `v3`).** `_FRAGMENTS += "ui"`; `base.md` title bumped to v3; `compose_working()` → freeze `versions/generation_v3.md`; add to `_FILES`; record its SHA-256 in `RECORDED_HASHES`; `CURRENT = "generation@v3"`. v1/v2 stay frozen + pinned-resolvable (replay determinism, D-103.1). The hash-guard test loops `versions()` — v3 auto-covered.
+
+**Eval corpus.** +3 offline+live probes in `drafts.json` — `config-existence-draft`, `permission-capability-draft`, `ui-layout-draft` (each: fixture → scripted propose+emit → expect draft / Layer-1 / no-caveat / metadata-recipe + a live envelope). One runner one-liner: `eval/runner.py:_seed` reads edge `properties` from the fixture (mirrors the existing entity-`attributes` read) so the capability probe's grant edge carries `can_edit:true` — additive, defaults `{}`, every existing probe unaffected. **D-104 envelope revisit:** the now-stale `_note` on `config-verified-draft` is corrected (existence/property are emittable now → they no longer auto-fail; they stay correctly in `acceptable_variants` as alternate *readings*, not forced into invariants — forcing one reading would make the probe brittle).
+
+**Honest scope cut — property's eval probe defers (with #83).** property-claim grounding reads `get_entity_details`, which hits a per-type **detail table** (`field_details`) the eval `_seed` (and the integration `seeded` fixture) doesn't populate — the *same blocker* that deferred the property grounded integration test (D-122 follow-on, task #83). Rather than expand the fixture loaders to seed detail-tables (its own piece of work), property's deterministic probe folds into that follow-on; property's **live-reach still ships** (the fragment guidance). existence + capability + layout ship full offline+live probes now.
+
+**Verification + boundary.** `compose_working()` round-trips; the v3 content-hash guard; `test_current_resolves_to_v3` (CURRENT + v3 title strings); `test_compose_working_has_all_fragments` (+ui); the offline corpus green (3 new drafts auto-load + auto-run, the `>=` category asserts hold); the live envelopes authored-but-skipped (periodic, env-gated). No S2/S1 change; no migration.
+
+---
