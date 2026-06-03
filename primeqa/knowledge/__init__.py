@@ -26,24 +26,24 @@ Future providers slot in by implementing the protocol and registering with the
 assembler \u2014 precedence / dedup / token-cap logic is already tested.
 
 Public API:
-    from primeqa.intelligence.knowledge import Rule, QueryContext, KnowledgeAssembler
-    from primeqa.intelligence.knowledge import SystemPromptRulesProvider, LearnedRulesProvider
-    from primeqa.intelligence.knowledge import DomainPackProvider, DomainPack
+    from primeqa.knowledge import Rule, QueryContext, KnowledgeAssembler
+    from primeqa.knowledge import SystemPromptRulesProvider, LearnedRulesProvider
+    from primeqa.knowledge import DomainPackProvider, DomainPack
 """
-from primeqa.intelligence.knowledge.provider import (
+from primeqa.knowledge.provider import (
     Rule,
     QueryContext,
     KnowledgeProvider,
     KnowledgeAssembler,
 )
-from primeqa.intelligence.knowledge.system_rules import SystemPromptRulesProvider
-from primeqa.intelligence.knowledge.learned_rules import LearnedRulesProvider
-from primeqa.intelligence.knowledge.domain_packs import (
+from primeqa.knowledge.system_rules import SystemPromptRulesProvider
+from primeqa.knowledge.learned_rules import LearnedRulesProvider
+from primeqa.knowledge.domain_packs import (
     DomainPack,
     DomainPackLibrary,
     DomainPackSelector,
 )
-from primeqa.intelligence.knowledge.domain_pack_provider import DomainPackProvider
+from primeqa.knowledge.domain_pack_provider import DomainPackProvider
 
 __all__ = [
     # The provider port (proscriptive rules)

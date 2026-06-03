@@ -158,7 +158,7 @@ def run_tests():
 
     # ---- 1. Pack file parses correctly -----------------------------------
     def test_pack_file_parses():
-        from primeqa.intelligence.knowledge.domain_packs import _parse_pack_file
+        from primeqa.knowledge.domain_packs import _parse_pack_file
         tmp = _write_packs_tmpdir({"widget.md": PACK_GOOD})
         path = tmp / "widget.md"
         pack = _parse_pack_file(path)
@@ -176,7 +176,7 @@ def run_tests():
 
     # ---- 2. Malformed pack file is skipped -------------------------------
     def test_malformed_pack_skipped():
-        from primeqa.intelligence.knowledge.domain_packs import DomainPackLibrary
+        from primeqa.knowledge.domain_packs import DomainPackLibrary
         tmp = _write_packs_tmpdir({
             "good.md": PACK_GOOD,
             "bad_yaml.md": PACK_BAD_YAML,
@@ -194,7 +194,7 @@ def run_tests():
 
     # ---- 3. Library reloads on mtime change ------------------------------
     def test_library_reloads_on_mtime():
-        from primeqa.intelligence.knowledge.domain_packs import DomainPackLibrary
+        from primeqa.knowledge.domain_packs import DomainPackLibrary
         tmp = _write_packs_tmpdir({"widget.md": PACK_GOOD})
         lib = DomainPackLibrary(str(tmp))
         first = lib.load()
@@ -214,7 +214,7 @@ def run_tests():
 
     # ---- 4. Keyword scoring uses word boundaries -------------------------
     def test_keyword_word_boundaries():
-        from primeqa.intelligence.knowledge.domain_packs import (
+        from primeqa.knowledge.domain_packs import (
             DomainPackLibrary, DomainPackSelector,
         )
         tmp = _write_packs_tmpdir({"widget.md": PACK_GOOD})
@@ -235,7 +235,7 @@ def run_tests():
 
     # ---- 5. Object-match scoring weighted 2x + dormant in v1 --------------
     def test_object_match_weight():
-        from primeqa.intelligence.knowledge.domain_packs import (
+        from primeqa.knowledge.domain_packs import (
             DomainPackLibrary, DomainPackSelector,
         )
         tmp = _write_packs_tmpdir({"widget.md": PACK_GOOD})
@@ -262,7 +262,7 @@ def run_tests():
 
     # ---- 6. Token budget cap (measured, not declared) ---------------------
     def test_token_budget_cap():
-        from primeqa.intelligence.knowledge.domain_packs import (
+        from primeqa.knowledge.domain_packs import (
             DomainPackLibrary, DomainPackSelector,
         )
         # Two packs, each roughly 60 chars → ~15 measured tokens each.
@@ -288,7 +288,7 @@ def run_tests():
 
     # ---- 7. No matches returns empty list --------------------------------
     def test_no_matches_empty():
-        from primeqa.intelligence.knowledge.domain_packs import (
+        from primeqa.knowledge.domain_packs import (
             DomainPackLibrary, DomainPackSelector,
         )
         tmp = _write_packs_tmpdir({"widget.md": PACK_GOOD})
@@ -301,7 +301,7 @@ def run_tests():
 
     # ---- 8. Provider returns packs + attribution -------------------------
     def test_provider_attribution():
-        from primeqa.intelligence.knowledge.domain_pack_provider import DomainPackProvider
+        from primeqa.knowledge.domain_pack_provider import DomainPackProvider
         tmp = _write_packs_tmpdir({"widget.md": PACK_GOOD})
         prov = DomainPackProvider(packs_dir=str(tmp))
         packs, attr = prov.get_packs("the widget whirrs", referenced_objects=None)
@@ -354,7 +354,7 @@ def run_tests():
         fake_resp.usage_log_ids = [999]
 
         with patch(
-            "primeqa.intelligence.knowledge.domain_pack_provider.DomainPackProvider.__init__",
+            "primeqa.knowledge.domain_pack_provider.DomainPackProvider.__init__",
             side_effect=RuntimeError("provider should NOT be constructed"),
         ):
             with patch("primeqa.intelligence.llm.llm_call",
@@ -492,7 +492,7 @@ def run_tests():
 
     # ---- 12. SQ-205 text matches case_escalation -------------------------
     def test_sq205_matches_case_escalation():
-        from primeqa.intelligence.knowledge.domain_pack_provider import DomainPackProvider
+        from primeqa.knowledge.domain_pack_provider import DomainPackProvider
         # Use the real pack dir shipped with the repo
         prov = DomainPackProvider(packs_dir="salesforce_domain_packs")
 
@@ -519,7 +519,7 @@ def run_tests():
         assert packs[0].id == "case_escalation"
         # At least "escalate", "escalation", "case" should match
         # (score = len(matched_keywords)). Require score >= 2 per the plan.
-        from primeqa.intelligence.knowledge.domain_packs import DomainPackSelector, DomainPackLibrary
+        from primeqa.knowledge.domain_packs import DomainPackSelector, DomainPackLibrary
         sel = DomainPackSelector(DomainPackLibrary("salesforce_domain_packs"))
         matches = sel.select(text, None)
         assert matches[0].score >= 2, matches[0].score
@@ -530,7 +530,7 @@ def run_tests():
     # ---- 13. build() records attribution in context_for_log --------------
     def test_build_records_attribution():
         from primeqa.intelligence.llm.prompts.test_plan_generation import build
-        from primeqa.intelligence.knowledge.domain_packs import DomainPack
+        from primeqa.knowledge.domain_packs import DomainPack
 
         fake_pack = DomainPack(
             id="case_escalation",
@@ -581,7 +581,7 @@ def run_tests():
     # ---- 14. build() appends fourth uncached user_block when packs present
     def test_build_appends_uncached_block():
         from primeqa.intelligence.llm.prompts.test_plan_generation import build
-        from primeqa.intelligence.knowledge.domain_packs import DomainPack
+        from primeqa.knowledge.domain_packs import DomainPack
 
         fake_pack = DomainPack(
             id="case_escalation",

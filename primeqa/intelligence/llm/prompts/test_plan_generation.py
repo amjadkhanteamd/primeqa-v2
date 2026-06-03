@@ -193,10 +193,10 @@ OUTPUT_SCHEMA = {
 
 # Word-boundary match with optional common inflections so "flows" /
 # "flowed" count but "workflow" does NOT contribute to "flow". The actual
-# implementation lives in primeqa.intelligence.knowledge._text so the
+# implementation lives in primeqa.knowledge._text so the
 # domain-pack selector uses the same semantics — nothing worse than two
 # "same thing" matchers drifting apart.
-from primeqa.intelligence.knowledge._text import kw_count as _kw_count  # noqa: E402,F401
+from primeqa.knowledge._text import kw_count as _kw_count  # noqa: E402,F401
 
 
 def detect_complexity(context: Dict[str, Any]) -> str:
@@ -268,7 +268,7 @@ def _get_knowledge_assembler():
     global _knowledge_assembler
     if _knowledge_assembler is None:
         try:
-            from primeqa.intelligence.knowledge import (
+            from primeqa.knowledge import (
                 KnowledgeAssembler, SystemPromptRulesProvider,
             )
             _knowledge_assembler = KnowledgeAssembler([SystemPromptRulesProvider()])
@@ -289,7 +289,7 @@ def _build_knowledge_block(meta):
     if not assembler:
         return None
     try:
-        from primeqa.intelligence.knowledge import QueryContext
+        from primeqa.knowledge import QueryContext
         # metadata_context.objects entries look like
         # "Account [required: Name] [custom: Foo__c]" \u2014 first token is
         # the api name.
@@ -363,7 +363,7 @@ def _format_domain_packs(packs) -> str:
     carrying id + version so the model has a clear signal of where one
     pack ends and the next begins.
 
-    See primeqa/intelligence/knowledge/domain_packs.py for the data
+    See primeqa/knowledge/domain_packs.py for the data
     shape. `packs` is expected to be list[DomainPack]; the function is
     defensive against dicts too (tests sometimes pass serialised forms).
     """
