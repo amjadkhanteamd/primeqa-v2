@@ -7952,4 +7952,27 @@ The three legs (recipe-grounding D-113, claim-grounding D-139, field-value-valid
 
 ---
 
+## D-142 — S8 recorded-verdict store + read API: s8_grounding_validity (Phase 6 slice 4)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S8] (the thin mechanics — a per-tenant recorded-verdict store + read API). **MIGRATION** (alembic tenant `20260603_0030`, down_revision `20260603_0010`).
+**Status:** Active — Phase 6 (S8 evolution) slice 4, on `phase-14-substrate-8-evolution`.
+
+The composition (D-141) produces a `GroundingValidity` on demand; this slice persists it + makes it readable — the **thin mechanics** (the D-137 parity S6 just got), the recorded verdict SPEC §6 named as deferrable-but-bounded. **Persist + read only** — NO sync trigger / reverse index / orchestration (those stay fenced; the trigger is slice 5).
+
+**The store (mirrors `interpretation/result_store.py` + the `s6_interpretations` migration).**
+- Per-tenant table `s8_grounding_validity` (no `tenant_id` — isolation by schema, the substrate convention). Typed columns: `test_id` (UUID) + `version_seq` (int) — the **claim version** grounded; `evaluated_at_version_seq` (int) — the **S1 seq** the verdict was computed against (the contemporaneous-grounding axis, S8-Q-007, made queryable); `overall` (TEXT verdict) + `claim_verdict` (TEXT). PK `(test_id, version_seq)` — the artifact grain (the verdict is per-claim-version; the per-recipe verdicts live in `detail`). `detail` JSONB — the rich part (claim-grounding reason/unresolved + each recipe's leg verdicts/reasons/invalid + rolled_up). Index on `overall` (the "show me all drifted / broken" query).
+- `persist_grounding_validity(session, *, test_id, version_seq, evaluated_at_version_seq, validity)` — an **UPSERT** on `(test_id, version_seq)`: re-grounding the same claim version at a later `evaluated_at_version_seq` **refreshes** the row (the recompute path, slice 5) rather than colliding. add/update + flush, **no commit** (the caller owns the tx — the substrate convention).
+- `GroundingValidityRead` DTO + `read_grounding_validity(session, test_id, version_seq)` + `list_grounding_validity(session, *, test_id=None, overall=None, limit=200)` (bounded at 500; ordered by `(test_id, version_seq)` deterministic; optional scope by test or by overall-verdict).
+
+**`overall` / `claim_verdict` are TEXT** (not a PG enum) — the Python `GroundingVerdict` Literal is the source of truth; TEXT avoids an ALTER TYPE and stays queryable (the `s6_interpretations` precedent).
+
+**Honest caveat (the snapshot).** A recorded verdict is a **snapshot** as-of `evaluated_at_version_seq` — nothing refreshes it absent a recompute (the slice-5 trigger). The column makes the staleness queryable (a consumer can spot rows grounded against an older S1 seq). Consistent with the S6 store (a run's interpretation is also a snapshot) — named here so it isn't mistaken for a standing live index.
+
+**Boundary.** Persist + read only. No trigger / reverse index / orchestration (deferred — the heavy mechanics). The composition + legs are unchanged. The store is the only writer; the pure core stays DB-free (`import grounding_validity` pulls no DB).
+
+**Verification.** Governance-DB integration (the `test_representation` `session` fixture; `alembic upgrade tenant@head` applies `20260603_0030`): persist a hand-built `GroundingValidity` → `read_grounding_validity` round-trip (incl. `detail` rehydration + `evaluated_at_version_seq`); the UPSERT — persist twice on one `(test_id, version_seq)` with a later `evaluated_at_version_seq` → one row, refreshed; `list_grounding_validity` scope by test + by `overall` + the bound.
+
+---
+
 ---
