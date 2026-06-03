@@ -7800,3 +7800,17 @@ S5 is the **only core-path substrate built before it was documented.** Its machi
 **Slice 2 + boundary.** `knowledge/__init__.py` extended (additively) to export the full S5 surface incl. the Domain Packs channel; `tests/test_s5_knowledge_contract.py` pins the invariants. **Deferred** (DEFERRED_ITEMS): the S3-substrate forward-seam; serving S6; the unbuilt vision (per-tenant learned facts, cross-tenant patterns, the reserved `curated` provider slot); the physical relocation to `primeqa/knowledge/` (Phase-7 cutover). No migration; no v1 behavior change — the realized code is unchanged, only documented + given a coherent public API + a drift-guard.
 
 ---
+
+## D-135 — Phase 4 close: S5 Knowledge opened, ratified, contracted
+
+**Date:** 2026-06-03
+**Substrates affected:** [S5] (close). Documentation + merge gate.
+**Status:** Active — Phase 4 (S5 Knowledge) **close**, merging `phase-12-substrate-5-knowledge` → `main`.
+
+Phase 4 opened S5 as a formal substrate over its already-deployed machinery (docs-led, per the binding scope). **Realized:** the substrate doc set (`substrate_5_knowledge/` SPEC/EVOLUTION/DEFERRED) + the D-134 ratification of the provider-port contract + the boundary; the **unified public API** (`knowledge/__init__` exports all three channels — provider port + both rule providers + the Domain Packs channel) — additive, no call-site change; the **contract drift-guard** (`test_s5_knowledge_contract.py`, 12 tests) pinning the surface + the `Rule`/`QueryContext` shape + the assembler invariants (dedup / `learned>system` precedence / byte-identical determinism / token cap / broken-provider tolerance) + domain-pack selection.
+
+**Deferred (designed, tracked):** the S3-substrate generation forward-seam (needs a semantic-fit design — substrate gen emits *claims*, not v1 test cases — so the v1-calibrated knowledge isn't a mechanical wire-in); serving S6 interpretation; the unbuilt vision (a per-tenant learned-knowledge provider; cross-tenant patterns; the reserved `curated` provider slot); the physical relocation `primeqa/intelligence/knowledge/` → `primeqa/knowledge/` (folded into the Phase-7 cutover). S5 is now a documented + contracted boundary future consumers build against — without churning the live v1 stack.
+
+**Merge gate.** A green run of the knowledge-relevant suites — `test_s5_knowledge_contract` + the existing `test_knowledge_architecture` / `test_domain_packs` / `test_generation_quality_gate` — never red. **No migration**; **no v1-runtime behavior change** (the only code delta is additive package exports + a new test), so the deploy is inert. Merge `phase-12-substrate-5-knowledge` → `main` via PR on green.
+
+---
