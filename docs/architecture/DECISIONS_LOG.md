@@ -7655,3 +7655,28 @@ The self-read builders reuse the **proven** Tooling SOQL already shipped in v1 s
 **Verification.** Deterministic stub-client unit tests (no org, no PG): `test_translator.py` (Object + Field self-read SOQL exact strings; the `Object.Field` split; SOQL-literal escape; fail-loud on unknown entity_type), `test_executor.py` (existence passes on ≥1 row / fails on empty), `test_run_dispatch.py` (a real `author_emission(GroundedExistence(...))` recipe routes through the metadata path to a grounded outcome). Live-sandbox proof deferred (decision) — the inspection spine is already live-proven; this is a translator extension.
 
 ---
+
+## D-128 — S4 property execution: the equals/is_null predicate + a finite property→column map (Phase 3 slice A2)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S4] (execution — the metadata executor + translator). Pure-S4; no S2/S3 change, no migration.
+**Status:** Active — Phase 3 (S4 execution) slice A2, on `phase-11-substrate-4-execution`.
+
+Property-claim recipes (`_author_property` → `_inspection_recipe(capture_field=<property_name>, assert_predicate="equals"/"is_null", assert_value=<S1 value>)`) read the subject's own metadata and assert a property holds a value. Two gaps block execution: the executor supports only `exists`, and the translator has no self-read for a property capture. This slice adds both — the durable value is the **predicate machinery** (reusable by every future property-bearing read); the mapped property set is a deliberately narrow, honest starting point.
+
+**The executor — equals + is_null over a captured value (D-128.A).** `_SUPPORTED_PREDICATES |= {"equals", "is_null"}`. Unlike `exists` (row-count), these read a **captured column value** out of the read's single row. The metadata property recipe's assert carries `subject_ref="read-subject"` (the step, no field — unlike the data-recipe's `<step>.<field>`), so the executor cannot learn the column from the assertion. It learns it from the **read**: the translator records the SELECTed Tooling column on the `ToolingQuery` (`capture_column`), the executor stashes it per read step, and `_run_assert` reads `rows[0].get(capture_column)`. `equals` holds iff `observed == value` (with a `str()`-coercion fallback for the int-vs-string JSON representation gap, never masking a semantic mismatch); `is_null` holds iff the value is absent/None. A non-`exists` predicate over a read that captured no column fails loud (a recipe/plan defect).
+
+**The translator — a finite, honest property→FieldDefinition-column map (D-128.B, Fork A-P).** The `_self_read_field` builder gains a property branch over a finite map of the **cleanly equals-mappable** Field properties: `length`→`Length`, `precision`→`Precision`, `scale`→`Scale` (numeric, same value semantics on Tooling `FieldDefinition`). The SELECT names that column; `capture_column` carries it to the executor. **Deliberate fail-loud** (`UnsupportedPropertyError`, a new sibling of `UnsupportedEdgeError`) — the "never guesses" discipline (SPEC §5) — for:
+- **`is_required`** — describe/layout-derived, **no faithful Tooling `FieldDefinition` column** (entity_attributes.py: it is the page-layout create-time enforcement, distinct from the column-level `is_nillable`). A future describe-backed read path (Fork A-P.2, a new transport) reopens it.
+- **`field_type`** — the S1 value is the describe vocabulary (`"picklist"`, `"string"`); Tooling `DataType` is a display string (`"Picklist"`, `"Text(255)"`). A naive `equals` would mismatch — **not faithful**, so refuse rather than wrongly fail. A describe-type read or a vocabulary map reopens it.
+- **other field_details flags** (`is_custom`/`is_unique`/`is_nillable`/…) and **Object-subject properties** — each needs its own verified column+value mapping before it can ground; until then, refuse.
+
+This is the same honest-refusal posture as the D-125 `field_details` scope cut: the *machinery* ships; an unmapped property surfaces as a clean `UnsupportedPropertyError`, never a wrong `passed`.
+
+**Why faithful (no semantic injection).** The self-read adds only the `FROM`/`WHERE QualifiedApiName` scoping + the SELECTed column; the asserted predicate + value are the recipe's, read verbatim from S1 at grounding (D-122). The mapped columns' **live** value-correctness (e.g. that Tooling `Length` equals S1 `length`) is asserted-but-not-proven this session — the deterministic tests check the SOQL + the comparison logic; live-sandbox proof is deferred (decision), and an unmapped/wrong column fails *safe* (an SF error → `errored`, never a false `passed`).
+
+**Boundary.** `ToolingQuery` + the executor's per-read column stash are the only additions; no `ReadEvidence`/result-store schema change (the plan's "no new evidence schema"). No bridge/S2/S3/S1 change; no migration. existence (A1) is unaffected (its capture has no column; `exists` ignores `capture_column`).
+
+**Verification.** Deterministic stub-client unit tests: `test_translator.py` (length/precision/scale → correct `FieldDefinition` SOQL + `capture_column`; `is_required`/`field_type`/unmapped → `UnsupportedPropertyError`), `test_executor.py` (equals holds/fails; is_null holds/fails; the int-vs-string coercion; fail-loud when a value predicate has no captured column), `test_run_dispatch.py` (a real `author_emission(GroundedProperty(...))` length recipe routes + grounds). Live-sandbox proof deferred.
+
+---
