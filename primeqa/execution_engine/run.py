@@ -26,6 +26,7 @@ inject a real client because the local substrate test DB has no
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 from uuid import UUID
@@ -261,3 +262,99 @@ def run_recipe_execution_for_tenant(
         finally:
             session.close()
     # get_tenant_connection commits on clean exit (atomic); rolls back on raise.
+
+
+# ---------------------------------------------------------------------------
+# The async run path (D-129) — brief transactions around the live read, so no
+# DB connection is held across Salesforce I/O. The production-trigger
+# foundation (B1/B2 queue + consumer drive this); the sync path above is
+# unchanged (boundary A, the right call for a one-off call).
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _default_session_scope(tenant_id: int):
+    """A brief tenant-scoped session: open ``get_tenant_connection`` (search_path
+    = tenant_N, public), bind a ``Session``, yield it, close it; the context
+    **commits on clean exit** (atomic) and rolls back on raise — the
+    ``_for_tenant`` idiom, scoped to one bracket. Injectable so a test drives the
+    async path with a fake scope (no PG)."""
+    from sqlalchemy.orm import Session
+
+    from primeqa.semantic.connection import get_tenant_connection
+
+    with get_tenant_connection(tenant_id) as conn:
+        session = Session(bind=conn)
+        try:
+            yield session
+        finally:
+            session.close()
+
+
+def run_recipe_execution_async(
+    tenant_id: int,
+    test_id: UUID,
+    *,
+    environment_id: int,
+    client,
+    available_environment: Optional[ExecutionEnvironmentBody] = None,
+    coordinator=None,
+    session_scope=None,
+) -> RunPathResult:
+    """Async-safe execution: bracket the live read with **brief transactions** so
+    no DB connection is held across Salesforce I/O (D-129). Three brackets:
+
+      1. **select** (read-only TX) → the ``RecipeRead`` detaches as plain data;
+      2. **execute** holding NO DB connection (the metadata path needs only the
+         injected ``client``) — the load-bearing invariant;
+      3. **persist + posture + interpret** (TX) → committed.
+
+    ``client`` is **required** (the consumer resolves it up front; there is no
+    in-bracket resolver, by design — a resolver would need a held connection).
+    ``session_scope`` defaults to :func:`_default_session_scope`; a test injects
+    a fake scope to assert the no-connection-during-read invariant.
+
+    **Metadata-path only** — a non-metadata recipe (the positive data vertical
+    reads S1 mid-execute) raises a clear deferral rather than silently holding a
+    connection across the live mutation; that bracketing is its own work, and the
+    sync :func:`run_recipe_execution` runs those today.
+    """
+    coord = coordinator or SemanticTransactionCoordinator()
+    scope = session_scope or _default_session_scope
+
+    # 1. select — brief, read-only; the recipe detaches as plain data.
+    with scope(tenant_id) as session:
+        recipe = coord.select_recipe_for_execution(
+            session,
+            test_id,
+            available_environment=available_environment or _MIN_AVAILABLE_ENV,
+            replay_mode="live",
+        )
+    if recipe is None:
+        return RunPathResult(ran=False, reason="no_eligible_recipe")
+
+    # The async wrapper brackets the metadata path (DB-free execute). The data
+    # vertical reads S1 mid-execute → deferred (raise, never hold a connection
+    # across the live mutation).
+    if recipe.recipe_kind != _METADATA_RECIPE_KIND:
+        raise PlanTranslationError(
+            f"async execution for recipe_kind={recipe.recipe_kind!r} is deferred "
+            f"(it reads S1 mid-execute; the sync path runs it). B0 brackets the "
+            f"metadata path only",
+            recipe_id=recipe.recipe_id,
+        )
+
+    # 2. execute — NO DB connection held across the live read (the invariant).
+    evidence = _execute_for_kind(recipe, None, environment_id, client)
+
+    # 3. persist + posture + interpret — a fresh brief transaction.
+    with scope(tenant_id) as session:
+        state = finalize_run(session, evidence, coordinator=coord)
+        interpretation = _interpret_and_persist(session, evidence)
+
+    return RunPathResult(
+        ran=True,
+        selected_recipe_id=recipe.recipe_id,
+        evidence=evidence,
+        runtime_state=state,
+        interpretation=interpretation,
+    )

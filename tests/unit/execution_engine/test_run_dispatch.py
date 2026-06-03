@@ -94,6 +94,19 @@ def _inspection_recipe():
                  trigger_kind="inspection-trigger", recipe_kind="metadata-recipe")
 
 
+def _existence_recipe():
+    # an existence-claim recipe (D-127): a self-read of the subject's own
+    # metadata + assert `exists` — routes through the same metadata path.
+    from primeqa.generation.emission import GroundedExistence
+    bundle = author_emission(GroundedExistence(
+        archetype="configuration", claim_kind="existence-claim", version_seq=7,
+        subject=_Endpoint(entity_id=uuid4(), entity_type="Object", external_id="Account"),
+        requirement_excerpt="Account exists"))
+    return _wrap(bundle.causal_initiation, bundle.observation_realization,
+                 bundle.execution_environment,
+                 trigger_kind="inspection-trigger", recipe_kind="metadata-recipe")
+
+
 def _negative_data_recipe():
     trigger = DataMutationTriggerBody.model_validate({
         "operation": "create",
@@ -134,6 +147,42 @@ def test_metadata_recipe_routes_to_inspection_path():
     # the inspection path issued a query, not a create.
     assert len(client.queries) == 1 and client.creates == []
     assert result.evidence.steps[0].kind == "read"
+
+
+def test_existence_recipe_routes_through_self_read_metadata_path():
+    # D-127: an existence recipe routes to the metadata path, issues the
+    # EntityDefinition self-read query, and grounds an outcome — no create.
+    coord = _SpyCoordinator(_existence_recipe())
+    client = _StubClient(rows=[{"QualifiedApiName": "Account"}])
+    result = run_recipe_execution(
+        _FakeSession(), uuid4(), environment_id=7, client=client, coordinator=coord)
+
+    assert result.ran is True
+    assert result.evidence.outcome == "passed"
+    assert len(client.queries) == 1 and client.creates == []
+    assert "FROM EntityDefinition" in client.queries[0]
+    assert result.evidence.steps[0].edge == "sf_api_name"
+
+
+def test_property_recipe_routes_and_grounds_equals():
+    # D-128: a property (length) recipe routes to the metadata path, issues the
+    # FieldDefinition self-read, and grounds equals over the captured column.
+    from primeqa.generation.emission import GroundedProperty
+    bundle = author_emission(GroundedProperty(
+        archetype="configuration", claim_kind="property-claim", version_seq=7,
+        subject=_Endpoint(entity_id=uuid4(), entity_type="Field", external_id="Account.Description"),
+        property_name="length", expected_value=255, requirement_excerpt="x"))
+    coord = _SpyCoordinator(_wrap(
+        bundle.causal_initiation, bundle.observation_realization, bundle.execution_environment,
+        trigger_kind="inspection-trigger", recipe_kind="metadata-recipe"))
+    client = _StubClient(rows=[{"Length": 255}])
+    result = run_recipe_execution(
+        _FakeSession(), uuid4(), environment_id=7, client=client, coordinator=coord)
+
+    assert result.ran is True
+    assert result.evidence.outcome == "passed"
+    assert "SELECT Length FROM FieldDefinition" in client.queries[0]
+    assert result.evidence.steps[1].predicate == "equals"
 
 
 def test_data_recipe_routes_to_negative_path():

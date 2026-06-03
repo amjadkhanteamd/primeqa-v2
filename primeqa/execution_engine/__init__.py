@@ -78,6 +78,7 @@ from primeqa.execution_engine.result_store import (
 from primeqa.execution_engine.run import (
     RunPathResult,
     run_recipe_execution,
+    run_recipe_execution_async,
     run_recipe_execution_for_tenant,
 )
 from primeqa.execution_engine.tooling_client import ToolingReadClient
@@ -117,6 +118,7 @@ __all__ = [
     "finalize_run",
     # run path — end-to-end recipe execution
     "run_recipe_execution",
+    "run_recipe_execution_async",
     "run_recipe_execution_for_tenant",
     "RunPathResult",
     # errors

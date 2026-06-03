@@ -7633,3 +7633,152 @@ These reopen as an S3-breadth continuation after the corresponding S1 tiers land
 **Merge gate.** A real green run of the substrate-relevant suites (generation unit + integration + representation + the offline eval corpus + eval-harness) — never the live probes (env-gated, periodic). No migration across the whole phase (every kind was pre-seated in `CLAIM_KIND_ENUM` / `ARCHETYPE_ENUM` at the D-121 readiness ratification). Merge `phase-10-substrate-3-breadth` → `main` via PR on green.
 
 ---
+
+## D-127 — S4 existence execution: the read-shape dispatch + entity self-read (Phase 3 slice A1)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S4] (execution — the metadata translator). Pure-S4; no S2/S3 change, no migration.
+**Status:** Active — Phase 3 (S4 execution) slice A1, on `phase-11-substrate-4-execution`. The first slice closing the generation→execution gap Phase 2 opened.
+
+Phase 2 made existence/property/capability/layout **emittable + grounded + LLM-reachable**, but **not executable**: S4's metadata translator (`translator.py`) has exactly one edge (`APPLIES_TO`) and `translate_read` assumes `fields_to_capture[0]` *is* an edge to traverse. existence breaks that assumption — its recipe (`_author_existence` → `_inspection_recipe(capture_field="sf_api_name", assert "exists")`) reads the subject's **own** metadata, not a related-edge. So executing an existence recipe today raises `UnsupportedEdgeError`. This slice makes existence runnable end-to-end; it is the simplest breadth win because the `exists` predicate is **already** supported by the executor.
+
+**The shape fork — read-shape dispatch (D-127.A).** `translate_read` is refactored from a flat edge-lookup into a **two-mode dispatch**:
+- **edge-read** — `capture_field` ∈ the known Tier-1 edges → the existing `_EDGE_TRANSLATORS` (today: `APPLIES_TO`). Unchanged.
+- **self-read** — `capture_field` is the subject's own surface (`sf_api_name` for existence; a property name in A2) → a new finite registry of **entity-self-read builders keyed on `subject.entity_type`**.
+
+The self-read builders reuse the **proven** Tooling SOQL already shipped in v1 sync (`metadata/service.py`): `Object` → `SELECT QualifiedApiName FROM EntityDefinition WHERE QualifiedApiName = '<api>'`; `Field` (external_id is the qualified `Object.Field`) → `SELECT QualifiedApiName FROM FieldDefinition WHERE EntityDefinition.QualifiedApiName = '<object>' AND QualifiedApiName = '<field>'`. We reuse the *query knowledge* (the column + relationship vocabulary), not the v1 fetcher objects — the thin `ToolingReadClient` stays the only transport. An unknown `subject.entity_type` raises (fail-loud, never a silent empty query — the SPEC §5 realization discipline).
+
+**Why this is faithful (no semantic injection, D-108.1).** existence asserts *the subject surfaces in the org's metadata*. A non-empty self-read **is** that verification — the query adds only operational mechanics (the `FROM` object, the `QualifiedApiName` scoping), never a predicate the recipe didn't assert. The executor's existing `exists` (held ⇔ row_count > 0) renders the grounded outcome unchanged.
+
+**Boundary.** No executor change (`exists` already supported). No bridge change (`build_metadata_inspection_plan` already projects any `ReadMetadataStep`/`AssertStep` verbatim — verified). No S2/S3/S1 change; no migration. The `ToolingQuery` evidence dataclass gains a self-read shape (the `edge` field carries the captured surface, e.g. `sf_api_name`, so S6 can still tell an absent subject from a present one).
+
+**Verification.** Deterministic stub-client unit tests (no org, no PG): `test_translator.py` (Object + Field self-read SOQL exact strings; the `Object.Field` split; SOQL-literal escape; fail-loud on unknown entity_type), `test_executor.py` (existence passes on ≥1 row / fails on empty), `test_run_dispatch.py` (a real `author_emission(GroundedExistence(...))` recipe routes through the metadata path to a grounded outcome). Live-sandbox proof deferred (decision) — the inspection spine is already live-proven; this is a translator extension.
+
+---
+
+## D-128 — S4 property execution: the equals/is_null predicate + a finite property→column map (Phase 3 slice A2)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S4] (execution — the metadata executor + translator). Pure-S4; no S2/S3 change, no migration.
+**Status:** Active — Phase 3 (S4 execution) slice A2, on `phase-11-substrate-4-execution`.
+
+Property-claim recipes (`_author_property` → `_inspection_recipe(capture_field=<property_name>, assert_predicate="equals"/"is_null", assert_value=<S1 value>)`) read the subject's own metadata and assert a property holds a value. Two gaps block execution: the executor supports only `exists`, and the translator has no self-read for a property capture. This slice adds both — the durable value is the **predicate machinery** (reusable by every future property-bearing read); the mapped property set is a deliberately narrow, honest starting point.
+
+**The executor — equals + is_null over a captured value (D-128.A).** `_SUPPORTED_PREDICATES |= {"equals", "is_null"}`. Unlike `exists` (row-count), these read a **captured column value** out of the read's single row. The metadata property recipe's assert carries `subject_ref="read-subject"` (the step, no field — unlike the data-recipe's `<step>.<field>`), so the executor cannot learn the column from the assertion. It learns it from the **read**: the translator records the SELECTed Tooling column on the `ToolingQuery` (`capture_column`), the executor stashes it per read step, and `_run_assert` reads `rows[0].get(capture_column)`. `equals` holds iff `observed == value` (with a `str()`-coercion fallback for the int-vs-string JSON representation gap, never masking a semantic mismatch); `is_null` holds iff the value is absent/None. A non-`exists` predicate over a read that captured no column fails loud (a recipe/plan defect).
+
+**The translator — a finite, honest property→FieldDefinition-column map (D-128.B, Fork A-P).** The `_self_read_field` builder gains a property branch over a finite map of the **cleanly equals-mappable** Field properties: `length`→`Length`, `precision`→`Precision`, `scale`→`Scale` (numeric, same value semantics on Tooling `FieldDefinition`). The SELECT names that column; `capture_column` carries it to the executor. **Deliberate fail-loud** (`UnsupportedPropertyError`, a new sibling of `UnsupportedEdgeError`) — the "never guesses" discipline (SPEC §5) — for:
+- **`is_required`** — describe/layout-derived, **no faithful Tooling `FieldDefinition` column** (entity_attributes.py: it is the page-layout create-time enforcement, distinct from the column-level `is_nillable`). A future describe-backed read path (Fork A-P.2, a new transport) reopens it.
+- **`field_type`** — the S1 value is the describe vocabulary (`"picklist"`, `"string"`); Tooling `DataType` is a display string (`"Picklist"`, `"Text(255)"`). A naive `equals` would mismatch — **not faithful**, so refuse rather than wrongly fail. A describe-type read or a vocabulary map reopens it.
+- **other field_details flags** (`is_custom`/`is_unique`/`is_nillable`/…) and **Object-subject properties** — each needs its own verified column+value mapping before it can ground; until then, refuse.
+
+This is the same honest-refusal posture as the D-125 `field_details` scope cut: the *machinery* ships; an unmapped property surfaces as a clean `UnsupportedPropertyError`, never a wrong `passed`.
+
+**Why faithful (no semantic injection).** The self-read adds only the `FROM`/`WHERE QualifiedApiName` scoping + the SELECTed column; the asserted predicate + value are the recipe's, read verbatim from S1 at grounding (D-122). The mapped columns' **live** value-correctness (e.g. that Tooling `Length` equals S1 `length`) is asserted-but-not-proven this session — the deterministic tests check the SOQL + the comparison logic; live-sandbox proof is deferred (decision), and an unmapped/wrong column fails *safe* (an SF error → `errored`, never a false `passed`).
+
+**Boundary.** `ToolingQuery` + the executor's per-read column stash are the only additions; no `ReadEvidence`/result-store schema change (the plan's "no new evidence schema"). No bridge/S2/S3/S1 change; no migration. existence (A1) is unaffected (its capture has no column; `exists` ignores `capture_column`).
+
+**Verification.** Deterministic stub-client unit tests: `test_translator.py` (length/precision/scale → correct `FieldDefinition` SOQL + `capture_column`; `is_required`/`field_type`/unmapped → `UnsupportedPropertyError`), `test_executor.py` (equals holds/fails; is_null holds/fails; the int-vs-string coercion; fail-loud when a value predicate has no captured column), `test_run_dispatch.py` (a real `author_emission(GroundedProperty(...))` length recipe routes + grounds). Live-sandbox proof deferred.
+
+---
+
+## D-129 — S4 async orchestration wrapper: brief transactions around the live read (Phase 3 slice B0)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S4] (execution — the run path). Pure-S4; no S2/S3 change, no migration. The first PART-B (async trigger) slice.
+
+The sync run path (`run_recipe_execution` / `_for_tenant`) holds **one DB transaction across the live Salesforce read** (Boundary A, D-108.4) — correct for a one-off sync call, but the production trigger (a worker tick over many tenants) must not pin a pooled connection across ~1–2 s of network I/O. S4's DEFERRED_ITEMS §1 names the requirement: the async path **brackets the live read with brief transactions**, orchestrating select / persist directly rather than under one umbrella. B0 builds exactly that — the foundation the B1/B2 queue+consumer drive.
+
+**Shape — an additive wrapper, sync path untouched (Fork B-O.1).** `run_recipe_execution_async(tenant_id, test_id, *, environment_id, client, …)` reuses the **same component functions** as the sync path (`select_recipe_for_execution`, `_execute_for_kind`, `finalize_run`, `_interpret_and_persist`) across **three brackets**:
+- **TX1 — select (brief, read-only).** Open a tenant session → `select_recipe_for_execution` → the `RecipeRead` is plain detachable data (the Coordinator fully hydrates it) → close. The connection is released before any live I/O.
+- **Execute — NO DB connection held.** `_execute_for_kind` for the metadata path needs only the injected `client` (the bridge + executor are DB-free; the consumer resolves the client up front). The live read runs with zero open connections — the load-bearing invariant.
+- **TX2 — persist + posture + interpret (brief).** Open a fresh tenant session → `finalize_run` (the `s4_execution_runs` row + the S2 posture callback) + `_interpret_and_persist` (S6, best-effort, its own SAVEPOINT) → commit.
+
+The live-proven sync `run_recipe_execution` is **not touched** (its ~138 tests stay green); the async path is purely additive, exactly the "orchestrate the components directly" the docs call for.
+
+**Scope — metadata-path only; data-recipe async deferred (honest).** The metadata verticals (existence / property / metadata-relationship / the caveated negative) are DB-free during execute, so B0 brackets them cleanly **today**. The positive **data** vertical reads S1 mid-execute (`SemanticOrgModel(session.connection())` for k16 padding, `run.py`) — it genuinely needs a connection *inside* the execute step, so its brief-tx bracketing is its own piece of work. B0's async wrapper **raises a clear deferral** for a non-metadata recipe rather than silently holding a connection (the consumer surfaces it as a failed job). This is the same dormancy-honesty as the deferred recipe kinds — build the clean path, refuse the unbuilt one loudly.
+
+**Testability seam.** The two DB brackets go through an injectable `session_scope(tenant_id)` context manager (default: `get_tenant_connection` + a bound `Session`, committing on clean exit — the `_for_tenant` idiom). A deterministic test injects a fake scope yielding a `_FakeSession` + an asserting client that checks **no scope is open when `client.query` fires** — proving the invariant with no real PG.
+
+**Boundary.** No change to the executor / bridge / finalize / result-store / S6 stages — B0 only re-orchestrates their transaction boundaries. No S2/S3/S1 change; no migration. The sync path and `RunPathResult` shape are unchanged.
+
+**Verification.** `tests/unit/execution_engine/test_async_run.py` (deterministic, no PG): the **no-connection-during-live-read** invariant; select + persist happen in two *distinct* scopes; a metadata recipe grounds end-to-end (passed); a data recipe raises the deferral; the no-eligible-recipe branch returns `ran=False`. Live-sandbox proof deferred — B0 is a transaction-boundary refactor of already-live-proven stages.
+
+---
+
+## D-130 — S4 execution-job queue: s4_execution_jobs + ExecutionJobStore (Phase 3 slice B1)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S4] (execution — the async job queue). Pure-S4; **one tenant migration** (`s4_execution_jobs` + `s4_execution_job_attempts`); no S2/S3 change.
+**Status:** Active — Phase 3 (S4 execution) slice B1, on `phase-11-substrate-4-execution`. The per-tenant queue B2's consumer drains.
+
+The async run path (B0) executes when called; B1 gives it a **queue** — the durable per-tenant record of "execute recipe `test_id` on `environment_id`," with claim / attempt / heartbeat / reap lifecycle. A near-mechanical mirror of S3's proven `s3_generation_jobs` / `GenerationJobStore` (D-106.4), per-tenant (schema isolation, no `tenant_id` column), `SELECT … FOR UPDATE SKIP LOCKED` claim, fresh-`request_id`-per-attempt child table, race-safe terminal guards, reaper.
+
+**The one real design call — idempotency differs from S3 (D-130.A).** S3 keys jobs `UNIQUE (requirement_key, s1_version_seq)` — "**one job ever**" — because generating the same requirement at the same S1 version is deterministic (same input → same output). **Execution is not** — re-running a recipe on the same env at a later time is a *legitimate* operation (the org state changed; re-verification is the point). So S4 uses a **partial-unique on the active set**: `UNIQUE (test_id, environment_id) WHERE status IN ('queued','claimed','running')`. This dedups a double-enqueue while a run is pending **but allows a fresh job once the prior is terminal** — the v1 `generation_jobs` "new-job-after-terminal" model the S3 design explicitly *didn't* need, which S4 explicitly *does*. `create_or_get_job` `INSERT … ON CONFLICT (test_id, environment_id) WHERE status IN (…) DO NOTHING` then SELECTs the active job — race-safe get-or-create of the *active* job.
+
+**Schema.** `s4_execution_jobs` (per-tenant): `id` PK, `test_id` UUID, `environment_id` int (which org — required), `status` (queued/claimed/running/completed/failed/cancelled, CHECK), `current_request_id` UUID, `attempt_count`, `claimed_at`/`started_at`/`completed_at`/`heartbeat_at`, `error_code`/`error_message`, `created_by`, timestamps; the partial-unique active index + a partial status index for the claim. `s4_execution_job_attempts` (child, CASCADE): `job_id`, `attempt_no`, `request_id` (UNIQUE), `status`, `error_code`, `started_at`/`finished_at`. **No FK to logical_versions** (S4 keys on test_id + env, not an S1 version — unlike S3). Attempts are **observability-grade** for S4 (the executor mints its own `run_id` per run; the attempt `request_id` is the job-level attempt identity, not an idempotency key against a ledger PK).
+
+**Store.** `ExecutionJobStore(tenant_id)` mirrors `GenerationJobStore`: `create_or_get_job(test_id, environment_id, …)`, `claim_next_queued_job()` (SKIP LOCKED), `start_attempt()` (fresh request_id), `complete`/`fail`(race-safe terminal guard)/`cancel`/`heartbeat`, `reap_stale_jobs(stale_minutes=10)` (fail jobs stuck past the heartbeat threshold, reusing `fail`), `get_job`/`get_attempts`. Per-call `get_tenant_connection` (the `LedgerPersister` idiom).
+
+**Verification + the DB-gated honesty.** The store's behavior is **Postgres semantics** (FOR UPDATE SKIP LOCKED, the partial-unique ON CONFLICT, the race-safe terminal guard) — it can only be faithfully tested against a real per-tenant schema, exactly like the S3 jobs tests (the project norm: "integration tests against the real Railway database"). So B1 ships: (a) a **DB-gated integration test** (`tests/integration/execution_engine/test_jobs.py`) — idempotency (active dedup + re-run-after-terminal), SKIP-LOCKED claim, attempt minting, race-safe terminal guard, reap — runnable where `DATABASE_URL` is set; and (b) **no-PG local checks** — the migration imports + `upgrade`/`downgrade` are well-formed, the store imports, and the `_job` row→dataclass mapping unit-tests. The behavioral green runs in the governance-DB environment (a phase-close gating item, like the Phase-0 sandbox probe #82); my sandboxed shell has no `DATABASE_URL`, so I verify (b) locally and author (a) to the project's integration-test standard.
+
+---
+
+## D-131 — S4 execution consumer + reaper ticks (Phase 3 slice B1's driver, slice B2)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S4] (execution — the worker loop). Pure-S4; no migration.
+**Status:** Active — Phase 3 (S4 execution) slice B2, on `phase-11-substrate-4-execution`. The loop that drains the B1 queue through the B0 async run.
+
+The worker layer driving `run_recipe_execution_async` (B0) off the `s4_execution_jobs` queue (B1) — a near-mechanical mirror of S3's `consumer.py` (D-106.4 slice 3): per-tenant, one job per tenant per tick, per-tenant isolation (one tenant's failure never starves the others).
+
+**Flow.** `process_execution_job_for_tenant(tenant_id, *, client_resolver, run_fn=run_recipe_execution_async)`: claim (SKIP LOCKED) → `heartbeat` → `start_attempt` → resolve the Tooling client worker-side → `run_recipe_execution_async(tenant_id, test_id, environment_id, client)` → `complete`. Any raise aborts the job to `failed` with a thin classified `error_code` (`credential_error` / `sf_error` / `execution_error`) + finalizes the attempt. The claim is **not** wrapped — an infrastructure failure (missing tenant schema) propagates to the per-tenant boundary in the tick. `run_s4_execution_tick` + `run_s4_reaper_tick` mirror the S3 ticks (`{tenant_id: outcome}` / `{tenant_id: reaped_count}`, per-tenant try/except).
+
+**Two injected seams (D-131.A).**
+- **`client_resolver: (tenant_id, environment_id) → client`** — resolves the Tooling/data client worker-side (the S3 `api_key_resolver` discipline), so the consumer stays decoupled from the v1 connection store and is stub-testable. The client is resolved **up front** (before the async run's execute bracket) so the async path holds no connection across the live read. The **production** resolver (a brief-tx read of v1 `connections`/Fernet creds) is wired in B3; B2 ships the seam.
+- **`run_fn`** — defaults to `run_recipe_execution_async`; injectable so the consumer's *orchestration* (claim → attempt → complete/fail → isolation) is tested without re-seeding a full approved S2 recipe (the async run itself is B0-tested, the executor A1/A2-tested, the queue B1-tested). The test asserts the consumer calls `run_fn` with the right `(tenant_id, test_id, environment_id, client)` so a wiring defect is still caught.
+
+**Complete-on-ran, fail-on-raise.** A run that returns (even `ran=False` no-eligible-recipe, or `evidence.outcome=='errored'`) **completes** the job — the *worker* did its job; the run outcome / absence of a recipe is not a worker failure (mirrors S3 completing on a refusal outcome). Only a raised exception fails the job. The run outcome lives on the persisted `s4_execution_runs` row (S6's to interpret), not the job status.
+
+**Verification.** Governance-DB integration (`tests/integration/execution_engine/test_consumer.py`, the B1 harness): empty queue → None; one job → claimed + attempted + `run_fn` called with the right args + completed; a raising run → failed + classified `error_code`; a raising `client_resolver` → failed (`credential_error`); `ran=False` → completed; `run_s4_execution_tick` per-tenant outcomes + isolation (a bogus tenant's claim raises → `error:…`, the real tenant still processes); `run_s4_reaper_tick` reaps a stale job. Pure-S4; no migration.
+
+---
+
+## D-132 — S4 execution scheduler/worker wiring (Phase 3 slice B3)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S4] (execution — the worker + scheduler tick wiring). v1 `worker.py` + `scheduler.py` (the deploy services); no migration.
+**Status:** Active — Phase 3 (S4 execution) slice B3, on `phase-11-substrate-4-execution`. The last build slice — fires the B2 consumer + reaper from the Railway services.
+
+B2 built the consumer + reaper *functions*; B3 fires them from the deploy services, mirroring the S3 split exactly: the **consumer** tick runs in the **worker** loop (`worker.py`, beside `s3_generation_tick`), the **reaper** tick in the **scheduler** loop (`scheduler.py`, beside `s3_reaper_tick`).
+
+**Worker (`worker.py`).** `_default_s4_client_resolver(db_factory)` — the production `client_resolver`: `(tenant_id, environment_id) → resolve_tooling_client(db, environment_id)` (the env→connection-scoped SF token, the D-106.4 credential path), opening + closing a v1 session per resolve so **no connection is held into the async run's execute bracket**. `s4_execution_tick(db_factory=None, *, client_resolver=None)` discovers tenant schemas (`_discover_tenant_schemas`, the enrichment idiom) → `run_s4_execution_tick(tenant_ids, client_resolver=…)`; wired into `worker_tick` next to `s3_generation_tick`.
+
+**Scheduler (`scheduler.py`).** `s4_reaper_tick(ctx)` enumerates active tenants from `shared.tenants` (via `admin_run_in_shared_schema`) → `run_s4_reaper_tick(tenant_ids)`; wired into `scheduler_tick` next to `s3_reaper_tick`. A verbatim structural mirror of the proven `s3_reaper_tick`.
+
+**Enqueue source DEFERRED (Fork B3).** Nothing enqueues S4 jobs yet, so both ticks **no-op on an empty queue** today — exactly as `s3_generation_tick` did before its slice-4 enqueue. The *product* trigger (a post-approval hook on a freshly-approved recipe / scheduled re-verification / a CI release gate) is its own design — each implies different ownership + cadence — and is a tracked follow-on. Jobs can be enqueued programmatically via `ExecutionJobStore.create_or_get_job` (a later trigger slice, or a test). Shipping the queue + consumer + reaper + the firing wiring without a UI enqueue is coherent: the production loop is live and idle, ready for the trigger.
+
+**Verification.** Worker-side unit tests (`tests/unit/execution_engine/test_worker_wiring.py`, mock-patched like the S3 worker tests — no DB): `s4_execution_tick` no-ops `{}` on no tenants; delegates to `run_s4_execution_tick` with the discovered `tenant_ids` + the resolver; `_default_s4_client_resolver`'s closure raises on a `None` environment_id. `s4_reaper_tick` mirrors the (precedent-untested) `s3_reaper_tick` — verified by structural mirror + import; the underlying `run_s4_reaper_tick` logic is B2-tested. Pure wiring; no migration.
+
+---
+
+## D-133 — Phase 3 close: S4 execution breadth (existence/property) + the async production trigger
+
+**Date:** 2026-06-03
+**Substrates affected:** [S4] (execution — close). Documentation + merge gate.
+**Status:** Active — Phase 3 (S4 execution) **close**, merging `phase-11-substrate-4-execution` → `main`.
+
+Phase 3 closed the **generation→execution gap** Phase 2 opened (Phase 2 made existence/property/capability/layout emittable + grounded + LLM-reachable; they did not yet *execute*) and laid the **async production-trigger foundation**. Six slices, each a design/impl triad; EVOLUTION/DEFERRED currency batched here.
+
+**Realized — PART A (execution breadth, pure-S4).** `existence` (D-127) + `property` (D-128) now execute end-to-end. The translator gained a **read-shape dispatch** (edge-read vs self-read: Object→`EntityDefinition`, Field→`FieldDefinition`, reusing v1 sync's Tooling vocabulary); the executor gained `equals` / `is_null` over a captured column value. The `metadata-relationship` vertical (the original first vertical) is unchanged; the new kinds ride the same bridge (generic) + the same `exists`/value executor.
+
+**Realized — PART B (the async trigger).** `run_recipe_execution_async` (D-129) brackets the live read with **brief transactions** (select TX → execute with **no DB connection held** → persist+posture+interpret TX), leaving the live-proven sync path untouched. The per-tenant `s4_execution_jobs` queue + `ExecutionJobStore` (D-130, **the phase's one migration** `20260603_0010`) — partial-unique active-set idempotency (re-runnable after terminal, unlike S3). The consumer + reaper ticks (D-131) draining the queue through the async run, per-tenant isolation. The scheduler/worker firing wiring (D-132) — the production loop ships **live + idle**, no-opping on the empty queue until a trigger enqueues.
+
+**Deferred (honest, tracked).**
+- **capability + layout execution** — their recipes are **under-specified for live execution** (the recipe reads one endpoint + the edge *type*; the grant target / placed field is env-detail prose only). Live execution needs an **Option-X recipe enrichment** (S2 `ReadMetadataStep` + S3 emission carry the structured second endpoint), which reopens the S2/S3 territory Phase 2 sealed — deferred to a follow-on S3 recipe-enrichment slice. The S4 translator branch (`GRANTS_*` / `INCLUDES_FIELD`) lands with it.
+- **`is_required` property** — page-layout-derived, no faithful Tooling `FieldDefinition` column; refuses (`UnsupportedPropertyError`) until a describe-backed read path lands. `field_type` (describe-vocab vs `DataType`) likewise. `matches_pattern` / `not_equals` predicates likewise.
+- **The data-path async bracketing** — B0 is metadata-path-only; the positive-data vertical reads S1 mid-execute, so its brief-tx bracketing is its own work (the async wrapper refuses a data recipe loudly today).
+- **The product enqueue source** — the queue+consumer+reaper+wiring ship, but *what* enqueues (a post-approval hook / scheduled re-verification / a CI release gate) is its own trigger design — each implies different ownership + cadence. Jobs are enqueueable programmatically via `ExecutionJobStore.create_or_get_job` until then.
+
+**Merge gate.** A real green run of the substrate-relevant suites — `execution_engine` (unit + the governance-DB integration: jobs + consumer), the worker wiring units, and the generation / representation / interpretation suites the run path touches — never the live Salesforce sandbox (deferred per decision: the metadata-inspection spine is already live-proven; the new predicates/self-reads + the async restructure are mechanism extensions, sandbox-confirmable post-merge like #82). One migration (`20260603_0010`), applied to the governance DB before its integration tests (proven via `alembic upgrade tenant@head`). Merge `phase-11-substrate-4-execution` → `main` via PR on green.
+
+---

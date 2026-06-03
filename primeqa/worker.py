@@ -1235,6 +1235,51 @@ def s3_generation_tick(db_factory=None, *, tool_turn_fn=None, api_key_resolver=N
         tenant_ids, api_key_resolver=api_key_resolver, tool_turn_fn=tool_turn_fn)
 
 
+def _default_s4_client_resolver(db_factory):
+    """Worker-side Tooling-client resolution (D-132): the SF token is
+    environment -> connection-scoped (the D-106.4 credential path), resolved via
+    the v1 store. Returns a closure ``(tenant_id, environment_id) ->
+    ToolingReadClient``. Opens + closes a v1 session per resolve, so no connection
+    is held into the async run's execute bracket (D-129)."""
+    from primeqa.execution_engine.credentials import resolve_tooling_client
+
+    def _resolve(tenant_id, environment_id):
+        if environment_id is None:
+            raise ValueError(f"s4 job for tenant {tenant_id} has no environment_id")
+        db = db_factory()
+        try:
+            return resolve_tooling_client(db, environment_id)
+        finally:
+            db.close()
+
+    return _resolve
+
+
+def s4_execution_tick(db_factory=None, *, client_resolver=None) -> dict:
+    """Drive the substrate-4 execution queue (D-132): one job per tenant per tick
+    off ``s4_execution_jobs`` (per-tenant). Discovers tenant schemas + delegates to
+    the resilient per-tenant loop. The queue is empty until an enqueue source ships
+    (deferred), so this no-ops today. ``client_resolver`` defaults to the
+    worker-side Tooling resolver; tests inject a stub."""
+    if db_factory is None:
+        from primeqa.db import SessionLocal
+        db_factory = SessionLocal
+
+    disc = db_factory()
+    try:
+        tenants = _discover_tenant_schemas(disc)
+    finally:
+        disc.close()
+    tenant_ids = [tid for _, tid in tenants]
+    if not tenant_ids:
+        return {}
+
+    if client_resolver is None:
+        client_resolver = _default_s4_client_resolver(db_factory)
+    from primeqa.execution_engine.consumer import run_s4_execution_tick
+    return run_s4_execution_tick(tenant_ids, client_resolver=client_resolver)
+
+
 def worker_tick(ctx):
     """Single poll iteration: drive pipeline runs AND metadata syncs."""
     # 1) Pipeline runs (existing)
@@ -1285,6 +1330,14 @@ def worker_tick(ctx):
         s3_generation_tick()
     except Exception as e:
         log.warning("s3 generation worker tick failed: %s", e)
+
+    # 3c) S4 execution jobs (D-132). Per-tenant queue (s4_execution_jobs); one job
+    # per tenant per tick through the async run path. The queue is empty until an
+    # enqueue source ships (deferred), so this no-ops today.
+    try:
+        s4_execution_tick()
+    except Exception as e:
+        log.warning("s4 execution worker tick failed: %s", e)
 
     # 4) Enrichment queue (§23). Drains ai_enrichment_queue across all
     # tenant schemas — embeddings via the Voyage API (batched up to

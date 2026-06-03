@@ -37,9 +37,10 @@ from primeqa.execution_engine.plan import (
 from primeqa.execution_engine.translator import translate_read
 from primeqa.integrations.exceptions import SFClientError
 
-# Predicates the executor can faithfully evaluate today. The emitted inspection
-# recipe asserts `exists`; the others are deferred (fail-loud until built).
-_SUPPORTED_PREDICATES = frozenset({"exists"})
+# Predicates the executor can faithfully evaluate. `exists` (row presence) grounds
+# existence / metadata-relationship; `equals` / `is_null` (a captured column value)
+# ground property (D-128). Others are deferred (fail-loud until built).
+_SUPPORTED_PREDICATES = frozenset({"exists", "equals", "is_null"})
 
 
 def execute_metadata_inspection(
@@ -58,13 +59,14 @@ def execute_metadata_inspection(
     run_id = uuid4()        # the run self-identifies from birth (slice 3 PK)
     started = _now()
     steps: list[StepEvidence] = []
-    captures: dict[str, list[dict]] = {}    # read step_id -> rows
+    captures: dict[str, list[dict]] = {}            # read step_id -> rows
+    capture_columns: dict[str, Optional[str]] = {}  # read step_id -> value column (D-128)
     outcome = "passed"
     top_error: Optional[ErrorSurface] = None
 
     for ordinal, step in enumerate(plan.steps):
         if isinstance(step, PlannedRead):
-            ev, err = _run_read(step, ordinal, client, captures)
+            ev, err = _run_read(step, ordinal, client, captures, capture_columns)
             steps.append(ev)
             if err is not None:
                 # The read couldn't be performed → the assertion can't be
@@ -73,7 +75,7 @@ def execute_metadata_inspection(
                 top_error = err
                 break
         else:  # PlannedAssertion (plan carries only the two kinds)
-            ev = _run_assert(step, ordinal, captures)
+            ev = _run_assert(step, ordinal, captures, capture_columns)
             steps.append(ev)
             if not ev.held:
                 outcome = "failed"
@@ -96,12 +98,14 @@ def execute_metadata_inspection(
 
 
 def _run_read(
-    step: PlannedRead, ordinal: int, client, captures: dict,
+    step: PlannedRead, ordinal: int, client, captures: dict, capture_columns: dict,
 ) -> tuple[ReadEvidence, Optional[ErrorSurface]]:
     """Translate + run one read. Returns (evidence, error|None). An
-    untranslatable edge raises (fail-loud, before any client call); a transport
-    failure is captured + returned as an error (→ errored outcome)."""
-    query = translate_read(step)        # UnsupportedEdgeError → fail-loud
+    untranslatable edge / unmapped property raises (fail-loud, before any client
+    call); a transport failure is captured + returned as an error (→ errored
+    outcome). On success, records the read's value column (``capture_column``,
+    None for an existence/edge read) so a downstream value-predicate can read it."""
+    query = translate_read(step)        # Unsupported{Edge,Property}Error → fail-loud
     start = _now()
     try:
         rows = client.query(query.soql)
@@ -120,6 +124,7 @@ def _run_read(
 
     end = _now()
     captures[step.step_id] = rows
+    capture_columns[step.step_id] = query.capture_column
     ev = ReadEvidence(
         step_id=step.step_id, ordinal=ordinal, query=query.soql,
         sobject=query.sobject, edge=query.edge,
@@ -131,18 +136,23 @@ def _run_read(
 
 
 def _run_assert(
-    step: PlannedAssertion, ordinal: int, captures: dict,
+    step: PlannedAssertion, ordinal: int, captures: dict, capture_columns: dict,
 ) -> AssertEvidence:
     """Evaluate one assertion against a prior read's capture.
 
-    ``exists`` (the only supported predicate): the run holds iff the referenced
-    read returned ≥1 row. An unsupported predicate or an unresolvable
-    ``subject_ref`` fails loud (raises) — not a run outcome."""
+    - ``exists`` — the run holds iff the referenced read returned ≥1 row.
+    - ``equals`` / ``is_null`` (D-128) — read the read's captured column value
+      from its single row and compare to the predicate's ``value``. The value
+      column was recorded by the read (a property self-read); a value predicate
+      over a presence-only read (no captured column) fails loud.
+
+    An unsupported predicate or an unresolvable ``subject_ref`` fails loud
+    (raises) — a representation/plan defect, not a run outcome."""
     predicate = step.predicate.predicate
     if predicate not in _SUPPORTED_PREDICATES:
         raise UnsupportedPredicateError(
             f"assertion {step.step_id!r} uses predicate {predicate!r}; "
-            f"slice 2 evaluates only {sorted(_SUPPORTED_PREDICATES)}")
+            f"the executor evaluates only {sorted(_SUPPORTED_PREDICATES)}")
 
     subject = step.predicate.subject_ref
     if subject not in captures:
@@ -152,12 +162,42 @@ def _run_assert(
 
     start = _now()
     rows = captures[subject]
-    held = len(rows) > 0        # `exists`
+    if predicate == "exists":
+        held = len(rows) > 0
+    else:
+        # equals / is_null — a value comparison over the read's captured column.
+        column = capture_columns.get(subject)
+        if column is None:
+            raise AssertionResolutionError(
+                f"assertion {step.step_id!r} predicate {predicate!r} needs a "
+                f"value column, but read {subject!r} captured none (a value "
+                f"predicate over a presence-only read)")
+        # A value predicate needs an observed row; 0 rows (the subject didn't
+        # surface) can't confirm equality OR null-ness → not held (a grounded
+        # `failed`, distinct from the existence read's own outcome).
+        if not rows:
+            held = False
+        elif predicate == "is_null":
+            held = rows[0].get(column) is None
+        else:  # equals
+            held = _value_eq(rows[0].get(column), step.predicate.value)
     end = _now()
     return AssertEvidence(
         step_id=step.step_id, ordinal=ordinal, predicate=predicate,
         subject_ref=subject, evaluated_row_count=len(rows), held=held,
         started_at=start, finished_at=end, duration_ms=_ms(start, end))
+
+
+def _value_eq(observed, expected) -> bool:
+    """Equality with a representational-coercion fallback: a faithful match
+    (``observed == expected``) OR — when both are present but differently typed
+    (Tooling JSON may render a number as a string) — a string-equal fallback.
+    Never coerces a None / absent value into a match."""
+    if observed == expected:
+        return True
+    if observed is None or expected is None:
+        return False
+    return str(observed) == str(expected)
 
 
 def _now() -> datetime:

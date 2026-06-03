@@ -65,6 +65,19 @@ class UnsupportedPredicateError(ExecutionEngineError):
     """
 
 
+class UnsupportedPropertyError(ExecutionEngineError):
+    """The translator has no faithful live-column mapping for the property a
+    self-read captures (D-128).
+
+    Fail-loud: a property whose S1 value cannot be equated to a Tooling column
+    with the same value semantics — e.g. ``is_required`` (page-layout-derived, no
+    ``FieldDefinition`` column) or ``field_type`` (describe vocabulary vs the
+    ``DataType`` display string). Refusing is the honest posture; never a guessed
+    column or a wrong ``passed``. Reopens when a describe-backed read / a verified
+    column+value mapping lands.
+    """
+
+
 class AssertionResolutionError(ExecutionEngineError):
     """An assertion's ``subject_ref`` does not resolve to a prior read step's
     captured output.
