@@ -7926,4 +7926,30 @@ The recipe-grounding leg (D-113) asks "does the payload still violate a VR formu
 
 ---
 
+## D-141 — S8 two-level grounding_validity composition: claim-level + recipe-level, composed not collapsed (Phase 6 slice 3)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S8] (the grounding-validity predicate's public composition over the three built legs). **No migration** (pure, produce-only).
+**Status:** Active — Phase 6 (S8 evolution) slice 3, on `phase-14-substrate-8-evolution`.
+
+The three legs (recipe-grounding D-113, claim-grounding D-139, field-value-validity D-140) judge in isolation; this slice composes them into the predicate SPEC §2 names: `grounding_validity(artifact, current_org) → intact | drifted | broken`, **two-level** (claim-level + recipe-level), **composed never collapsed** (D-112 Fork C — the parts stay individually addressable).
+
+**The artifact + the composed verdict.**
+- `Artifact(claim: BodyBase, recipes: tuple[DataRecipeBody, …])` — one claim's `asserted_truth` + its recipes (the realized S2 join: `test_claims` + `test_recipes` by `claim_test_id`).
+- `RecipeVerdict(recipe_grounding, field_value, rolled_up)` — per recipe, both recipe-level legs + their roll-up.
+- `GroundingValidity(claim_grounding, recipe_verdicts, overall)` — the claim-level leg (one) + the recipe-level verdicts (per recipe) + a derived `overall`, with every part addressable.
+- `grounding_validity(artifact, *, subjects, vrs, picklists)` — **three ports, not one** (each leg keeps its own port — parallel-siblings preserved).
+
+**The precedence law (the one new semantic decision).** `broken > drifted > intact`. Per recipe, roll up the two recipe legs by max-severity — so **field-value `broken` un-masks a recipe-grounding `intact`** (the whole point of D-140: the payload still fires a VR, but its picklist value is gone). `overall` = max-severity over the claim-level verdict + every recipe's roll-up — so **claim-level `broken` dominates** (the subject is gone; nothing grounds). claim-level is intact/broken (no drift axis); recipe roll-ups carry the drift axis.
+
+**Mixed-recipe honesty.** The recipe legs are **behavioral-negative-only** (D-113/D-140). An artifact's recipes may include non-negative recipes (positive / inspection); the composition **skips** those for the recipe legs (`_negative_create_step is None` → no `RecipeVerdict`) rather than fabricate a verdict — a non-negative recipe's grounding is the claim-grounding leg + future legs. An artifact with zero negative recipes (e.g. a positive value-claim) → empty `recipe_verdicts`, `overall` = the claim-level verdict.
+
+**Refinement vs the plan — `s1_reader.py` moves to slice 5.** The plan placed the production tri-port adapter (SubjectResolver + VrReader + PicklistReader over one `SemanticOrgModel`, pinning `version_seq` once) in this slice. It is first **used** + governance-testable in slice 5 (the recompute trigger runs the composition against real S1); building it here would ship untested glue. So slice 3 is the **pure composition only** (fully unit-tested with stub ports), and `s1_reader.py` lands in slice 5 with the trigger that exercises it. The composition's three-port signature is the seam the adapter plugs into.
+
+**Boundary.** Pure; produce-only; no persistence (slice 4) and no production reader (slice 5). The three legs are unchanged. No migration.
+
+**Verification.** Pure unit tests (no DB, three stub ports): all-intact artifact → overall intact + parts addressable; claim broken + recipes intact → overall broken, recipe parts still intact (**non-collapse proof**); recipe-grounding intact + field-value broken → recipe rolls up broken (**un-masking proof**); claim intact + one recipe drifts → overall drifted; mixed multi-recipe → per-recipe addressable; artifact with no negative recipe → empty `recipe_verdicts` + overall = claim verdict.
+
+---
+
 ---
