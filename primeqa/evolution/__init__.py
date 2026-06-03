@@ -23,12 +23,22 @@ Phase 6 slice 1 (D-139): the **claim-grounding leg** — does a claim's subject
 still resolve in the current org? Re-asks generation's resolution step (S1
 ``get_entities`` by ``sf_api_name``) through S8's own :class:`SubjectResolver`
 port. Produce-only.
+
+Phase 6 slice 2 (D-140): the **field-value-validity leg** — do a recipe payload's
+field values still exist? Closes recipe-grounding's removed-picklist-value
+false-``intact`` via S8's own :class:`PicklistReader` port. Produce-only.
 """
 from primeqa.evolution.claim_grounding import (
     ClaimGroundingResult,
     SubjectResolver,
     claim_grounding_validity,
     claim_grounding_validity_for_claim,
+)
+from primeqa.evolution.field_value_grounding import (
+    FieldValueGroundingResult,
+    PicklistReader,
+    field_value_grounding_validity,
+    field_value_grounding_validity_for_recipe,
 )
 from primeqa.evolution.recipe_grounding import (
     RecipeGroundingResult,
@@ -48,4 +58,9 @@ __all__ = [
     "claim_grounding_validity_for_claim",
     "ClaimGroundingResult",
     "SubjectResolver",
+    # field-value-validity leg (D-140)
+    "field_value_grounding_validity",
+    "field_value_grounding_validity_for_recipe",
+    "FieldValueGroundingResult",
+    "PicklistReader",
 ]
