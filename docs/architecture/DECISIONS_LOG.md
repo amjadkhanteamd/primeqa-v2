@@ -7607,3 +7607,29 @@ The fourth Phase-2 slice — the **end-to-end live-reach** for the kinds slices 
 **Verification + boundary.** `compose_working()` round-trips; the v3 content-hash guard; `test_current_resolves_to_v3` (CURRENT + v3 title strings); `test_compose_working_has_all_fragments` (+ui); the offline corpus green (3 new drafts auto-load + auto-run, the `>=` category asserts hold); the live envelopes authored-but-skipped (periodic, env-gated). No S2/S1 change; no migration.
 
 ---
+
+## D-126 — Phase 2 close: the realized Tier-1 breadth set (7/16) + the deferred-9 catalog
+
+**Date:** 2026-06-03
+**Substrates affected:** [S3] (ledger / close — no code). Documentation + merge gate.
+**Status:** Active — Phase 2 (S3 generation breadth) **close**, merging `phase-10-substrate-3-breadth` → `main`.
+
+Phase 2 set out to grow the emittable claim-kind surface from the Phase-2-lock thin vertical toward substrate-2's 16-kind taxonomy. The realized outcome — **7 of 16**, the *complete S1-Tier-1-groundable set* — is the honest ceiling at the current S1 tier, not a shortfall: the re-scope (D-122 design) established early that only S1-Tier-1-groundable kinds are buildable now, and all of them are now built, grounded, and LLM-reachable.
+
+**Realized emittable set (7).** `configuration`: metadata-relationship (D-098), existence + property (D-122) — **3/3 complete**. `permission`: capability (D-123). `ui`: layout (D-124). `data_behavior`: prohibition (D-101), value (D-115). The four breadth kinds (existence/property/capability/layout) are LLM-reachable end to end via prompt `generation@v3` (D-125); the configuration archetype is fully realized.
+
+**Deferred-9 catalog (each an honest refusal, by unblock condition).** None is a defect — each is a kind whose grounding the current S1 tier cannot support, so the substrate *refuses with disambiguation* rather than overstate:
+- `state-transition-claim` (data_behavior) — **dormant**: zero record-triggered flows on the sandbox (`phase_flow` docstring), build-correct-but-grounds-nothing; reopens when the org carries record-triggered flows or the formula parser lands (D-100.1).
+- `automation-effect-claim` (data_behavior) — Apex effect-tractability → **S1 Tier-2 (Apex)** (D-078 / D-100.5).
+- `sharing-rule-claim` (permission) — sharing / OWD / role-hierarchy capability unmodeled → **S1 Tier-2 (sharing)** (D-080).
+- `element-state-claim` (ui) — runtime Lightning render/enable (distinct from static layout placement) → **S1 Tier-3** (D-081).
+- `navigation-claim` (ui) — navigation model unmodeled → **S1 Tier-3**.
+- `platform-event-claim` / `outbound-message-claim` / `callout-claim` / `inbound-effect-claim` (integration ×4) — the integration entity types are absent from S1 Tier-1 → **S1 integration modeling** (D-082 / D-084).
+
+These reopen as an S3-breadth continuation after the corresponding S1 tiers land (S1 Phase-3); the catalog above + DEFERRED §1/§6/§8 are the standing record.
+
+**Open follow-on (deferred, not flushed) — task #83.** property-claim's *grounded integration test* and its *deterministic eval probe* both need a seeded `field_details` detail-table row that neither fixture loader (eval `_seed` / integration `seeded`) yet produces — its own piece of test-infrastructure work. property's **feature is fully shipped** (emission D-122 + grounding + live-reach D-125, unit-probed); only its grounded *test* lags. Deferred as a tracked follow-on per the Phase-2-close decision; it does not gate the breadth claim.
+
+**Merge gate.** A real green run of the substrate-relevant suites (generation unit + integration + representation + the offline eval corpus + eval-harness) — never the live probes (env-gated, periodic). No migration across the whole phase (every kind was pre-seated in `CLAIM_KIND_ENUM` / `ARCHETYPE_ENUM` at the D-121 readiness ratification). Merge `phase-10-substrate-3-breadth` → `main` via PR on green.
+
+---
