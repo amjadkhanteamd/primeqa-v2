@@ -7559,3 +7559,26 @@ The second Phase-2 slice, and the **only** one of the four permission / UI / int
 **Verification + boundary.** Emit-probes (bundle shape / recipe / Layer-1-no-caveat) + the drift-guard + an integration grounding test on real seeded S1 (seed a Profile + a `GRANTS_FIELD_ACCESS` edge → resolve → check-refs → emit → persist, mirroring the existence test that caught the slice-1 wiring bugs). The **prompt live-reach** (the LLM *proposing* capability-claim) is **slice 4 (D-125)** — batched with existence/property/layout into one prompt freeze. No S1 change; no migration.
 
 ---
+
+## D-124 — UI layout-claim emission (Phase 2 slice 3)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S3] (emission — the first UI-archetype kind); [S2] (one new claim-body Pydantic model — additive, no migration)
+**Status:** Active — Phase 2 (S3 generation breadth) slice 3, on `phase-10-substrate-3-breadth`. The emission + grounding path; the prompt live-reach is batched into slice 4 (D-125).
+
+The third Phase-2 slice and the **UI-archetype debut**. `layout-claim` asserts "**Field F appears on PageLayout L**" — the emittable surface grows **6 → 7**, completing the **S1-Tier-1-groundable set** (the remaining ~8 kinds are all Tier-2/Tier-3/integration-blocked → S1 Phase-3).
+
+**Verify-data-first gate → BUILD (the discipline the slice required).** Unlike `state-transition-claim` (dormant: the sync author's docstring records "this sandbox has **zero** record-triggered flows → zero `TRIGGERS_ON` edges", phases.py — built-correct-but-grounds-nothing, deferred), the layout grounding edge is **live**: `phase_layout` is a fully-implemented, active sync phase whose docstring documents **~115 layouts → ~3,000–12,000 `INCLUDES_FIELD` edges** on the dev sandbox (phases.py:846/881). `INCLUDES_FIELD` (Layout→Field, grid-placement properties) is in the locked `TIER_1_EDGES` (edges.py:290), and `get_related` traverses it generically (no new S1 work). The one residual — *live*-confirming instances this session — is the **same standard capability-claim (D-123) was built on** (documented expected cardinality; the live probe deferred to the post-merge sandbox run); every Salesforce org universally ships page layouts, so the dormancy risk is near-zero.
+
+**Shape — a clone of capability-claim (D-123), `archetype="ui"`, `edge="INCLUDES_FIELD"`.** Two endpoints (Layout + Field) + a **metadata-inspection** recipe. **Layer-1-complete, no caveat** — the `INCLUDES_FIELD` edge IS the verification (D-079). The established add-a-kind pattern (**no migration** — `layout-claim` already in `CLAIM_KIND_ENUM`, the `"ui"` archetype already in `ARCHETYPE_ENUM`, D-121):
+- **S2** — `LayoutClaimBody(layout: IdentityBearingRef, field: IdentityBearingRef)` in a new `test_representation/models/claims/ui/`, `@register_body`-registered + added to the flat `ClaimBody` union.
+- **S3 `emission.py`** — `GroundedLayout` + `_author_layout` (reuse `_inspection_recipe` — read the Layout, capture the `INCLUDES_FIELD` edge); the `author_emission` dispatch arm; `EMITTABLE += ("ui","layout-claim")`; the `_EMITTABLE_SHAPES` drift-guard kept lockstep. (`_HAS_LAYER_2["layout-claim"] = False` — no caveat.)
+- **S3 `governance_core.py`** — `_resolve_ui` (dispatch on `archetype_hint == "ui"`): resolve the Layout + the Field, verify the `INCLUDES_FIELD` edge via `get_related`; absent → `no_relevant_context` / ungrounded. `check_refs_exist` gains a UI branch (two refs — layout + field, like the permission grantee/target branch).
+
+**Key design call — metadata-recipe, NOT ui-recipe.** Layout placement is a *metadata* fact (the layout includes the field), verified by inspection — `metadata-recipe` / `inspection-trigger`, exactly like capability/config. The `ui-recipe` / `ui-trigger` kinds stay reserved for `element-state-claim` (the *runtime* render/enable question — does the field actually surface in the live Lightning page), which is S1 Tier-3 and deferred. Using a UI-interaction recipe for a placement claim would overstate verification (the D-080 honesty applied to the UI archetype).
+
+**Scope.** v1 grounds **placement-existence** (the field is on the layout). There is no capability-style "bit" to check — `INCLUDES_FIELD`-edge existence *is* the placement. Section/row/column **assertions** (e.g. "F appears in the 'Address' section") are a v1.1 refinement (the edge carries `section_name`/`row`/`column` as properties; deferred, not yet asserted). Other UI kinds — `element-state-claim` (Tier-3 Lightning), `navigation-claim` — stay deferred.
+
+**Verification + boundary.** Emit-probes (bundle shape / metadata-recipe / Layer-1-no-caveat) + the drift-guard + two integration grounding tests on real seeded S1 (seed a Layout + an `INCLUDES_FIELD` edge → resolve → check-refs → emit → persist; edge-absent → refuse) + the `test_substrate_imports` registry guard (+`layout-claim`). The **prompt live-reach** (the LLM *proposing* layout-claim) is **slice 4 (D-125)** — batched with existence/property/capability into one prompt freeze. No S1 change; no migration.
+
+---
