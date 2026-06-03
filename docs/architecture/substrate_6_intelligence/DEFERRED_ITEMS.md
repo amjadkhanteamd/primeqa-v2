@@ -29,3 +29,4 @@ Authored at the slice-1+2 foundation milestone (2026-05-27). Append corrections 
 - Design rationale: `DECISIONS_LOG.md` D-111 / D-111.1.
 - Realized state: `SPEC.md` §Status.
 - Build history: `EVOLUTION.md`.
+- **Cutover sequencing (D-146):** the Phase-7 / cutover deferrals above — the user-facing UI/dashboard consumer + always-on trigger, and the clustering release-grain / dashboard consumer — now have a gated home in `docs/architecture/greenfield_cutover/SEQUENCE.md` (step 2), with the GO/NO-GO folding at step 4.

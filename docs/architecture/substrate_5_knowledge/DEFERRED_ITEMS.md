@@ -30,3 +30,4 @@ PLATFORM_VISION §"Substrate 5" lists knowledge S5 *includes* that is **not yet 
 - PLATFORM_VISION.md §"Substrate 5 — Knowledge System" (the vision source).
 - SPEC.md (this substrate) — the ratified realized surface + boundary.
 - DECISIONS_LOG D-134 (ratification) / D-135 (Phase-4 close).
+- **Cutover sequencing (D-146):** the Phase-7 / cutover deferrals above — the `intelligence/knowledge/` → `primeqa/knowledge/` relocation (+ `feedback_rules`) and the S5→S3 forward-seam — now have gated homes in `docs/architecture/greenfield_cutover/SEQUENCE.md` (steps 1 + 2).
