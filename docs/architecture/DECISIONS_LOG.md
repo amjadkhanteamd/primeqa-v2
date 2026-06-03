@@ -7835,4 +7835,32 @@ S6's `interpret_run` dispatches on step shape: *any* `CreateAttemptEvidence` →
 
 ---
 
+## D-137 — S6 in-substrate consumer: the read API + the phrasing live-fire + the clustering read surface (Phase 5 slice 2)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S6] (interpretation — the read/consumer surface) + a v1 `intelligence/interpretation_phrasing` caller helper. **No migration** — the `phrasing` column + the `llm_enable_interpretation_phrasing` flag already exist (D-117 / migration 050).
+**Status:** Active — Phase 5 (S6 interpretation) slice 2, on `phase-13-substrate-6-interpretation`. Makes S6 *readable*: the write-only store gains a read API; the built-but-unfired phrasing primitive fires on a real read path; the dormant clustering reads become a named consumer surface.
+
+S6 persists every run's interpretation (`persist_interpretation`, wired into both S4 run paths) but is **write-only**: `result_store` exposes only `persist_interpretation` + `set_phrasing`. The clustering reads (D-116) and the phrasing `get_or_phrase` (D-117) exist but are fired only from tests (grep: zero production call sites). This slice gives S6 a coherent **read surface** and fires the phrasing live.
+
+**The read API (substrate, pure — no LLM, no v1 DB).** `result_store` gains, alongside the writers:
+- `InterpretationRead` — a frozen DTO: the row hydrated (`run_id`, `recipe_id`, `claim_test_id`, `outcome`, `verdict`, `attribution`, `evidence_refs`, `cause`, **`phrasing`**). The read-side projection that, unlike the produce-side `Interpretation`, carries the persisted presentation layer.
+- `read_interpretation(session, run_id) -> InterpretationRead | None` — one row by PK.
+- `list_interpretations(session, *, recipe_id=None, claim_test_id=None, limit=200) -> list[InterpretationRead]` — bounded (the substrate's hard-cap convention), ordered by `run_id` (deterministic — the table carries no timestamp axis), optionally scoped by recipe / claim.
+- `_row_to_interpretation(row) -> Interpretation` — the model hydrator (rebuilds `EvidenceRef`s + `Cause` from `detail` JSONB); feeds the phrasing live-fire. `_row_to_read` builds the DTO. All on the caller-provided tenant-scoped session (isolation by schema — the substrate convention).
+
+**The phrasing live-fire — and the realized seam.** The flag `llm_enable_interpretation_phrasing` (migration 050) lives on **`tenant_agent_settings`, a v1 public-schema table keyed by `tenant_id`** — it is NOT in the alembic tenant chain, so it is **unreachable from the substrate's per-tenant session** (where `s6_interpretations` lives). The plan's literal `read_and_phrase(session, …)` gating on the flag from one substrate session is therefore unsound against the code. **Resolution — flag-as-param:**
+- `read_and_phrase(session, run_id, *, tenant_id, api_key, phrasing_enabled) -> InterpretationRead | None` (in v1 `intelligence/interpretation_phrasing.py`, alongside `get_or_phrase` — the LLM stays out of `interpretation/`). Reads the row on the substrate session; when `phrasing_enabled`, hydrates the model (`_row_to_interpretation`) and fires `get_or_phrase` (cache-or-phrase), attaching `.phrasing` to the returned DTO. Best-effort: disabled or a failed phrasing returns the unphrased read.
+- `interpretation_phrasing_enabled(db, tenant_id) -> bool` (v1, mirrors `_story_enrichment_enabled`) — reads the flag off the v1 `db`, tolerant (absent row / error → False). The consumer composes the two: resolve the flag on the v1 session, pass the boolean to `read_and_phrase` on the substrate session. This keeps `read_and_phrase` single-session + pure of the settings table, honors "flag-gated" (it never phrases when False), and stays testable in governance without standing up `tenant_agent_settings`.
+
+*(Considered + rejected: a two-session `read_and_phrase(tenant_session, v1_db, …)` reaching the flag itself — couples the helper to both DBs + the v1 settings table for no gain, since the eventual caller already holds both sessions.)*
+
+**The clustering read surface.** Re-export the existing `clustering.py` reads (`cluster_recurring_causes` / `cluster_by_vr` / `cluster_flapping` + their `CauseCluster` / `VrCluster` / `FlappingCluster` dataclasses) and the read API from `primeqa/interpretation/__init__.py` — already-built pure reads become a named, discoverable S6 consumer API. Surface only; no behavior change.
+
+**Boundary.** No migration. No change to `interpret_run` / `attribute_run` / `persist_interpretation` / the run-path wiring. The substrate read API touches no LLM and no v1 DB; the live-fire + the flag-read live in v1 (the allowed v1→substrate direction). **Deferred (tracked):** the user-facing UI/dashboard over substrate runs (Phase-7 cutover — substrate runs ≠ v1 pipeline-runs); folding S6 verdicts into v1's GO/NO-GO; cause attribution for positive/property failures (the *why* — value drift / org change); a standing production consumer wired into a worker tick (the read surface + the gated live-fire land here; the always-on caller is a cutover concern).
+
+**Verification.** Governance-DB integration (the existing S6 harness; `alembic upgrade tenant@head`): persist → `read_interpretation` round-trip (incl. the `cause` rehydration) + `list_interpretations` scoping / bound; `read_and_phrase` with a **stubbed** enricher — `phrasing_enabled=True` → phrasing attached + cached on the row; `False` → unphrased (no `llm_call`); a stubbed failure → unphrased; `interpretation_phrasing_enabled` True / False / absent-row; a clustering read surfaces a recurring cause through the re-exported surface. Reuses the `test_s6_*` patterns. Merge gate: the S6 suites green; no v1-runtime behavior change (additive reads + a flag-gated, currently-uncalled live-fire helper) — inert deploy.
+
+---
+
 ---
