@@ -8004,4 +8004,26 @@ The composition (D-141) is pure; slice 4 persists a verdict on demand. This slic
 
 ---
 
+## D-144 — Phase 6 close: S8 evolution — predicate legs + the in-substrate mechanics
+
+**Date:** 2026-06-03
+**Substrates affected:** [S8] (evolution). **One migration** (alembic tenant `20260603_0030`).
+**Status:** Active — Phase 6 (S8 evolution) close, merging `phase-14-substrate-8-evolution` → `main`.
+
+Phase 6 completes the grounding-validity predicate over the **realized** S1/S2/S3 surface, persists its verdicts, and wires it to **fire** as the org evolves — across five slices:
+
+- **D-139 (claim-grounding leg).** Does the subject still resolve? Re-resolve every `IdentityBearingRef` by `sf_api_name` (external_id, rename-faithful) through S8's own `SubjectResolver` port. Pure.
+- **D-140 (field-value-validity leg).** Do the payload values still exist? Closes recipe-grounding's removed-picklist-value false-`intact` via the `PicklistReader` port. Pure.
+- **D-141 (two-level composition).** `grounding_validity` composes the three legs claim-level + per-recipe, composed never collapsed (`broken` > `drifted` > `intact`; field-value `broken` un-masks a recipe-grounding `intact`). Pure.
+- **D-142 (recorded-verdict store).** Per-tenant `s8_grounding_validity` (migration `20260603_0030`) + UPSERT persist + read/list. The thin mechanics.
+- **D-143 (S1-sync recompute trigger).** `S8S1Reader` tri-port + `recompute_grounding` (freshness off the store — no watermark table, cap-correct) + scheduler `s8_grounding_tick`. S8 fires on S1 advance (recompute-all).
+
+**Doc currency.** `SPEC.md` — §2 leg table (3 legs realized, admissibility deferred) + the composition / store / trigger marked realized + Status realized-through-Phase-6; §6 fence annotated (trigger + recorded-verdict landed thin). `EVOLUTION.md` — the Phase-6 build-arc entry. `DEFERRED_ITEMS.md` — §1 (trigger / verdict thin; reverse-index + queue still fenced) + §3 (legs landed; admissibility S3-blocked; VR-pin / multi-select still deferred). `OPEN_QUESTIONS.md` — S8-Q-007 (the snapshot axis `evaluated_at_version_seq`). `GLOSSARY.md` — +5 terms.
+
+**Deferred (tracked).** The admissibility leg (S3-blocked — the synthesis→intent contract, S8-Q-004); the change→impact reverse index (recompute-all is correct, just unoptimized); re-grounding orchestration + supersession execution (the artifact-mutation body, autonomy-gated, S8-Q-006); the generation-side VR-pin (an S3-emission change); the held NonEvaluable-symmetry pass; the multi-select picklist value split.
+
+**Merge gate.** The S8 suites — `test_recipe_grounding` + `test_claim_grounding` + `test_field_value_grounding` + `test_grounding_validity` (37 unit) + `test_s8_s1_reader` (6) + `test_s8_grounding_store` (6) + `test_s8_recompute` (5) — green; app + scheduler import OK. **One migration** (alembic tenant `20260603_0030`); the substrate stays off the v1 request path (the only runtime delta is a best-effort scheduler tick), so the v1 deploy is inert. Merge `phase-14-substrate-8-evolution` → `main` via PR on green.
+
+---
+
 ---

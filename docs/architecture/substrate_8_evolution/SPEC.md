@@ -1,8 +1,8 @@
 # Substrate 8 — Evolution Engine — SPEC
 
-**Status:** Phase 0 (foundational design) — opening (D-112). Faculty-first: the **grounding-validity predicate** is the semantic core; evolution *mechanics* are explicitly fenced (§6). Mirrors how S6 opened — the faculty first, the wiring later.
+**Status:** Realized through Phase 6 (program). The **grounding-validity predicate** is built over the realized surface — three legs (recipe-grounding D-113, claim-grounding D-139, field-value-validity D-140) composed two-level (D-141) — plus the thin mechanics: a recorded-verdict store (D-142) + an S1-sync recompute trigger (D-143). Admissibility + the heavy mechanics stay fenced (§6).
 
-**Last substantive update:** 2026-05-31 (substrate opened)
+**Last substantive update:** 2026-06-03 (Phase 6 — predicate legs + the in-substrate mechanics; D-139 / D-140 / D-141 / D-142 / D-143)
 
 ---
 
@@ -41,11 +41,14 @@ It is **on-demand** and **stateless**: computed when asked, from the grounding r
 
 **The predicate is not a new computation — it is generation's own grounding checks, re-asked against today's org.** Its legs are *generation's grounding faculties*; this is the **initial, explicitly-extensible** set:
 
-| Leg | The question | Re-consumes |
-|---|---|---|
-| **claim-grounding** | does the subject still resolve? | S1 entity-resolution |
-| **recipe-grounding** | does the payload still *violate*? | the neutral `formula.evaluate` primitive (D-113 — **not** `derive`) |
-| **admissibility** | LAYER_1 ↔ LAYER_2 — is the negative still (un)derivable? | S3 admissibility logic |
+| Leg | The question | Re-consumes | Status |
+|---|---|---|---|
+| **recipe-grounding** | does the payload still *violate*? | the neutral `formula.evaluate` primitive (D-113 — **not** `derive`) | **realized** (D-113) |
+| **claim-grounding** | does the subject still resolve? | S1 entity-resolution (`get_entities` by `sf_api_name`) | **realized** (D-139) |
+| **field-value-validity** | does the payload's value still *exist*? | S1 picklist values (`get_picklist_values`) | **realized** (D-140) |
+| **admissibility** | LAYER_1 ↔ LAYER_2 — is the negative still (un)derivable? | S3 admissibility logic | **deferred — S3-blocked** (the synthesis→intent contract, S8-Q-004) |
+
+**Realized — the two-level composition + the in-substrate mechanics (D-141 … D-143).** `grounding_validity(artifact, *, subjects, vrs, picklists)` composes the three legs claim-level + per-recipe (`broken` > `drifted` > `intact`; field-value `broken` un-masks a recipe-grounding `intact`), composed never collapsed (D-141). A per-tenant `s8_grounding_validity` store persists the verdict + an `evaluated_at_version_seq` (D-142); an S1-sync recompute trigger (scheduler tick) re-grounds a tenant's current claims when S1 advances, freshness-gated off the store (no watermark table) and bounded by a per-tick cap (D-143). **Admissibility is deferred** (verified S3-blocked: on the negative vertical it duplicates recipe-grounding, and its independent positive content needs the synthesis→intent contract — S8-Q-004).
 
 The admissibility leg **closes G3**: `caveat_required` / `admissibility_layer` stop being a frozen emission-time snapshot and become a **re-evaluable function of `(claim, current org)`** — a formula becoming derivable lifts a caveat; ceasing to be derivable imposes one.
 
@@ -98,8 +101,8 @@ Explicitly **out of the semantic core**, named here so they are not later litiga
 
 - **Standing dependency manifest** — promoting the per-artifact grounding refs to a first-class queryable index. The predicate derives its inputs on-demand from the embedded refs; it needs no manifest.
 - **Change → impact reverse index (G5)** — "which artifacts are hit by *this* org change?" (the join from an S1 entity-change to affected artifacts). Real, but it is the **impact trigger**, not the predicate.
-- **S1-sync trigger** — reacting to a new S1 `version_seq` by diffing and evaluating. The predicate is identical whether invoked on sync or on query; the trigger is mechanics.
-- **Standing recorded verdict** — persisting + refreshing a grounding-validity verdict per artifact. The core is a pure function; recording it is an optimization for "show me all drifted tests," a mechanics concern.
+- **S1-sync trigger** — reacting to a new S1 `version_seq` by diffing and evaluating. *(Landed thin, D-143: a scheduler tick recomputes a tenant's current claims when S1 advances, freshness-gated off the store — **recompute-all**, since the change→impact reverse index that would narrow it stays fenced below.)*
+- **Standing recorded verdict** — persisting + refreshing a grounding-validity verdict per artifact. *(Landed thin, D-142: the per-tenant `s8_grounding_validity` store persists the verdict + `evaluated_at_version_seq`; "show me all drifted tests" is the `overall`-indexed `list_grounding_validity`. The refresh is the D-143 trigger.)*
 - **Coverage-version gap (G4)** — `test_claim_coverage` records `(claim, entity_id)` but not the entity version at derivation time; reproducibility of coverage across versions is a mechanics-phase repair.
 - **The one S8 → S6 edge** — a *drift-trigger signal* ("this test keeps drifting across recent runs → re-evaluate"). This is the only place S8 legitimately reads S6, and it is a **trigger input**, not part of the predicate. It belongs here, with the rest of the trigger machinery.
 
@@ -109,4 +112,4 @@ These are the **regeneration-infrastructure local maximum** we are deliberately 
 
 ## Status
 
-**Phase 0 (foundational design) — opening (2026-05-31).** The keystone (evolution is a grounding-axis event under identity preservation), the grounding-validity predicate (pure, on-demand, two-level; legs = generation's grounding checks re-asked), the dependency law (parallel to S6 on epistemic grounds; `S8 → {S1 resolution, S3 derive, S3 admissibility}`), and the supersession law are **locked** (D-112). The evolution mechanics (§6) are **explicitly deferred**. Next: the first slice — the grounding-validity predicate over the built behavioral-negative vertical (the recipe-grounding leg on D-107), faculty-first and produce-only, mirroring S6 slice 1.
+**Realized through Phase 6 (2026-06-03).** The keystone + the dependency law + the supersession law are locked (D-112). The build arc (see `EVOLUTION.md`): the recipe-grounding leg (D-113) → S6 alignment on the shared `evaluate` (D-114) → **the claim-grounding leg** (D-139, re-resolve the subject by `sf_api_name`) → **the field-value-validity leg** (D-140, the picklist-value-removed false-`intact`) → **the two-level composition** (D-141, `grounding_validity`, composed never collapsed) → **the recorded-verdict store** (D-142, per-tenant `s8_grounding_validity` + read API) → **the S1-sync recompute trigger** (D-143, a scheduler tick re-grounds a tenant's current claims when S1 advances, freshness-gated + capped). **Deferred:** the **admissibility leg** (S3-blocked — the synthesis→intent contract, S8-Q-004); the **change→impact reverse index** (recompute-all is correct, just unoptimized); **re-grounding orchestration + supersession execution** (the artifact-mutation body, autonomy-gated, S8-Q-006); the **generation-side VR-pin** (an S3-emission change); the held **NonEvaluable-symmetry** pass. See `DEFERRED_ITEMS.md`.
