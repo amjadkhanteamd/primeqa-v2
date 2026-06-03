@@ -7904,4 +7904,26 @@ The grounding-validity predicate's recipe-grounding leg (D-113) asks "does the p
 
 ---
 
+## D-140 — S8 field-value-validity leg: do the recipe payload's field values still exist? (Phase 6 slice 2)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S8] (the field-value-validity leg — the third built leg), reading S1 picklist metadata through S8's own port. **No migration** (pure, produce-only).
+**Status:** Active — Phase 6 (S8 evolution) slice 2, on `phase-14-substrate-8-evolution`.
+
+The recipe-grounding leg (D-113) asks "does the payload still violate a VR formula?" — but `evaluate` returns `True` on a removed picklist value (the formula compares fine on the string), so recipe-grounding **cannot** catch a value that Salesforce would now reject for being *invalid*, not for *violating the rule*. The **field-value-validity leg** closes that false-`intact`: **do the recipe payload's field values still exist in the current org?** Each payload picklist value is checked against the field's current active value set.
+
+**Realized — verified against the code.** Picklist *values* are synced: `picklist_value_details` carries `value_api_name` + `is_active`; `SemanticOrgModel.get_picklist_values(pvs_id, at_seq)` enumerates them version-aware (`query.py:374`); Field→set via `field_details.picklist_value_set_entity_id` (1:1 FK), surfaced by `get_entity_details`. So **payload {field: value} → resolve Field → picklist_value_set_entity_id → get_picklist_values → is `value` an active value_api_name?** is fully walkable on realized reads.
+
+**Shape (mirrors `recipe_grounding.py` — pure fn + S8's own port + adapter):**
+- `FieldValueGroundingResult(verdict: Literal["intact","broken"], reason, invalid: tuple[(field_api, value), …])` — two-valued; `reason="picklist_value_removed"` + `invalid` are load-bearing on broken (which value(s) no longer exist).
+- `PicklistReader` Protocol — `active_values(object_external_id, field_api) -> Optional[frozenset[str]]`: the field's active value_api_names, or **None when the field is not a constrained picklist** (→ the leg skips it — not its concern). S8's own port; the production adapter (Field → set → values) lands in slice 3.
+- `field_value_grounding_validity(payload, object_external_id, *, s1)` — per payload key: skip None values + non-picklist fields (port `None`); a present value not in the active set → collected into `invalid`. Broken iff any invalid.
+- `field_value_grounding_validity_for_recipe(recipe, *, s1)` — reuses `recipe_grounding._negative_create_step` (a private intra-package import; shared-helper extraction is tracked adjacent work).
+
+**Boundary.** Object-level / behavioral-negative-only v1 (the negative create step's `field_values`), the same scope as recipe-grounding. **Multi-select picklist** (semicolon-delimited) values are a v1 simplification — single-value membership first; the split is a tracked follow-up. Null payload values are skipped (not a membership concern). No migration; produce-only; no composition yet (slice 3).
+
+**Verification.** Pure unit tests (no DB, stub reader): value still active → intact; value removed / inactive → broken/`picklist_value_removed` + `invalid` populated; non-picklist field (port `None`) → skipped/intact; null value → skipped; payload with no picklist fields → intact; adapter extracts from a `DataRecipeBody` + raises without a negative step. Mirrors `test_recipe_grounding.py`.
+
+---
+
 ---
