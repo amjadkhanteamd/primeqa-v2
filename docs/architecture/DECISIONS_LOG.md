@@ -7540,3 +7540,22 @@ Phase 2 grows the emittable surface from 3 of 16 toward all groundable kinds. Sl
 **Scope boundary.** Slice 1 is the **emission path** — the two kinds become emittable + grounded + deterministically tested. The **prompt live-reach** (a `configuration` fragment line so the LLM proposes existence/property + a live ontology-coherence probe) is **slice 1b** (the D-115.4-style activation), kept separate so the prompt freeze ritual doesn't entangle the emission build. No S1 change (the reads shipped in Phase 0); no migration.
 
 ---
+
+## D-123 — Permission capability-claim emission (Phase 2 slice 2)
+
+**Date:** 2026-06-02
+**Substrates affected:** [S3] (emission — the first permission-archetype kind); [S2] (one new claim-body Pydantic model — additive, no migration)
+**Status:** Active — Phase 2 (S3 generation breadth) slice 2, on `phase-10-substrate-3-breadth`. The emission + grounding path; the prompt live-reach is batched into slice 4 (D-125).
+
+The second Phase-2 slice, and the **only** one of the four permission / UI / integration archetypes that is **S1-Tier-1-groundable today** (the readiness audit: integration entity types are absent from S1 Tier-1, and sharing/OWD/Apex are Tier-2/Tier-3 — all deferred to S1 Phase-3). `capability-claim` asserts "**Profile / PermissionSet P grants read/edit on Object/Field X**" — buildable now because the `GRANTS_OBJECT_ACCESS` / `GRANTS_FIELD_ACCESS` edges are synced (~11K FieldPermissions on the sandbox) and `get_related` returns their `can_read` / `can_edit` properties (proven Phase 0 / D-120). **Layer-1-complete, no caveat** — reading the grant IS the verification (D-079).
+
+**Shape — two patterns already shipped.** capability-claim fuses the **two-endpoint** grounding of `metadata-relationship-claim` (a grantee + a target + the grant edge between them) with the **metadata-inspection recipe** of the configuration kinds. The extension points (the established add-a-kind pattern; **no migration** — `capability-claim` is already in `CLAIM_KIND_ENUM`, D-121):
+- **S2** — `CapabilityClaimBody(granting_subject: IdentityBearingRef, target: IdentityBearingRef, granted_capability: str, grant_type: Literal["object","field"])` in a new `test_representation/models/claims/permission/`, `@register_body`-registered + added to the flat `ClaimBody` union.
+- **S3 `emission.py`** — `GroundedCapability` + `_author_capability` (reuse `_inspection_recipe` — read the grantee, assert the grant edge surfaces); the `author_emission` dispatch arm; `EMITTABLE += ("permission","capability-claim")`; the `_EMITTABLE_SHAPES` drift-guard kept lockstep. (`_HAS_LAYER_2["capability-claim"]` confirmed `False` — no caveat.)
+- **S3 `governance_core.py`** — `_resolve_permission` (dispatch on `archetype_hint == "permission"`): resolve the grantee (Profile/PermissionSet) + the target (Object/Field), verify the `GRANTS_OBJECT_ACCESS` / `GRANTS_FIELD_ACCESS` edge via `get_related` (the `can_read`/`can_edit` ride the edge properties); absent → `no_relevant_context`. `check_refs_exist` gains a permission branch (two refs — grantee + target, like the metadata-relationship source/target branch).
+
+**Scope — the D-080 honesty (recipe-kind preserves claim semantics).** v1 grounds **direct grants** with a **metadata-inspection** recipe: it verifies the grant is *configured*, not the *effective runtime* capability. The **run-as-execution** recipe (a test user with profile P attempts the op + observes success/failure) is a different verification surface, and D-080 forbids silently substituting one for the other. So complex capability claims implying sharing / OWD / role-hierarchy / Apex-sharing (S1 Tier-2, unmodeled) **refuse with disambiguation** rather than emit a metadata-inspection that overstates verification — a higher refusal rate on complex claims, which is the honest posture, not a defect. The run-as path + the Tier-2 sharing model reopen later (S1 Phase-3 / S4 side-B).
+
+**Verification + boundary.** Emit-probes (bundle shape / recipe / Layer-1-no-caveat) + the drift-guard + an integration grounding test on real seeded S1 (seed a Profile + a `GRANTS_FIELD_ACCESS` edge → resolve → check-refs → emit → persist, mirroring the existence test that caught the slice-1 wiring bugs). The **prompt live-reach** (the LLM *proposing* capability-claim) is **slice 4 (D-125)** — batched with existence/property/layout into one prompt freeze. No S1 change; no migration.
+
+---
