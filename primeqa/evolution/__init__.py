@@ -27,6 +27,10 @@ port. Produce-only.
 Phase 6 slice 2 (D-140): the **field-value-validity leg** — do a recipe payload's
 field values still exist? Closes recipe-grounding's removed-picklist-value
 false-``intact`` via S8's own :class:`PicklistReader` port. Produce-only.
+
+Phase 6 slice 3 (D-141): the **two-level composition** — ``grounding_validity``
+composes the three legs into the predicate (claim-level + recipe-level, composed
+never collapsed; ``broken`` > ``drifted`` > ``intact``). Pure; three ports.
 """
 from primeqa.evolution.claim_grounding import (
     ClaimGroundingResult,
@@ -39,6 +43,12 @@ from primeqa.evolution.field_value_grounding import (
     PicklistReader,
     field_value_grounding_validity,
     field_value_grounding_validity_for_recipe,
+)
+from primeqa.evolution.grounding_validity import (
+    Artifact,
+    GroundingValidity,
+    RecipeVerdict,
+    grounding_validity,
 )
 from primeqa.evolution.recipe_grounding import (
     RecipeGroundingResult,
@@ -63,4 +73,9 @@ __all__ = [
     "field_value_grounding_validity_for_recipe",
     "FieldValueGroundingResult",
     "PicklistReader",
+    # two-level composition (D-141)
+    "grounding_validity",
+    "GroundingValidity",
+    "Artifact",
+    "RecipeVerdict",
 ]
