@@ -7760,3 +7760,25 @@ B2 built the consumer + reaper *functions*; B3 fires them from the deploy servic
 **Verification.** Worker-side unit tests (`tests/unit/execution_engine/test_worker_wiring.py`, mock-patched like the S3 worker tests — no DB): `s4_execution_tick` no-ops `{}` on no tenants; delegates to `run_s4_execution_tick` with the discovered `tenant_ids` + the resolver; `_default_s4_client_resolver`'s closure raises on a `None` environment_id. `s4_reaper_tick` mirrors the (precedent-untested) `s3_reaper_tick` — verified by structural mirror + import; the underlying `run_s4_reaper_tick` logic is B2-tested. Pure wiring; no migration.
 
 ---
+
+## D-133 — Phase 3 close: S4 execution breadth (existence/property) + the async production trigger
+
+**Date:** 2026-06-03
+**Substrates affected:** [S4] (execution — close). Documentation + merge gate.
+**Status:** Active — Phase 3 (S4 execution) **close**, merging `phase-11-substrate-4-execution` → `main`.
+
+Phase 3 closed the **generation→execution gap** Phase 2 opened (Phase 2 made existence/property/capability/layout emittable + grounded + LLM-reachable; they did not yet *execute*) and laid the **async production-trigger foundation**. Six slices, each a design/impl triad; EVOLUTION/DEFERRED currency batched here.
+
+**Realized — PART A (execution breadth, pure-S4).** `existence` (D-127) + `property` (D-128) now execute end-to-end. The translator gained a **read-shape dispatch** (edge-read vs self-read: Object→`EntityDefinition`, Field→`FieldDefinition`, reusing v1 sync's Tooling vocabulary); the executor gained `equals` / `is_null` over a captured column value. The `metadata-relationship` vertical (the original first vertical) is unchanged; the new kinds ride the same bridge (generic) + the same `exists`/value executor.
+
+**Realized — PART B (the async trigger).** `run_recipe_execution_async` (D-129) brackets the live read with **brief transactions** (select TX → execute with **no DB connection held** → persist+posture+interpret TX), leaving the live-proven sync path untouched. The per-tenant `s4_execution_jobs` queue + `ExecutionJobStore` (D-130, **the phase's one migration** `20260603_0010`) — partial-unique active-set idempotency (re-runnable after terminal, unlike S3). The consumer + reaper ticks (D-131) draining the queue through the async run, per-tenant isolation. The scheduler/worker firing wiring (D-132) — the production loop ships **live + idle**, no-opping on the empty queue until a trigger enqueues.
+
+**Deferred (honest, tracked).**
+- **capability + layout execution** — their recipes are **under-specified for live execution** (the recipe reads one endpoint + the edge *type*; the grant target / placed field is env-detail prose only). Live execution needs an **Option-X recipe enrichment** (S2 `ReadMetadataStep` + S3 emission carry the structured second endpoint), which reopens the S2/S3 territory Phase 2 sealed — deferred to a follow-on S3 recipe-enrichment slice. The S4 translator branch (`GRANTS_*` / `INCLUDES_FIELD`) lands with it.
+- **`is_required` property** — page-layout-derived, no faithful Tooling `FieldDefinition` column; refuses (`UnsupportedPropertyError`) until a describe-backed read path lands. `field_type` (describe-vocab vs `DataType`) likewise. `matches_pattern` / `not_equals` predicates likewise.
+- **The data-path async bracketing** — B0 is metadata-path-only; the positive-data vertical reads S1 mid-execute, so its brief-tx bracketing is its own work (the async wrapper refuses a data recipe loudly today).
+- **The product enqueue source** — the queue+consumer+reaper+wiring ship, but *what* enqueues (a post-approval hook / scheduled re-verification / a CI release gate) is its own trigger design — each implies different ownership + cadence. Jobs are enqueueable programmatically via `ExecutionJobStore.create_or_get_job` until then.
+
+**Merge gate.** A real green run of the substrate-relevant suites — `execution_engine` (unit + the governance-DB integration: jobs + consumer), the worker wiring units, and the generation / representation / interpretation suites the run path touches — never the live Salesforce sandbox (deferred per decision: the metadata-inspection spine is already live-proven; the new predicates/self-reads + the async restructure are mechanism extensions, sandbox-confirmable post-merge like #82). One migration (`20260603_0010`), applied to the governance DB before its integration tests (proven via `alembic upgrade tenant@head`). Merge `phase-11-substrate-4-execution` → `main` via PR on green.
+
+---
