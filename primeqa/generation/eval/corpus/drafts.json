@@ -36,7 +36,7 @@
           {"field": "claim_kind", "op": "in", "value": ["metadata-relationship-claim", "existence-claim", "property-claim"]}
         ],
         "benign": ["explanation", "phrasing", "excerpt", "subject"],
-        "_note": "existence-claim/property-claim are coherent config readings but capability-gated: only metadata-relationship-claim is emittable today, so an existence/property proposal surfaces as a refusal and auto-fails the must-draft invariant. They become true acceptable drift when their emission lands."
+        "_note": "existence-claim/property-claim are now emittable (D-122), so an existence/property reading of this requirement is a genuine acceptable_variant — a draft, not a refusal (no longer auto-fails). The invariant stays outcome=draft + archetype=configuration + no-caveat; the specific claim_kind is the acceptable variant (not forced into the invariant — that would make the probe brittle to which coherent reading the LLM picks). Each new kind has its own dedicated probe (config-existence-draft, etc.)."
       }
     }
   },
@@ -160,6 +160,129 @@
         ],
         "benign": ["explanation", "phrasing", "excerpt", "subject", "caveat_kind"],
         "_note": "The live LLM (prompt generation@v2) must propose a value-claim naming the field as the fully-qualified Account.Status with expected_value 'Active' (D-115.4). value-claim is a Layer-1 positive, uncaveated. A bare unqualified field_name would miss grounding -> not a draft -> this probe fails, surfacing the format gap. A state-transition reading is emission-deferred (not yet emittable), so only value-claim is an acceptable variant."
+      }
+    }
+  },
+  {
+    "id": "config-existence-draft",
+    "description": "Config existence-claim: the Account.Industry field exists -> Layer-1-complete draft, no caveat (D-122 emission, D-125 live-reach). The flat {entity_type, sf_api_name} subject hint.",
+    "category": "draft",
+    "fixture": {
+      "entities": [
+        {"entity_type": "Object", "sf_api_name": "Account"},
+        {"entity_type": "Field", "sf_api_name": "Account.Industry"}
+      ],
+      "edges": [
+        {"source": "Account.Industry", "target": "Account", "edge_type": "BELONGS_TO", "edge_category": "STRUCTURAL"}
+      ]
+    },
+    "turns": [
+      {"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The Account object has an Industry field.", "intent_descriptor": {"archetype_hint": "configuration", "polarity_hint": "positive", "claim_kind_hint": "existence-claim", "target_subject_hint": {"entity_type": "Field", "sf_api_name": "Account.Industry"}}}},
+      {"tool": "emit_outcome", "input": {"outcome_kind": "draft", "payload": {"admissibility_layer": "layer_1"}}}
+    ],
+    "expect": {
+      "outcome_kind": "draft",
+      "admissibility_layer": "layer_1",
+      "caveat_required": false,
+      "caveat_kind": null,
+      "claim": {"archetype": "configuration", "claim_kind": "existence-claim"},
+      "recipe": {"trigger_kind": "inspection-trigger", "recipe_kind": "metadata-recipe"}
+    },
+    "live": {
+      "requirement_text": "The Account object must have an Industry field.",
+      "envelope": {
+        "invariant": [
+          {"field": "outcome_kind", "op": "eq", "value": "draft"},
+          {"field": "archetype", "op": "eq", "value": "configuration"},
+          {"field": "caveat_required", "op": "is_false"}
+        ],
+        "acceptable_variants": [
+          {"field": "claim_kind", "op": "in", "value": ["existence-claim", "metadata-relationship-claim"]}
+        ],
+        "benign": ["explanation", "phrasing", "excerpt", "subject"],
+        "_note": "Either an existence-claim (the field exists) or a metadata-relationship-claim (Field BELONGS_TO Account) is a coherent, groundable reading on this fixture; both are Layer-1-complete drafts. A property-claim reading would over-read (no value stated) and miss grounding (no field_details seeded), so it is NOT an acceptable variant here."
+      }
+    }
+  },
+  {
+    "id": "permission-capability-draft",
+    "description": "Permission capability-claim: the Admin profile grants edit on Account.AnnualRevenue (the GRANTS_FIELD_ACCESS edge carries can_edit=true) -> Layer-1-complete draft, no caveat (D-123 emission, D-125 live-reach). The four-key {grantee, target, granted_capability, grant_type} hint; the grant edge's bit is checked.",
+    "category": "draft",
+    "fixture": {
+      "entities": [
+        {"entity_type": "Profile", "sf_api_name": "Admin"},
+        {"entity_type": "Field", "sf_api_name": "Account.AnnualRevenue"}
+      ],
+      "edges": [
+        {"source": "Admin", "target": "Account.AnnualRevenue", "edge_type": "GRANTS_FIELD_ACCESS", "edge_category": "PERMISSION", "properties": {"can_read": true, "can_edit": true}}
+      ]
+    },
+    "turns": [
+      {"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The Admin profile can edit Account.AnnualRevenue.", "intent_descriptor": {"archetype_hint": "permission", "polarity_hint": "positive", "claim_kind_hint": "capability-claim", "target_subject_hint": {"grantee": {"entity_type": "Profile", "sf_api_name": "Admin"}, "target": {"entity_type": "Field", "sf_api_name": "Account.AnnualRevenue"}, "granted_capability": "edit", "grant_type": "field"}}}},
+      {"tool": "emit_outcome", "input": {"outcome_kind": "draft", "payload": {"admissibility_layer": "layer_1"}}}
+    ],
+    "expect": {
+      "outcome_kind": "draft",
+      "admissibility_layer": "layer_1",
+      "caveat_required": false,
+      "caveat_kind": null,
+      "claim": {"archetype": "permission", "claim_kind": "capability-claim"},
+      "recipe": {"trigger_kind": "inspection-trigger", "recipe_kind": "metadata-recipe"}
+    },
+    "live": {
+      "requirement_text": "The Admin profile must be able to edit the Account AnnualRevenue field.",
+      "envelope": {
+        "invariant": [
+          {"field": "outcome_kind", "op": "eq", "value": "draft"},
+          {"field": "archetype", "op": "eq", "value": "permission"},
+          {"field": "caveat_required", "op": "is_false"}
+        ],
+        "acceptable_variants": [
+          {"field": "claim_kind", "op": "in", "value": ["capability-claim"]}
+        ],
+        "benign": ["explanation", "phrasing", "excerpt", "subject"],
+        "_note": "The live LLM (generation@v3) must propose a capability-claim with grantee=Profile Admin, target=Field Account.AnnualRevenue, granted_capability=edit, grant_type=field (D-125 permission fragment). The grant edge carries can_edit=true so it grounds Layer-1-complete; a claim of edit on a read-only grant would refuse, surfacing the bit-check."
+      }
+    }
+  },
+  {
+    "id": "ui-layout-draft",
+    "description": "UI layout-claim: Account.Industry is placed on the Account layout (the INCLUDES_FIELD edge) -> Layer-1-complete draft, no caveat (D-124 emission, D-125 live-reach). The two-key {layout, field} hint; metadata-recipe (NOT ui-recipe).",
+    "category": "draft",
+    "fixture": {
+      "entities": [
+        {"entity_type": "Layout", "sf_api_name": "Account-Account Layout"},
+        {"entity_type": "Field", "sf_api_name": "Account.Industry"}
+      ],
+      "edges": [
+        {"source": "Account-Account Layout", "target": "Account.Industry", "edge_type": "INCLUDES_FIELD", "edge_category": "CONFIG", "properties": {"section_name": "Details", "section_order": 0, "row": 0, "column": 0}}
+      ]
+    },
+    "turns": [
+      {"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The Industry field appears on the Account layout.", "intent_descriptor": {"archetype_hint": "ui", "polarity_hint": "positive", "claim_kind_hint": "layout-claim", "target_subject_hint": {"layout": {"entity_type": "Layout", "sf_api_name": "Account-Account Layout"}, "field": {"entity_type": "Field", "sf_api_name": "Account.Industry"}}}}},
+      {"tool": "emit_outcome", "input": {"outcome_kind": "draft", "payload": {"admissibility_layer": "layer_1"}}}
+    ],
+    "expect": {
+      "outcome_kind": "draft",
+      "admissibility_layer": "layer_1",
+      "caveat_required": false,
+      "caveat_kind": null,
+      "claim": {"archetype": "ui", "claim_kind": "layout-claim"},
+      "recipe": {"trigger_kind": "inspection-trigger", "recipe_kind": "metadata-recipe"}
+    },
+    "live": {
+      "requirement_text": "The Industry field must appear on the Account page layout.",
+      "envelope": {
+        "invariant": [
+          {"field": "outcome_kind", "op": "eq", "value": "draft"},
+          {"field": "archetype", "op": "eq", "value": "ui"},
+          {"field": "caveat_required", "op": "is_false"}
+        ],
+        "acceptable_variants": [
+          {"field": "claim_kind", "op": "in", "value": ["layout-claim"]}
+        ],
+        "benign": ["explanation", "phrasing", "excerpt", "subject"],
+        "_note": "The live LLM (generation@v3) must propose a layout-claim with layout=Layout 'Account-Account Layout' and field=Field Account.Industry (D-125 ui fragment). The INCLUDES_FIELD placement edge grounds it Layer-1-complete via a metadata-recipe (NOT a ui-recipe — placement is a metadata fact, D-124)."
       }
     }
   }

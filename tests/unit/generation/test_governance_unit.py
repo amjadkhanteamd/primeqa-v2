@@ -12,9 +12,13 @@ from primeqa.generation import governance_core as gc
 from primeqa.generation.enums import AdmissibilityLayer, CaveatKind
 from primeqa.generation.emission import (
     EMITTABLE,
+    GroundedCapability,
     GroundedEmission,
+    GroundedExistence,
+    GroundedLayout,
     GroundedNegative,
     GroundedPositive,
+    GroundedProperty,
     _Endpoint,
     author_emission,
 )
@@ -65,6 +69,22 @@ _EMITTABLE_SHAPES = {
         edge_type="APPLIES_TO", version_seq=1,
         source=_ep("ValidationRule", "Case.RequireReason"),
         target=_ep("Object", "Case"), requirement_excerpt="x"),
+    ("configuration", "existence-claim"): lambda: GroundedExistence(
+        archetype="configuration", claim_kind="existence-claim", version_seq=1,
+        subject=_ep("Field", "Account.Industry"), requirement_excerpt="x"),
+    ("configuration", "property-claim"): lambda: GroundedProperty(
+        archetype="configuration", claim_kind="property-claim", version_seq=1,
+        subject=_ep("Field", "Account.Industry"), property_name="is_required",
+        expected_value=True, requirement_excerpt="x"),
+    ("permission", "capability-claim"): lambda: GroundedCapability(
+        archetype="permission", claim_kind="capability-claim", version_seq=1,
+        granting_subject=_ep("Profile", "Admin"),
+        target=_ep("Field", "Account.AnnualRevenue"),
+        granted_capability="edit", grant_type="field", requirement_excerpt="x"),
+    ("ui", "layout-claim"): lambda: GroundedLayout(
+        archetype="ui", claim_kind="layout-claim", version_seq=1,
+        layout=_ep("Layout", "Account-Account Layout"),
+        field=_ep("Field", "Account.AnnualRevenue"), requirement_excerpt="x"),
     ("data_behavior", "prohibition-claim"): lambda: GroundedNegative(
         archetype="data_behavior", claim_kind="prohibition-claim",
         operation_hint=None, version_seq=1,

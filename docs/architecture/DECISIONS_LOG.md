@@ -7516,3 +7516,120 @@ Phase 1's purpose: confirm Substrate-2 (Test Representation) is ready for the S3
 **Deliverable.** No product code: an executable **taxonomy-contract drift-guard** (`tests/unit/test_representation/test_taxonomy_contract.py`) pins `CLAIM_KIND_ENUM` (16) + `RECIPE_KIND_ENUM` (5) + `TRIGGER_KIND_ENUM` (6) as the S3/S4 breadth contract — a future edit that drops or renames a kind fails loud. The standing S2 proof (1148 tests + the e2e round-trip) is unchanged. **Merge gate is deterministic** (Phase 1 touches no Salesforce — no live probe).
 
 ---
+
+## D-122 — Configuration breadth: existence-claim + property-claim emission (Phase 2 slice 1)
+
+**Date:** 2026-06-02
+**Substrates affected:** [S3] (emission — two new configuration claim-kinds become emittable); [S2] (two new claim-body Pydantic models — additive, no migration)
+**Status:** Active — Phase 2 (S3 generation breadth) slice 1, on `phase-10-substrate-3-breadth`. The emission path; the prompt live-reach (the LLM *proposing* these) is slice 1b.
+
+Phase 2 grows the emittable surface from 3 of 16 toward all groundable kinds. Slice 1 — the cleanest entry (S1-ready, Layer-1-complete, no caveat machinery) — adds the two configuration claim-kinds D-098 / D-098.4 deferred to the S1 detail-read increment (now shipped, Phase 0 / D-119–D-120):
+
+- **`existence-claim`** — "Object / Field / Flow X exists in this org."
+- **`property-claim`** — "Field X is required / has length N; RecordType RT exists on Object" — an S1-Tier-1-modeled property holds.
+
+**Mirror the proven `_author_config` pattern.** Both are **Layer-1-complete, no caveat** — reading the metadata *is* the verification (D-079, as for `metadata-relationship-claim`). The shape is the existing `_inspection_recipe` (a metadata-read + an assert), `inspection-trigger` + `metadata-recipe`, `LAYER_1`. The extension points (the established add-a-kind pattern):
+- **S2** — two claim bodies in `test_representation/models/claims/configuration/`: `ExistenceClaimBody(subject)` and `PropertyClaimBody(subject, property_name, expected_value)`, `@register_body`-registered. **Additive, no migration** — `CLAIM_KIND_ENUM` already holds both (D-121); the body is just the JSONB `asserted_truth` shape.
+- **S3 `emission.py`** — `GroundedExistence` / `GroundedProperty` dataclasses (mirror `GroundedEmission`); `_author_existence` / `_author_property` (reuse `_inspection_recipe`); two `author_emission` dispatch arms; `EMITTABLE += {(configuration, existence-claim), (configuration, property-claim)}`.
+- **S3 `governance_core.py`** — open the `_resolve_configuration` gate (today it refuses everything but metadata-relationship): **existence** grounds via `self._s1.get_entities(entity_type, filters)` (found → `GroundedExistence`; absent → `no_relevant_context` refusal); **property** grounds via `self._s1.get_entity_details(entity_id)` (the property is an S1-modeled detail column carrying the asserted value → `GroundedProperty`; unmodeled column → `ungrounded-claim` / `ontology_gap` — the honest Tier-1 ceiling, D-079).
+
+**Grounding is invent-nothing (Guardrail 2).** Existence is the non-empty `get_entities` result; the property value is read from the S1 detail row — never the requirement's assertion on faith. A mismatch (asserted ≠ S1) refuses rather than emit a false claim.
+
+**Drift-guard kept lockstep.** `EMITTABLE` and the `_EMITTABLE_SHAPES` map (the `set(_EMITTABLE_SHAPES) == set(EMITTABLE)` test) update together — the mechanical guard against a kind in the gate with no author arm (or vice-versa). Deterministic emit probes assert the bundle shape / recipe / `LAYER_1`-no-caveat for both.
+
+**Scope boundary.** Slice 1 is the **emission path** — the two kinds become emittable + grounded + deterministically tested. The **prompt live-reach** (a `configuration` fragment line so the LLM proposes existence/property + a live ontology-coherence probe) is **slice 1b** (the D-115.4-style activation), kept separate so the prompt freeze ritual doesn't entangle the emission build. No S1 change (the reads shipped in Phase 0); no migration.
+
+---
+
+## D-123 — Permission capability-claim emission (Phase 2 slice 2)
+
+**Date:** 2026-06-02
+**Substrates affected:** [S3] (emission — the first permission-archetype kind); [S2] (one new claim-body Pydantic model — additive, no migration)
+**Status:** Active — Phase 2 (S3 generation breadth) slice 2, on `phase-10-substrate-3-breadth`. The emission + grounding path; the prompt live-reach is batched into slice 4 (D-125).
+
+The second Phase-2 slice, and the **only** one of the four permission / UI / integration archetypes that is **S1-Tier-1-groundable today** (the readiness audit: integration entity types are absent from S1 Tier-1, and sharing/OWD/Apex are Tier-2/Tier-3 — all deferred to S1 Phase-3). `capability-claim` asserts "**Profile / PermissionSet P grants read/edit on Object/Field X**" — buildable now because the `GRANTS_OBJECT_ACCESS` / `GRANTS_FIELD_ACCESS` edges are synced (~11K FieldPermissions on the sandbox) and `get_related` returns their `can_read` / `can_edit` properties (proven Phase 0 / D-120). **Layer-1-complete, no caveat** — reading the grant IS the verification (D-079).
+
+**Shape — two patterns already shipped.** capability-claim fuses the **two-endpoint** grounding of `metadata-relationship-claim` (a grantee + a target + the grant edge between them) with the **metadata-inspection recipe** of the configuration kinds. The extension points (the established add-a-kind pattern; **no migration** — `capability-claim` is already in `CLAIM_KIND_ENUM`, D-121):
+- **S2** — `CapabilityClaimBody(granting_subject: IdentityBearingRef, target: IdentityBearingRef, granted_capability: str, grant_type: Literal["object","field"])` in a new `test_representation/models/claims/permission/`, `@register_body`-registered + added to the flat `ClaimBody` union.
+- **S3 `emission.py`** — `GroundedCapability` + `_author_capability` (reuse `_inspection_recipe` — read the grantee, assert the grant edge surfaces); the `author_emission` dispatch arm; `EMITTABLE += ("permission","capability-claim")`; the `_EMITTABLE_SHAPES` drift-guard kept lockstep. (`_HAS_LAYER_2["capability-claim"]` confirmed `False` — no caveat.)
+- **S3 `governance_core.py`** — `_resolve_permission` (dispatch on `archetype_hint == "permission"`): resolve the grantee (Profile/PermissionSet) + the target (Object/Field), verify the `GRANTS_OBJECT_ACCESS` / `GRANTS_FIELD_ACCESS` edge via `get_related` (the `can_read`/`can_edit` ride the edge properties); absent → `no_relevant_context`. `check_refs_exist` gains a permission branch (two refs — grantee + target, like the metadata-relationship source/target branch).
+
+**Scope — the D-080 honesty (recipe-kind preserves claim semantics).** v1 grounds **direct grants** with a **metadata-inspection** recipe: it verifies the grant is *configured*, not the *effective runtime* capability. The **run-as-execution** recipe (a test user with profile P attempts the op + observes success/failure) is a different verification surface, and D-080 forbids silently substituting one for the other. So complex capability claims implying sharing / OWD / role-hierarchy / Apex-sharing (S1 Tier-2, unmodeled) **refuse with disambiguation** rather than emit a metadata-inspection that overstates verification — a higher refusal rate on complex claims, which is the honest posture, not a defect. The run-as path + the Tier-2 sharing model reopen later (S1 Phase-3 / S4 side-B).
+
+**Verification + boundary.** Emit-probes (bundle shape / recipe / Layer-1-no-caveat) + the drift-guard + an integration grounding test on real seeded S1 (seed a Profile + a `GRANTS_FIELD_ACCESS` edge → resolve → check-refs → emit → persist, mirroring the existence test that caught the slice-1 wiring bugs). The **prompt live-reach** (the LLM *proposing* capability-claim) is **slice 4 (D-125)** — batched with existence/property/layout into one prompt freeze. No S1 change; no migration.
+
+---
+
+## D-124 — UI layout-claim emission (Phase 2 slice 3)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S3] (emission — the first UI-archetype kind); [S2] (one new claim-body Pydantic model — additive, no migration)
+**Status:** Active — Phase 2 (S3 generation breadth) slice 3, on `phase-10-substrate-3-breadth`. The emission + grounding path; the prompt live-reach is batched into slice 4 (D-125).
+
+The third Phase-2 slice and the **UI-archetype debut**. `layout-claim` asserts "**Field F appears on PageLayout L**" — the emittable surface grows **6 → 7**, completing the **S1-Tier-1-groundable set** (the remaining ~8 kinds are all Tier-2/Tier-3/integration-blocked → S1 Phase-3).
+
+**Verify-data-first gate → BUILD (the discipline the slice required).** Unlike `state-transition-claim` (dormant: the sync author's docstring records "this sandbox has **zero** record-triggered flows → zero `TRIGGERS_ON` edges", phases.py — built-correct-but-grounds-nothing, deferred), the layout grounding edge is **live**: `phase_layout` is a fully-implemented, active sync phase whose docstring documents **~115 layouts → ~3,000–12,000 `INCLUDES_FIELD` edges** on the dev sandbox (phases.py:846/881). `INCLUDES_FIELD` (Layout→Field, grid-placement properties) is in the locked `TIER_1_EDGES` (edges.py:290), and `get_related` traverses it generically (no new S1 work). The one residual — *live*-confirming instances this session — is the **same standard capability-claim (D-123) was built on** (documented expected cardinality; the live probe deferred to the post-merge sandbox run); every Salesforce org universally ships page layouts, so the dormancy risk is near-zero.
+
+**Shape — a clone of capability-claim (D-123), `archetype="ui"`, `edge="INCLUDES_FIELD"`.** Two endpoints (Layout + Field) + a **metadata-inspection** recipe. **Layer-1-complete, no caveat** — the `INCLUDES_FIELD` edge IS the verification (D-079). The established add-a-kind pattern (**no migration** — `layout-claim` already in `CLAIM_KIND_ENUM`, the `"ui"` archetype already in `ARCHETYPE_ENUM`, D-121):
+- **S2** — `LayoutClaimBody(layout: IdentityBearingRef, field: IdentityBearingRef)` in a new `test_representation/models/claims/ui/`, `@register_body`-registered + added to the flat `ClaimBody` union.
+- **S3 `emission.py`** — `GroundedLayout` + `_author_layout` (reuse `_inspection_recipe` — read the Layout, capture the `INCLUDES_FIELD` edge); the `author_emission` dispatch arm; `EMITTABLE += ("ui","layout-claim")`; the `_EMITTABLE_SHAPES` drift-guard kept lockstep. (`_HAS_LAYER_2["layout-claim"] = False` — no caveat.)
+- **S3 `governance_core.py`** — `_resolve_ui` (dispatch on `archetype_hint == "ui"`): resolve the Layout + the Field, verify the `INCLUDES_FIELD` edge via `get_related`; absent → `no_relevant_context` / ungrounded. `check_refs_exist` gains a UI branch (two refs — layout + field, like the permission grantee/target branch).
+
+**Key design call — metadata-recipe, NOT ui-recipe.** Layout placement is a *metadata* fact (the layout includes the field), verified by inspection — `metadata-recipe` / `inspection-trigger`, exactly like capability/config. The `ui-recipe` / `ui-trigger` kinds stay reserved for `element-state-claim` (the *runtime* render/enable question — does the field actually surface in the live Lightning page), which is S1 Tier-3 and deferred. Using a UI-interaction recipe for a placement claim would overstate verification (the D-080 honesty applied to the UI archetype).
+
+**Scope.** v1 grounds **placement-existence** (the field is on the layout). There is no capability-style "bit" to check — `INCLUDES_FIELD`-edge existence *is* the placement. Section/row/column **assertions** (e.g. "F appears in the 'Address' section") are a v1.1 refinement (the edge carries `section_name`/`row`/`column` as properties; deferred, not yet asserted). Other UI kinds — `element-state-claim` (Tier-3 Lightning), `navigation-claim` — stay deferred.
+
+**Verification + boundary.** Emit-probes (bundle shape / metadata-recipe / Layer-1-no-caveat) + the drift-guard + two integration grounding tests on real seeded S1 (seed a Layout + an `INCLUDES_FIELD` edge → resolve → check-refs → emit → persist; edge-absent → refuse) + the `test_substrate_imports` registry guard (+`layout-claim`). The **prompt live-reach** (the LLM *proposing* layout-claim) is **slice 4 (D-125)** — batched with existence/property/capability into one prompt freeze. No S1 change; no migration.
+
+---
+
+## D-125 — Prompt live-reach + eval corpus for the Tier-1 breadth set (Phase 2 slice 4)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S3] (prompts — the freeze ritual; eval corpus). No S2/S1 change; no migration.
+**Status:** Active — Phase 2 (S3 generation breadth) slice 4, on `phase-10-substrate-3-breadth`. The cross-cutting live-reach for slices 1–3's four new kinds.
+
+The fourth Phase-2 slice — the **end-to-end live-reach** for the kinds slices 1–3 made emittable + groundable (`existence-claim` / `property-claim` D-122, `capability-claim` D-123, `layout-claim` D-124). Until now those kinds ground + emit when *handed* an intent, but the LLM has no guidance to *propose* them — so they're unreachable from a real requirement. This slice closes that, batched into a single prompt freeze (the value-claim live-reach precedent, D-115.4).
+
+**The de-risking finding — the tool schema is already permissive.** `propose_semantic_intent`'s `_ARCHETYPES` / `_CLAIM_KINDS` already enumerate `permission`/`ui` + `capability`/`layout`/`existence`/`property` (verbatim from S2's enums, D-095.A), and `target_subject_hint` is a free-form `{"type":"object"}` (no fixed key set, no `additionalProperties:false`). So **zero tool-schema / Layer-A change** — the live-reach is purely prompt fragments + the freeze + eval probes.
+
+**Prompt fragments (the live-reach).** Each fragment names the *exact* `target_subject_hint` keys the resolver reads — the precision bar `data_behavior.md` set for value-claim:
+- `configuration.md` — **add** existence-claim (flat `{entity_type, sf_api_name}`) + property-claim (flat + `property_name` + `expected_value`). Was metadata-relationship-only.
+- `permission.md` — **sharpen** to the precise keys: `grantee` / `target` as `{entity_type, sf_api_name}`, `granted_capability` (read/edit), `grant_type` (object/field).
+- `ui.md` (**new**) — layout-claim: `layout` / `field` as `{entity_type, sf_api_name}`.
+
+**The freeze (`generation@v2` → `v3`).** `_FRAGMENTS += "ui"`; `base.md` title bumped to v3; `compose_working()` → freeze `versions/generation_v3.md`; add to `_FILES`; record its SHA-256 in `RECORDED_HASHES`; `CURRENT = "generation@v3"`. v1/v2 stay frozen + pinned-resolvable (replay determinism, D-103.1). The hash-guard test loops `versions()` — v3 auto-covered.
+
+**Eval corpus.** +3 offline+live probes in `drafts.json` — `config-existence-draft`, `permission-capability-draft`, `ui-layout-draft` (each: fixture → scripted propose+emit → expect draft / Layer-1 / no-caveat / metadata-recipe + a live envelope). One runner one-liner: `eval/runner.py:_seed` reads edge `properties` from the fixture (mirrors the existing entity-`attributes` read) so the capability probe's grant edge carries `can_edit:true` — additive, defaults `{}`, every existing probe unaffected. **D-104 envelope revisit:** the now-stale `_note` on `config-verified-draft` is corrected (existence/property are emittable now → they no longer auto-fail; they stay correctly in `acceptable_variants` as alternate *readings*, not forced into invariants — forcing one reading would make the probe brittle).
+
+**Honest scope cut — property's eval probe defers (with #83).** property-claim grounding reads `get_entity_details`, which hits a per-type **detail table** (`field_details`) the eval `_seed` (and the integration `seeded` fixture) doesn't populate — the *same blocker* that deferred the property grounded integration test (D-122 follow-on, task #83). Rather than expand the fixture loaders to seed detail-tables (its own piece of work), property's deterministic probe folds into that follow-on; property's **live-reach still ships** (the fragment guidance). existence + capability + layout ship full offline+live probes now.
+
+**Verification + boundary.** `compose_working()` round-trips; the v3 content-hash guard; `test_current_resolves_to_v3` (CURRENT + v3 title strings); `test_compose_working_has_all_fragments` (+ui); the offline corpus green (3 new drafts auto-load + auto-run, the `>=` category asserts hold); the live envelopes authored-but-skipped (periodic, env-gated). No S2/S1 change; no migration.
+
+---
+
+## D-126 — Phase 2 close: the realized Tier-1 breadth set (7/16) + the deferred-9 catalog
+
+**Date:** 2026-06-03
+**Substrates affected:** [S3] (ledger / close — no code). Documentation + merge gate.
+**Status:** Active — Phase 2 (S3 generation breadth) **close**, merging `phase-10-substrate-3-breadth` → `main`.
+
+Phase 2 set out to grow the emittable claim-kind surface from the Phase-2-lock thin vertical toward substrate-2's 16-kind taxonomy. The realized outcome — **7 of 16**, the *complete S1-Tier-1-groundable set* — is the honest ceiling at the current S1 tier, not a shortfall: the re-scope (D-122 design) established early that only S1-Tier-1-groundable kinds are buildable now, and all of them are now built, grounded, and LLM-reachable.
+
+**Realized emittable set (7).** `configuration`: metadata-relationship (D-098), existence + property (D-122) — **3/3 complete**. `permission`: capability (D-123). `ui`: layout (D-124). `data_behavior`: prohibition (D-101), value (D-115). The four breadth kinds (existence/property/capability/layout) are LLM-reachable end to end via prompt `generation@v3` (D-125); the configuration archetype is fully realized.
+
+**Deferred-9 catalog (each an honest refusal, by unblock condition).** None is a defect — each is a kind whose grounding the current S1 tier cannot support, so the substrate *refuses with disambiguation* rather than overstate:
+- `state-transition-claim` (data_behavior) — **dormant**: zero record-triggered flows on the sandbox (`phase_flow` docstring), build-correct-but-grounds-nothing; reopens when the org carries record-triggered flows or the formula parser lands (D-100.1).
+- `automation-effect-claim` (data_behavior) — Apex effect-tractability → **S1 Tier-2 (Apex)** (D-078 / D-100.5).
+- `sharing-rule-claim` (permission) — sharing / OWD / role-hierarchy capability unmodeled → **S1 Tier-2 (sharing)** (D-080).
+- `element-state-claim` (ui) — runtime Lightning render/enable (distinct from static layout placement) → **S1 Tier-3** (D-081).
+- `navigation-claim` (ui) — navigation model unmodeled → **S1 Tier-3**.
+- `platform-event-claim` / `outbound-message-claim` / `callout-claim` / `inbound-effect-claim` (integration ×4) — the integration entity types are absent from S1 Tier-1 → **S1 integration modeling** (D-082 / D-084).
+
+These reopen as an S3-breadth continuation after the corresponding S1 tiers land (S1 Phase-3); the catalog above + DEFERRED §1/§6/§8 are the standing record.
+
+**Open follow-on (deferred, not flushed) — task #83.** property-claim's *grounded integration test* and its *deterministic eval probe* both need a seeded `field_details` detail-table row that neither fixture loader (eval `_seed` / integration `seeded`) yet produces — its own piece of test-infrastructure work. property's **feature is fully shipped** (emission D-122 + grounding + live-reach D-125, unit-probed); only its grounded *test* lags. Deferred as a tracked follow-on per the Phase-2-close decision; it does not gate the breadth claim.
+
+**Merge gate.** A real green run of the substrate-relevant suites (generation unit + integration + representation + the offline eval corpus + eval-harness) — never the live probes (env-gated, periodic). No migration across the whole phase (every kind was pre-seated in `CLAIM_KIND_ENUM` / `ARCHETYPE_ENUM` at the D-121 readiness ratification). Merge `phase-10-substrate-3-breadth` → `main` via PR on green.
+
+---

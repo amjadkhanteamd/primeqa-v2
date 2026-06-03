@@ -20,6 +20,7 @@ now run through this same persister.
 """
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 import pytest
@@ -321,3 +322,220 @@ def test_positive_value_claim_emitted_end_to_end(seeded):
     recipe = rows["recipes"][0]
     assert recipe["trigger_kind"] == "data-mutation-trigger"
     assert recipe["recipe_kind"] == "data-recipe"
+
+
+# ---------------------------------------------------------------------------
+# Configuration breadth (D-122): existence-claim grounds + emits end to end
+# ---------------------------------------------------------------------------
+
+def _existence_intent(entity_type: str, sf_api_name: str):
+    """A config existence-claim intent (D-122) — the flat target_subject_hint
+    convention {entity_type, sf_api_name}."""
+    return {"requirement_excerpt": f"{sf_api_name} exists in the org",
+            "intent_descriptor": {
+                "archetype_hint": "configuration", "polarity_hint": "positive",
+                "claim_kind_hint": "existence-claim",
+                "target_subject_hint": {"entity_type": entity_type, "sf_api_name": sf_api_name}}}
+
+
+def test_existence_claim_grounds_and_emits(seeded):
+    # "Account" exists in the seeded S1 -> existence-claim grounds (get_entities),
+    # emits the inspection recipe, persists whole (Layer-1-complete, no caveat).
+    _, res = _emit_run(seeded, [_existence_intent("Object", "Account")],
+                       persister=LedgerPersister(TEST_TENANT_ID))
+    o = res.results[0].outcome
+    assert o.outcome_kind == OutcomeKind.DRAFT
+    assert o.admissibility_layer == AdmissibilityLayer.LAYER_1
+    assert o.caveat_required is False and o.caveat_kind is None
+    assert o.claims_written and o.recipes_written
+
+    rows = _query()
+    assert len(rows["claims"]) == 1 and len(rows["recipes"]) == 1
+    claim = rows["claims"][0]
+    assert claim["archetype"] == "configuration"
+    assert claim["claim_kind"] == "existence-claim"
+    assert rows["recipes"][0]["recipe_kind"] == "metadata-recipe"
+    assert rows["recipes"][0]["trigger_kind"] == "inspection-trigger"
+
+
+# ---------------------------------------------------------------------------
+# Permission breadth (D-123): capability-claim grounds on the grant edge's BIT
+# ---------------------------------------------------------------------------
+
+def _seed_grant(v1: int, profile_api: str, target_api: str, target_type: str,
+                edge_type: str, props: dict) -> None:
+    """Idempotently seed a Profile + a GRANTS_*_ACCESS edge (carrying capability
+    properties) to an already-seeded target. The conftest ``_edge`` helper forces
+    empty properties, but capability grounding reads ``can_read``/``can_edit`` off
+    the edge, so we insert directly. Guarded SELECT-then-INSERT keeps it safe under
+    the session-scoped (committed) S1 seed."""
+    from primeqa.semantic.connection import get_tenant_connection
+    with get_tenant_connection(TEST_TENANT_ID) as conn:
+        prof = conn.execute(text(
+            "SELECT id FROM entities WHERE entity_type='Profile' AND sf_api_name=:api "
+            "AND valid_from_seq=:vf"), {"api": profile_api, "vf": v1}).scalar()
+        if prof is None:
+            prof = conn.execute(text(
+                "INSERT INTO entities (entity_type, sf_api_name, display_name, attributes, "
+                "valid_from_seq, valid_to_seq, last_synced_at) "
+                "VALUES ('Profile',:api,:api,'{}'::jsonb,:vf,NULL,NOW()) RETURNING id"),
+                {"api": profile_api, "vf": v1}).scalar()
+        tgt = conn.execute(text(
+            "SELECT id FROM entities WHERE entity_type=:et AND sf_api_name=:api "
+            "AND valid_from_seq=:vf"), {"et": target_type, "api": target_api, "vf": v1}).scalar()
+        present = conn.execute(text(
+            "SELECT 1 FROM edges WHERE source_entity_id=:s AND target_entity_id=:t "
+            "AND edge_type=:et AND valid_from_seq=:vf"),
+            {"s": str(prof), "t": str(tgt), "et": edge_type, "vf": v1}).scalar()
+        if not present:
+            conn.execute(text(
+                "INSERT INTO edges (source_entity_id, target_entity_id, edge_type, "
+                "edge_category, properties, valid_from_seq, valid_to_seq) "
+                "VALUES (CAST(:s AS uuid),CAST(:t AS uuid),:et,'PERMISSION',"
+                "CAST(:p AS jsonb),:vf,NULL)"),
+                {"s": str(prof), "t": str(tgt), "et": edge_type,
+                 "p": json.dumps(props), "vf": v1})
+
+
+def _capability_intent(profile_api, target_api, target_type, grant_type, capability):
+    """A permission capability-claim intent (D-123) — two endpoints (grantee +
+    target) under target_subject_hint, plus the capability + grant_type."""
+    return {"requirement_excerpt": f"The {profile_api} profile can {capability} {target_api}",
+            "intent_descriptor": {
+                "archetype_hint": "permission", "polarity_hint": "positive",
+                "claim_kind_hint": "capability-claim",
+                "target_subject_hint": {
+                    "grantee": {"entity_type": "Profile", "sf_api_name": profile_api},
+                    "target": {"entity_type": target_type, "sf_api_name": target_api},
+                    "granted_capability": capability, "grant_type": grant_type}}}
+
+
+def test_capability_claim_grounds_and_emits(seeded):
+    # Profile "PQA_Admin" --GRANTS_FIELD_ACCESS{can_edit}--> Invoice.Amount, so a
+    # capability-claim "Admin can edit Invoice.Amount" grounds on the grant edge's
+    # SET bit, emits the inspection recipe, persists whole (Layer-1, no caveat).
+    _seed_grant(seeded["v1"], "PQA_Admin", "Invoice.Amount", "Field",
+                "GRANTS_FIELD_ACCESS", {"can_read": True, "can_edit": True})
+    _, res = _emit_run(seeded,
+                       [_capability_intent("PQA_Admin", "Invoice.Amount", "Field", "field", "edit")],
+                       persister=LedgerPersister(TEST_TENANT_ID))
+    o = res.results[0].outcome
+    assert o.outcome_kind == OutcomeKind.DRAFT
+    assert o.admissibility_layer == AdmissibilityLayer.LAYER_1
+    assert o.caveat_required is False and o.caveat_kind is None
+    assert o.claims_written and o.recipes_written
+
+    rows = _query()
+    assert len(rows["claims"]) == 1 and len(rows["recipes"]) == 1
+    claim = rows["claims"][0]
+    assert claim["archetype"] == "permission"
+    assert claim["claim_kind"] == "capability-claim"
+    assert rows["recipes"][0]["recipe_kind"] == "metadata-recipe"
+    assert rows["recipes"][0]["trigger_kind"] == "inspection-trigger"
+
+
+def test_capability_claim_refuses_when_bit_unset(seeded):
+    # Profile "PQA_ReadOnly" --GRANTS_FIELD_ACCESS{can_read, NOT can_edit}-->
+    # Invoice.Amount. A claim that ReadOnly can *edit* must REFUSE: the grant edge
+    # exists but the asserted capability BIT is unset. This is the property that
+    # makes capability-claim more than a renamed relationship-claim — grounding
+    # checks the bit, not mere edge existence. Nothing emits.
+    _seed_grant(seeded["v1"], "PQA_ReadOnly", "Invoice.Amount", "Field",
+                "GRANTS_FIELD_ACCESS", {"can_read": True, "can_edit": False})
+    _, res = _emit_run(seeded,
+                       [_capability_intent("PQA_ReadOnly", "Invoice.Amount", "Field", "field", "edit")],
+                       persister=LedgerPersister(TEST_TENANT_ID))
+    o = res.results[0].outcome
+    assert o.outcome_kind == OutcomeKind.REFUSAL
+    assert o.refusal_kind == RefusalKind.UNGROUNDED_CLAIM
+    rows = _query()
+    assert len(rows["claims"]) == 0 and len(rows["recipes"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# UI breadth (D-124): layout-claim grounds on the INCLUDES_FIELD placement edge
+# ---------------------------------------------------------------------------
+
+def _seed_layout(v1: int, layout_api: str, field_api: str, *, place: bool) -> None:
+    """Idempotently seed a Layout entity (and, when ``place``, an INCLUDES_FIELD
+    edge to an already-seeded Field). The conftest ``_edge`` helper forces empty
+    properties, but layout grounding only checks edge *existence* (placement IS
+    the edge), so we direct-insert a realistic placement either way."""
+    from primeqa.semantic.connection import get_tenant_connection
+    with get_tenant_connection(TEST_TENANT_ID) as conn:
+        layout = conn.execute(text(
+            "SELECT id FROM entities WHERE entity_type='Layout' AND sf_api_name=:api "
+            "AND valid_from_seq=:vf"), {"api": layout_api, "vf": v1}).scalar()
+        if layout is None:
+            layout = conn.execute(text(
+                "INSERT INTO entities (entity_type, sf_api_name, display_name, attributes, "
+                "valid_from_seq, valid_to_seq, last_synced_at) "
+                "VALUES ('Layout',:api,:api,'{}'::jsonb,:vf,NULL,NOW()) RETURNING id"),
+                {"api": layout_api, "vf": v1}).scalar()
+        if not place:
+            return
+        fld = conn.execute(text(
+            "SELECT id FROM entities WHERE entity_type='Field' AND sf_api_name=:api "
+            "AND valid_from_seq=:vf"), {"api": field_api, "vf": v1}).scalar()
+        present = conn.execute(text(
+            "SELECT 1 FROM edges WHERE source_entity_id=:s AND target_entity_id=:t "
+            "AND edge_type='INCLUDES_FIELD' AND valid_from_seq=:vf"),
+            {"s": str(layout), "t": str(fld), "vf": v1}).scalar()
+        if not present:
+            conn.execute(text(
+                "INSERT INTO edges (source_entity_id, target_entity_id, edge_type, "
+                "edge_category, properties, valid_from_seq, valid_to_seq) "
+                "VALUES (CAST(:s AS uuid),CAST(:t AS uuid),'INCLUDES_FIELD','CONFIG',"
+                "CAST(:p AS jsonb),:vf,NULL)"),
+                {"s": str(layout), "t": str(fld),
+                 "p": json.dumps({"section_name": "Details", "section_order": 0,
+                                  "row": 0, "column": 0}), "vf": v1})
+
+
+def _layout_intent(layout_api, field_api):
+    """A ui layout-claim intent (D-124) — two endpoints (layout + field) under
+    target_subject_hint."""
+    return {"requirement_excerpt": f"{field_api} appears on the {layout_api} layout",
+            "intent_descriptor": {
+                "archetype_hint": "ui", "polarity_hint": "positive",
+                "claim_kind_hint": "layout-claim",
+                "target_subject_hint": {
+                    "layout": {"entity_type": "Layout", "sf_api_name": layout_api},
+                    "field": {"entity_type": "Field", "sf_api_name": field_api}}}}
+
+
+def test_layout_claim_grounds_and_emits(seeded):
+    # Layout "PQA_AccountLayout" --INCLUDES_FIELD--> Invoice.Amount, so a layout-claim
+    # "Invoice.Amount appears on PQA_AccountLayout" grounds on the placement edge,
+    # emits the metadata-inspection recipe, persists whole (Layer-1, no caveat).
+    _seed_layout(seeded["v1"], "PQA_AccountLayout", "Invoice.Amount", place=True)
+    _, res = _emit_run(seeded, [_layout_intent("PQA_AccountLayout", "Invoice.Amount")],
+                       persister=LedgerPersister(TEST_TENANT_ID))
+    o = res.results[0].outcome
+    assert o.outcome_kind == OutcomeKind.DRAFT
+    assert o.admissibility_layer == AdmissibilityLayer.LAYER_1
+    assert o.caveat_required is False and o.caveat_kind is None
+    assert o.claims_written and o.recipes_written
+
+    rows = _query()
+    assert len(rows["claims"]) == 1 and len(rows["recipes"]) == 1
+    claim = rows["claims"][0]
+    assert claim["archetype"] == "ui"
+    assert claim["claim_kind"] == "layout-claim"
+    # metadata-recipe, NOT ui-recipe (placement is a metadata fact — D-124).
+    assert rows["recipes"][0]["recipe_kind"] == "metadata-recipe"
+    assert rows["recipes"][0]["trigger_kind"] == "inspection-trigger"
+
+
+def test_layout_claim_refuses_when_field_absent(seeded):
+    # Layout "PQA_EmptyLayout" exists but has NO INCLUDES_FIELD edge to Invoice.Amount.
+    # A claim that the field appears on it must REFUSE: both endpoints resolve, but
+    # the placement edge is absent (we never emit a false 'appears on'). Nothing emits.
+    _seed_layout(seeded["v1"], "PQA_EmptyLayout", "Invoice.Amount", place=False)
+    _, res = _emit_run(seeded, [_layout_intent("PQA_EmptyLayout", "Invoice.Amount")],
+                       persister=LedgerPersister(TEST_TENANT_ID))
+    o = res.results[0].outcome
+    assert o.outcome_kind == OutcomeKind.REFUSAL
+    assert o.refusal_kind == RefusalKind.UNGROUNDED_CLAIM
+    rows = _query()
+    assert len(rows["claims"]) == 0 and len(rows["recipes"]) == 0

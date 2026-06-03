@@ -24,19 +24,24 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v2():
-    # D-115.4: CURRENT bumped to v2 (the value-claim live-reach prompt). v1 stays
-    # frozen + pinned-resolvable (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v2"
-    assert registry.get() == registry.get("generation@v2")
+def test_current_resolves_to_v3():
+    # D-125: CURRENT bumped to v3 (the Tier-1 breadth live-reach prompt — existence
+    # / property / capability / layout become LLM-proposable). v1/v2 stay frozen +
+    # pinned-resolvable (test_runtime_honors_pinned_prompt_version).
+    assert registry.CURRENT == "generation@v3"
+    assert registry.get() == registry.get("generation@v3")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # the substance the schemas don't enforce (D-103.3) is present
     assert "bounded cognition provider" in sys
     assert "Transcribe admissibility" in sys
-    assert "value-claim live-reach" in sys                  # v2's title
-    # v2's added value-claim guidance — supply the qualified field + value
+    assert "Tier-1 breadth live-reach" in sys               # v3's title
+    # v2's value-claim guidance is carried forward
     assert "fully-qualified" in sys and "expected_value" in sys
+    # v3's added breadth guidance — the four new kinds + their hint keys
+    assert "existence-claim" in sys and "property-claim" in sys
+    assert "capability-claim" in sys and "granted_capability" in sys and "grant_type" in sys
+    assert "layout-claim" in sys
 
 
 def test_unknown_version_raises():
@@ -45,11 +50,12 @@ def test_unknown_version_raises():
 
 
 def test_compose_working_has_all_fragments():
-    # All-fragments composition (D-103.2): base + the three v1 archetypes.
+    # All-fragments composition (D-103.2): base + the four archetypes (ui added D-125).
     composed = registry.compose_working()
     assert "Archetype guidance — data_behavior" in composed
     assert "Archetype guidance — configuration" in composed
     assert "Archetype guidance — permission" in composed
+    assert "Archetype guidance — ui" in composed
 
 
 # ---------------------------------------------------------------------------
