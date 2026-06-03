@@ -7882,4 +7882,148 @@ Phase 5 brings S6 current with the **realized S4 execution surface** (Phase-3 cl
 
 ---
 
+## D-139 — S8 claim-grounding leg: does the claim's subject still resolve? (Phase 6 slice 1)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S8] (the claim-grounding leg — the second built leg of the grounding-validity predicate), reading S1 entity-resolution through S8's own port. **No migration** (pure, produce-only).
+**Status:** Active — Phase 6 (S8 evolution) slice 1, on `phase-14-substrate-8-evolution`.
+
+The grounding-validity predicate's recipe-grounding leg (D-113) asks "does the payload still violate?"; the **claim-grounding leg** asks the prior question — **does the claim's subject still resolve in the current org?** It re-asks generation's own resolution step (`resolve_subject` → `SemanticOrgModel.get_entities(type, at_seq, filters={"sf_api_name": external_id})`) against today's S1 active set. A subject that no longer resolves (a renamed/deleted Field or Object) means the test can no longer address what it claims — broken grounding, independent of any VR.
+
+**Realized — verified against the code.** Claim subjects are `IdentityBearingRef(entity_type, external_id, …)` in `asserted_truth` (every kind carries ≥1: value/property/existence/state-transition `subject`, prohibition `target`, metadata-relationship `source`+`target`, capability `granting_subject`+`target`, automation-effect `automation`, layout `layout`+`field`). S1 re-resolves by `(entity_type, external_id)` — the exact key generation used. **By external_id, not entity_id:** a rename supersedes the S1 entity (entity_id persists, external_id changes) and execution addresses the org by api-name (external_id), so the execution-faithful "still resolves" is by-external_id — it catches the rename-break that by-entity_id would mask.
+
+**Shape (mirrors `recipe_grounding.py` exactly — pure fn + S8's own port + adapter):**
+- `ClaimGroundingResult(verdict: Literal["intact","broken"], reason, unresolved: tuple[(entity_type, external_id), …])` — **two-valued** (resolution is binary; the value/formula *drift* axes belong to the other legs). `reason="subject_not_resolved"` + `unresolved` are load-bearing on broken (which subject(s) broke).
+- `SubjectResolver` Protocol — `resolves(entity_type, external_id) -> bool`. S8's OWN port (parallel-siblings, D-112); the production adapter over `SemanticOrgModel` lands with the composition (slice 3, `s1_reader.py`); slice-1 tests inject a stub.
+- `claim_grounding_validity(entity_type, external_id, *, s1)` — resolves → intact; not → broken.
+- `claim_grounding_validity_for_claim(asserted_truth: BodyBase, *, s1)` — walks the body for **every** `IdentityBearingRef` (claim-kind-agnostic), resolves each; **broken if any** unresolved (a claim grounded on a deleted Field *or* Object is broken). A local `_identity_bearing_refs` walk mirrors `coverage._walk` (the D-058 §5.4 pattern) projected to (entity_type, external_id) — `coverage.extract_coverage` projects to `entity_id` (the wrong key here), so the walk is re-expressed locally rather than refactoring `coverage.py` (shared-walker extraction = tracked adjacent work).
+
+**Boundary.** `asserted_truth` only (the subject — what the claim is *about*); `semantic_conditions` scoping refs are a noted later extension. No `entity_id`/version-pin check (by-external_id is the execution-faithful resolution). A degenerate claim with no identity-bearing ref → vacuously intact. No migration; produce-only; no composition yet (slice 3). The recipe-grounding leg is untouched.
+
+**Verification.** Pure unit tests (no DB, stub resolver): subject resolves → intact; subject gone → broken/`subject_not_resolved` + `unresolved` populated; adapter extracts + resolves from a prohibition (`target`), a value-claim (`subject` Field, dotted external_id), a capability (two refs, one gone → broken); multi-ref all-resolve → intact. Mirrors `test_recipe_grounding.py`.
+
+---
+
+## D-140 — S8 field-value-validity leg: do the recipe payload's field values still exist? (Phase 6 slice 2)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S8] (the field-value-validity leg — the third built leg), reading S1 picklist metadata through S8's own port. **No migration** (pure, produce-only).
+**Status:** Active — Phase 6 (S8 evolution) slice 2, on `phase-14-substrate-8-evolution`.
+
+The recipe-grounding leg (D-113) asks "does the payload still violate a VR formula?" — but `evaluate` returns `True` on a removed picklist value (the formula compares fine on the string), so recipe-grounding **cannot** catch a value that Salesforce would now reject for being *invalid*, not for *violating the rule*. The **field-value-validity leg** closes that false-`intact`: **do the recipe payload's field values still exist in the current org?** Each payload picklist value is checked against the field's current active value set.
+
+**Realized — verified against the code.** Picklist *values* are synced: `picklist_value_details` carries `value_api_name` + `is_active`; `SemanticOrgModel.get_picklist_values(pvs_id, at_seq)` enumerates them version-aware (`query.py:374`); Field→set via `field_details.picklist_value_set_entity_id` (1:1 FK), surfaced by `get_entity_details`. So **payload {field: value} → resolve Field → picklist_value_set_entity_id → get_picklist_values → is `value` an active value_api_name?** is fully walkable on realized reads.
+
+**Shape (mirrors `recipe_grounding.py` — pure fn + S8's own port + adapter):**
+- `FieldValueGroundingResult(verdict: Literal["intact","broken"], reason, invalid: tuple[(field_api, value), …])` — two-valued; `reason="picklist_value_removed"` + `invalid` are load-bearing on broken (which value(s) no longer exist).
+- `PicklistReader` Protocol — `active_values(object_external_id, field_api) -> Optional[frozenset[str]]`: the field's active value_api_names, or **None when the field is not a constrained picklist** (→ the leg skips it — not its concern). S8's own port; the production adapter (Field → set → values) lands in slice 3.
+- `field_value_grounding_validity(payload, object_external_id, *, s1)` — per payload key: skip None values + non-picklist fields (port `None`); a present value not in the active set → collected into `invalid`. Broken iff any invalid.
+- `field_value_grounding_validity_for_recipe(recipe, *, s1)` — reuses `recipe_grounding._negative_create_step` (a private intra-package import; shared-helper extraction is tracked adjacent work).
+
+**Boundary.** Object-level / behavioral-negative-only v1 (the negative create step's `field_values`), the same scope as recipe-grounding. **Multi-select picklist** (semicolon-delimited) values are a v1 simplification — single-value membership first; the split is a tracked follow-up. Null payload values are skipped (not a membership concern). No migration; produce-only; no composition yet (slice 3).
+
+**Verification.** Pure unit tests (no DB, stub reader): value still active → intact; value removed / inactive → broken/`picklist_value_removed` + `invalid` populated; non-picklist field (port `None`) → skipped/intact; null value → skipped; payload with no picklist fields → intact; adapter extracts from a `DataRecipeBody` + raises without a negative step. Mirrors `test_recipe_grounding.py`.
+
+---
+
+## D-141 — S8 two-level grounding_validity composition: claim-level + recipe-level, composed not collapsed (Phase 6 slice 3)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S8] (the grounding-validity predicate's public composition over the three built legs). **No migration** (pure, produce-only).
+**Status:** Active — Phase 6 (S8 evolution) slice 3, on `phase-14-substrate-8-evolution`.
+
+The three legs (recipe-grounding D-113, claim-grounding D-139, field-value-validity D-140) judge in isolation; this slice composes them into the predicate SPEC §2 names: `grounding_validity(artifact, current_org) → intact | drifted | broken`, **two-level** (claim-level + recipe-level), **composed never collapsed** (D-112 Fork C — the parts stay individually addressable).
+
+**The artifact + the composed verdict.**
+- `Artifact(claim: BodyBase, recipes: tuple[DataRecipeBody, …])` — one claim's `asserted_truth` + its recipes (the realized S2 join: `test_claims` + `test_recipes` by `claim_test_id`).
+- `RecipeVerdict(recipe_grounding, field_value, rolled_up)` — per recipe, both recipe-level legs + their roll-up.
+- `GroundingValidity(claim_grounding, recipe_verdicts, overall)` — the claim-level leg (one) + the recipe-level verdicts (per recipe) + a derived `overall`, with every part addressable.
+- `grounding_validity(artifact, *, subjects, vrs, picklists)` — **three ports, not one** (each leg keeps its own port — parallel-siblings preserved).
+
+**The precedence law (the one new semantic decision).** `broken > drifted > intact`. Per recipe, roll up the two recipe legs by max-severity — so **field-value `broken` un-masks a recipe-grounding `intact`** (the whole point of D-140: the payload still fires a VR, but its picklist value is gone). `overall` = max-severity over the claim-level verdict + every recipe's roll-up — so **claim-level `broken` dominates** (the subject is gone; nothing grounds). claim-level is intact/broken (no drift axis); recipe roll-ups carry the drift axis.
+
+**Mixed-recipe honesty.** The recipe legs are **behavioral-negative-only** (D-113/D-140). An artifact's recipes may include non-negative recipes (positive / inspection); the composition **skips** those for the recipe legs (`_negative_create_step is None` → no `RecipeVerdict`) rather than fabricate a verdict — a non-negative recipe's grounding is the claim-grounding leg + future legs. An artifact with zero negative recipes (e.g. a positive value-claim) → empty `recipe_verdicts`, `overall` = the claim-level verdict.
+
+**Refinement vs the plan — `s1_reader.py` moves to slice 5.** The plan placed the production tri-port adapter (SubjectResolver + VrReader + PicklistReader over one `SemanticOrgModel`, pinning `version_seq` once) in this slice. It is first **used** + governance-testable in slice 5 (the recompute trigger runs the composition against real S1); building it here would ship untested glue. So slice 3 is the **pure composition only** (fully unit-tested with stub ports), and `s1_reader.py` lands in slice 5 with the trigger that exercises it. The composition's three-port signature is the seam the adapter plugs into.
+
+**Boundary.** Pure; produce-only; no persistence (slice 4) and no production reader (slice 5). The three legs are unchanged. No migration.
+
+**Verification.** Pure unit tests (no DB, three stub ports): all-intact artifact → overall intact + parts addressable; claim broken + recipes intact → overall broken, recipe parts still intact (**non-collapse proof**); recipe-grounding intact + field-value broken → recipe rolls up broken (**un-masking proof**); claim intact + one recipe drifts → overall drifted; mixed multi-recipe → per-recipe addressable; artifact with no negative recipe → empty `recipe_verdicts` + overall = claim verdict.
+
+---
+
+## D-142 — S8 recorded-verdict store + read API: s8_grounding_validity (Phase 6 slice 4)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S8] (the thin mechanics — a per-tenant recorded-verdict store + read API). **MIGRATION** (alembic tenant `20260603_0030`, down_revision `20260603_0010`).
+**Status:** Active — Phase 6 (S8 evolution) slice 4, on `phase-14-substrate-8-evolution`.
+
+The composition (D-141) produces a `GroundingValidity` on demand; this slice persists it + makes it readable — the **thin mechanics** (the D-137 parity S6 just got), the recorded verdict SPEC §6 named as deferrable-but-bounded. **Persist + read only** — NO sync trigger / reverse index / orchestration (those stay fenced; the trigger is slice 5).
+
+**The store (mirrors `interpretation/result_store.py` + the `s6_interpretations` migration).**
+- Per-tenant table `s8_grounding_validity` (no `tenant_id` — isolation by schema, the substrate convention). Typed columns: `test_id` (UUID) + `version_seq` (int) — the **claim version** grounded; `evaluated_at_version_seq` (int) — the **S1 seq** the verdict was computed against (the contemporaneous-grounding axis, S8-Q-007, made queryable); `overall` (TEXT verdict) + `claim_verdict` (TEXT). PK `(test_id, version_seq)` — the artifact grain (the verdict is per-claim-version; the per-recipe verdicts live in `detail`). `detail` JSONB — the rich part (claim-grounding reason/unresolved + each recipe's leg verdicts/reasons/invalid + rolled_up). Index on `overall` (the "show me all drifted / broken" query).
+- `persist_grounding_validity(session, *, test_id, version_seq, evaluated_at_version_seq, validity)` — an **UPSERT** on `(test_id, version_seq)`: re-grounding the same claim version at a later `evaluated_at_version_seq` **refreshes** the row (the recompute path, slice 5) rather than colliding. add/update + flush, **no commit** (the caller owns the tx — the substrate convention).
+- `GroundingValidityRead` DTO + `read_grounding_validity(session, test_id, version_seq)` + `list_grounding_validity(session, *, test_id=None, overall=None, limit=200)` (bounded at 500; ordered by `(test_id, version_seq)` deterministic; optional scope by test or by overall-verdict).
+
+**`overall` / `claim_verdict` are TEXT** (not a PG enum) — the Python `GroundingVerdict` Literal is the source of truth; TEXT avoids an ALTER TYPE and stays queryable (the `s6_interpretations` precedent).
+
+**Honest caveat (the snapshot).** A recorded verdict is a **snapshot** as-of `evaluated_at_version_seq` — nothing refreshes it absent a recompute (the slice-5 trigger). The column makes the staleness queryable (a consumer can spot rows grounded against an older S1 seq). Consistent with the S6 store (a run's interpretation is also a snapshot) — named here so it isn't mistaken for a standing live index.
+
+**Boundary.** Persist + read only. No trigger / reverse index / orchestration (deferred — the heavy mechanics). The composition + legs are unchanged. The store is the only writer; the pure core stays DB-free (`import grounding_validity` pulls no DB).
+
+**Verification.** Governance-DB integration (the `test_representation` `session` fixture; `alembic upgrade tenant@head` applies `20260603_0030`): persist a hand-built `GroundingValidity` → `read_grounding_validity` round-trip (incl. `detail` rehydration + `evaluated_at_version_seq`); the UPSERT — persist twice on one `(test_id, version_seq)` with a later `evaluated_at_version_seq` → one row, refreshed; `list_grounding_validity` scope by test + by `overall` + the bound.
+
+---
+
+## D-143 — S8 S1-sync recompute trigger: the production tri-port reader + the grounding recompute + scheduler wiring (Phase 6 slice 5)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S8] (the production S1 read adapter + the recompute orchestrator + the scheduler tick — the live mechanics), reading S1 (`SemanticOrgModel`) + S2 (`SemanticTransactionCoordinator`) and writing the S8 store. **No migration** (freshness is derived from the store — no watermark table).
+**Status:** Active — Phase 6 (S8 evolution) slice 5, on `phase-14-substrate-8-evolution`. The last build slice — S8 fires as the org evolves.
+
+The composition (D-141) is pure; slice 4 persists a verdict on demand. This slice makes S8 **fire**: when a tenant's S1 advances, recompute grounding-validity over the tenant's current claims + refresh the store. Three pieces.
+
+**1. The production tri-port reader (`s1_reader.py`, mirrors `interpretation/s1_reader.py`).** `S8S1Reader(model: SemanticOrgModel, *, at_seq=None)` implements all three ports the composition needs, pinning `at_seq` once (default `current_version_seq()`):
+- `resolves(entity_type, external_id)` → `bool(get_entities(type, at_seq, {"sf_api_name": external_id}))` (the claim-grounding port).
+- `vrs_for_object(external_id)` → the exact S1ValidationRuleReader composition (Object → `get_related(["APPLIES_TO"], "inbound")` → ValidationRule → `get_entity_details` `is_active` + `attributes.formula_text`), returning S8-local `_GroundingVr(is_active, formula_text)` (no `VrMeta` import — parallel-siblings).
+- `active_values(object_external_id, field_api)` → resolve the Field by `sf_api_name` (compose `{object}.{field}` when undotted) → `get_entity_details` `picklist_value_set_entity_id` (None → not a picklist → return None) → `get_picklist_values` → frozenset of `value_api_name` where `is_active` (the field-value port).
+
+**2. The recompute (`recompute.py`).**
+- `load_current_artifacts(session)` — `SELECT test_id, version_seq FROM test_claims WHERE valid_to IS NULL` (no ready S2 API for "all current claims"); per claim, `coordinator.get_latest_claim` (the `asserted_truth` body) + `list_active_recipes` (the `observation_realization` bodies, **DataRecipeBody only** — the recipe legs are data-recipe-only) → `Artifact`. Returns `[ArtifactRef(test_id, version_seq, artifact)]`.
+- `recompute_grounding(session, artifact_refs, *, s1, at_seq, cap=100)` — the testable orchestration: per ref, **freshness** = a store row at `(test_id, version_seq)` with `evaluated_at_version_seq == at_seq`; fresh → skip; stale/absent → `grounding_validity(artifact, subjects=s1, vrs=s1, picklists=s1)` + `persist_grounding_validity(evaluated_at_version_seq=at_seq)`, up to `cap` groundings; returns `RecomputeResult(grounded, skipped_fresh, remaining)` (remaining = stale refs left past the cap — logged, never silently dropped).
+- `recompute_tenant_grounding(tenant_id, *, cap=100)` — the production wrapper: `get_tenant_connection` → `SemanticOrgModel(conn)` → `at_seq = current_version_seq()` (a tenant with no S1 versions raises `VersionNotFoundError` → 0, skipped) → `S8S1Reader(model, at_seq=at_seq)` + `Session(bind=conn)` → `load_current_artifacts` → `recompute_grounding`. The connection context owns the commit.
+- `run_s8_grounding_tick(tenant_ids, *, cap=100)` → `{tid: grounded}` with per-tenant try/except (mirrors `run_s3_reaper_tick`).
+
+**3. Scheduler wiring (`scheduler.py`).** `s8_grounding_tick(ctx)` folded into `scheduler_tick` (after `s4_reaper_tick`): enumerate tenants from `shared.tenants`, call `run_s8_grounding_tick`, log the total. Mirrors `s3_reaper_tick`.
+
+**No watermark table (refinement vs the plan).** The plan proposed a per-tenant `s8_grounding_watermark`. **Freshness is instead derived from the store** — a claim is fresh iff its verdict's `evaluated_at_version_seq` equals the current S1 seq. This needs **no new table/migration**, and is **cap-correct**: a partial recompute (cap hit) leaves stale claims un-fresh, so the next tick resumes them (a global watermark would wrongly mark "done"). When S1 advances, every claim's verdict is stale → re-grounded (recompute-all).
+
+**Deferred (the genuine remaining heavy mechanics).** The **change→impact reverse index** (narrow the recompute to claims actually hit by *this* S1 change — recompute-all is correct, just unoptimized); **re-grounding orchestration + supersession execution** (re-deriving payloads + authoring new identity-preserving versions — the large artifact-mutation body, gated on the autonomy boundary S8-Q-006); the per-artifact **job queue** (the freshness+inline approach is the simpler correct v1). All fenced.
+
+**Verification.** Governance-DB integration: **(a)** `S8S1Reader` against seeded S1 (an Object + an active VR with `formula_text` + `APPLIES_TO` + details; a picklist Field + value set + values) → `resolves` true/false, `vrs_for_object` returns the VR (is_active + formula), `active_values` returns the active set / None for a non-picklist (mirrors `test_s6_s1_reader`); **(b)** `recompute_grounding` over **injected** `ArtifactRef`s + a stub tri-port (no S1/S2 seed) → grounds + persists; a fresh row → skipped (no re-persist); a stale row (older seq) → re-grounded; `cap=1` over 2 stale → 1 grounded + 1 remaining; **(c)** `load_current_artifacts` decode — seed one claim + a data-recipe (via the coordinator) → returns the `ArtifactRef` with the decoded `Artifact`.
+
+---
+
+## D-144 — Phase 6 close: S8 evolution — predicate legs + the in-substrate mechanics
+
+**Date:** 2026-06-03
+**Substrates affected:** [S8] (evolution). **One migration** (alembic tenant `20260603_0030`).
+**Status:** Active — Phase 6 (S8 evolution) close, merging `phase-14-substrate-8-evolution` → `main`.
+
+Phase 6 completes the grounding-validity predicate over the **realized** S1/S2/S3 surface, persists its verdicts, and wires it to **fire** as the org evolves — across five slices:
+
+- **D-139 (claim-grounding leg).** Does the subject still resolve? Re-resolve every `IdentityBearingRef` by `sf_api_name` (external_id, rename-faithful) through S8's own `SubjectResolver` port. Pure.
+- **D-140 (field-value-validity leg).** Do the payload values still exist? Closes recipe-grounding's removed-picklist-value false-`intact` via the `PicklistReader` port. Pure.
+- **D-141 (two-level composition).** `grounding_validity` composes the three legs claim-level + per-recipe, composed never collapsed (`broken` > `drifted` > `intact`; field-value `broken` un-masks a recipe-grounding `intact`). Pure.
+- **D-142 (recorded-verdict store).** Per-tenant `s8_grounding_validity` (migration `20260603_0030`) + UPSERT persist + read/list. The thin mechanics.
+- **D-143 (S1-sync recompute trigger).** `S8S1Reader` tri-port + `recompute_grounding` (freshness off the store — no watermark table, cap-correct) + scheduler `s8_grounding_tick`. S8 fires on S1 advance (recompute-all).
+
+**Doc currency.** `SPEC.md` — §2 leg table (3 legs realized, admissibility deferred) + the composition / store / trigger marked realized + Status realized-through-Phase-6; §6 fence annotated (trigger + recorded-verdict landed thin). `EVOLUTION.md` — the Phase-6 build-arc entry. `DEFERRED_ITEMS.md` — §1 (trigger / verdict thin; reverse-index + queue still fenced) + §3 (legs landed; admissibility S3-blocked; VR-pin / multi-select still deferred). `OPEN_QUESTIONS.md` — S8-Q-007 (the snapshot axis `evaluated_at_version_seq`). `GLOSSARY.md` — +5 terms.
+
+**Deferred (tracked).** The admissibility leg (S3-blocked — the synthesis→intent contract, S8-Q-004); the change→impact reverse index (recompute-all is correct, just unoptimized); re-grounding orchestration + supersession execution (the artifact-mutation body, autonomy-gated, S8-Q-006); the generation-side VR-pin (an S3-emission change); the held NonEvaluable-symmetry pass; the multi-select picklist value split.
+
+**Merge gate.** The S8 suites — `test_recipe_grounding` + `test_claim_grounding` + `test_field_value_grounding` + `test_grounding_validity` (37 unit) + `test_s8_s1_reader` (6) + `test_s8_grounding_store` (6) + `test_s8_recompute` (5) — green; app + scheduler import OK. **One migration** (alembic tenant `20260603_0030`); the substrate stays off the v1 request path (the only runtime delta is a best-effort scheduler tick), so the v1 deploy is inert. Merge `phase-14-substrate-8-evolution` → `main` via PR on green.
+
+---
+
 ---

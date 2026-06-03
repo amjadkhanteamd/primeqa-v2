@@ -12,6 +12,14 @@ Terms specific to substrate-8.
 
 **Recipe-grounding leg.** The first built leg (D-113): does a behavioral-negative recipe's stored payload still violate the current VR formula? **Object-level** (the recipe pins no VR): **intact** = ≥1 active VR's current formula evaluates `True`; **drifted** = none triggered but ≥1 active evaluable VR exists; **broken** (`no_active_vr` / `formula_non_evaluable`).
 
+**Claim-grounding leg.** The second built leg (D-139): does the claim's subject still resolve in the current org? Re-resolves **every** `IdentityBearingRef` in `asserted_truth` by `sf_api_name` through the `SubjectResolver` port. Two-valued (`intact` / `broken` = `subject_not_resolved`). **By external_id, not entity_id** — a rename changes the api-name execution addresses, which by-entity_id would mask.
+
+**Field-value-validity leg.** The third built leg (D-140): do the payload's field values still *exist*? Closes recipe-grounding's removed-picklist-value false-`intact` (the formula string-compares `True` on a now-invalid value) via the `PicklistReader.active_values` port. `broken` = `picklist_value_removed`. Behavioral-negative-only v1.
+
+**Two-level composition.** `grounding_validity(artifact, *, subjects, vrs, picklists)` (D-141) — composes the three legs **claim-level (one)** + **recipe-level (per-recipe)**, *composed never collapsed* (Fork C). Precedence `broken > drifted > intact`: a field-value `broken` un-masks a recipe-grounding `intact`; a claim-level `broken` dominates `overall`.
+
+**Recorded-verdict store / S1-sync recompute trigger (the thin mechanics).** The per-tenant `s8_grounding_validity` store persists a verdict + `evaluated_at_version_seq` (D-142); a scheduler tick (`s8_grounding_tick`) re-grounds a tenant's current claims when S1 advances — freshness-gated off the store (no watermark table), bounded by a per-tick cap, **recompute-all** (the change→impact reverse index is deferred) (D-143).
+
 **`formula.evaluate` primitive.** The neutral Kleene-three-valued evaluator (`primeqa/semantic/formula/eval.py`) — `evaluate(formula_ast, payload) → True | False | NonEvaluable`. The evaluation counterpart of S3's `derive` (`derive` *solves* formula → a violating assignment; `evaluate` *computes* formula + payload → fires?). Consumed by S8 (pre-run) + S6 (post-run) — the parallel-siblings.
 
 **Dependency law (parallel-siblings).** `S8 → {S1 resolution, S3 derive, S3 admissibility}`, **parallel to S6, never S6 → S8**. The decisive reason is epistemic: S6 judges post-run with the actual run evidence; S8 judges pre-run by derivation; the stronger-evidence faculty must not route through the weaker.
