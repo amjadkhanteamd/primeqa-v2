@@ -20,10 +20,10 @@ from datetime import datetime, timezone
 from primeqa.app import app
 from primeqa.db import SessionLocal
 from primeqa.execution.models import PipelineRun
-from primeqa.intelligence.knowledge.provider import (
+from primeqa.knowledge.provider import (
     KnowledgeAssembler, QueryContext, Rule,
 )
-from primeqa.intelligence.knowledge.system_rules import (
+from primeqa.knowledge.system_rules import (
     SystemPromptRulesProvider,
 )
 from primeqa.intelligence.linter import (

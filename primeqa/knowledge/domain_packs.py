@@ -43,7 +43,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from primeqa.intelligence.knowledge._text import matched_keywords
+from primeqa.knowledge._text import matched_keywords
 
 log = logging.getLogger(__name__)
 

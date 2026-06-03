@@ -25,7 +25,7 @@ import os
 from functools import lru_cache
 from typing import List
 
-from primeqa.intelligence.knowledge.provider import (
+from primeqa.knowledge.provider import (
     QueryContext, Rule, KnowledgeProvider,
 )
 
@@ -34,9 +34,11 @@ log = logging.getLogger(__name__)
 
 def _default_rules_path() -> str:
     """Default path: <repo_root>/salesforce_knowledge/system_rules.json."""
-    # primeqa/intelligence/knowledge/system_rules.py -> repo root
+    # primeqa/knowledge/system_rules.py -> repo root: two levels up
+    # (knowledge -> primeqa -> repo_root). D-148: was three under the old
+    # primeqa/intelligence/knowledge/ home; the relocation up one level drops one.
     here = os.path.dirname(os.path.abspath(__file__))
-    root = os.path.abspath(os.path.join(here, "..", "..", ".."))
+    root = os.path.abspath(os.path.join(here, "..", ".."))
     return os.path.join(root, "salesforce_knowledge", "system_rules.json")
 
 

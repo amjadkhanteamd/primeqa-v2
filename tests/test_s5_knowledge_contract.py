@@ -15,8 +15,8 @@ from dataclasses import fields, is_dataclass
 
 import pytest
 
-import primeqa.intelligence.knowledge as s5
-from primeqa.intelligence.knowledge import (
+import primeqa.knowledge as s5
+from primeqa.knowledge import (
     DomainPack,
     DomainPackLibrary,
     DomainPackProvider,

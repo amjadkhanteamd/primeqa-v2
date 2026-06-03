@@ -4,7 +4,7 @@ Exists so callers (currently just `primeqa.intelligence.generation`) can
 resolve matching packs with one call. No Flask / app-layer imports —
 pure library code, safe to instantiate from any context.
 
-See `primeqa.intelligence.knowledge.domain_packs` for the core data
+See `primeqa.knowledge.domain_packs` for the core data
 model and selection semantics.
 """
 
@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional, Tuple
 
-from primeqa.intelligence.knowledge.domain_packs import (
+from primeqa.knowledge.domain_packs import (
     DomainPack,
     DomainPackLibrary,
     DomainPackSelector,

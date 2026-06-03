@@ -54,7 +54,7 @@ def _resolve_domain_packs(requirement):
     wires object extraction on the requirements pipeline.
     """
     try:
-        from primeqa.intelligence.knowledge.domain_pack_provider import (
+        from primeqa.knowledge.domain_pack_provider import (
             DomainPackProvider,
         )
     except Exception as exc:  # pragma: no cover — defensive

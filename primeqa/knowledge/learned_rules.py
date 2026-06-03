@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import List
 
-from primeqa.intelligence.knowledge.provider import (
+from primeqa.knowledge.provider import (
     QueryContext, Rule, KnowledgeProvider,
 )
 

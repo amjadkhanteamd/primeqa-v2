@@ -15,7 +15,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from primeqa.intelligence.knowledge import (
+from primeqa.knowledge import (
     Rule, QueryContext, KnowledgeAssembler,
     SystemPromptRulesProvider, LearnedRulesProvider,
 )
