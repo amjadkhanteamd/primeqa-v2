@@ -7863,4 +7863,23 @@ S6 persists every run's interpretation (`persist_interpretation`, wired into bot
 
 ---
 
+## D-138 — Phase 5 close: S6 full-surface verdicts + the in-substrate consumer
+
+**Date:** 2026-06-03
+**Substrates affected:** [S6] (interpretation). **No migration** (`verdict` is TEXT; the `phrasing` column + the `llm_enable_interpretation_phrasing` flag pre-exist).
+**Status:** Active — Phase 5 (S6 interpretation) close, merging `phase-13-substrate-6-interpretation` → `main`.
+
+Phase 5 brings S6 current with the **realized S4 execution surface** (Phase-3 closed) and makes the write-only store **readable**, across two slices:
+
+- **D-136 — full-surface verdicts.** Fixed the positive value-claim mis-interpretation (`interpret_run` routes **create + assert → `_interpret_positive`**: `value_persisted` / `value_not_persisted` / `not_evaluated`; **create alone → `_interpret_behavioral`**, the prohibition negative, unchanged) + property value precision (`_interpret_inspection` dispatches on `AssertEvidence.predicate`: `equals`/`is_null` → `asserted_value_matches` / `asserted_value_differs`; `exists` → present/absent, unchanged). `Verdict` taxonomy +4; attribution stays evidence-derived. The only behavioral change: a positive value-claim's persisted verdict moves from a wrong value to a right one.
+- **D-137 — the in-substrate consumer.** A pure read API (`InterpretationRead` DTO + `read_interpretation` / `list_interpretations` + the row→model/DTO hydrators) re-exported from `interpretation/__init__` alongside the clustering reads as one coherent S6 consumer surface; and the phrasing live-fire (`read_and_phrase` fires `get_or_phrase` on a real read path). Resolved the realized seam — the per-tenant flag `llm_enable_interpretation_phrasing` lives on the **v1 public-schema `tenant_agent_settings`** (unreachable from the substrate session), so `read_and_phrase` takes a resolved `phrasing_enabled` boolean (flag-as-param) and v1's `interpretation_phrasing_enabled` (targeted single-column SELECT, fails closed) supplies it. S6 is no longer write-only.
+
+**Doc currency.** `SPEC.md` — §3 verdict taxonomy grown (+4) + Status "realized through Phase 5". `EVOLUTION.md` — the Phase-5 build-arc entry (D-136 / D-137). `DEFERRED_ITEMS.md` — §2 (read API + phrasing live-fire LANDED; the UI/dashboard consumer + release-grain defer) + §3 (positive value-claim + property value verdicts LANDED; the dormant verticals + positive/property cause attribution defer). `OPEN_QUESTIONS.md` — S6-Q-006 live-fire note.
+
+**Deferred (tracked).** The user-facing UI/dashboard over substrate runs + a standing production consumer wired into a tick (Phase-7 cutover — substrate runs ≠ v1 pipeline-runs); folding S6 verdicts into v1's GO/NO-GO; cause attribution for positive/property failures (the *why* — value drift / org change); the dormant verticals' verdicts (ui/event/callout — no executor emits their evidence); the reviewer edit/version lifecycle (S6-Q-005).
+
+**Merge gate.** A green run of the S6 suites — `test_s6_full_surface` (10) + `test_s6_consumer` (14) + the existing `test_s6_interpret_persist` / `test_s6_clustering` / `test_s6_phrasing` / `test_s6_s1_reader` + the interpreter unit suites (30) — plus the v1 `test_interpretation_phrasing` (7) / `test_s5_knowledge_contract` (12) regression + the v1 app import. **No migration**; the only v1-runtime delta is additive read paths + a currently-uncalled live-fire helper (inert deploy). Merge `phase-13-substrate-6-interpretation` → `main` via PR on green.
+
+---
+
 ---
