@@ -8054,4 +8054,28 @@ So the cutover is a multi-month, multi-part program with a hard prerequisite (S1
 
 ---
 
+## D-146 — The greenfield cutover sequencing law: gated steps, the `meta_*` drop strictly last
+
+**Date:** 2026-06-03
+**Substrates affected:** [cutover]. **Docs only.**
+**Status:** Active — Phase 7 (greenfield cutover) slice 2, on `phase-15-greenfield-cutover`.
+
+The SPEC (D-145) fixed the cutover's target state (the disposition map + the greenfield re-sync strategy). This entry fixes the **sequencing law**: the cutover runs as **ordered, gated steps** — each with an entry-gate (what must hold), an exit-gate (what proves it done), and a rollback — with **one irreversible step, the `meta_*` drop, strictly last**.
+
+**The ordering principle — reversible-before-irreversible, additive-before-substitutive:**
+0. **S1-sync prod trigger** — fire `primeqa/sync/` against live Salesforce per tenant; populate `entities`/`edges` on a cadence. The hard prerequisite; additive (v1 still reads `meta_*`). Rollback: trivial.
+1. **Relocations (zero-risk)** — `primeqa/intelligence/knowledge/` → `primeqa/knowledge/` (+ `feedback_rules`); a pure move + import updates. Independent of step 0. Rollback: revert.
+2. **Additive substrate consumers** — surface S6 interpretations / S8 grounding verdicts / S3+S4 outputs in **additive** UI (no v1 removal). Rollback: hide.
+3. **v1 read-path switch (flagged)** — generation context / validator CRUDQ / preflight read S1, behind per-tenant flags, `meta_*` still populated. Rollback: flip the flag.
+4. **Parallel-run validation** — both stacks; S1-sourced == `meta_*`-sourced over a window; fold S6 verdicts into GO/NO-GO; retire the S3 ledger into S2 provenance (D-074). Rollback: extend / revert.
+5. **The `meta_*` drop (LAST, irreversible)** — drop `public.meta_*` + the DROP tables (D-065) in one migration; remove the v1 metadata module + the flags. **Entry-gate: a clean parallel-run window + S1 verified as the production data source (D-012). Rollback: none past here — the gate IS the safety.**
+
+**The consolidated work-list.** Every "deferred to the cutover" item across the substrate docs is folded into the step it belongs to (the SEQUENCE carries the full mapping): the S1-sync trigger → step 0; the S5 relocation + `feedback_rules` move → step 1; the S6 UI consumer + clustering dashboard + the S8 verdict surface + the S5→S3 forward-seam (the "v1-vs-substrate generation direction settles at the cutover") → step 2; the v1 read-path switch → step 3; the GO/NO-GO folding + the S3-ledger retirement → step 4; the `meta_*` re-sync completion + drop → step 5. So the ~dozen scattered deferrals (S5 D-134; S6 D-137 / D-111; S3 D-074) become one tracked checklist.
+
+**Invariant.** No step that removes a v1 read-path or drops a table runs before its substrate replacement is proven *additive → flagged → parity-validated*. The `meta_*` drop is the only irreversible step and is gated on the full parallel-run window. **Docs only** — this is the order the execution phases follow; nothing is built here.
+
+**Verification.** Internal consistency: every substrate `DEFERRED_ITEMS.md` "Phase-7 / cutover" item has a home in `SEQUENCE.md`; the step order is reversible-before-irreversible with `meta_*` drop strictly last + gated. Append-only.
+
+---
+
 ---
