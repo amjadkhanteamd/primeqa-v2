@@ -25,8 +25,12 @@ silent empty query.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
-from primeqa.execution_engine.errors import UnsupportedEdgeError
+from primeqa.execution_engine.errors import (
+    UnsupportedEdgeError,
+    UnsupportedPropertyError,
+)
 from primeqa.execution_engine.plan import PlannedRead
 
 
@@ -40,9 +44,12 @@ class ToolingQuery:
     soql: str
     sobject: str                # the Tooling object queried (e.g. "ValidationRule")
     edge: str                   # the S1 surface realized: an edge ("APPLIES_TO")
-                                # or a self-read capture ("sf_api_name")
+                                # or a self-read capture ("sf_api_name", "length")
     subject_entity_type: str    # the LogicalRef's entity_type (e.g. "Object")
     subject_external_id: str    # the LogicalRef's external_id (e.g. "Lead")
+    capture_column: Optional[str] = None  # the SELECTed column whose value a
+                                # value-predicate (equals/is_null) reads; None for
+                                # existence/edge reads (exists ignores it). D-128.
 
 
 def _applies_to_validation_rule(read: PlannedRead) -> ToolingQuery:
@@ -73,8 +80,19 @@ _EDGE_TRANSLATORS = {
 }
 
 # The capture that denotes an existence-claim self-read: the subject's own
-# canonical api name. (A2 adds property-name captures via the same builders.)
+# canonical api name.
 _EXISTENCE_CAPTURE = "sf_api_name"
+
+# property-claim self-read (D-128): the finite, **cleanly equals-mappable** Field
+# properties — the S1 detail-column → Tooling `FieldDefinition` column whose value
+# has the SAME semantics. is_required (page-layout-derived, no FieldDefinition
+# column) and field_type (describe vocabulary vs DataType display string) are
+# intentionally ABSENT → `UnsupportedPropertyError` (never a guessed column).
+_FIELD_PROPERTY_COLUMNS = {
+    "length": "Length",
+    "precision": "Precision",
+    "scale": "Scale",
+}
 
 
 def _self_read_object(read: PlannedRead, capture: str) -> ToolingQuery:
@@ -105,12 +123,15 @@ def _self_read_field(read: PlannedRead, capture: str) -> ToolingQuery:
     The Field external_id is the qualified ``Object.Field``; the query scopes by
     the parent object + the field's own api name. Reuses v1 sync's proven probe
     (`metadata/service.py`: ``FROM FieldDefinition WHERE
-    EntityDefinition.QualifiedApiName = …``)."""
-    if capture != _EXISTENCE_CAPTURE:
-        raise UnsupportedEdgeError(
-            f"Field self-read supports capture {_EXISTENCE_CAPTURE!r} "
-            f"(existence); got {capture!r} (property captures arrive in A2)"
-        )
+    EntityDefinition.QualifiedApiName = …``).
+
+    Two captures:
+      - ``sf_api_name`` → existence (SELECT the api name; assert ``exists``; no
+        value column to read);
+      - a **mapped property** (length/precision/scale) → SELECT the Tooling
+        column for an ``equals``/``is_null`` assertion, recorded as
+        ``capture_column``. An unmapped property raises
+        :class:`UnsupportedPropertyError` (D-128 — never a guessed column)."""
     ext = read.target_entity.external_id
     obj, sep, field = ext.partition(".")
     if not sep or not obj or not field:
@@ -118,15 +139,26 @@ def _self_read_field(read: PlannedRead, capture: str) -> ToolingQuery:
             f"Field self-read needs a qualified 'Object.Field' external_id; "
             f"got {ext!r}"
         )
-    soql = (
-        "SELECT QualifiedApiName FROM FieldDefinition "
+    where = (
         f"WHERE EntityDefinition.QualifiedApiName = '{_soql_literal(obj)}' "
         f"AND QualifiedApiName = '{_soql_literal(field)}'"
     )
+    if capture == _EXISTENCE_CAPTURE:
+        column, capture_column = "QualifiedApiName", None
+    else:
+        column = _FIELD_PROPERTY_COLUMNS.get(capture)
+        if column is None:
+            raise UnsupportedPropertyError(
+                f"no faithful FieldDefinition column for property {capture!r} on "
+                f"{ext!r} (mapped: {sorted(_FIELD_PROPERTY_COLUMNS)}; "
+                f"is_required / field_type have no faithful Tooling column — deferred)"
+            )
+        capture_column = column
     return ToolingQuery(
-        soql=soql, sobject="FieldDefinition", edge=capture,
+        soql=f"SELECT {column} FROM FieldDefinition {where}",
+        sobject="FieldDefinition", edge=capture,
         subject_entity_type=read.target_entity.entity_type,
-        subject_external_id=ext,
+        subject_external_id=ext, capture_column=capture_column,
     )
 
 

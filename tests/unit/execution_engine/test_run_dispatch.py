@@ -164,6 +164,27 @@ def test_existence_recipe_routes_through_self_read_metadata_path():
     assert result.evidence.steps[0].edge == "sf_api_name"
 
 
+def test_property_recipe_routes_and_grounds_equals():
+    # D-128: a property (length) recipe routes to the metadata path, issues the
+    # FieldDefinition self-read, and grounds equals over the captured column.
+    from primeqa.generation.emission import GroundedProperty
+    bundle = author_emission(GroundedProperty(
+        archetype="configuration", claim_kind="property-claim", version_seq=7,
+        subject=_Endpoint(entity_id=uuid4(), entity_type="Field", external_id="Account.Description"),
+        property_name="length", expected_value=255, requirement_excerpt="x"))
+    coord = _SpyCoordinator(_wrap(
+        bundle.causal_initiation, bundle.observation_realization, bundle.execution_environment,
+        trigger_kind="inspection-trigger", recipe_kind="metadata-recipe"))
+    client = _StubClient(rows=[{"Length": 255}])
+    result = run_recipe_execution(
+        _FakeSession(), uuid4(), environment_id=7, client=client, coordinator=coord)
+
+    assert result.ran is True
+    assert result.evidence.outcome == "passed"
+    assert "SELECT Length FROM FieldDefinition" in client.queries[0]
+    assert result.evidence.steps[1].predicate == "equals"
+
+
 def test_data_recipe_routes_to_negative_path():
     rid = uuid4()
     coord = _SpyCoordinator(

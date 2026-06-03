@@ -210,6 +210,78 @@ def test_existence_field_fails_when_absent():
 
 
 # ---------------------------------------------------------------------------
+# property execution (D-128) — equals / is_null over a captured column value
+# ---------------------------------------------------------------------------
+
+def _property_plan(property_name, expected_value, external_id="Account.Description"):
+    """A real metadata-inspection plan from an emitted property recipe — a
+    self-read capturing a mapped Field property + an equals/is_null assert."""
+    from primeqa.generation.emission import GroundedProperty
+    bundle = author_emission(GroundedProperty(
+        archetype="configuration", claim_kind="property-claim", version_seq=7,
+        subject=_Endpoint(entity_id=uuid4(), entity_type="Field", external_id=external_id),
+        property_name=property_name, expected_value=expected_value,
+        requirement_excerpt=f"{external_id}.{property_name} == {expected_value!r}"))
+    recipe = RecipeRead(
+        recipe_id=uuid4(), version_seq=1, valid_from=_NOW, valid_to=None,
+        claim_test_id=uuid4(), claim_version_seq=None,
+        trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
+        causal_initiation=bundle.causal_initiation,
+        observation_realization=bundle.observation_realization,
+        execution_environment=bundle.execution_environment,
+        priority=0, status="generated_unapproved", created_at=_NOW, updated_at=_NOW)
+    return build_metadata_inspection_plan(recipe)
+
+
+def test_property_equals_passes_when_value_matches():
+    # length == 255 and the org's FieldDefinition.Length is 255 → passed.
+    client = _StubClient(rows=[{"Length": 255}])
+    ev = execute_metadata_inspection(_property_plan("length", 255), client=client,
+                                     environment_id=_ENV_ID)
+    assert ev.outcome == "passed"
+    assert "SELECT Length FROM FieldDefinition" in client.queries[0]
+    read, assertion = ev.steps
+    assert assertion.predicate == "equals" and assertion.held is True
+
+
+def test_property_equals_fails_when_value_differs():
+    ev = execute_metadata_inspection(_property_plan("length", 255),
+                                     client=_StubClient(rows=[{"Length": 100}]),
+                                     environment_id=_ENV_ID)
+    assert ev.outcome == "failed"
+    assert ev.steps[1].held is False
+    assert ev.error is None
+
+
+def test_property_equals_coerces_string_vs_int_representation():
+    # Tooling JSON may render a number as a string; the coercion fallback matches
+    # "255" against 255 without masking a real mismatch.
+    ev = execute_metadata_inspection(_property_plan("length", 255),
+                                     client=_StubClient(rows=[{"Length": "255"}]),
+                                     environment_id=_ENV_ID)
+    assert ev.outcome == "passed"
+
+
+def test_property_is_null_holds_when_value_absent():
+    # is_null grounds when the captured column is absent/None. (scale is None on a
+    # non-decimal field.) A present value would fail the is_null assertion.
+    ev = execute_metadata_inspection(_property_plan("scale", None),
+                                     client=_StubClient(rows=[{"Scale": None}]),
+                                     environment_id=_ENV_ID)
+    assert ev.outcome == "passed"
+    assert ev.steps[1].predicate == "is_null" and ev.steps[1].held is True
+
+
+def test_property_unmapped_is_required_fails_loud():
+    # is_required has no faithful Tooling column → UnsupportedPropertyError,
+    # surfaced before any client call (never a guessed column / wrong pass).
+    from primeqa.execution_engine.errors import UnsupportedPropertyError
+    with pytest.raises(UnsupportedPropertyError, match="is_required"):
+        execute_metadata_inspection(_property_plan("is_required", True),
+                                    client=_StubClient(rows=[{}]), environment_id=_ENV_ID)
+
+
+# ---------------------------------------------------------------------------
 # Fail-loud paths (representation / plan defects — not run outcomes)
 # ---------------------------------------------------------------------------
 
@@ -226,9 +298,20 @@ def _plan_with_assertion(predicate: AssertionPredicate):
 
 
 def test_unsupported_predicate_fails_loud():
+    # `equals`/`is_null` are supported (D-128); `matches_pattern` is not yet.
+    plan = _plan_with_assertion(
+        AssertionPredicate(subject_ref="read-subject", predicate="matches_pattern", value="x.*"))
+    with pytest.raises(UnsupportedPredicateError, match="matches_pattern"):
+        execute_metadata_inspection(plan, client=_StubClient(rows=[{"Id": "1"}]),
+                                    environment_id=_ENV_ID)
+
+
+def test_value_predicate_over_presence_only_read_fails_loud():
+    # `equals` over an edge/existence read that captured no value column is a
+    # recipe defect (a value asserted over a presence-only read) → fail-loud.
     plan = _plan_with_assertion(
         AssertionPredicate(subject_ref="read-subject", predicate="equals", value="x"))
-    with pytest.raises(UnsupportedPredicateError, match="equals"):
+    with pytest.raises(AssertionResolutionError, match="value column"):
         execute_metadata_inspection(plan, client=_StubClient(rows=[{"Id": "1"}]),
                                     environment_id=_ENV_ID)
 
