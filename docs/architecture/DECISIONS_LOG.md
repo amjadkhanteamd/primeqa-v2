@@ -7680,3 +7680,27 @@ This is the same honest-refusal posture as the D-125 `field_details` scope cut: 
 **Verification.** Deterministic stub-client unit tests: `test_translator.py` (length/precision/scale → correct `FieldDefinition` SOQL + `capture_column`; `is_required`/`field_type`/unmapped → `UnsupportedPropertyError`), `test_executor.py` (equals holds/fails; is_null holds/fails; the int-vs-string coercion; fail-loud when a value predicate has no captured column), `test_run_dispatch.py` (a real `author_emission(GroundedProperty(...))` length recipe routes + grounds). Live-sandbox proof deferred.
 
 ---
+
+## D-129 — S4 async orchestration wrapper: brief transactions around the live read (Phase 3 slice B0)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S4] (execution — the run path). Pure-S4; no S2/S3 change, no migration. The first PART-B (async trigger) slice.
+
+The sync run path (`run_recipe_execution` / `_for_tenant`) holds **one DB transaction across the live Salesforce read** (Boundary A, D-108.4) — correct for a one-off sync call, but the production trigger (a worker tick over many tenants) must not pin a pooled connection across ~1–2 s of network I/O. S4's DEFERRED_ITEMS §1 names the requirement: the async path **brackets the live read with brief transactions**, orchestrating select / persist directly rather than under one umbrella. B0 builds exactly that — the foundation the B1/B2 queue+consumer drive.
+
+**Shape — an additive wrapper, sync path untouched (Fork B-O.1).** `run_recipe_execution_async(tenant_id, test_id, *, environment_id, client, …)` reuses the **same component functions** as the sync path (`select_recipe_for_execution`, `_execute_for_kind`, `finalize_run`, `_interpret_and_persist`) across **three brackets**:
+- **TX1 — select (brief, read-only).** Open a tenant session → `select_recipe_for_execution` → the `RecipeRead` is plain detachable data (the Coordinator fully hydrates it) → close. The connection is released before any live I/O.
+- **Execute — NO DB connection held.** `_execute_for_kind` for the metadata path needs only the injected `client` (the bridge + executor are DB-free; the consumer resolves the client up front). The live read runs with zero open connections — the load-bearing invariant.
+- **TX2 — persist + posture + interpret (brief).** Open a fresh tenant session → `finalize_run` (the `s4_execution_runs` row + the S2 posture callback) + `_interpret_and_persist` (S6, best-effort, its own SAVEPOINT) → commit.
+
+The live-proven sync `run_recipe_execution` is **not touched** (its ~138 tests stay green); the async path is purely additive, exactly the "orchestrate the components directly" the docs call for.
+
+**Scope — metadata-path only; data-recipe async deferred (honest).** The metadata verticals (existence / property / metadata-relationship / the caveated negative) are DB-free during execute, so B0 brackets them cleanly **today**. The positive **data** vertical reads S1 mid-execute (`SemanticOrgModel(session.connection())` for k16 padding, `run.py`) — it genuinely needs a connection *inside* the execute step, so its brief-tx bracketing is its own piece of work. B0's async wrapper **raises a clear deferral** for a non-metadata recipe rather than silently holding a connection (the consumer surfaces it as a failed job). This is the same dormancy-honesty as the deferred recipe kinds — build the clean path, refuse the unbuilt one loudly.
+
+**Testability seam.** The two DB brackets go through an injectable `session_scope(tenant_id)` context manager (default: `get_tenant_connection` + a bound `Session`, committing on clean exit — the `_for_tenant` idiom). A deterministic test injects a fake scope yielding a `_FakeSession` + an asserting client that checks **no scope is open when `client.query` fires** — proving the invariant with no real PG.
+
+**Boundary.** No change to the executor / bridge / finalize / result-store / S6 stages — B0 only re-orchestrates their transaction boundaries. No S2/S3/S1 change; no migration. The sync path and `RunPathResult` shape are unchanged.
+
+**Verification.** `tests/unit/execution_engine/test_async_run.py` (deterministic, no PG): the **no-connection-during-live-read** invariant; select + persist happen in two *distinct* scopes; a metadata recipe grounds end-to-end (passed); a data recipe raises the deferral; the no-eligible-recipe branch returns `ran=False`. Live-sandbox proof deferred — B0 is a transaction-boundary refactor of already-live-proven stages.
+
+---
