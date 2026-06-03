@@ -8078,4 +8078,23 @@ The SPEC (D-145) fixed the cutover's target state (the disposition map + the gre
 
 ---
 
+## D-147 — Phase 7 close: the greenfield cutover, designed + sequenced (docs-led)
+
+**Date:** 2026-06-03
+**Substrates affected:** [cutover]. **Docs only — no code, no migration, no v1 behavior change.**
+**Status:** Active — Phase 7 (greenfield cutover) close, merging `phase-15-greenfield-cutover` → `main`.
+
+Phase 7 opened the greenfield cutover **docs-led** and authored its missing design — turning a loosely-defined, multi-month, production-touching program into an executable gated sequence, without touching production. Two slices:
+
+- **D-145 (open + SPEC).** The premise-break recorded (not executable as one phase: `meta_*` is the live store; no S1-sync prod trigger; no `meta_*`→S1 migration; no substrate UI consumers) + the docs-led fork chosen. `greenfield_cutover/SPEC.md` — the v1→substrate disposition map (D-cited), the greenfield re-sync migration strategy (not backfill, D-012), the realized per-tenant schema topology (D-015 built; D-023 superseded), the non-goals.
+- **D-146 (SEQUENCE).** The sequencing law — ordered, gated steps (reversible-before-irreversible) with the `meta_*` drop strictly last + gated. `greenfield_cutover/SEQUENCE.md` (the gated checklist + the coverage table folding every cutover deferral into its step) + `EVOLUTION.md` + reciprocal SEQUENCE pointers in the S5/S6 `DEFERRED_ITEMS.md`.
+
+**The outcome.** The cutover is now a single tracked, gated program — 6 steps (S1-sync prod trigger → relocations → additive consumers → flagged read-switch → parallel-run validation → `meta_*` drop), each with entry/exit gates + rollback, every scattered deferral (S5/S6/S3) given a home. Execution is later phases, one gated step each.
+
+**Deferred (the cutover *execution* — gated by this design).** Building each step: the S1-sync prod trigger; the S5 relocation; the substrate UI consumers + GO/NO-GO folding; the v1 read-path switch; the parallel run; the `meta_*` drop. The MIGRATE tables stay out of the cutover (post-cutover future substrates, D-065).
+
+**Merge gate.** Docs only — no code, no migration, no v1 behavior change. Internal consistency verified: every disposition-map row + SEQUENCE step cites a real D-entry; every substrate Phase-7 deferral has a SEQUENCE home (reciprocal pointers); the `meta_*` drop is strictly last + gated; DECISIONS_LOG + EVOLUTION append-only; `primeqa.app` imports (inert deploy). Merge `phase-15-greenfield-cutover` → `main` via PR.
+
+---
+
 ---
