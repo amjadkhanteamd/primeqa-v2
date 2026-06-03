@@ -7722,3 +7722,23 @@ The async run path (B0) executes when called; B1 gives it a **queue** — the du
 **Verification + the DB-gated honesty.** The store's behavior is **Postgres semantics** (FOR UPDATE SKIP LOCKED, the partial-unique ON CONFLICT, the race-safe terminal guard) — it can only be faithfully tested against a real per-tenant schema, exactly like the S3 jobs tests (the project norm: "integration tests against the real Railway database"). So B1 ships: (a) a **DB-gated integration test** (`tests/integration/execution_engine/test_jobs.py`) — idempotency (active dedup + re-run-after-terminal), SKIP-LOCKED claim, attempt minting, race-safe terminal guard, reap — runnable where `DATABASE_URL` is set; and (b) **no-PG local checks** — the migration imports + `upgrade`/`downgrade` are well-formed, the store imports, and the `_job` row→dataclass mapping unit-tests. The behavioral green runs in the governance-DB environment (a phase-close gating item, like the Phase-0 sandbox probe #82); my sandboxed shell has no `DATABASE_URL`, so I verify (b) locally and author (a) to the project's integration-test standard.
 
 ---
+
+## D-131 — S4 execution consumer + reaper ticks (Phase 3 slice B1's driver, slice B2)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S4] (execution — the worker loop). Pure-S4; no migration.
+**Status:** Active — Phase 3 (S4 execution) slice B2, on `phase-11-substrate-4-execution`. The loop that drains the B1 queue through the B0 async run.
+
+The worker layer driving `run_recipe_execution_async` (B0) off the `s4_execution_jobs` queue (B1) — a near-mechanical mirror of S3's `consumer.py` (D-106.4 slice 3): per-tenant, one job per tenant per tick, per-tenant isolation (one tenant's failure never starves the others).
+
+**Flow.** `process_execution_job_for_tenant(tenant_id, *, client_resolver, run_fn=run_recipe_execution_async)`: claim (SKIP LOCKED) → `heartbeat` → `start_attempt` → resolve the Tooling client worker-side → `run_recipe_execution_async(tenant_id, test_id, environment_id, client)` → `complete`. Any raise aborts the job to `failed` with a thin classified `error_code` (`credential_error` / `sf_error` / `execution_error`) + finalizes the attempt. The claim is **not** wrapped — an infrastructure failure (missing tenant schema) propagates to the per-tenant boundary in the tick. `run_s4_execution_tick` + `run_s4_reaper_tick` mirror the S3 ticks (`{tenant_id: outcome}` / `{tenant_id: reaped_count}`, per-tenant try/except).
+
+**Two injected seams (D-131.A).**
+- **`client_resolver: (tenant_id, environment_id) → client`** — resolves the Tooling/data client worker-side (the S3 `api_key_resolver` discipline), so the consumer stays decoupled from the v1 connection store and is stub-testable. The client is resolved **up front** (before the async run's execute bracket) so the async path holds no connection across the live read. The **production** resolver (a brief-tx read of v1 `connections`/Fernet creds) is wired in B3; B2 ships the seam.
+- **`run_fn`** — defaults to `run_recipe_execution_async`; injectable so the consumer's *orchestration* (claim → attempt → complete/fail → isolation) is tested without re-seeding a full approved S2 recipe (the async run itself is B0-tested, the executor A1/A2-tested, the queue B1-tested). The test asserts the consumer calls `run_fn` with the right `(tenant_id, test_id, environment_id, client)` so a wiring defect is still caught.
+
+**Complete-on-ran, fail-on-raise.** A run that returns (even `ran=False` no-eligible-recipe, or `evidence.outcome=='errored'`) **completes** the job — the *worker* did its job; the run outcome / absence of a recipe is not a worker failure (mirrors S3 completing on a refusal outcome). Only a raised exception fails the job. The run outcome lives on the persisted `s4_execution_runs` row (S6's to interpret), not the job status.
+
+**Verification.** Governance-DB integration (`tests/integration/execution_engine/test_consumer.py`, the B1 harness): empty queue → None; one job → claimed + attempted + `run_fn` called with the right args + completed; a raising run → failed + classified `error_code`; a raising `client_resolver` → failed (`credential_error`); `ran=False` → completed; `run_s4_execution_tick` per-tenant outcomes + isolation (a bogus tenant's claim raises → `error:…`, the real tenant still processes); `run_s4_reaper_tick` reaps a stale job. Pure-S4; no migration.
+
+---
