@@ -7633,3 +7633,25 @@ These reopen as an S3-breadth continuation after the corresponding S1 tiers land
 **Merge gate.** A real green run of the substrate-relevant suites (generation unit + integration + representation + the offline eval corpus + eval-harness) — never the live probes (env-gated, periodic). No migration across the whole phase (every kind was pre-seated in `CLAIM_KIND_ENUM` / `ARCHETYPE_ENUM` at the D-121 readiness ratification). Merge `phase-10-substrate-3-breadth` → `main` via PR on green.
 
 ---
+
+## D-127 — S4 existence execution: the read-shape dispatch + entity self-read (Phase 3 slice A1)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S4] (execution — the metadata translator). Pure-S4; no S2/S3 change, no migration.
+**Status:** Active — Phase 3 (S4 execution) slice A1, on `phase-11-substrate-4-execution`. The first slice closing the generation→execution gap Phase 2 opened.
+
+Phase 2 made existence/property/capability/layout **emittable + grounded + LLM-reachable**, but **not executable**: S4's metadata translator (`translator.py`) has exactly one edge (`APPLIES_TO`) and `translate_read` assumes `fields_to_capture[0]` *is* an edge to traverse. existence breaks that assumption — its recipe (`_author_existence` → `_inspection_recipe(capture_field="sf_api_name", assert "exists")`) reads the subject's **own** metadata, not a related-edge. So executing an existence recipe today raises `UnsupportedEdgeError`. This slice makes existence runnable end-to-end; it is the simplest breadth win because the `exists` predicate is **already** supported by the executor.
+
+**The shape fork — read-shape dispatch (D-127.A).** `translate_read` is refactored from a flat edge-lookup into a **two-mode dispatch**:
+- **edge-read** — `capture_field` ∈ the known Tier-1 edges → the existing `_EDGE_TRANSLATORS` (today: `APPLIES_TO`). Unchanged.
+- **self-read** — `capture_field` is the subject's own surface (`sf_api_name` for existence; a property name in A2) → a new finite registry of **entity-self-read builders keyed on `subject.entity_type`**.
+
+The self-read builders reuse the **proven** Tooling SOQL already shipped in v1 sync (`metadata/service.py`): `Object` → `SELECT QualifiedApiName FROM EntityDefinition WHERE QualifiedApiName = '<api>'`; `Field` (external_id is the qualified `Object.Field`) → `SELECT QualifiedApiName FROM FieldDefinition WHERE EntityDefinition.QualifiedApiName = '<object>' AND QualifiedApiName = '<field>'`. We reuse the *query knowledge* (the column + relationship vocabulary), not the v1 fetcher objects — the thin `ToolingReadClient` stays the only transport. An unknown `subject.entity_type` raises (fail-loud, never a silent empty query — the SPEC §5 realization discipline).
+
+**Why this is faithful (no semantic injection, D-108.1).** existence asserts *the subject surfaces in the org's metadata*. A non-empty self-read **is** that verification — the query adds only operational mechanics (the `FROM` object, the `QualifiedApiName` scoping), never a predicate the recipe didn't assert. The executor's existing `exists` (held ⇔ row_count > 0) renders the grounded outcome unchanged.
+
+**Boundary.** No executor change (`exists` already supported). No bridge change (`build_metadata_inspection_plan` already projects any `ReadMetadataStep`/`AssertStep` verbatim — verified). No S2/S3/S1 change; no migration. The `ToolingQuery` evidence dataclass gains a self-read shape (the `edge` field carries the captured surface, e.g. `sf_api_name`, so S6 can still tell an absent subject from a present one).
+
+**Verification.** Deterministic stub-client unit tests (no org, no PG): `test_translator.py` (Object + Field self-read SOQL exact strings; the `Object.Field` split; SOQL-literal escape; fail-loud on unknown entity_type), `test_executor.py` (existence passes on ≥1 row / fails on empty), `test_run_dispatch.py` (a real `author_emission(GroundedExistence(...))` recipe routes through the metadata path to a grounded outcome). Live-sandbox proof deferred (decision) — the inspection spine is already live-proven; this is a translator extension.
+
+---
