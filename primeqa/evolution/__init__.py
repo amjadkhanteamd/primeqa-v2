@@ -18,7 +18,18 @@ Slice 1 (D-113): the **recipe-grounding leg** — does a behavioral-negative
 recipe's stored payload still violate the current validation-rule formula?
 Re-consumes the neutral ``primeqa.semantic.formula.evaluate`` primitive (parallel
 to S6, never via S6). Produce-only.
+
+Phase 6 slice 1 (D-139): the **claim-grounding leg** — does a claim's subject
+still resolve in the current org? Re-asks generation's resolution step (S1
+``get_entities`` by ``sf_api_name``) through S8's own :class:`SubjectResolver`
+port. Produce-only.
 """
+from primeqa.evolution.claim_grounding import (
+    ClaimGroundingResult,
+    SubjectResolver,
+    claim_grounding_validity,
+    claim_grounding_validity_for_claim,
+)
 from primeqa.evolution.recipe_grounding import (
     RecipeGroundingResult,
     VrReader,
@@ -27,8 +38,14 @@ from primeqa.evolution.recipe_grounding import (
 )
 
 __all__ = [
+    # recipe-grounding leg (D-113)
     "recipe_grounding_validity",
     "recipe_grounding_validity_for_recipe",
     "RecipeGroundingResult",
     "VrReader",
+    # claim-grounding leg (D-139)
+    "claim_grounding_validity",
+    "claim_grounding_validity_for_claim",
+    "ClaimGroundingResult",
+    "SubjectResolver",
 ]
