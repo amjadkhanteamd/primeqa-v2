@@ -41,6 +41,8 @@ _HAS_LAYER_2: dict[str, bool] = {
     "metadata-relationship-claim": False,   # the D-098.1 debut
     "existence-claim": False,
     "property-claim": False,
+    # permission (D-080): the configured grant edge IS the verification — no Layer 2.
+    "capability-claim": False,
     # data_behavior (D-078):
     "value-claim": False,                   # type + permission IS the verification
     "prohibition-claim": True,              # Layer 2 = formula confirms rejection (parser-deferred)

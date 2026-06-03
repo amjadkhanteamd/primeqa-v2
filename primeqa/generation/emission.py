@@ -50,6 +50,9 @@ from primeqa.test_representation.models.claims.configuration import (
     MetadataRelationshipClaimBody,
     PropertyClaimBody,
 )
+from primeqa.test_representation.models.claims.permission import (
+    CapabilityClaimBody,
+)
 from primeqa.test_representation.models.claims.data_behavior.prohibition_claim import (
     ProhibitionClaimBody,
 )
@@ -121,6 +124,7 @@ EMITTABLE: frozenset = frozenset({
     ("configuration", "metadata-relationship-claim"),   # D-098 (GroundedEmission)
     ("configuration", "existence-claim"),                # D-122 (GroundedExistence)
     ("configuration", "property-claim"),                 # D-122 (GroundedProperty)
+    ("permission", "capability-claim"),                  # D-123 (GroundedCapability)
     ("data_behavior", "prohibition-claim"),              # D-101 (GroundedNegative)
     ("data_behavior", "value-claim"),                    # D-115 (GroundedPositive)
 })
@@ -228,6 +232,23 @@ class GroundedProperty:
     subject: _Endpoint          # the entity whose property is asserted
     property_name: str          # the S1 detail column (e.g. "is_required")
     expected_value: Any         # the value read from the S1 detail row (raw scalar)
+    requirement_excerpt: str
+
+
+@dataclass(frozen=True)
+class GroundedCapability:
+    """permission capability-claim grounding (D-123): a Profile/PermissionSet
+    grants the asserted capability on an Object/Field — the ``GRANTS_*_ACCESS``
+    edge verified via ``get_related`` (the grant is *configured*). Layer-1-
+    complete (D-079); authored-from, never LLM-supplied (D-097.5)."""
+
+    archetype: str              # "permission"
+    claim_kind: str             # "capability-claim"
+    version_seq: int
+    granting_subject: _Endpoint  # the Profile or PermissionSet
+    target: _Endpoint            # the Object or Field
+    granted_capability: str      # "read" / "edit"
+    grant_type: str              # "object" | "field"
     requirement_excerpt: str
 
 
@@ -398,6 +419,43 @@ def _author_property(g: GroundedProperty) -> EmissionBundle:
         env_detail=(f"read {g.subject.external_id}.{g.property_name} to verify "
                     f"it equals {g.expected_value!r}"),
         assert_predicate=assert_predicate, assert_value=assert_value,
+    )
+    return EmissionBundle(
+        archetype=g.archetype, claim_kind=g.claim_kind,
+        asserted_truth=claim, semantic_conditions=conditions,
+        trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
+        causal_initiation=trigger, observation_realization=recipe,
+        execution_environment=env,
+        admissibility_layer=AdmissibilityLayer.LAYER_1,
+        caveat_required=requires_caveat(g.claim_kind),
+        caveat_kind=caveat_kind(g.claim_kind),
+    )
+
+
+def _author_capability(g: GroundedCapability) -> EmissionBundle:
+    """Author a permission capability-claim (D-123): an inspection recipe that
+    reads the grantee's metadata and asserts the grant edge surfaces. Layer-1-
+    complete, no caveat (D-079) — the configured grant IS the verification."""
+    granter_ref = IdentityBearingRef(
+        entity_type=g.granting_subject.entity_type, entity_id=g.granting_subject.entity_id,
+        version_seq=g.version_seq, external_id=g.granting_subject.external_id,
+    )
+    target_ref = IdentityBearingRef(
+        entity_type=g.target.entity_type, entity_id=g.target.entity_id,
+        version_seq=g.version_seq, external_id=g.target.external_id,
+    )
+    claim = CapabilityClaimBody(
+        granting_subject=granter_ref, target=target_ref,
+        granted_capability=g.granted_capability, grant_type=g.grant_type,
+    )
+    conditions = SemanticConditionsBody(conditions=[])
+    edge_type = "GRANTS_OBJECT_ACCESS" if g.grant_type == "object" else "GRANTS_FIELD_ACCESS"
+    trigger, recipe, env = _inspection_recipe(
+        read_entity_type=g.granting_subject.entity_type,
+        read_external_id=g.granting_subject.external_id,
+        capture_field=edge_type,
+        env_detail=(f"read {g.granting_subject.external_id} grants to verify "
+                    f"{g.granted_capability} on {g.target.external_id}"),
     )
     return EmissionBundle(
         archetype=g.archetype, claim_kind=g.claim_kind,
@@ -623,6 +681,8 @@ def author_emission(grounded: object) -> EmissionBundle:
         return _author_existence(grounded)
     if isinstance(grounded, GroundedProperty):
         return _author_property(grounded)
+    if isinstance(grounded, GroundedCapability):
+        return _author_capability(grounded)
     if isinstance(grounded, GroundedNegative):
         return _author_negative(grounded)
     if isinstance(grounded, GroundedPositive):

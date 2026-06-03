@@ -32,6 +32,7 @@ from uuid import uuid4
 from primeqa.generation.enums import AdmissibilityLayer, OutcomeKind, RefusalKind
 from primeqa.generation.explanation_hash import compute_explanation_hash
 from primeqa.generation.emission import (
+    GroundedCapability,
     GroundedEmission,
     GroundedExistence,
     GroundedNegative,
@@ -69,6 +70,20 @@ EDGE_VALIDATION_RULE = "APPLIES_TO"        # ValidationRule -> Object (BEHAVIOR)
 EDGE_BELONGS = "BELONGS_TO"                # Field/RecordType/VR/Layout -> Object (STRUCTURAL)
 EDGE_FLOW = "TRIGGERS_ON"                  # Flow -> Object (BEHAVIOR)
 EDGE_OBJECT_GRANT = "GRANTS_OBJECT_ACCESS" # Profile/PermissionSet -> Object (PERMISSION)
+EDGE_FIELD_GRANT = "GRANTS_FIELD_ACCESS"   # Profile/PermissionSet -> Field (PERMISSION)
+
+# permission capability-claim (D-123): the asserted capability maps to the
+# grant edge's boolean property. Object grants carry all six flags; field grants
+# carry only read/edit — an asserted flag the edge type doesn't model resolves
+# falsy (``.get``) and refuses, fail-closed (invent-nothing, D-079).
+_CAPABILITY_FLAG = {
+    "read": "can_read",
+    "edit": "can_edit",
+    "create": "can_create",
+    "delete": "can_delete",
+    "view_all": "can_view_all",
+    "modify_all": "can_modify_all",
+}
 
 # All edges used to build a data-behavior Object neighborhood (inbound).
 OBJECT_NEIGHBORHOOD_EDGES = [
@@ -390,6 +405,20 @@ class GovernanceCore:
                                 feedback=f"relationship endpoint(s) not found at s1_version_seq {at}: {missing}")
             return RefCheck(ok=True)
 
+        # permission capability-claim (D-123): two endpoints — grantee + target —
+        # carried under target_subject_hint, not the flat {entity_type, sf_api_name}.
+        if desc.get("archetype_hint") == "permission":
+            missing = []
+            for label in ("grantee", "target"):
+                ep = hint.get(label) or {}
+                et, api = ep.get("entity_type"), ep.get("sf_api_name")
+                if not et or not api or not self._admit.resolve_subject(et, api, at):
+                    missing.append(f"{label}:{et}:{api}")
+            if missing:
+                return RefCheck(ok=False, missing_refs=missing,
+                                feedback=f"grant endpoint(s) not found at s1_version_seq {at}: {missing}")
+            return RefCheck(ok=True)
+
         et, api = hint.get("entity_type"), hint.get("sf_api_name")
         if not et or not api:
             return RefCheck(ok=False, feedback=(
@@ -408,6 +437,8 @@ class GovernanceCore:
         archetype = desc.get("archetype_hint")
         if archetype == "configuration":
             return self._resolve_configuration(intent_input, ctx, state)
+        if archetype == "permission":
+            return self._resolve_permission(intent_input, ctx, state)
         polarity = desc.get("polarity_hint")
         claim_kind = desc.get("claim_kind_hint")
         hint = desc.get("target_subject_hint") or {}
@@ -690,6 +721,99 @@ class GovernanceCore:
                      summary={"entity_type": e.entity_type, "sf_api_name": e.sf_api_name,
                               "property": property_name, "value": s1_value})]
         return IntentResolution(presented, NextAction.PROCEED_TO_EMIT, self._delta([], [cand]))
+
+    def _resolve_permission(self, intent_input: dict, ctx: ConversationContext, state: Any) -> IntentResolution:
+        """capability-claim (D-080 / D-123): a Profile/PermissionSet grants the
+        asserted capability (read/edit/...) on an Object/Field. Layer-1-complete
+        (D-079): the S1 ``GRANTS_OBJECT_ACCESS`` / ``GRANTS_FIELD_ACCESS`` edge
+        carries the capability bit; the grant edge present-and-set IS the full
+        verification. v1 grounds **direct** grants only — a capability implied by
+        sharing rules / OWD / role hierarchy has no direct grant edge (S1 Tier-2,
+        unmodeled) and refuses here, never silently passes (the D-080 conservative
+        posture). The grounded grant is READ from S1, never taken on the
+        assertion's word (D-097.5)."""
+        desc = intent_input["intent_descriptor"]
+        excerpt = intent_input.get("requirement_excerpt", "")
+        hint = desc.get("target_subject_hint") or {}
+        at = ctx.semantic_context.s1_version_seq
+        grantee_ref, target_ref = hint.get("grantee") or {}, hint.get("target") or {}
+        capability = (hint.get("granted_capability") or "").strip().lower()
+        grant_type = hint.get("grant_type")
+        edge_type = EDGE_OBJECT_GRANT if grant_type == "object" else EDGE_FIELD_GRANT
+
+        def _cand(reason=None, status="dismissed", layer=None) -> _Candidate:
+            return _Candidate(
+                path_id="c0", archetype="permission", claim_kind="capability-claim",
+                subject_refs=[grantee_ref, target_ref], requirement_anchor=excerpt,
+                status=status, admissibility_layer=layer, dismissal_reason=reason)
+
+        # grant_type disambiguates the edge; anything else has no edge to inspect.
+        if grant_type not in ("object", "field"):
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [_cand("type_incompatibility")]),
+                                    refusal=self._router.underspecified(
+                                        f"grant_type {grant_type!r} must be 'object' or 'field'"))
+        # The asserted capability must map to a known S1 grant flag — else we
+        # can't verify it (invent-nothing, ontology_gap rather than a guess).
+        flag = _CAPABILITY_FLAG.get(capability)
+        if flag is None:
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [_cand("ontology_gap")]),
+                                    refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
+                                        "detail": f"capability {capability!r} is not S1-modeled "
+                                                  f"(known: {sorted(_CAPABILITY_FLAG)})",
+                                        "capability": capability}))
+
+        g_matches = self._admit.resolve_subject(grantee_ref.get("entity_type"), grantee_ref.get("sf_api_name"), at)
+        t_matches = self._admit.resolve_subject(target_ref.get("entity_type"), target_ref.get("sf_api_name"), at)
+        if len(g_matches) > 1 or len(t_matches) > 1:
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [_cand("ambiguous_target_resolution")]),
+                                    refusal=self._router.ambiguous(g_matches + t_matches))
+        if not g_matches or not t_matches:
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [_cand("no_relevant_context")]),
+                                    refusal=self._router.no_relevant_context("grant endpoint did not resolve"))
+        grantee, target = g_matches[0], t_matches[0]
+        subject_refs = [
+            {"entity_type": grantee.entity_type, "sf_api_name": grantee.sf_api_name},
+            {"entity_type": target.entity_type, "sf_api_name": target.sf_api_name},
+        ]
+
+        # Layer-1-complete: the grant edge exists AND carries the asserted
+        # capability bit. Edge absent OR bit unset -> the grant the claim assumes
+        # is not present in the org -> ungrounded refusal (we never emit a false
+        # 'is granted'). Direct grants only; no sharing/OWD synthesis (D-080).
+        related = self._s1.get_related(grantee.id, [edge_type], "outbound", at_seq=at)
+        match = next((r for r in related if r.entity.id == target.id), None)
+        granted = bool(match and match.properties.get(flag))
+
+        cand = _Candidate(path_id="c0", archetype="permission", claim_kind="capability-claim",
+                          subject_refs=subject_refs, requirement_anchor=excerpt, status="dismissed")
+        if granted:
+            cand.status = "admissibly_grounded"
+            cand.admissibility_layer = AdmissibilityLayer.LAYER_1.value
+            # Stash the S1-resolved grounding for emission (D-097.5): finalize
+            # authors the claim + recipe from these endpoints, never from the LLM.
+            if state is not None:
+                state.grounded_emission = GroundedCapability(
+                    archetype="permission", claim_kind="capability-claim", version_seq=at,
+                    granting_subject=_Endpoint(
+                        entity_id=grantee.id, entity_type=grantee.entity_type,
+                        external_id=grantee.sf_api_name or str(grantee.id)),
+                    target=_Endpoint(
+                        entity_id=target.id, entity_type=target.entity_type,
+                        external_id=target.sf_api_name or str(target.id)),
+                    granted_capability=capability, grant_type=grant_type,
+                    requirement_excerpt=excerpt)
+            presented = [PresentedCandidate(
+                path_id="c0", admissibility_layer=AdmissibilityLayer.LAYER_1,
+                summary={"grantee": subject_refs[0], "target": subject_refs[1],
+                         "capability": capability, "grant_type": grant_type})]
+            return IntentResolution(presented, NextAction.PROCEED_TO_EMIT, self._delta(related, [cand]))
+        cand.dismissal_reason = "insufficient_grounding"
+        return IntentResolution([], NextAction.REFUSE, self._delta(related, [cand]),
+                                refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
+                                    "detail": f"{grantee.sf_api_name} does not grant {capability!r} on "
+                                              f"{target.sf_api_name} (no direct grant edge or bit unset)",
+                                    "capability": capability,
+                                    "grantee": subject_refs[0], "target": subject_refs[1]}))
 
     # -- refusal materialization ----------------------------------------
     def route_refusal(self, *, directive: RefusalDirective, ctx: ConversationContext, state: Any) -> GenerationOutcome:

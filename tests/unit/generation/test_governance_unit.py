@@ -12,6 +12,7 @@ from primeqa.generation import governance_core as gc
 from primeqa.generation.enums import AdmissibilityLayer, CaveatKind
 from primeqa.generation.emission import (
     EMITTABLE,
+    GroundedCapability,
     GroundedEmission,
     GroundedExistence,
     GroundedNegative,
@@ -74,6 +75,11 @@ _EMITTABLE_SHAPES = {
         archetype="configuration", claim_kind="property-claim", version_seq=1,
         subject=_ep("Field", "Account.Industry"), property_name="is_required",
         expected_value=True, requirement_excerpt="x"),
+    ("permission", "capability-claim"): lambda: GroundedCapability(
+        archetype="permission", claim_kind="capability-claim", version_seq=1,
+        granting_subject=_ep("Profile", "Admin"),
+        target=_ep("Field", "Account.AnnualRevenue"),
+        granted_capability="edit", grant_type="field", requirement_excerpt="x"),
     ("data_behavior", "prohibition-claim"): lambda: GroundedNegative(
         archetype="data_behavior", claim_kind="prohibition-claim",
         operation_hint=None, version_seq=1,

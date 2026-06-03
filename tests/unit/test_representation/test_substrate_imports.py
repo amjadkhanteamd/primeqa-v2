@@ -93,8 +93,12 @@ EXPECTED_REGISTRATIONS = (
     ("state-transition-claim", 1),
     ("automation-effect-claim", 1),
     ("prohibition-claim", 1),
-    # Configuration claim bodies (D-098 — the C debut)
+    # Configuration claim bodies (D-098 — the C debut; existence + property D-122)
     ("metadata-relationship-claim", 1),
+    ("existence-claim", 1),
+    ("property-claim", 1),
+    # Permission claim bodies (D-123 — the permission-archetype debut)
+    ("capability-claim", 1),
     # Trigger bodies (B-γ; inspection-trigger added by D-099)
     ("inbound-trigger", 1),
     ("data-mutation-trigger", 1),

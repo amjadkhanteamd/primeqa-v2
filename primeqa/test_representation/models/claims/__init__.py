@@ -58,6 +58,12 @@ from primeqa.test_representation.models.claims.configuration import (
     MetadataRelationshipClaimBody,
     PropertyClaimBody,
 )
+# Importing the permission subpackage triggers @register_body on its bodies
+# (the first permission-archetype kind, D-123).
+from primeqa.test_representation.models.claims.permission import (
+    CapabilityClaimBody,
+    PermissionClaimBody,
+)
 
 
 __all__ = [
@@ -65,6 +71,7 @@ __all__ = [
     # typing in downstream code).
     "DataBehaviorClaimBody",
     "ConfigurationClaimBody",
+    "PermissionClaimBody",
     # Individual body classes (re-exported for direct typing).
     "AutomationEffectClaimBody",
     "ProhibitionClaimBody",
@@ -73,6 +80,7 @@ __all__ = [
     "MetadataRelationshipClaimBody",
     "ExistenceClaimBody",
     "PropertyClaimBody",
+    "CapabilityClaimBody",
     # Cross-archetype flat union (the substrate-level
     # dispatch type).
     "ClaimBody",
@@ -88,6 +96,7 @@ ClaimBody = Annotated[
         MetadataRelationshipClaimBody,
         ExistenceClaimBody,
         PropertyClaimBody,
+        CapabilityClaimBody,
         # Future archetype body classes extend here. Order is
         # not semantically meaningful — Pydantic dispatches by
         # the ``kind`` discriminator value.
