@@ -53,6 +53,9 @@ from primeqa.test_representation.models.claims.configuration import (
 from primeqa.test_representation.models.claims.permission import (
     CapabilityClaimBody,
 )
+from primeqa.test_representation.models.claims.ui import (
+    LayoutClaimBody,
+)
 from primeqa.test_representation.models.claims.data_behavior.prohibition_claim import (
     ProhibitionClaimBody,
 )
@@ -125,6 +128,7 @@ EMITTABLE: frozenset = frozenset({
     ("configuration", "existence-claim"),                # D-122 (GroundedExistence)
     ("configuration", "property-claim"),                 # D-122 (GroundedProperty)
     ("permission", "capability-claim"),                  # D-123 (GroundedCapability)
+    ("ui", "layout-claim"),                              # D-124 (GroundedLayout)
     ("data_behavior", "prohibition-claim"),              # D-101 (GroundedNegative)
     ("data_behavior", "value-claim"),                    # D-115 (GroundedPositive)
 })
@@ -249,6 +253,21 @@ class GroundedCapability:
     target: _Endpoint            # the Object or Field
     granted_capability: str      # "read" / "edit"
     grant_type: str              # "object" | "field"
+    requirement_excerpt: str
+
+
+@dataclass
+class GroundedLayout:
+    """ui layout-claim grounding (D-124): a Field is placed on a PageLayout — the
+    ``INCLUDES_FIELD`` edge verified via ``get_related`` (the placement is
+    *configured*). Layer-1-complete (D-079); authored-from, never LLM-supplied
+    (D-097.5)."""
+
+    archetype: str              # "ui"
+    claim_kind: str             # "layout-claim"
+    version_seq: int
+    layout: _Endpoint            # the PageLayout
+    field: _Endpoint             # the Field placed on it
     requirement_excerpt: str
 
 
@@ -456,6 +475,42 @@ def _author_capability(g: GroundedCapability) -> EmissionBundle:
         capture_field=edge_type,
         env_detail=(f"read {g.granting_subject.external_id} grants to verify "
                     f"{g.granted_capability} on {g.target.external_id}"),
+    )
+    return EmissionBundle(
+        archetype=g.archetype, claim_kind=g.claim_kind,
+        asserted_truth=claim, semantic_conditions=conditions,
+        trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
+        causal_initiation=trigger, observation_realization=recipe,
+        execution_environment=env,
+        admissibility_layer=AdmissibilityLayer.LAYER_1,
+        caveat_required=requires_caveat(g.claim_kind),
+        caveat_kind=caveat_kind(g.claim_kind),
+    )
+
+
+def _author_layout(g: GroundedLayout) -> EmissionBundle:
+    """Author a ui layout-claim (D-124): an inspection recipe that reads the
+    layout's metadata and asserts the ``INCLUDES_FIELD`` placement surfaces.
+    Layer-1-complete, no caveat (D-079) — the configured placement IS the
+    verification. A **metadata-recipe, NOT a ui-recipe**: placement is a metadata
+    fact, not a live UI interaction (the runtime render/enable question is
+    ``element-state-claim``, Tier-3-deferred)."""
+    layout_ref = IdentityBearingRef(
+        entity_type=g.layout.entity_type, entity_id=g.layout.entity_id,
+        version_seq=g.version_seq, external_id=g.layout.external_id,
+    )
+    field_ref = IdentityBearingRef(
+        entity_type=g.field.entity_type, entity_id=g.field.entity_id,
+        version_seq=g.version_seq, external_id=g.field.external_id,
+    )
+    claim = LayoutClaimBody(layout=layout_ref, field=field_ref)
+    conditions = SemanticConditionsBody(conditions=[])
+    trigger, recipe, env = _inspection_recipe(
+        read_entity_type=g.layout.entity_type,
+        read_external_id=g.layout.external_id,
+        capture_field="INCLUDES_FIELD",
+        env_detail=(f"read {g.layout.external_id} layout to verify "
+                    f"{g.field.external_id} is placed on it"),
     )
     return EmissionBundle(
         archetype=g.archetype, claim_kind=g.claim_kind,
@@ -683,6 +738,8 @@ def author_emission(grounded: object) -> EmissionBundle:
         return _author_property(grounded)
     if isinstance(grounded, GroundedCapability):
         return _author_capability(grounded)
+    if isinstance(grounded, GroundedLayout):
+        return _author_layout(grounded)
     if isinstance(grounded, GroundedNegative):
         return _author_negative(grounded)
     if isinstance(grounded, GroundedPositive):

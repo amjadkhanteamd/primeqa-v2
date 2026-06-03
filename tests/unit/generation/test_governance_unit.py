@@ -15,6 +15,7 @@ from primeqa.generation.emission import (
     GroundedCapability,
     GroundedEmission,
     GroundedExistence,
+    GroundedLayout,
     GroundedNegative,
     GroundedPositive,
     GroundedProperty,
@@ -80,6 +81,10 @@ _EMITTABLE_SHAPES = {
         granting_subject=_ep("Profile", "Admin"),
         target=_ep("Field", "Account.AnnualRevenue"),
         granted_capability="edit", grant_type="field", requirement_excerpt="x"),
+    ("ui", "layout-claim"): lambda: GroundedLayout(
+        archetype="ui", claim_kind="layout-claim", version_seq=1,
+        layout=_ep("Layout", "Account-Account Layout"),
+        field=_ep("Field", "Account.AnnualRevenue"), requirement_excerpt="x"),
     ("data_behavior", "prohibition-claim"): lambda: GroundedNegative(
         archetype="data_behavior", claim_kind="prohibition-claim",
         operation_hint=None, version_seq=1,

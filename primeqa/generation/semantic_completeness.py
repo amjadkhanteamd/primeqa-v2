@@ -43,6 +43,8 @@ _HAS_LAYER_2: dict[str, bool] = {
     "property-claim": False,
     # permission (D-080): the configured grant edge IS the verification — no Layer 2.
     "capability-claim": False,
+    # ui (D-081): the configured INCLUDES_FIELD placement IS the verification — no Layer 2.
+    "layout-claim": False,
     # data_behavior (D-078):
     "value-claim": False,                   # type + permission IS the verification
     "prohibition-claim": True,              # Layer 2 = formula confirms rejection (parser-deferred)

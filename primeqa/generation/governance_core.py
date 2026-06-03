@@ -35,6 +35,7 @@ from primeqa.generation.emission import (
     GroundedCapability,
     GroundedEmission,
     GroundedExistence,
+    GroundedLayout,
     GroundedNegative,
     GroundedPositive,
     GroundedProperty,
@@ -71,6 +72,7 @@ EDGE_BELONGS = "BELONGS_TO"                # Field/RecordType/VR/Layout -> Objec
 EDGE_FLOW = "TRIGGERS_ON"                  # Flow -> Object (BEHAVIOR)
 EDGE_OBJECT_GRANT = "GRANTS_OBJECT_ACCESS" # Profile/PermissionSet -> Object (PERMISSION)
 EDGE_FIELD_GRANT = "GRANTS_FIELD_ACCESS"   # Profile/PermissionSet -> Field (PERMISSION)
+EDGE_LAYOUT_FIELD = "INCLUDES_FIELD"       # Layout -> Field (CONFIG; D-124)
 
 # permission capability-claim (D-123): the asserted capability maps to the
 # grant edge's boolean property. Object grants carry all six flags; field grants
@@ -419,6 +421,20 @@ class GovernanceCore:
                                 feedback=f"grant endpoint(s) not found at s1_version_seq {at}: {missing}")
             return RefCheck(ok=True)
 
+        # ui layout-claim (D-124): two endpoints — layout + field — carried under
+        # target_subject_hint, not the flat {entity_type, sf_api_name}.
+        if desc.get("archetype_hint") == "ui":
+            missing = []
+            for label in ("layout", "field"):
+                ep = hint.get(label) or {}
+                et, api = ep.get("entity_type"), ep.get("sf_api_name")
+                if not et or not api or not self._admit.resolve_subject(et, api, at):
+                    missing.append(f"{label}:{et}:{api}")
+            if missing:
+                return RefCheck(ok=False, missing_refs=missing,
+                                feedback=f"layout endpoint(s) not found at s1_version_seq {at}: {missing}")
+            return RefCheck(ok=True)
+
         et, api = hint.get("entity_type"), hint.get("sf_api_name")
         if not et or not api:
             return RefCheck(ok=False, feedback=(
@@ -439,6 +455,8 @@ class GovernanceCore:
             return self._resolve_configuration(intent_input, ctx, state)
         if archetype == "permission":
             return self._resolve_permission(intent_input, ctx, state)
+        if archetype == "ui":
+            return self._resolve_ui(intent_input, ctx, state)
         polarity = desc.get("polarity_hint")
         claim_kind = desc.get("claim_kind_hint")
         hint = desc.get("target_subject_hint") or {}
@@ -814,6 +832,73 @@ class GovernanceCore:
                                               f"{target.sf_api_name} (no direct grant edge or bit unset)",
                                     "capability": capability,
                                     "grantee": subject_refs[0], "target": subject_refs[1]}))
+
+    def _resolve_ui(self, intent_input: dict, ctx: ConversationContext, state: Any) -> IntentResolution:
+        """layout-claim (D-081 / D-124): a Field is placed on a PageLayout. Layer-1-
+        complete (D-079): the S1 ``INCLUDES_FIELD`` edge (Layout -> Field) present
+        IS the full verification — there is no capability-style bit; edge-existence
+        IS the placement. Absent edge → the org does not place the field on that
+        layout → ungrounded refusal (we never emit a false 'appears on'). v1 grounds
+        placement-existence; section / row / column assertions are a v1.1 refinement.
+        A metadata fact, not a UI interaction — the runtime render/enable surface is
+        element-state-claim (Tier-3, deferred)."""
+        desc = intent_input["intent_descriptor"]
+        excerpt = intent_input.get("requirement_excerpt", "")
+        hint = desc.get("target_subject_hint") or {}
+        at = ctx.semantic_context.s1_version_seq
+        layout_ref, field_ref = hint.get("layout") or {}, hint.get("field") or {}
+
+        def _cand(reason=None, status="dismissed", layer=None) -> _Candidate:
+            return _Candidate(
+                path_id="c0", archetype="ui", claim_kind="layout-claim",
+                subject_refs=[layout_ref, field_ref], requirement_anchor=excerpt,
+                status=status, admissibility_layer=layer, dismissal_reason=reason)
+
+        l_matches = self._admit.resolve_subject(layout_ref.get("entity_type"), layout_ref.get("sf_api_name"), at)
+        f_matches = self._admit.resolve_subject(field_ref.get("entity_type"), field_ref.get("sf_api_name"), at)
+        if len(l_matches) > 1 or len(f_matches) > 1:
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [_cand("ambiguous_target_resolution")]),
+                                    refusal=self._router.ambiguous(l_matches + f_matches))
+        if not l_matches or not f_matches:
+            return IntentResolution([], NextAction.REFUSE, self._delta([], [_cand("no_relevant_context")]),
+                                    refusal=self._router.no_relevant_context("layout endpoint did not resolve"))
+        layout, field = l_matches[0], f_matches[0]
+        subject_refs = [
+            {"entity_type": layout.entity_type, "sf_api_name": layout.sf_api_name},
+            {"entity_type": field.entity_type, "sf_api_name": field.sf_api_name},
+        ]
+
+        # Layer-1-complete: the INCLUDES_FIELD edge (Layout -> Field) exists or not.
+        related = self._s1.get_related(layout.id, [EDGE_LAYOUT_FIELD], "outbound", at_seq=at)
+        placed = any(r.entity.id == field.id for r in related)
+
+        cand = _Candidate(path_id="c0", archetype="ui", claim_kind="layout-claim",
+                          subject_refs=subject_refs, requirement_anchor=excerpt, status="dismissed")
+        if placed:
+            cand.status = "admissibly_grounded"
+            cand.admissibility_layer = AdmissibilityLayer.LAYER_1.value
+            # Stash the S1-resolved grounding for emission (D-097.5): finalize
+            # authors the claim + recipe from these endpoints, never from the LLM.
+            if state is not None:
+                state.grounded_emission = GroundedLayout(
+                    archetype="ui", claim_kind="layout-claim", version_seq=at,
+                    layout=_Endpoint(
+                        entity_id=layout.id, entity_type=layout.entity_type,
+                        external_id=layout.sf_api_name or str(layout.id)),
+                    field=_Endpoint(
+                        entity_id=field.id, entity_type=field.entity_type,
+                        external_id=field.sf_api_name or str(field.id)),
+                    requirement_excerpt=excerpt)
+            presented = [PresentedCandidate(
+                path_id="c0", admissibility_layer=AdmissibilityLayer.LAYER_1,
+                summary={"layout": subject_refs[0], "field": subject_refs[1]})]
+            return IntentResolution(presented, NextAction.PROCEED_TO_EMIT, self._delta(related, [cand]))
+        cand.dismissal_reason = "insufficient_grounding"
+        return IntentResolution([], NextAction.REFUSE, self._delta(related, [cand]),
+                                refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
+                                    "detail": f"{field.sf_api_name} is not placed on layout "
+                                              f"{layout.sf_api_name} (no INCLUDES_FIELD edge)",
+                                    "layout": subject_refs[0], "field": subject_refs[1]}))
 
     # -- refusal materialization ----------------------------------------
     def route_refusal(self, *, directive: RefusalDirective, ctx: ConversationContext, state: Any) -> GenerationOutcome:

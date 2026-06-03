@@ -99,6 +99,8 @@ EXPECTED_REGISTRATIONS = (
     ("property-claim", 1),
     # Permission claim bodies (D-123 — the permission-archetype debut)
     ("capability-claim", 1),
+    # UI claim bodies (D-124 — the ui-archetype debut)
+    ("layout-claim", 1),
     # Trigger bodies (B-γ; inspection-trigger added by D-099)
     ("inbound-trigger", 1),
     ("data-mutation-trigger", 1),
