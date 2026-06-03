@@ -7975,4 +7975,33 @@ The composition (D-141) produces a `GroundingValidity` on demand; this slice per
 
 ---
 
+## D-143 — S8 S1-sync recompute trigger: the production tri-port reader + the grounding recompute + scheduler wiring (Phase 6 slice 5)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S8] (the production S1 read adapter + the recompute orchestrator + the scheduler tick — the live mechanics), reading S1 (`SemanticOrgModel`) + S2 (`SemanticTransactionCoordinator`) and writing the S8 store. **No migration** (freshness is derived from the store — no watermark table).
+**Status:** Active — Phase 6 (S8 evolution) slice 5, on `phase-14-substrate-8-evolution`. The last build slice — S8 fires as the org evolves.
+
+The composition (D-141) is pure; slice 4 persists a verdict on demand. This slice makes S8 **fire**: when a tenant's S1 advances, recompute grounding-validity over the tenant's current claims + refresh the store. Three pieces.
+
+**1. The production tri-port reader (`s1_reader.py`, mirrors `interpretation/s1_reader.py`).** `S8S1Reader(model: SemanticOrgModel, *, at_seq=None)` implements all three ports the composition needs, pinning `at_seq` once (default `current_version_seq()`):
+- `resolves(entity_type, external_id)` → `bool(get_entities(type, at_seq, {"sf_api_name": external_id}))` (the claim-grounding port).
+- `vrs_for_object(external_id)` → the exact S1ValidationRuleReader composition (Object → `get_related(["APPLIES_TO"], "inbound")` → ValidationRule → `get_entity_details` `is_active` + `attributes.formula_text`), returning S8-local `_GroundingVr(is_active, formula_text)` (no `VrMeta` import — parallel-siblings).
+- `active_values(object_external_id, field_api)` → resolve the Field by `sf_api_name` (compose `{object}.{field}` when undotted) → `get_entity_details` `picklist_value_set_entity_id` (None → not a picklist → return None) → `get_picklist_values` → frozenset of `value_api_name` where `is_active` (the field-value port).
+
+**2. The recompute (`recompute.py`).**
+- `load_current_artifacts(session)` — `SELECT test_id, version_seq FROM test_claims WHERE valid_to IS NULL` (no ready S2 API for "all current claims"); per claim, `coordinator.get_latest_claim` (the `asserted_truth` body) + `list_active_recipes` (the `observation_realization` bodies, **DataRecipeBody only** — the recipe legs are data-recipe-only) → `Artifact`. Returns `[ArtifactRef(test_id, version_seq, artifact)]`.
+- `recompute_grounding(session, artifact_refs, *, s1, at_seq, cap=100)` — the testable orchestration: per ref, **freshness** = a store row at `(test_id, version_seq)` with `evaluated_at_version_seq == at_seq`; fresh → skip; stale/absent → `grounding_validity(artifact, subjects=s1, vrs=s1, picklists=s1)` + `persist_grounding_validity(evaluated_at_version_seq=at_seq)`, up to `cap` groundings; returns `RecomputeResult(grounded, skipped_fresh, remaining)` (remaining = stale refs left past the cap — logged, never silently dropped).
+- `recompute_tenant_grounding(tenant_id, *, cap=100)` — the production wrapper: `get_tenant_connection` → `SemanticOrgModel(conn)` → `at_seq = current_version_seq()` (a tenant with no S1 versions raises `VersionNotFoundError` → 0, skipped) → `S8S1Reader(model, at_seq=at_seq)` + `Session(bind=conn)` → `load_current_artifacts` → `recompute_grounding`. The connection context owns the commit.
+- `run_s8_grounding_tick(tenant_ids, *, cap=100)` → `{tid: grounded}` with per-tenant try/except (mirrors `run_s3_reaper_tick`).
+
+**3. Scheduler wiring (`scheduler.py`).** `s8_grounding_tick(ctx)` folded into `scheduler_tick` (after `s4_reaper_tick`): enumerate tenants from `shared.tenants`, call `run_s8_grounding_tick`, log the total. Mirrors `s3_reaper_tick`.
+
+**No watermark table (refinement vs the plan).** The plan proposed a per-tenant `s8_grounding_watermark`. **Freshness is instead derived from the store** — a claim is fresh iff its verdict's `evaluated_at_version_seq` equals the current S1 seq. This needs **no new table/migration**, and is **cap-correct**: a partial recompute (cap hit) leaves stale claims un-fresh, so the next tick resumes them (a global watermark would wrongly mark "done"). When S1 advances, every claim's verdict is stale → re-grounded (recompute-all).
+
+**Deferred (the genuine remaining heavy mechanics).** The **change→impact reverse index** (narrow the recompute to claims actually hit by *this* S1 change — recompute-all is correct, just unoptimized); **re-grounding orchestration + supersession execution** (re-deriving payloads + authoring new identity-preserving versions — the large artifact-mutation body, gated on the autonomy boundary S8-Q-006); the per-artifact **job queue** (the freshness+inline approach is the simpler correct v1). All fenced.
+
+**Verification.** Governance-DB integration: **(a)** `S8S1Reader` against seeded S1 (an Object + an active VR with `formula_text` + `APPLIES_TO` + details; a picklist Field + value set + values) → `resolves` true/false, `vrs_for_object` returns the VR (is_active + formula), `active_values` returns the active set / None for a non-picklist (mirrors `test_s6_s1_reader`); **(b)** `recompute_grounding` over **injected** `ArtifactRef`s + a stub tri-port (no S1/S2 seed) → grounds + persists; a fresh row → skipped (no re-persist); a stale row (older seq) → re-grounded; `cap=1` over 2 stale → 1 grounded + 1 remaining; **(c)** `load_current_artifacts` decode — seed one claim + a data-recipe (via the coordinator) → returns the `ArtifactRef` with the decoded `Artifact`.
+
+---
+
 ---
