@@ -134,12 +134,16 @@ class EvalHarness:
                 "attrs": json.dumps(ent.get("attributes") or {})}).scalar()
             name_to_id[ent["sf_api_name"]] = eid
         for edge in fixture.get("edges", []):
+            # properties default to {} but a fixture may carry edge properties
+            # (e.g. a GRANTS_FIELD_ACCESS edge's can_edit bit — D-125 capability
+            # probe), mirroring the entity-attributes read above.
             conn.execute(text(
                 "INSERT INTO edges (source_entity_id, target_entity_id, edge_type, "
                 "edge_category, properties, valid_from_seq, valid_to_seq) "
-                "VALUES (CAST(:s AS uuid),CAST(:t AS uuid),:et,:ec,'{}'::jsonb,:vf,NULL)"
+                "VALUES (CAST(:s AS uuid),CAST(:t AS uuid),:et,:ec,CAST(:props AS jsonb),:vf,NULL)"
             ), {"s": str(name_to_id[edge["source"]]), "t": str(name_to_id[edge["target"]]),
-                "et": edge["edge_type"], "ec": edge.get("edge_category", "BEHAVIOR"), "vf": vseq})
+                "et": edge["edge_type"], "ec": edge.get("edge_category", "BEHAVIOR"),
+                "props": json.dumps(edge.get("properties") or {}), "vf": vseq})
         return int(vseq)
 
     def _make_request(self, vseq: int, *, requirement_text: str = "the requirement",
