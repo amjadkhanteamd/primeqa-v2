@@ -21,13 +21,16 @@ best-effort).
 from __future__ import annotations
 
 import dataclasses
+import uuid
+from dataclasses import dataclass, field
+from typing import Optional
 
 from sqlalchemy import Column, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from primeqa.db import Base
 from primeqa.execution_engine.result_store import RUN_OUTCOME_ENUM
-from primeqa.interpretation.model import Interpretation
+from primeqa.interpretation.model import Cause, EvidenceRef, Interpretation
 
 
 class S6Interpretation(Base):
@@ -113,3 +116,86 @@ def _detail(interpretation: Interpretation) -> dict:
         "cause": (dataclasses.asdict(interpretation.cause)
                   if interpretation.cause is not None else None),
     }
+
+
+# ---------------------------------------------------------------------------
+# The read API (D-137) — pure, tenant-scoped reads; the consumer surface over
+# the write-only store. No LLM, no v1 DB.
+# ---------------------------------------------------------------------------
+
+_LIST_HARD_CAP = 500  # the substrate list-bound convention (cf. core.repository)
+
+
+@dataclass(frozen=True)
+class InterpretationRead:
+    """The read-side projection of an ``s6_interpretations`` row — the hydrated
+    interpretation plus the persisted ``phrasing`` presentation layer (which the
+    produce-side :class:`Interpretation` does not carry). Returned by
+    :func:`read_interpretation` / :func:`list_interpretations`."""
+
+    run_id: uuid.UUID
+    recipe_id: uuid.UUID
+    claim_test_id: uuid.UUID
+    outcome: str
+    verdict: str
+    attribution: str
+    evidence_refs: tuple[EvidenceRef, ...] = field(default_factory=tuple)
+    cause: Optional[Cause] = None
+    phrasing: Optional[dict] = None
+
+
+def read_interpretation(session, run_id) -> Optional[InterpretationRead]:
+    """Read one interpretation by ``run_id`` (the PK) on the caller's
+    tenant-scoped session, or None when absent."""
+    row = (session.query(S6Interpretation)
+           .filter(S6Interpretation.run_id == run_id).one_or_none())
+    return _row_to_read(row) if row is not None else None
+
+
+def list_interpretations(session, *, recipe_id=None, claim_test_id=None,
+                         limit: int = 200) -> list[InterpretationRead]:
+    """List interpretations on the caller's tenant-scoped session, optionally
+    scoped by ``recipe_id`` / ``claim_test_id``. Ordered by ``run_id``
+    (deterministic — the row carries no timestamp axis) and bounded by
+    ``min(limit, 500)`` (the substrate list-bound convention)."""
+    q = session.query(S6Interpretation)
+    if recipe_id is not None:
+        q = q.filter(S6Interpretation.recipe_id == recipe_id)
+    if claim_test_id is not None:
+        q = q.filter(S6Interpretation.claim_test_id == claim_test_id)
+    rows = (q.order_by(S6Interpretation.run_id)
+            .limit(min(int(limit), _LIST_HARD_CAP)).all())
+    return [_row_to_read(r) for r in rows]
+
+
+def _row_to_interpretation(row) -> Interpretation:
+    """Hydrate an ``s6_interpretations`` row back into the in-memory
+    :class:`Interpretation` (the inverse of :func:`persist_interpretation` /
+    :func:`_detail`): rebuild the evidence refs + the structured cause from the
+    ``detail`` JSONB. ``outcome`` / ``verdict`` come from the typed columns."""
+    detail = row.detail or {}
+    refs = tuple(
+        EvidenceRef(step_id=r.get("step_id"), detail=r.get("detail", ""))
+        for r in detail.get("evidence_refs", []))
+    cause_d = detail.get("cause")
+    cause = (Cause(cause_kind=cause_d.get("cause_kind"),
+                   vr_name=cause_d.get("vr_name"),
+                   detail=cause_d.get("detail"))
+             if cause_d else None)
+    return Interpretation(
+        run_id=row.run_id, recipe_id=row.recipe_id,
+        claim_test_id=row.claim_test_id, outcome=row.outcome,
+        verdict=row.verdict, attribution=detail.get("attribution", ""),
+        evidence_refs=refs, cause=cause)
+
+
+def _row_to_read(row) -> InterpretationRead:
+    """Project a row into the read DTO — the hydrated interpretation plus the
+    persisted ``phrasing`` (the presentation layer)."""
+    interp = _row_to_interpretation(row)
+    return InterpretationRead(
+        run_id=interp.run_id, recipe_id=interp.recipe_id,
+        claim_test_id=interp.claim_test_id, outcome=interp.outcome,
+        verdict=interp.verdict, attribution=interp.attribution,
+        evidence_refs=interp.evidence_refs, cause=interp.cause,
+        phrasing=row.phrasing)

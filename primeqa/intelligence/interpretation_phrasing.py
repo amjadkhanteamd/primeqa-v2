@@ -25,7 +25,11 @@ from typing import Any, Dict, Optional
 
 from primeqa.intelligence.llm import LLMError, llm_call
 from primeqa.interpretation.model import Interpretation
-from primeqa.interpretation.result_store import S6Interpretation, set_phrasing
+from primeqa.interpretation.result_store import (
+    S6Interpretation,
+    read_interpretation,
+    set_phrasing,
+)
 
 log = logging.getLogger(__name__)
 
@@ -121,4 +125,65 @@ def get_or_phrase(
     return phrasing
 
 
-__all__ = ["InterpretationPhrasingEnricher", "get_or_phrase"]
+def interpretation_phrasing_enabled(db, tenant_id: int) -> bool:
+    """Return True when the tenant has opted into S6 interpretation phrasing
+    (migration 050: ``tenant_agent_settings.llm_enable_interpretation_phrasing``).
+
+    Reads the single flag column directly off the v1 ``db`` (a targeted SELECT,
+    **not** the ORM model — the column is intentionally unmapped, so existing
+    ``TenantAgentSettings`` queries are unaffected in any environment that has not
+    yet run migration 050). Absent row / missing column / any error → False: the
+    gate fails closed (mirrors ``_story_enrichment_enabled``) so a settings-lookup
+    blip can never fire the LLM. The flag lives on the v1 public schema (keyed by
+    ``tenant_id``) — unreachable from the substrate session — so the caller
+    resolves it here and hands the boolean to :func:`read_and_phrase`.
+    """
+    try:
+        from sqlalchemy import text
+        row = db.execute(
+            text("SELECT llm_enable_interpretation_phrasing "
+                 "FROM tenant_agent_settings WHERE tenant_id = :tid"),
+            {"tid": tenant_id}).first()
+        return bool(row and row[0])
+    except Exception:
+        return False
+
+
+def read_and_phrase(session, run_id, *, tenant_id: int, api_key: str,
+                    phrasing_enabled: bool):
+    """Read one S6 interpretation and, when ``phrasing_enabled``, fire the
+    on-demand LLM phrasing — the live consumer path that finally exercises
+    ``get_or_phrase`` outside tests (D-137).
+
+    Returns the :class:`~primeqa.interpretation.result_store.InterpretationRead`
+    (``.phrasing`` attached on a successful phrase / cache hit), or None when no
+    row exists. Best-effort: a disabled flag or a failed phrasing returns the
+    unphrased read.
+
+    The CALLER resolves ``phrasing_enabled`` (e.g. via
+    :func:`interpretation_phrasing_enabled` on the v1 db) because the flag lives
+    on the v1 ``tenant_agent_settings`` table, unreachable from the substrate
+    ``session`` that reaches ``s6_interpretations``.
+    """
+    read = read_interpretation(session, run_id)
+    if read is None or not phrasing_enabled:
+        return read
+    # Reconstruct the produce-side model from the DTO (same fields, minus the
+    # presentation layer) to feed the cache-or-phrase primitive.
+    interp = Interpretation(
+        run_id=read.run_id, recipe_id=read.recipe_id,
+        claim_test_id=read.claim_test_id, outcome=read.outcome,
+        verdict=read.verdict, attribution=read.attribution,
+        evidence_refs=read.evidence_refs, cause=read.cause)
+    phrasing = get_or_phrase(session, interp, tenant_id=tenant_id, api_key=api_key)
+    if phrasing is None:
+        return read                                    # best-effort: unphrased
+    return dataclasses.replace(read, phrasing=phrasing)
+
+
+__all__ = [
+    "InterpretationPhrasingEnricher",
+    "get_or_phrase",
+    "interpretation_phrasing_enabled",
+    "read_and_phrase",
+]

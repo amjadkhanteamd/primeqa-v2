@@ -18,13 +18,19 @@ from uuid import UUID
 # The semantic verdict taxonomy (slice 1) — what an S4 outcome *means* for the
 # requirement. Closed at v1; grows with recipe kinds / deeper attribution.
 Verdict = Literal[
-    # behavioral negative (data-recipe)
+    # behavioral negative (data-recipe, negative)
     "prohibition_enforced",          # passed: the violating create was rejected as asserted
     "prohibition_not_enforced",      # failed + create succeeded: the rule did NOT block it (a defect)
     "rejected_unasserted_reason",    # failed + rejected, but not with the asserted error_code
-    # inspection (metadata-recipe)
+    # positive value-claim (data-recipe, positive create-and-verify — D-136)
+    "value_persisted",               # passed: the create succeeded + the read-back value matched the assertion
+    "value_not_persisted",           # failed: created, but the read-back value did not match the assertion
+    # inspection — presence (metadata-recipe, `exists` assert: existence + metadata-relationship)
     "asserted_metadata_present",     # passed: the asserted relationship/metadata is there
     "asserted_metadata_absent",      # failed: it is not
+    # inspection — value (metadata-recipe, `equals`/`is_null` assert: property — D-136)
+    "asserted_value_matches",        # passed: the subject's metadata value equals the assertion
+    "asserted_value_differs",        # failed: it does not
     # both verticals
     "not_evaluated",                 # errored: the run couldn't be evaluated
 ]
