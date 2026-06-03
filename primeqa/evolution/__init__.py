@@ -35,6 +35,11 @@ never collapsed; ``broken`` > ``drifted`` > ``intact``). Pure; three ports.
 Phase 6 slice 4 (D-142): the **recorded-verdict store + read API** — persist a
 ``GroundingValidity`` to the per-tenant ``s8_grounding_validity`` table + read it
 back (the thin mechanics; the only DB-touching module). Persist + read only.
+
+Phase 6 slice 5 (D-143): the **S1-sync recompute trigger** — ``S8S1Reader`` (the
+production tri-port over ``SemanticOrgModel``) + ``recompute_grounding`` (freshness
++ cap) + ``run_s8_grounding_tick`` (the scheduler fan-out). S8 fires as the org
+evolves.
 """
 from primeqa.evolution.claim_grounding import (
     ClaimGroundingResult,
@@ -60,6 +65,14 @@ from primeqa.evolution.recipe_grounding import (
     recipe_grounding_validity,
     recipe_grounding_validity_for_recipe,
 )
+from primeqa.evolution.recompute import (
+    ArtifactRef,
+    RecomputeResult,
+    load_current_artifacts,
+    recompute_grounding,
+    recompute_tenant_grounding,
+    run_s8_grounding_tick,
+)
 from primeqa.evolution.result_store import (
     GroundingValidityRead,
     S8GroundingValidity,
@@ -67,6 +80,7 @@ from primeqa.evolution.result_store import (
     persist_grounding_validity,
     read_grounding_validity,
 )
+from primeqa.evolution.s1_reader import S8S1Reader
 
 __all__ = [
     # recipe-grounding leg (D-113)
@@ -95,4 +109,12 @@ __all__ = [
     "list_grounding_validity",
     "GroundingValidityRead",
     "S8GroundingValidity",
+    # S1-sync recompute trigger (D-143)
+    "S8S1Reader",
+    "load_current_artifacts",
+    "recompute_grounding",
+    "recompute_tenant_grounding",
+    "run_s8_grounding_tick",
+    "RecomputeResult",
+    "ArtifactRef",
 ]

@@ -287,6 +287,7 @@ def scheduler_tick(ctx):
     reap_stale_generation_jobs(ctx)   # migration 044 / Prompt 11
     s3_reaper_tick(ctx)               # D-106.4 slice 5 (substrate-3 queue)
     s4_reaper_tick(ctx)               # D-132 (substrate-4 execution queue)
+    s8_grounding_tick(ctx)            # D-143 (substrate-8 grounding recompute)
     trim_run_events(ctx)
 
 
@@ -331,6 +332,30 @@ def s3_reaper_tick(ctx):
             log.warning("reaped %d stale s3 generation job(s)", total)
     except Exception as e:
         log.warning("s3_reaper_tick failed: %s", e)
+
+
+def s8_grounding_tick(ctx):
+    """Recompute S8 grounding-validity for tenants whose S1 has advanced (D-143).
+
+    s8_grounding_validity is per-tenant, so enumerate active tenants from
+    shared.tenants and recompute each — per-tenant try/except (in
+    run_s8_grounding_tick) so one tenant's failure never starves the others.
+    Freshness is derived from the store (a claim is fresh iff its verdict was
+    computed against the current S1 seq), so a tick whose tenants are all fresh
+    is a cheap no-op.
+    """
+    try:
+        from primeqa.evolution.recompute import run_s8_grounding_tick
+        from primeqa.semantic.connection import admin_run_in_shared_schema
+        with admin_run_in_shared_schema() as conn:
+            tenant_ids = [r[0] for r in conn.execute(text(
+                "SELECT id FROM shared.tenants WHERE deleted_at IS NULL ORDER BY id"
+            )).fetchall()]
+        total = sum(run_s8_grounding_tick(tenant_ids).values())
+        if total:
+            log.info("s8 grounding: recomputed %d claim grounding(s)", total)
+    except Exception as e:
+        log.warning("s8_grounding_tick failed: %s", e)
 
 
 def s4_reaper_tick(ctx):
