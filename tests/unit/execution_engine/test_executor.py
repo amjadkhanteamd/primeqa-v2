@@ -161,6 +161,55 @@ def test_evidence_carries_recipe_and_claim_identity():
 
 
 # ---------------------------------------------------------------------------
+# existence execution (D-127) — the self-read path through the same executor
+# ---------------------------------------------------------------------------
+
+def _existence_plan(entity_type="Object", external_id="Account"):
+    """A real metadata-inspection plan from an emitted existence recipe — a
+    self-read of the subject's own metadata + assert `exists`."""
+    from primeqa.generation.emission import GroundedExistence
+    bundle = author_emission(GroundedExistence(
+        archetype="configuration", claim_kind="existence-claim", version_seq=7,
+        subject=_Endpoint(entity_id=uuid4(), entity_type=entity_type, external_id=external_id),
+        requirement_excerpt=f"{external_id} exists in the org"))
+    recipe = RecipeRead(
+        recipe_id=uuid4(), version_seq=1, valid_from=_NOW, valid_to=None,
+        claim_test_id=uuid4(), claim_version_seq=None,
+        trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
+        causal_initiation=bundle.causal_initiation,
+        observation_realization=bundle.observation_realization,
+        execution_environment=bundle.execution_environment,
+        priority=0, status="generated_unapproved", created_at=_NOW, updated_at=_NOW)
+    return build_metadata_inspection_plan(recipe)
+
+
+def test_existence_object_passes_via_entity_definition_self_read():
+    # existence on an Object routes through the EntityDefinition self-read; a
+    # non-empty result grounds `passed` (the self-read IS the verification).
+    client = _StubClient(rows=[{"QualifiedApiName": "Account"}])
+    ev = execute_metadata_inspection(_existence_plan("Object", "Account"),
+                                     client=client, environment_id=_ENV_ID)
+    assert ev.outcome == "passed"
+    read, assertion = ev.steps
+    assert "FROM EntityDefinition" in read.query
+    assert "QualifiedApiName = 'Account'" in read.query
+    assert read.edge == "sf_api_name"
+    assert assertion.held is True
+
+
+def test_existence_field_fails_when_absent():
+    # existence on a Field routes through FieldDefinition; an empty result is a
+    # grounded `failed` (the asserted field does not surface), not an error.
+    ev = execute_metadata_inspection(_existence_plan("Field", "Account.Industry"),
+                                     client=_StubClient(rows=[]), environment_id=_ENV_ID)
+    assert ev.outcome == "failed"
+    read = ev.steps[0]
+    assert "FROM FieldDefinition" in read.query
+    assert "EntityDefinition.QualifiedApiName = 'Account'" in read.query
+    assert ev.error is None
+
+
+# ---------------------------------------------------------------------------
 # Fail-loud paths (representation / plan defects — not run outcomes)
 # ---------------------------------------------------------------------------
 
