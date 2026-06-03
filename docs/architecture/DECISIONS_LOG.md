@@ -8026,4 +8026,75 @@ Phase 6 completes the grounding-validity predicate over the **realized** S1/S2/S
 
 ---
 
+## D-145 — Phase 7 opened: the greenfield cutover, authored docs-led
+
+**Date:** 2026-06-03
+**Substrates affected:** [cutover] (cross-substrate — the v1→substrate migration program). **No code, no migration — docs only.**
+**Status:** Active — Phase 7 (greenfield cutover) open, on `phase-15-greenfield-cutover`. Docs-led (mirrors S5's D-134 "ratify + consolidate, docs-led").
+
+"Phase 7 — greenfield cutover + meta_* drop" is the milestone where the substrate spine (S1–S8) replaces the live v1 product and the v1 `meta_*` tables are dropped. **Verified against the code, it is not executable as one phase today, and it is undesigned** — the intent is scattered across D-012 / D-065 / D-074 / D-111 / D-134 with no consolidated cutover doc:
+
+- `meta_*` is still the **live metadata store** the v1 product reads (generation context, the validator's CRUDQ, preflight staleness, the metadata UI) — dropping it now breaks production.
+- The S1 sync writer exists (`primeqa/sync/` — `SyncEngine.run_sync`, materialize/phases/edge_specs) but **no production trigger** runs the full Salesforce→`entities` materialization, and there is **no `meta_*`→S1 migration**.
+- The substrate outputs (S3/S4/S6/S8) are **not surfaced in the product UI** (S6/S8 are write-only, each deferring its consumer "to the Phase-7 cutover").
+
+So the cutover is a multi-month, multi-part program with a hard prerequisite (S1-sync proven in prod) and a single irreversible final step (the `meta_*` drop) — **not one executable phase.**
+
+**The chosen fork — open docs-led (mirrors S5's D-134).** Rather than barrel into a wholesale cutover (or drop `meta_*` against the premise-break), Phase 7 opens by **authoring the missing cutover design + sequencing it** into a gated, executable program. Zero production risk; the cutover then runs slice-by-slice off the SPEC in later phases. *(Considered + rejected: (b) the safe prep slices now — relocations + additive consumer wiring — premature without the sequence that orders them; (c) tackle the S1-sync prod blocker first — a substantial build the SPEC must scope before it is built; (d) defer the cutover + build S7 — leaves the program's largest risk undesigned. The design is the prerequisite for all three.)*
+
+**The deliverable: `docs/architecture/greenfield_cutover/`.** `SPEC.md` (slice 1) — the v1-module→substrate **disposition map** consolidated from the logged decisions (each row D-cited), the **migration strategy**, the **schema-topology resolution**, the **non-goals**. `SEQUENCE.md` + `EVOLUTION.md` (slice 2) — the **ordered, gated cutover steps** (the `meta_*` drop strictly last; each step entry/exit-gated + a rollback) + the **consolidated Phase-7 work-list** (every "deferred to the cutover" item across the substrate docs, folded into the sequence).
+
+**Two consolidations the SPEC fixes (grounded in the primary entries, not new policy):**
+- **Migration strategy = greenfield re-sync, NOT a `meta_*`→S1 backfill** (D-012: "the new Substrate 1 sync engine is greenfield, not bridged"; `meta_*` dropped in one migration "once S1 is verified as the production data source"). `meta_*` is kept read-only through a parallel-run window, dropped last.
+- **Terminology reconciliation:** D-012's "Phase 4 cutover" (the product-roadmap phase where S1 replaces `meta_*`) and "the Phase-7 greenfield cutover" (the engineering-phase counter) name the **same event**. The SPEC adopts "greenfield cutover" and notes the alias.
+
+**Boundary.** Docs only — **no code, no migration, no v1 behavior change** (inert deploy). The cutover *execution* (the S1-sync prod trigger, the re-sync + `meta_*` drop, the UI consumers, the S5 relocation, the S3 ledger retirement) is deferred to later phases, gated by this SPEC. The MIGRATE tables (`test_suites` / `sections` / `suite_test_cases` / `ba_reviews`) stay **out of the cutover entirely** — post-cutover future substrates (D-065). DECISIONS_LOG append-only; AK author / zero `Co-Authored-By`.
+
+**Verification.** Docs-only — internal consistency + fidelity to the logged decisions: every disposition-map row cites a real D-entry that says what the row claims; the `meta_*` drop is strictly last + gated; no code touched (the suite is inert; `primeqa.app` imports). Merge `phase-15-greenfield-cutover` → `main` via PR at close (D-147).
+
+---
+
+## D-146 — The greenfield cutover sequencing law: gated steps, the `meta_*` drop strictly last
+
+**Date:** 2026-06-03
+**Substrates affected:** [cutover]. **Docs only.**
+**Status:** Active — Phase 7 (greenfield cutover) slice 2, on `phase-15-greenfield-cutover`.
+
+The SPEC (D-145) fixed the cutover's target state (the disposition map + the greenfield re-sync strategy). This entry fixes the **sequencing law**: the cutover runs as **ordered, gated steps** — each with an entry-gate (what must hold), an exit-gate (what proves it done), and a rollback — with **one irreversible step, the `meta_*` drop, strictly last**.
+
+**The ordering principle — reversible-before-irreversible, additive-before-substitutive:**
+0. **S1-sync prod trigger** — fire `primeqa/sync/` against live Salesforce per tenant; populate `entities`/`edges` on a cadence. The hard prerequisite; additive (v1 still reads `meta_*`). Rollback: trivial.
+1. **Relocations (zero-risk)** — `primeqa/intelligence/knowledge/` → `primeqa/knowledge/` (+ `feedback_rules`); a pure move + import updates. Independent of step 0. Rollback: revert.
+2. **Additive substrate consumers** — surface S6 interpretations / S8 grounding verdicts / S3+S4 outputs in **additive** UI (no v1 removal). Rollback: hide.
+3. **v1 read-path switch (flagged)** — generation context / validator CRUDQ / preflight read S1, behind per-tenant flags, `meta_*` still populated. Rollback: flip the flag.
+4. **Parallel-run validation** — both stacks; S1-sourced == `meta_*`-sourced over a window; fold S6 verdicts into GO/NO-GO; retire the S3 ledger into S2 provenance (D-074). Rollback: extend / revert.
+5. **The `meta_*` drop (LAST, irreversible)** — drop `public.meta_*` + the DROP tables (D-065) in one migration; remove the v1 metadata module + the flags. **Entry-gate: a clean parallel-run window + S1 verified as the production data source (D-012). Rollback: none past here — the gate IS the safety.**
+
+**The consolidated work-list.** Every "deferred to the cutover" item across the substrate docs is folded into the step it belongs to (the SEQUENCE carries the full mapping): the S1-sync trigger → step 0; the S5 relocation + `feedback_rules` move → step 1; the S6 UI consumer + clustering dashboard + the S8 verdict surface + the S5→S3 forward-seam (the "v1-vs-substrate generation direction settles at the cutover") → step 2; the v1 read-path switch → step 3; the GO/NO-GO folding + the S3-ledger retirement → step 4; the `meta_*` re-sync completion + drop → step 5. So the ~dozen scattered deferrals (S5 D-134; S6 D-137 / D-111; S3 D-074) become one tracked checklist.
+
+**Invariant.** No step that removes a v1 read-path or drops a table runs before its substrate replacement is proven *additive → flagged → parity-validated*. The `meta_*` drop is the only irreversible step and is gated on the full parallel-run window. **Docs only** — this is the order the execution phases follow; nothing is built here.
+
+**Verification.** Internal consistency: every substrate `DEFERRED_ITEMS.md` "Phase-7 / cutover" item has a home in `SEQUENCE.md`; the step order is reversible-before-irreversible with `meta_*` drop strictly last + gated. Append-only.
+
+---
+
+## D-147 — Phase 7 close: the greenfield cutover, designed + sequenced (docs-led)
+
+**Date:** 2026-06-03
+**Substrates affected:** [cutover]. **Docs only — no code, no migration, no v1 behavior change.**
+**Status:** Active — Phase 7 (greenfield cutover) close, merging `phase-15-greenfield-cutover` → `main`.
+
+Phase 7 opened the greenfield cutover **docs-led** and authored its missing design — turning a loosely-defined, multi-month, production-touching program into an executable gated sequence, without touching production. Two slices:
+
+- **D-145 (open + SPEC).** The premise-break recorded (not executable as one phase: `meta_*` is the live store; no S1-sync prod trigger; no `meta_*`→S1 migration; no substrate UI consumers) + the docs-led fork chosen. `greenfield_cutover/SPEC.md` — the v1→substrate disposition map (D-cited), the greenfield re-sync migration strategy (not backfill, D-012), the realized per-tenant schema topology (D-015 built; D-023 superseded), the non-goals.
+- **D-146 (SEQUENCE).** The sequencing law — ordered, gated steps (reversible-before-irreversible) with the `meta_*` drop strictly last + gated. `greenfield_cutover/SEQUENCE.md` (the gated checklist + the coverage table folding every cutover deferral into its step) + `EVOLUTION.md` + reciprocal SEQUENCE pointers in the S5/S6 `DEFERRED_ITEMS.md`.
+
+**The outcome.** The cutover is now a single tracked, gated program — 6 steps (S1-sync prod trigger → relocations → additive consumers → flagged read-switch → parallel-run validation → `meta_*` drop), each with entry/exit gates + rollback, every scattered deferral (S5/S6/S3) given a home. Execution is later phases, one gated step each.
+
+**Deferred (the cutover *execution* — gated by this design).** Building each step: the S1-sync prod trigger; the S5 relocation; the substrate UI consumers + GO/NO-GO folding; the v1 read-path switch; the parallel run; the `meta_*` drop. The MIGRATE tables stay out of the cutover (post-cutover future substrates, D-065).
+
+**Merge gate.** Docs only — no code, no migration, no v1 behavior change. Internal consistency verified: every disposition-map row + SEQUENCE step cites a real D-entry; every substrate Phase-7 deferral has a SEQUENCE home (reciprocal pointers); the `meta_*` drop is strictly last + gated; DECISIONS_LOG + EVOLUTION append-only; `primeqa.app` imports (inert deploy). Merge `phase-15-greenfield-cutover` → `main` via PR.
+
+---
+
 ---
