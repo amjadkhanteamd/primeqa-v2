@@ -7742,3 +7742,21 @@ The worker layer driving `run_recipe_execution_async` (B0) off the `s4_execution
 **Verification.** Governance-DB integration (`tests/integration/execution_engine/test_consumer.py`, the B1 harness): empty queue → None; one job → claimed + attempted + `run_fn` called with the right args + completed; a raising run → failed + classified `error_code`; a raising `client_resolver` → failed (`credential_error`); `ran=False` → completed; `run_s4_execution_tick` per-tenant outcomes + isolation (a bogus tenant's claim raises → `error:…`, the real tenant still processes); `run_s4_reaper_tick` reaps a stale job. Pure-S4; no migration.
 
 ---
+
+## D-132 — S4 execution scheduler/worker wiring (Phase 3 slice B3)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S4] (execution — the worker + scheduler tick wiring). v1 `worker.py` + `scheduler.py` (the deploy services); no migration.
+**Status:** Active — Phase 3 (S4 execution) slice B3, on `phase-11-substrate-4-execution`. The last build slice — fires the B2 consumer + reaper from the Railway services.
+
+B2 built the consumer + reaper *functions*; B3 fires them from the deploy services, mirroring the S3 split exactly: the **consumer** tick runs in the **worker** loop (`worker.py`, beside `s3_generation_tick`), the **reaper** tick in the **scheduler** loop (`scheduler.py`, beside `s3_reaper_tick`).
+
+**Worker (`worker.py`).** `_default_s4_client_resolver(db_factory)` — the production `client_resolver`: `(tenant_id, environment_id) → resolve_tooling_client(db, environment_id)` (the env→connection-scoped SF token, the D-106.4 credential path), opening + closing a v1 session per resolve so **no connection is held into the async run's execute bracket**. `s4_execution_tick(db_factory=None, *, client_resolver=None)` discovers tenant schemas (`_discover_tenant_schemas`, the enrichment idiom) → `run_s4_execution_tick(tenant_ids, client_resolver=…)`; wired into `worker_tick` next to `s3_generation_tick`.
+
+**Scheduler (`scheduler.py`).** `s4_reaper_tick(ctx)` enumerates active tenants from `shared.tenants` (via `admin_run_in_shared_schema`) → `run_s4_reaper_tick(tenant_ids)`; wired into `scheduler_tick` next to `s3_reaper_tick`. A verbatim structural mirror of the proven `s3_reaper_tick`.
+
+**Enqueue source DEFERRED (Fork B3).** Nothing enqueues S4 jobs yet, so both ticks **no-op on an empty queue** today — exactly as `s3_generation_tick` did before its slice-4 enqueue. The *product* trigger (a post-approval hook on a freshly-approved recipe / scheduled re-verification / a CI release gate) is its own design — each implies different ownership + cadence — and is a tracked follow-on. Jobs can be enqueued programmatically via `ExecutionJobStore.create_or_get_job` (a later trigger slice, or a test). Shipping the queue + consumer + reaper + the firing wiring without a UI enqueue is coherent: the production loop is live and idle, ready for the trigger.
+
+**Verification.** Worker-side unit tests (`tests/unit/execution_engine/test_worker_wiring.py`, mock-patched like the S3 worker tests — no DB): `s4_execution_tick` no-ops `{}` on no tenants; delegates to `run_s4_execution_tick` with the discovered `tenant_ids` + the resolver; `_default_s4_client_resolver`'s closure raises on a `None` environment_id. `s4_reaper_tick` mirrors the (precedent-untested) `s3_reaper_tick` — verified by structural mirror + import; the underlying `run_s4_reaper_tick` logic is B2-tested. Pure wiring; no migration.
+
+---
