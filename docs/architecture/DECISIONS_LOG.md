@@ -7782,3 +7782,35 @@ Phase 3 closed the **generation→execution gap** Phase 2 opened (Phase 2 made e
 **Merge gate.** A real green run of the substrate-relevant suites — `execution_engine` (unit + the governance-DB integration: jobs + consumer), the worker wiring units, and the generation / representation / interpretation suites the run path touches — never the live Salesforce sandbox (deferred per decision: the metadata-inspection spine is already live-proven; the new predicates/self-reads + the async restructure are mechanism extensions, sandbox-confirmable post-merge like #82). One migration (`20260603_0010`), applied to the governance DB before its integration tests (proven via `alembic upgrade tenant@head`). Merge `phase-11-substrate-4-execution` → `main` via PR on green.
 
 ---
+
+## D-134 — Substrate-5 Knowledge ratification: open the formal Knowledge substrate over the realized machinery (Phase 4 slice 1)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S5] (the Knowledge System — opened as a formal substrate). Documentation + a unified public API + a contract drift-guard (Slice 2); no migration, no v1-runtime behavior change.
+**Status:** Active — Phase 4 (S5 Knowledge) slice 1, on `phase-12-substrate-5-knowledge`. The ratification, mirroring S2's D-121 readiness pattern.
+
+S5 is the **only core-path substrate built before it was documented.** Its machinery shipped in the v1 intelligence stack (≈ Apr 2026) and has fed v1 test-case generation in production since: the `KnowledgeProvider` port + `KnowledgeAssembler`, the system-rules JSON channel (33 rules), the feedback/learned channel, the Domain Packs channel. The PLATFORM_VISION names it Substrate 5 ("persists + improves the knowledge that shapes generation and execution… extends/formalizes the current Domain Packs and System Rules infrastructure"); the design order permits opening it after S1–S4. This entry **opens + ratifies** it as a formal substrate.
+
+**The binding scope — ratify + consolidate, docs-led (the chosen fork).** The exploration surfaced a real fork: S5 could (a) be ratified/formalized over the existing machinery, (b) also be wired into the S3-substrate generation (the forward-seam), or (c) also build the unbuilt vision (per-tenant learned facts). **(a) chosen.** Phase 4 formalizes what is built — a doc set + this ratification + a unified API + a contract drift-guard — and **defers all new wiring**. Rationale: the vision says "formalize the current infrastructure"; v1 is the live product, so relocating the code or wiring new consumers now would churn it for no functional gain; the eventual greenfield cutover (Phase 7) reorganizes packages anyway. Smallest correct change.
+
+**The ratified boundary.** S5 is a **retrieval/curation layer, not an LLM layer** — all knowledge is human-authored (git files, signal aggregation, DB rows); the LLM lives in the *consumer*. Knowledge flows one way (consumers read; S5 learns from signals *about* generations but never writes one). The provider-port contract: `Rule` (`id`/`object`/`field`/`category`/`rule_text`/`source`/`confidence`/`scope`) + `QueryContext` + `KnowledgeProvider.get_rules` + the `KnowledgeAssembler`'s dedup-by-id, **source-precedence `learned > curated > system`**, token cap, and **deterministic cache-stable render** (the prompt-cache invariant). Domain Packs are a **parallel** prescriptive channel (not a `KnowledgeProvider` — packs are ~1200-token patterns, not ≤140-char rules). Scoping: system rules global/git; domain packs global/git + the per-tenant `llm_enable_domain_packs` flag; feedback rules per-tenant DB (`generation_quality_signals`).
+
+**The realized consumer today is v1 generation, NOT the substrate spine.** `intelligence/generation.py` → the LLM gateway → `prompts/test_plan_generation.py` injects the three blocks; the S3-substrate generation (`primeqa/generation/`) carries only an attribution stub and does not consume S5. This v1-vs-substrate split is *why* the forward-seam needs a semantic-fit design (substrate gen emits claims, not test cases — different knowledge) and is deferred.
+
+**Slice 2 + boundary.** `knowledge/__init__.py` extended (additively) to export the full S5 surface incl. the Domain Packs channel; `tests/test_s5_knowledge_contract.py` pins the invariants. **Deferred** (DEFERRED_ITEMS): the S3-substrate forward-seam; serving S6; the unbuilt vision (per-tenant learned facts, cross-tenant patterns, the reserved `curated` provider slot); the physical relocation to `primeqa/knowledge/` (Phase-7 cutover). No migration; no v1 behavior change — the realized code is unchanged, only documented + given a coherent public API + a drift-guard.
+
+---
+
+## D-135 — Phase 4 close: S5 Knowledge opened, ratified, contracted
+
+**Date:** 2026-06-03
+**Substrates affected:** [S5] (close). Documentation + merge gate.
+**Status:** Active — Phase 4 (S5 Knowledge) **close**, merging `phase-12-substrate-5-knowledge` → `main`.
+
+Phase 4 opened S5 as a formal substrate over its already-deployed machinery (docs-led, per the binding scope). **Realized:** the substrate doc set (`substrate_5_knowledge/` SPEC/EVOLUTION/DEFERRED) + the D-134 ratification of the provider-port contract + the boundary; the **unified public API** (`knowledge/__init__` exports all three channels — provider port + both rule providers + the Domain Packs channel) — additive, no call-site change; the **contract drift-guard** (`test_s5_knowledge_contract.py`, 12 tests) pinning the surface + the `Rule`/`QueryContext` shape + the assembler invariants (dedup / `learned>system` precedence / byte-identical determinism / token cap / broken-provider tolerance) + domain-pack selection.
+
+**Deferred (designed, tracked):** the S3-substrate generation forward-seam (needs a semantic-fit design — substrate gen emits *claims*, not v1 test cases — so the v1-calibrated knowledge isn't a mechanical wire-in); serving S6 interpretation; the unbuilt vision (a per-tenant learned-knowledge provider; cross-tenant patterns; the reserved `curated` provider slot); the physical relocation `primeqa/intelligence/knowledge/` → `primeqa/knowledge/` (folded into the Phase-7 cutover). S5 is now a documented + contracted boundary future consumers build against — without churning the live v1 stack.
+
+**Merge gate.** A green run of the knowledge-relevant suites — `test_s5_knowledge_contract` + the existing `test_knowledge_architecture` / `test_domain_packs` / `test_generation_quality_gate` — never red. **No migration**; **no v1-runtime behavior change** (the only code delta is additive package exports + a new test), so the deploy is inert. Merge `phase-12-substrate-5-knowledge` → `main` via PR on green.
+
+---
