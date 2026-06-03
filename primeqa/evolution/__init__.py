@@ -31,6 +31,10 @@ false-``intact`` via S8's own :class:`PicklistReader` port. Produce-only.
 Phase 6 slice 3 (D-141): the **two-level composition** — ``grounding_validity``
 composes the three legs into the predicate (claim-level + recipe-level, composed
 never collapsed; ``broken`` > ``drifted`` > ``intact``). Pure; three ports.
+
+Phase 6 slice 4 (D-142): the **recorded-verdict store + read API** — persist a
+``GroundingValidity`` to the per-tenant ``s8_grounding_validity`` table + read it
+back (the thin mechanics; the only DB-touching module). Persist + read only.
 """
 from primeqa.evolution.claim_grounding import (
     ClaimGroundingResult,
@@ -56,6 +60,13 @@ from primeqa.evolution.recipe_grounding import (
     recipe_grounding_validity,
     recipe_grounding_validity_for_recipe,
 )
+from primeqa.evolution.result_store import (
+    GroundingValidityRead,
+    S8GroundingValidity,
+    list_grounding_validity,
+    persist_grounding_validity,
+    read_grounding_validity,
+)
 
 __all__ = [
     # recipe-grounding leg (D-113)
@@ -78,4 +89,10 @@ __all__ = [
     "GroundingValidity",
     "Artifact",
     "RecipeVerdict",
+    # recorded-verdict store + read API (D-142)
+    "persist_grounding_validity",
+    "read_grounding_validity",
+    "list_grounding_validity",
+    "GroundingValidityRead",
+    "S8GroundingValidity",
 ]
