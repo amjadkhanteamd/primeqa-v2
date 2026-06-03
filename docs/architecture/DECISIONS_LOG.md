@@ -7814,3 +7814,25 @@ Phase 4 opened S5 as a formal substrate over its already-deployed machinery (doc
 **Merge gate.** A green run of the knowledge-relevant suites — `test_s5_knowledge_contract` + the existing `test_knowledge_architecture` / `test_domain_packs` / `test_generation_quality_gate` — never red. **No migration**; **no v1-runtime behavior change** (the only code delta is additive package exports + a new test), so the deploy is inert. Merge `phase-12-substrate-5-knowledge` → `main` via PR on green.
 
 ---
+
+## D-136 — S6 full-surface verdicts: the positive value-claim branch + property value verdicts (Phase 5 slice 1)
+
+**Date:** 2026-06-03
+**Substrates affected:** [S6] (interpretation — the verdict surface). Pure-S6; no migration (`verdict` is a TEXT column).
+**Status:** Active — Phase 5 (S6 interpretation) slice 1, on `phase-13-substrate-6-interpretation`. Closes the interpretation gap for what S4 executes today; fixes a real mis-interpretation.
+
+S6's `interpret_run` dispatches on step shape: *any* `CreateAttemptEvidence` → the negative-prohibition branch; else → inspection. Two gaps against the **realized S4 execution surface** (Phase-3 closed: metadata-inspection incl. existence/property + data-recipe negative **and positive**):
+
+**The positive value-claim is mis-interpreted (a correctness bug, not just missing coverage).** The positive create-and-verify vertical (D-115) emits `[CreateAttemptEvidence, DataReadEvidence, AssertEvidence]` — so its `CreateAttemptEvidence` routes to `_interpret_behavioral`, which assumes a *violating* create that should be *rejected*. A passed value-claim is verdicted `prohibition_enforced` ("the violating create was rejected as asserted") — nonsense. **The fix — a robust discriminator:** the negative emits a *single* step `(create,)` (no assert); the positive emits create + read + assert. So `interpret_run` routes **create + AssertEvidence present → `_interpret_positive`** (the value-claim); **create alone → `_interpret_behavioral`** (the prohibition negative). `_interpret_positive` → `value_persisted` (passed: created + read-back value matched the assertion) / `value_not_persisted` (failed: created, but the read-back value differs) / `not_evaluated` (errored: create failed or 0-row read-back). Attribution derived from the evidence (the create's success, the read rows, the assert's `held`) — never generated.
+
+**Property inspection is imprecise.** existence + property both route to `_interpret_inspection` → `asserted_metadata_present`/`absent`. existence fits ("the field exists"); **property** (an `equals`/`is_null` value assert — `AssertEvidence.predicate` carries it) is mis-described as presence when the field IS present and only its *value* differs. **The fix:** `_interpret_inspection` dispatches on `assertion.predicate` — `exists` → present/absent (unchanged: existence + metadata-relationship); `equals`/`is_null` → `asserted_value_matches` (passed) / `asserted_value_differs` (failed).
+
+**Taxonomy.** `model.py` `Verdict` Literal grows by four: `value_persisted`, `value_not_persisted`, `asserted_value_matches`, `asserted_value_differs` (the closed taxonomy "grows with recipe kinds" — the SPEC's stated pattern). **No cause attribution** for positive/property failures yet (the *why* — value drift / org change — needs the deeper org-change-correlation work; deferred). **No migration** — `verdict` persists as TEXT.
+
+**Boundary.** No change to `attribute_run` (VR-cause is behavioral-negative only), the store, the run-path wiring, or the dormant verticals (capability/layout/ui/event/callout — no executor emits their evidence, so no verdict; deferred). The only *behavioral* change: the persisted verdict for a positive value-claim changes from a wrong value (`prohibition_enforced`) to a right one (`value_persisted`).
+
+**Verification.** Deterministic interpreter tests (pure, no DB): positive value-claim passed/failed/errored → the new verdicts (constructed `RunEvidence` or real `author_emission(GroundedPositive(...))` + the data executor with a stub client); property equals match/mismatch → value verdicts; existence still present/absent; **regression** — the negative prohibition + metadata-relationship verdicts unchanged.
+
+---
+
+---
