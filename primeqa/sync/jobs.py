@@ -88,11 +88,30 @@ class SyncJobStore:
         """Return the existing **active** job for ``connected_org_id`` or create a
         fresh ``queued`` one. Re-runnable: once the prior job is terminal there is
         no active row, so a new one is created. Race-safe via the partial-unique
-        ``ON CONFLICT … DO NOTHING`` then SELECT the active row."""
+        ``ON CONFLICT … DO NOTHING`` then SELECT the active row.
+
+        **Resume carry-forward (D-152).** A newly-created job's
+        ``last_sync_run_id`` is seeded from the org's most-recent *incomplete*
+        ``sync_run`` — ``status NOT IN ('success','partial_success') AND
+        last_completed_phase IS DISTINCT FROM 'Flow'`` — so the consumer resumes a
+        reaped/failed sync from ``last_completed_phase`` (the engine's
+        ``run_sync(resume_sync_run_id=…)``) instead of re-syncing from phase 1.
+        There is at most one such row per org (resume continues the same
+        ``sync_run`` rather than forking a new one), so newest-first is
+        unambiguous; NULL when none (a fresh sync). The seed is computed in the
+        INSERT's source SELECT, so a conflict (an active job already exists)
+        discards it via ``DO NOTHING`` — carry-forward only materializes when a new
+        job is actually created."""
         with get_tenant_connection(self._tenant_id) as conn:
             conn.execute(text(
-                "INSERT INTO s1_sync_jobs (connected_org_id, environment_id, created_by) "
-                "VALUES (CAST(:oid AS uuid), :eid, :cb) "
+                "INSERT INTO s1_sync_jobs "
+                "(connected_org_id, environment_id, created_by, last_sync_run_id) "
+                "SELECT CAST(:oid AS uuid), :eid, :cb, ("
+                "  SELECT sr.id FROM sync_runs sr "
+                "  WHERE sr.source_org_id = CAST(:oid AS uuid) "
+                "    AND sr.status NOT IN ('success', 'partial_success') "
+                "    AND sr.last_completed_phase IS DISTINCT FROM 'Flow' "
+                "  ORDER BY sr.started_at DESC LIMIT 1) "
                 f"ON CONFLICT (connected_org_id) WHERE {_ACTIVE} DO NOTHING"
             ), {"oid": str(connected_org_id), "eid": environment_id, "cb": created_by})
             row = conn.execute(text(
