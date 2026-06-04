@@ -107,6 +107,14 @@ class TestManagementService:
     # negative / boundary / edge / regression. Each becomes a TC row in
     # one generation batch so the user can see "why 5 TCs?" and audit cost.
 
+    def _metadata_accessor(self, tenant_id, metadata_repo):
+        """Cutover Step 3 (D-158): wrap the meta_* repo in the flag-gated
+        ``MetadataAccessor`` — the single switch point for v1's metadata reads.
+        Slice 3.1 passes ``s1_reader=None`` (pure passthrough — identical v1
+        behavior); 3.2+ builds the S1 reader here."""
+        from primeqa.metadata.accessor import MetadataAccessor
+        return MetadataAccessor(tenant_id, metadata_repo, s1_reader=None)
+
     def generate_test_plan(self, tenant_id, requirement_id, environment_id,
                            created_by, env_repo, conn_repo, metadata_repo,
                            min_tests=3, max_tests=6):
@@ -157,8 +165,12 @@ class TestManagementService:
         llm_client.api_key = api_key  # ensure attr exists for gateway lookup
         model = llm_conn["config"].get("model", "claude-sonnet-4-20250514")
 
+        # Cutover Step 3 (D-158): route metadata reads through the flag-gated
+        # accessor (s1_reader=None → passthrough in 3.1). One accessor feeds
+        # both the generator + the validator, so the flag is read once.
+        accessor = self._metadata_accessor(tenant_id, metadata_repo)
         generator = TestCaseGenerator(
-            llm_client, metadata_repo,
+            llm_client, accessor,
             tenant_id=tenant_id, user_id=created_by, api_key=api_key,
         )
         plan = generator.generate_plan(
@@ -173,7 +185,7 @@ class TestManagementService:
         # Lazy import to keep cold-start light; validator is cheap to
         # construct since metadata is hot in memory by this point.
         from primeqa.intelligence.validator import TestCaseValidator
-        validator = TestCaseValidator(metadata_repo, env.current_meta_version_id)
+        validator = TestCaseValidator(accessor, env.current_meta_version_id)
 
         # Prompt 13 wiring: structural linter runs after the LLM returns
         # + before each TC version persists. Shares the validator's
@@ -625,7 +637,8 @@ class TestManagementService:
         if not meta_version_id:
             meta_version_id = tcv.metadata_version_id
 
-        validator = TestCaseValidator(metadata_repo, meta_version_id)
+        validator = TestCaseValidator(
+            self._metadata_accessor(tenant_id, metadata_repo), meta_version_id)
         report = validator.validate(tcv.steps or [])
         self._store_validation_report(tcv.id, report, meta_version_id)
         return report
@@ -648,7 +661,9 @@ class TestManagementService:
         if not tcv:
             raise NotFoundError("Test case version not found")
 
-        validator = TestCaseValidator(metadata_repo, tcv.metadata_version_id)
+        validator = TestCaseValidator(
+            self._metadata_accessor(tenant_id, metadata_repo),
+            tcv.metadata_version_id)
         new_steps = validator.apply_fix(tcv.steps or [], issue, replacement)
 
         # Create a new version (same convention as regenerate)
@@ -709,7 +724,8 @@ class TestManagementService:
         llm_client = anthropic.Anthropic(api_key=llm_conn["config"].get("api_key", ""))
         model = llm_conn["config"].get("model", "claude-sonnet-4-20250514")
 
-        generator = TestCaseGenerator(llm_client, metadata_repo)
+        generator = TestCaseGenerator(
+            llm_client, self._metadata_accessor(tenant_id, metadata_repo))
         result = generator.generate(requirement, env.current_meta_version_id, model=model)
 
         # Whether the final write was a fresh TC, a reuse of an existing
