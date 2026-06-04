@@ -27,6 +27,22 @@ from sqlalchemy import text
 log = logging.getLogger(__name__)
 
 
+def cutover_read_s1_enabled(db, tenant_id) -> bool:
+    """Tolerant read of the per-tenant ``cutover_read_s1`` flag (→ False on a
+    missing row / column / any DB error). Shared by the accessor (to gate usage)
+    and the service (to gate the — potentially expensive — S1 reader build, so a
+    flag-off tenant never hydrates S1)."""
+    try:
+        row = db.execute(text(
+            "SELECT cutover_read_s1 FROM tenant_agent_settings "
+            "WHERE tenant_id = :tid"), {"tid": tenant_id}).first()
+        return bool(row and row[0])
+    except Exception as exc:                     # missing row/column / DB blip
+        log.warning("cutover_read_s1 read failed for tenant %s: %s "
+                    "(defaulting to meta_*)", tenant_id, exc)
+        return False
+
+
 class MetadataAccessor:
     """Flag-gated facade over the ``meta_*`` read-interface. Per read:
     ``cutover_read_s1 AND s1_reader ? S1 : meta_*``. Everything not switched
@@ -41,16 +57,7 @@ class MetadataAccessor:
         self._use_s1 = bool(s1_reader) and self._flag_on()
 
     def _flag_on(self) -> bool:
-        """Read ``tenant_agent_settings.cutover_read_s1`` (tolerant → False)."""
-        try:
-            row = self._repo.db.execute(text(
-                "SELECT cutover_read_s1 FROM tenant_agent_settings "
-                "WHERE tenant_id = :tid"), {"tid": self._tenant_id}).first()
-            return bool(row and row[0])
-        except Exception as exc:                 # missing row/column / DB blip
-            log.warning("cutover_read_s1 read failed for tenant %s: %s "
-                        "(defaulting to meta_*)", self._tenant_id, exc)
-            return False
+        return cutover_read_s1_enabled(self._repo.db, self._tenant_id)
 
     # -- the switched reads (S1 when routed, else meta_*) --------------------
     def get_objects(self, meta_version_id):

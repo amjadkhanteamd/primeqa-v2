@@ -107,13 +107,24 @@ class TestManagementService:
     # negative / boundary / edge / regression. Each becomes a TC row in
     # one generation batch so the user can see "why 5 TCs?" and audit cost.
 
-    def _metadata_accessor(self, tenant_id, metadata_repo):
-        """Cutover Step 3 (D-158): wrap the meta_* repo in the flag-gated
+    def _metadata_accessor(self, tenant_id, metadata_repo, *, with_s1_reader=False):
+        """Cutover Step 3 (D-158/D-159): wrap the meta_* repo in the flag-gated
         ``MetadataAccessor`` — the single switch point for v1's metadata reads.
-        Slice 3.1 passes ``s1_reader=None`` (pure passthrough — identical v1
-        behavior); 3.2+ builds the S1 reader here."""
-        from primeqa.metadata.accessor import MetadataAccessor
-        return MetadataAccessor(tenant_id, metadata_repo, s1_reader=None)
+
+        ``with_s1_reader`` (D-159): the GENERATION sites pass ``True`` (they
+        tolerate the field-CRUD GAP — the descriptive context approximates
+        createable); the VALIDATOR sites stay ``False`` until 3.4 (their CRITICAL
+        ``field_not_createable`` check needs the real flags 3.3 adds). The S1
+        reader is built ONLY when ``cutover_read_s1`` is on (no wasted hydrate for
+        flag-off tenants) and is best-effort (empty/error S1 → None → meta_*)."""
+        from primeqa.metadata.accessor import (
+            MetadataAccessor, cutover_read_s1_enabled,
+        )
+        s1_reader = None
+        if with_s1_reader and cutover_read_s1_enabled(metadata_repo.db, tenant_id):
+            from primeqa.metadata.s1_reader import build_metadata_s1_reader
+            s1_reader = build_metadata_s1_reader(tenant_id)
+        return MetadataAccessor(tenant_id, metadata_repo, s1_reader=s1_reader)
 
     def generate_test_plan(self, tenant_id, requirement_id, environment_id,
                            created_by, env_repo, conn_repo, metadata_repo,
@@ -165,12 +176,15 @@ class TestManagementService:
         llm_client.api_key = api_key  # ensure attr exists for gateway lookup
         model = llm_conn["config"].get("model", "claude-sonnet-4-20250514")
 
-        # Cutover Step 3 (D-158): route metadata reads through the flag-gated
-        # accessor (s1_reader=None → passthrough in 3.1). One accessor feeds
-        # both the generator + the validator, so the flag is read once.
-        accessor = self._metadata_accessor(tenant_id, metadata_repo)
+        # Cutover Step 3 (D-159): the GENERATION accessor gets the S1 reader
+        # (with_s1_reader=True); the VALIDATOR stays on meta_* until 3.4 (its
+        # CRITICAL field_not_createable check needs the field-CRUD flags 3.3 adds
+        # — the generation context only approximates createable, fine for a
+        # descriptive prompt). Separate accessors → distinct read sources.
+        gen_accessor = self._metadata_accessor(
+            tenant_id, metadata_repo, with_s1_reader=True)
         generator = TestCaseGenerator(
-            llm_client, accessor,
+            llm_client, gen_accessor,
             tenant_id=tenant_id, user_id=created_by, api_key=api_key,
         )
         plan = generator.generate_plan(
@@ -185,7 +199,9 @@ class TestManagementService:
         # Lazy import to keep cold-start light; validator is cheap to
         # construct since metadata is hot in memory by this point.
         from primeqa.intelligence.validator import TestCaseValidator
-        validator = TestCaseValidator(accessor, env.current_meta_version_id)
+        validator = TestCaseValidator(
+            self._metadata_accessor(tenant_id, metadata_repo),
+            env.current_meta_version_id)
 
         # Prompt 13 wiring: structural linter runs after the LLM returns
         # + before each TC version persists. Shares the validator's
@@ -725,7 +741,8 @@ class TestManagementService:
         model = llm_conn["config"].get("model", "claude-sonnet-4-20250514")
 
         generator = TestCaseGenerator(
-            llm_client, self._metadata_accessor(tenant_id, metadata_repo))
+            llm_client,
+            self._metadata_accessor(tenant_id, metadata_repo, with_s1_reader=True))
         result = generator.generate(requirement, env.current_meta_version_id, model=model)
 
         # Whether the final write was a fresh TC, a reuse of an existing
