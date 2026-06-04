@@ -19,7 +19,7 @@ This document exists because the cutover was, until now, **undesigned** — its 
 Three facts make the cutover a multi-step program with a hard prerequisite and an irreversible tail, not a single change (full rationale: D-145):
 
 - **`meta_*` is live.** The v1 product reads it for generation context, the validator's CRUDQ flags, preflight staleness, and the metadata UI (`primeqa/metadata/`, `primeqa/intelligence/generation.py` + `validator.py`, `primeqa/runs/preflight.py`, `primeqa/views.py`). Dropping it without a proven replacement breaks production.
-- **S1 is built but not production-fired.** The sync *writer* exists (`primeqa/sync/` — `SyncEngine.run_sync`, materialize/phases/edge_specs; the worker enriches `entities` with embeddings/`semantic_text`), and the per-tenant substrate schema is **real** (§4). But **no production trigger** invokes the full Salesforce→`entities` materialization, so S1 is not yet the live metadata source.
+- **S1 is built; the production trigger is now built but not yet live-proven.** The sync *writer* exists (`primeqa/sync/` — `SyncEngine.run_sync`, materialize/phases/edge_specs; the worker enriches `entities` with embeddings/`semantic_text`), and the per-tenant substrate schema is **real** (§4). A **production trigger is now built** (cutover Step 0, D-150–D-153: the `s1_sync_jobs` queue + the consumer/enqueuer/reaper ticks, governance-tested) but **not yet live-proven** against a real org — the live-SF run that materializes Salesforce→`entities` + the `meta_*` parity probe is **ops-deferred** — so S1 is not yet *confirmed* as the live metadata source.
 - **The spine is dormant to the product.** S3/S4 have async job queues but no standing trigger; S6/S8 are write-only with **no UI consumer** (each deferred "to the Phase-7 cutover").
 
 Therefore the **`meta_*` drop is the LAST, gated step** — it never precedes a proven S1-in-prod + a clean parallel-run window (§3, SEQUENCE).
@@ -46,7 +46,7 @@ The authoritative v1→substrate dispositions, consolidated from the logged deci
 **Decided (D-012): the S1 sync engine is greenfield, "not bridged."** S1 is populated by **re-syncing from live Salesforce** (`primeqa/sync/` reading the Tooling/Describe APIs), **not** by transforming `meta_*` rows into `entities`/`edges`. Rationale (D-012 + the readiness audit): a `meta_*`→S1 backfill is lossy (edges must be re-derived from org state anyway) and risks staleness; a fresh sync is authoritative.
 
 The cutover therefore runs a **parallel-run window**:
-1. Build + fire the S1-sync **production trigger** (the missing piece) so `entities`/`edges` are populated per tenant from live Salesforce, on a refresh cadence.
+1. Build + fire the S1-sync **production trigger** (**built** — cutover Step 0, D-150–D-153; **live-firing against a real org is the ops step**) so `entities`/`edges` are populated per tenant from live Salesforce, on a refresh cadence.
 2. Switch the v1 read-paths (generation context, validator CRUDQ, preflight) to read S1 **behind flags**, with `meta_*` still populated + readable as the fallback (parallel run).
 3. Validate parity over the window (S1-sourced reads vs `meta_*`-sourced reads agree).
 4. **Only then** drop `meta_*` in one migration — D-012's "once S1 is verified as the production data source." `meta_*` carries no forward data into S1; it is retired, optionally archived for audit.

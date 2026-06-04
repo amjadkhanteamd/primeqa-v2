@@ -8,7 +8,7 @@ This is the order the execution phases follow. **Nothing here is built in Phase 
 
 ---
 
-## Step 0 — S1-sync production trigger *(the hard prerequisite)*
+## Step 0 — S1-sync production trigger *(the hard prerequisite)* — ✅ BUILT (D-150–D-153; live-proving → ops)
 
 Make S1 the *live* metadata source: fire `primeqa/sync/` (`SyncEngine.run_sync`) against live Salesforce per tenant on a refresh cadence, populating `entities`/`edges`/details in the per-tenant schema. **Additive** — v1 still reads `meta_*` throughout; nothing of v1's behaviour changes.
 
@@ -16,6 +16,7 @@ Make S1 the *live* metadata source: fire `primeqa/sync/` (`SyncEngine.run_sync`)
 - **Work:** wire a production trigger (a scheduler tick and/or an on-demand route) that runs `SyncEngine.run_sync` per tenant + records a refresh cadence + sync-run correlation. *(Carries: the S1-sync prod-trigger gap — the readiness audit's #1 blocker.)*
 - **Exit-gate:** `entities`/`edges` populated from live orgs for the pilot tenants; the cadence runs; a parity probe (S1 entity/field counts vs `meta_*`) agrees within tolerance.
 - **Rollback:** trivial — S1 is additive; disable the trigger, v1 is untouched.
+- **Landed (D-150–D-153):** the trigger is **built + governance-tested, the engine untouched** (it was finished-but-dormant — zero prod callers). **S0.1 (D-150)** — `connected_orgs.environment_id` (the missing env→sync-target link) + `resolve_sync_sf_client` (reuses v1's `_oauth_token`, pre-seeding the engine's refresh-token-grant client via an additive `access_token` param — the grant mismatch resolved) + `ensure_connected_org_for_environment`. **S0.2 (D-151)** — the `s1_sync_jobs` per-tenant queue + `SyncJobStore` (mirrors `s4_execution_jobs` minus the attempts table; `last_sync_run_id` resume anchor; 45-min reaper). **S0.3 (D-152)** — the consumer (claim → `resolve_sync_sf_client` → `run_sync` → complete/fail via `sync_runs.status`, since the engine captures phase failure in the row); **resume-on-reap** wired (carry-forward seeds the anchor from the org's incomplete `sync_run`; `run_sync(resume_sync_run_id=…)`). **S0.4 (D-153)** — the enqueuer cadence (24 h + prompt resume) + the scheduler ticks (`s1_sync_enqueuer_tick`/`s1_sync_reaper_tick`) + the worker consumer tick (`s1_sync_tick`). Additive: 2 tenant migrations (`20260604_0010`/`0020`) + new `primeqa/sync/{credentials,jobs,consumer}.py` + thin scheduler/worker wiring; **no engine/phase edits.** 29 governance tests (stubbed SF + a fake engine); app/worker/scheduler import. **The exit-gate's live-SF half — `entities`/`edges` from a real org + the `meta_*` parity probe — is ops-deferred** (the `@pytest.mark.sandbox` e2e suites; needs SF creds + ~30 min). So Step 0 lands **built + governance-tested**; S1-goes-live is the ops run.
 
 ## Step 1 — Relocations *(zero-risk; independent of step 0)* — ✅ DONE (D-148)
 
@@ -71,7 +72,7 @@ Every "deferred to the cutover" item across the substrate docs, mapped to its st
 
 | Deferred item | Source | Step |
 |---|---|---|
-| S1-sync production trigger (populate `entities` from live Salesforce) | readiness audit / D-012 | **0** |
+| S1-sync production trigger (populate `entities` from live Salesforce) ✅ **built (D-150–D-153; live-proving → ops)** | readiness audit / D-012 | **0** |
 | S5 relocation `intelligence/knowledge/` → `primeqa/knowledge/` ✅ **done (D-148)** | D-134 | **1** |
 | `feedback_rules.py` move (part of the same relocation) | D-134 | **1** |
 | S6 user-facing UI/dashboard consumer + always-on trigger | D-137 | **2** |

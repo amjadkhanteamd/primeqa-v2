@@ -8209,4 +8209,27 @@ S0.4 wires the dormant engine's trigger into the running services — the cadenc
 
 ---
 
+## D-154 — Cutover Step 0 close: the S1-sync production trigger, built (live-proving → ops)
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (the sync trigger — built + governance-tested) + 2 tenant migrations (`20260604_0010`/`0020`) + thin scheduler/worker wiring. **No engine/phase edits, no v1 behaviour change.**
+**Status:** Active — greenfield-cutover **Step 0 close**, merging `phase-17-cutover-step0-s1-sync-trigger` → `main`. Executes + closes the SEQUENCE's hardest step (the readiness audit's #1 blocker).
+
+Step 0 wired a production trigger to the **finished-but-dormant** S1 sync engine (`SyncEngine.run_sync`, all 11 phases, zero prior prod callers) — four build slices + this close, no engine/phase edits:
+
+- **S0.1 (D-150)** — `connected_orgs.environment_id` + `resolve_sync_sf_client` (reuses v1's `_oauth_token`, pre-seeds the engine's refresh-token-grant client via an additive `access_token` param — the grant mismatch resolved) + `ensure_connected_org_for_environment`.
+- **S0.2 (D-151)** — the `s1_sync_jobs` queue + `SyncJobStore` (mirrors `s4_execution_jobs` minus the attempts table; `last_sync_run_id` resume anchor; 45-min reaper).
+- **S0.3 (D-152)** — the consumer (complete/fail via `sync_runs.status`; **resume-on-reap** via carry-forward from the org's incomplete `sync_run`).
+- **S0.4 (D-153)** — the enqueuer cadence (24 h + prompt resume) + the scheduler ticks + the worker consumer tick.
+
+**The realized loop:** the scheduler enqueues (`s1_sync_enqueuer_tick`) → the worker consumes (`s1_sync_tick` → claim → resolve creds → `run_sync` → complete/fail) → the scheduler reaps (`s1_sync_reaper_tick`; 45-min stale → resumable). Additive throughout: 2 tenant migrations, new `primeqa/sync/{credentials,jobs,consumer}.py`, thin scheduler/worker wiring — **no engine/phase edits, no v1 read-path change** (v1 still reads `meta_*`; this is the additive Step-0 of the gated SEQUENCE).
+
+**Doc currency.** Cutover `SEQUENCE.md` Step 0 marked **✅ BUILT (live-proving → ops)** + its coverage row; `SPEC.md` realized-state (the S1 production trigger now exists but isn't live-proven); `EVOLUTION.md` Step-0 build-arc entry (D-150–D-154).
+
+**Deferred → ops/later (the standing follow-ons).** The **live-SF prod-proving** — a real `run_sync` against a connected org → `entities`/`edges`/`sync_runs`/`ai_enrichment_queue` rows + the `meta_*` parity probe — is unavoidably ops (needs SF creds + ~30 min; the `@pytest.mark.sandbox` e2e suites cover it). The **prod-migration applies** (`20260604_0010`/`0020`) join the standing list. The **interactive "sync this env now" v1 route** → cutover Step 3. **Per-org cadence config** → ops enhancement.
+
+**Merge gate.** The 29 S1-sync governance suites green (`tests/integration/sync/` — jobs + consumer + enqueuer) + `import primeqa.app` / `primeqa.worker` / `primeqa.scheduler` (the wiring compiles; app verified with dummy secrets — the prior `JWT_SECRET` error is env-only, unchanged). No engine/phase change; no v1 behaviour change. Merge `phase-17-cutover-step0-s1-sync-trigger` → `main` via PR.
+
+---
+
 ---
