@@ -28,7 +28,7 @@ Move S5 to its own top-level package, the one concrete relocation the cutover ow
 - **Rollback:** revert the move.
 - **Landed (D-148):** `git mv` (renames preserved) + the import rewrite across the 6 importers; **`feedback_rules.py` STAYED** in `intelligence/llm/` (wrapped via `LearnedRulesProvider` — moving it would churn 13 importers for no gain). A `system_rules.py` `__file__`-relative default-path fix (`..`×3 → ×2 for the up-one-level move) was caught + fixed by the suite. 29 relocation tests green; app import OK.
 
-## Step 2 — Additive substrate consumers *(no v1 removal)*
+## Step 2 — Additive substrate consumers *(no v1 removal)* — ✅ BUILT (additive surface, D-155/D-156; run-detail graft + release-grain → Steps 3–4)
 
 Make the dormant substrate outputs **visible** alongside v1 — additive UI/read surfaces, nothing removed.
 
@@ -36,6 +36,7 @@ Make the dormant substrate outputs **visible** alongside v1 — additive UI/read
 - **Work:** wire the S6 read API (`read_interpretation` / `list_interpretations`) into a run-detail interpretation view; surface S8 grounding-validity verdicts + the S6 clustering reads (`cluster_*`) in a dashboard/route; show S3/S4 substrate outputs. Settle the **S5→S3 forward-seam** here (the "v1-vs-substrate generation direction settles at the cutover"). *(Carries: S6 UI consumer + always-on trigger — D-137; the clustering release-grain + dashboard consumer — D-137; the S5→S3 forward-seam — D-134.)*
 - **Exit-gate:** substrate outputs render in the product (additively), reviewed for parity-of-meaning with the v1 surfaces.
 - **Rollback:** hide the additive surfaces.
+- **Landed (D-155 / D-156).** The standalone **`/substrate-insights`** page (the first v1→substrate read bridge, `get_substrate_insights`) surfaces S6 interpretations + cross-run clustering + S8 grounding-validity, additively + best-effort, with empty-states (the stores are empty until Step 0's live-SF run lands data); 35 governance tests. The **S5→S3 forward-seam** was settled — **not wired** (D-156: v1 generation stays as the product path; S3 parallel + downstream-only). **Deferred to Steps 3–4 (a verified premise break):** the **v1-run-grafted S6 panel** + the **release-grain clustering** both need a v1↔substrate run correlation the data model lacks — the two execution worlds are disjoint (no shared key, no write-path), and unifying them is the flagged read-switch / parallel-run, not additive Step 2. The live data + the parity-of-meaning review are ops-deferred (the live half, like Step 0).
 
 ## Step 3 — v1 read-path switch *(flagged; `meta_*` still populated)*
 
@@ -75,10 +76,10 @@ Every "deferred to the cutover" item across the substrate docs, mapped to its st
 | S1-sync production trigger (populate `entities` from live Salesforce) ✅ **built (D-150–D-153; live-proving → ops)** | readiness audit / D-012 | **0** |
 | S5 relocation `intelligence/knowledge/` → `primeqa/knowledge/` ✅ **done (D-148)** | D-134 | **1** |
 | `feedback_rules.py` move (part of the same relocation) | D-134 | **1** |
-| S6 user-facing UI/dashboard consumer + always-on trigger | D-137 | **2** |
-| S6 clustering release-grain view + dashboard/route consumer | D-137 | **2** |
-| S5→S3 generation forward-seam (settles at the cutover) | D-134 | **2** |
-| S8 grounding-validity verdict surface | D-143 (implied) | **2** |
+| S6 user-facing UI/dashboard consumer ✅ **standalone surface landed (D-155)**; run-detail graft + always-on trigger → Steps 3–4 | D-137 | **2** |
+| S6 clustering ✅ **surfaced tenant-wide (D-155)**; release-grain view → Steps 3–4 (needs the v1↔substrate run key) | D-137 | **2** |
+| S5→S3 generation forward-seam ✅ **settled — not wired (D-156)** | D-134 | **2** |
+| S8 grounding-validity verdict surface ✅ **landed (D-155)** | D-143 (implied) | **2** |
 | v1 read-path switch → S1 (generation / validator / preflight) | D-012 / D-003 | **3** |
 | Folding S6 verdicts into v1's GO/NO-GO | D-111 / D-137 | **4** |
 | S3 semantic-ledger retirement → S2 provenance (`get_provenance`) | D-074 | **4** |

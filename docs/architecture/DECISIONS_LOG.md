@@ -8232,4 +8232,67 @@ Step 0 wired a production trigger to the **finished-but-dormant** S1 sync engine
 
 ---
 
+## D-155 — Cutover Step 2 / Slice 2.1: the substrate-insights read surface
+
+**Date:** 2026-06-04
+**Substrates affected:** [S6, S8] (read-only consumers) + v1 (new `primeqa/intelligence/substrate_insights.py`, a `views.py` route, a template, a `navigation.py` entry). **No migration; no substrate-package change; no v1 behaviour change** (an additive read-only page).
+**Status:** Active — greenfield-cutover **Step 2, slice 2.1** (the lead), on `phase-18-cutover-step2-substrate-consumers`. Makes the dormant substrate outputs **visible additively** in the v1 product — the first v1→substrate read consumer.
+
+Step 2 surfaces the substrate outputs (S6 interpretation + clustering, S8 grounding-validity) in v1, additively. Slice 2.1 builds the first + cleanest surface: a standalone **`/substrate-insights`** read page. Three exploration findings shaped the choice.
+
+**Why a standalone page (not a graft onto `/runs/:id`).** S6's `read_interpretation` keys on `s4_execution_runs.run_id` (a substrate UUID), **not** v1's `pipeline_runs.id`; no correlation exists (D-137's "substrate runs ≠ v1 pipeline-runs"). So an S6 panel cannot naively attach to the v1 run-detail page. A standalone page **keyed on substrate ids** sidesteps the mismatch entirely; the v1-run↔substrate-run correlation seam (for the eventual grafted panel) is deferred to slice 2.3.
+
+**The session seam — v1 owns the bridge.** The S6/S8 read APIs (`list_interpretations`, `cluster_recurring_causes`/`cluster_by_vr`/`cluster_flapping`, `list_grounding_validity`) run on a **tenant-schema-scoped ORM `Session`**; v1 Flask routes hold the main-DB session. The bridge is `with get_tenant_connection(tenant_id) as conn: Session(bind=conn)` — the verified precedent in `evolution/recompute.py` + `execution_engine/run.py`. A new **v1-side** module `primeqa/intelligence/substrate_insights.py` owns it (the allowed v1→substrate direction, like `interpretation_phrasing.py`) — the substrate packages stay route-agnostic. Factored for testability: a thin outer `get_substrate_insights(tenant_id)` (opens the bridge; best-effort — any failure → `available=False`, never raises) wrapping a **pure** `_assemble_insights(session, limit) -> dict` (testable directly on the rollback-fixture session). Rows flatten to plain dicts inside the `with`-block (they detach on commit).
+
+**Empty until live S1 → the empty-state is a first-class render branch.** Every substrate store is empty in prod until the ops live-SF run (task #119, Step 0's deferred exit-gate) + the first runs/recompute ticks. So the page has three branches (all via the `_empty_state` component): `available=False` (tenant schema absent / read error) → "unavailable"; `available=True, empty=True` (the prod state until S1 goes live) → "no insights yet"; data → render. This makes 2.1 shippable now (prod renders the empty branch; governance tests exercise the data branch with seeded rows).
+
+**Role-gating — `view_intelligence_report` (the role→set map is counterintuitive).** Verified `_DEFAULT_SET_FOR_ROLE`: `ba→tester_base`, `viewer→release_owner_base`, `tester→developer_base`, `admin`/`superadmin→admin_base`. `view_intelligence_report` lives in tester_base + admin_base; gating on it → **ba + admin + superadmin** see the page, **viewer + tester excluded** (the detailed-intelligence audience). Gating on "report OR summary" would wrongly *include viewers* (release_owner_base holds `view_intelligence_summary`) — so the single `view_intelligence_report` gate is correct. `require_page_permission` supplies superadmin god-mode + a redirect (not a 403). The exact gate is reconfirmed against the live `permission_sets` seed at impl.
+
+**Boundary.** Additive: a new v1 module + a read-only route + a template + a sidebar entry. The LLM phrasing layer (D-117) is deferred (2.1 lists the deterministic `attribution`); the run-correlation graft (2.3), release-grain clustering (2.4), and the S5→S3 forward-seam decision (2.2) are later slices. The live "parity-of-meaning" review is ops-deferred (needs live substrate data).
+
+**Verification.** Governance DB (`tests/integration/test_representation/`, the rollback `session` fixture): seed S6 + S8 rows via `persist_interpretation` / `persist_grounding_validity` → assert `_assemble_insights(session)` surfaces them (sections populated, `empty=False`); seed nothing → `empty=True`; `get_substrate_insights` on an absent tenant → `available=False` (monkeypatched). Plus the existing S6/S8 suites stay green + `import primeqa.app` (route + nav compile).
+
+---
+
+## D-156 — Cutover Step 2 / Slice 2.2: the S5→S3 generation forward-seam — settled (not wired)
+
+**Date:** 2026-06-04
+**Substrates affected:** [S5, S3] — a **decision only**. No code, no migration, no behaviour change (docs).
+**Status:** Active — greenfield-cutover **Step 2, slice 2.2**, on `phase-18-cutover-step2-substrate-consumers`. Resolves D-134's deferred "S5→S3 forward-seam" — the one genuinely-open architectural question Step 2 carries.
+
+D-134 deferred wiring S5 knowledge into S3 generation "until a semantic-fit design is defined **and** the v1-vs-substrate generation direction settles at the cutover." Both conditions are now resolvable, and the decision is: **do not wire S5→S3 at the cutover** — close the seam, with the reasoning + the revisit-condition recorded.
+
+**The generation direction IS settled — and it settles as "v1 stays."** The cutover SPEC §2 disposition map dispositions v1 generation (`intelligence/generation.py`) as **REPLACE the data-source layer** (read S1 entities, not `meta_*`) with the **code + the LLM gateway + the prompts STAYING** (operational infrastructure, D-111). S3 substrate generation (`primeqa/generation/run_generation`) is **not** mapped as a replacement for v1 generation — it emits a **different artifact** (semantic claims + recipes in S2 `test_claims`/`test_recipes`, D-056/D-065), consumed **downstream** by S4/S6/S8, **not** the product's `test_cases`. So post-cutover: v1 generation remains the product's test-case authoring path (re-sourced onto S1); S3 is a parallel substrate capability, not product-facing. The "direction" the forward-seam waited on has resolved — and it resolved **away from** "S3 is the v2 generation path."
+
+**The semantic fit is ~zero — a wire would be net-new, not a seam.** S5's knowledge today is **test-case-authoring-calibrated**: domain packs are ~1200-token test-step pattern blocks (e.g. Case-escalation test patterns); system rules are authorship proscriptions ("formula fields are read-only; never set them in a payload"). S3's claim-emitter (`propose_semantic_intent`) needs **ontology signals** — which claim kinds exist, which S1 edges ground them (the `governance_core` edge/dimension mappings) — to propose the narrowest groundable intent. These are **adjacent, not complementary**: S5 answers "how do I author correct test steps?"; S3 needs "which claims should I propose, and what grounds them?". Wiring S5→S3 would therefore require a **new claim-calibrated knowledge channel** (sourced from `governance_core`'s mappings), not a port of the existing Rule/DomainPack channels — net-new design + build, for a generation path that is **not product-facing**. And S3 already enforces grounding deterministically *post-proposal* (Guardrail 1, D-085: the LLM proposes, the substrate validates/refuses), so much of that ontology knowledge is already enforced where it matters.
+
+**The decision.** **The S5→S3 forward-seam is closed for the cutover — not wired.** Rationale: (1) the generation direction settled as "v1 generation stays as the product path; S3 is parallel + downstream-only," so there is no cutover-driven need; (2) the semantic fit is ~zero — a wire would be a new claim-ontology channel (net-new build), not a reuse; (3) building knowledge for a non-product-facing emitter is speculative. This **resolves D-134's deferral** (the "until the direction settles" condition is met). **Revisit-condition (recorded, not scheduled):** IF a future, post-cutover decision makes S3 a **product-facing** generation path (S3 claims/recipes surfaced as the product's tests), THEN design a claim-ontology knowledge channel (a `governance_core`-sourced MVP) — gated on that decision, which the cutover explicitly does not make.
+
+**The alternative, weighed + rejected.** Wire a minimal claim-ontology channel into the S3 prompt now (a new `claim_ontology.json` sourced from `governance_core`, appended to the frozen `generation@v3` system prompt). Rejected: it is net-new build (not the "seam" D-134 framed), it serves a non-product-facing emitter, and it partly duplicates the deterministic grounding `governance_core` already enforces — speculative work the cutover does not need.
+
+**Boundary.** Docs only — a decision + its doc-currency (the cutover SEQUENCE coverage row for the forward-seam marked **settled**; the S5 `DEFERRED_ITEMS.md` forward-seam item marked **resolved → D-156**). No code, no migration, no behaviour change.
+
+---
+
+## D-157 — Cutover Step 2 close: the additive substrate-insights surface (run-grafted consumers deferred)
+
+**Date:** 2026-06-04
+**Substrates affected:** [S6, S8] (read consumers) + v1 (the `/substrate-insights` page). No migration; no substrate-package change; no v1 behaviour change.
+**Status:** Active — greenfield-cutover **Step 2 close**, merging `phase-18-cutover-step2-substrate-consumers` → `main`. Closes Step 2 with the additive-visibility goal met; the v1-run-grafted + release-grain consumers deferred to the steps that enable them.
+
+Step 2 made the dormant substrate outputs **visible additively** in v1. Two slices delivered the goal; the two remaining planned slices hit a verified premise break and are deferred.
+
+- **2.1 (D-155)** — the standalone **`/substrate-insights`** page: S6 interpretations + cross-run clustering + S8 grounding-validity, tenant-scoped via the first v1→substrate read bridge (`get_substrate_insights`), best-effort, with empty-states for the empty-until-live reality. 35 governance tests.
+- **2.2 (D-156)** — the **S5→S3 forward-seam settled (not wired)**: the generation direction resolved as "v1 stays as the product path; S3 parallel + downstream-only"; the semantic fit is ~zero; revisit gated on S3 ever going product-facing.
+
+**The deferral — 2.3 (run-detail graft) + 2.4 (release-grain) need execution-world unification (a verified premise break).** The plan's 2.3 would graft an S6 panel onto `/runs/:id` via a derive-path `pipeline_run → test_case → S2 test_claims.test_id → s6_interpretations.claim_test_id`. **That path does not exist** — it breaks at hop 2: v1 `test_cases` (Integer PK) carry **no** reference to S2 `test_claims` (UUID), and `s4_execution_runs`/`s6_interpretations` carry **no** v1 reference (only a too-weak shared `environment_id`). The v1 run-world (`test_cases`/`pipeline_runs`) and the substrate run-world (claims/recipes/`s4_runs`/`s6_interpretations`) are **entirely disjoint** — independently triggered, no shared key, no write-path coupling (consistent with D-156: v1 + substrate generation are separate, unwired, different-artifact paths). A correlation can't be derived **or** stored until the two execution paths are **unified**, which is the *later* cutover steps (Step 3 flagged read-switch / Step 4 parallel-run), **not** additive Step 2. Building the bridge now would do later-step work out of the gated order. So **2.3 + 2.4 fold into Steps 3–4** (the SEQUENCE coverage rows updated); the standalone page (2.1) already delivers the additive surface they would have refined.
+
+**Doc currency.** Cutover `SEQUENCE.md` Step 2 marked **built (additive surface; D-155/D-156)** with the run-grafted + release-grain consumers folded into Steps 3–4; the S6/S8 coverage rows updated; `EVOLUTION.md` Step-2 entry. (The forward-seam row was already marked settled by D-156.)
+
+**Deferred → ops/later.** The page's **live data** (every substrate store is empty until the ops live-SF run, task #119) + the exit-gate's **live parity-of-meaning review** are ops-deferred (the same live half as Step 0). The **run-grafted S6 panel** + the **release-grain clustering** are deferred to cutover Steps 3–4 (they require the v1↔substrate execution bridge).
+
+**Merge gate.** The new `test_s6_s8_insights_surface` suite green + the existing S6/S8 suites (`test_s6_consumer`, `test_s6_clustering`, `test_s8_grounding_store`, `test_s8_recompute`) stay green + `import primeqa.app` (route + nav compile). Additive read-only page; no migration; no v1 behaviour change. Merge `phase-18-cutover-step2-substrate-consumers` → `main` via PR.
+
+---
+
 ---

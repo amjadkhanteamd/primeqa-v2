@@ -134,6 +134,17 @@ SIDEBAR_ITEMS: list[dict] = [
         "section": "testing",
         "enabled": False,
     },
+    {
+        # Cutover Step 2 (D-155): the additive substrate-insights read surface
+        # (S6 interpretation + clustering, S8 grounding-validity). Renders an
+        # empty-state until the live-SF sync populates S1.
+        "id": "substrate_insights",
+        "label": "Substrate Insights",
+        "icon": "brain",
+        "url": "/substrate-insights",
+        "permission": "view_intelligence_report",
+        "section": "testing",
+    },
 
     # Admin — tenant-wide config
     {
