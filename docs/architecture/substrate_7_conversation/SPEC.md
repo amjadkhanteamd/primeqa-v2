@@ -1,6 +1,6 @@
 # Substrate 7 — Conversation and Control — SPEC
 
-**Status:** Opening (Phase 8, program). The **grounded-answering faculty** is the semantic core — a deterministic retrieve → bounded-assemble → phrase pipeline with a **grounded-or-refuse** keystone. Phase 1 opens three intents (`failure_cause` / `grounding_drift` / `impact`) over the substrate read-spine + a thin `/ask` surface; the **Control half + the conversation mechanics stay fenced** (§6).
+**Status:** Realized through Phase 8 (program). The **grounded-answering faculty** is built end-to-end — a deterministic classify → retrieve → bounded-assemble → phrase pipeline with a **grounded-or-refuse** keystone — over three intents (`failure_cause` / `grounding_drift` / `impact`) on the substrate read-spine, with a thin `/ask` surface (D-163 → D-163.4). The **Control half + the conversation mechanics stay fenced** (§6).
 
 **Last substantive update:** 2026-06-04 (Phase 8 — the open: keystone + dependency law + the intent set; D-163)
 
@@ -81,4 +81,4 @@ These are the **conversation-infrastructure local maximum** deliberately not bui
 
 ## Status
 
-**Opening — Phase 8 (2026-06-04).** The keystone (grounded-or-refuse), the deterministic-first pipeline, the dependency law (pure consumer, no table), and the bounded-stateless law are locked (D-163). The build arc (see `EVOLUTION.md`): the open + the contract types (D-163) → intent classification (D-163.1) → deterministic retrieval + bounded assembly (D-163.2) → the LLM phrasing edge + grounded-or-refuse (D-163.3) → the thin `/ask` consumer surface + phase close (D-163.4). **Deferred:** the Control half (write-side, permission-gated), multi-turn + any S7 persistence, proactive insights, broad retrieval, the open-ended router, rich UI. See `DEFERRED_ITEMS.md`.
+**Realized through Phase 8 (2026-06-04).** The keystone (grounded-or-refuse), the deterministic-first pipeline, the dependency law (pure consumer, no table), and the bounded-stateless law are locked + built (D-163 → D-163.4). The build arc (see `EVOLUTION.md`): the open + the contract types (D-163) → intent classification (D-163.1) → deterministic retrieval + bounded assembly (D-163.2) → the LLM phrasing edge + grounded-or-refuse (D-163.3) → the thin `/ask` consumer surface + phase close (D-163.4). 43 governance + unit tests; `conversation/` stays LLM-free; the live *answered*-path demo awaits seeded substrate data (S7-Q-005). **Deferred:** the Control half (write-side, permission-gated), multi-turn + any S7 persistence, proactive insights, broad retrieval, the open-ended router, rich UI. See `DEFERRED_ITEMS.md`.

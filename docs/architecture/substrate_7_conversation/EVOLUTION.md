@@ -33,6 +33,29 @@ Locked constraints honored: D-095.4 (stateless-per-question, explicit bounded
 context — no hidden conversational state); D-073 (refusals are the
 conversational-clarification surface); D-045 (Control deferred).
 
+**Phase 8 realized (D-163 → D-163.4).** The faculty is built end-to-end:
+- **D-163** — open + the frozen contract types (`QuestionContext` / `Intent` /
+  `EvidenceItem` / `Evidence` / `Citation` / `Answer`) + a contract/drift-guard
+  (incl. the subprocess **LLM-free import guard**).
+- **D-163.1** — `classify_intent` (deterministic keyword, reusing the shared
+  `knowledge._text` matcher; highest-count-then-priority; `None` → clarify-refusal).
+- **D-163.2** — the three retrieval recipes (S6 `failure_cause` / S8
+  `grounding_drift` / S1+S2 `impact`, pure over injected readers) + the bounded
+  assembler (`E1..En`, item-cap + token budget).
+- **D-163.3** — the grounded-or-refuse `build_answer` (empty ⇒ refuse before any
+  LLM) + the v1 `grounded_answer@v1` Haiku phrasing task (registry + router).
+- **D-163.4** — the v1 `conversation_bridge` (dual-derivation, best-effort) + the
+  `/ask` page (`view_intelligence_report`-gated).
+
+43 governance + unit tests green (contract / intent / assembler / answerer /
+retrieval / bridge); `import primeqa.app` registers the route; the `conversation/`
+package stays import-clean of `intelligence`. The substrate stores are empty in
+prod until the live-SF sync + first runs land (S7-Q-005), so the *answered* path is
+demonstrated with seeded data and the *refused* path is the correct default.
+Deferred (SPEC §6): the Control half, multi-turn + persistence, proactive insights,
+broad retrieval, the open-ended router, rich UI. Merged `phase-20-substrate-7-conversation`
+→ `main` at phase close.
+
 Slice 0 (D-163) lands the doc-set + the contract types (`QuestionContext`, `Intent`,
 `EvidenceItem`, `Evidence`, `Citation`, `Answer` — frozen, behaviour-free) +
 a contract/drift-guard test. On `phase-20-substrate-7-conversation`.
