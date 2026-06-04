@@ -8320,4 +8320,26 @@ Step 3 routes v1's metadata READS to the S1 semantic org model behind a **per-te
 
 ---
 
+## D-159 — Cutover Step 3 / Slice 3.2: the generation S1-reader
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (read) + v1 (new `metadata/s1_reader.py`, the `test_management/service.py` gen-vs-validator accessor split, a `cutover_read_s1_enabled` extraction in `accessor.py`). No migration; no v1 behaviour change when flag-off.
+**Status:** Active — greenfield-cutover **Step 3, slice 3.2**, on `phase-19-cutover-step3-read-path-switch`. The first S1-served v1 read-path: flag-on tenants' **generation metadata context** reads S1.
+
+3.1 built the `MetadataAccessor` seam (passthrough). 3.2 builds the **`MetadataS1Reader`** (S1 → the `MetaObject`/`MetaField`/VR duck-types) + wires it into the **generation** accessor. The validator stays on `meta_*` until 3.4 (it needs the field-CRUD columns 3.3 adds — the split below).
+
+**The reader — eager-hydrated, read through `SemanticOrgModel`.** A new `primeqa/metadata/s1_reader.py` `MetadataS1Reader` reads S1's typed query interface (`get_entities`/`get_related`/`get_entity_details` — the S6/S8 `s1_reader` pattern, no S1-local SQL). It **eager-hydrates** at construction (one `with get_tenant_connection(tid) as conn:` → `SemanticOrgModel(conn)` → load the whole org's metadata into frozen `_S1Object`/`_S1Field`/`_S1ValidationRule` dataclasses), so it is a pure in-memory snapshot for its lifetime — sidestepping connection-close-across-the-generation-call (the validator already eager-hydrates; data volume is one org). The translation:
+- **objects** → `get_entities("Object", at_seq)` → `_S1Object(id=entity.id, api_name=sf_api_name, is_createable, is_custom)` (`is_createable`/`is_custom` from `get_entity_details` → `object_details`). Sorted by `api_name`.
+- **fields** → per object, `get_related(object.id, ["BELONGS_TO"], "inbound", at_seq)` → `_S1Field(api_name, field_type, is_required, is_custom, …, meta_object_id=object.id)` (`field_type`/`is_custom` from `field_details`; `is_required` from `FieldAttributes` JSONB). Sorted by `api_name`. **`_S1Object.id` == `_S1Field.meta_object_id`** (the same S1 entity UUID — the validator indexes by `meta_object_id`, looks up by `obj.id`).
+- **VRs** → `get_entities("ValidationRule", at_seq)` → `_S1ValidationRule(rule_name, error_message, meta_object=<the APPLIES_TO-target object ref, carrying .api_name>)` (object via `get_related(vr, ["APPLIES_TO"], "outbound")`). Sorted by (object, rule).
+- **`at_seq` = `current_version_seq()`** (ignores the passed `meta_version_id`, D-158). **Best-effort build** — `build_metadata_s1_reader(tenant_id)` returns `None` on `VersionNotFoundError` (empty S1) / any error → the accessor falls back to `meta_*` (the parallel-run safety). **Flag-gated build** — the service builds the reader **only when `cutover_read_s1` is on** (a shared `cutover_read_s1_enabled(db, tenant_id)` extracted from the accessor) → no wasted hydrate for flag-off tenants.
+
+**The gen-vs-validator accessor split (the GAP-1 sequencing).** `_build_metadata_context` reads field `f.is_createable` (its "required createable fields" line). S1's `field_details` carries no per-field createable until 3.3 — so the 3.2 reader **approximates `_S1Field.is_createable=True`** (over-listing a non-createable required field is a soft prompt nudge, not a gate — acceptable for the *descriptive* generation context). But the **validator's** `field_not_createable` is a **CRITICAL gate** — `is_createable=True` would mask a real read-only field (a false-negative). So in 3.2 the validator must NOT read S1. `generate_test_plan` therefore uses **two accessors**: the generator's (`with_s1_reader=True`) + the validator's (`with_s1_reader=False`, stays `meta_*`); the linter reads the validator's `meta_*`-fed indexes (unchanged). `generate_test_case` (a generator) gets the reader; `revalidate`/`apply_validation_fix` (validators) stay `meta_*`. 3.4 flips the validator sites to S1 once 3.3's columns make `is_createable` real.
+
+**Shape.** New `primeqa/metadata/s1_reader.py` (`MetadataS1Reader` + `build_metadata_s1_reader` + the frozen duck-types); `metadata/accessor.py` extracts `cutover_read_s1_enabled`; `test_management/service.py` `_metadata_accessor(..., with_s1_reader=…)` + the generate_test_plan split. No migration.
+
+**Verification.** Governance DB (seed BOTH `meta_*` + S1 for one org): flag-on → the generation accessor's `get_objects`/`get_fields`/`get_validation_rules` return the S1 snapshot with the SAME api_names + object `is_createable` + field `is_required`/`is_custom` + VR error-messages + **the same `api_name` ordering** (prompt-cache determinism); `_build_metadata_context` is **byte-identical** S1-vs-`meta_*` for an org whose required fields are createable (the field-`is_createable` approximation is consistent there — the divergent required-non-createable case is the known 3.2 tolerance 3.4 resolves). Flag-off → `meta_*` unchanged. Empty-S1 → `None` reader → `meta_*` (no raise). Plus the accessor unit tests stay green + `import primeqa.app`.
+
+---
+
 ---
