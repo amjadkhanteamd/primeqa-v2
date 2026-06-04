@@ -8503,4 +8503,25 @@ The first pipeline stage: `classify_intent(question_text, context) -> Intent | N
 
 ---
 
+## D-163.2 — S7 slice 2: deterministic retrieval recipes + bounded assembly
+
+**Date:** 2026-06-04
+**Substrates affected:** [S7] (`conversation/retrieval.py` + `assembler.py`); [S6] (`list_interpretations` / `cluster_recurring_causes` / `cluster_by_vr`, read); [S8] (`list_grounding_validity`, read); [S1] (`get_entities` / `get_related`, read); [S2] (`coordinator.list_tests_by_requirement`, read) — all read-only
+**Status:** Active — S7 slice 2 (sub-decision of D-163). Pure over **injected** readers; no LLM, no connection-management (the bridge injects `session` + `s1`).
+
+The deterministic core of the faculty: given an `Intent` + `QuestionContext`, run that intent's **retrieval recipe** over the substrate read-APIs and assemble a **bounded** `Evidence`. No LLM. Signatures **live-probed** (CONVENTIONS) — corrected vs the plan's approximations.
+
+**The recipes (verified signatures), uniform `(s1, session, ctx)` for a clean dispatch:**
+- `retrieve_failure_cause` → `list_interpretations(session, recipe_id=…, limit)` + `cluster_recurring_causes(session, recipe_id=…, min_runs=2)` + `cluster_by_vr(session, recipe_id=…, min_runs=2)` (all keyword-only, optional `recipe_id` scope from `ctx.recipe_id`). Flattens `InterpretationRead` / `CauseCluster(cause_kind,count,run_ids)` / `VrCluster(vr_name,count,outcomes,run_ids)`.
+- `retrieve_grounding_drift` → `list_grounding_validity(session, test_id=…, overall="drifted")` + `overall="broken"` (the `overall`-indexed standing-verdict query S8 built for exactly this consumer). Flattens `GroundingValidityRead{test_id,version_seq,overall,claim_verdict,evaluated_at_version_seq}`.
+- `retrieve_impact` → object branch: `s1.get_entities("Object", at_seq, filters={"sf_api_name": ctx.object_api_name})` → `s1.get_related(obj.id, ["BELONGS_TO","APPLIES_TO","HAS_RELATIONSHIP_TO","REFERENCES"], "inbound", at_seq)` (the object's impact surface — fields/VRs/referencing-fields that touch it; verified the edge taxonomy); requirement branch: `coordinator.list_tests_by_requirement(session, external_system="jira", external_key=ctx.requirement_key)` → `RequirementMatch(test_id,link_kind,external_version,linked_at)`. `current_version_seq()` `VersionNotFoundError` (empty S1) → no S1 evidence (a clean degrade → likely a downstream refusal). **Plan correction:** S2's read is a **coordinator method** with keyword args `external_system`/`external_key` (not a bare `jira_key`), and the impact edge set is the verified inbound taxonomy (not the plan's guessed list).
+
+**The bounded assembler.** `assemble_evidence(intent, items, *, max_items, char_budget)` applies the **bound** — an item-count cap **and** a char/token budget on the serialized evidence (the D-095.4 "explicit and bounded" requirement + the substrate `_LIST_HARD_CAP` convention) — and **assigns sequential stable citation ids** (`E1..En`), returning `Evidence`. Deterministic: preserves recipe order, always admits ≥1 item (so a single large item isn't dropped to empty), then stops at the cap or budget. The recipes mint a natural ref per item (in `data`); the assembler is the sole authority on the canonical `E{n}` citation (the SPEC §2 "assembler assigns" reading) — so `Answer.citations` are always the assembler's ids.
+
+**Boundary.** `retrieval.py` imports S6/S8/S2/S1 (all **verified** to pull in zero `primeqa.intelligence` — the LLM-free package guard holds; S7→{S6,S8,S2,S1} is the dependency law). The recipes take **injected** readers (no `get_tenant_connection` here) — the connection-management + best-effort lives in the slice-4 bridge; this keeps the recipes pure + directly unit-testable.
+
+**Verify (governance, the semantic `conn`+`seed` harness — the bridge's own dual-derivation):** build `Session(bind=conn)` + `SemanticOrgModel(conn)` from one tenant `conn`; seed S6 via `persist_interpretation` + S8 via `persist_grounding_validity` (the `test_s6_s8_insights_surface` helpers) + S1 entities/edges via `seed` — assert each recipe returns the expected flattened evidence (failure_cause: interpretation + cause/vr clusters; grounding_drift: only `drifted`/`broken`; impact: the object + its inbound edges + linked tests). Plus a **pure-unit** assembler test: the item-cap, the char-budget early-stop, the ≥1-item floor, and `E1..En` numbering. No LLM anywhere.
+
+---
+
 ---
