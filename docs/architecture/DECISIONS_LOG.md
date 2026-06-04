@@ -8342,4 +8342,22 @@ Step 3 routes v1's metadata READS to the S1 semantic org model behind a **per-te
 
 ---
 
+## D-160 — Cutover Step 3 / Slice 3.3: S1 field-level CRUD flags (the first sync touch)
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (the sync's field-detail mapper + an additive `field_details` migration). **MIGRATION** (tenant, chains onto `20260604_0020`). **The first sync-engine / S1-schema touch of the cutover.**
+**Status:** Active — greenfield-cutover **Step 3, slice 3.3**, on `phase-19-cutover-step3-read-path-switch`. Resolves GAP-1 (D-158): S1 gains per-field `is_createable`/`is_updateable` so the validator can reach true S1 parity (3.4).
+
+The 3.4 validator S1-switch needs per-field CRUD writability (its `field_not_createable` is a CRITICAL gate); S1's `field_details` carried only the **object**-level flag. 3.3 adds the two columns — **verified cheap**: the describe **already fetches** `createable`/`updateable` per field (the raw `DescribeFieldResult`), they **survive normalization** (not in `semantic/normalization.py::_VOLATILE_KEYS`; `_normalize_field = _strip_volatile + list-sort`), and the **object** mapper already stores them (`detail_mappers._map_object_details`). So 3.3 is **a 2-column migration + a 2-line mapper change** — no fetch-layer change.
+
+**Shape.** (1) An additive tenant migration `field_details.is_createable`/`is_updateable BOOLEAN NOT NULL DEFAULT true` (idempotent `ADD COLUMN IF NOT EXISTS`; chains onto `20260604_0020`). **Default TRUE** matches Salesforce's permissive default + the v1 `MetaField` server_default → **no backfill** (existing `field_details` rows read True until the next sync repopulates the real value — acceptable in the parallel-run window; a permissive default never *adds* a false CRITICAL). (2) `detail_mappers._map_field_details` adds `"is_createable": bool(normalized.get("createable", True))` + `"is_updateable": bool(normalized.get("updateable", True))`.
+
+**Why this unblocks 3.4 with no reader change.** The D-159 `MetadataS1Reader` already reads `field_details.get("is_createable", True)` (via `get_entity_details`'s `SELECT *`): absent in 3.2 → True (the approximation); **present after 3.3 → the real value**. So once 3.3's columns exist + the next sync populates them, the reader serves real per-field CRUD — and 3.4 just flips the validator's accessor to S1.
+
+**The boundary it crosses.** This is the **first sync-engine + S1-schema touch** of the cutover (Steps 0–2 were "no engine/phase edits"). Authorized (the user's GAP-1 choice) because it's the only path to the Step-3 exit-gate ("S1 reads *agree* with `meta_*`") for the validator, and it's a clean additive column filling a real S1 fidelity gap (S1 *should* carry field CRUD flags regardless). **No behaviour change** to existing sync/phase logic — only two keys added to one detail row + two nullable-default columns.
+
+**Verification.** The sync detail-mapper unit suite: `_map_field_details` maps `createable`/`updateable` from the normalized describe (and defaults True when the key is absent — the existing mock); the migration applies (the governance/semantic harness `alembic upgrade tenant@head` picks it up — `field_details.is_createable`/`is_updateable` exist); the D-159 reader test stays green (the reader's `get("is_createable", True)` is unchanged). No v1 behaviour change.
+
+---
+
 ---
