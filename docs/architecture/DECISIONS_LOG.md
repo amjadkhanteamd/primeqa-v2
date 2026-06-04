@@ -8129,4 +8129,22 @@ The cutover's first *executed* step (the zero-risk, independent relocation). `pr
 
 ---
 
+## D-150 — Cutover Step 0 / S0.1: the S1-sync provisioning + SF-client resolution seam
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (the sync trigger's credential + provisioning seam) + an additive `connected_orgs.environment_id` column + an additive `access_token` param on `integrations/sf_client.SalesforceClient`. **MIGRATION** (tenant `20260604_0010`, chains onto head `20260603_0030`).
+**Status:** Active — greenfield-cutover **Step 0, slice S0.1**, on `phase-17-cutover-step0-s1-sync-trigger`. Cutover SEQUENCE Step 0 (the hard unblocker); the engine is finished-but-dormant (`run_sync`, zero prod callers) — this phase wires the trigger.
+
+S0.1 builds the two seams the trigger needs: a **Salesforce client per environment** + a **sync target** (`connected_orgs`).
+
+**The SF-client seam — bridge v1's auth to the engine's client (the resolved grant mismatch).** The engine's client (`integrations/sf_client.SalesforceClient(instance_url, client_id, client_secret, refresh_token)`) is **refresh-token-grant only** (`_refresh_access_token` posts `grant_type=refresh_token`). But v1's connections authenticate via **client_credentials / password** (`metadata.worker_runner._oauth_token` → a bare `access_token`; the decrypted config carries no `refresh_token`). So "build the client from the connection 4-tuple" (the agent's first lean) does **not** work. **Resolution:** reuse v1's `_oauth_token` (env → connection → `access_token`, exactly S4's `credentials.py` path) and **pre-seed** the engine's client with that token — via a new **additive, backward-compatible `access_token: str | None = None`** param on `SalesforceClient.__init__` (`self._access_token = access_token`; when set, `_ensure_access_token` skips the refresh exchange). So `resolve_sync_sf_client(db, environment_id)` reuses ALL of v1's credential machinery + the engine's transport, both untouched. A mid-sync 401 (access token expiry past ~2h, beyond a ~30-min sync) → `SFAuthError` → the job fails + retries with a fresh token (acceptable v1 behaviour; noted). **This removes the agent-flagged "verify-against-connection-configs" HOLD** — any connection v1 metadata-sync can authenticate, S1 sync can too (the same `_oauth_token`).
+
+**The provisioning seam — `environment → connected_org` (none exists).** `connected_orgs` (the sync target) carries `sf_instance_url` + oauth stubs but no `client_id/secret`, is **never INSERTed in prod**, and has no link to `environments`. S0.1 adds `connected_orgs.environment_id` (a nullable loose int → `environments.id`; no cross-schema FK — the substrate convention) + `ensure_connected_org_for_environment(conn, environment_id, sf_instance_url) -> connected_org_id` (idempotent upsert keyed on `environment_id`). The sync *targets* a connected_org; the *environment* is the credential source.
+
+**Shape.** New `primeqa/sync/credentials.py` — `resolve_sync_sf_client(db, environment_id) -> SalesforceClient` (mirrors `execution_engine/credentials.py`; raises a sync-local `CredentialResolutionError` on missing env/connection) + `ensure_connected_org_for_environment(...)`. Additive: `connected_orgs.environment_id` (migration `20260604_0010`) + the `access_token` param on `integrations/sf_client.SalesforceClient`. **No engine/phase edits.**
+
+**Verification.** Governance DB + stubbed creds: `ensure_connected_org_for_environment` creates then returns the same row (idempotent); `resolve_sync_sf_client` builds a token-seeded client from a stubbed connection (monkeypatch `_oauth_token` + `get_connection_decrypted`); missing env/connection → `CredentialResolutionError`; the `access_token`-seeded `SalesforceClient` skips `_refresh_access_token`. Plus `import primeqa.sync.credentials` + `primeqa.integrations.sf_client` (backward-compat: default `access_token=None` keeps the refresh path).
+
+---
+
 ---
