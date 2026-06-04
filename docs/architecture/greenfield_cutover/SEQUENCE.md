@@ -77,7 +77,7 @@ Every "deferred to the cutover" item across the substrate docs, mapped to its st
 | `feedback_rules.py` move (part of the same relocation) | D-134 | **1** |
 | S6 user-facing UI/dashboard consumer + always-on trigger | D-137 | **2** |
 | S6 clustering release-grain view + dashboard/route consumer | D-137 | **2** |
-| S5→S3 generation forward-seam (settles at the cutover) | D-134 | **2** |
+| S5→S3 generation forward-seam ✅ **settled — not wired (D-156)** | D-134 | **2** |
 | S8 grounding-validity verdict surface | D-143 (implied) | **2** |
 | v1 read-path switch → S1 (generation / validator / preflight) | D-012 / D-003 | **3** |
 | Folding S6 verdicts into v1's GO/NO-GO | D-111 / D-137 | **4** |
