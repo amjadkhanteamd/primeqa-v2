@@ -8378,4 +8378,43 @@ The 3.4 validator S1-switch needs per-field CRUD writability (its `field_not_cre
 
 ---
 
+## D-161.1 — amendment: the reader must emit *bare* field api-names (parity break found mid-impl)
+
+**Date:** 2026-06-04. Amends D-161 (append-only — does not edit it).
+
+Mid-impl verification (read, not assumed) surfaced a parity break the D-161 design
+missed. S1 stores a Field's ``sf_api_name`` **object-qualified**:
+``_extract_external_id`` (``sync/materialize.py``) builds ``f"{parent}.{name}"`` →
+``"Account.Name"``. But v1 ``meta_*`` stores the **bare** name
+(``metadata/service.py``: ``MetaField.api_name = describe["name"]`` → ``"Name"``),
+and every test-case step references fields bare (``field_values: {"Name": …}`` /
+``{"Status": …}`` — the ``generation.py`` prompt schema + the test fixtures). The
+validator keys ``obj_fields = {f.api_name: f}`` and tests ``fname not in
+obj_fields``; the reader passed the qualified name through unchanged →
+**``field_not_found`` CRITICAL on every field of every TC** when the validator
+reads S1. The slice's "the reader's already correct, just flip the validator"
+premise was false.
+
+**Fix (root cause, in the reader — NOT a validator workaround).**
+``hydrate_metadata_s1_reader`` strips the parent-object prefix to recover the bare
+name — the exact inverse of the sync's ``f"{parent}.{name}"``:
+``bare = fe_api[len(obj_api)+1:] if fe_api.startswith(obj_api + ".") else fe_api``.
+This is the literal "true parity" 3.4 promised; it corrects the validator AND the
+already-shipped 3.2 generation context (which had been leaking ``"Account.Name"``
+into the prompt — a quality regression, not a correctness break).
+
+**Why 3.2 didn't catch it.** ``test_metadata_s1_reader.py`` asserted the reader's
+*self-consistent* output (``"Account [required: Account.Name]"``), never seeding
+``meta_*`` and comparing — so it codified the qualified shape as expected. 3.4
+corrects those assertions to bare (``"Name"``) and adds the validator-over-reader
+parity test that exercises real bare-name steps (the assertion the 3.2 test should
+have made).
+
+**Out of scope (noted, not fixed).** ValidationRule ``sf_api_name`` may carry the
+same qualified skew, but no validator rule reads VR names — it only affects the
+generation-context VR-list *text*. Left as a documented generation-cosmetics item;
+revisit if/when VR naming reaches a rule.
+
+---
+
 ---
