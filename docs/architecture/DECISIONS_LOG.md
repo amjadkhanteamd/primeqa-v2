@@ -8524,4 +8524,22 @@ The deterministic core of the faculty: given an `Intent` + `QuestionContext`, ru
 
 ---
 
+## D-163.3 — S7 slice 3: the LLM phrasing edge + grounded-or-refuse
+
+**Date:** 2026-06-04
+**Substrates affected:** [S7] (`conversation/answerer.py` — the refusal gate, LLM-free); [v1 intelligence] (the `grounded_answer` prompt task + gateway registration)
+**Status:** Active — S7 slice 3 (sub-decision of D-163). The only LLM in the faculty, fenced to phrasing.
+
+Turns bounded `Evidence` into an `Answer` — the **grounded-or-refuse keystone**. Two pieces, split across the boundary:
+
+**The refusal gate (`conversation/answerer.py`, LLM-free).** `build_answer(evidence, *, question, phrase_fn) -> Answer`. **Empty evidence ⇒ `refused` deterministically, BEFORE any phrasing** — the model never sees an empty block; refusal is a substrate decision, never the model's (D-073). Otherwise the **injected** `phrase_fn` phrases over only this evidence, and S7 returns the **evidence's** citations (`Answer.citations` = the assembler's `E{n}` ids), never citations the model claims. The phrase step is injected (a `Callable`) so `conversation/` stays LLM-free — the real `llm_call` is wired in the slice-4 bridge (v1). A phrasing failure (None / raise) degrades to `refused` with a `refusal_reason` + the citations (honest: there *is* grounding, the prose just failed) — best-effort, never raises.
+
+**The phrasing task (`intelligence/llm/prompts/grounded_answer.py`, v1).** Copied from the `story_view` skeleton: `VERSION="grounded_answer@v1"`, Haiku, `SUPPORTS_CACHE=False`, `SUPPORTS_ESCALATION=False`, `detect_complexity→low`, the defensive `_extract_json` parser. The SYSTEM is the keystone instruction: *answer ONLY from the EVIDENCE; if it's not there, say you cannot answer; never state a fact not in the evidence; cite the evidence ids used.* Output `{answer, cited_ids}`. Registered `grounded_answer_generation` in `prompts/registry.py` `_REGISTRY` + a Haiku-only chain in `router.py` `_CHAINS` (the `story_view_generation` template). The LLM **phrases** — it never retrieves, never refuses, never cites beyond the handed evidence (the structural anti-hallucination guarantee: it can only restate what it was given).
+
+**Soft citation back-check (S7-Q-001).** If the model returns no `cited_ids`, log it but **do not** downgrade to refused in phase 1 (harden once real outputs are observed — the story_view "verified periodically" posture).
+
+**Shape.** `conversation/answerer.py` (`build_answer` + `_citations`); export from `__init__`. `intelligence/llm/prompts/grounded_answer.py` + registry + router. **Verify:** answerer unit with a **stubbed phrase_fn** — empty evidence → refused with **zero phrase_fn calls**; answered path returns the evidence's citations; `phrase_fn`→None / raise → graceful refused; the model's `cited_ids` never replace the evidence's. Prompt-module unit — `build` → `PromptSpec` (`has_cache_blocks=False`), `_parse` extracts JSON, `registry.get("grounded_answer_generation")` resolves, `router` has its chain. `tests/test_llm_architecture.py` stays green (registry/router intact).
+
+---
+
 ---
