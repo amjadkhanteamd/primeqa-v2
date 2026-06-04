@@ -8360,4 +8360,22 @@ The 3.4 validator S1-switch needs per-field CRUD writability (its `field_not_cre
 
 ---
 
+## D-161 — Cutover Step 3 / Slice 3.4: the validator + linter S1-reader (true parity)
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (read) + v1 (the validator-site accessor flips + the reader's picklist population). No migration; no v1 behaviour change when flag-off.
+**Status:** Active — greenfield-cutover **Step 3, slice 3.4**, on `phase-19-cutover-step3-read-path-switch`. Completes the read-switch: flag-on tenants' **validator + linter** read S1, now at **true parity** (3.3 made the field CRUD flags real).
+
+3.2 routed generation to S1 + kept the validator on `meta_*` (it needed 3.3's field CRUD flags). 3.3 landed them. 3.4 flips the validator sites + closes the one remaining reader gap (picklist values), so the validator's *decisions* match `meta_*`.
+
+**The validator-site flip.** The three validator-construction sites — `generate_test_plan`'s validator, `revalidate_test_case_version`, `apply_validation_fix` — flip from `_metadata_accessor(...)` (default `meta_*`) to `with_s1_reader=True`. The linter is covered transitively (it reads the validator's accessor-fed `_obj_by_name`/`_fields_by_obj`). **No reader change for the CRUD flags** — the D-159 reader already reads `field_details.get("is_createable", True)`, which 3.3 made real (`get_entity_details` `SELECT *`). So `field_not_createable` (CRITICAL) / `field_not_updateable` (WARNING) now fire correctly off S1 — the GAP-1 payoff.
+
+**The one reader gap closed — picklist values.** The validator's `picklist_value_not_allowed` (WARNING) reads `f.picklist_values`; D-159 left `_S1Field.picklist_values=()` (the validator *gracefully skips* on empty — `_picklist_values` returns None → no false-positive, the existing degrade). For **true parity** (the WARNING should fire identically), 3.4 populates it via the clean **2-hop**: `field_details.picklist_value_set_entity_id` (already on the detail row) → `SemanticOrgModel.get_picklist_values(pvs_id, at_seq)` → the `value_api_name`s. So a picklist field's S1 read carries its allowed values, matching `meta_*`.
+
+**Shape.** `test_management/service.py`: the 3 validator sites → `with_s1_reader=True`. `metadata/s1_reader.py`: `_hydrate`'s field loop populates `picklist_values` (the 2-hop, only for fields carrying a `picklist_value_set_entity_id`). No migration; no v1 behaviour change when flag-off.
+
+**Verification.** Governance DB (semantic harness, the validator-over-reader): a step list exercising each rule on the S1 snapshot → **`field_not_createable` CRITICAL fires** on a non-createable field (3.3's real flag reaching the validator), `object_not_found` / `field_not_found` fire on absent subjects, **`picklist_value_not_allowed` WARNING fires** on a value outside the seeded picklist (the 2-hop), and a clean step → no issues. The D-159 generation-reader tests + the accessor unit + detail-mapper suites stay green; `import primeqa.app`. Live dual-stack byte-parity (real-org S1 vs `meta_*`) is the ops-deferred half.
+
+---
+
 ---
