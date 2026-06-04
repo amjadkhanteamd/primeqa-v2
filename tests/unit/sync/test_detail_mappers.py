@@ -323,6 +323,28 @@ class TestMapFieldDetails:
         assert row["is_filterable"] is True
         assert row["length"] == 40
 
+    def test_map_field_details_maps_crud_flags(self) -> None:
+        """D-160: createable/updateable from the normalized describe land on the
+        is_createable/is_updateable columns."""
+        resolver = MagicMock(return_value="obj-account-uuid")
+        row = _map_field_details(
+            normalized=self._normalized(createable=True, updateable=False),
+            entity_id="fld", parent_resolver=resolver,
+        )
+        assert row["is_createable"] is True
+        assert row["is_updateable"] is False
+
+    def test_map_field_details_crud_flags_default_true(self) -> None:
+        """A read-shape omitting createable/updateable → True (Salesforce's
+        permissive default; the validator blocks only on an explicit False)."""
+        resolver = MagicMock(return_value="obj-account-uuid")
+        row = _map_field_details(
+            normalized=self._normalized(),     # no createable/updateable keys
+            entity_id="fld", parent_resolver=resolver,
+        )
+        assert row["is_createable"] is True
+        assert row["is_updateable"] is True
+
     def test_map_field_details_resolves_reference_target(self) -> None:
         """A reference-typed field with referenceTo=['User'] resolves
         references_object_entity_id from the FIRST target. Polymorphic

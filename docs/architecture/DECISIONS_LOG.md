@@ -8295,4 +8295,170 @@ Step 2 made the dormant substrate outputs **visible additively** in v1. Two slic
 
 ---
 
+## D-158 — Cutover Step 3 / Slice 3.1: the v1 read-path switch — the `MetadataAccessor` seam + flag
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (read consumer) + v1 (`metadata/accessor.py`, the `core/models.py` flag, `test_management/service.py` wiring). **MIGRATION** (`migrations/051` — public `tenant_agent_settings.cutover_read_s1`).
+**Status:** Active — greenfield-cutover **Step 3, slice 3.1** (the seam), on `phase-19-cutover-step3-read-path-switch`. Opens Step 3 (the flagged v1 read-path switch to S1) + sets the contract for its slices.
+
+Step 3 routes v1's metadata READS to the S1 semantic org model behind a **per-tenant flag** (`cutover_read_s1`), with `meta_*` the flag-off fallback — the start of the parallel run, reversible (flip the flag). Per the SEQUENCE: the **generation context** + the **validator CRUDQ** switch to S1; preflight stays on `meta_*` (GAP-2). Slice 3.1 builds the seam; later slices add the S1 reader + the field-CRUD parity.
+
+**The seam — a `MetadataAccessor` facade (the one switch point).** The read-paths all go through `MetadataRepository`'s read methods. A new `primeqa/metadata/accessor.py` `MetadataAccessor(db, tenant_id, metadata_repo, s1_reader=None)` implements the same read-interface (`get_objects`/`get_fields`/`get_validation_rules`/`get_version`), reads the flag **once** at construction (tolerant try/except → False, the `_domain_packs_enabled` pattern), and routes `flag AND s1_reader ? s1_reader.X() : metadata_repo.X()`. The call sites (`test_management/service.py`: `generate_test_plan`, `revalidate_test_case_version`, the single-TC wrapper) inject the accessor in place of the raw repo; the consumers (`TestCaseGenerator`, `TestCaseValidator`) are duck-typed + accept it unchanged. **In 3.1 `s1_reader=None`** → pure passthrough → **identical v1 behavior** (additive, zero behaviour change). The S1 reader lands in 3.2 (generation) / 3.4 (validator).
+
+**Three contract decisions (settled here for all Step-3 slices):**
+- **`at_seq` ignores `meta_version_id`.** v1's `meta_version_id` (an environment-pinned `meta_versions` snapshot) and S1's `version_seq` (`logical_versions`) are **independent axes** — no mapping. For a read-*switch* (read the org's current metadata), the S1 reader resolves `at_seq = current_version_seq()` once + discards the passed `meta_version_id` (the S6/S8 `s1_reader` precedent). The one intentional asymmetry between the two paths.
+- **Empty-S1 → fall back to `meta_*` (best-effort, never raise).** S1 is empty in prod until the ops live-SF run (#119); `current_version_seq()` raises `VersionNotFoundError` on a tenant with no S1 versions. The reader-builder mirrors `substrate_insights.get_substrate_insights` — best-effort; on any failure → `s1_reader=None` → the accessor reads `meta_*` + logs a warning. So a flag-on tenant whose S1 isn't synced yet degrades safely (the parallel-run safety).
+- **The 4th coupling — the `GenerationLinter`.** `generate_test_plan` (~L183-199) builds `linter_metadata` from the validator's private indexes (`validator._obj_by_name`/`_fields_by_obj`), reading field `is_createable`/`is_updateable`/`field_type`/`picklist_values`. So the validator's `MetaField`-shaped objects feed **two** consumers — the S1 reader's synthetic `_S1Field` must carry the full duck-type incl. the field CRUD flags (→ GAP-1).
+
+**GAP-1 — field-level `is_createable`/`is_updateable` (RESOLVED: add the S1 columns, user-authorized).** The validator's `field_not_createable` (CRITICAL) / `field_not_updateable` (WARNING) + the linter need per-field CRUD writability, which S1's `field_details` doesn't carry (only object-level). The sync **already fetches** them per field (the **object** mapper stores `createable`/`updateable` at `detail_mappers.py` L75-76; the field mapper doesn't). Resolution (3.3): an additive `field_details.is_createable`/`is_updateable` (alembic tenant migration, default TRUE — matches SF + `MetaField` server_default, no backfill) + a 2-line `_map_field_details` change. This is the **first sync-engine touch of the cutover** — authorized to give the validator true S1 parity (the Step-3 exit-gate is "S1 reads *agree* with `meta_*`"; object-level fallback would break that by design + was rejected).
+
+**GAP-2 — preflight category-health (DEFERRED to a Step-5 prerequisite).** Preflight's `MetaSyncStatus` per-category health + `MetaVersion.completed_at` staleness have no clean S1 map (S1's sync model is `sync_runs` phases). Preflight is a **soft gate** and `meta_*` stays populated through Steps 3–4, so it reads `meta_*` correctly throughout. Its S1 cutover is relocated to a **Step-5 prerequisite** (the `meta_*` drop can't proceed until preflight has an S1 freshness/health source) — not built speculatively now.
+
+**Slice 3.1 shape.** `migrations/051_cutover_read_s1_flag.sql` (public `tenant_agent_settings.cutover_read_s1 BOOLEAN DEFAULT false`, idempotent, mirrors 050) + the model column + `primeqa/metadata/accessor.py` (passthrough) + the 3-site wiring + a passthrough-parity governance test. Additive; flag default off; no v1 behaviour change.
+
+**Verification.** Governance DB: the accessor with `s1_reader=None`, flag on AND off → identical delegation to `metadata_repo` for all four methods (passthrough parity — no S1 needed). Plus `import primeqa.app` (the wiring compiles) + the existing generation/validator suites stay green.
+
+---
+
+## D-159 — Cutover Step 3 / Slice 3.2: the generation S1-reader
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (read) + v1 (new `metadata/s1_reader.py`, the `test_management/service.py` gen-vs-validator accessor split, a `cutover_read_s1_enabled` extraction in `accessor.py`). No migration; no v1 behaviour change when flag-off.
+**Status:** Active — greenfield-cutover **Step 3, slice 3.2**, on `phase-19-cutover-step3-read-path-switch`. The first S1-served v1 read-path: flag-on tenants' **generation metadata context** reads S1.
+
+3.1 built the `MetadataAccessor` seam (passthrough). 3.2 builds the **`MetadataS1Reader`** (S1 → the `MetaObject`/`MetaField`/VR duck-types) + wires it into the **generation** accessor. The validator stays on `meta_*` until 3.4 (it needs the field-CRUD columns 3.3 adds — the split below).
+
+**The reader — eager-hydrated, read through `SemanticOrgModel`.** A new `primeqa/metadata/s1_reader.py` `MetadataS1Reader` reads S1's typed query interface (`get_entities`/`get_related`/`get_entity_details` — the S6/S8 `s1_reader` pattern, no S1-local SQL). It **eager-hydrates** at construction (one `with get_tenant_connection(tid) as conn:` → `SemanticOrgModel(conn)` → load the whole org's metadata into frozen `_S1Object`/`_S1Field`/`_S1ValidationRule` dataclasses), so it is a pure in-memory snapshot for its lifetime — sidestepping connection-close-across-the-generation-call (the validator already eager-hydrates; data volume is one org). The translation:
+- **objects** → `get_entities("Object", at_seq)` → `_S1Object(id=entity.id, api_name=sf_api_name, is_createable, is_custom)` (`is_createable`/`is_custom` from `get_entity_details` → `object_details`). Sorted by `api_name`.
+- **fields** → per object, `get_related(object.id, ["BELONGS_TO"], "inbound", at_seq)` → `_S1Field(api_name, field_type, is_required, is_custom, …, meta_object_id=object.id)` (`field_type`/`is_custom` from `field_details`; `is_required` from `FieldAttributes` JSONB). Sorted by `api_name`. **`_S1Object.id` == `_S1Field.meta_object_id`** (the same S1 entity UUID — the validator indexes by `meta_object_id`, looks up by `obj.id`).
+- **VRs** → `get_entities("ValidationRule", at_seq)` → `_S1ValidationRule(rule_name, error_message, meta_object=<the APPLIES_TO-target object ref, carrying .api_name>)` (object via `get_related(vr, ["APPLIES_TO"], "outbound")`). Sorted by (object, rule).
+- **`at_seq` = `current_version_seq()`** (ignores the passed `meta_version_id`, D-158). **Best-effort build** — `build_metadata_s1_reader(tenant_id)` returns `None` on `VersionNotFoundError` (empty S1) / any error → the accessor falls back to `meta_*` (the parallel-run safety). **Flag-gated build** — the service builds the reader **only when `cutover_read_s1` is on** (a shared `cutover_read_s1_enabled(db, tenant_id)` extracted from the accessor) → no wasted hydrate for flag-off tenants.
+
+**The gen-vs-validator accessor split (the GAP-1 sequencing).** `_build_metadata_context` reads field `f.is_createable` (its "required createable fields" line). S1's `field_details` carries no per-field createable until 3.3 — so the 3.2 reader **approximates `_S1Field.is_createable=True`** (over-listing a non-createable required field is a soft prompt nudge, not a gate — acceptable for the *descriptive* generation context). But the **validator's** `field_not_createable` is a **CRITICAL gate** — `is_createable=True` would mask a real read-only field (a false-negative). So in 3.2 the validator must NOT read S1. `generate_test_plan` therefore uses **two accessors**: the generator's (`with_s1_reader=True`) + the validator's (`with_s1_reader=False`, stays `meta_*`); the linter reads the validator's `meta_*`-fed indexes (unchanged). `generate_test_case` (a generator) gets the reader; `revalidate`/`apply_validation_fix` (validators) stay `meta_*`. 3.4 flips the validator sites to S1 once 3.3's columns make `is_createable` real.
+
+**Shape.** New `primeqa/metadata/s1_reader.py` (`MetadataS1Reader` + `build_metadata_s1_reader` + the frozen duck-types); `metadata/accessor.py` extracts `cutover_read_s1_enabled`; `test_management/service.py` `_metadata_accessor(..., with_s1_reader=…)` + the generate_test_plan split. No migration.
+
+**Verification.** Governance DB (seed BOTH `meta_*` + S1 for one org): flag-on → the generation accessor's `get_objects`/`get_fields`/`get_validation_rules` return the S1 snapshot with the SAME api_names + object `is_createable` + field `is_required`/`is_custom` + VR error-messages + **the same `api_name` ordering** (prompt-cache determinism); `_build_metadata_context` is **byte-identical** S1-vs-`meta_*` for an org whose required fields are createable (the field-`is_createable` approximation is consistent there — the divergent required-non-createable case is the known 3.2 tolerance 3.4 resolves). Flag-off → `meta_*` unchanged. Empty-S1 → `None` reader → `meta_*` (no raise). Plus the accessor unit tests stay green + `import primeqa.app`.
+
+---
+
+## D-160 — Cutover Step 3 / Slice 3.3: S1 field-level CRUD flags (the first sync touch)
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (the sync's field-detail mapper + an additive `field_details` migration). **MIGRATION** (tenant, chains onto `20260604_0020`). **The first sync-engine / S1-schema touch of the cutover.**
+**Status:** Active — greenfield-cutover **Step 3, slice 3.3**, on `phase-19-cutover-step3-read-path-switch`. Resolves GAP-1 (D-158): S1 gains per-field `is_createable`/`is_updateable` so the validator can reach true S1 parity (3.4).
+
+The 3.4 validator S1-switch needs per-field CRUD writability (its `field_not_createable` is a CRITICAL gate); S1's `field_details` carried only the **object**-level flag. 3.3 adds the two columns — **verified cheap**: the describe **already fetches** `createable`/`updateable` per field (the raw `DescribeFieldResult`), they **survive normalization** (not in `semantic/normalization.py::_VOLATILE_KEYS`; `_normalize_field = _strip_volatile + list-sort`), and the **object** mapper already stores them (`detail_mappers._map_object_details`). So 3.3 is **a 2-column migration + a 2-line mapper change** — no fetch-layer change.
+
+**Shape.** (1) An additive tenant migration `field_details.is_createable`/`is_updateable BOOLEAN NOT NULL DEFAULT true` (idempotent `ADD COLUMN IF NOT EXISTS`; chains onto `20260604_0020`). **Default TRUE** matches Salesforce's permissive default + the v1 `MetaField` server_default → **no backfill** (existing `field_details` rows read True until the next sync repopulates the real value — acceptable in the parallel-run window; a permissive default never *adds* a false CRITICAL). (2) `detail_mappers._map_field_details` adds `"is_createable": bool(normalized.get("createable", True))` + `"is_updateable": bool(normalized.get("updateable", True))`.
+
+**Why this unblocks 3.4 with no reader change.** The D-159 `MetadataS1Reader` already reads `field_details.get("is_createable", True)` (via `get_entity_details`'s `SELECT *`): absent in 3.2 → True (the approximation); **present after 3.3 → the real value**. So once 3.3's columns exist + the next sync populates them, the reader serves real per-field CRUD — and 3.4 just flips the validator's accessor to S1.
+
+**The boundary it crosses.** This is the **first sync-engine + S1-schema touch** of the cutover (Steps 0–2 were "no engine/phase edits"). Authorized (the user's GAP-1 choice) because it's the only path to the Step-3 exit-gate ("S1 reads *agree* with `meta_*`") for the validator, and it's a clean additive column filling a real S1 fidelity gap (S1 *should* carry field CRUD flags regardless). **No behaviour change** to existing sync/phase logic — only two keys added to one detail row + two nullable-default columns.
+
+**Verification.** The sync detail-mapper unit suite: `_map_field_details` maps `createable`/`updateable` from the normalized describe (and defaults True when the key is absent — the existing mock); the migration applies (the governance/semantic harness `alembic upgrade tenant@head` picks it up — `field_details.is_createable`/`is_updateable` exist); the D-159 reader test stays green (the reader's `get("is_createable", True)` is unchanged). No v1 behaviour change.
+
+---
+
+## D-161 — Cutover Step 3 / Slice 3.4: the validator + linter S1-reader (true parity)
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (read) + v1 (the validator-site accessor flips + the reader's picklist population). No migration; no v1 behaviour change when flag-off.
+**Status:** Active — greenfield-cutover **Step 3, slice 3.4**, on `phase-19-cutover-step3-read-path-switch`. Completes the read-switch: flag-on tenants' **validator + linter** read S1, now at **true parity** (3.3 made the field CRUD flags real).
+
+3.2 routed generation to S1 + kept the validator on `meta_*` (it needed 3.3's field CRUD flags). 3.3 landed them. 3.4 flips the validator sites + closes the one remaining reader gap (picklist values), so the validator's *decisions* match `meta_*`.
+
+**The validator-site flip.** The three validator-construction sites — `generate_test_plan`'s validator, `revalidate_test_case_version`, `apply_validation_fix` — flip from `_metadata_accessor(...)` (default `meta_*`) to `with_s1_reader=True`. The linter is covered transitively (it reads the validator's accessor-fed `_obj_by_name`/`_fields_by_obj`). **No reader change for the CRUD flags** — the D-159 reader already reads `field_details.get("is_createable", True)`, which 3.3 made real (`get_entity_details` `SELECT *`). So `field_not_createable` (CRITICAL) / `field_not_updateable` (WARNING) now fire correctly off S1 — the GAP-1 payoff.
+
+**The one reader gap closed — picklist values.** The validator's `picklist_value_not_allowed` (WARNING) reads `f.picklist_values`; D-159 left `_S1Field.picklist_values=()` (the validator *gracefully skips* on empty — `_picklist_values` returns None → no false-positive, the existing degrade). For **true parity** (the WARNING should fire identically), 3.4 populates it via the clean **2-hop**: `field_details.picklist_value_set_entity_id` (already on the detail row) → `SemanticOrgModel.get_picklist_values(pvs_id, at_seq)` → the `value_api_name`s. So a picklist field's S1 read carries its allowed values, matching `meta_*`.
+
+**Shape.** `test_management/service.py`: the 3 validator sites → `with_s1_reader=True`. `metadata/s1_reader.py`: `_hydrate`'s field loop populates `picklist_values` (the 2-hop, only for fields carrying a `picklist_value_set_entity_id`). No migration; no v1 behaviour change when flag-off.
+
+**Verification.** Governance DB (semantic harness, the validator-over-reader): a step list exercising each rule on the S1 snapshot → **`field_not_createable` CRITICAL fires** on a non-createable field (3.3's real flag reaching the validator), `object_not_found` / `field_not_found` fire on absent subjects, **`picklist_value_not_allowed` WARNING fires** on a value outside the seeded picklist (the 2-hop), and a clean step → no issues. The D-159 generation-reader tests + the accessor unit + detail-mapper suites stay green; `import primeqa.app`. Live dual-stack byte-parity (real-org S1 vs `meta_*`) is the ops-deferred half.
+
+---
+
+## D-161.1 — amendment: the reader must emit *bare* field api-names (parity break found mid-impl)
+
+**Date:** 2026-06-04. Amends D-161 (append-only — does not edit it).
+
+Mid-impl verification (read, not assumed) surfaced a parity break the D-161 design
+missed. S1 stores a Field's ``sf_api_name`` **object-qualified**:
+``_extract_external_id`` (``sync/materialize.py``) builds ``f"{parent}.{name}"`` →
+``"Account.Name"``. But v1 ``meta_*`` stores the **bare** name
+(``metadata/service.py``: ``MetaField.api_name = describe["name"]`` → ``"Name"``),
+and every test-case step references fields bare (``field_values: {"Name": …}`` /
+``{"Status": …}`` — the ``generation.py`` prompt schema + the test fixtures). The
+validator keys ``obj_fields = {f.api_name: f}`` and tests ``fname not in
+obj_fields``; the reader passed the qualified name through unchanged →
+**``field_not_found`` CRITICAL on every field of every TC** when the validator
+reads S1. The slice's "the reader's already correct, just flip the validator"
+premise was false.
+
+**Fix (root cause, in the reader — NOT a validator workaround).**
+``hydrate_metadata_s1_reader`` strips the parent-object prefix to recover the bare
+name — the exact inverse of the sync's ``f"{parent}.{name}"``:
+``bare = fe_api[len(obj_api)+1:] if fe_api.startswith(obj_api + ".") else fe_api``.
+This is the literal "true parity" 3.4 promised; it corrects the validator AND the
+already-shipped 3.2 generation context (which had been leaking ``"Account.Name"``
+into the prompt — a quality regression, not a correctness break).
+
+**Why 3.2 didn't catch it.** ``test_metadata_s1_reader.py`` asserted the reader's
+*self-consistent* output (``"Account [required: Account.Name]"``), never seeding
+``meta_*`` and comparing — so it codified the qualified shape as expected. 3.4
+corrects those assertions to bare (``"Name"``) and adds the validator-over-reader
+parity test that exercises real bare-name steps (the assertion the 3.2 test should
+have made).
+
+**Out of scope (noted, not fixed).** ValidationRule ``sf_api_name`` may carry the
+same qualified skew, but no validator rule reads VR names — it only affects the
+generation-context VR-list *text*. Left as a documented generation-cosmetics item;
+revisit if/when VR naming reaches a rule.
+
+---
+
+## D-162 — Cutover Step 3 close: read-switch built; preflight → Step-5 prereq; merge
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (read) + v1 (the accessor seam + readers). Closes
+greenfield-cutover **Step 3** on `phase-19-cutover-step3-read-path-switch`
+(D-158–D-162).
+**Status:** Active — Step 3 **BUILT** (generation + validator/linter read S1 behind
+`cutover_read_s1`); preflight deferred to a **Step-5 prerequisite** (GAP-2); the
+live dual-stack parity rides ops task #119.
+
+**What Step 3 landed.** v1's metadata *reads* route to S1 behind the per-tenant
+`cutover_read_s1` flag, `meta_*` the flag-off fallback — the parallel run begins.
+The seam is `MetadataAccessor` (3.1, D-158, migration `051`); the generation context
+(3.2, D-159) and the validator + linter CRUDQ (3.4, D-161) read `MetadataS1Reader`;
+the first sync-engine touch added `field_details.is_createable`/`is_updateable`
+(3.3, D-160, tenant `20260604_0030`). D-161.1 caught + root-caused a field-naming
+parity break (S1's object-qualified `sf_api_name` vs v1's bare names) mid-impl.
+Best-effort throughout (empty/error S1 → `meta_*`, never raises), so a flag-on but
+S1-empty tenant degrades safely during the parallel window.
+
+**GAP-2 ratified — preflight stays `meta_*`.** `primeqa/runs/preflight.py` reads
+`MetaSyncStatus` per-category health + `MetaVersion.completed_at` staleness; neither
+has a clean S1 map (S1's freshness model is `sync_runs` phases, a different shape).
+Preflight is a soft gate and `meta_*` is populated through Steps 3–4, so it reads
+correctly throughout the parallel run. Its S1 cutover is **relocated to a Step-5
+prerequisite** — the `meta_*` drop cannot proceed while preflight reads `meta_*`.
+Recorded in SEQUENCE Step 5's entry-gate.
+
+**Verification (run, observed).** Merge gate green: **46 semantic integration + 82
+unit (accessor + detail-mapper) = 128**, no regression. The validator-over-reader
+parity test exercises each rule (`object_not_found` / `field_not_found` /
+`field_not_createable` CRITICAL + `picklist_value_not_allowed` WARNING + a clean
+step) off a real S1 snapshot with **bare-name** steps; `import primeqa.app` green.
+Flag-off → `meta_*` passthrough (zero v1 behaviour change). The live dual-stack
+byte-parity (real-org S1 vs `meta_*` for pilot tenants) is ops-deferred with #119 —
+the same live half as Steps 0/2.
+
+**Boundary + standing follow-ons.** Additive — no v1 read removed, no table dropped
+(Steps 4–5). Prod-migration applies: `migrations/051_cutover_read_s1_flag.sql`
+(public) + `20260604_0030_field_details_crud_flags` (tenant). Merge
+`phase-19-cutover-step3-read-path-switch` → `main`.
+
+---
+
 ---

@@ -278,6 +278,12 @@ def _map_field_details(
         "picklist_value_set_entity_id": picklist_value_set_id,
         "field_type": normalized.get("type"),
         "is_custom": bool(normalized.get("custom", False)),
+        # D-160 (cutover Step 3.3): per-field CRUD writability — already in the
+        # normalized describe (survives _strip_volatile). Drives the v1 validator's
+        # field_not_createable (CRITICAL) / field_not_updateable (WARNING) via the
+        # S1 read-switch. Default True = Salesforce's permissive default.
+        "is_createable": bool(normalized.get("createable", True)),
+        "is_updateable": bool(normalized.get("updateable", True)),
         "is_unique": bool(normalized.get("unique", False)),
         "is_external_id": bool(normalized.get("externalId", False)),
         "is_nillable": bool(normalized.get("nillable", True)),

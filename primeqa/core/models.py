@@ -210,6 +210,15 @@ class TenantAgentSettings(Base):
         Boolean, nullable=False, server_default="false",
     )
 
+    # Migration 051 (cutover Step 3 / D-158): the per-tenant read-path switch.
+    # When ON (and the tenant's S1 is synced), v1's metadata reads route to the
+    # S1 semantic org model via metadata.accessor.MetadataAccessor; when OFF
+    # (default), they read meta_* unchanged. Reversible per tenant — the start
+    # of the parallel run (meta_* stays populated as the fallback).
+    cutover_read_s1 = Column(
+        Boolean, nullable=False, server_default="false",
+    )
+
 
 class ActivityLog(Base):
     __tablename__ = "activity_log"
