@@ -256,6 +256,28 @@ def release_dashboard():
     return _render()
 
 
+@views_bp.route("/substrate-insights")
+@login_required
+def substrate_insights():
+    """Cutover Step 2 (D-155): the additive substrate-insights read surface.
+
+    S6 interpretations + cross-run clustering + S8 grounding-validity verdicts,
+    tenant-scoped + best-effort (the substrate read can never break this page).
+    Renders an empty-state until the live-SF sync populates S1 + the first
+    runs/recompute ticks land. Gated on ``view_intelligence_report`` (ba + admin
+    + superadmin)."""
+    from primeqa.core.permissions import require_page_permission
+    from primeqa.intelligence.substrate_insights import get_substrate_insights
+
+    @require_page_permission("view_intelligence_report")
+    def _render():
+        insights = get_substrate_insights(request.user["tenant_id"])
+        return render_template("substrate_insights.html", **ctx(
+            active_page="substrate_insights", insights=insights))
+
+    return _render()
+
+
 @views_bp.route("/api/releases/<int:run_id>/approve", methods=["POST"])
 @_require_auth_api
 def api_release_approve(run_id):
