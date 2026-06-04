@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Ask - PrimeQA{% endblock %}
+{% block content %}
+{% from 'components/_empty_state.html' import empty_state %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'components/_buttons.html' import btn_primary %}
+
+{# S7 grounded answering (D-163.4): ask a question about the test system; get an
+   answer grounded in substrate evidence, or a refusal. The substrate answer stores
+   are empty until the live-SF sync + first runs land, so the default is a refusal. #}
+
+<div class="max-w-4xl mx-auto space-y-6" data-page="ask">
+
+  {{ breadcrumbs([('Ask', None)]) }}
+
+  <div>
+    <h1 class="text-xl font-semibold text-gray-900">Ask</h1>
+    <p class="mt-1 text-sm text-gray-500">
+      Ask about failure causes, grounding drift, or impact. Answers are grounded in
+      what the substrate spine recorded — when nothing grounds your question, the
+      system says so rather than guessing.
+    </p>
+  </div>
+
+  <form method="POST" action="/ask"
+        class="space-y-4 bg-white border border-gray-200 rounded-lg p-5">
+    {{ csrf_input | safe }}
+    <div>
+      <label for="question" class="block text-sm font-medium text-gray-700">Your question</label>
+      <textarea id="question" name="question" rows="3" required
+        class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+        placeholder="e.g. Did yesterday's failures share a cause?">{{ form.question }}</textarea>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div>
+        <label for="environment_id" class="block text-sm font-medium text-gray-700">Environment</label>
+        <select id="environment_id" name="environment_id"
+          class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+          <option value="">&mdash; select &mdash;</option>
+          {% for env in environments %}
+            <option value="{{ env.id }}"
+              {% if form.environment_id == env.id|string %}selected{% endif %}>{{ env.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="object_api_name" class="block text-sm font-medium text-gray-700">Object <span class="text-gray-400">(impact)</span></label>
+        <input type="text" id="object_api_name" name="object_api_name" value="{{ form.object_api_name }}"
+          class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+          placeholder="e.g. Account">
+      </div>
+      <div>
+        <label for="requirement_key" class="block text-sm font-medium text-gray-700">Requirement <span class="text-gray-400">(Jira key)</span></label>
+        <input type="text" id="requirement_key" name="requirement_key" value="{{ form.requirement_key }}"
+          class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+          placeholder="e.g. SQ-205">
+      </div>
+    </div>
+
+    <div>{{ btn_primary('Ask', type='submit') }}</div>
+  </form>
+
+  {% if answer %}
+    {% if not answer.available %}
+      {{ empty_state(
+          title='Answering unavailable',
+          description='The substrate stores could not be read for your tenant right now. They populate after the metadata sync goes live.') }}
+    {% elif answer.status == 'refused' %}
+      {{ empty_state(title='No grounded answer', description=answer.text) }}
+    {% else %}
+      <div class="bg-white border border-gray-200 rounded-lg p-5 space-y-4" data-answer="answered">
+        <p class="text-sm text-gray-900 whitespace-pre-line">{{ answer.text }}</p>
+        {% if answer.citations %}
+          <div class="border-t border-gray-100 pt-3">
+            <p class="text-xs font-medium text-gray-500 mb-2">Grounded in</p>
+            <div class="flex flex-wrap gap-2">
+              {% for c in answer.citations %}
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs text-gray-700">
+                  <span class="font-mono font-semibold">{{ c.id }}</span>
+                  <span class="text-gray-400">&middot;</span>{{ c.source }}
+                  <span class="text-gray-400">&middot;</span>{{ c.ref }}
+                </span>
+              {% endfor %}
+            </div>
+          </div>
+        {% endif %}
+      </div>
+    {% endif %}
+  {% endif %}
+
+</div>
+{% endblock %}

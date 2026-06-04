@@ -8461,4 +8461,103 @@ the same live half as Steps 0/2.
 
 ---
 
+## D-163 — Substrate 7 (Conversation & Control) opened: grounded answering over the substrate spine
+
+**Date:** 2026-06-04
+**Substrates affected:** [S7] (opened — the conversation faculty); [S1] (entity-resolution, read through `SemanticOrgModel`); [S6] (interpretations + clustering, read); [S8] (grounding-validity verdicts, read); [S2] (requirement→tests, read) — all read-only, S7 writes nothing
+**Status:** Active — S7 foundational opening (Phase 8). Faculty-first: the grounded-answering faculty is the semantic core; the Control half + the conversation mechanics explicitly deferred. SPEC: `docs/architecture/substrate_7_conversation/SPEC.md`.
+
+Substrate 7 opened — the **conversation layer**: the natural-language surface through which a user asks the system about itself and gets an answer grounded in what the other substrates recorded (PLATFORM_VISION §S7 — "sits on top and touches every other substrate as a user-facing surface"). Faculty-first (mirroring D-111/D-112/D-134): the semantic core opens; the **Control** half + conversation **mechanics** are explicitly fenced. This is the **last** substrate — it opens because every other substrate now has a queryable read API.
+
+**Keystone — grounded-or-refuse.** Every answer is grounded in substrate evidence retrieved deterministically; when nothing grounds the question, S7 **refuses** rather than guessing (D-073: refusals are the substrate's conversational-clarification surface). The refusal is **deterministic + substrate-authored, produced before any LLM call** — the model never gets the option to "answer anyway"; it only ever sees a non-empty, bounded evidence block. This raises the platform's spine-wide grounding discipline (S3 substrate-authored admissibility; S6/S8 deterministic-first "the LLM phrases, never invents") to the user surface.
+
+**The semantic core — the grounded-answering faculty.** A deterministic pipeline with a fenced phrasing edge: `(question, QuestionContext) → classify_intent (keyword) → retrieve_<intent> (deterministic recipe over the substrate read-APIs) → assemble_evidence (bounded: item-cap + token budget + stable citation ids) → build_answer (empty ⇒ refuse, no LLM; else phrase over ONLY that evidence) → Answer{status, text, citations, refusal_reason}`. **Deterministic-first:** classification, retrieval, assembly, and the refusal decision are pure; the LLM phrases handed evidence and cites nothing beyond it (the structural anti-hallucination guarantee — the model can only restate what it was given). The `conversation/` package is **LLM-free** — the phrase step is an injected callable; the real `llm_call` lives in v1 (the S6 `interpretation_phrasing` boundary split).
+
+**The intent set — three deterministic retrieval recipes (open).** Phase 1 (user-chosen): `failure_cause` (S6 `list_interpretations` + `cluster_recurring_causes` + `cluster_by_vr`), `grounding_drift` (S8 `list_grounding_validity(overall=...)`), `impact` (S1 `get_entities`→`get_related` single-hop + S2 `list_tests_by_requirement`). The first two phrase already-recorded deterministic verdicts (the safest debut posture — the substrate already decided, S7 adds zero judgment); `impact` is the one live S1 read-through (keeping the boundary honest — S7 reaches S1, not only the two answer-stores). `impact` takes its target from the bounded context (a picker), not free-text entity extraction. No keyword match ⇒ a deterministic clarify-refusal. The set is **explicitly open** (the S8 "the leg set grows" / D-096 "single-hop before traverse" discipline applied to intents).
+
+**The dependency law — a pure consumer; no table.** `S7 → {S1 query, S2 coordinator-read, S6 interpretation-read + clustering, S8 grounding-validity-read, …}`; **S7 writes nothing to any substrate.** It is the one substrate primarily a consumer, not a producer — it reads others' durable artifacts and produces an *ephemeral* answer, so it owns **no table in phase 1** (S4/S6/S8 each own a result table because they produce a durable artifact; S7 does not). It reads through each substrate's public read API (never raw tables / internals): S1 via `SemanticOrgModel`, S6/S8/S2 via their `__init__` reads on a tenant-scoped `Session`. The v1→substrate bridge opens one tenant connection and derives both an S1 reader and an ORM session from it (the `evolution/recompute.py` dual-derivation), best-effort (any failure → `available=False`, never breaks the page — the `substrate_insights` precedent).
+
+**Stateless + bounded (D-095.4).** Phase-1 answering is stateless per question; the scope is an explicit, bounded `QuestionContext` (release / environment / requirement), never an implicit accumulating session — D-095.4 ("the shared context is explicit and bounded, not an implicit shared conversation") at the user surface. Multi-turn (+ any persistence) is deferred.
+
+**Deferred — the Control half + the conversation mechanics (the fence).** Explicitly out of the phase-1 core: the **Control** half (write-side commands — trigger/approve/apply, gating on the Permission Model + env run-policies — the next phase); **multi-turn + any S7 persistence** (D-095.4 forbids implicit shared state); **proactive/push insights**; **broad retrieval** over all substrates; the **open-ended NL router** (deferred until the fixed-intent vocabulary matures — retrieval stays substrate-authored, not model-authored); **rich chat UI**. The conversation-infrastructure local maximum, deliberately not built at the opening.
+
+**Slice arc.** Slice 0 (this entry) lands the doc-set + the frozen contract types (`QuestionContext` / `Intent` / `EvidenceItem` / `Evidence` (+`is_empty`) / `Citation` / `Answer`) + a contract/drift-guard test (the pipeline stages are produce-only here). The faculty lands across D-163.1 (intent classification) → D-163.2 (retrieval + bounded assembly) → D-163.3 (the LLM phrasing edge + grounded-or-refuse) → D-163.4 (the thin `/ask` surface + close).
+
+**Guards.** S7 writes nothing to any substrate (pure consumer). Retrieval + the refusal decision are deterministic + substrate-authored (the LLM phrases only). The `conversation/` package imports no `intelligence` (the phrase_fn is injected — LLM-free package, the S6/S8 invariant). Reads go through each substrate's public read API, not raw tables. No S7 table in phase 1. Control + mechanics are fenced (§6) and not in the opening.
+
+---
+
+## D-163.1 — S7 slice 1: deterministic intent classification
+
+**Date:** 2026-06-04
+**Substrates affected:** [S7] (`conversation/intent.py` — the classifier); [S5] (reuses the shared `knowledge._text` word-boundary matcher — read-only, pure)
+**Status:** Active — S7 slice 1 (sub-decision of D-163). Pure, no-DB, no-LLM.
+
+The first pipeline stage: `classify_intent(question_text, context) -> Intent | None`. Maps a natural-language question to one of the three fixed intents, or `None` (→ a deterministic clarify-refusal downstream). **Keyword, not LLM** (the SPEC §3 discipline — the classifier picks *which fixed recipe* runs; it never authors an arbitrary query; letting the model choose retrieval is letting it author its own grounding, the inversion the platform refuses).
+
+**Reuse, corrected path.** Matching is the shared **`primeqa.knowledge._text`** (`kw_count` / `matched_keywords`) — inflection-aware word-boundary regex (`\bkw(?:s|es|ed|ing)?\b`), the same matcher S5 domain-pack selection + S3 `detect_complexity` use, so S7 doesn't reinvent matching semantics (and dodges the "flow silently matches workflow" class of bug `_text` was extracted to fix). The plan's path (`intelligence.knowledge._text`) was pre-cutover; the module relocated to S5 (`primeqa/knowledge/`) in Step 1, so the import is **`primeqa.knowledge._text`** — verified to pull in **zero `primeqa.intelligence`**, so the LLM-free package guard (D-163) holds. S7→S5 is within the dependency law.
+
+**Scoring (deterministic).** Per intent, count the distinct matched keywords; **highest count wins; ties break by a fixed priority order** (`failure_cause` > `grounding_drift` > `impact` — SPEC §3) via a stable sort `(-count, priority_index)`. No intent matches ⇒ `None`. `impact`'s target object/requirement is **not** parsed from the question — it rides the bounded `QuestionContext` (the picker; SPEC §3) — so classification is keyword-only and entity-extraction-free.
+
+**Shape.** `conversation/intent.py` (the keyword sets + `classify_intent`); re-export from `conversation/__init__.py`. **Verify:** a pure-unit table — each intent's keywords classify to it; the highest-count intent wins a mixed question; ties resolve by priority; an off-topic question → `None`; inflections match (`failed`/`drifting`/`affects`). No DB, no LLM.
+
+---
+
+## D-163.2 — S7 slice 2: deterministic retrieval recipes + bounded assembly
+
+**Date:** 2026-06-04
+**Substrates affected:** [S7] (`conversation/retrieval.py` + `assembler.py`); [S6] (`list_interpretations` / `cluster_recurring_causes` / `cluster_by_vr`, read); [S8] (`list_grounding_validity`, read); [S1] (`get_entities` / `get_related`, read); [S2] (`coordinator.list_tests_by_requirement`, read) — all read-only
+**Status:** Active — S7 slice 2 (sub-decision of D-163). Pure over **injected** readers; no LLM, no connection-management (the bridge injects `session` + `s1`).
+
+The deterministic core of the faculty: given an `Intent` + `QuestionContext`, run that intent's **retrieval recipe** over the substrate read-APIs and assemble a **bounded** `Evidence`. No LLM. Signatures **live-probed** (CONVENTIONS) — corrected vs the plan's approximations.
+
+**The recipes (verified signatures), uniform `(s1, session, ctx)` for a clean dispatch:**
+- `retrieve_failure_cause` → `list_interpretations(session, recipe_id=…, limit)` + `cluster_recurring_causes(session, recipe_id=…, min_runs=2)` + `cluster_by_vr(session, recipe_id=…, min_runs=2)` (all keyword-only, optional `recipe_id` scope from `ctx.recipe_id`). Flattens `InterpretationRead` / `CauseCluster(cause_kind,count,run_ids)` / `VrCluster(vr_name,count,outcomes,run_ids)`.
+- `retrieve_grounding_drift` → `list_grounding_validity(session, test_id=…, overall="drifted")` + `overall="broken"` (the `overall`-indexed standing-verdict query S8 built for exactly this consumer). Flattens `GroundingValidityRead{test_id,version_seq,overall,claim_verdict,evaluated_at_version_seq}`.
+- `retrieve_impact` → object branch: `s1.get_entities("Object", at_seq, filters={"sf_api_name": ctx.object_api_name})` → `s1.get_related(obj.id, ["BELONGS_TO","APPLIES_TO","HAS_RELATIONSHIP_TO","REFERENCES"], "inbound", at_seq)` (the object's impact surface — fields/VRs/referencing-fields that touch it; verified the edge taxonomy); requirement branch: `coordinator.list_tests_by_requirement(session, external_system="jira", external_key=ctx.requirement_key)` → `RequirementMatch(test_id,link_kind,external_version,linked_at)`. `current_version_seq()` `VersionNotFoundError` (empty S1) → no S1 evidence (a clean degrade → likely a downstream refusal). **Plan correction:** S2's read is a **coordinator method** with keyword args `external_system`/`external_key` (not a bare `jira_key`), and the impact edge set is the verified inbound taxonomy (not the plan's guessed list).
+
+**The bounded assembler.** `assemble_evidence(intent, items, *, max_items, char_budget)` applies the **bound** — an item-count cap **and** a char/token budget on the serialized evidence (the D-095.4 "explicit and bounded" requirement + the substrate `_LIST_HARD_CAP` convention) — and **assigns sequential stable citation ids** (`E1..En`), returning `Evidence`. Deterministic: preserves recipe order, always admits ≥1 item (so a single large item isn't dropped to empty), then stops at the cap or budget. The recipes mint a natural ref per item (in `data`); the assembler is the sole authority on the canonical `E{n}` citation (the SPEC §2 "assembler assigns" reading) — so `Answer.citations` are always the assembler's ids.
+
+**Boundary.** `retrieval.py` imports S6/S8/S2/S1 (all **verified** to pull in zero `primeqa.intelligence` — the LLM-free package guard holds; S7→{S6,S8,S2,S1} is the dependency law). The recipes take **injected** readers (no `get_tenant_connection` here) — the connection-management + best-effort lives in the slice-4 bridge; this keeps the recipes pure + directly unit-testable.
+
+**Verify (governance, the semantic `conn`+`seed` harness — the bridge's own dual-derivation):** build `Session(bind=conn)` + `SemanticOrgModel(conn)` from one tenant `conn`; seed S6 via `persist_interpretation` + S8 via `persist_grounding_validity` (the `test_s6_s8_insights_surface` helpers) + S1 entities/edges via `seed` — assert each recipe returns the expected flattened evidence (failure_cause: interpretation + cause/vr clusters; grounding_drift: only `drifted`/`broken`; impact: the object + its inbound edges + linked tests). Plus a **pure-unit** assembler test: the item-cap, the char-budget early-stop, the ≥1-item floor, and `E1..En` numbering. No LLM anywhere.
+
+---
+
+## D-163.3 — S7 slice 3: the LLM phrasing edge + grounded-or-refuse
+
+**Date:** 2026-06-04
+**Substrates affected:** [S7] (`conversation/answerer.py` — the refusal gate, LLM-free); [v1 intelligence] (the `grounded_answer` prompt task + gateway registration)
+**Status:** Active — S7 slice 3 (sub-decision of D-163). The only LLM in the faculty, fenced to phrasing.
+
+Turns bounded `Evidence` into an `Answer` — the **grounded-or-refuse keystone**. Two pieces, split across the boundary:
+
+**The refusal gate (`conversation/answerer.py`, LLM-free).** `build_answer(evidence, *, question, phrase_fn) -> Answer`. **Empty evidence ⇒ `refused` deterministically, BEFORE any phrasing** — the model never sees an empty block; refusal is a substrate decision, never the model's (D-073). Otherwise the **injected** `phrase_fn` phrases over only this evidence, and S7 returns the **evidence's** citations (`Answer.citations` = the assembler's `E{n}` ids), never citations the model claims. The phrase step is injected (a `Callable`) so `conversation/` stays LLM-free — the real `llm_call` is wired in the slice-4 bridge (v1). A phrasing failure (None / raise) degrades to `refused` with a `refusal_reason` + the citations (honest: there *is* grounding, the prose just failed) — best-effort, never raises.
+
+**The phrasing task (`intelligence/llm/prompts/grounded_answer.py`, v1).** Copied from the `story_view` skeleton: `VERSION="grounded_answer@v1"`, Haiku, `SUPPORTS_CACHE=False`, `SUPPORTS_ESCALATION=False`, `detect_complexity→low`, the defensive `_extract_json` parser. The SYSTEM is the keystone instruction: *answer ONLY from the EVIDENCE; if it's not there, say you cannot answer; never state a fact not in the evidence; cite the evidence ids used.* Output `{answer, cited_ids}`. Registered `grounded_answer_generation` in `prompts/registry.py` `_REGISTRY` + a Haiku-only chain in `router.py` `_CHAINS` (the `story_view_generation` template). The LLM **phrases** — it never retrieves, never refuses, never cites beyond the handed evidence (the structural anti-hallucination guarantee: it can only restate what it was given).
+
+**Soft citation back-check (S7-Q-001).** If the model returns no `cited_ids`, log it but **do not** downgrade to refused in phase 1 (harden once real outputs are observed — the story_view "verified periodically" posture).
+
+**Shape.** `conversation/answerer.py` (`build_answer` + `_citations`); export from `__init__`. `intelligence/llm/prompts/grounded_answer.py` + registry + router. **Verify:** answerer unit with a **stubbed phrase_fn** — empty evidence → refused with **zero phrase_fn calls**; answered path returns the evidence's citations; `phrase_fn`→None / raise → graceful refused; the model's `cited_ids` never replace the evidence's. Prompt-module unit — `build` → `PromptSpec` (`has_cache_blocks=False`), `_parse` extracts JSON, `registry.get("grounded_answer_generation")` resolves, `router` has its chain. `tests/test_llm_architecture.py` stays green (registry/router intact).
+
+---
+
+## D-163.4 — S7 slice 4: the thin `/ask` consumer surface + Phase 8 close
+
+**Date:** 2026-06-04
+**Substrates affected:** [S7] (consumed end-to-end); [v1] (`intelligence/conversation_bridge.py` + a `/ask` route + template). Closes greenfield Phase 8 on `phase-20-substrate-7-conversation`.
+**Status:** Active — S7 slice 4 + Phase 8 close. The faculty reaches a user surface; the substrate is opened, built, and demonstrable.
+
+The end-to-end wiring + the close. v1 owns the bridge (the allowed v1→substrate direction — the `substrate_insights` + `interpretation_phrasing` precedent).
+
+**The bridge (`intelligence/conversation_bridge.py`, v1).** `answer_question(tenant_id, question_text, *, environment_id, requirement_key, object_api_name, api_key, model) -> dict`. The **dual-derivation** (verified `evolution/recompute.py`): one `with get_tenant_connection(tenant_id) as conn:` serves `SemanticOrgModel(conn)` (S1) **and** `Session(bind=conn)` (S6/S8/S2). A pure inner `_answer(s1, session, *, question, ctx, phrase_fn)` runs the whole faculty — `classify_intent` (None → a clarify-refusal dict) → `retrieve` → `assemble_evidence` → `build_answer` — and flattens the `Answer` to a JSON-safe dict (status / text / refusal_reason / citations). The wrapper owns connection-management + is **best-effort** (any failure → `available=False`, never raises — the `get_substrate_insights` contract). The `phrase_fn` closes over `llm_call(task="grounded_answer_generation", …)`; **when no `api_key` resolves, `phrase_fn` is a null returning `None`** → `build_answer` degrades to a refused-with-citations (so the page works without an LLM — the common empty-store prod path needs no LLM at all, since empty evidence refuses before phrasing).
+
+**The route + page (`views.py` `/ask` + `templates/conversation.html`).** `@login_required` + inner `@require_page_permission("view_intelligence_report")` (the **exact** `/substrate-insights` gate — ba+admin+superadmin; reuse, no new permission). GET renders the form (a question box + an environment picker from `EnvironmentRepository.list_environments` + optional requirement-key / object-api-name pickers for the `impact` bounded context); POST resolves the env's LLM `api_key`/`model` (`EnvironmentRepository.get_environment` → `ConnectionRepository.get_connection_decrypted`, best-effort) and calls the bridge, rendering an answered card (text + citation chips) or a refused empty-state. CSRF via `{{ csrf_input | safe }}`; the component kit (`_empty_state`, `breadcrumbs`).
+
+**Close.** Doc currency: `substrate_7_conversation/EVOLUTION.md` (slices 1–4 landed) + `SPEC.md` Status (Phase 8 realized). **Merge gate:** the S7 suites green (contract + intent + assembler + answerer + retrieval governance + the new bridge governance), `import primeqa.app` (route registers), `import primeqa.intelligence.conversation_bridge`; then merge `phase-20-substrate-7-conversation` → `main` via PR. **Deferred unchanged** (SPEC §6): the Control half, multi-turn + persistence, proactive, broad retrieval, the open-ended router, rich UI.
+
+**Verify.** Bridge governance on the semantic `conn`+`seed` harness: `_answer(s1, session, …)` with a **stub phrase_fn** over seeded S6/S8/S1 — an answered failure-cause question (citations present), a refused empty-store question, a `None`-intent clarify-refusal, an impact question over a seeded object; `answer_question(-1, …)` → `available=False` (best-effort). The substrate stores are empty in prod until live runs (S7-Q-005), so the *answered* path is demonstrated only with seeded data; the *refused* path is the correct default. No Flask-client route test (the `JWT_SECRET`-gated integration layer doesn't run locally — the `substrate_insights` precedent tests the bridge inner, not the route).
+
+---
+
 ---
