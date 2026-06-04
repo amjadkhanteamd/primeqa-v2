@@ -8232,4 +8232,26 @@ Step 0 wired a production trigger to the **finished-but-dormant** S1 sync engine
 
 ---
 
+## D-155 — Cutover Step 2 / Slice 2.1: the substrate-insights read surface
+
+**Date:** 2026-06-04
+**Substrates affected:** [S6, S8] (read-only consumers) + v1 (new `primeqa/intelligence/substrate_insights.py`, a `views.py` route, a template, a `navigation.py` entry). **No migration; no substrate-package change; no v1 behaviour change** (an additive read-only page).
+**Status:** Active — greenfield-cutover **Step 2, slice 2.1** (the lead), on `phase-18-cutover-step2-substrate-consumers`. Makes the dormant substrate outputs **visible additively** in the v1 product — the first v1→substrate read consumer.
+
+Step 2 surfaces the substrate outputs (S6 interpretation + clustering, S8 grounding-validity) in v1, additively. Slice 2.1 builds the first + cleanest surface: a standalone **`/substrate-insights`** read page. Three exploration findings shaped the choice.
+
+**Why a standalone page (not a graft onto `/runs/:id`).** S6's `read_interpretation` keys on `s4_execution_runs.run_id` (a substrate UUID), **not** v1's `pipeline_runs.id`; no correlation exists (D-137's "substrate runs ≠ v1 pipeline-runs"). So an S6 panel cannot naively attach to the v1 run-detail page. A standalone page **keyed on substrate ids** sidesteps the mismatch entirely; the v1-run↔substrate-run correlation seam (for the eventual grafted panel) is deferred to slice 2.3.
+
+**The session seam — v1 owns the bridge.** The S6/S8 read APIs (`list_interpretations`, `cluster_recurring_causes`/`cluster_by_vr`/`cluster_flapping`, `list_grounding_validity`) run on a **tenant-schema-scoped ORM `Session`**; v1 Flask routes hold the main-DB session. The bridge is `with get_tenant_connection(tenant_id) as conn: Session(bind=conn)` — the verified precedent in `evolution/recompute.py` + `execution_engine/run.py`. A new **v1-side** module `primeqa/intelligence/substrate_insights.py` owns it (the allowed v1→substrate direction, like `interpretation_phrasing.py`) — the substrate packages stay route-agnostic. Factored for testability: a thin outer `get_substrate_insights(tenant_id)` (opens the bridge; best-effort — any failure → `available=False`, never raises) wrapping a **pure** `_assemble_insights(session, limit) -> dict` (testable directly on the rollback-fixture session). Rows flatten to plain dicts inside the `with`-block (they detach on commit).
+
+**Empty until live S1 → the empty-state is a first-class render branch.** Every substrate store is empty in prod until the ops live-SF run (task #119, Step 0's deferred exit-gate) + the first runs/recompute ticks. So the page has three branches (all via the `_empty_state` component): `available=False` (tenant schema absent / read error) → "unavailable"; `available=True, empty=True` (the prod state until S1 goes live) → "no insights yet"; data → render. This makes 2.1 shippable now (prod renders the empty branch; governance tests exercise the data branch with seeded rows).
+
+**Role-gating — `view_intelligence_report` (the role→set map is counterintuitive).** Verified `_DEFAULT_SET_FOR_ROLE`: `ba→tester_base`, `viewer→release_owner_base`, `tester→developer_base`, `admin`/`superadmin→admin_base`. `view_intelligence_report` lives in tester_base + admin_base; gating on it → **ba + admin + superadmin** see the page, **viewer + tester excluded** (the detailed-intelligence audience). Gating on "report OR summary" would wrongly *include viewers* (release_owner_base holds `view_intelligence_summary`) — so the single `view_intelligence_report` gate is correct. `require_page_permission` supplies superadmin god-mode + a redirect (not a 403). The exact gate is reconfirmed against the live `permission_sets` seed at impl.
+
+**Boundary.** Additive: a new v1 module + a read-only route + a template + a sidebar entry. The LLM phrasing layer (D-117) is deferred (2.1 lists the deterministic `attribution`); the run-correlation graft (2.3), release-grain clustering (2.4), and the S5→S3 forward-seam decision (2.2) are later slices. The live "parity-of-meaning" review is ops-deferred (needs live substrate data).
+
+**Verification.** Governance DB (`tests/integration/test_representation/`, the rollback `session` fixture): seed S6 + S8 rows via `persist_interpretation` / `persist_grounding_validity` → assert `_assemble_insights(session)` surfaces them (sections populated, `empty=False`); seed nothing → `empty=True`; `get_substrate_insights` on an absent tenant → `available=False` (monkeypatched). Plus the existing S6/S8 suites stay green + `import primeqa.app` (route + nav compile).
+
+---
+
 ---
