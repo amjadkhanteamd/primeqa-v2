@@ -8487,4 +8487,20 @@ Substrate 7 opened — the **conversation layer**: the natural-language surface 
 
 ---
 
+## D-163.1 — S7 slice 1: deterministic intent classification
+
+**Date:** 2026-06-04
+**Substrates affected:** [S7] (`conversation/intent.py` — the classifier); [S5] (reuses the shared `knowledge._text` word-boundary matcher — read-only, pure)
+**Status:** Active — S7 slice 1 (sub-decision of D-163). Pure, no-DB, no-LLM.
+
+The first pipeline stage: `classify_intent(question_text, context) -> Intent | None`. Maps a natural-language question to one of the three fixed intents, or `None` (→ a deterministic clarify-refusal downstream). **Keyword, not LLM** (the SPEC §3 discipline — the classifier picks *which fixed recipe* runs; it never authors an arbitrary query; letting the model choose retrieval is letting it author its own grounding, the inversion the platform refuses).
+
+**Reuse, corrected path.** Matching is the shared **`primeqa.knowledge._text`** (`kw_count` / `matched_keywords`) — inflection-aware word-boundary regex (`\bkw(?:s|es|ed|ing)?\b`), the same matcher S5 domain-pack selection + S3 `detect_complexity` use, so S7 doesn't reinvent matching semantics (and dodges the "flow silently matches workflow" class of bug `_text` was extracted to fix). The plan's path (`intelligence.knowledge._text`) was pre-cutover; the module relocated to S5 (`primeqa/knowledge/`) in Step 1, so the import is **`primeqa.knowledge._text`** — verified to pull in **zero `primeqa.intelligence`**, so the LLM-free package guard (D-163) holds. S7→S5 is within the dependency law.
+
+**Scoring (deterministic).** Per intent, count the distinct matched keywords; **highest count wins; ties break by a fixed priority order** (`failure_cause` > `grounding_drift` > `impact` — SPEC §3) via a stable sort `(-count, priority_index)`. No intent matches ⇒ `None`. `impact`'s target object/requirement is **not** parsed from the question — it rides the bounded `QuestionContext` (the picker; SPEC §3) — so classification is keyword-only and entity-extraction-free.
+
+**Shape.** `conversation/intent.py` (the keyword sets + `classify_intent`); re-export from `conversation/__init__.py`. **Verify:** a pure-unit table — each intent's keywords classify to it; the highest-count intent wins a mixed question; ties resolve by priority; an off-topic question → `None`; inflections match (`failed`/`drifting`/`affects`). No DB, no LLM.
+
+---
+
 ---
