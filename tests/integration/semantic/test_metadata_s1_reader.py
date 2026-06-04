@@ -69,12 +69,15 @@ def test_hydrate_fields_ordered_and_typed(conn, seed):
     v1, obj = _seed_org(seed, conn)
     reader = hydrate_metadata_s1_reader(SemanticOrgModel(conn), v1)
     fields = reader.get_fields(object_id=reader.get_objects()[0].id)
-    assert [f.api_name for f in fields] == ["Account.Industry__c", "Account.Name"]
+    # D-161.1: the reader emits BARE field api-names (strips the object prefix the
+    # S1 sync stores — `{Object}.{field}`), matching v1 meta_* + bare-name steps.
+    assert [f.api_name for f in fields] == ["Industry__c", "Name"]
     by_name = {f.api_name: f for f in fields}
-    assert by_name["Account.Name"].is_required is True
-    assert by_name["Account.Name"].field_type == "string"
-    assert by_name["Account.Industry__c"].is_custom is True
-    # 3.2 GAP-1 approximation: field is_createable defaults True (no S1 column yet).
+    assert by_name["Name"].is_required is True
+    assert by_name["Name"].field_type == "string"
+    assert by_name["Industry__c"].is_custom is True
+    # is_createable defaults True when field_details carries no explicit value
+    # (this seed omits it; 3.3's column server-defaults true).
     assert all(f.is_createable is True for f in fields)
     assert all(str(f.meta_object_id) == str(obj) for f in fields)
 
@@ -99,7 +102,9 @@ def test_reader_drives_build_metadata_context(conn, seed):
     gen.metadata_repo = reader
     ctx = gen._build_metadata_context(None)
     assert ctx["objects"] == [
-        "Account [required: Account.Name] [custom: Account.Industry__c]"]
+        "Account [required: Name] [custom: Industry__c]"]
+    # VR naming stays object-qualified (D-161.1: no validator rule reads VR names;
+    # generation-context VR-list text only).
     assert ctx["validation_rules"] == [
         "Account.Account.RequireName: Name required"]
 

@@ -111,12 +111,14 @@ class TestManagementService:
         """Cutover Step 3 (D-158/D-159): wrap the meta_* repo in the flag-gated
         ``MetadataAccessor`` — the single switch point for v1's metadata reads.
 
-        ``with_s1_reader`` (D-159): the GENERATION sites pass ``True`` (they
-        tolerate the field-CRUD GAP — the descriptive context approximates
-        createable); the VALIDATOR sites stay ``False`` until 3.4 (their CRITICAL
-        ``field_not_createable`` check needs the real flags 3.3 adds). The S1
-        reader is built ONLY when ``cutover_read_s1`` is on (no wasted hydrate for
-        flag-off tenants) and is best-effort (empty/error S1 → None → meta_*)."""
+        ``with_s1_reader``: the GENERATION sites (D-159) and — since 3.4 (D-161) —
+        the VALIDATOR sites all pass ``True``. 3.3 made the field-CRUD flags real
+        and 3.4 populates picklist values, so the validator's CRITICAL
+        ``field_not_createable`` and WARNING ``picklist_value_not_allowed`` checks
+        read S1 at true parity. The S1 reader is built ONLY when ``cutover_read_s1``
+        is on (no wasted hydrate for flag-off tenants) and is best-effort
+        (empty/error S1 → None → meta_*). The default ``False`` keeps any non-read
+        caller (e.g. apply_fix-only paths) on meta_*."""
         from primeqa.metadata.accessor import (
             MetadataAccessor, cutover_read_s1_enabled,
         )
@@ -176,11 +178,12 @@ class TestManagementService:
         llm_client.api_key = api_key  # ensure attr exists for gateway lookup
         model = llm_conn["config"].get("model", "claude-sonnet-4-20250514")
 
-        # Cutover Step 3 (D-159): the GENERATION accessor gets the S1 reader
-        # (with_s1_reader=True); the VALIDATOR stays on meta_* until 3.4 (its
-        # CRITICAL field_not_createable check needs the field-CRUD flags 3.3 adds
-        # — the generation context only approximates createable, fine for a
-        # descriptive prompt). Separate accessors → distinct read sources.
+        # Cutover Step 3: both the GENERATION accessor (D-159) and the VALIDATOR
+        # below (D-161) get the S1 reader (with_s1_reader=True). 3.3 made the
+        # field-CRUD flags real and 3.4 populates picklist values, so the
+        # validator reads S1 at true parity (incl. its CRITICAL
+        # field_not_createable check). Separate accessors → independently
+        # flag-gated reads; flag-off → both stay on meta_* (no behaviour change).
         gen_accessor = self._metadata_accessor(
             tenant_id, metadata_repo, with_s1_reader=True)
         generator = TestCaseGenerator(
@@ -200,7 +203,8 @@ class TestManagementService:
         # construct since metadata is hot in memory by this point.
         from primeqa.intelligence.validator import TestCaseValidator
         validator = TestCaseValidator(
-            self._metadata_accessor(tenant_id, metadata_repo),
+            self._metadata_accessor(
+                tenant_id, metadata_repo, with_s1_reader=True),
             env.current_meta_version_id)
 
         # Prompt 13 wiring: structural linter runs after the LLM returns
@@ -654,7 +658,9 @@ class TestManagementService:
             meta_version_id = tcv.metadata_version_id
 
         validator = TestCaseValidator(
-            self._metadata_accessor(tenant_id, metadata_repo), meta_version_id)
+            self._metadata_accessor(
+                tenant_id, metadata_repo, with_s1_reader=True),
+            meta_version_id)
         report = validator.validate(tcv.steps or [])
         self._store_validation_report(tcv.id, report, meta_version_id)
         return report
@@ -678,7 +684,8 @@ class TestManagementService:
             raise NotFoundError("Test case version not found")
 
         validator = TestCaseValidator(
-            self._metadata_accessor(tenant_id, metadata_repo),
+            self._metadata_accessor(
+                tenant_id, metadata_repo, with_s1_reader=True),
             tcv.metadata_version_id)
         new_steps = validator.apply_fix(tcv.steps or [], issue, replacement)
 

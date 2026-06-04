@@ -18,7 +18,10 @@ The per-field CRUD flags (``is_createable``/``is_updateable``) read ``field_deta
 with a default of ``True`` — **absent in 3.2** (→ True, the descriptive-generation
 approximation; the validator does NOT read S1 until those flags are real) and
 **real once the 3.3 columns land** (``get_entity_details`` does ``SELECT *``, so it
-picks them up) — so the reader is unchanged between 3.2 and 3.4.
+picks them up). The picklist values (the validator's ``picklist_value_not_allowed``
+WARNING) are populated in 3.4 (D-161) via the
+``field_details.picklist_value_set_entity_id`` → ``get_picklist_values`` 2-hop — so
+the validator reads S1 at true parity (every rule the ``meta_*`` reader served).
 """
 from __future__ import annotations
 
@@ -54,8 +57,8 @@ class _S1Field:
     is_createable: bool
     is_updateable: bool
     meta_object_id: Any        # the S1 Object entity UUID (== _S1Object.id)
-    reference_to: Optional[str] = None       # 3.4 populates for lookups
-    picklist_values: tuple = ()              # 3.4 populates (the validator's need)
+    reference_to: Optional[str] = None       # (deferred) SOQL relationship checks
+    picklist_values: Any = ()                # D-161: list[str] value api-names (()=none)
 
 
 @dataclass(frozen=True)
@@ -124,6 +127,7 @@ def hydrate_metadata_s1_reader(model, seq) -> MetadataS1Reader:
             id=e.id, api_name=e.sf_api_name,
             is_createable=bool(od.get("is_createable", True)),
             is_custom=bool(od.get("is_custom", False))))
+        obj_api = e.sf_api_name or ""     # stripped from qualified field names below
         flds = []
         for r in model.get_related(e.id, edge_types=[_BELONGS_TO],
                                    direction="inbound", at_seq=seq):
@@ -132,15 +136,39 @@ def hydrate_metadata_s1_reader(model, seq) -> MetadataS1Reader:
                 continue
             fd = model.get_entity_details(fe.id, at_seq=seq) or {}
             attrs = fe.attributes or {}
+            # S1 stores a Field's sf_api_name object-qualified ("Account.Name",
+            # per sync materialize._extract_external_id's f"{parent}.{name}"); v1
+            # meta_* + every test step use the bare name ("Name"). Strip the parent
+            # prefix — the exact inverse — so the validator's obj_fields[fname]
+            # lookup matches bare-name steps and the generation context lists bare
+            # field names (D-161.1).
+            fe_api = fe.sf_api_name or ""
+            bare = (fe_api[len(obj_api) + 1:]
+                    if obj_api and fe_api.startswith(obj_api + ".") else fe_api)
+            # Picklist values via the 2-hop (D-161): field_details carries the
+            # picklist_value_set_entity_id FK (NULL for non-picklist fields);
+            # get_picklist_values enumerates that set at `seq`. Emit a **list**
+            # of value api-names — the validator's _picklist_values needs
+            # isinstance(pv, list) (a tuple is skipped); empty stays () so a
+            # field with no captured values is skipped (no false-positive).
+            pvs_id = fd.get("picklist_value_set_entity_id")
+            picklist_values = ()
+            if pvs_id:
+                picklist_values = [
+                    pv["value_api_name"]
+                    for pv in model.get_picklist_values(pvs_id, at_seq=seq)
+                    if pv.get("value_api_name")
+                ]
             flds.append(_S1Field(
-                api_name=fe.sf_api_name,
+                api_name=bare,
                 field_type=fd.get("field_type"),
                 is_required=bool(attrs.get("is_required", False)),
                 is_custom=bool(fd.get("is_custom", False)),
-                # absent in 3.2 (→ True, the descriptive approximation); real once
-                # 3.3 adds the field_details columns (SELECT * picks them up).
+                # real since 3.3 added the field_details columns (get_entity_details
+                # SELECT * picks them up; absent → True, SF's permissive default).
                 is_createable=bool(fd.get("is_createable", True)),
                 is_updateable=bool(fd.get("is_updateable", True)),
+                picklist_values=picklist_values,
                 meta_object_id=e.id))
         fields_by_obj[e.id] = tuple(sorted(flds, key=lambda f: f.api_name or ""))
 
