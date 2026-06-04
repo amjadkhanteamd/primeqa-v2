@@ -8254,4 +8254,24 @@ Step 2 surfaces the substrate outputs (S6 interpretation + clustering, S8 ground
 
 ---
 
+## D-156 — Cutover Step 2 / Slice 2.2: the S5→S3 generation forward-seam — settled (not wired)
+
+**Date:** 2026-06-04
+**Substrates affected:** [S5, S3] — a **decision only**. No code, no migration, no behaviour change (docs).
+**Status:** Active — greenfield-cutover **Step 2, slice 2.2**, on `phase-18-cutover-step2-substrate-consumers`. Resolves D-134's deferred "S5→S3 forward-seam" — the one genuinely-open architectural question Step 2 carries.
+
+D-134 deferred wiring S5 knowledge into S3 generation "until a semantic-fit design is defined **and** the v1-vs-substrate generation direction settles at the cutover." Both conditions are now resolvable, and the decision is: **do not wire S5→S3 at the cutover** — close the seam, with the reasoning + the revisit-condition recorded.
+
+**The generation direction IS settled — and it settles as "v1 stays."** The cutover SPEC §2 disposition map dispositions v1 generation (`intelligence/generation.py`) as **REPLACE the data-source layer** (read S1 entities, not `meta_*`) with the **code + the LLM gateway + the prompts STAYING** (operational infrastructure, D-111). S3 substrate generation (`primeqa/generation/run_generation`) is **not** mapped as a replacement for v1 generation — it emits a **different artifact** (semantic claims + recipes in S2 `test_claims`/`test_recipes`, D-056/D-065), consumed **downstream** by S4/S6/S8, **not** the product's `test_cases`. So post-cutover: v1 generation remains the product's test-case authoring path (re-sourced onto S1); S3 is a parallel substrate capability, not product-facing. The "direction" the forward-seam waited on has resolved — and it resolved **away from** "S3 is the v2 generation path."
+
+**The semantic fit is ~zero — a wire would be net-new, not a seam.** S5's knowledge today is **test-case-authoring-calibrated**: domain packs are ~1200-token test-step pattern blocks (e.g. Case-escalation test patterns); system rules are authorship proscriptions ("formula fields are read-only; never set them in a payload"). S3's claim-emitter (`propose_semantic_intent`) needs **ontology signals** — which claim kinds exist, which S1 edges ground them (the `governance_core` edge/dimension mappings) — to propose the narrowest groundable intent. These are **adjacent, not complementary**: S5 answers "how do I author correct test steps?"; S3 needs "which claims should I propose, and what grounds them?". Wiring S5→S3 would therefore require a **new claim-calibrated knowledge channel** (sourced from `governance_core`'s mappings), not a port of the existing Rule/DomainPack channels — net-new design + build, for a generation path that is **not product-facing**. And S3 already enforces grounding deterministically *post-proposal* (Guardrail 1, D-085: the LLM proposes, the substrate validates/refuses), so much of that ontology knowledge is already enforced where it matters.
+
+**The decision.** **The S5→S3 forward-seam is closed for the cutover — not wired.** Rationale: (1) the generation direction settled as "v1 generation stays as the product path; S3 is parallel + downstream-only," so there is no cutover-driven need; (2) the semantic fit is ~zero — a wire would be a new claim-ontology channel (net-new build), not a reuse; (3) building knowledge for a non-product-facing emitter is speculative. This **resolves D-134's deferral** (the "until the direction settles" condition is met). **Revisit-condition (recorded, not scheduled):** IF a future, post-cutover decision makes S3 a **product-facing** generation path (S3 claims/recipes surfaced as the product's tests), THEN design a claim-ontology knowledge channel (a `governance_core`-sourced MVP) — gated on that decision, which the cutover explicitly does not make.
+
+**The alternative, weighed + rejected.** Wire a minimal claim-ontology channel into the S3 prompt now (a new `claim_ontology.json` sourced from `governance_core`, appended to the frozen `generation@v3` system prompt). Rejected: it is net-new build (not the "seam" D-134 framed), it serves a non-product-facing emitter, and it partly duplicates the deterministic grounding `governance_core` already enforces — speculative work the cutover does not need.
+
+**Boundary.** Docs only — a decision + its doc-currency (the cutover SEQUENCE coverage row for the forward-seam marked **settled**; the S5 `DEFERRED_ITEMS.md` forward-seam item marked **resolved → D-156**). No code, no migration, no behaviour change.
+
+---
+
 ---
