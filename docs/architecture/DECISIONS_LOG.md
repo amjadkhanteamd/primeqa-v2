@@ -8147,4 +8147,26 @@ S0.1 builds the two seams the trigger needs: a **Salesforce client per environme
 
 ---
 
+## D-151 — Cutover Step 0 / S0.2: the `s1_sync_jobs` queue + `SyncJobStore`
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (the sync trigger's job queue). **MIGRATION** (tenant `20260604_0020`, chains onto S0.1's `20260604_0010`).
+**Status:** Active — greenfield-cutover **Step 0, slice S0.2**, on `phase-17-cutover-step0-s1-sync-trigger`. Builds the durable async-work record wrapping `SyncEngine.run_sync` — the queue the S0.3 consumer drains.
+
+`run_sync` is long (~30 min live), so the production trigger is a **per-tenant job queue + worker consumer** (the `s4_execution_jobs` pattern, D-130), not an inline scheduler tick. S0.2 builds the queue + its repository; S0.3 the consumer; S0.4 the scheduler enqueuer + reaper wiring.
+
+**A near-mechanical mirror of `s4_execution_jobs` (D-130) — with one divergence.** Per-tenant schema (unqualified, **no `tenant_id` column** — isolation by schema), `SELECT … FOR UPDATE SKIP LOCKED` claim, partial-unique on the active set. **The one divergence: no attempts child table.** S4 carries `s4_execution_job_attempts` (one row per `run_recipe_execution_async`, a fresh `request_id` per attempt). S1's engine already writes its **own** per-run history to `sync_runs`; the job's **`last_sync_run_id`** links the current/last run — the resume anchor for `run_sync(resume_sync_run_id=…)`. A second attempts table would duplicate `sync_runs`, so the job keeps a single `last_sync_run_id` pointer instead.
+
+**Idempotency — the S4 repeatable shape (not S3's "one job ever").** Partial-unique `UNIQUE (connected_org_id) WHERE status IN ('queued','claimed','running')` — one active sync per connected_org, a fresh job allowed once the prior is terminal (re-sync as the org evolves). Keyed on **`connected_org_id` alone** (not `(connected_org_id, environment_id)`, where S4 keys `(test_id, environment_id)`): the connected_org **is** the sync-target identity — one org, one active sync — and `environment_id` rides alongside as the credential source the consumer resolves (D-150), not part of the dedup key.
+
+**The lifecycle** (`SyncJobStore`, mirroring `ExecutionJobStore`): `create_or_get_job(connected_org_id, environment_id)` (get-or-create the active job — `ON CONFLICT … WHERE active DO NOTHING` then SELECT; race-safe) → `claim_next_queued_job()` (`FOR UPDATE SKIP LOCKED`, queued→claimed) → `mark_running(job_id)` (→running + bump `attempt_count`; S4's `start_attempt` minus the attempts-row insert) → `set_sync_run(job_id, sync_run_id)` (link the engine's run — the resume anchor) → `heartbeat` → `complete` / `fail` (the latter guarded `status NOT IN terminal` — reaper-race-safe) → `reap_stale_jobs(stale_minutes=45)`.
+
+**The reaper timeout — 45 min (generous by design).** It must **exceed the longest legitimate sync** (~30 min live), or the reaper would kill a healthy run; `reap_stale_jobs` fails jobs whose `COALESCE(heartbeat_at, claimed_at)` is older than the threshold. On a stale-fail, **`last_sync_run_id` survives** (the `fail` path never clears it) → a fresh `create_or_get_job` + the consumer's resume picks up that `sync_run` rather than restarting from phase 1.
+
+**Shape.** `s1_sync_jobs` (migration `20260604_0020`, chains onto S0.1's `20260604_0010`) + `SyncJobStore` (new `primeqa/sync/jobs.py`). Additive — a new table + a new module; **no engine/phase edits**, no v1 change.
+
+**Verification.** Governance DB (stubbed — no SF): the job lifecycle (create → claim → mark_running → heartbeat → complete, statuses + timestamps progressing); active-set idempotency (a second `create_or_get_job` returns the **same** active job; a fresh one only after the prior is terminal); the reaper fails a stale `running` job **and preserves `last_sync_run_id`** (resumable) while leaving a fresh/heartbeating job untouched. Plus `import primeqa.sync.jobs`.
+
+---
+
 ---
