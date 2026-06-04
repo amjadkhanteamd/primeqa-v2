@@ -8129,4 +8129,107 @@ The cutover's first *executed* step (the zero-risk, independent relocation). `pr
 
 ---
 
+## D-150 — Cutover Step 0 / S0.1: the S1-sync provisioning + SF-client resolution seam
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (the sync trigger's credential + provisioning seam) + an additive `connected_orgs.environment_id` column + an additive `access_token` param on `integrations/sf_client.SalesforceClient`. **MIGRATION** (tenant `20260604_0010`, chains onto head `20260603_0030`).
+**Status:** Active — greenfield-cutover **Step 0, slice S0.1**, on `phase-17-cutover-step0-s1-sync-trigger`. Cutover SEQUENCE Step 0 (the hard unblocker); the engine is finished-but-dormant (`run_sync`, zero prod callers) — this phase wires the trigger.
+
+S0.1 builds the two seams the trigger needs: a **Salesforce client per environment** + a **sync target** (`connected_orgs`).
+
+**The SF-client seam — bridge v1's auth to the engine's client (the resolved grant mismatch).** The engine's client (`integrations/sf_client.SalesforceClient(instance_url, client_id, client_secret, refresh_token)`) is **refresh-token-grant only** (`_refresh_access_token` posts `grant_type=refresh_token`). But v1's connections authenticate via **client_credentials / password** (`metadata.worker_runner._oauth_token` → a bare `access_token`; the decrypted config carries no `refresh_token`). So "build the client from the connection 4-tuple" (the agent's first lean) does **not** work. **Resolution:** reuse v1's `_oauth_token` (env → connection → `access_token`, exactly S4's `credentials.py` path) and **pre-seed** the engine's client with that token — via a new **additive, backward-compatible `access_token: str | None = None`** param on `SalesforceClient.__init__` (`self._access_token = access_token`; when set, `_ensure_access_token` skips the refresh exchange). So `resolve_sync_sf_client(db, environment_id)` reuses ALL of v1's credential machinery + the engine's transport, both untouched. A mid-sync 401 (access token expiry past ~2h, beyond a ~30-min sync) → `SFAuthError` → the job fails + retries with a fresh token (acceptable v1 behaviour; noted). **This removes the agent-flagged "verify-against-connection-configs" HOLD** — any connection v1 metadata-sync can authenticate, S1 sync can too (the same `_oauth_token`).
+
+**The provisioning seam — `environment → connected_org` (none exists).** `connected_orgs` (the sync target) carries `sf_instance_url` + oauth stubs but no `client_id/secret`, is **never INSERTed in prod**, and has no link to `environments`. S0.1 adds `connected_orgs.environment_id` (a nullable loose int → `environments.id`; no cross-schema FK — the substrate convention) + `ensure_connected_org_for_environment(conn, environment_id, sf_instance_url) -> connected_org_id` (idempotent upsert keyed on `environment_id`). The sync *targets* a connected_org; the *environment* is the credential source.
+
+**Shape.** New `primeqa/sync/credentials.py` — `resolve_sync_sf_client(db, environment_id) -> SalesforceClient` (mirrors `execution_engine/credentials.py`; raises a sync-local `CredentialResolutionError` on missing env/connection) + `ensure_connected_org_for_environment(...)`. Additive: `connected_orgs.environment_id` (migration `20260604_0010`) + the `access_token` param on `integrations/sf_client.SalesforceClient`. **No engine/phase edits.**
+
+**Verification.** Governance DB + stubbed creds: `ensure_connected_org_for_environment` creates then returns the same row (idempotent); `resolve_sync_sf_client` builds a token-seeded client from a stubbed connection (monkeypatch `_oauth_token` + `get_connection_decrypted`); missing env/connection → `CredentialResolutionError`; the `access_token`-seeded `SalesforceClient` skips `_refresh_access_token`. Plus `import primeqa.sync.credentials` + `primeqa.integrations.sf_client` (backward-compat: default `access_token=None` keeps the refresh path).
+
+---
+
+## D-151 — Cutover Step 0 / S0.2: the `s1_sync_jobs` queue + `SyncJobStore`
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (the sync trigger's job queue). **MIGRATION** (tenant `20260604_0020`, chains onto S0.1's `20260604_0010`).
+**Status:** Active — greenfield-cutover **Step 0, slice S0.2**, on `phase-17-cutover-step0-s1-sync-trigger`. Builds the durable async-work record wrapping `SyncEngine.run_sync` — the queue the S0.3 consumer drains.
+
+`run_sync` is long (~30 min live), so the production trigger is a **per-tenant job queue + worker consumer** (the `s4_execution_jobs` pattern, D-130), not an inline scheduler tick. S0.2 builds the queue + its repository; S0.3 the consumer; S0.4 the scheduler enqueuer + reaper wiring.
+
+**A near-mechanical mirror of `s4_execution_jobs` (D-130) — with one divergence.** Per-tenant schema (unqualified, **no `tenant_id` column** — isolation by schema), `SELECT … FOR UPDATE SKIP LOCKED` claim, partial-unique on the active set. **The one divergence: no attempts child table.** S4 carries `s4_execution_job_attempts` (one row per `run_recipe_execution_async`, a fresh `request_id` per attempt). S1's engine already writes its **own** per-run history to `sync_runs`; the job's **`last_sync_run_id`** links the current/last run — the resume anchor for `run_sync(resume_sync_run_id=…)`. A second attempts table would duplicate `sync_runs`, so the job keeps a single `last_sync_run_id` pointer instead.
+
+**Idempotency — the S4 repeatable shape (not S3's "one job ever").** Partial-unique `UNIQUE (connected_org_id) WHERE status IN ('queued','claimed','running')` — one active sync per connected_org, a fresh job allowed once the prior is terminal (re-sync as the org evolves). Keyed on **`connected_org_id` alone** (not `(connected_org_id, environment_id)`, where S4 keys `(test_id, environment_id)`): the connected_org **is** the sync-target identity — one org, one active sync — and `environment_id` rides alongside as the credential source the consumer resolves (D-150), not part of the dedup key.
+
+**The lifecycle** (`SyncJobStore`, mirroring `ExecutionJobStore`): `create_or_get_job(connected_org_id, environment_id)` (get-or-create the active job — `ON CONFLICT … WHERE active DO NOTHING` then SELECT; race-safe) → `claim_next_queued_job()` (`FOR UPDATE SKIP LOCKED`, queued→claimed) → `mark_running(job_id)` (→running + bump `attempt_count`; S4's `start_attempt` minus the attempts-row insert) → `set_sync_run(job_id, sync_run_id)` (link the engine's run — the resume anchor) → `heartbeat` → `complete` / `fail` (the latter guarded `status NOT IN terminal` — reaper-race-safe) → `reap_stale_jobs(stale_minutes=45)`.
+
+**The reaper timeout — 45 min (generous by design).** It must **exceed the longest legitimate sync** (~30 min live), or the reaper would kill a healthy run; `reap_stale_jobs` fails jobs whose `COALESCE(heartbeat_at, claimed_at)` is older than the threshold. On a stale-fail, **`last_sync_run_id` survives** (the `fail` path never clears it) → a fresh `create_or_get_job` + the consumer's resume picks up that `sync_run` rather than restarting from phase 1.
+
+**Shape.** `s1_sync_jobs` (migration `20260604_0020`, chains onto S0.1's `20260604_0010`) + `SyncJobStore` (new `primeqa/sync/jobs.py`). Additive — a new table + a new module; **no engine/phase edits**, no v1 change.
+
+**Verification.** Governance DB (stubbed — no SF): the job lifecycle (create → claim → mark_running → heartbeat → complete, statuses + timestamps progressing); active-set idempotency (a second `create_or_get_job` returns the **same** active job; a fresh one only after the prior is terminal); the reaper fails a stale `running` job **and preserves `last_sync_run_id`** (resumable) while leaving a fresh/heartbeating job untouched. Plus `import primeqa.sync.jobs`.
+
+---
+
+## D-152 — Cutover Step 0 / S0.3: the S1-sync consumer (resume-on-reap)
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (the sync trigger's consumer) + an extension to D-151's `SyncJobStore.create_or_get_job` (resume carry-forward). **No migration.** Additive new `primeqa/sync/consumer.py`; no engine/phase/v1 edits.
+**Status:** Active — greenfield-cutover **Step 0, slice S0.3**, on `phase-17-cutover-step0-s1-sync-trigger`. The worker loop that drains the D-151 queue: claim → resolve creds → `run_sync` → complete/fail.
+
+**The consumer — mirrors `generation/consumer.py`, with two engine-driven divergences.** `process_sync_job_for_tenant(tenant_id, *, sf_client_resolver, engine_factory)` claims one job (`SKIP LOCKED`) → `mark_running` + one heartbeat → resolves a `SalesforceClient` via the **injected** `sf_client_resolver` (the generation `api_key_resolver` pattern — keeps the substrate consumer decoupled from the v1 connection store + stub-testable; production wires `resolve_sync_sf_client` (D-150) inside a v1 session) → builds `SyncEngine(get_engine(), sf, _resolve_schema_name(tid))` via an **injected** `engine_factory` (default the real engine; tests inject a fake) → `run_sync(connected_org_id, resume_sync_run_id=job.last_sync_run_id)`. `run_s1_sync_consumer_tick(tenant_ids, *, sf_client_resolver, engine_factory)` runs one job per tenant with per-tenant try/except isolation (the resilient-tick pattern), returning `{tid: processed:<id> | empty | error:<Type>}`.
+
+**Divergence 1 — complete/fail reads `sync_runs.status`, not raise-vs-return.** Unlike `run_generation` (which raises on failure), the engine **captures phase failure in the `sync_run` row and returns the id regardless** (only fatal infra — `SyncEngineError` — raises). So the consumer's terminal decision is: `run_sync` **raises** → `fail(error_code='sync_engine_error')`; else read `sync_runs.status` for the returned id — `'failure'` → `fail(error_code='sync_failed', error_message=<the row's message>)`; `'running'/'success'/'partial_success'` → `set_sync_run` (provenance) + `complete`. (`'running'` is a structural-complete success: the engine leaves status `running` / phase `enrichment` for the separate enrichment worker — the job's unit is the **structural** sync, not enrichment.)
+
+**Divergence 2 — resume-on-reap via the durable `sync_run` (realizing D-151, per the resume-now decision).** The engine exposes `run_sync(resume_sync_run_id=…)`, which reads `last_completed_phase` and continues from the next phase. To make a reaped sync resume, D-152 extends **`create_or_get_job`**: a newly-created job's `last_sync_run_id` is **seeded from the org's most-recent incomplete `sync_run`** (`status NOT IN ('success','partial_success') AND last_completed_phase IS DISTINCT FROM 'Flow'`), read directly from `sync_runs`. The `sync_run` row — not a mid-run-captured job column — is the durable resume source of truth (cleaner than the daemon-capture floated at the fork; identical outcome, because there is at most **one** incomplete `sync_run` per org: resume continues the same run rather than forking a new one). The flow: worker dies mid-sync → reaper fails the job (D-151) → re-enqueue → `create_or_get_job` finds the incomplete `sync_run` → the new job carries its id → the consumer passes it to `run_sync` → the sync **resumes from `last_completed_phase`** (same logical_version). On structural completion the `sync_run` is no longer incomplete → the next enqueue is fresh.
+
+**Heartbeat — a single beat + the resume safety net (periodic deferred).** The engine has **no progress hook** (its phase loop calls back nothing), so periodic heartbeats would need a daemon thread. Because resume now makes a reap **cheap** (a spuriously-reaped long sync simply resumes), v1 keeps the generation pattern — **one heartbeat at `mark_running`** + the generous 45-min reaper window (D-151, > the ~30-min sync) — and relies on resume to recover the rare over-window sync. The daemon-thread periodic heartbeat is a noted optimization, deferred (its only value, avoiding spurious-reap churn, is now low-stakes).
+
+**Shape.** New `primeqa/sync/consumer.py` (`process_sync_job_for_tenant`, `run_s1_sync_consumer_tick`, a thin `_classify_error`) + the `create_or_get_job` carry-forward extension in `primeqa/sync/jobs.py`. No migration; no engine/phase/v1 edits.
+
+**Verification.** Governance DB + an injected fake engine (writing controllable `sync_runs` rows) + a stub `sf_client_resolver`: the consumer claims → runs → `complete` with `last_sync_run_id` set; a `sync_run` left `status='failure'` → job `failed` (`sync_failed` + the row's message); `run_sync` raising → job `failed` (`sync_engine_error`); a job carrying `last_sync_run_id` → `run_sync` receives it as `resume_sync_run_id`; **carry-forward** — an incomplete `sync_run` for an org → the next `create_or_get_job` seeds the new job's anchor (a complete one → fresh NULL); per-tenant tick isolation (a resolver that raises → `error:<Type>`, others unaffected) + empty-queue → `empty`. The **live-SF run** (real `run_sync` → entities/edges/`sync_runs`/`ai_enrichment_queue` rows) stays the ops-deferred sandbox e2e (`test_e2e_sync_scenarios.py`).
+
+---
+
+## D-153 — Cutover Step 0 / S0.4: the enqueuer + scheduler/worker wiring
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (the sync trigger's cadence + service wiring) — additive `run_s1_sync_{enqueuer,reaper}_tick` in `primeqa/sync/consumer.py` + thin `s1_sync_enqueuer_tick`/`s1_sync_reaper_tick` in `primeqa/scheduler.py` + `s1_sync_tick` + `_default_s1_sf_client_resolver` in `primeqa/worker.py`. **No migration; no engine/phase edits.**
+**Status:** Active — greenfield-cutover **Step 0, slice S0.4** (the last build slice), on `phase-17-cutover-step0-s1-sync-trigger`. Closes the loop: enqueue (cadence) → consume (D-152) → reap (D-151). After this, ops points it at a real org and S1 goes live.
+
+S0.4 wires the dormant engine's trigger into the running services — the cadence that creates jobs + the scheduler/worker ticks that drain + reap them.
+
+**The enqueuer — the cadence (`run_s1_sync_enqueuer_tick`).** Per tenant (isolated), find `connected_orgs` needing a (re)sync → `create_or_get_job` (idempotency dedups). The **needs-sync policy**: an org with `environment_id` set (provisioned, D-150) **and no active job** is enqueued iff EITHER it has an **incomplete `sync_run`** (`status NOT IN ('success','partial_success') AND last_completed_phase IS DISTINCT FROM 'Flow'` — the reaped/failed case → **resume promptly**, per the resume-now decision) OR **no `sync_run` started within `resync_interval_hours`** (default **24 h** — never-synced or stale → a fresh re-sync to catch metadata drift). Idempotency means a fresh-complete org (synced < 24 h, no incomplete run) is skipped, and an in-flight org (active job) is skipped — so the tick never piles up. `resync_interval_hours` is a hardcoded default; per-org cadence config is a deferred ops enhancement.
+
+**Scheduler ticks — mirror `s3_reaper_tick`/`s4_reaper_tick`.** `s1_sync_enqueuer_tick(ctx)` + `s1_sync_reaper_tick(ctx)` each enumerate active tenants (`shared.tenants WHERE deleted_at IS NULL`) and delegate to the resilient per-tenant `run_s1_sync_{enqueuer,reaper}_tick` (per-tenant try/except — one tenant's failure never starves the others), wired into `scheduler_tick`. The reaper uses `stale_minutes=45` (D-151, > the longest sync).
+
+**Worker consumer tick — mirror `s4_execution_tick`.** `s1_sync_tick(db_factory, *, sf_client_resolver)` discovers tenant schemas (`_discover_tenant_schemas`) + delegates to `run_s1_sync_consumer_tick` (D-152), wired into `worker_tick`. `_default_s1_sf_client_resolver` is the worker-side credential closure — `(tenant_id, environment_id) → SalesforceClient` via `resolve_sync_sf_client` (D-150), opening + closing a v1 session per resolve (the `_default_s4_client_resolver` pattern — no v1 connection held into the ~30-min sync). One sync job per tenant per tick.
+
+**Deferred (recorded at close).** The **live-SF prod-proving** (a real `run_sync` → entities/edges/`sync_runs`/`ai_enrichment_queue` rows + the `meta_*` parity probe) → **ops** (the sandbox e2e suites; needs SF creds + ~30 min). The **interactive "sync this env now" v1 route** → cutover Step 3 (needs Flask + auth). **Per-org sync cadence config** → ops enhancement.
+
+**Verification.** Governance DB: the enqueuer creates a job for a never-synced org, a stale-complete org (`sync_run` started > 24 h ago), and an org with an incomplete `sync_run` (resume); **skips** a fresh-complete org (< 24 h), an org with an active job (idempotent — a second tick enqueues 0), and an org without `environment_id` (no creds); per-tenant isolation (a bad tenant → 0, others unaffected). The reaper tick fails a stale job per tenant. Plus `import primeqa.worker` + `primeqa.scheduler` (the wiring compiles) + the D-151/152 sync suites stay green.
+
+---
+
+## D-154 — Cutover Step 0 close: the S1-sync production trigger, built (live-proving → ops)
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (the sync trigger — built + governance-tested) + 2 tenant migrations (`20260604_0010`/`0020`) + thin scheduler/worker wiring. **No engine/phase edits, no v1 behaviour change.**
+**Status:** Active — greenfield-cutover **Step 0 close**, merging `phase-17-cutover-step0-s1-sync-trigger` → `main`. Executes + closes the SEQUENCE's hardest step (the readiness audit's #1 blocker).
+
+Step 0 wired a production trigger to the **finished-but-dormant** S1 sync engine (`SyncEngine.run_sync`, all 11 phases, zero prior prod callers) — four build slices + this close, no engine/phase edits:
+
+- **S0.1 (D-150)** — `connected_orgs.environment_id` + `resolve_sync_sf_client` (reuses v1's `_oauth_token`, pre-seeds the engine's refresh-token-grant client via an additive `access_token` param — the grant mismatch resolved) + `ensure_connected_org_for_environment`.
+- **S0.2 (D-151)** — the `s1_sync_jobs` queue + `SyncJobStore` (mirrors `s4_execution_jobs` minus the attempts table; `last_sync_run_id` resume anchor; 45-min reaper).
+- **S0.3 (D-152)** — the consumer (complete/fail via `sync_runs.status`; **resume-on-reap** via carry-forward from the org's incomplete `sync_run`).
+- **S0.4 (D-153)** — the enqueuer cadence (24 h + prompt resume) + the scheduler ticks + the worker consumer tick.
+
+**The realized loop:** the scheduler enqueues (`s1_sync_enqueuer_tick`) → the worker consumes (`s1_sync_tick` → claim → resolve creds → `run_sync` → complete/fail) → the scheduler reaps (`s1_sync_reaper_tick`; 45-min stale → resumable). Additive throughout: 2 tenant migrations, new `primeqa/sync/{credentials,jobs,consumer}.py`, thin scheduler/worker wiring — **no engine/phase edits, no v1 read-path change** (v1 still reads `meta_*`; this is the additive Step-0 of the gated SEQUENCE).
+
+**Doc currency.** Cutover `SEQUENCE.md` Step 0 marked **✅ BUILT (live-proving → ops)** + its coverage row; `SPEC.md` realized-state (the S1 production trigger now exists but isn't live-proven); `EVOLUTION.md` Step-0 build-arc entry (D-150–D-154).
+
+**Deferred → ops/later (the standing follow-ons).** The **live-SF prod-proving** — a real `run_sync` against a connected org → `entities`/`edges`/`sync_runs`/`ai_enrichment_queue` rows + the `meta_*` parity probe — is unavoidably ops (needs SF creds + ~30 min; the `@pytest.mark.sandbox` e2e suites cover it). The **prod-migration applies** (`20260604_0010`/`0020`) join the standing list. The **interactive "sync this env now" v1 route** → cutover Step 3. **Per-org cadence config** → ops enhancement.
+
+**Merge gate.** The 29 S1-sync governance suites green (`tests/integration/sync/` — jobs + consumer + enqueuer) + `import primeqa.app` / `primeqa.worker` / `primeqa.scheduler` (the wiring compiles; app verified with dummy secrets — the prior `JWT_SECRET` error is env-only, unchanged). No engine/phase change; no v1 behaviour change. Merge `phase-17-cutover-step0-s1-sync-trigger` → `main` via PR.
+
+---
+
 ---

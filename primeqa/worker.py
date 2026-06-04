@@ -1280,6 +1280,54 @@ def s4_execution_tick(db_factory=None, *, client_resolver=None) -> dict:
     return run_s4_execution_tick(tenant_ids, client_resolver=client_resolver)
 
 
+def _default_s1_sf_client_resolver(db_factory):
+    """Worker-side Salesforce-client resolution (D-153): the SF token is
+    environment -> connection-scoped (the D-150 credential path), resolved via the
+    v1 store. Returns a closure ``(tenant_id, environment_id) -> SalesforceClient``.
+    Opens + closes a v1 session per resolve, so no v1 connection is held into the
+    sync's ~30-min run (the ``_default_s4_client_resolver`` pattern)."""
+    from primeqa.sync.credentials import resolve_sync_sf_client
+
+    def _resolve(tenant_id, environment_id):
+        if environment_id is None:
+            raise ValueError(
+                f"s1 sync job for tenant {tenant_id} has no environment_id")
+        db = db_factory()
+        try:
+            return resolve_sync_sf_client(db, environment_id)
+        finally:
+            db.close()
+
+    return _resolve
+
+
+def s1_sync_tick(db_factory=None, *, sf_client_resolver=None) -> dict:
+    """Drive the substrate-1 metadata-sync queue (D-153): one job per tenant per
+    tick off ``s1_sync_jobs`` (per-tenant). Discovers tenant schemas + delegates to
+    the resilient per-tenant loop. The queue is filled by the scheduler enqueuer
+    (``s1_sync_enqueuer_tick``); until an org is provisioned with an
+    ``environment_id`` + becomes due, this no-ops. ``sf_client_resolver`` defaults
+    to the worker-side v1-credential resolver; tests inject a stub."""
+    if db_factory is None:
+        from primeqa.db import SessionLocal
+        db_factory = SessionLocal
+
+    disc = db_factory()
+    try:
+        tenants = _discover_tenant_schemas(disc)
+    finally:
+        disc.close()
+    tenant_ids = [tid for _, tid in tenants]
+    if not tenant_ids:
+        return {}
+
+    if sf_client_resolver is None:
+        sf_client_resolver = _default_s1_sf_client_resolver(db_factory)
+    from primeqa.sync.consumer import run_s1_sync_consumer_tick
+    return run_s1_sync_consumer_tick(
+        tenant_ids, sf_client_resolver=sf_client_resolver)
+
+
 def worker_tick(ctx):
     """Single poll iteration: drive pipeline runs AND metadata syncs."""
     # 1) Pipeline runs (existing)
@@ -1338,6 +1386,15 @@ def worker_tick(ctx):
         s4_execution_tick()
     except Exception as e:
         log.warning("s4 execution worker tick failed: %s", e)
+
+    # 3d) S1 metadata sync jobs (D-153). Per-tenant queue (s1_sync_jobs); one sync
+    # per tenant per tick through the (previously dormant) SyncEngine.run_sync. The
+    # queue is filled by the scheduler's s1_sync_enqueuer_tick cadence; no-ops until
+    # an org is provisioned with an environment_id + becomes due.
+    try:
+        s1_sync_tick()
+    except Exception as e:
+        log.warning("s1 sync worker tick failed: %s", e)
 
     # 4) Enrichment queue (§23). Drains ai_enrichment_queue across all
     # tenant schemas — embeddings via the Voyage API (batched up to

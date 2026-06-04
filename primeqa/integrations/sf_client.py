@@ -130,6 +130,7 @@ class SalesforceClient:
         refresh_token: str,
         api_version: str = SF_API_VERSION,
         timeout: float = 30.0,
+        access_token: str | None = None,
     ) -> None:
         self.instance_url = instance_url.rstrip("/")
         self.client_id = client_id
@@ -137,7 +138,12 @@ class SalesforceClient:
         self.refresh_token = refresh_token
         self.api_version = api_version
         self.timeout = timeout
-        self._access_token: str | None = None
+        # When a caller pre-resolves an access_token (D-150: the S1-sync trigger
+        # reuses v1's client_credentials/password OAuth via _oauth_token, since
+        # connections carry no refresh_token), seed it so _ensure_access_token
+        # skips the refresh-token exchange. Default None keeps the lazy
+        # refresh-grant path unchanged.
+        self._access_token: str | None = access_token
         self._client = httpx.Client(timeout=timeout)
 
     # --------------------------------------------------------------
