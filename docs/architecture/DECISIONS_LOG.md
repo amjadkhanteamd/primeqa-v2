@@ -8274,4 +8274,25 @@ D-134 deferred wiring S5 knowledge into S3 generation "until a semantic-fit desi
 
 ---
 
+## D-157 — Cutover Step 2 close: the additive substrate-insights surface (run-grafted consumers deferred)
+
+**Date:** 2026-06-04
+**Substrates affected:** [S6, S8] (read consumers) + v1 (the `/substrate-insights` page). No migration; no substrate-package change; no v1 behaviour change.
+**Status:** Active — greenfield-cutover **Step 2 close**, merging `phase-18-cutover-step2-substrate-consumers` → `main`. Closes Step 2 with the additive-visibility goal met; the v1-run-grafted + release-grain consumers deferred to the steps that enable them.
+
+Step 2 made the dormant substrate outputs **visible additively** in v1. Two slices delivered the goal; the two remaining planned slices hit a verified premise break and are deferred.
+
+- **2.1 (D-155)** — the standalone **`/substrate-insights`** page: S6 interpretations + cross-run clustering + S8 grounding-validity, tenant-scoped via the first v1→substrate read bridge (`get_substrate_insights`), best-effort, with empty-states for the empty-until-live reality. 35 governance tests.
+- **2.2 (D-156)** — the **S5→S3 forward-seam settled (not wired)**: the generation direction resolved as "v1 stays as the product path; S3 parallel + downstream-only"; the semantic fit is ~zero; revisit gated on S3 ever going product-facing.
+
+**The deferral — 2.3 (run-detail graft) + 2.4 (release-grain) need execution-world unification (a verified premise break).** The plan's 2.3 would graft an S6 panel onto `/runs/:id` via a derive-path `pipeline_run → test_case → S2 test_claims.test_id → s6_interpretations.claim_test_id`. **That path does not exist** — it breaks at hop 2: v1 `test_cases` (Integer PK) carry **no** reference to S2 `test_claims` (UUID), and `s4_execution_runs`/`s6_interpretations` carry **no** v1 reference (only a too-weak shared `environment_id`). The v1 run-world (`test_cases`/`pipeline_runs`) and the substrate run-world (claims/recipes/`s4_runs`/`s6_interpretations`) are **entirely disjoint** — independently triggered, no shared key, no write-path coupling (consistent with D-156: v1 + substrate generation are separate, unwired, different-artifact paths). A correlation can't be derived **or** stored until the two execution paths are **unified**, which is the *later* cutover steps (Step 3 flagged read-switch / Step 4 parallel-run), **not** additive Step 2. Building the bridge now would do later-step work out of the gated order. So **2.3 + 2.4 fold into Steps 3–4** (the SEQUENCE coverage rows updated); the standalone page (2.1) already delivers the additive surface they would have refined.
+
+**Doc currency.** Cutover `SEQUENCE.md` Step 2 marked **built (additive surface; D-155/D-156)** with the run-grafted + release-grain consumers folded into Steps 3–4; the S6/S8 coverage rows updated; `EVOLUTION.md` Step-2 entry. (The forward-seam row was already marked settled by D-156.)
+
+**Deferred → ops/later.** The page's **live data** (every substrate store is empty until the ops live-SF run, task #119) + the exit-gate's **live parity-of-meaning review** are ops-deferred (the same live half as Step 0). The **run-grafted S6 panel** + the **release-grain clustering** are deferred to cutover Steps 3–4 (they require the v1↔substrate execution bridge).
+
+**Merge gate.** The new `test_s6_s8_insights_surface` suite green + the existing S6/S8 suites (`test_s6_consumer`, `test_s6_clustering`, `test_s8_grounding_store`, `test_s8_recompute`) stay green + `import primeqa.app` (route + nav compile). Additive read-only page; no migration; no v1 behaviour change. Merge `phase-18-cutover-step2-substrate-consumers` → `main` via PR.
+
+---
+
 ---
