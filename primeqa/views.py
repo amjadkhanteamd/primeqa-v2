@@ -278,6 +278,64 @@ def substrate_insights():
     return _render()
 
 
+def _resolve_env_llm(db, tenant_id, environment_id):
+    """Best-effort resolve an env's LLM api_key + model — (None, None) on any miss.
+    When unresolved, the S7 bridge phrases nothing and degrades to a
+    refused-with-citations (S7 still answers refusals without an LLM)."""
+    if not environment_id:
+        return None, None
+    try:
+        env = EnvironmentRepository(db).get_environment(environment_id, tenant_id)
+        if env and getattr(env, "llm_connection_id", None):
+            conn = ConnectionRepository(db).get_connection_decrypted(
+                env.llm_connection_id, tenant_id)
+            if conn:
+                cfg = conn.get("config") or {}
+                return cfg.get("api_key"), cfg.get("model")
+    except Exception:
+        pass
+    return None, None
+
+
+@views_bp.route("/ask", methods=["GET", "POST"])
+@login_required
+def ask():
+    """S7 grounded answering (D-163.4): ask a question about the test system; get an
+    answer grounded in substrate evidence, or a refusal. Gated on
+    ``view_intelligence_report`` (ba + admin + superadmin). The substrate answer
+    stores are empty until the live-SF sync + first runs land, so the default
+    result is a grounded refusal — correct behaviour."""
+    from primeqa.core.permissions import require_page_permission
+    from primeqa.intelligence.conversation_bridge import answer_question
+
+    @require_page_permission("view_intelligence_report")
+    def _render():
+        tid = request.user["tenant_id"]
+        db = next(get_db())
+        environments = EnvironmentRepository(db).list_environments(tid)
+        form = {"question": "", "environment_id": "", "requirement_key": "",
+                "object_api_name": ""}
+        answer = None
+        if request.method == "POST":
+            form["question"] = (request.form.get("question") or "").strip()
+            form["environment_id"] = request.form.get("environment_id") or ""
+            form["requirement_key"] = (request.form.get("requirement_key") or "").strip()
+            form["object_api_name"] = (request.form.get("object_api_name") or "").strip()
+            env_id = (int(form["environment_id"])
+                      if form["environment_id"].isdigit() else None)
+            if form["question"]:
+                api_key, model = _resolve_env_llm(db, tid, env_id)
+                answer = answer_question(
+                    tid, form["question"], environment_id=env_id,
+                    requirement_key=form["requirement_key"] or None,
+                    object_api_name=form["object_api_name"] or None,
+                    api_key=api_key, model=model)
+        return render_template("conversation.html", **ctx(
+            active_page="ask", environments=environments, answer=answer, form=form))
+
+    return _render()
+
+
 @views_bp.route("/api/releases/<int:run_id>/approve", methods=["POST"])
 @_require_auth_api
 def api_release_approve(run_id):
