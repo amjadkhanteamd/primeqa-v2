@@ -8417,4 +8417,48 @@ revisit if/when VR naming reaches a rule.
 
 ---
 
+## D-162 — Cutover Step 3 close: read-switch built; preflight → Step-5 prereq; merge
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (read) + v1 (the accessor seam + readers). Closes
+greenfield-cutover **Step 3** on `phase-19-cutover-step3-read-path-switch`
+(D-158–D-162).
+**Status:** Active — Step 3 **BUILT** (generation + validator/linter read S1 behind
+`cutover_read_s1`); preflight deferred to a **Step-5 prerequisite** (GAP-2); the
+live dual-stack parity rides ops task #119.
+
+**What Step 3 landed.** v1's metadata *reads* route to S1 behind the per-tenant
+`cutover_read_s1` flag, `meta_*` the flag-off fallback — the parallel run begins.
+The seam is `MetadataAccessor` (3.1, D-158, migration `051`); the generation context
+(3.2, D-159) and the validator + linter CRUDQ (3.4, D-161) read `MetadataS1Reader`;
+the first sync-engine touch added `field_details.is_createable`/`is_updateable`
+(3.3, D-160, tenant `20260604_0030`). D-161.1 caught + root-caused a field-naming
+parity break (S1's object-qualified `sf_api_name` vs v1's bare names) mid-impl.
+Best-effort throughout (empty/error S1 → `meta_*`, never raises), so a flag-on but
+S1-empty tenant degrades safely during the parallel window.
+
+**GAP-2 ratified — preflight stays `meta_*`.** `primeqa/runs/preflight.py` reads
+`MetaSyncStatus` per-category health + `MetaVersion.completed_at` staleness; neither
+has a clean S1 map (S1's freshness model is `sync_runs` phases, a different shape).
+Preflight is a soft gate and `meta_*` is populated through Steps 3–4, so it reads
+correctly throughout the parallel run. Its S1 cutover is **relocated to a Step-5
+prerequisite** — the `meta_*` drop cannot proceed while preflight reads `meta_*`.
+Recorded in SEQUENCE Step 5's entry-gate.
+
+**Verification (run, observed).** Merge gate green: **46 semantic integration + 82
+unit (accessor + detail-mapper) = 128**, no regression. The validator-over-reader
+parity test exercises each rule (`object_not_found` / `field_not_found` /
+`field_not_createable` CRITICAL + `picklist_value_not_allowed` WARNING + a clean
+step) off a real S1 snapshot with **bare-name** steps; `import primeqa.app` green.
+Flag-off → `meta_*` passthrough (zero v1 behaviour change). The live dual-stack
+byte-parity (real-org S1 vs `meta_*` for pilot tenants) is ops-deferred with #119 —
+the same live half as Steps 0/2.
+
+**Boundary + standing follow-ons.** Additive — no v1 read removed, no table dropped
+(Steps 4–5). Prod-migration applies: `migrations/051_cutover_read_s1_flag.sql`
+(public) + `20260604_0030_field_details_crud_flags` (tenant). Merge
+`phase-19-cutover-step3-read-path-switch` → `main`.
+
+---
+
 ---

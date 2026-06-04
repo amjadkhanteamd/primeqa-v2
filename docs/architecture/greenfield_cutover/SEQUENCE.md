@@ -38,14 +38,15 @@ Make the dormant substrate outputs **visible** alongside v1 — additive UI/read
 - **Rollback:** hide the additive surfaces.
 - **Landed (D-155 / D-156).** The standalone **`/substrate-insights`** page (the first v1→substrate read bridge, `get_substrate_insights`) surfaces S6 interpretations + cross-run clustering + S8 grounding-validity, additively + best-effort, with empty-states (the stores are empty until Step 0's live-SF run lands data); 35 governance tests. The **S5→S3 forward-seam** was settled — **not wired** (D-156: v1 generation stays as the product path; S3 parallel + downstream-only). **Deferred to Steps 3–4 (a verified premise break):** the **v1-run-grafted S6 panel** + the **release-grain clustering** both need a v1↔substrate run correlation the data model lacks — the two execution worlds are disjoint (no shared key, no write-path), and unifying them is the flagged read-switch / parallel-run, not additive Step 2. The live data + the parity-of-meaning review are ops-deferred (the live half, like Step 0).
 
-## Step 3 — v1 read-path switch *(flagged; `meta_*` still populated)*
+## Step 3 — v1 read-path switch *(flagged; `meta_*` still populated)* — ✅ BUILT (generation + validator/linter on S1, D-158–D-162; preflight → Step-5 prereq)
 
-Switch the v1 metadata *reads* to S1, behind per-tenant flags, with `meta_*` still populated as the fallback — the start of the parallel run.
+Switch the v1 metadata *reads* to S1, behind the per-tenant `cutover_read_s1` flag, with `meta_*` still populated as the fallback — the start of the parallel run.
 
+- **Landed (D-158–D-162).** A single flag-gated seam — **`MetadataAccessor`** (`primeqa/metadata/accessor.py`; `cutover_read_s1` flag, migration `051`) — routes v1's metadata reads to **`MetadataS1Reader`** (`primeqa/metadata/s1_reader.py`, eager-hydrated through the S1 query interface) when on, `meta_*` when off (best-effort: empty/error S1 → `meta_*`, never raises; so flag-on-but-S1-empty degrades safely in the parallel-run window). **Generation** context (3.2, D-159) + the **validator + linter** CRUDQ (3.4, D-161) read S1; the first sync-engine touch added **`field_details.is_createable`/`is_updateable`** (3.3, D-160, migration `20260604_0030`) so `field_not_createable`/`field_not_updateable` reach parity, and the picklist 2-hop reaches `picklist_value_not_allowed`. A **mid-impl premise break** (D-161.1) was caught + root-caused: S1 stores a field's `sf_api_name` object-qualified (`Account.Name`) where v1 + every test step use bare (`Name`) — the reader now strips the prefix so the validator's field lookup matches (and the 3.2 "parity" test, which had only asserted the reader's self-consistent output, was corrected). 128 governance tests (semantic reader + validator-parity + accessor/mapper units); flag-off → **zero v1 behaviour change**.
 - **Entry-gate:** step 0 (S1 populated + on a cadence).
-- **Work:** route the generation metadata context (`primeqa/intelligence/generation.py`), the validator CRUDQ (`validator.py`), and preflight staleness (`primeqa/runs/preflight.py`) to read S1 entities/attributes when the per-tenant flag is on; `meta_*` remains the flag-off path. *(Carries: the v1 read-path replacement — D-012 / D-003.)*
-- **Exit-gate:** flagged reads work + agree with the `meta_*`-sourced reads for the pilot tenants.
-- **Rollback:** flip the flag back to `meta_*` (per tenant).
+- **Work:** generation context (`primeqa/intelligence/generation.py`) + the validator/linter CRUDQ (`validator.py`) routed to S1 behind the flag; `meta_*` remains the flag-off path. **Preflight staleness (`primeqa/runs/preflight.py`) stays on `meta_*`** — `MetaSyncStatus` per-category health + `MetaVersion.completed_at` have no clean S1 map (S1's model is `sync_runs` phases), and `meta_*` is populated through Steps 3–4 so preflight reads correctly; its S1 cutover is relocated to a **Step-5 prerequisite** (GAP-2). *(Carries: the v1 read-path replacement — D-012 / D-003.)*
+- **Exit-gate:** flagged reads work + agree with the `meta_*`-sourced reads for the pilot tenants. *(Built + governance-tested now; the live dual-stack byte-parity probe — real-org S1 vs `meta_*` — is ops-deferred with #119, the same live half as Steps 0/2.)*
+- **Rollback:** flip `cutover_read_s1` back to `meta_*` (per tenant).
 
 ## Step 4 — Parallel-run validation
 
@@ -60,7 +61,7 @@ Run both stacks; prove S1-sourced reads equal `meta_*`-sourced reads over a wind
 
 Retire v1 metadata: drop `public.meta_*` + the DROP tables in one migration; remove the v1 metadata module + the read-path flags. S1 is the sole metadata source.
 
-- **Entry-gate (the safety):** a clean parallel-run window (step 4) **and** S1 verified as the production data source (D-012).
+- **Entry-gate (the safety):** a clean parallel-run window (step 4) **and** S1 verified as the production data source (D-012) **and** preflight switched off `meta_*` onto an S1 freshness/health source (GAP-2 — Step 3 deferred preflight here; the `meta_*` drop cannot proceed while preflight still reads `meta_*`).
 - **Work:** one migration dropping `meta_versions` / `meta_objects` / `meta_fields` / `meta_validation_rules` / `meta_flows` / `meta_triggers` / `meta_record_types` / `meta_sync_status` + the DROP tables (`test_case_versions`, `requirements`, `metadata_impacts`, D-065); delete `primeqa/metadata/` + the read-path flags; `migrations/` for `meta_*` becomes archive-eligible. *(Carries: the `meta_*` re-sync completion + drop — D-012.)*
 - **Exit-gate:** `meta_*` gone; the product runs on the spine; the metadata suite is retired/rewritten to S1.
 - **Rollback:** **none past this point** — the entry-gate is the only safety. (Optionally archive `meta_*` as a snapshot for audit before the drop.)
@@ -80,7 +81,7 @@ Every "deferred to the cutover" item across the substrate docs, mapped to its st
 | S6 clustering ✅ **surfaced tenant-wide (D-155)**; release-grain view → Steps 3–4 (needs the v1↔substrate run key) | D-137 | **2** |
 | S5→S3 generation forward-seam ✅ **settled — not wired (D-156)** | D-134 | **2** |
 | S8 grounding-validity verdict surface ✅ **landed (D-155)** | D-143 (implied) | **2** |
-| v1 read-path switch → S1 (generation / validator / preflight) | D-012 / D-003 | **3** |
+| v1 read-path switch → S1: generation + validator/linter ✅ **built (D-158–D-162)**; preflight → Step 5 (GAP-2 — no clean S1 freshness map yet) | D-012 / D-003 | **3** |
 | Folding S6 verdicts into v1's GO/NO-GO | D-111 / D-137 | **4** |
 | S3 semantic-ledger retirement → S2 provenance (`get_provenance`) | D-074 | **4** |
 | `meta_*` re-sync completion + the `meta_*` / DROP-tables drop | D-012 / D-065 | **5** |
