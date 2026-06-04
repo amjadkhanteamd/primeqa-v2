@@ -137,6 +137,14 @@ _CHAINS: Dict[str, Dict[str, List[str]]] = {
         COMPLEXITY_LOW: [HAIKU],
         "default":      [HAIKU],
     },
+
+    # S7 grounded answering (D-163.3) — phrase a bounded substrate-evidence block
+    # into an answer (invent-nothing). Haiku-class, NO fallback: a failed phrasing
+    # degrades to a refusal (the grounding exists; only the prose failed).
+    "grounded_answer_generation": {
+        COMPLEXITY_LOW: [HAIKU],
+        "default":      [HAIKU],
+    },
 }
 
 

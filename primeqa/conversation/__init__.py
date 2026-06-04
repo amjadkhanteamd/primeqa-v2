@@ -25,6 +25,7 @@ Pipeline (stages land across D-163.1–D-163.4):
 Public API (the opened contract — D-163):
     from primeqa.conversation import QuestionContext, Intent, Evidence, Answer
 """
+from primeqa.conversation.answerer import build_answer
 from primeqa.conversation.assembler import assemble_evidence
 from primeqa.conversation.intent import classify_intent
 from primeqa.conversation.model import (
@@ -59,4 +60,5 @@ __all__ = [
     "retrieve_grounding_drift",
     "retrieve_impact",
     "assemble_evidence",
+    "build_answer",
 ]

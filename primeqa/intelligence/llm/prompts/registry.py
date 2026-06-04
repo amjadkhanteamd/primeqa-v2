@@ -18,6 +18,7 @@ from primeqa.intelligence.llm.prompts import (
     interpretation_phrasing,
     entity_summary_flow,
     entity_summary_validation_rule,
+    grounded_answer,
 )
 
 
@@ -36,6 +37,9 @@ _REGISTRY: Dict[str, object] = {
     # Haiku, best-effort. Summary scope is Flow + ValidationRule for v1.
     "entity_summary_flow":             entity_summary_flow,
     "entity_summary_validation_rule":  entity_summary_validation_rule,
+    # D-163.3 — S7 grounded answering: phrase a bounded substrate-evidence block,
+    # Haiku, invent-nothing. conversation/ stays LLM-free (invoked via the bridge).
+    "grounded_answer_generation":      grounded_answer,
 }
 
 
