@@ -8542,4 +8542,22 @@ Turns bounded `Evidence` into an `Answer` — the **grounded-or-refuse keystone*
 
 ---
 
+## D-163.4 — S7 slice 4: the thin `/ask` consumer surface + Phase 8 close
+
+**Date:** 2026-06-04
+**Substrates affected:** [S7] (consumed end-to-end); [v1] (`intelligence/conversation_bridge.py` + a `/ask` route + template). Closes greenfield Phase 8 on `phase-20-substrate-7-conversation`.
+**Status:** Active — S7 slice 4 + Phase 8 close. The faculty reaches a user surface; the substrate is opened, built, and demonstrable.
+
+The end-to-end wiring + the close. v1 owns the bridge (the allowed v1→substrate direction — the `substrate_insights` + `interpretation_phrasing` precedent).
+
+**The bridge (`intelligence/conversation_bridge.py`, v1).** `answer_question(tenant_id, question_text, *, environment_id, requirement_key, object_api_name, api_key, model) -> dict`. The **dual-derivation** (verified `evolution/recompute.py`): one `with get_tenant_connection(tenant_id) as conn:` serves `SemanticOrgModel(conn)` (S1) **and** `Session(bind=conn)` (S6/S8/S2). A pure inner `_answer(s1, session, *, question, ctx, phrase_fn)` runs the whole faculty — `classify_intent` (None → a clarify-refusal dict) → `retrieve` → `assemble_evidence` → `build_answer` — and flattens the `Answer` to a JSON-safe dict (status / text / refusal_reason / citations). The wrapper owns connection-management + is **best-effort** (any failure → `available=False`, never raises — the `get_substrate_insights` contract). The `phrase_fn` closes over `llm_call(task="grounded_answer_generation", …)`; **when no `api_key` resolves, `phrase_fn` is a null returning `None`** → `build_answer` degrades to a refused-with-citations (so the page works without an LLM — the common empty-store prod path needs no LLM at all, since empty evidence refuses before phrasing).
+
+**The route + page (`views.py` `/ask` + `templates/conversation.html`).** `@login_required` + inner `@require_page_permission("view_intelligence_report")` (the **exact** `/substrate-insights` gate — ba+admin+superadmin; reuse, no new permission). GET renders the form (a question box + an environment picker from `EnvironmentRepository.list_environments` + optional requirement-key / object-api-name pickers for the `impact` bounded context); POST resolves the env's LLM `api_key`/`model` (`EnvironmentRepository.get_environment` → `ConnectionRepository.get_connection_decrypted`, best-effort) and calls the bridge, rendering an answered card (text + citation chips) or a refused empty-state. CSRF via `{{ csrf_input | safe }}`; the component kit (`_empty_state`, `breadcrumbs`).
+
+**Close.** Doc currency: `substrate_7_conversation/EVOLUTION.md` (slices 1–4 landed) + `SPEC.md` Status (Phase 8 realized). **Merge gate:** the S7 suites green (contract + intent + assembler + answerer + retrieval governance + the new bridge governance), `import primeqa.app` (route registers), `import primeqa.intelligence.conversation_bridge`; then merge `phase-20-substrate-7-conversation` → `main` via PR. **Deferred unchanged** (SPEC §6): the Control half, multi-turn + persistence, proactive, broad retrieval, the open-ended router, rich UI.
+
+**Verify.** Bridge governance on the semantic `conn`+`seed` harness: `_answer(s1, session, …)` with a **stub phrase_fn** over seeded S6/S8/S1 — an answered failure-cause question (citations present), a refused empty-store question, a `None`-intent clarify-refusal, an impact question over a seeded object; `answer_question(-1, …)` → `available=False` (best-effort). The substrate stores are empty in prod until live runs (S7-Q-005), so the *answered* path is demonstrated only with seeded data; the *refused* path is the correct default. No Flask-client route test (the `JWT_SECRET`-gated integration layer doesn't run locally — the `substrate_insights` precedent tests the bridge inner, not the route).
+
+---
+
 ---
