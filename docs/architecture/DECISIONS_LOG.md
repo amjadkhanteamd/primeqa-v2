@@ -8189,4 +8189,24 @@ S0.1 builds the two seams the trigger needs: a **Salesforce client per environme
 
 ---
 
+## D-153 — Cutover Step 0 / S0.4: the enqueuer + scheduler/worker wiring
+
+**Date:** 2026-06-04
+**Substrates affected:** [S1] (the sync trigger's cadence + service wiring) — additive `run_s1_sync_{enqueuer,reaper}_tick` in `primeqa/sync/consumer.py` + thin `s1_sync_enqueuer_tick`/`s1_sync_reaper_tick` in `primeqa/scheduler.py` + `s1_sync_tick` + `_default_s1_sf_client_resolver` in `primeqa/worker.py`. **No migration; no engine/phase edits.**
+**Status:** Active — greenfield-cutover **Step 0, slice S0.4** (the last build slice), on `phase-17-cutover-step0-s1-sync-trigger`. Closes the loop: enqueue (cadence) → consume (D-152) → reap (D-151). After this, ops points it at a real org and S1 goes live.
+
+S0.4 wires the dormant engine's trigger into the running services — the cadence that creates jobs + the scheduler/worker ticks that drain + reap them.
+
+**The enqueuer — the cadence (`run_s1_sync_enqueuer_tick`).** Per tenant (isolated), find `connected_orgs` needing a (re)sync → `create_or_get_job` (idempotency dedups). The **needs-sync policy**: an org with `environment_id` set (provisioned, D-150) **and no active job** is enqueued iff EITHER it has an **incomplete `sync_run`** (`status NOT IN ('success','partial_success') AND last_completed_phase IS DISTINCT FROM 'Flow'` — the reaped/failed case → **resume promptly**, per the resume-now decision) OR **no `sync_run` started within `resync_interval_hours`** (default **24 h** — never-synced or stale → a fresh re-sync to catch metadata drift). Idempotency means a fresh-complete org (synced < 24 h, no incomplete run) is skipped, and an in-flight org (active job) is skipped — so the tick never piles up. `resync_interval_hours` is a hardcoded default; per-org cadence config is a deferred ops enhancement.
+
+**Scheduler ticks — mirror `s3_reaper_tick`/`s4_reaper_tick`.** `s1_sync_enqueuer_tick(ctx)` + `s1_sync_reaper_tick(ctx)` each enumerate active tenants (`shared.tenants WHERE deleted_at IS NULL`) and delegate to the resilient per-tenant `run_s1_sync_{enqueuer,reaper}_tick` (per-tenant try/except — one tenant's failure never starves the others), wired into `scheduler_tick`. The reaper uses `stale_minutes=45` (D-151, > the longest sync).
+
+**Worker consumer tick — mirror `s4_execution_tick`.** `s1_sync_tick(db_factory, *, sf_client_resolver)` discovers tenant schemas (`_discover_tenant_schemas`) + delegates to `run_s1_sync_consumer_tick` (D-152), wired into `worker_tick`. `_default_s1_sf_client_resolver` is the worker-side credential closure — `(tenant_id, environment_id) → SalesforceClient` via `resolve_sync_sf_client` (D-150), opening + closing a v1 session per resolve (the `_default_s4_client_resolver` pattern — no v1 connection held into the ~30-min sync). One sync job per tenant per tick.
+
+**Deferred (recorded at close).** The **live-SF prod-proving** (a real `run_sync` → entities/edges/`sync_runs`/`ai_enrichment_queue` rows + the `meta_*` parity probe) → **ops** (the sandbox e2e suites; needs SF creds + ~30 min). The **interactive "sync this env now" v1 route** → cutover Step 3 (needs Flask + auth). **Per-org sync cadence config** → ops enhancement.
+
+**Verification.** Governance DB: the enqueuer creates a job for a never-synced org, a stale-complete org (`sync_run` started > 24 h ago), and an org with an incomplete `sync_run` (resume); **skips** a fresh-complete org (< 24 h), an org with an active job (idempotent — a second tick enqueues 0), and an org without `environment_id` (no creds); per-tenant isolation (a bad tenant → 0, others unaffected). The reaper tick fails a stale job per tenant. Plus `import primeqa.worker` + `primeqa.scheduler` (the wiring compiles) + the D-151/152 sync suites stay green.
+
+---
+
 ---
