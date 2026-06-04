@@ -288,6 +288,8 @@ def scheduler_tick(ctx):
     s3_reaper_tick(ctx)               # D-106.4 slice 5 (substrate-3 queue)
     s4_reaper_tick(ctx)               # D-132 (substrate-4 execution queue)
     s8_grounding_tick(ctx)            # D-143 (substrate-8 grounding recompute)
+    s1_sync_enqueuer_tick(ctx)        # D-153 (substrate-1 sync cadence)
+    s1_sync_reaper_tick(ctx)          # D-153 (substrate-1 sync queue)
     trim_run_events(ctx)
 
 
@@ -379,6 +381,52 @@ def s4_reaper_tick(ctx):
             log.warning("reaped %d stale s4 execution job(s)", total)
     except Exception as e:
         log.warning("s4_reaper_tick failed: %s", e)
+
+
+def s1_sync_enqueuer_tick(ctx):
+    """Enqueue substrate-1 metadata-sync jobs on a cadence (D-153).
+
+    s1_sync_jobs is per-tenant, so enumerate active tenants from shared.tenants and
+    enqueue each — per-tenant try/except (in run_s1_sync_enqueuer_tick) so one
+    tenant's failure never starves the others. The enqueuer scans connected_orgs
+    needing a (re)sync (an incomplete sync_run → resume, OR never/stale beyond the
+    cadence window); create_or_get_job dedups, so a steady state enqueues nothing.
+    """
+    try:
+        from primeqa.sync.consumer import run_s1_sync_enqueuer_tick
+        from primeqa.semantic.connection import admin_run_in_shared_schema
+        with admin_run_in_shared_schema() as conn:
+            tenant_ids = [r[0] for r in conn.execute(text(
+                "SELECT id FROM shared.tenants WHERE deleted_at IS NULL ORDER BY id"
+            )).fetchall()]
+        total = sum(run_s1_sync_enqueuer_tick(tenant_ids).values())
+        if total:
+            log.info("s1 sync: enqueued %d org sync(s)", total)
+    except Exception as e:
+        log.warning("s1_sync_enqueuer_tick failed: %s", e)
+
+
+def s1_sync_reaper_tick(ctx):
+    """Reap stale substrate-1 sync jobs (D-153).
+
+    s1_sync_jobs is per-tenant, so enumerate active tenants from shared.tenants and
+    reap each — per-tenant try/except (in run_s1_sync_reaper_tick) so one tenant's
+    failure never starves the others. stale_minutes=45 (D-151) exceeds the longest
+    legitimate sync; a reaped job leaves its sync_run resumable, so a re-enqueue
+    continues from last_completed_phase (D-152 carry-forward).
+    """
+    try:
+        from primeqa.sync.consumer import run_s1_sync_reaper_tick
+        from primeqa.semantic.connection import admin_run_in_shared_schema
+        with admin_run_in_shared_schema() as conn:
+            tenant_ids = [r[0] for r in conn.execute(text(
+                "SELECT id FROM shared.tenants WHERE deleted_at IS NULL ORDER BY id"
+            )).fetchall()]
+        total = sum(run_s1_sync_reaper_tick(tenant_ids).values())
+        if total:
+            log.warning("reaped %d stale s1 sync job(s)", total)
+    except Exception as e:
+        log.warning("s1_sync_reaper_tick failed: %s", e)
 
 
 _last_trim = {"at": 0}

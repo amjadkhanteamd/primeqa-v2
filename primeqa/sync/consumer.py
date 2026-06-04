@@ -153,3 +153,87 @@ def run_s1_sync_consumer_tick(
             log.warning("s1_sync_consumer_tick: tenant %s failed: %s", tid, exc)
             outcomes[tid] = f"error:{type(exc).__name__}"
     return outcomes
+
+
+# ---------------------------------------------------------------------------
+# The enqueuer (the cadence) + the reaper tick — the scheduler's counterparts
+# (D-153). The enqueuer fills the queue the consumer above drains.
+# ---------------------------------------------------------------------------
+
+# The needs-(re)sync set: orgs with a credential source (environment_id, D-150)
+# and **no active job**, that EITHER carry an incomplete sync_run (reaped/failed →
+# resume) OR have not synced within the cadence window (never / stale). The
+# active-job exclusion + create_or_get_job's dedup keep a steady state quiet.
+_NEEDS_SYNC_SQL = (
+    "SELECT co.id, co.environment_id "
+    "FROM connected_orgs co "
+    "WHERE co.environment_id IS NOT NULL "
+    "  AND NOT EXISTS ("
+    "      SELECT 1 FROM s1_sync_jobs j "
+    "      WHERE j.connected_org_id = co.id "
+    "        AND j.status IN ('queued', 'claimed', 'running')) "
+    "  AND ("
+    "      EXISTS (SELECT 1 FROM sync_runs sr "
+    "              WHERE sr.source_org_id = co.id "
+    "                AND sr.status NOT IN ('success', 'partial_success') "
+    "                AND sr.last_completed_phase IS DISTINCT FROM 'Flow') "
+    "      OR NOT EXISTS (SELECT 1 FROM sync_runs sr "
+    "                     WHERE sr.source_org_id = co.id "
+    "                       AND sr.started_at > NOW() - make_interval(hours => :hrs))) "
+    "ORDER BY co.id"
+)
+
+
+def _enqueue_for_tenant(tenant_id: int, *, resync_interval_hours: int) -> int:
+    """Enqueue every ``connected_org`` in ``tenant_id`` that needs a (re)sync (see
+    ``_NEEDS_SYNC_SQL``); returns the count found. ``create_or_get_job`` is
+    idempotent, so an org that gained an active job between the scan and the create
+    is a harmless no-op (the scan already excludes active-job orgs, so a steady
+    state finds nothing)."""
+    store = SyncJobStore(tenant_id)
+    with get_tenant_connection(tenant_id) as conn:
+        rows = conn.execute(text(_NEEDS_SYNC_SQL),
+                            {"hrs": resync_interval_hours}).mappings().all()
+    for r in rows:
+        store.create_or_get_job(connected_org_id=r["id"],
+                                environment_id=r["environment_id"])
+    return len(rows)
+
+
+def run_s1_sync_enqueuer_tick(
+    tenant_ids, *, resync_interval_hours: int = 24,
+) -> dict[int, int]:
+    """The scheduler's cadence (D-153): per tenant, enqueue the orgs needing a
+    (re)sync — incomplete-sync resume OR never/stale beyond ``resync_interval_hours``
+    — with per-tenant isolation (a tenant whose scan raises records 0). Idempotent
+    across ticks: an org with an active job is excluded, so a steady state enqueues
+    nothing. Returns ``{tenant_id: enqueued_count}``."""
+    enqueued: dict[int, int] = {}
+    for tid in tenant_ids:
+        try:
+            enqueued[tid] = _enqueue_for_tenant(
+                tid, resync_interval_hours=resync_interval_hours)
+        except Exception as exc:
+            log.warning("s1_sync_enqueuer_tick: tenant %s failed: %s", tid, exc)
+            enqueued[tid] = 0
+    return enqueued
+
+
+def run_s1_sync_reaper_tick(
+    tenant_ids, *, stale_minutes: int = 45,
+) -> dict[int, int]:
+    """The scheduler's reaper counterpart (D-153, mirrors ``run_s3_reaper_tick``):
+    fail jobs stuck past the heartbeat timeout, per tenant, with per-tenant
+    isolation. ``stale_minutes=45`` (D-151) exceeds the longest legitimate sync; a
+    reaped job leaves its ``sync_run`` resumable, so a re-enqueue continues from
+    ``last_completed_phase`` (D-152 carry-forward). Returns
+    ``{tenant_id: reaped_count}``."""
+    reaped: dict[int, int] = {}
+    for tid in tenant_ids:
+        try:
+            reaped[tid] = SyncJobStore(tid).reap_stale_jobs(
+                stale_minutes=stale_minutes)
+        except Exception as exc:
+            log.warning("s1_sync_reaper_tick: tenant %s failed: %s", tid, exc)
+            reaped[tid] = 0
+    return reaped
