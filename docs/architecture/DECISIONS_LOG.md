@@ -8578,4 +8578,26 @@ The end-to-end wiring + the close. v1 owns the bridge (the allowed v1→substrat
 
 ---
 
+## D-165 — UI Phase Area 2 (Test Authoring / S2+S3): re-point generation onto the substrate
+
+**Date:** 2026-06-04
+**Affected:** v2 runtime UI (requirements + test-authoring views/templates) + a v1 bridge to S3 generation + S2 claim/recipe reads. Commits to `main`. No substrate-package change.
+**Status:** Active — UI Phase Area 2 (sequence step 2). **User decision: REPLACE the v1 generate flow with S3** (not additive — discard the v1 `test_cases` authoring path as the substrate path lands).
+
+**The finding.** S3 generation is a full, working backend with API routes (`POST /api/s3-generation-jobs` enqueue, status poll, cancel; it writes S2 `test_claims`/`test_recipes` + the S3 ledger) but **zero UI** — no surface displays a claim or an outcome. v1 generation (→ `test_cases`) is a *separate* pipeline. Area 2 re-points the authoring UI from v1 onto S2/S3.
+
+**The coupling (flagged, not blocking).** Generation + execution are linked: v1 Generate → `test_cases` → v1 Run; S3 Generate → claims/recipes → **S4** (Area 3). Replacing generate (Area 2) without re-pointing execution (Area 3) leaves generated **claims viewable but not runnable** until Area 3. Accepted as a transitional build state (generate + view now, run next); the loop closes at Area 3.
+
+**Verdict map.** Requirements list/detail → **re-point** (the Generate button targets S3; the linked-tests view shows S2 claims/recipes). Test detail → **redesign** (a claim is *semantic* — archetype / claim_kind / asserted_truth / semantic_conditions + recipes — not procedural steps/validation/story_view). Test Library → **net-new** claims library over S2. Suites / Reviews / Sections / Milestones → **deferred** (re-point later; reviews need a semantic-claim rethink). The v1 `test_cases` surfaces are discarded as their S2 replacements land (final removal at cutover Step 5).
+
+**Slices.**
+- **2a — S3 generation console** (the spine): a v1 bridge `primeqa/intelligence/s3_generation_console.py` (best-effort): `trigger_s3_generation` (resolve_requirement → `enqueue_s3_generation`) + `read_requirement_claims` (`coordinator.list_tests_by_requirement` → per claim `get_latest_claim` + `list_active_recipes`, flattened) + `read_s3_job_status` (`GenerationJobStore.get_job`). Re-point the **requirement detail**: the Generate button → S3 trigger; the linked-tests section → the requirement's S2 claims/recipes; the async progress → poll the S3 job. The direct analog of Area 1's sync console — and the next live proving (substrate generation over the freshly-synced S1).
+- **2b — claim + recipe detail** (the semantic view).
+- **2c — claims library** (`/claims`, list + search over S2).
+- **2d — close** + record the deferred re-points + the Area-3 execution coupling.
+
+**Boundary.** The re-point is a behaviour change to a v1 surface (not purely additive) — but the v1 generate path/code stays callable until its S2 replacement is proven; the UI just points at S3. Best-effort bridges (never break the page). No migration. Commits to `main`.
+
+---
+
 ---
