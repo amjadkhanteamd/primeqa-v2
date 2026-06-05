@@ -5622,7 +5622,7 @@ def claims_detail(test_id):
     from primeqa.intelligence.s3_generation_console import read_claim_detail
     detail = read_claim_detail(request.user["tenant_id"], test_id)
     return render_template("claims/detail.html", **ctx(
-        active_page="requirements", detail=detail))
+        active_page="test_library", detail=detail))
 
 
 @views_bp.route("/requirements/<int:req_id>/edit", methods=["POST"])

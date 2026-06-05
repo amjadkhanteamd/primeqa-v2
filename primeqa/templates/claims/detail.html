@@ -36,7 +36,7 @@
 {% set c = detail.claim if detail else None %}
 
 {{ breadcrumbs([
-  ('Requirements', '/requirements'),
+  ('Claims', '/claims'),
   (c.claim_kind.replace('-', ' ') if c else 'Claim', None),
 ]) }}
 
