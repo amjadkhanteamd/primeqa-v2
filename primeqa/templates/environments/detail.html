@@ -147,6 +147,39 @@
         {{ csrf_input | safe }}
         {{ btn_primary('Sync substrate', type='submit') }}
       </form>
+
+      {% set _run = s1_status.run if s1_status else None %}
+      {% set _job = s1_status.job if s1_status else None %}
+      {% set _active = (s1_status and s1_status.provisioned and (
+            (_run and _run.status in ['running','queued','claimed']) or
+            (_job and _job.status in ['queued','claimed','running']))) %}
+      <div id="s1-sync-live" class="mt-3" data-env-id="{{ env.id }}" data-active="{{ '1' if _active else '0' }}">
+        <span id="s1-sync-badge" class="hidden text-xs text-blue-600 font-medium"
+              title="The substrate sync is running against Salesforce. This panel refreshes automatically when it finishes.">&#9679; syncing&hellip;</span>
+      </div>
+      <script>
+      (function(){
+        var el = document.getElementById('s1-sync-live');
+        if (!el || el.dataset.active !== '1') return;
+        var envId = el.dataset.envId;
+        document.getElementById('s1-sync-badge').classList.remove('hidden');
+        var n = 0, TERMINAL = ['success', 'partial_success', 'failure'];
+        var t = setInterval(function(){
+          n++;
+          if (n > 180) { clearInterval(t); return; }   // ~15 min cap
+          fetch('/environments/' + envId + '/sync-substrate/status',
+                {headers: {'Accept': 'application/json'}})
+            .then(function(r){ return r.json(); })
+            .then(function(s){
+              if (s.run && TERMINAL.indexOf(s.run.status) !== -1) {
+                clearInterval(t);
+                setTimeout(function(){ window.location.reload(); }, 400);
+              }
+            })
+            .catch(function(){ /* keep polling */ });
+        }, 5000);
+      })();
+      </script>
     </div>
 </div>
 {% endblock %}

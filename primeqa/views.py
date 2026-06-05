@@ -2823,6 +2823,15 @@ def environments_sync_substrate(env_id):
     return redirect(f"/environments/{env_id}?message={quote(msg)}")
 
 
+@views_bp.route("/environments/<int:env_id>/sync-substrate/status")
+@role_required("admin", "superadmin")
+def environments_sync_substrate_status(env_id):
+    """JSON S1-sync status for the env (D-164, 1b) — polled by the panel while a
+    sync runs. Best-effort; always 200 with the status dict."""
+    from primeqa.metadata.s1_sync_console import read_s1_sync_status
+    return jsonify(read_s1_sync_status(request.user["tenant_id"], env_id))
+
+
 @views_bp.route("/environments/<int:env_id>/edit", methods=["GET"])
 @role_required("admin")
 def environments_edit(env_id):
