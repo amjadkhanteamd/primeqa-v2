@@ -94,6 +94,10 @@ def test_assemble_surfaces_seeded_rows(session):
     assert len(out["flapping"]) == 1
     assert set(out["flapping"][0]["outcomes"]) == {"passed", "failed"}
     assert {g["overall"] for g in out["grounding"]} == {"drifted", "broken"}
+    # 4b drill-through: clusters surface their member run_ids (UUIDs as str)
+    cc = next(c for c in out["cause_clusters"] if c["cause_kind"] == "enforcement_gap")
+    assert len(cc["run_ids"]) == 2 and all(isinstance(x, str) for x in cc["run_ids"])
+    assert out["flapping"][0]["run_ids"]              # flapping run links present
 
 
 def test_assemble_empty_when_unseeded(session):

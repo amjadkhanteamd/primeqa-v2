@@ -76,16 +76,21 @@
       {% endif %}
     </section>
 
-    {# ---- S6 clustering ------------------------------------------------- #}
+    {# ---- S6 clustering: cross-run patterns with run drill-through (4b) - #}
     <section class="bg-white shadow rounded-lg p-5 space-y-4">
-      <h2 class="text-sm font-semibold text-gray-900">Cross-run clusters</h2>
+      <h2 class="text-sm font-semibold text-gray-900">Cross-run patterns</h2>
 
       <div>
         <h3 class="text-xs font-medium text-gray-500 mb-1">Recurring causes</h3>
         {% if insights.cause_clusters %}
-        <ul class="text-sm text-gray-700 space-y-1">
+        <ul class="space-y-2">
           {% for c in insights.cause_clusters %}
-          <li>{{ c.cause_kind }} <span class="text-gray-400">· {{ c.count }} runs</span></li>
+          <li class="text-sm">
+            <span class="text-gray-700">{{ c.cause_kind.replace('_', ' ') }}</span> <span class="text-gray-400">· {{ c.count }} runs</span>
+            <div class="mt-0.5 flex flex-wrap gap-1.5">
+              {% for rid in c.run_ids %}<a href="/runs/{{ rid }}" class="font-mono text-[11px] text-indigo-600 hover:underline">{{ rid[:8] }}</a>{% endfor %}
+            </div>
+          </li>
           {% endfor %}
         </ul>
         {% else %}<p class="text-sm text-gray-400">None recurring.</p>{% endif %}
@@ -94,9 +99,14 @@
       <div>
         <h3 class="text-xs font-medium text-gray-500 mb-1">Same validation rule across runs</h3>
         {% if insights.vr_clusters %}
-        <ul class="text-sm text-gray-700 space-y-1">
+        <ul class="space-y-2">
           {% for c in insights.vr_clusters %}
-          <li>{{ c.vr_name }} <span class="text-gray-400">· {{ c.count }} runs · {{ c.outcomes | join(', ') }}</span></li>
+          <li class="text-sm">
+            <span class="font-mono text-gray-700">{{ c.vr_name }}</span> <span class="text-gray-400">· {{ c.count }} runs · {{ c.outcomes | join(', ') }}</span>
+            <div class="mt-0.5 flex flex-wrap gap-1.5">
+              {% for rid in c.run_ids %}<a href="/runs/{{ rid }}" class="font-mono text-[11px] text-indigo-600 hover:underline">{{ rid[:8] }}</a>{% endfor %}
+            </div>
+          </li>
           {% endfor %}
         </ul>
         {% else %}<p class="text-sm text-gray-400">None recurring.</p>{% endif %}
@@ -105,9 +115,15 @@
       <div>
         <h3 class="text-xs font-medium text-gray-500 mb-1">Flapping tests</h3>
         {% if insights.flapping %}
-        <ul class="text-sm text-gray-700 space-y-1">
+        <ul class="space-y-2">
           {% for c in insights.flapping %}
-          <li class="font-mono text-xs">{{ c.claim_test_id[:8] }} <span class="font-sans text-gray-400">· {{ c.outcomes | join(' / ') }}</span></li>
+          <li class="text-sm">
+            <a href="/claims/{{ c.claim_test_id }}" class="font-mono text-xs text-indigo-600 hover:underline">{{ c.claim_test_id[:8] }}</a>
+            <span class="text-gray-400">· {{ c.outcomes | join(' / ') }}</span>
+            <div class="mt-0.5 flex flex-wrap gap-1.5">
+              {% for rid in c.run_ids %}<a href="/runs/{{ rid }}" class="font-mono text-[11px] text-indigo-600 hover:underline">{{ rid[:8] }}</a>{% endfor %}
+            </div>
+          </li>
           {% endfor %}
         </ul>
         {% else %}<p class="text-sm text-gray-400">None flapping.</p>{% endif %}
