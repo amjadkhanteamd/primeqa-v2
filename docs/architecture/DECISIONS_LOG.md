@@ -8844,4 +8844,73 @@ per-run verdict/cause 3c already surfaces.
 
 ---
 
+## D-170 — UI Phase Area 4 (Results & Intelligence / S6+S8): design
+
+**Date:** 2026-06-05
+**Affected:** v2 runtime UI — the `/substrate-insights` results surface + the
+`s3_generation_console`-style read bridge (`substrate_insights.py`). Commits to
+`main`. **Status:** Active — UI Phase Area 4 (sequence step 4). No substrate change
+(every read already exists).
+
+**The map (workflow `wouts4ial`, 4 facets, file+line cited).**
+- **The results surface largely exists.** `/substrate-insights` (`views.py:259`,
+  nav `navigation.py:144`, gated `view_intelligence_report`) already renders S6
+  interpretations + 3 cross-run clusters + the S8 grounding table, via
+  `intelligence/substrate_insights.py` `get_substrate_insights`. But it is a
+  **static flat dump**: no recency (Section A uses `list_interpretations`, ordered
+  by the random-uuid `run_id`), no drill-through (cluster `run_ids` dropped to a
+  count), no severity on grounding, and the S8 `detail` JSONB (the *why drifted*) +
+  S6 phrasing/evidence are dropped by the flatteners.
+- **Every read Area 4 needs already exists** (no substrate work): S6
+  `list_interpretations` / `read_interpretation` / `cluster_recurring_causes` /
+  `cluster_by_vr` / `cluster_flapping`; S8 `list_grounding_validity(overall=…)` /
+  `read_grounding_validity`; and Area-3's `s4_execution_console.list_runs` (S4-base,
+  true `finished_at DESC`, verdict LEFT JOIN) + `read_run_detail`.
+- **The v1 intelligence APIs have NO UI** — `/api/patterns`, `/api/explanations`,
+  `/api/causal-links`, facts, deps are JSON-only with zero templates; S6 supersedes
+  them. `/impacts` (real UI) maps to S8 grounding-validity. `/results` redirects to
+  the v1 `/runs`.
+
+**Verdict map.** `/substrate-insights` → **EXPAND** into the real Results &
+Intelligence dashboard (the keystone). v1 `/results` + the "Results" nav → **defer**
+(re-point at 4d, gated on parity). v1 intelligence APIs (patterns/explanations/
+causal-links/facts/deps) → **discard** (no UI, S6 supersedes). `/impacts` list/detail
+→ **reuse-chrome + re-point to S8 grounding** → deferred. The run detail (`3c`,
+`/runs/<uuid>`) + claim-runs → the **drill-down targets** (already built).
+
+**Slices.**
+- **4a — recency-correct results spine** (keystone): rewire the insights bridge's
+  Section A from `list_interpretations` (uuid-ordered, drops interpret-failed runs)
+  → `s4_execution_console.list_runs` (S4-base, `finished_at DESC`, verdict via LEFT
+  JOIN). Rows link to `/runs/<uuid>`; an "All runs →" to `/runs/substrate`.
+- **4b — cross-run patterns drill-through**: the clusters (recurring causes / same-VR
+  / flapping) become expandable — `run_ids` → run links, flapping `claim_test_id` →
+  `/claims/<id>`.
+- **4c — grounding drift board**: a filter (All / Drifted / Broken via
+  `list_grounding_validity(overall=…)` + its index), severity colours, an
+  "N drifted · M broken" headline, and a drill into the `detail` JSONB (the *why* —
+  unresolved subjects, removed picklist values, VR reasons).
+- **4d — close**: defer the `/impacts` re-point to S8, the "Results" nav cutover
+  (`/results` → the substrate surface), and release-scoped results; record the gaps.
+
+**Substrate gaps recorded (NOT buildable in the UI — substrate asks).**
+- **No release→runs key** — clustering is release-blind (`clustering.py:11`); a
+  "results for release X" view is a substrate migration, not a UI slice (**HOLD**).
+- **S6 has no time axis** — worked around by reading `s4_execution_runs` as the base
+  (the Area-3 fix), applied here in 4a.
+- **S8 has no wall-clock** — only `evaluated_at_version_seq` (an S1 sync seq); "drifted
+  at sync #N", not a date, until a seq→timestamp join lands.
+- **Clusters carry no human labels** (raw UUIDs); a run_id→claim-name/timestamp join
+  is a bridge follow-up.
+- **`min_runs=2` hardcoded** in the bridge (not yet user-tunable).
+
+**Boundary.** Best-effort bridges; all reads exist (no substrate change, no
+migration). The expanded page reuses `/substrate-insights` (nav + permission
+unchanged until 4d). **Empty-state is the DEFAULT** (the S6/S8 stores stay empty
+until the live SF sync populates them — `#119`). One surface: fold clustering +
+grounding into the expanded `/substrate-insights`; `/runs/substrate` (the full runs
+list) stays as the drill-target it links to. Commits to `main`.
+
+---
+
 ---
