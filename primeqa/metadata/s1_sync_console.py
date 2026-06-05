@@ -110,3 +110,56 @@ def trigger_s1_sync(tenant_id: int, environment_id: int, sf_instance_url: str, *
         log.warning("trigger_s1_sync failed for tenant %s env %s: %s",
                     tenant_id, environment_id, exc)
         return {"ok": False, "error": str(exc)}
+
+
+# --- org-model browser (D-164, UI 1c) ----------------------------------------
+# Read-only view of the synced S1 org model (objects -> fields / VRs) at the
+# tenant's current version. Edge directions match the S7 impact recipe + the
+# metadata S1-reader: fields are BELONGS_TO-inbound to an object, VRs are
+# APPLIES_TO-inbound.
+
+def _read_org_model(model, object_api_name=None) -> dict:
+    """Pure: read the current S1 org model on a ``SemanticOrgModel``. Raises
+    ``VersionNotFoundError`` (caught by the wrapper) when nothing is synced yet."""
+    seq = model.current_version_seq()
+    if object_api_name:
+        objs = model.get_entities("Object", at_seq=seq,
+                                  filters={"sf_api_name": object_api_name})
+        if not objs:
+            return {"available": True, "synced": True, "version_seq": seq, "object": None}
+        obj = objs[0]
+        fields, vrs = [], []
+        for r in model.get_related(obj.id, edge_types=["BELONGS_TO"],
+                                   direction="inbound", at_seq=seq):
+            if r.entity.entity_type == "Field":
+                fields.append({"api_name": r.entity.sf_api_name,
+                               "display_name": r.entity.display_name})
+        for r in model.get_related(obj.id, edge_types=["APPLIES_TO"],
+                                   direction="inbound", at_seq=seq):
+            if r.entity.entity_type == "ValidationRule":
+                vrs.append({"api_name": r.entity.sf_api_name})
+        return {"available": True, "synced": True, "version_seq": seq, "object": {
+            "api_name": obj.sf_api_name, "display_name": obj.display_name,
+            "fields": sorted(fields, key=lambda x: x["api_name"] or ""),
+            "validation_rules": sorted(vrs, key=lambda x: x["api_name"] or "")}}
+    objects = sorted(
+        ({"api_name": o.sf_api_name, "display_name": o.display_name}
+         for o in model.get_entities("Object", at_seq=seq)),
+        key=lambda x: x["api_name"] or "")
+    return {"available": True, "synced": True, "version_seq": seq, "objects": objects}
+
+
+def read_org_model(tenant_id: int, object_api_name=None) -> dict:
+    """Best-effort read of the tenant's current S1 org model. Never raises.
+    ``synced=False`` when no S1 version exists yet; ``available=False`` on error."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.semantic.query import SemanticOrgModel, VersionNotFoundError
+        with get_tenant_connection(tenant_id) as conn:
+            try:
+                return _read_org_model(SemanticOrgModel(conn), object_api_name)
+            except VersionNotFoundError:
+                return {"available": True, "synced": False}
+    except Exception as exc:
+        log.warning("org-model read unavailable for tenant %s: %s", tenant_id, exc)
+        return {"available": False, "synced": False}

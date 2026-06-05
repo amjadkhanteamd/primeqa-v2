@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Org model - PrimeQA{% endblock %}
+{% block content %}
+{% from 'components/_empty_state.html' import empty_state %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+
+{# D-164 (UI Area 1c): read-only browser of the synced S1 org model. #}
+
+<div class="max-w-5xl mx-auto space-y-6" data-page="org-model">
+
+  {{ breadcrumbs([('Org model', '/org-model')] + ([(selected_object, None)] if selected_object else [])) }}
+
+  <div>
+    <h1 class="text-xl font-semibold text-gray-900">Org model <span class="text-gray-400 text-base">(Substrate S1)</span></h1>
+    <p class="mt-1 text-sm text-gray-500">The Salesforce metadata synced into the substrate &mdash; objects, fields, and validation rules at the current version. This is what the new generation, validation, and intelligence read from.</p>
+  </div>
+
+  {% if not model or not model.available %}
+    {{ empty_state(title='Org model unavailable',
+        description='The substrate could not be read for your tenant right now.') }}
+  {% elif not model.synced %}
+    {{ empty_state(title='Not synced yet',
+        description='No substrate org model exists yet. Run a Substrate (S1) sync from an environment to populate it.') }}
+  {% elif selected_object %}
+    {% set obj = model.object %}
+    {% if not obj %}
+      {{ empty_state(title='Object not found',
+          description='No object named ' ~ selected_object ~ ' in the current org model.') }}
+    {% else %}
+      <div class="bg-white border border-gray-200 rounded-lg p-5">
+        <h2 class="text-lg font-semibold text-gray-900 font-mono">{{ obj.api_name }}</h2>
+        {% if obj.display_name and obj.display_name != obj.api_name %}
+          <p class="text-sm text-gray-500">{{ obj.display_name }}</p>{% endif %}
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
+          <div>
+            <h3 class="text-xs font-medium text-gray-500 uppercase mb-2">Fields ({{ obj.fields|length }})</h3>
+            {% if obj.fields %}
+              <ul class="divide-y divide-gray-100 text-sm">
+                {% for f in obj.fields %}<li class="py-1.5 font-mono text-gray-700">{{ f.api_name }}</li>{% endfor %}
+              </ul>
+            {% else %}<p class="text-sm text-gray-400">No fields synced.</p>{% endif %}
+          </div>
+          <div>
+            <h3 class="text-xs font-medium text-gray-500 uppercase mb-2">Validation rules ({{ obj.validation_rules|length }})</h3>
+            {% if obj.validation_rules %}
+              <ul class="divide-y divide-gray-100 text-sm">
+                {% for v in obj.validation_rules %}<li class="py-1.5 text-gray-700">{{ v.api_name }}</li>{% endfor %}
+              </ul>
+            {% else %}<p class="text-sm text-gray-400">No validation rules synced.</p>{% endif %}
+          </div>
+        </div>
+      </div>
+    {% endif %}
+  {% else %}
+    <div class="bg-white border border-gray-200 rounded-lg p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-medium text-gray-700">Objects ({{ model.objects|length }})</h2>
+        <span class="text-xs text-gray-400">version {{ model.version_seq }}</span>
+      </div>
+      {% if model.objects %}
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+          {% for o in model.objects %}
+            <a href="/org-model?object={{ o.api_name|urlencode }}"
+               class="block rounded border border-gray-200 px-3 py-2 text-sm hover:bg-gray-50">
+              <span class="font-mono text-gray-800">{{ o.api_name }}</span>
+            </a>
+          {% endfor %}
+        </div>
+      {% else %}
+        {{ empty_state(title='No objects', description='The current version has no objects.') }}
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

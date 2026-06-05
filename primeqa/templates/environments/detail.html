@@ -143,10 +143,13 @@
         </div>
       {% endif %}
 
-      <form method="POST" action="/environments/{{ env.id }}/sync-substrate">
-        {{ csrf_input | safe }}
-        {{ btn_primary('Sync substrate', type='submit') }}
-      </form>
+      <div class="flex items-center gap-4">
+        <form method="POST" action="/environments/{{ env.id }}/sync-substrate">
+          {{ csrf_input | safe }}
+          {{ btn_primary('Sync substrate', type='submit') }}
+        </form>
+        <a href="/org-model" class="text-sm text-indigo-600 hover:text-indigo-800">Browse org model &rarr;</a>
+      </div>
 
       {% set _run = s1_status.run if s1_status else None %}
       {% set _job = s1_status.job if s1_status else None %}

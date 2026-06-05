@@ -2832,6 +2832,18 @@ def environments_sync_substrate_status(env_id):
     return jsonify(read_s1_sync_status(request.user["tenant_id"], env_id))
 
 
+@views_bp.route("/org-model")
+@role_required("admin", "superadmin")
+def org_model():
+    """Read-only browser of the synced S1 org model (D-164, 1c). Tenant-level —
+    S1 is one versioned org model per tenant. ``?object=ApiName`` drills in."""
+    from primeqa.metadata.s1_sync_console import read_org_model
+    obj = request.args.get("object") or None
+    data = read_org_model(request.user["tenant_id"], obj)
+    return render_template("org_model.html", **ctx(
+        active_page="org_model", model=data, selected_object=obj))
+
+
 @views_bp.route("/environments/<int:env_id>/edit", methods=["GET"])
 @role_required("admin")
 def environments_edit(env_id):
