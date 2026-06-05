@@ -5596,6 +5596,20 @@ def requirements_generate_substrate(req_id):
     return redirect(f"/requirements/{req_id}")
 
 
+@views_bp.route("/claims/<uuid:test_id>")
+@login_required
+def claims_detail(test_id):
+    """D-165 (UI Area 2 slice 2b): the semantic detail of a single S2 claim —
+    archetype / claim_kind / asserted_truth / semantic_conditions + its recipes.
+    The substrate replacement for the v1 test-case detail page. Best-effort read
+    via the s3_generation_console bridge; renders an empty state when the claim is
+    gone or the substrate is unavailable."""
+    from primeqa.intelligence.s3_generation_console import read_claim_detail
+    detail = read_claim_detail(request.user["tenant_id"], test_id)
+    return render_template("claims/detail.html", **ctx(
+        active_page="requirements", detail=detail))
+
+
 @views_bp.route("/requirements/<int:req_id>/edit", methods=["POST"])
 @role_required("admin", "tester", "superadmin")
 def requirements_edit(req_id):

@@ -152,3 +152,67 @@ def read_latest_s3_job(tenant_id: int, requirement_key: str) -> dict:
         log.warning("read_latest_s3_job unavailable for tenant %s key %s: %s",
                     tenant_id, requirement_key, exc)
         return {"available": False, "job": None}
+
+
+# --- read: a single claim's semantic detail + its recipes (2b) ---------------
+
+def _dump(body):
+    """A Pydantic body (asserted_truth / a recipe leg) → a JSON-safe dict for the
+    template. Tolerant: returns ``{}`` for None / a non-model value."""
+    if body is not None and hasattr(body, "model_dump"):
+        return body.model_dump(mode="json")
+    return body if isinstance(body, dict) else {}
+
+
+def _read_claim_detail(session, test_id) -> dict | None:
+    """Pure: the current claim version + its active recipes, bodies dumped to
+    JSON-safe dicts. Returns ``None`` when no live claim matches ``test_id``.
+    Directly testable on the generation harness."""
+    from primeqa.test_representation.coordinator import SemanticTransactionCoordinator
+    coord = SemanticTransactionCoordinator()
+    claim = coord.get_latest_claim(session, test_id)
+    if claim is None:
+        return None
+    recipes = coord.list_active_recipes(session, test_id)
+    return {
+        "test_id": str(test_id),
+        "archetype": claim.archetype,
+        "claim_kind": claim.claim_kind,
+        "status": claim.status,
+        "version_seq": claim.version_seq,
+        "valid_from": _iso(claim.valid_from),
+        "identity_hash": claim.identity_hash,
+        "asserted_truth": _dump(claim.asserted_truth),
+        "semantic_conditions": _dump(claim.semantic_conditions),
+        "recipes": [{
+            "recipe_id": str(r.recipe_id),
+            "trigger_kind": r.trigger_kind,
+            "recipe_kind": r.recipe_kind,
+            "priority": r.priority,
+            "status": r.status,
+            "version_seq": r.version_seq,
+            "causal_initiation": _dump(r.causal_initiation),
+            "observation_realization": _dump(r.observation_realization),
+            "execution_environment": _dump(r.execution_environment),
+        } for r in recipes],
+    }
+
+
+def read_claim_detail(tenant_id: int, test_id) -> dict:
+    """Best-effort read of a single claim's semantic detail + recipes. Never
+    raises. Returns ``{available, found, claim}`` — ``found=False`` when no live
+    claim matches; ``available=False`` on any read error."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        from sqlalchemy.orm import Session
+        with get_tenant_connection(tenant_id) as conn:
+            session = Session(bind=conn)
+            try:
+                detail = _read_claim_detail(session, test_id)
+                return {"available": True, "found": detail is not None, "claim": detail}
+            finally:
+                session.close()
+    except Exception as exc:
+        log.warning("read_claim_detail unavailable for tenant %s test %s: %s",
+                    tenant_id, test_id, exc)
+        return {"available": False, "found": False, "claim": None}

@@ -159,7 +159,7 @@
         <li class="px-6 py-3 flex items-center justify-between">
           <div class="min-w-0">
             <div class="flex items-center gap-2 flex-wrap">
-              <span class="text-sm font-medium text-gray-900">{{ c.claim_kind.replace('-', ' ') }}</span>
+              <a href="/claims/{{ c.test_id }}" class="text-sm font-medium text-indigo-600 hover:underline">{{ c.claim_kind.replace('-', ' ') }}</a>
               <span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-600">{{ c.archetype.replace('_', ' ') }}</span>
               <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
                 {% if c.status == 'approved' %}bg-blue-100 text-blue-800

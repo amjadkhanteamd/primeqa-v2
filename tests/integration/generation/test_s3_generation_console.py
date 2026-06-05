@@ -19,6 +19,7 @@ from primeqa.generation.persistence import LedgerPersister
 from primeqa.intelligence.s3_generation_console import (
     _read_claims,
     _read_latest_job,
+    read_claim_detail,
     read_latest_s3_job,
     read_requirement_claims,
 )
@@ -72,3 +73,34 @@ def test_best_effort_bad_tenant():
     # tenant -1 has no schema -> get_tenant_connection fails -> available=False.
     assert read_requirement_claims(-1, "R0")["available"] is False
     assert read_latest_s3_job(-1, "R0")["available"] is False
+
+
+# --- 2b: single-claim semantic detail ----------------------------------------
+
+def test_read_claim_detail_returns_claim_and_recipes(seeded):
+    _, res = _emit_run(seeded, [_grounded_rel()], persister=LedgerPersister(TEST_TENANT_ID))
+    test_id = res.results[0].outcome.claims_written[0].test_id
+
+    out = read_claim_detail(TEST_TENANT_ID, test_id)
+    assert out["available"] is True and out["found"] is True
+    c = out["claim"]
+    assert c["test_id"] == str(test_id)
+    assert c["archetype"] == "configuration"
+    assert c["claim_kind"] == "metadata-relationship-claim"
+    assert isinstance(c["asserted_truth"], dict) and c["asserted_truth"]   # body dumped
+    assert isinstance(c["semantic_conditions"], dict)
+    assert len(c["recipes"]) == 1
+    r = c["recipes"][0]
+    assert r["recipe_kind"] == "metadata-recipe" and r["trigger_kind"] == "inspection-trigger"
+    assert isinstance(r["causal_initiation"], dict)
+
+
+def test_read_claim_detail_not_found_for_unknown_id(seeded):
+    import uuid
+    out = read_claim_detail(TEST_TENANT_ID, uuid.uuid4())
+    assert out["available"] is True and out["found"] is False and out["claim"] is None
+
+
+def test_read_claim_detail_best_effort_bad_tenant():
+    import uuid
+    assert read_claim_detail(-1, uuid.uuid4())["available"] is False

@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'components/_empty_state.html' import empty_state %}
+{% block title %}Claim - PrimeQA{% endblock %}
+{% block content %}
+
+{# D-165 (UI Area 2 slice 2b): read-only semantic view of one S2 claim + its
+   recipes. render_value walks a dumped Pydantic body (any of the 16 claim-kind
+   shapes) into labelled key/value rows — generic, no per-kind template. #}
+{% macro render_value(v) %}
+  {%- if v is mapping -%}
+    <dl class="space-y-1">
+    {%- for k, val in v.items() %}
+      <div class="sm:flex sm:gap-3">
+        <dt class="text-xs font-medium text-gray-500 sm:min-w-[10rem] shrink-0">{{ k.replace('_', ' ') }}</dt>
+        <dd class="text-sm text-gray-800 min-w-0">{{ render_value(val) }}</dd>
+      </div>
+    {%- endfor %}
+    </dl>
+  {%- elif v is iterable and v is not string -%}
+    {%- if v | length == 0 -%}<span class="text-sm text-gray-400 italic">none</span>
+    {%- else -%}
+    <ul class="space-y-1">
+      {%- for item in v %}<li class="border-l-2 border-gray-100 pl-2">{{ render_value(item) }}</li>{%- endfor %}
+    </ul>
+    {%- endif -%}
+  {%- elif v is none -%}
+    <span class="text-gray-400">&mdash;</span>
+  {%- elif v is boolean -%}
+    <span class="font-mono text-xs px-1.5 py-0.5 rounded {{ 'bg-green-50 text-green-700' if v else 'bg-gray-100 text-gray-600' }}">{{ 'true' if v else 'false' }}</span>
+  {%- else -%}
+    <span class="font-mono text-xs break-words">{{ v }}</span>
+  {%- endif -%}
+{% endmacro %}
+
+{% set c = detail.claim if detail else None %}
+
+{{ breadcrumbs([
+  ('Requirements', '/requirements'),
+  (c.claim_kind.replace('-', ' ') if c else 'Claim', None),
+]) }}
+
+<div class="max-w-4xl space-y-6">
+  {% if not detail or not detail.available %}
+    {{ empty_state(title='Claim unavailable',
+        description='The substrate could not be read for your tenant right now.') }}
+  {% elif not detail.found or not c %}
+    {{ empty_state(title='Claim not found',
+        description='No current claim version matches this id. It may have been superseded or removed.') }}
+  {% else %}
+    <!-- Header -->
+    <div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-600">{{ c.archetype.replace('_', ' ') }}</span>
+        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+          {% if c.status == 'approved' %}bg-blue-100 text-blue-800
+          {% elif c.status == 'draft' %}bg-gray-100 text-gray-700
+          {% else %}bg-amber-100 text-amber-800{% endif %}">{{ c.status }}</span>
+        <span class="text-xs text-gray-400">v{{ c.version_seq }}</span>
+      </div>
+      <h1 class="mt-2 text-2xl font-bold text-gray-900">{{ c.claim_kind.replace('-', ' ') }}</h1>
+      <p class="mt-1 text-xs text-gray-400 font-mono break-all" title="{{ c.test_id }}">{{ c.test_id }}</p>
+    </div>
+
+    <!-- Asserted truth -->
+    <div class="bg-white shadow rounded-lg">
+      <div class="px-4 py-3 border-b">
+        <h3 class="text-sm font-semibold text-gray-700">Asserted truth</h3>
+        <p class="text-xs text-gray-400">What this claim says is true about the org.</p>
+      </div>
+      <div class="px-6 py-4">
+        {% if c.asserted_truth %}{{ render_value(c.asserted_truth) }}
+        {% else %}<p class="text-sm text-gray-400 italic">No asserted truth recorded.</p>{% endif %}
+      </div>
+    </div>
+
+    <!-- Semantic conditions -->
+    <div class="bg-white shadow rounded-lg">
+      <div class="px-4 py-3 border-b">
+        <h3 class="text-sm font-semibold text-gray-700">Semantic conditions</h3>
+        <p class="text-xs text-gray-400">The conditions under which the claim holds.</p>
+      </div>
+      <div class="px-6 py-4">
+        {% if c.semantic_conditions %}{{ render_value(c.semantic_conditions) }}
+        {% else %}<p class="text-sm text-gray-400 italic">No conditions recorded.</p>{% endif %}
+      </div>
+    </div>
+
+    <!-- Recipes -->
+    <div class="bg-white shadow rounded-lg">
+      <div class="px-4 py-3 border-b flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-gray-700">Recipes
+          <span class="text-gray-500 font-normal">({{ c.recipes | length }})</span>
+        </h3>
+        <span class="text-xs text-gray-400">How the claim is verified.</span>
+      </div>
+      {% if c.recipes %}
+      <div class="divide-y divide-gray-200">
+        {% for r in c.recipes %}
+        <div class="px-6 py-4 space-y-3">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-sm font-medium text-gray-900">{{ r.recipe_kind.replace('-', ' ') }}</span>
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-indigo-50 text-indigo-700">{{ r.trigger_kind.replace('-', ' ') }}</span>
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+              {% if r.status == 'approved' %}bg-blue-100 text-blue-800{% elif r.status == 'draft' %}bg-gray-100 text-gray-700{% else %}bg-amber-100 text-amber-800{% endif %}">{{ r.status }}</span>
+            <span class="text-xs text-gray-400">priority {{ r.priority }} · v{{ r.version_seq }}</span>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <h4 class="text-xs font-medium text-gray-500 uppercase mb-1">Causal initiation</h4>
+              {{ render_value(r.causal_initiation) }}
+            </div>
+            <div>
+              <h4 class="text-xs font-medium text-gray-500 uppercase mb-1">Observation</h4>
+              {{ render_value(r.observation_realization) }}
+            </div>
+            <div>
+              <h4 class="text-xs font-medium text-gray-500 uppercase mb-1">Environment</h4>
+              {{ render_value(r.execution_environment) }}
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="px-6 py-6 text-sm text-gray-500">No active recipes for this claim.</div>
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
