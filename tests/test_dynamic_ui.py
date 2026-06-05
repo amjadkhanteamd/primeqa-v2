@@ -176,6 +176,27 @@ def run_tests():
     results.append(test("4. admin_base sidebar = every section populated + releases",
                         test_admin_sidebar))
 
+    def test_ask_nav_gated_to_intelligence_report():
+        # UI Area 6 (D-174): the Ask (/ask) nav item mirrors substrate_insights —
+        # same view_intelligence_report gate, sitting next to it in the testing
+        # section. Visible to tester + admin; hidden from developer + release_owner
+        # (which lack view_intelligence_report — D-174 fork 2).
+        tst = [i["id"] for i in build_sidebar(_base_perms("tester_base"), "/ask")]
+        adm = [i["id"] for i in build_sidebar(_base_perms("admin_base"), "/settings")]
+        dev = [i["id"] for i in build_sidebar(_base_perms("developer_base"), "/requirements")]
+        ro = [i["id"] for i in build_sidebar(_base_perms("release_owner_base"), "/")]
+        assert "ask" in tst, tst
+        assert "ask" in adm, adm
+        assert "ask" not in dev, dev
+        assert "ask" not in ro, ro
+        # sits next to its read-only sibling
+        assert tst.index("ask") == tst.index("substrate_insights") + 1, tst
+        # /ask highlights exactly the Ask item
+        active = [i for i in build_sidebar(_base_perms("tester_base"), "/ask") if i["active"]]
+        assert len(active) == 1 and active[0]["id"] == "ask", active
+    results.append(test("4b. Ask nav item gated to view_intelligence_report",
+                        test_ask_nav_gated_to_intelligence_report))
+
     def test_developer_plus_review():
         perms = _base_perms("developer_base") | {"review_test_cases"}
         nav = build_sidebar(perms, "/reviews")

@@ -148,6 +148,19 @@ SIDEBAR_ITEMS: list[dict] = [
         "permission": "view_intelligence_report",
         "section": "testing",
     },
+    {
+        # UI Area 6 (D-174): surface the S7 grounded-answering page in nav.
+        # Same gate + section as substrate_insights (its read-only sibling) so
+        # the audience matches the route's @require_page_permission. Renders an
+        # empty-state (every answer a grounded refusal) until the live-SF sync
+        # populates the S6/S8 answer stores.
+        "id": "ask",
+        "label": "Ask",
+        "icon": "chat",
+        "url": "/ask",
+        "permission": "view_intelligence_report",
+        "section": "testing",
+    },
 
     # Admin — tenant-wide config
     {

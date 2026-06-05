@@ -5,9 +5,47 @@
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% from 'components/_buttons.html' import btn_primary %}
 
-{# S7 grounded answering (D-163.4): ask a question about the test system; get an
-   answer grounded in substrate evidence, or a refusal. The substrate answer stores
-   are empty until the live-SF sync + first runs land, so the default is a refusal. #}
+{# S7 grounded answering (D-163.4 + UI Area 6 polish D-174): ask a question about
+   the test system; get an answer grounded in substrate evidence, or a refusal. The
+   substrate answer stores are empty until the live-SF sync + first runs land, so the
+   default is a refusal. The bridge returns 4 distinct refusal_reasons — we give each
+   its own treatment instead of one generic empty-state. #}
+
+{# Grounded-in citation chips (shared by the answered state AND the
+   phrasing_unavailable refusal, which carries citations too). Renders the row kind
+   (c.kind) the substrate already provides. #}
+{% macro citation_chips(citations) %}
+  <div class="flex flex-wrap gap-2">
+    {% for c in citations %}
+      <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs text-gray-700">
+        <span class="font-mono font-semibold">{{ c.id }}</span>
+        <span class="text-gray-400">&middot;</span>{{ c.source }}
+        {% if c.kind %}<span class="text-gray-400">&middot;</span><span class="text-gray-500">{{ c.kind }}</span>{% endif %}
+        <span class="text-gray-400">&middot;</span>{{ c.ref }}
+      </span>
+    {% endfor %}
+  </div>
+{% endmacro %}
+
+{# Example questions, one per S7 intent (failure_cause / grounding_drift / impact).
+   The wording uses each intent's classifier keywords so the question routes. Clicking
+   prefills the textarea (and the Object field for the impact example). #}
+{% macro ask_examples() %}
+  <div class="flex flex-wrap gap-2">
+    <button type="button" data-ask-example data-q="Why did the recent runs fail?"
+      class="inline-flex items-center rounded-full bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100">
+      Why did the recent runs fail?
+    </button>
+    <button type="button" data-ask-example data-q="Which approved claims have drifted or are at risk?"
+      class="inline-flex items-center rounded-full bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100">
+      Which claims have drifted?
+    </button>
+    <button type="button" data-ask-example data-q="What depends on the Account object?" data-object="Account"
+      class="inline-flex items-center rounded-full bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100">
+      What depends on an object?
+    </button>
+  </div>
+{% endmacro %}
 
 <div class="max-w-4xl mx-auto space-y-6" data-page="ask">
 
@@ -58,36 +96,81 @@
       </div>
     </div>
 
-    <div>{{ btn_primary('Ask', type='submit') }}</div>
+    <div>{{ btn_primary('Ask', type='submit', spinner=True) }}</div>
   </form>
 
   {% if answer %}
     {% if not answer.available %}
+      {# refusal_reason='unavailable' — schema / read / LLM error (best-effort). #}
       {{ empty_state(
           title='Answering unavailable',
           description='The substrate stores could not be read for your tenant right now. They populate after the metadata sync goes live.') }}
     {% elif answer.status == 'refused' %}
-      {{ empty_state(title='No grounded answer', description=answer.text) }}
+      {% if answer.refusal_reason == 'phrasing_unavailable' %}
+        {# Grounding WAS found; only the compose step failed. Show the evidence + the
+           retry nudge, so the refusal still proves grounding. #}
+        <div class="bg-white border border-amber-200 rounded-lg p-5 space-y-4" data-answer="refused" data-refusal="phrasing_unavailable">
+          <div>
+            <p class="text-sm font-medium text-gray-900">Found grounding, but couldn't compose an answer</p>
+            <p class="mt-1 text-sm text-gray-600 whitespace-pre-line">{{ answer.text }}</p>
+          </div>
+          {% if answer.citations %}
+            <div class="border-t border-gray-100 pt-3">
+              <p class="text-xs font-medium text-gray-500 mb-2">Grounded in</p>
+              {{ citation_chips(answer.citations) }}
+            </div>
+          {% endif %}
+        </div>
+      {% elif answer.refusal_reason == 'no_intent_match' %}
+        {# Question matched no intent — offer the answerable shapes. #}
+        <div class="bg-white border border-gray-200 rounded-lg p-5 space-y-4" data-answer="refused" data-refusal="no_intent_match">
+          <div>
+            <p class="text-sm font-medium text-gray-900">Couldn't tell what you're asking</p>
+            <p class="mt-1 text-sm text-gray-600 whitespace-pre-line">{{ answer.text }}</p>
+          </div>
+          <div>
+            <p class="text-xs font-medium text-gray-500 mb-2">Try one of these</p>
+            {{ ask_examples() }}
+          </div>
+        </div>
+      {% else %}
+        {# no_grounding_evidence (or any future reason) — the substrate text already
+           guides narrowing to a release / environment / requirement. #}
+        <div class="bg-white border border-gray-200 rounded-lg p-5" data-answer="refused" data-refusal="{{ answer.refusal_reason }}">
+          <p class="text-sm font-medium text-gray-900">No grounded answer</p>
+          <p class="mt-1 text-sm text-gray-600 whitespace-pre-line">{{ answer.text }}</p>
+        </div>
+      {% endif %}
     {% else %}
       <div class="bg-white border border-gray-200 rounded-lg p-5 space-y-4" data-answer="answered">
         <p class="text-sm text-gray-900 whitespace-pre-line">{{ answer.text }}</p>
         {% if answer.citations %}
           <div class="border-t border-gray-100 pt-3">
             <p class="text-xs font-medium text-gray-500 mb-2">Grounded in</p>
-            <div class="flex flex-wrap gap-2">
-              {% for c in answer.citations %}
-                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs text-gray-700">
-                  <span class="font-mono font-semibold">{{ c.id }}</span>
-                  <span class="text-gray-400">&middot;</span>{{ c.source }}
-                  <span class="text-gray-400">&middot;</span>{{ c.ref }}
-                </span>
-              {% endfor %}
-            </div>
+            {{ citation_chips(answer.citations) }}
           </div>
         {% endif %}
       </div>
     {% endif %}
+  {% else %}
+    {# No question asked yet — guided discovery with one example per intent. #}
+    <div class="bg-white border border-gray-200 rounded-lg p-5" data-answer="empty">
+      <p class="text-sm font-medium text-gray-900">Not sure what to ask?</p>
+      <p class="mt-1 text-sm text-gray-500 mb-3">Try one of these — each maps to something the substrate can answer.</p>
+      {{ ask_examples() }}
+    </div>
   {% endif %}
+
+  <script>
+    document.querySelectorAll('[data-ask-example]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var q = document.getElementById('question');
+        if (q) { q.value = b.dataset.q || ''; q.focus(); }
+        var obj = document.getElementById('object_api_name');
+        if (obj && b.dataset.object) { obj.value = b.dataset.object; }
+      });
+    });
+  </script>
 
 </div>
 {% endblock %}
