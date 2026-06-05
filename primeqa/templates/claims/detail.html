@@ -62,6 +62,48 @@
       <p class="mt-1 text-xs text-gray-400 font-mono break-all" title="{{ c.test_id }}">{{ c.test_id }}</p>
     </div>
 
+    <!-- Approve (a draft claim is not runnable until approved) -->
+    {% if c.status != 'approved' and user.role in ['admin', 'tester', 'superadmin'] %}
+    <div class="rounded-md bg-amber-50 border border-amber-100 p-3 flex items-center justify-between gap-3">
+      <p class="text-sm text-amber-800">This claim is a <strong>{{ c.status }}</strong> — approve it to make the claim + its recipes runnable.</p>
+      <form method="POST" action="/claims/{{ c.test_id }}/approve">
+        {{ csrf_input | safe }}
+        <button type="submit" class="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500 whitespace-nowrap">Approve claim</button>
+      </form>
+    </div>
+    {% endif %}
+
+    <!-- Run this claim (S4 execution) -->
+    {% if user.role in ['admin', 'tester', 'superadmin'] %}
+    <div class="bg-white shadow rounded-lg p-5">
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="text-sm font-semibold text-gray-700">Run this claim</h3>
+        <span class="text-xs text-gray-400">Executes the eligible recipe live against Salesforce (S4).</span>
+      </div>
+      <p class="text-xs text-gray-500 mb-3">Runs synchronously &mdash; the page waits for the result, then shows the outcome + verdict below.</p>
+      {% if environments %}
+      <form method="POST" action="/claims/{{ c.test_id }}/run" class="flex items-center gap-2 flex-wrap" id="claim-run-form">
+        {{ csrf_input | safe }}
+        <select name="environment_id" id="claim-run-env" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+          <option value="">Run env&hellip;</option>
+          {% for env in environments %}
+          <option value="{{ env.id }}" data-is-production="{{ 'true' if env.is_production else 'false' }}" {% if not env.has_connection %}disabled{% endif %}>
+            {{ env.name }}{% if not env.has_connection %} &mdash; no connection{% elif env.is_production %} (production){% endif %}
+          </option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="rounded-md bg-green-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-green-500">&#9654; Run</button>
+        <span id="claim-run-prodgate" class="hidden inline-flex items-center gap-1.5 text-xs text-red-700">
+          <input type="checkbox" name="confirm_production" id="claim-run-confirm" class="h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500">
+          <label for="claim-run-confirm">I confirm running against <strong>production</strong>.</label>
+        </span>
+      </form>
+      {% else %}
+      <p class="text-sm text-gray-400">No environments available to run against.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+
     <!-- Asserted truth -->
     <div class="bg-white shadow rounded-lg">
       <div class="px-4 py-3 border-b">
@@ -126,6 +168,52 @@
       <div class="px-6 py-6 text-sm text-gray-500">No active recipes for this claim.</div>
       {% endif %}
     </div>
+
+    <!-- Recent runs (S4 outcome + S6 verdict) -->
+    <div class="bg-white shadow rounded-lg">
+      <div class="px-4 py-3 border-b flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-gray-700">Recent runs
+          <span class="text-gray-500 font-normal">({{ (runs.runs | length) if runs else 0 }})</span>
+        </h3>
+        <span class="text-xs text-gray-400">Outcome (S4) + verdict (S6).</span>
+      </div>
+      {% if not runs or not runs.available %}
+        <div class="px-6 py-6 text-sm text-gray-400">Run history unavailable right now.</div>
+      {% elif runs.runs %}
+        <ul class="divide-y divide-gray-200">
+          {% for r in runs.runs %}
+          <li class="px-6 py-3 flex items-center justify-between">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+                {% if r.outcome == 'passed' %}bg-green-100 text-green-800
+                {% elif r.outcome == 'failed' %}bg-red-100 text-red-800
+                {% elif r.outcome == 'errored' %}bg-amber-100 text-amber-800
+                {% else %}bg-gray-100 text-gray-700{% endif %}">{{ r.outcome }}</span>
+              {% if r.verdict %}<span class="text-xs text-gray-600">{{ r.verdict.replace('_', ' ') }}</span>{% endif %}
+            </div>
+            <span class="text-xs text-gray-400 font-mono" title="{{ r.run_id }}">{{ r.run_id[:8] }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="px-6 py-6 text-sm text-gray-500">No runs yet. Use <strong>Run</strong> above to execute this claim.</div>
+      {% endif %}
+    </div>
   {% endif %}
 </div>
+
+<script>
+(function(){
+  var sel = document.getElementById('claim-run-env');
+  var gate = document.getElementById('claim-run-prodgate');
+  var cb = document.getElementById('claim-run-confirm');
+  if (!sel || !gate) return;
+  sel.addEventListener('change', function(){
+    var opt = sel.options[sel.selectedIndex];
+    var isProd = opt && opt.getAttribute('data-is-production') === 'true';
+    gate.classList.toggle('hidden', !isProd);
+    if (!isProd && cb) { cb.checked = false; }
+  });
+})();
+</script>
 {% endblock %}

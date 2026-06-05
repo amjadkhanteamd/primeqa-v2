@@ -1,0 +1,114 @@
+"""S4 execution console bridge — governance (D-168, UI Area 3 slice 3a).
+
+Covers the bridge's own logic without a live Salesforce client: the pure
+run-result mapping (`_map_run_result`, duck-typed), the S6 run read
+(`_read_claim_runs` over the substrate `session`), and the best-effort wrappers
+(a bad tenant returns ok/available=False, never raises). The full live run (a real
+metadata-recipe → outcome) is proven by `test_s4_run_path.py` + live proving.
+"""
+from __future__ import annotations
+
+from types import SimpleNamespace
+from uuid import uuid4
+
+from primeqa.intelligence.s4_execution_console import (
+    _approve_claim,
+    _map_run_result,
+    _read_claim_runs,
+    approve_claim,
+    read_claim_runs,
+    trigger_claim_run,
+)
+from primeqa.execution_engine.run import _MIN_AVAILABLE_ENV
+from primeqa.generation.emission import GroundedNegative, _Endpoint, author_emission
+from primeqa.test_representation import SemanticTransactionCoordinator
+
+from ._fixtures import empty_conditions, make_value_claim
+
+
+def _seed_draft_claim_with_recipe(session, coord):
+    """A draft claim + a generated_unapproved metadata recipe under it — the
+    shape S3 generation produces (neither runnable until approved)."""
+    body = make_value_claim(value="Tech")
+    cr = coord.write_claim(
+        session, actor="s3", test_id=None,
+        archetype="data_behavior", claim_kind="value-claim",
+        asserted_truth=body, semantic_conditions=empty_conditions())
+    bundle = author_emission(GroundedNegative(
+        archetype="data_behavior", claim_kind="prohibition-claim",
+        operation_hint="delete", version_seq=7,
+        subject=_Endpoint(entity_id=uuid4(), entity_type="Object", external_id="Lead"),
+        requirement_excerpt="Users must not delete a Lead without a reason."))
+    coord.write_recipe(
+        session, actor="s3", recipe_id=None, claim_test_id=cr.test_id,
+        trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
+        causal_initiation=bundle.causal_initiation,
+        observation_realization=bundle.observation_realization,
+        execution_environment=bundle.execution_environment,
+        claim_version_seq=cr.version_seq)
+    session.flush()
+    return cr.test_id
+
+
+def test_map_run_result_ran_with_verdict():
+    rid = uuid4()
+    result = SimpleNamespace(
+        ran=True, reason=None, selected_recipe_id=rid,
+        evidence=SimpleNamespace(outcome="passed"),
+        interpretation=SimpleNamespace(verdict="prohibition_enforced"))
+    assert _map_run_result(result) == {
+        "ok": True, "ran": True, "recipe_id": str(rid),
+        "outcome": "passed", "verdict": "prohibition_enforced"}
+
+
+def test_map_run_result_ran_without_interpretation():
+    # the best-effort S6 interpret can fail -> interpretation None -> verdict None,
+    # while the S4 outcome stays authoritative.
+    result = SimpleNamespace(
+        ran=True, reason=None, selected_recipe_id=uuid4(),
+        evidence=SimpleNamespace(outcome="failed"), interpretation=None)
+    out = _map_run_result(result)
+    assert out["ran"] is True and out["outcome"] == "failed" and out["verdict"] is None
+
+
+def test_map_run_result_no_eligible_recipe():
+    result = SimpleNamespace(ran=False, reason="no_eligible_recipe")
+    assert _map_run_result(result) == {
+        "ok": True, "ran": False, "reason": "no_eligible_recipe"}
+
+
+def test_read_claim_runs_empty(session):
+    # a claim with no runs -> list_interpretations returns [] -> [].
+    assert _read_claim_runs(session, uuid4()) == []
+
+
+def test_trigger_claim_run_best_effort_bad_tenant():
+    # tenant -1 has no schema -> run_recipe_execution_for_tenant raises -> ok=False.
+    assert trigger_claim_run(-1, str(uuid4()), 1)["ok"] is False
+
+
+def test_read_claim_runs_best_effort_bad_tenant():
+    assert read_claim_runs(-1, str(uuid4()))["available"] is False
+
+
+# --- approve a claim (draft -> runnable) -------------------------------------
+
+def test_approve_claim_makes_draft_runnable(session):
+    coord = SemanticTransactionCoordinator()
+    test_id = _seed_draft_claim_with_recipe(session, coord)
+    # not runnable: draft claim (no approved version) + generated_unapproved recipe
+    assert coord.get_current_approved_claim(session, test_id) is None
+    assert coord.select_recipe_for_execution(
+        session, test_id, available_environment=_MIN_AVAILABLE_ENV) is None
+
+    out = _approve_claim(session, test_id)
+    assert out["ok"] is True and out["recipes_approved"] >= 1
+
+    # now approved AND runnable (claim approved + recipe promoted)
+    assert coord.get_current_approved_claim(session, test_id) is not None
+    assert coord.select_recipe_for_execution(
+        session, test_id, available_environment=_MIN_AVAILABLE_ENV) is not None
+
+
+def test_approve_claim_best_effort_bad_tenant():
+    assert approve_claim(-1, str(uuid4()))["ok"] is False

@@ -5584,9 +5584,84 @@ def claims_detail(test_id):
     via the s3_generation_console bridge; renders an empty state when the claim is
     gone or the substrate is unavailable."""
     from primeqa.intelligence.s3_generation_console import read_claim_detail
-    detail = read_claim_detail(request.user["tenant_id"], test_id)
+    from primeqa.intelligence.s4_execution_console import read_claim_runs
+    tid = request.user["tenant_id"]
+    detail = read_claim_detail(tid, test_id)
+    runs = read_claim_runs(tid, test_id)              # D-168 (3a): recent runs (S6)
+    # Environments for the Run picker (tester+; gated in the template). is_production
+    # drives the dynamic prod-confirm gate; has_connection flags runnable envs.
+    db = next(get_db())
+    try:
+        envs = EnvironmentRepository(db).list_environments(
+            tid, request.user["id"], request.user["role"])
+        envs_data = [{"id": e.id, "name": e.name,
+                      "is_production": bool(getattr(e, "is_production", False)),
+                      "has_connection": bool(getattr(e, "connection_id", None))}
+                     for e in envs]
+    finally:
+        db.close()
     return render_template("claims/detail.html", **ctx(
-        active_page="test_library", detail=detail))
+        active_page="test_library", detail=detail, runs=runs, environments=envs_data))
+
+
+@views_bp.route("/claims/<uuid:test_id>/run", methods=["POST"])
+@role_required("admin", "tester", "superadmin")
+def claims_run(test_id):
+    """D-168 (UI Area 3 slice 3a): run the eligible recipe for this claim on the
+    chosen environment (synchronous — blocks for the live Salesforce I/O, returns
+    the outcome + verdict). The production-confirm gate lives HERE (the substrate
+    has none and a data-recipe run mutates the org) — reuses v1's
+    environment_can_bulk_run. Best-effort run via the s4_execution_console bridge."""
+    from flask import flash
+    environment_id = request.form.get("environment_id", type=int)
+    confirm_production = request.form.get("confirm_production") in ("on", "1", "true")
+    if not environment_id:
+        flash("Pick an environment to run against.", "error")
+        return redirect(f"/claims/{test_id}")
+    tid = request.user["tenant_id"]
+    db = next(get_db())
+    try:
+        from primeqa.core.repository import EnvironmentRepository
+        from primeqa.runs.bulk import environment_can_bulk_run
+        env = EnvironmentRepository(db).get_environment(environment_id, tid)
+        if env is None:
+            flash("Environment not found.", "error")
+            return redirect(f"/claims/{test_id}")
+        ok, msg = environment_can_bulk_run(env, confirm_production)
+    finally:
+        db.close()
+    if not ok:
+        flash(msg, "error")
+        return redirect(f"/claims/{test_id}")
+
+    from primeqa.intelligence.s4_execution_console import trigger_claim_run
+    res = trigger_claim_run(tid, str(test_id), environment_id)
+    if not res.get("ok"):
+        flash(f"Run failed: {res.get('error', 'unknown error')}", "error")
+    elif not res.get("ran"):
+        flash("Nothing ran — the claim needs an approved recipe that matches the "
+              f"environment ({res.get('reason', 'no_eligible_recipe')}).", "error")
+    else:
+        v = res.get("verdict")
+        flash(f"Run complete — outcome: {res.get('outcome')}"
+              + (f" · verdict: {v}" if v else ""), "success")
+    return redirect(f"/claims/{test_id}")
+
+
+@views_bp.route("/claims/<uuid:test_id>/approve", methods=["POST"])
+@role_required("admin", "tester", "superadmin")
+def claims_approve(test_id):
+    """D-168 (UI Area 3 slice 3a): approve a draft claim + its recipes so it
+    becomes runnable (the generate→approve→run loop). Approval is humans-only at
+    the substrate (D-ε-1); best-effort via the s4_execution_console bridge."""
+    from flask import flash
+    from primeqa.intelligence.s4_execution_console import approve_claim
+    res = approve_claim(request.user["tenant_id"], str(test_id))
+    if res.get("ok"):
+        flash("Claim approved — it's now runnable.", "success")
+    else:
+        flash(f"Could not approve: {res.get('error', 'unknown error')}", "error")
+    return redirect(f"/claims/{test_id}")
 
 
 @views_bp.route("/requirements/<int:req_id>/edit", methods=["POST"])
