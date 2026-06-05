@@ -6661,10 +6661,21 @@ def releases_detail(release_id):
         )
         envs_data = [{"id": e.id, "name": e.name} for e in envs]
 
+        # D-172 (5a): substrate evidence for the Decision tab — the release's
+        # requirements' claims -> S8 grounding-drift + S6 latest verdict
+        # (best-effort; the v1 DecisionEngine stays the verdict authority). The
+        # substrate path is via requirements only (jira_key or req-<id>).
+        substrate = None
+        if tab == "decision":
+            from primeqa.intelligence.release_substrate_console import get_release_substrate
+            external_keys = [(r.get("jira_key") or ("req-%d" % r["id"]))
+                             for r in release.get("requirements", []) if r.get("id")]
+            substrate = get_release_substrate(tid, external_keys)
+
         return render_template("releases/detail.html", **ctx(
             active_page="releases", release=release, tab=tab,
             all_requirements=all_requirements,
-            environments=envs_data,
+            environments=envs_data, substrate=substrate,
         ))
     finally:
         db.close()

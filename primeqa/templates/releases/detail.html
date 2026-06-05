@@ -222,6 +222,63 @@
         <p class="text-sm text-gray-500 text-center py-8">No decision yet. Complete test execution to generate a recommendation.</p>
         {% endif %}
     </div>
+
+    {# D-172 (5a): substrate evidence — the release's claims (via its requirements)
+       grounding-drift + latest verdict. Signal the human weighs next to the v1
+       recommendation above; the substrate does NOT produce the verdict. #}
+    <div class="bg-white shadow rounded-lg p-6 mt-6">
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="text-lg font-medium text-gray-900">Substrate evidence</h3>
+        <span class="text-xs text-gray-400">Grounding + verdicts for this release's claims (S6 / S8)</span>
+      </div>
+      <p class="text-xs text-gray-500 mb-4">From the claims generated for this release's linked requirements &mdash; additional signal next to the recommendation, not the decision itself.</p>
+      {% if not substrate or not substrate.available %}
+        <p class="text-sm text-gray-400">Substrate evidence unavailable right now.</p>
+      {% elif substrate.claim_count == 0 %}
+        <p class="text-sm text-gray-400">No substrate claims for this release yet &mdash; generate from its requirements; grounding + verdicts populate after the live sync.</p>
+      {% else %}
+        {% set g = substrate.grounding_counts %}
+        {% set v = substrate.verdict_counts %}
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+          <div class="rounded border border-gray-200 p-3">
+            <p class="text-xs text-gray-500 uppercase mb-1">Grounding ({{ substrate.claim_count }} claims)</p>
+            <div class="flex flex-wrap gap-3 text-sm">
+              {% if g.get('broken') %}<span class="font-medium text-red-700">{{ g.broken }} broken</span>{% endif %}
+              {% if g.get('drifted') %}<span class="font-medium text-amber-700">{{ g.drifted }} drifted</span>{% endif %}
+              {% if g.get('intact') %}<span class="text-green-700">{{ g.intact }} intact</span>{% endif %}
+              {% if g.get('not_computed') %}<span class="text-gray-400">{{ g.not_computed }} not computed</span>{% endif %}
+            </div>
+          </div>
+          <div class="rounded border border-gray-200 p-3">
+            <p class="text-xs text-gray-500 uppercase mb-1">Latest run verdict</p>
+            <div class="flex flex-wrap gap-3 text-sm">
+              {% if v.get('passed') %}<span class="text-green-700">{{ v.passed }} passed</span>{% endif %}
+              {% if v.get('failed') %}<span class="font-medium text-red-700">{{ v.failed }} failed</span>{% endif %}
+              {% if v.get('errored') %}<span class="text-amber-700">{{ v.errored }} errored</span>{% endif %}
+              {% if v.get('never_run') %}<span class="text-gray-400">{{ v.never_run }} never run</span>{% endif %}
+            </div>
+          </div>
+        </div>
+        {% if substrate.at_risk %}
+        <h4 class="text-sm font-medium text-gray-700 mb-2">At-risk claims ({{ substrate.at_risk | length }})</h4>
+        <ul class="divide-y divide-gray-100 border border-gray-200 rounded">
+          {% for c in substrate.at_risk %}
+          <li class="px-3 py-2 flex items-center justify-between text-sm">
+            <div class="flex items-center gap-2 flex-wrap min-w-0">
+              <a href="/claims/{{ c.test_id }}" class="font-mono text-xs text-indigo-600 hover:underline">{{ c.test_id[:8] }}</a>
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium {% if c.overall == 'broken' %}bg-red-100 text-red-800{% else %}bg-amber-100 text-amber-800{% endif %}">{{ c.overall }}</span>
+              {% set why = (c.detail.get('claim_grounding') or {}).get('reason') %}
+              {% if why %}<span class="text-xs text-gray-500">{{ why.replace('_', ' ') }}</span>{% endif %}
+            </div>
+            <span class="text-xs text-gray-400 flex-shrink-0 ml-3">{% if c.latest_outcome %}last run: {{ c.latest_outcome }}{% else %}never run{% endif %}</span>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="text-sm text-green-700">No claims at risk &mdash; all grounded claims are intact.</p>
+        {% endif %}
+      {% endif %}
+    </div>
     {% else %}
     <!-- Requirements tab (default) -->
     <div class="bg-white shadow rounded-lg">
