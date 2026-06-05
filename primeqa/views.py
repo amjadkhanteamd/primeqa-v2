@@ -330,6 +330,17 @@ def ask():
                     requirement_key=form["requirement_key"] or None,
                     object_api_name=form["object_api_name"] or None,
                     api_key=api_key, model=model)
+        else:
+            # GET prefill for contextual deep-links ("Ask about this requirement").
+            # Prefill ONLY — a deep-link must never auto-run an LLM call (a GET stays
+            # safe/idempotent); the user reviews the seeded question and clicks Ask.
+            # Values are length-capped (URL params are link-supplied) and HTML-escaped
+            # at render; environment_id only sticks if it matches a tenant env option.
+            form["question"] = (request.args.get("q") or "").strip()[:500]
+            form["requirement_key"] = (request.args.get("requirement_key") or "").strip()[:100]
+            form["object_api_name"] = (request.args.get("object_api_name") or "").strip()[:100]
+            eid = request.args.get("environment_id") or ""
+            form["environment_id"] = eid if eid.isdigit() else ""
         return render_template("conversation.html", **ctx(
             active_page="ask", environments=environments, answer=answer, form=form))
 

@@ -12,12 +12,17 @@
 
   {{ breadcrumbs([('Substrate Insights', None)]) }}
 
-  <div>
-    <h1 class="text-xl font-semibold text-gray-900">Substrate Insights</h1>
-    <p class="mt-1 text-sm text-gray-500">
-      Run interpretations, recurring-cause clusters, and grounding-validity
-      verdicts produced by the substrate spine — additive and read-only.
-    </p>
+  <div class="flex items-start justify-between gap-4">
+    <div>
+      <h1 class="text-xl font-semibold text-gray-900">Substrate Insights</h1>
+      <p class="mt-1 text-sm text-gray-500">
+        Run interpretations, recurring-cause clusters, and grounding-validity
+        verdicts produced by the substrate spine — additive and read-only.
+      </p>
+    </div>
+    {# UI Area 6 (D-174 6b): entry to /ask, this page's grounded-answering sibling
+       (same view_intelligence_report gate, so the link always resolves here). #}
+    <a href="/ask" class="flex-shrink-0 text-sm font-medium text-indigo-600 hover:underline whitespace-nowrap">Ask a question &rarr;</a>
   </div>
 
   {% if not insights.available %}

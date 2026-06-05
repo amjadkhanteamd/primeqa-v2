@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'components/_buttons.html' import btn_secondary %}
 {% block title %}Requirement {{ req.jira_key or '#' ~ req.id }} - PrimeQA{% endblock %}
 {% block content %}
 
@@ -38,6 +39,17 @@
       </p>
     </div>
     <div class="flex items-center space-x-2">
+      {# UI Area 6 (D-174 6b): contextual launcher into S7 /ask, scoped to this
+         requirement via the impact intent (requirement_key). Gated on the same
+         permission as /ask so it never renders a 403 link. GET-prefill only — the
+         user reviews the seeded question and clicks Ask. #}
+      {% if has_permission('view_intelligence_report') %}
+        {% set _rk = req.jira_key or ('req-' ~ req.id) %}
+        {{ btn_secondary('Ask about this',
+             href='/ask?' ~ ({'q': 'What depends on requirement ' ~ _rk ~ '?',
+                              'requirement_key': _rk} | urlencode),
+             size='sm') }}
+      {% endif %}
       {% if req.deleted_at %}
         <button class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500" data-restore-req="{{ req.id }}">Restore</button>
         {% if user.role in ['admin', 'superadmin'] %}

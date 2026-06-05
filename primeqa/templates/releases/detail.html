@@ -297,6 +297,14 @@
                     {% if req.jira_key %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono bg-blue-50 text-blue-700 flex-shrink-0">{{ req.jira_key }}</span>{% endif %}
                     <a href="/requirements/{{ req.id }}" class="text-sm font-medium text-indigo-600 hover:underline truncate">{{ req.jira_summary or ('Requirement #' ~ req.id) }}</a>
                     {% if req.is_stale %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-yellow-100 text-yellow-800 flex-shrink-0">Stale</span>{% endif %}
+                    {# UI Area 6 (D-174 6b): contextual S7 launcher — impact scoped to this
+                       requirement (requirement_key). Gated on the /ask permission. #}
+                    {% if has_permission('view_intelligence_report') %}
+                      {% set _rk = req.jira_key or ('req-' ~ req.id) %}
+                      <a href="/ask?{{ {'q': 'What depends on requirement ' ~ _rk ~ '?', 'requirement_key': _rk} | urlencode }}"
+                         class="text-xs text-indigo-600 hover:underline flex-shrink-0"
+                         title="Ask the substrate what depends on this requirement">Ask</a>
+                    {% endif %}
                 </div>
                 {% if user.role in ['admin', 'tester', 'superadmin'] %}
                 <button class="remove-req text-xs text-red-600 hover:text-red-800 ml-3 flex-shrink-0" data-req-id="{{ req.id }}">Remove</button>
