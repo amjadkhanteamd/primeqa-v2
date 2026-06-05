@@ -9207,4 +9207,93 @@ untouched. Every grounded answer is a refusal until the live `#119` sync populat
 
 ---
 
+## D-175 — UI Phase Area 6 (Conversation / S7): close
+
+**Date:** 2026-06-06
+**Affected:** docs-only. Area 6 implementation landed in commits `fc4d0ba` (6a) +
+`7fff9fa` (6b) on `main`. **Status:** Area 6 COMPLETE — the S7 `/ask` page is surfaced
+in nav, its grounded-or-refuse UX is differentiated, and contextual launchers reach it
+from the requirement / release / substrate-insights surfaces. Area 7 (Knowledge &
+Settings/Admin) is next.
+
+**What shipped (D-174 design; slices 6a + 6b).**
+- **6a — nav + grounded-or-refuse polish** (`fc4d0ba`; template + nav only): the `ask`
+  SIDEBAR_ITEM (mirrors `substrate_insights` — gate `view_intelligence_report`, section
+  `testing`); `conversation.html` differentiates the 4 `refusal_reason`s the bridge already
+  returns (`no_intent_match` → example questions; `phrasing_unavailable` → the carried
+  citations + retry; `no_grounding_evidence` → narrow-scope hint; `unavailable` →
+  sync-not-live) instead of one generic empty-state; renders `c.kind` on citation chips;
+  adds a guided empty state (example-question chips that prefill the textarea) + the submit
+  spinner. `btn_primary` gained a default-off `spinner` kwarg (wires the `[data-spinner]`
+  glyph `loading.js` already reveals; non-spinner buttons render byte-identical).
+- **6b — GET-prefill + contextual launchers** (`7fff9fa`): the `/ask` route prefills
+  `q` / `requirement_key` / `object_api_name` / `environment_id` from the query string on
+  GET — **prefill-only, never auto-runs an LLM call** (a GET stays safe/idempotent),
+  length-capped. Launchers (all gated `has_permission('view_intelligence_report')` so no
+  403 links): requirement detail "Ask about this" + release detail per-requirement "Ask"
+  (both impact via `requirement_key`); substrate-insights header "Ask a question →".
+- **No substrate change, no migration, no bridge contract change.** The S7 package's
+  LLM-free guard + the bridge's best-effort contract are untouched.
+
+**Design refinement (premise checked against code).** D-174 listed a release panel-level
+*grounding_drift* launcher. `retrieval.py` confirms `retrieve_grounding_drift` scopes ONLY
+by `ctx.test_id` and `retrieve_failure_cause` only by `ctx.recipe_id`, and `answer_question`'s
+signature carries neither — so from the UI only **impact** (via `requirement_key` /
+`object_api_name`) is honestly scopable. A "scoped to this release" grounding launcher would
+silently run tenant-wide, so it was **dropped** rather than mislabel scope (confirms the
+deferred fork-1 per-artifact scoping).
+
+**Verification.** Build-time: all 6 `conversation.html` render states (empty / unavailable /
+3 refusals / answered) verified end-to-end (stub base + real components); nav gating across
+4 roles + active highlight (new `test_dynamic_ui` test); `btn_primary` default byte-identical;
+the launcher construct (encoded href, `req-<id>` fallback, permission-gated); GET-prefill
+logic (trim/cap/isdigit-drop) + a prefilled form landing in the inputs. Plus an **adversarial
+review** (workflow `wpxjiyd15`, 3 dimensions): **0 high/medium** — XSS/injection clean (every
+prefill value autoescaped, no `|safe`), authz clean (nav + launcher gates match the route
+gate exactly; release owners — who lack `view_intelligence_report` — never see a 403 link;
+the ungated substrate-insights link is safe because the page carries the same gate), tenant
+isolation clean (a cross-tenant `?environment_id=` never sticks on render and is re-scoped on
+POST). One review LOW (the `req-<id>` fallback can't ground) was **refuted on read**:
+generation persists the `generated_from` link with `external_system="jira"` +
+`external_key=jira_key-or-req-<id>` (`persistence.py:140`, `s3_enqueue.py:23`), and
+`list_tests_by_requirement(link_kind=None)` matches it — the same key path the 5a release
+console grounds on, so the fallback grounds correctly.
+
+**Deferred (recorded, not done).**
+- **Per-artifact scoping** ("is THIS claim drifting" / "why did THIS run fail") — needs the
+  **bridge** signature widened to pass `recipe_id`/`test_id` (the `QuestionContext` fields +
+  recipes already honor them; for *run*, `failure_cause` also lacks a `run_id` axis). Blocks
+  the claim/run scoped launchers + the dropped release grounding launcher.
+- **`environment_id` is inert** (NEW, from the review): the form's Environment picker is
+  collected and threaded into `QuestionContext.environment_id`, but **no recipe reads it** —
+  choosing an environment has no effect on the answer (the env picker + the no-evidence
+  refusal copy imply a narrowing the recipes don't honor). Pre-existing (predates Area 6);
+  a substrate-side follow-up (recipes filter by environment, or relabel the field as
+  context-only).
+- **Rich-field flattener** — `retrieval.py`'s `_grounding_item` / `_interp_item` drop S8
+  `detail` + S6 `attribution`, so answers say *which* not *why*. Substrate-side S7 work.
+- **Citation click-through** (`Citation.ref` is a free-form audit string, not a typed link
+  target), **real object/requirement pickers** (the route passes only `environments`, not the
+  metadata-object / requirement lists), **question history** (no persistence layer — a new
+  table), **confidence/intent badge** (the `Answer` model has neither field).
+- **Release-owner `/ask` access** — `release_owner_base` lacks `view_intelligence_report`, so
+  release owners don't see the Ask launchers (visibility-gated, no broken links). Whether they
+  *should* get `/ask` is a deferred permission-model product decision.
+
+**Substrate gaps (HOLD — not UI-buildable).** `failure_cause` has no `run_id` scope axis
+(only `recipe_id`); `grounding_drift` / `failure_cause` scope only by `test_id` / `recipe_id`
+(unreachable from the UI without the bridge widening); the recipes ignore `environment_id`;
+`Answer` carries no confidence / intent; `Citation.ref` is a free-form audit string, not a
+structured link target.
+
+**Empty-state note.** The S6/S8 answer stores stay empty until the live `#119` sync; every
+grounded answer is a refusal today — the polish + launchers are verified on the refusal/empty
+paths (the live paths anyway), and the launchers will return grounded refusals until sync.
+
+**Next.** Area 7 — Knowledge & Settings/Admin: S5 knowledge admin + re-point the SF
+connection for S1 (per the U0 map). That closes the UI Phase's area sweep (Area 1's live
+`#119` proving + 1d close remains parked separately).
+
+---
+
 ---
