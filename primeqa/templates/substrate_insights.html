@@ -130,9 +130,18 @@
       </div>
     </section>
 
-    {# ---- S8 grounding-validity ---------------------------------------- #}
+    {# ---- S8 grounding-validity: the drift board (4c) ------------------- #}
     <section class="bg-white shadow rounded-lg p-5">
-      <h2 class="text-sm font-semibold text-gray-900 mb-3">Grounding-validity verdicts</h2>
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-gray-900">Grounding validity</h2>
+        {% set gc = insights.grounding_counts or {} %}
+        <div class="text-xs space-x-2">
+          {% if gc.get('broken') %}<span class="font-medium text-red-700">{{ gc.broken }} broken</span>{% endif %}
+          {% if gc.get('drifted') %}<span class="font-medium text-amber-700">{{ gc.drifted }} drifted</span>{% endif %}
+          {% if gc.get('intact') %}<span class="text-green-700">{{ gc.intact }} intact</span>{% endif %}
+        </div>
+      </div>
+      <p class="text-xs text-gray-400 mb-3">Whether each claim's grounding still holds as the org evolved (S8). Drifted/broken rows show why.</p>
       {% if insights.grounding %}
       <div class="overflow-x-auto">
         <table class="min-w-full text-sm">
@@ -148,14 +157,35 @@
           <tbody class="divide-y divide-gray-50">
             {% for g in insights.grounding %}
             <tr>
-              <td class="py-2 pr-4 font-mono text-xs text-gray-500">{{ g.test_id[:8] }}</td>
+              <td class="py-2 pr-4"><a href="/claims/{{ g.test_id }}" class="font-mono text-xs text-indigo-600 hover:underline">{{ g.test_id[:8] }}</a></td>
               <td class="py-2 pr-4 text-gray-600">{{ g.version_seq }}</td>
               <td class="py-2 pr-4">
-                <span class="inline-flex rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700">{{ g.overall }}</span>
+                <span class="inline-flex rounded-full px-2 py-0.5 text-xs font-medium
+                  {% if g.overall == 'broken' %}bg-red-100 text-red-800
+                  {% elif g.overall == 'drifted' %}bg-amber-100 text-amber-800
+                  {% elif g.overall == 'intact' %}bg-green-100 text-green-800
+                  {% else %}bg-gray-100 text-gray-700{% endif %}">{{ g.overall }}</span>
               </td>
               <td class="py-2 pr-4 text-gray-700">{{ g.claim_verdict }}</td>
               <td class="py-2 pr-4 text-gray-500">{{ g.evaluated_at_version_seq }}</td>
             </tr>
+            {% if g.overall != 'intact' and g.detail %}
+            <tr>
+              <td colspan="5" class="pb-2 pr-4">
+                <div class="text-xs text-gray-600 bg-gray-50 rounded p-2 space-y-1">
+                  {% set cg = g.detail.get('claim_grounding') %}
+                  {% if cg and cg.get('reason') %}
+                  <div><span class="text-gray-400">claim:</span> {{ cg.reason.replace('_', ' ') }}{% if cg.get('unresolved') %} &mdash; {% for u in cg.unresolved %}<span class="font-mono">{{ u | join(' ') }}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</div>
+                  {% endif %}
+                  {% for rv in (g.detail.get('recipe_verdicts') or []) %}
+                  {% if rv.get('rolled_up') and rv.rolled_up != 'intact' %}
+                  <div><span class="text-gray-400">recipe:</span> {{ rv.rolled_up }}{% set rg = rv.get('recipe_grounding') %}{% if rg and rg.get('reason') %} &middot; {{ rg.reason.replace('_', ' ') }}{% endif %}{% set fv = rv.get('field_value') %}{% if fv and fv.get('invalid') %} &middot; removed: {% for iv in fv.invalid %}<span class="font-mono">{{ iv | join('=') }}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</div>
+                  {% endif %}
+                  {% endfor %}
+                </div>
+              </td>
+            </tr>
+            {% endif %}
             {% endfor %}
           </tbody>
         </table>

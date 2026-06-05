@@ -85,12 +85,28 @@ def _flapping_dict(c) -> dict:
 def _grounding_dict(r) -> dict:
     return {"test_id": str(r.test_id), "version_seq": r.version_seq,
             "evaluated_at_version_seq": r.evaluated_at_version_seq,
-            "overall": r.overall, "claim_verdict": r.claim_verdict}
+            "overall": r.overall, "claim_verdict": r.claim_verdict,
+            # D-170 4c: the rich "why drifted/broke" — claim_grounding{reason,
+            # unresolved}, recipe_verdicts[{recipe_grounding, field_value{invalid},
+            # rolled_up}]. Already a JSON-safe dict (the stored JSONB).
+            "detail": r.detail or {}}
+
+
+_GROUNDING_COUNTS_SQL = (
+    "SELECT overall, COUNT(*) AS n FROM s8_grounding_validity GROUP BY overall")
+
+
+def _grounding_counts(session) -> dict:
+    """``{overall: count}`` over the full grounding store (accurate, not capped by
+    the list limit) — the drift-board headline (D-170 4c)."""
+    rows = session.execute(text(_GROUNDING_COUNTS_SQL)).mappings().all()
+    return {r["overall"]: r["n"] for r in rows}
 
 
 def _empty_payload(*, available: bool) -> dict:
     return {"recent_runs": [], "cause_clusters": [], "vr_clusters": [],
-            "flapping": [], "grounding": [], "available": available, "empty": True}
+            "flapping": [], "grounding": [], "grounding_counts": {},
+            "available": available, "empty": True}
 
 
 # --- the pure assembler (directly testable on a tenant-scoped session) --------
@@ -107,11 +123,13 @@ def _assemble_insights(session, limit: int) -> dict:
     flapping = [_flapping_dict(c) for c in cluster_flapping(session)]
     grounding = [_grounding_dict(r)
                  for r in list_grounding_validity(session, limit=limit)]
+    grounding_counts = _grounding_counts(session)
     empty = not any([recent_runs, cause_clusters, vr_clusters,
                      flapping, grounding])
     return {"recent_runs": recent_runs, "cause_clusters": cause_clusters,
             "vr_clusters": vr_clusters, "flapping": flapping,
-            "grounding": grounding, "available": True, "empty": empty}
+            "grounding": grounding, "grounding_counts": grounding_counts,
+            "available": True, "empty": empty}
 
 
 # --- the bridge (best-effort; v1 owns it) ------------------------------------

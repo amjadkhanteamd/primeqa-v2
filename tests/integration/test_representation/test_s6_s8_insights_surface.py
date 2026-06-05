@@ -94,6 +94,8 @@ def test_assemble_surfaces_seeded_rows(session):
     assert len(out["flapping"]) == 1
     assert set(out["flapping"][0]["outcomes"]) == {"passed", "failed"}
     assert {g["overall"] for g in out["grounding"]} == {"drifted", "broken"}
+    assert out["grounding_counts"] == {"drifted": 1, "broken": 1}   # 4c headline counts
+    assert all("detail" in g for g in out["grounding"])             # 4c: the why surfaced
     # 4b drill-through: clusters surface their member run_ids (UUIDs as str)
     cc = next(c for c in out["cause_clusters"] if c["cause_kind"] == "enforcement_gap")
     assert len(cc["run_ids"]) == 2 and all(isinstance(x, str) for x in cc["run_ids"])
@@ -134,6 +136,7 @@ def test_grounding_dict_shape(session):
     assert g["test_id"] == str(tid)
     assert (g["version_seq"], g["evaluated_at_version_seq"]) == (2, 9)
     assert (g["overall"], g["claim_verdict"]) == ("drifted", "intact")
+    assert "detail" in g                          # 4c: the why is surfaced
 
 
 def test_get_substrate_insights_best_effort_on_bad_tenant():
