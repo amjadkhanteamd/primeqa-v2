@@ -8913,4 +8913,54 @@ list) stays as the drill-target it links to. Commits to `main`.
 
 ---
 
+## D-171 — UI Phase Area 4 (Results & Intelligence / S6+S8) — close
+
+**Date:** 2026-06-05
+**Affected:** docs-only. Area 4 implementation landed across commits
+`f7f04f9..161af3b` on `main`. **Status:** Area 4 COMPLETE — `/substrate-insights`
+is the Results & Intelligence dashboard. Area 5 (Releases & Decisions) is next.
+
+**What shipped (D-170 design; slices 4a / 4b / 4c).**
+- **4a — recency-correct spine**: Section A reads `s4_execution_runs LEFT JOIN
+  s6_interpretations` (`finished_at DESC`), surfaces interpret-failed runs, rows
+  drill to `/runs/<uuid>`; payload key `interpretations` → `recent_runs`.
+- **4b — cross-run patterns drill-through**: cluster `run_ids` → run links, flapping
+  → `/claims/<id>`.
+- **4c — grounding drift board**: severity colours + "N broken · M drifted" counts
+  (`GROUP BY overall`, accurate) + the `detail` *why* (claim reason + unresolved
+  subjects; per-recipe reason + removed picklist values).
+- **No substrate change, no migration** — every read pre-existed.
+
+**Verification.** 5 insights bridge tests + the mapping (workflow `wouts4ial`) + an
+adversarial review (workflow `wdmammyi0`, 11 agents): **9 findings, 0 confirmed** —
+SQL injection / tenant isolation / XSS on the org-derived grounding detail /
+null-safety all cleared.
+
+**Deferred (recorded, not done).**
+- **`/impacts` → S8 grounding** — the metadata-impact concept maps to
+  grounding-validity; reuse the `impacts/list`+`detail` chrome, re-source from S8.
+- **The "Results" nav cutover** — `/results` still redirects to v1 `/runs`; re-point
+  to the substrate surface at cutover Step 5. (The dashboard's nav entry is the
+  existing "Substrate Insights".)
+- **Server-side grounding filter** (`overall=`) — the read + index support it; the
+  counts headline + severity give the at-a-glance, so the filter is a follow-up.
+- **S6 phrasing on the dashboard** — per-run phrasing already shows on the run detail
+  (3c `read_run_detail`); a dashboard headline could surface it once populated
+  (D-117 is feature-gated, often empty in prod).
+- **Cluster human labels** + a **seq→timestamp join** for grounding wall-clock + a
+  **tunable `min_runs`** — bridge follow-ups.
+
+**Substrate gaps (HOLD — not UI-buildable, from D-170).** No release→runs key
+(release-blind clustering); S6 has no time axis (worked around via the S4-base read);
+S8 has no wall-clock (S1-seq only).
+
+**Empty-state note.** The S6/S8 stores stay empty until the live `#119` sync + the
+first runs/recompute ticks land — the dashboard renders guided empty-states by
+default.
+
+**Next.** Area 5 — Releases & Decisions: fold S6 verdicts + S8 grounding into the
+GO/NO-GO decision surface (mostly re-point, per the U0 map).
+
+---
+
 ---
