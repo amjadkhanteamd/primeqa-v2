@@ -278,6 +278,27 @@ def substrate_insights():
     return _render()
 
 
+@views_bp.route("/knowledge")
+@login_required
+def knowledge():
+    """UI Area 7 (D-176): read-only knowledge admin over the S5 substrate — System
+    Rules (file-backed) + Domain Packs (trusted git-controlled ``.md``) + Learned
+    Rules (per-tenant, signal-derived). Gated on ``manage_knowledge``. **Read-only
+    by contract**: rule/pack content is authored via git PR, never a UI write (the
+    trusted-content boundary — prompt-injection defence). Best-effort: the S5 read
+    can never break this page."""
+    from primeqa.core.permissions import require_page_permission
+    from primeqa.intelligence.knowledge_console import get_knowledge_overview
+
+    @require_page_permission("manage_knowledge")
+    def _render():
+        knowledge = get_knowledge_overview(request.user["tenant_id"])
+        return render_template("knowledge.html", **ctx(
+            active_page="knowledge", knowledge=knowledge))
+
+    return _render()
+
+
 def _resolve_env_llm(db, tenant_id, environment_id):
     """Best-effort resolve an env's LLM api_key + model — (None, None) on any miss.
     When unresolved, the S7 bridge phrases nothing and degrades to a

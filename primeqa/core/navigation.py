@@ -170,7 +170,9 @@ SIDEBAR_ITEMS: list[dict] = [
         "url": "/knowledge",
         "permission": "manage_knowledge",
         "section": "admin",
-        "enabled": False,
+        # UI Area 7 (D-176): the read-only knowledge admin now exists at
+        # /knowledge, so the reserved slot is live (gate manage_knowledge).
+        "enabled": True,
     },
     {
         "id": "audit_log",

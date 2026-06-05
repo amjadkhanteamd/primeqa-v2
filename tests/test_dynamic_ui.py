@@ -197,6 +197,22 @@ def run_tests():
     results.append(test("4b. Ask nav item gated to view_intelligence_report",
                         test_ask_nav_gated_to_intelligence_report))
 
+    def test_knowledge_nav_enabled_and_gated():
+        # UI Area 7 (D-176): the Knowledge (/knowledge) admin page now exists, so
+        # the reserved nav slot is enabled (gate manage_knowledge, section admin).
+        # Admin holds manage_knowledge; tester/developer/release_owner do not.
+        adm = [i["id"] for i in build_sidebar(_base_perms("admin_base"), "/knowledge")]
+        tst = [i["id"] for i in build_sidebar(_base_perms("tester_base"), "/runs")]
+        dev = [i["id"] for i in build_sidebar(_base_perms("developer_base"), "/requirements")]
+        assert "knowledge" in adm, adm
+        assert "knowledge" not in tst, tst
+        assert "knowledge" not in dev, dev
+        # /knowledge highlights exactly the Knowledge item
+        active = [i for i in build_sidebar(_base_perms("admin_base"), "/knowledge") if i["active"]]
+        assert len(active) == 1 and active[0]["id"] == "knowledge", active
+    results.append(test("4c. Knowledge nav item enabled + gated to manage_knowledge",
+                        test_knowledge_nav_enabled_and_gated))
+
     def test_developer_plus_review():
         perms = _base_perms("developer_base") | {"review_test_cases"}
         nav = build_sidebar(perms, "/reviews")
