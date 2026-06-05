@@ -193,7 +193,7 @@
             </div>
             <div class="flex items-center gap-3 flex-shrink-0 ml-3">
               {% if r.finished_at %}<span class="text-xs text-gray-400">{{ r.finished_at[:19] }}</span>{% endif %}
-              <span class="text-xs text-gray-400 font-mono" title="{{ r.run_id }}">{{ r.run_id[:8] }}</span>
+              <a href="/runs/{{ r.run_id }}" class="text-xs text-indigo-600 hover:underline font-mono" title="{{ r.run_id }}">{{ r.run_id[:8] }}</a>
             </div>
           </li>
           {% endfor %}

@@ -117,6 +117,70 @@ def read_claim_runs(tenant_id: int, test_id) -> dict:
         return {"available": False, "runs": []}
 
 
+# --- read one run's detail (S4 evidence steps + S6 verdict/cause) (3c) --------
+
+_RUN_DETAIL_SQL = (
+    "SELECT CAST(run_id AS text) AS run_id, CAST(claim_test_id AS text) AS claim_test_id, "
+    "CAST(recipe_id AS text) AS recipe_id, recipe_version_seq, environment_id, "
+    "outcome::text AS outcome, started_at, finished_at, duration_ms, evidence "
+    "FROM s4_execution_runs WHERE run_id = CAST(:rid AS uuid)")
+
+
+def _read_run_detail(session, run_id) -> dict | None:
+    """Pure: one S4 run row (the evidence trace) joined to its S6 interpretation
+    (verdict / attribution / cause), or None when no run matches ``run_id``."""
+    row = session.execute(
+        text(_RUN_DETAIL_SQL), {"rid": str(run_id)}).mappings().first()
+    if row is None:
+        return None
+    ev = row["evidence"] if isinstance(row["evidence"], dict) else {}
+    interp = None
+    try:
+        from primeqa.interpretation.result_store import read_interpretation
+        ir = read_interpretation(session, UUID(str(run_id)))
+        if ir is not None:
+            interp = {
+                "verdict": ir.verdict,
+                "attribution": ir.attribution,
+                "cause": ({"cause_kind": ir.cause.cause_kind, "vr_name": ir.cause.vr_name}
+                          if ir.cause is not None else None),
+                "phrasing": ir.phrasing,
+            }
+    except Exception:                                  # S6 read is best-effort
+        interp = None
+    return {
+        "run_id": row["run_id"], "claim_test_id": row["claim_test_id"],
+        "recipe_id": row["recipe_id"], "recipe_version_seq": row["recipe_version_seq"],
+        "environment_id": row["environment_id"], "outcome": row["outcome"],
+        "started_at": _iso(row["started_at"]), "finished_at": _iso(row["finished_at"]),
+        "duration_ms": row["duration_ms"],
+        "api_choice": ev.get("api_choice"),
+        "steps": ev.get("steps") or [],
+        "error": ev.get("error"),
+        "interpretation": interp,
+    }
+
+
+def read_run_detail(tenant_id: int, run_id) -> dict:
+    """Best-effort read of one run's detail. Never raises. Returns
+    ``{available, found, run}`` — ``found=False`` when no run matches;
+    ``available=False`` on any read error."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        from sqlalchemy.orm import Session
+        with get_tenant_connection(tenant_id) as conn:
+            session = Session(bind=conn)
+            try:
+                d = _read_run_detail(session, run_id)
+                return {"available": True, "found": d is not None, "run": d}
+            finally:
+                session.close()
+    except Exception as exc:
+        log.warning("read_run_detail unavailable for tenant %s run %s: %s",
+                    tenant_id, run_id, exc)
+        return {"available": False, "found": False, "run": None}
+
+
 # --- approve a claim (the run-enabler) ---------------------------------------
 # S3 generates claims as `draft` and recipes as `generated_unapproved`, neither
 # of which `select_recipe_for_execution` will run (it needs an APPROVED claim +

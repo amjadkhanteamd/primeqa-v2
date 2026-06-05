@@ -15,8 +15,10 @@ from primeqa.intelligence.s4_execution_console import (
     _approve_claim,
     _map_run_result,
     _read_claim_runs,
+    _read_run_detail,
     approve_claim,
     read_claim_runs,
+    read_run_detail,
     trigger_claim_run,
 )
 from primeqa.execution_engine.run import _MIN_AVAILABLE_ENV
@@ -133,3 +135,38 @@ def test_approve_claim_makes_draft_runnable(session):
 
 def test_approve_claim_best_effort_bad_tenant():
     assert approve_claim(-1, str(uuid4()))["ok"] is False
+
+
+# --- run detail (evidence steps + S6 verdict) --------------------------------
+
+def test_read_run_detail(session):
+    import json
+    from sqlalchemy import text
+    run_id = uuid4()
+    evidence = {"api_choice": "tooling", "error": None, "steps": [
+        {"kind": "read", "ordinal": 0, "query": "SELECT Id FROM Lead", "row_count": 1},
+        {"kind": "assert", "ordinal": 1, "predicate": "exists", "held": True},
+    ]}
+    session.execute(text(
+        "INSERT INTO s4_execution_runs (run_id, recipe_id, recipe_version_seq, "
+        "claim_test_id, environment_id, outcome, started_at, finished_at, evidence) "
+        "VALUES (CAST(:r AS uuid), CAST(:rec AS uuid), 1, CAST(:t AS uuid), 7, "
+        "CAST(:o AS run_outcome), NOW(), NOW(), CAST(:ev AS jsonb))"),
+        {"r": str(run_id), "rec": str(uuid4()), "t": str(uuid4()), "o": "passed",
+         "ev": json.dumps(evidence)})
+    session.flush()
+
+    d = _read_run_detail(session, run_id)
+    assert d is not None
+    assert d["run_id"] == str(run_id) and d["outcome"] == "passed"
+    assert d["api_choice"] == "tooling"
+    assert len(d["steps"]) == 2 and d["steps"][1]["held"] is True
+    assert d["interpretation"] is None              # no S6 row for this run
+
+
+def test_read_run_detail_not_found(session):
+    assert _read_run_detail(session, uuid4()) is None
+
+
+def test_read_run_detail_best_effort_bad_tenant():
+    assert read_run_detail(-1, str(uuid4()))["available"] is False

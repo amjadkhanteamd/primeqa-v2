@@ -5664,6 +5664,19 @@ def claims_approve(test_id):
     return redirect(f"/claims/{test_id}")
 
 
+@views_bp.route("/runs/<uuid:run_id>")
+@login_required
+def s4_run_detail(run_id):
+    """D-168 (UI Area 3 slice 3c): the detail of one S4 execution run — the
+    evidence trace (per-step) + the S6 verdict/cause. Reached from the claim
+    detail's Recent-runs panel. Keyed on the run's UUID, so it coexists with the
+    v1 /runs/<int:id> detail. Best-effort read via the s4_execution_console bridge."""
+    from primeqa.intelligence.s4_execution_console import read_run_detail
+    detail = read_run_detail(request.user["tenant_id"], run_id)
+    return render_template("runs/s4_detail.html", **ctx(
+        active_page="test_library", detail=detail))
+
+
 @views_bp.route("/requirements/<int:req_id>/edit", methods=["POST"])
 @role_required("admin", "tester", "superadmin")
 def requirements_edit(req_id):

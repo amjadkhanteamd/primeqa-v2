@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% from 'components/_empty_state.html' import empty_state %}
+{% block title %}Run - PrimeQA{% endblock %}
+{% block content %}
+
+{# D-168 (UI Area 3 slice 3c): one S4 execution run — the evidence trace +
+   the S6 verdict/cause. render_value walks a step dict (4 heterogeneous kinds)
+   into labelled key/value rows — generic, no per-kind template. #}
+{% macro render_value(v) %}
+  {%- if v is mapping -%}
+    <dl class="space-y-1">
+    {%- for k, val in v.items() %}
+      <div class="sm:flex sm:gap-3">
+        <dt class="text-xs font-medium text-gray-500 sm:min-w-[10rem] shrink-0">{{ k.replace('_', ' ') }}</dt>
+        <dd class="text-sm text-gray-800 min-w-0">{{ render_value(val) }}</dd>
+      </div>
+    {%- endfor %}
+    </dl>
+  {%- elif v is iterable and v is not string -%}
+    {%- if v | length == 0 -%}<span class="text-sm text-gray-400 italic">none</span>
+    {%- else -%}
+    <ul class="space-y-1">
+      {%- for item in v %}<li class="border-l-2 border-gray-100 pl-2">{{ render_value(item) }}</li>{%- endfor %}
+    </ul>
+    {%- endif -%}
+  {%- elif v is none -%}
+    <span class="text-gray-400">&mdash;</span>
+  {%- elif v is boolean -%}
+    <span class="font-mono text-xs px-1.5 py-0.5 rounded {{ 'bg-green-50 text-green-700' if v else 'bg-gray-100 text-gray-600' }}">{{ 'true' if v else 'false' }}</span>
+  {%- else -%}
+    <span class="font-mono text-xs break-words">{{ v }}</span>
+  {%- endif -%}
+{% endmacro %}
+
+{% set r = detail.run if detail else None %}
+{% set i = r.interpretation if r else None %}
+
+{{ breadcrumbs([
+  ('Claims', '/claims'),
+  ('Claim', ('/claims/' ~ r.claim_test_id) if r else None),
+  ('Run', None),
+]) }}
+
+<div class="max-w-4xl space-y-6">
+  {% if not detail or not detail.available %}
+    {{ empty_state(title='Run unavailable',
+        description='The substrate could not be read for your tenant right now.') }}
+  {% elif not detail.found or not r %}
+    {{ empty_state(title='Run not found',
+        description='No execution run matches this id.') }}
+  {% else %}
+    <!-- Header -->
+    <div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+          {% if r.outcome == 'passed' %}bg-green-100 text-green-800
+          {% elif r.outcome == 'failed' %}bg-red-100 text-red-800
+          {% elif r.outcome == 'errored' %}bg-amber-100 text-amber-800
+          {% else %}bg-gray-100 text-gray-700{% endif %}">{{ r.outcome }}</span>
+        {% if i and i.verdict %}<span class="text-sm text-gray-700">{{ i.verdict.replace('_', ' ') }}</span>{% endif %}
+      </div>
+      <h1 class="mt-2 text-xl font-semibold text-gray-900 font-mono break-all">Run {{ r.run_id[:8] }}</h1>
+      <p class="mt-1 text-sm text-gray-500">
+        {% if r.finished_at %}{{ r.finished_at[:19] }} · {% endif %}
+        {% if r.duration_ms is not none %}{{ r.duration_ms }} ms · {% endif %}
+        env #{{ r.environment_id }} ·
+        <a href="/claims/{{ r.claim_test_id }}" class="text-indigo-600 hover:underline">back to claim &rarr;</a>
+      </p>
+    </div>
+
+    <!-- Interpretation (S6 verdict / cause) -->
+    <div class="bg-white shadow rounded-lg">
+      <div class="px-4 py-3 border-b">
+        <h3 class="text-sm font-semibold text-gray-700">Interpretation</h3>
+        <p class="text-xs text-gray-400">The semantic verdict + cause (S6).</p>
+      </div>
+      <div class="px-6 py-4">
+        {% if i %}
+          <div class="space-y-2">
+            <div class="sm:flex sm:gap-3">
+              <span class="text-xs font-medium text-gray-500 sm:min-w-[8rem]">Verdict</span>
+              <span class="text-sm text-gray-800">{{ i.verdict.replace('_', ' ') if i.verdict else '&mdash;' }}</span>
+            </div>
+            {% if i.attribution %}
+            <div class="sm:flex sm:gap-3">
+              <span class="text-xs font-medium text-gray-500 sm:min-w-[8rem]">Attribution</span>
+              <span class="text-sm text-gray-800">{{ i.attribution }}</span>
+            </div>
+            {% endif %}
+            {% if i.cause %}
+            <div class="sm:flex sm:gap-3">
+              <span class="text-xs font-medium text-gray-500 sm:min-w-[8rem]">Cause</span>
+              <span class="text-sm text-gray-800">{{ i.cause.cause_kind.replace('_', ' ') }}{% if i.cause.vr_name %} · <span class="font-mono text-xs">{{ i.cause.vr_name }}</span>{% endif %}</span>
+            </div>
+            {% endif %}
+            {% if i.phrasing %}
+            <div class="pt-2">
+              <span class="text-xs font-medium text-gray-500">Phrasing</span>
+              {{ render_value(i.phrasing) }}
+            </div>
+            {% endif %}
+          </div>
+        {% else %}
+          <p class="text-sm text-gray-400 italic">No interpretation recorded (the best-effort interpret step may have failed — the run outcome above is still authoritative).</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Run error (errored runs) -->
+    {% if r.error %}
+    <div class="rounded-md bg-amber-50 border border-amber-100 p-4">
+      <h3 class="text-sm font-semibold text-amber-800 mb-1">Run error</h3>
+      {{ render_value(r.error) }}
+    </div>
+    {% endif %}
+
+    <!-- Evidence steps -->
+    <div class="bg-white shadow rounded-lg">
+      <div class="px-4 py-3 border-b flex items-center justify-between">
+        <h3 class="text-sm font-semibold text-gray-700">Evidence
+          <span class="text-gray-500 font-normal">({{ r.steps | length }} step{{ '' if r.steps | length == 1 else 's' }})</span>
+        </h3>
+        {% if r.api_choice %}<span class="text-xs text-gray-400">api: {{ r.api_choice }}</span>{% endif %}
+      </div>
+      {% if r.steps %}
+      <div class="divide-y divide-gray-200">
+        {% for step in r.steps %}
+        <div class="px-6 py-4 space-y-2">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-xs text-gray-400">#{{ step.ordinal if step.ordinal is defined else loop.index0 }}</span>
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-indigo-50 text-indigo-700">{{ step.kind if step.kind is defined else 'step' }}</span>
+            {% if step.error %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">error</span>
+            {% elif step.held is defined %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium {{ 'bg-green-100 text-green-800' if step.held else 'bg-red-100 text-red-800' }}">{{ 'held' if step.held else 'not held' }}</span>
+            {% elif step.success is defined %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium {{ 'bg-green-100 text-green-800' if step.success else 'bg-amber-100 text-amber-800' }}">{{ 'ok' if step.success else 'rejected' }}</span>
+            {% endif %}
+          </div>
+          {{ render_value(step) }}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="px-6 py-6 text-sm text-gray-500">No evidence steps recorded for this run.</div>
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
