@@ -8560,4 +8560,22 @@ The end-to-end wiring + the close. v1 owns the bridge (the allowed v1→substrat
 
 ---
 
+## D-164 — UI Phase opened + Area 1 (Org Model & Sync / S1) design
+
+**Date:** 2026-06-04
+**Affected:** v2 runtime UI (Flask views + templates) + a v1 metadata-domain bridge to the S1 sync. No substrate-package change. Commits to `main` (v2 runtime, per CLAUDE.md).
+**Status:** Active — opens the **UI Phase** (wire the product UI onto the substrate spine S1–S8). Map-first (the U0 plan); area-by-area. This entry opens the phase + designs **Area 1**.
+
+**The phase.** The spine is built + merged, but the product UI still surfaces v1 (`meta_*`, v1 runs, v1 failure analysis) — `connected_orgs` / `sync_runs` / the S1 read-APIs have **zero** UI touchpoints (only `/ask` + `/substrate-insights`). The UI Phase re-wires each surface onto the spine: **reuse** the chrome (component kit, settings shell, auth, CSRF, permission decorators), **re-point / redesign / discard** the content tied to dead v1 pipelines. Seven areas (U0 map), sequenced 1→7; **Area 1 first** (the data tap — every downstream surface needs S1 data). The phase parallels the cutover — during Steps 3–4 both `meta_*` and S1 UIs coexist; the v1 halves are discarded at Step 5.
+
+**Area 1 — Org Model & Sync (S1).** Surface the three S1 operational concepts on the existing `/environments` admin surface: **provision + trigger** a sync, **watch its status**, and **browse the synced org model**. Wire to the existing backend (D-150–D-153); build no new sync logic.
+- **Bridge (v1-owned, best-effort — the `substrate_insights` pattern).** A v1 metadata-domain module `primeqa/metadata/s1_sync_console.py`: `trigger_s1_sync(tenant_id, environment_id, sf_instance_url, created_by)` = `ensure_connected_org_for_environment` (provision, idempotent) + `SyncJobStore.create_or_get_job` (enqueue); `read_s1_sync_status(tenant_id, environment_id)` = the env's `connected_orgs` row → latest `s1_sync_jobs` + `sync_runs` (`status` / `last_completed_phase` / counters / `error_message`). Tenant-scoped via `get_tenant_connection`; never raises (`available=False` / `not_provisioned`).
+- **Screens** (reuse the `/environments` detail shell + component kit): a **"Substrate (S1) sync" panel** on env detail (a "Sync substrate" button → POST trigger; the current run state + phase + entity/edge counts + last-synced + errors); a **poll-based status** surface (no SSE — the sync engine has no event bus); a net-new **org-model browser** (read-only S1 entities for the env's current version, via `SemanticOrgModel`).
+- **Gating:** `role_required("admin")` (the env-detail gate); reuse the `trigger_metadata_sync` permission for the trigger (same admin-ops class — no new permission). CSRF on the POST.
+- **Slices:** 1a bridge + trigger route + env-detail panel · 1b poll status/progress · 1c org-model browser · 1d run #119 through the UI + `scripts/probe_phase0_s1.py` (= #82) + Area-1 close.
+
+**Boundary.** Additive — a new panel + routes + a browser page; the v1 metadata-sync panel stays through the parallel run. No migration. Commits land on `main` (auto-deploy to the dev env, so each slice is visible). Substrate packages untouched — the bridge reads their public APIs only.
+
+---
+
 ---
