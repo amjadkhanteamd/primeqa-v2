@@ -9375,4 +9375,92 @@ visible affordance, not a hidden landmine. Commits to `main`.
 
 ---
 
+## D-177 — UI Phase Area 7 (Knowledge & Settings/Admin): close + UI Phase capstone
+
+**Date:** 2026-06-06
+**Affected:** docs-only. Area 7 implementation landed in commit `ac0bcf3` (7a) on `main`.
+**Status:** Area 7 COMPLETE — a read-only `/knowledge` admin surfaces the S5 knowledge
+substrate. **The UI Phase area sweep (Areas 1–7) is COMPLETE** (Area 1's `#119` live-proving
++ 1d close remain parked separately).
+
+**What shipped (D-176 design; slice 7a).**
+- **7a — read-only Knowledge admin** (`ac0bcf3`): new best-effort bridge
+  `knowledge_console.get_knowledge_overview(tenant_id)` reading the three S5 channels
+  independently — **System Rules** (`SystemPromptRulesProvider.get_rules`, file-backed),
+  **Domain Packs** (`DomainPackLibrary.load`, basename only — no abs-path leak), **Learned
+  Rules** (`feedback_rules.build_rules_block`, per-tenant). A `/knowledge` route gated
+  `manage_knowledge`; the reserved nav slot flipped `enabled:True`; a `knowledge.html`
+  template with three read-only sections + a visible **trusted-content banner** (git-PR
+  authoring). **Read-only by contract; no substrate change, no migration.**
+
+**Verdicts (the rest of Area 7).** All 8 settings pages → **reuse** (pure-v1 admin, no
+substrate touch). Connections + the SF→S1 re-point → **reuse** — the re-point is effectively
+done by Area 1 (`connected_orgs` is the sync *target*; the v1 connection is the credential
+*source* S1 reads through). Knowledge *management* (UI write/curate) → **DISCARDED** —
+trusted-content boundary + no write API.
+
+**Verification.** Build-time: the bridge reads real S5 data (33 system rules, 1 domain pack);
+all template states render (populated / learned-with-signals / all-unavailable / XSS-escaped);
+nav gating (admin sees Knowledge, tester/developer don't); 6 hermetic bridge tests + the
+`test_dynamic_ui` 4c nav test. Plus an **adversarial review** (workflow `wtffq6sxd`, 3
+dimensions): **0 high/medium** — XSS clean (every field autoescaped, verified empirically,
+incl. the learned-rules block whose text has a user-data lineage); authz clean (route gate +
+nav gate both `manage_knowledge`, read-only, tenant-scoped, no path leak); best-effort
+confirmed at runtime (`get_knowledge_overview` never raises on a dead DB; the template renders
+every channel state under StrictUndefined). One **info nuance** (record-only): on DB-down the
+learned channel reports `available=True, has_signals=False` (not `False`) because
+`feedback.recent_for_tenant` swallows the error upstream — UI impact none (renders "No learned
+rules yet", the correct degraded outcome); the swallow is pre-existing code outside this slice.
+
+**Deferred (recorded, not done).**
+- **Env-edit SF-connection re-pick** — an env's `connection_id` is settable only at create;
+  re-pointing carries a caveat (swapping `connection_id` under a fixed `connected_org` changes
+  the credential source under a fixed sync target — needs a re-provision-on-swap design note).
+  An Area-1-adjacent follow-up.
+- **Domain-pack attribution-fired view + enablement matrix** — `domain_packs_applied` is
+  write-only; a "which packs fired / which tenants have them on" view is a superadmin analytics
+  follow-up, empty until packs fire in prod.
+- **The learned-channel DB-down nuance** (above) — cosmetic; not fixed (the swallow is upstream).
+- **Curated / org-scoped rules** — the `curated` source + `org` scope are *reserved* in
+  `provider.py` but unimplemented; a write-backed tenant knowledge store is a future substrate
+  capability, not a re-point.
+
+**Substrate gaps (HOLD — not UI-buildable).** No write/curate API for S5 (file-backed; trusted
+git-controlled); learned rules read-only by design; domain-pack attribution has no read path;
+`connected_orgs.oauth_*` are dead/plaintext (no credentials-on-`connected_orgs` surface).
+
+---
+
+### UI Phase capstone — the area sweep (Areas 1–7)
+
+The UI Phase re-wired the product UI onto the substrate spine, area by area. Each area ran
+the same rhythm: an exhaustive mapping workflow → a design D-entry (HOLD/GO) → slices
+(HOLD/GO each, build → adversarial-review) → a close D-entry. All on `main` (Railway
+continuous-deploy), author `AK`, zero `Co-Authored-By`, append-only `DECISIONS_LOG`.
+
+- **Area 1 — Org Model & Sync (S1):** the S1-sync bridge + env-detail trigger panel +
+  poll-based status + the read-only org-model browser (1a–1c). **1d (live `#119` proving +
+  close) parked** on the sync report — the substrate data tap every downstream panel reads.
+- **Area 2 — Test Authoring (S2/S3) (D-167):** requirement detail + claim/recipe detail +
+  the `/claims` library, re-pointed onto S3 generation + S2 claims; the `generated_from`
+  requirement link closed (D-166).
+- **Area 3 — Execution (S4) (D-169):** run-a-claim spine (sync) + run detail (evidence +
+  S6 verdict/cause) + the global `/runs/substrate` list; Approve-claim coupling.
+- **Area 4 — Results & Intelligence (S6/S8) (D-171):** the recency-correct results spine +
+  cross-run cluster drill-through + the grounding-drift board on `/substrate-insights`.
+- **Area 5 — Releases & Decisions (D-173):** the additive substrate-evidence panel on the
+  release Decision tab (grounding + per-claim verdicts via the release's requirements).
+- **Area 6 — Conversation (S7) (D-175):** the `/ask` nav entry + grounded-or-refuse polish +
+  GET-prefill contextual launchers from requirement / release / substrate-insights.
+- **Area 7 — Knowledge & Settings/Admin (D-177):** the read-only `/knowledge` viewer over
+  S5; settings + connections confirmed reuse (SF→S1 already done by Area 1).
+
+**The standing reality.** The S6/S8/S7 answer stores stay empty until the live `#119` sync +
+the first runs/recompute ticks land, so every substrate-backed surface (Areas 4/5/6) renders
+guided empty-states by default today — they light up when the sync goes live. **The parked
+threads:** Area 1's `#119` live-proving + 1d close (the data tap), and Area 3's 3d (async
+execution queue + bulk + `/run` re-point).
+
+---
+
 ---
