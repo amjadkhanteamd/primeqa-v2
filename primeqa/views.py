@@ -2779,14 +2779,48 @@ def environments_detail(env_id):
                     "updated_at": r.updated_at.isoformat() if r.updated_at else None,
                 }
 
+        # D-164 (UI Area 1): Substrate-1 sync status — best-effort, never breaks the page.
+        from primeqa.metadata.s1_sync_console import read_s1_sync_status
+        s1_status = read_s1_sync_status(request.user["tenant_id"], env_id)
+
         return render_template("environments/detail.html", **ctx(
             active_page="settings_environments", settings_page="environments",
             breadcrumb_section="Environments", breadcrumb_item=env.name,
             env=env_data, message=request.args.get("message"),
             sync_statuses=sync_statuses, meta_version_id=meta_version_id,
+            s1_status=s1_status,
         ))
     finally:
         db.close()
+
+
+@views_bp.route("/environments/<int:env_id>/sync-substrate", methods=["POST"])
+@role_required("admin", "superadmin")
+def environments_sync_substrate(env_id):
+    """Provision + enqueue an S1 (substrate) metadata sync for the env (D-164).
+    Async via the worker queue; reuses the ``trigger_metadata_sync`` permission."""
+    from urllib.parse import quote
+
+    from primeqa.core.permissions import _resolve_effective_permissions
+    from primeqa.metadata.s1_sync_console import trigger_s1_sync
+    if (request.user.get("role") != "superadmin"
+            and "trigger_metadata_sync" not in _resolve_effective_permissions()):
+        flash("You don't have permission to trigger a substrate sync.", "warning")
+        return redirect(f"/environments/{env_id}")
+    db = next(get_db())
+    try:
+        env = EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"])
+        if not env:
+            return redirect("/environments")
+        res = trigger_s1_sync(
+            request.user["tenant_id"], env_id, env.sf_instance_url,
+            created_by=request.user.get("id"))
+    finally:
+        db.close()
+    msg = ("Substrate (S1) sync queued — it runs in the background; "
+           "refresh to watch progress." if res.get("ok")
+           else f"Substrate sync error: {res.get('error', 'could not queue')}")
+    return redirect(f"/environments/{env_id}?message={quote(msg)}")
 
 
 @views_bp.route("/environments/<int:env_id>/edit", methods=["GET"])

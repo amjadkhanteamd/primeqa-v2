@@ -1,5 +1,5 @@
 {% extends "settings/base.html" %}
-{% from 'components/_buttons.html' import btn_edit %}
+{% from 'components/_buttons.html' import btn_edit, btn_primary %}
 {% block title %}{{ env.name }} - PrimeQA{% endblock %}
 {% block settings_content %}
 <div class="space-y-6">
@@ -98,6 +98,55 @@
       })();
       </script>
       {% endif %}
+    </div>
+
+    <!-- D-164 (UI Area 1): Substrate (S1) sync panel ----------------------- -->
+    <div class="bg-white shadow rounded-lg p-6">
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="text-lg font-semibold text-gray-900">Substrate (S1) sync</h3>
+        {% if s1_status and s1_status.provisioned and s1_status.last_sync_completed_at %}
+          <span class="text-xs text-gray-500">Last synced: {{ s1_status.last_sync_completed_at }}</span>
+        {% endif %}
+      </div>
+      <p class="text-sm text-gray-500 mb-4">Syncs this environment's Salesforce metadata into the substrate org model (entities &amp; edges) &mdash; the source the new generation, validation, and intelligence read from. Runs in the background.</p>
+
+      {% if not s1_status or not s1_status.available %}
+        <div class="text-sm text-gray-400">Substrate status unavailable right now.</div>
+      {% else %}
+        {% set run = s1_status.run %}
+        {% set job = s1_status.job %}
+        <div class="rounded border border-gray-200 p-4 mb-4">
+          {% if not s1_status.provisioned %}
+            <div class="text-sm text-gray-500">Not yet synced to the substrate org model.</div>
+          {% else %}
+            <div class="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+              <div>
+                <span class="text-xs text-gray-500 uppercase">State</span>
+                {% set st = (run.status if run else (job.status if job else 'none')) %}
+                <p class="font-medium
+                  {% if st in ('success','completed') %}text-green-600
+                  {% elif st in ('failure','failed') %}text-red-600
+                  {% elif st in ('running','queued','claimed','partial_success') %}text-blue-600
+                  {% else %}text-gray-600{% endif %}">{{ st }}</p>
+              </div>
+              {% if run and run.last_completed_phase %}
+              <div><span class="text-xs text-gray-500 uppercase">Phase</span><p class="font-medium">{{ run.last_completed_phase }}</p></div>
+              {% endif %}
+              {% if run %}
+              <div><span class="text-xs text-gray-500 uppercase">Entities</span><p class="font-medium">{{ run.entities_inserted }}</p></div>
+              <div><span class="text-xs text-gray-500 uppercase">Edges</span><p class="font-medium">{{ run.edges_inserted }}</p></div>
+              {% endif %}
+            </div>
+            {% set err = (run.error_message if run else None) or (job.error_message if job else None) %}
+            {% if err %}<div class="mt-2 text-xs text-red-500">{{ err[:200] }}</div>{% endif %}
+          {% endif %}
+        </div>
+      {% endif %}
+
+      <form method="POST" action="/environments/{{ env.id }}/sync-substrate">
+        {{ csrf_input | safe }}
+        {{ btn_primary('Sync substrate', type='submit') }}
+      </form>
     </div>
 </div>
 {% endblock %}

@@ -1,0 +1,112 @@
+"""S1-sync console — v1's UI bridge to the Substrate-1 metadata sync (D-164, UI Area 1).
+
+v1 owns the bridge (the allowed v1→substrate direction, like ``substrate_insights``).
+Two operations for the ``/environments`` admin surface:
+
+  - :func:`trigger_s1_sync` — provision the ``connected_orgs`` sync target for an
+    environment (``ensure_connected_org_for_environment``) + enqueue a sync job
+    (``SyncJobStore.create_or_get_job``). The worker's ``s1_sync_tick`` runs it
+    async; there is no synchronous path.
+  - :func:`read_s1_sync_status` — the env's ``connected_orgs`` row → its latest
+    ``s1_sync_jobs`` + ``sync_runs``, flattened for the panel/poll.
+    ``provisioned=False`` when the env has no sync target yet.
+
+Both are **best-effort** — never raise; a substrate hiccup returns
+``available=False`` / ``ok=False`` rather than breaking the env page. Tenant-scoped
+via ``get_tenant_connection``.
+"""
+from __future__ import annotations
+
+import logging
+
+from sqlalchemy import text
+
+log = logging.getLogger(__name__)
+
+# The env's connected_org id resolves inside each query (a correlated subquery on
+# environment_id), so we only ever bind the int env id — no UUID round-trip.
+_ORG_SQL = (
+    "SELECT id, last_sync_completed_at FROM connected_orgs WHERE environment_id = :eid")
+_JOB_SQL = (
+    "SELECT status, error_code, error_message, created_at "
+    "FROM s1_sync_jobs "
+    "WHERE connected_org_id = (SELECT id FROM connected_orgs WHERE environment_id = :eid) "
+    "ORDER BY created_at DESC LIMIT 1")
+_RUN_SQL = (
+    "SELECT status, last_completed_phase, started_at, completed_at, "
+    "entities_inserted, edges_inserted, error_message "
+    "FROM sync_runs "
+    "WHERE source_org_id = (SELECT id FROM connected_orgs WHERE environment_id = :eid) "
+    "ORDER BY started_at DESC LIMIT 1")
+
+
+def _iso(v):
+    return v.isoformat() if v is not None and hasattr(v, "isoformat") else v
+
+
+def _read_status(conn, environment_id: int) -> dict:
+    """Pure: read S1 sync status on an already-open **tenant-scoped** connection.
+    Directly testable on the semantic ``conn`` fixture (no own connection)."""
+    org = conn.execute(text(_ORG_SQL), {"eid": environment_id}).mappings().first()
+    if org is None:
+        return {"available": True, "provisioned": False}
+    job = conn.execute(text(_JOB_SQL), {"eid": environment_id}).mappings().first()
+    run = conn.execute(text(_RUN_SQL), {"eid": environment_id}).mappings().first()
+    return {
+        "available": True,
+        "provisioned": True,
+        "last_sync_completed_at": _iso(org["last_sync_completed_at"]),
+        "job": ({"status": job["status"], "error_code": job["error_code"],
+                 "error_message": job["error_message"],
+                 "created_at": _iso(job["created_at"])} if job else None),
+        "run": ({"status": run["status"],
+                 "last_completed_phase": run["last_completed_phase"],
+                 "started_at": _iso(run["started_at"]),
+                 "completed_at": _iso(run["completed_at"]),
+                 "entities_inserted": run["entities_inserted"],
+                 "edges_inserted": run["edges_inserted"],
+                 "error_message": run["error_message"]} if run else None),
+    }
+
+
+def read_s1_sync_status(tenant_id: int, environment_id: int) -> dict:
+    """Best-effort S1-sync status for an environment. Never raises.
+
+    Returns ``{available, provisioned, last_sync_completed_at, job, run}`` —
+    ``provisioned=False`` when no ``connected_orgs`` row exists yet;
+    ``available=False`` on any read error.
+    """
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            return _read_status(conn, environment_id)
+    except Exception as exc:                     # absent schema / read error
+        log.warning("s1 sync status unavailable for tenant %s env %s: %s",
+                    tenant_id, environment_id, exc)
+        return {"available": False, "provisioned": False}
+
+
+def trigger_s1_sync(tenant_id: int, environment_id: int, sf_instance_url: str, *,
+                    created_by=None) -> dict:
+    """Provision the env's ``connected_orgs`` sync target + enqueue a sync job. The
+    worker runs it async. Best-effort — returns ``{ok: False, error: ...}`` on any
+    failure (never raises). Idempotent: a re-trigger while a job is active returns
+    that active job."""
+    if not sf_instance_url:
+        return {"ok": False, "error": "environment has no Salesforce instance URL"}
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.sync.credentials import ensure_connected_org_for_environment
+        from primeqa.sync.jobs import SyncJobStore
+
+        with get_tenant_connection(tenant_id) as conn:          # commits on exit
+            cid = ensure_connected_org_for_environment(
+                conn, environment_id, sf_instance_url)
+        job = SyncJobStore(tenant_id).create_or_get_job(        # opens + commits its own conn
+            connected_org_id=cid, environment_id=environment_id, created_by=created_by)
+        return {"ok": True, "connected_org_id": str(cid),
+                "job_id": job.id, "status": job.status}
+    except Exception as exc:
+        log.warning("trigger_s1_sync failed for tenant %s env %s: %s",
+                    tenant_id, environment_id, exc)
+        return {"ok": False, "error": str(exc)}
