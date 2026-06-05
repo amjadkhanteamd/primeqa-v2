@@ -19,13 +19,14 @@ from primeqa.generation.persistence import LedgerPersister
 from primeqa.intelligence.s3_generation_console import (
     _read_claims,
     _read_latest_job,
+    list_claims,
     read_claim_detail,
     read_latest_s3_job,
     read_requirement_claims,
 )
 
 from .conftest import TEST_TENANT_ID
-from .test_draft_vertical import _emit_run, _grounded_rel
+from .test_draft_vertical import _emit_run, _grounded_positive, _grounded_rel
 
 
 def test_read_requirement_claims_returns_generated_plan(seeded):
@@ -104,3 +105,27 @@ def test_read_claim_detail_not_found_for_unknown_id(seeded):
 def test_read_claim_detail_best_effort_bad_tenant():
     import uuid
     assert read_claim_detail(-1, uuid.uuid4())["available"] is False
+
+
+# --- 2c: the claims library (list + search + pagination) ---------------------
+
+def test_list_claims_paginates_and_searches(seeded):
+    _emit_run(seeded, [_grounded_rel()], persister=LedgerPersister(TEST_TENANT_ID))       # configuration / metadata-relationship-claim
+    _emit_run(seeded, [_grounded_positive()], persister=LedgerPersister(TEST_TENANT_ID))  # data_behavior / value-claim
+
+    out = list_claims(TEST_TENANT_ID, page=1, per_page=10)
+    assert out["available"] is True and out["total"] == 2
+    kinds = {c["claim_kind"] for c in out["claims"]}
+    assert {"metadata-relationship-claim", "value-claim"} <= kinds
+
+    # search narrows on claim_kind
+    s = list_claims(TEST_TENANT_ID, page=1, per_page=10, q="value")
+    assert s["total"] == 1 and s["claims"][0]["claim_kind"] == "value-claim"
+
+    # pagination splits the page
+    p = list_claims(TEST_TENANT_ID, page=1, per_page=1)
+    assert len(p["claims"]) == 1 and p["total"] == 2 and p["total_pages"] == 2
+
+
+def test_list_claims_best_effort_bad_tenant():
+    assert list_claims(-1)["available"] is False

@@ -216,3 +216,51 @@ def read_claim_detail(tenant_id: int, test_id) -> dict:
         log.warning("read_claim_detail unavailable for tenant %s test %s: %s",
                     tenant_id, test_id, exc)
         return {"available": False, "found": False, "claim": None}
+
+
+# --- read: the claims library (all current claims, paginated + search) (2c) --
+# No coordinator method lists claims cross-requirement, so the library reads
+# test_claims directly (the s1_sync_console pattern: a tenant-scoped raw read).
+# "Current" = valid_to IS NULL, matching get_latest_claim's filter.
+
+def _list_claims(conn, *, limit: int, offset: int, q=None):
+    """Pure: (total, page-rows) of current claims on an open tenant conn. ``q``
+    ILIKE-matches claim_kind / archetype / test_id (enum cols cast to text)."""
+    clause, qp = "", {}
+    if q:
+        clause = (" AND (claim_kind::text ILIKE :q OR archetype::text ILIKE :q "
+                  "OR CAST(test_id AS text) ILIKE :q)")
+        qp = {"q": f"%{q}%"}
+    total = conn.execute(text(
+        f"SELECT COUNT(*) FROM test_claims WHERE valid_to IS NULL{clause}"), qp).scalar()
+    rows = conn.execute(text(
+        "SELECT CAST(test_id AS text) AS test_id, archetype::text AS archetype, "
+        "claim_kind::text AS claim_kind, status::text AS status, version_seq, updated_at "
+        f"FROM test_claims WHERE valid_to IS NULL{clause} "
+        "ORDER BY updated_at DESC, test_id LIMIT :limit OFFSET :offset"),
+        {**qp, "limit": limit, "offset": offset}).mappings().all()
+    claims = [{"test_id": r["test_id"], "archetype": r["archetype"],
+               "claim_kind": r["claim_kind"], "status": r["status"],
+               "version_seq": r["version_seq"], "updated_at": _iso(r["updated_at"])}
+              for r in rows]
+    return (total or 0), claims
+
+
+def list_claims(tenant_id: int, *, page: int = 1, per_page: int = 20, q=None) -> dict:
+    """Best-effort paginated read of the tenant's current claims (the claims
+    library). Never raises. ``per_page`` capped at 50. Returns
+    ``{available, claims, total, page, per_page, total_pages}``."""
+    page = max(1, page)
+    per_page = max(1, min(per_page, 50))
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            total, claims = _list_claims(
+                conn, limit=per_page, offset=(page - 1) * per_page, q=q)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        return {"available": True, "claims": claims, "total": total,
+                "page": page, "per_page": per_page, "total_pages": total_pages}
+    except Exception as exc:
+        log.warning("list_claims unavailable for tenant %s: %s", tenant_id, exc)
+        return {"available": False, "claims": [], "total": 0,
+                "page": page, "per_page": per_page, "total_pages": 1}

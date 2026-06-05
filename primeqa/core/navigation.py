@@ -96,10 +96,13 @@ SIDEBAR_ITEMS: list[dict] = [
 
     # Testing — the artefacts of the practice
     {
+        # D-165 (UI Area 2): the Test Library nav now points at the substrate
+        # claims library (/claims, S2) — the replacement for the v1 /test-cases
+        # list. The v1 page stays reachable by URL until cutover Step 5.
         "id": "test_library",
         "label": "Test Library",
         "icon": "library",
-        "url": "/test-cases",
+        "url": "/claims",
         "permission": "view_test_library",
         "section": "testing",
     },

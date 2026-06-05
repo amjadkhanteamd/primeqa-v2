@@ -5596,6 +5596,21 @@ def requirements_generate_substrate(req_id):
     return redirect(f"/requirements/{req_id}")
 
 
+@views_bp.route("/claims")
+@login_required
+def claims_list():
+    """D-165 (UI Area 2 slice 2c): the claims library — paginated + searchable
+    list of the tenant's current S2 claims (the substrate replacement for the v1
+    Test Library at /test-cases). Best-effort read via the bridge."""
+    from primeqa.intelligence.s3_generation_console import list_claims
+    page = request.args.get("page", 1, type=int) or 1
+    per_page = request.args.get("per_page", 20, type=int) or 20
+    q = (request.args.get("q") or "").strip() or None
+    data = list_claims(request.user["tenant_id"], page=page, per_page=per_page, q=q)
+    return render_template("claims/list.html", **ctx(
+        active_page="test_library", data=data, q=q or ""))
+
+
 @views_bp.route("/claims/<uuid:test_id>")
 @login_required
 def claims_detail(test_id):

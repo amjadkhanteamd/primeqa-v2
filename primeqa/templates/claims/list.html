@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% from 'components/_empty_state.html' import empty_state %}
+{% from 'components/pagination.html' import render_pagination, render_search %}
+{% block title %}Claims - PrimeQA{% endblock %}
+{% block content %}
+
+{# D-165 (UI Area 2 slice 2c): the claims library — the substrate (S2)
+   replacement for the v1 Test Library. List + search over current claims. #}
+<div class="max-w-5xl space-y-5">
+  <div>
+    <h1 class="text-xl font-semibold text-gray-900">Claims <span class="text-gray-400 text-base">(Substrate S2)</span></h1>
+    <p class="mt-1 text-sm text-gray-500">Every current semantic claim generated for your org &mdash; the substrate test library. Each links to its detail + recipes.</p>
+  </div>
+
+  {{ render_search('/claims', q, 'Search claim kind or archetype…') }}
+
+  {% if not data or not data.available %}
+    {{ empty_state(title='Claims unavailable',
+        description='The substrate could not be read for your tenant right now.') }}
+  {% elif data.claims %}
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+      <table class="min-w-full divide-y divide-gray-200 text-sm">
+        <thead class="bg-gray-50">
+          <tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
+            <th class="px-4 py-2">Claim</th>
+            <th class="px-4 py-2">Archetype</th>
+            <th class="px-4 py-2">Status</th>
+            <th class="px-4 py-2">Version</th>
+            <th class="px-4 py-2">Updated</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for c in data.claims %}
+          <tr class="hover:bg-gray-50">
+            <td class="px-4 py-2">
+              <a href="/claims/{{ c.test_id }}" class="font-medium text-indigo-600 hover:underline">{{ c.claim_kind.replace('-', ' ') }}</a>
+            </td>
+            <td class="px-4 py-2"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-600">{{ c.archetype.replace('_', ' ') }}</span></td>
+            <td class="px-4 py-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+                {% if c.status == 'approved' %}bg-blue-100 text-blue-800
+                {% elif c.status == 'draft' %}bg-gray-100 text-gray-700
+                {% else %}bg-amber-100 text-amber-800{% endif %}">{{ c.status }}</span>
+            </td>
+            <td class="px-4 py-2 text-gray-500">v{{ c.version_seq }}</td>
+            <td class="px-4 py-2 text-gray-500">{{ c.updated_at[:10] if c.updated_at else '' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="flex items-center justify-between">
+      <p class="text-xs text-gray-500">{{ data.total }} claim{{ '' if data.total == 1 else 's' }}</p>
+      {{ render_pagination(data.page, data.total_pages, '/claims', ('&q=' ~ q | urlencode) if q else '') }}
+    </div>
+  {% else %}
+    {{ empty_state(
+        title='No matching claims' if q else 'No claims yet',
+        description='Try a different search.' if q else 'Generate a test plan from a requirement to create claims.') }}
+  {% endif %}
+</div>
+{% endblock %}
