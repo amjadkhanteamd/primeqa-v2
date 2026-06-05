@@ -9296,4 +9296,83 @@ connection for S1 (per the U0 map). That closes the UI Phase's area sweep (Area 
 
 ---
 
+## D-176 — UI Phase Area 7 (Knowledge & Settings/Admin): design
+
+**Date:** 2026-06-06
+**Affected:** v2 runtime UI (a net-new `/knowledge` admin page + the nav slot) + a new
+best-effort read bridge over the S5 knowledge library. **No substrate change** — the
+`primeqa/knowledge/` package is read-only/file-backed and stays untouched. **Status:**
+Active — UI Phase Area 7 (sequence step 7, the last area). Verdict: **read-only knowledge
+viewer + reuse**.
+
+**The map (workflow `wq9j0g825`, 4 facets) — two grounded refinements of the U0 plan.**
+- **S5 knowledge is read-only + file-backed.** Three channels behind `primeqa/knowledge/`:
+  **System Rules** (global, `salesforce_knowledge/system_rules.json`, 33 rules),
+  **Domain Packs** (global, `salesforce_domain_packs/*.md`, 1 pack), **Learned Rules**
+  (per-tenant, *derived* from the v1 `generation_quality_signals` table via
+  `feedback_rules.build_rules_block` — not stored in S5). **Zero write methods; no DB
+  table backs S5 content.** Pack/rule files are **trusted git-controlled content — MUST
+  NOT be user-uploaded/edited** (prompt-injection defence).
+- **Nav slot reserved:** the `knowledge` SIDEBAR_ITEM exists (`enabled:False`, url
+  `/knowledge`, gate `manage_knowledge`) but no route/page exists and `manage_knowledge`
+  gates nothing today.
+- **All 8 settings pages are pure-v1-admin** (general / agent / permission-sets / users /
+  test-data / llm-usage / my-llm-usage) — none touch the substrate.
+- **The SF-connection→S1 re-point is effectively ALREADY DONE by Area 1 (D-164).**
+  `connected_orgs` is the sync *target*; the v1 environment+connection is the credential
+  *source* (`sync/credentials.resolve_sync_sf_client` reads `env.connection_id →
+  get_connection_decrypted`). The `connected_orgs.oauth_*` columns are **dead** for the S1
+  path. Area 1's env-detail S1-sync panel + `/environments/<id>/sync-substrate` +
+  `/org-model` already own provisioning. So connections **reuse as-is**.
+- **Domain-pack attribution** (`llm_usage_log.context->domain_packs_applied`) is
+  **write-only** — captured at generation, never read/rendered.
+
+**Decision (verdicts).** Knowledge admin → **net-new, read-only** (a viewer over the three
+S5 channels; the "curate/manage" ambition is **DISCARDED** — trusted-content boundary + no
+write API). All settings pages → **reuse**. Connections + the SF→S1 re-point → **reuse**
+(already covered by Area 1; the v1 connection is the credential source S1 reads through).
+Per-tenant Story/Packs flag toggles (superadmin `/settings/llm-usage`) → **reuse** where
+they are.
+
+**Slices.**
+- **7a — read-only Knowledge admin** (keystone): a `/knowledge` route + template, flip the
+  reserved nav slot `enabled:True`, gate `manage_knowledge`. Three sections mirroring the S5
+  channels — **System Rules** (`SystemPromptRulesProvider().get_rules(ctx)` → table of
+  id/object/field/category/rule_text/confidence), **Domain Packs**
+  (`DomainPackLibrary(...).load()` → cards: id/title/keywords/objects/version/measured_tokens),
+  **Learned Rules** (`feedback_rules.build_rules_block(tenant_id)`, read-only). A thin
+  best-effort `knowledge_console` bridge over the library reads. The trusted-content boundary
+  shown as a visible "git-controlled — edit via PR" label; the dormant object-match path
+  noted. **Zero substrate change, no migration.**
+- **7b — close (D-177):** record the verdicts + deferrals, and mark the **UI Phase area
+  sweep COMPLETE** (Areas 1–7; Area 1's `#119` live-proving + 1d close remain parked).
+
+**Forks (leans).**
+1. **SF-connection re-point scope.** The U0 plan named it for Area 7, but the map shows it
+   is done by Area 1. The one genuine gap is **env-edit SF-connection re-pick** (an env's
+   `connection_id` is settable only at create), and it carries a real caveat: swapping
+   `connection_id` under a fixed `connected_org` (which keys on `environment_id`) silently
+   changes the credential source under a fixed sync target — it needs a design decision
+   (re-provision on swap?). **Lean: DEFER** as an Area-1-adjacent follow-up with that note —
+   don't rush a caveated mutation into the final area.
+2. **Knowledge URL.** `/knowledge` (the reserved top-level nav slot, section *admin*) vs
+   `/settings/knowledge` (inside the hardcoded settings shell). **Lean: `/knowledge`** —
+   honor the pre-wired slot; flip `enabled:True`, no settings-shell edit.
+3. **Attribution-fired view + enablement matrix** (which packs fired / which tenants have
+   them on). **Lean: DEFER** — write-only data with no read path yet, empty until packs fire
+   in prod; a superadmin analytics follow-up, not the tenant knowledge viewer.
+
+**Substrate gaps (HOLD — not UI-buildable).** No write/curate API for S5 (file-backed; the
+`curated` source + `org` scope are *reserved* in `provider.py` but unimplemented — a
+curated-knowledge store is a future substrate capability, not a re-point); learned rules are
+read-only by design; domain-pack attribution has no read path; `connected_orgs.oauth_*` are
+dead/plaintext (do not build a credentials-on-`connected_orgs` surface).
+
+**Boundary.** 7a is a route + template + a best-effort read bridge over the existing S5
+library — **no substrate write, no migration, no new substrate code**. Read-only by
+contract; the page labels the git-PR authoring path so the trusted-content boundary is a
+visible affordance, not a hidden landmine. Commits to `main`.
+
+---
+
 ---
