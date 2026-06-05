@@ -8655,4 +8655,56 @@ impact-by-requirement / coverage queries gain `generated_from` links for free.
 
 ---
 
+## D-167 — UI Phase Area 2 (Test Authoring / S2+S3) — close
+
+**Date:** 2026-06-05
+**Affected:** docs-only (this entry). Area 2 implementation landed across commits
+`d367b98..f99506c` on `main`. **Status:** Area 2 COMPLETE — sequence step 2 of the
+UI phase closed; Area 3 (Execution / S4) is next.
+
+**What shipped (D-165 design; D-166 + slices 2a–2c + #143).**
+- **D-166** — the S3 persister writes the `generated_from` requirement link, the
+  gap-closure that makes `list_tests_by_requirement` resolve generated tests.
+- **2a** — requirement detail re-pointed: Generate → S3
+  (`POST /requirements/<id>/generate-substrate`), linked-tests → the S2
+  claims/recipes view, async progress → S3 job poll. v1 `test_cases` loading removed.
+- **2b** — claim + recipe detail (`/claims/<test_id>`): the semantic view
+  (archetype / claim_kind / asserted_truth / semantic_conditions + recipes) via a
+  generic recursive body renderer over all 16 claim-kind shapes.
+- **2c** — claims library (`/claims`): list + search + pagination over current S2
+  claims; the **Test Library nav re-points to `/claims`** (the v1 `/test-cases`
+  list is nav-orphaned, URL-reachable until cutover Step 5).
+- **#143** — requirements list re-pointed to browse + S2 claim counts (bulk
+  `count_claims_by_requirement`); the v1 per-row generate/run + bulk-generate +
+  generate_overlay removed (they produced now-invisible v1 `test_cases`).
+- The v1→substrate bridge is `primeqa/intelligence/s3_generation_console.py`
+  (best-effort, tenant-scoped reads; mirrors `s1_sync_console` / `substrate_insights`).
+
+**Verification.** 13 console bridge tests on the generation harness + the D-166
+draft-vertical link test; the generation integration suite stays green. Two
+adversarial review workflows over the area surface (one over 2a–2c, one over #143):
+a single low/cosmetic finding (claims_detail `active_page` + breadcrumb → fixed at
+`2f069cd`), zero other confirmed defects — SQL injection (bound params), XSS
+(auto-escaped / `textContent`), cross-tenant claim read (`get_tenant_connection`
+schema isolation), and the key-consistency chain all cleared.
+
+**Deferred (recorded, not done).**
+- **Suites / Reviews / Sections / Milestones** — still v1. Re-point in a later pass;
+  **reviews** in particular need a semantic-claim rethink (review-of-a-claim is not
+  review-of-procedural-steps).
+- **Claim body prose** — 2b renders bodies structurally (key/value); prose-style
+  per-kind summaries (could lean on S7 grounded phrasing) are a future enhancement.
+- **Bulk S3 generation** — the v1 bulk-generate UI was removed, not re-pointed; an
+  S3 bulk path is a follow-up.
+
+**The Area-3 coupling (carried from D-165).** Generated claims are **viewable but
+not runnable** — there is no Run button on the substrate path yet. Execution is
+Area 3 (S4 UI); building it closes the generate→run loop and makes the v1-removed
+Run affordance real again on the new path. Accepted transitional state.
+
+**Next.** Area 3 — Execution (S4): the Run surface for claims/recipes
+(`s4_execution_runs`), which also unblocks running everything Area 2 now generates.
+
+---
+
 ---
