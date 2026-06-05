@@ -8785,4 +8785,63 @@ Commits to `main`.
 
 ---
 
+## D-169 — UI Phase Area 3 (Execution / S4) — close
+
+**Date:** 2026-06-05
+**Affected:** docs-only (this entry). Area 3 implementation landed across commits
+`ab5e57f..7697459` on `main`. **Status:** Area 3 COMPLETE at the synchronous-run
+milestone — the generate→approve→run→inspect loop is live on the substrate. Area 4
+(Results & Intelligence / S6+S8) is next.
+
+**What shipped (D-168 design; slices 3a / 3c / 3b).**
+- **3a** — the run-a-claim spine (sync) + **Approve**: `s4_execution_console`
+  (`trigger_claim_run` via `run_recipe_execution_for_tenant` → outcome+verdict;
+  `read_claim_runs`; `approve_claim` promotes the draft claim + its
+  `generated_unapproved` recipes → runnable, humans-only). The claim detail gains a
+  Run panel (env picker + **production-confirm gate at the UI trigger**, reusing
+  v1's `environment_can_bulk_run`) + a Recent-runs panel. Closed the
+  generate→approve→run loop.
+- **3c** — run detail (`/runs/<uuid:run_id>`): the S4 evidence trace (per-step) +
+  the S6 verdict / attribution / cause. Reached from the claim's run rows.
+- **3b** — the global runs index (`/runs/substrate`): paginated `s4_execution_runs`
+  LEFT JOIN the S6 verdict, newest-first; a focused new surface (the dense v1
+  `/runs` is re-pointed at cutover Step 5, not gutted now). Linked from the claims
+  library.
+- The v1→substrate bridge is `primeqa/intelligence/s4_execution_console.py`
+  (best-effort, tenant-scoped; mirrors `s3_generation_console`).
+
+**Verification.** 14 console bridge tests on the substrate harness + the engine's
+own `test_s4_run_path.py`. Three adversarial review workflows over the area: two
+low/cosmetic findings — the Recent-runs recency ordering (fixed by reading
+`s4_execution_runs.finished_at` LEFT JOIN S6, which also surfaces interpret-failed
+runs) and a dead double-escaped `&mdash;` (dropped) — and **zero** substantive
+defects (run/approve correctness, authz, production-safety, tenant isolation, SQL
+injection, XSS all cleared).
+
+**Deferred (recorded, not done).**
+- **3d — async queue + bulk + `/run` re-point** (the scale path): an enqueuer route
+  over `ExecutionJobStore.create_or_get_job` + a poll loop; close the **job→run
+  correlation gap** (a `last_run_id` on the job, or correlate by claim+env+recency)
+  and the **async data-recipe limit** (the queue path runs metadata-recipes only).
+  Re-point the `/run` 4-mode picker's submit to S4 (needs a v1-selection→S2-`test_id`
+  map).
+- **v1 `/runs` re-point** — the dense v1 history/detail (filters, SSE log, agent-fix,
+  cost) stays on `pipeline_runs` until cutover Step 5.
+- **Agent-fix + cost** tabs — not S4-wired; v1-bridged until a later substrate lands.
+- **Scheduled runs** — re-point the firing path to S4 at cutover.
+
+**Carried constraints (from D-168, still true).** Async queue = metadata-recipe
+only; the substrate enforces no production guard (the UI trigger owns it); no
+job→run FK.
+
+**Claim-approval seam (3a).** `approve_claim` is the minimal human-approval step
+that makes a claim runnable; a richer review UI (the Area-2 deferred "reviews need a
+semantic rethink" bucket) can relocate/reuse it.
+
+**Next.** Area 4 — Results & Intelligence (S6/S8): expand `/substrate-insights` into
+the real results surface (cross-run clustering, grounding-validity), building on the
+per-run verdict/cause 3c already surfaces.
+
+---
+
 ---
