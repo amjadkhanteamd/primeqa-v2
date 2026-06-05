@@ -8963,4 +8963,74 @@ GO/NO-GO decision surface (mostly re-point, per the U0 map).
 
 ---
 
+## D-172 — UI Phase Area 5 (Releases & Decisions): design
+
+**Date:** 2026-06-05
+**Affected:** v2 runtime UI (the release detail Decision tab) + a new v1→substrate
+bridge (`release_substrate_console`). Commits to `main`. **Status:** Active — UI
+Phase Area 5 (sequence step 5). No substrate change; read-only assembly.
+
+**The map (workflow `wshnthmwg`, 4 facets).**
+- **TWO distinct GO/NO-GO surfaces**: the **per-release** decision (`/releases/<id>`
+  → Decision tab; `DecisionEngine.evaluate` → `release_decisions`; reads
+  `release_runs`→`pipeline_runs`) and the **env-scoped** Release Owner dashboard
+  (`/dashboard`, `dashboard.get_dashboard_data`, keyed on the active *environment*,
+  reads `pipeline_runs.release_status`; `/shared/<token>` mirrors it). They share no
+  verdict.
+- **The linkage (load-bearing, confirmed buildable):** `release →
+  release_requirements → requirements.jira_key → _requirement_to_ref(req)["key"]`
+  (`jira_key` or `req-<id>`) `→ coordinator.list_tests_by_requirement(
+  external_system="jira", external_key=key, link_kind="generated_from") → claim
+  test_ids →` S8 grounding (`list_grounding_validity(test_id=)`) + S6 verdicts
+  (`s4_execution_console._read_claim_runs`). The v1 **test-plan axis**
+  (`release_test_plan_items` → `test_cases`) is a **dead end** to the substrate
+  (`test_cases` ≠ claims); the **requirements axis is the only substrate-reachable
+  path**.
+- **No release key on `s6_interpretations` / `s8_grounding_validity`** (confirmed) →
+  release-scoped clustering NOT buildable; per-claim aggregation IS (join axis =
+  claim `test_id`).
+
+**Decision.** An **additive substrate-evidence panel** on the release detail Decision
+tab. The v1 `DecisionEngine` stays the **verdict authority**; the substrate **adds
+evidence** (grounding-drift + per-claim run verdicts) — it does NOT produce a verdict
+or flip the v1 recommendation (out of scope; no substrate→v1 verdict dependency is
+specced). Mirrors Area 3's additive claim-detail Run panel.
+
+**Verdict map.** `/releases/<id>` Decision tab → **ADD** a substrate-evidence panel
+(the keystone). `/releases` list + other tabs → **reuse** (a per-release at-risk chip
+is a later follow-up). `/dashboard` + `/shared` (env-scoped) → **defer** (stays v1; no
+release context to hang per-claim evidence on). `/milestones` → **defer**. The v1
+`DecisionEngine` + `RiskEngine` → **unchanged**.
+
+**The bridge** (new `primeqa/intelligence/release_substrate_console.py`, best-effort):
+`get_release_substrate(tenant_id, external_keys)` opens **one** tenant connection + a
+shared session, resolves the release's requirement keys → claim `test_id`s (bulk,
+deduped), then per claim reads S8 grounding (`list_grounding_validity(test_id=)`) + S6
+latest verdict (`_read_claim_runs` **in-session** — the recency-correct,
+interpret-failed-surfacing read), and rolls up: grounding `{intact/drifted/broken
+counts + at-risk claims}` + verdicts `{passed/failed/never-run}`. Never raises
+(`available=False` on error); **empty-state is the default** (stores empty until
+`#119`).
+
+**Slices.**
+- **5a — the substrate-evidence panel** (keystone): the bridge + a panel on
+  `/releases/<id>` Decision tab — a grounding-at-risk headline ("N of M claims
+  at-risk · X drifted · Y broken" + the at-risk claims, with the *why*) + a
+  run-verdict breakdown (passed / failed / never-run); each claim links to
+  `/claims/<id>`.
+- **5b — close**: record deferred (a per-release at-risk chip on the list; the
+  `/dashboard` + `/shared` env surfaces; folding into `DecisionEngine` [out of scope];
+  persisted release-grain verdicts [migration, out of scope]) + the substrate gaps.
+
+**Substrate gaps (HOLD).** No release→runs key (release-scoped clustering not
+buildable); the substrate has no decision engine (the v1 `DecisionEngine` stays
+authoritative); the roll-up is the bridge's job.
+
+**Boundary.** Best-effort bridge; **one shared tenant connection** (not N
+`read_claim_runs` calls); read-only (no migration, no substrate write). The substrate
+path is via release **requirements** only (test-plan items are a v1 dead end) — the
+panel notes this. Commits to `main`.
+
+---
+
 ---
