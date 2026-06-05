@@ -9117,4 +9117,94 @@ substrate data exists.
 
 ---
 
+## D-174 — UI Phase Area 6 (Conversation / S7): design
+
+**Date:** 2026-06-06
+**Affected:** v2 runtime UI (the `/ask` page + the sidebar nav) + small additive changes
+to the `/ask` route. **No substrate change** — the S7 package (`primeqa/conversation/`)
+and the v1 bridge (`intelligence/conversation_bridge.answer_question`) stay as-is.
+**Status:** Active — UI Phase Area 6 (sequence step 6). Verdict: **reuse + polish + nav**.
+
+**The map (workflow `wri7txi80`, 4 facets — current UI / substrate consumer contract /
+cross-surface entry points / nav + polish).**
+- `/ask` (`views.py:300`, GET/POST, gated `view_intelligence_report`) already runs on S7
+  via `answer_question`, which is best-effort (never raises; `available=False` on error)
+  and returns a 5-key dict: `available / status / text / refusal_reason / citations`
+  (each citation `{id, source, kind, ref}`).
+- **Nav gap (the #1 leverage):** `/ask` has **zero** nav entries and **zero** inbound
+  links anywhere — URL-only. The sibling `substrate_insights` IS registered
+  (`navigation.py:144-150`, same `view_intelligence_report` gate, section `testing`).
+- **The bridge already returns signals the template DROPS:** 4 distinct `refusal_reason`s
+  (`no_intent_match` / `no_grounding_evidence` / `phrasing_unavailable` / `unavailable`)
+  all collapse into one generic `empty_state`; the `phrasing_unavailable` refusal carries
+  **citations** that get dropped; the citation chip drops `c.kind`. All template-only —
+  the data is already in the payload.
+- **No guided empty (no-question) state**; **no submit spinner** (`loading.js` is wired
+  globally but `btn_primary('Ask')` ships no spinner span).
+- **Contextual entry points** need only a small route change: the route reads scope fields
+  (`object_api_name` / `requirement_key`) **only on POST**; a GET-querystring prefill path
+  unblocks "Ask about this" deep-links. `retrieve_impact` already consumes both keys, so
+  requirement/release launchers scope correctly with **zero bridge change**.
+
+**Decision (verdicts).** `templates/conversation.html` → **polish** (differentiate the 4
+refusal reasons, surface citations on the evidence-bearing refusal, guided empty state,
+spinner, render `c.kind`). The `/ask` route → **re-point** (additive GET-prefill). The
+sidebar nav → **net-new** (one `ask` item). Contextual launchers (requirement / release /
+substrate-insights → `/ask`) → **net-new**. The S7 package + `conversation_bridge` →
+**reuse, untouched** (the substrate boundary holds; the bridge stays LLM-free-respecting
+and best-effort).
+
+**Slices.**
+- **6a — nav entry + grounded-or-refuse polish** (template + nav only; no route / bridge /
+  substrate change — the keystone): add the `ask` SIDEBAR_ITEM (mirror `substrate_insights`:
+  `url=/ask`, `permission=view_intelligence_report`, `section=testing`); in
+  `conversation.html` differentiate the 4 refusal reasons (rephrase / narrow-scope /
+  retry+show-citations / sync-not-live), surface citations on `phrasing_unavailable`, add a
+  guided empty state with clickable example-question chips for the 3 intents
+  (`failure_cause` / `grounding_drift` / `impact`) that prefill the textarea, add a submit
+  spinner span, render `c.kind` on chips.
+- **6b — contextual entry points** (small additive GET-prefill on the route + launchers that
+  scope via `requirement_key` / `object_api_name`, **visibility-gated on
+  `view_intelligence_report`** so no broken 403 links): route accepts GET querystring prefill
+  (`q` / `object_api_name` / `requirement_key` / `environment_id`); launchers on requirement
+  detail ("Ask about this requirement" + "Are its claims still valid?"), release detail
+  (per-requirement "Ask" + panel-level "Why are these claims at risk?"), and substrate-
+  insights (header "Ask a question →").
+- **6c — close (D-175):** record deferrals + substrate gaps + the empty-until-`#119` reality.
+
+**Forks (leans).**
+1. **Per-artifact scoping** ("is THIS claim drifting" / "why did THIS run fail") needs the
+   **bridge** signature widened to pass `recipe_id` / `test_id` (the `QuestionContext` fields
+   + recipes already honor them — additive, backward-compatible). For *run*, the run-detail
+   context doesn't expose `recipe_id` and `failure_cause` has no `run_id` axis (a real
+   substrate gap). **Lean: DEFER** — requirement/release launchers already deliver
+   contextual-ask value with zero bridge change; keep 6b bridge-clean.
+2. **Release-owner permission:** `release_owner_base` lacks `view_intelligence_report`, so an
+   "Ask" launcher on the Release surface would 403 for the owner of that surface. **Lean:
+   gate launcher visibility on the permission** (no broken links) + defer the "should release
+   owners get `/ask`?" product decision.
+3. **Rich-field flattener** (S8 `detail` / S6 `attribution` dropped by `retrieval.py`'s
+   `_grounding_item` / `_interp_item` → answers say *which* not *why*). **Lean: DEFER** as
+   substrate-side S7 work — editing the flatteners is not UI-phase wiring; don't cross the
+   boundary in Area 6.
+4. **Citation click-through, real object/requirement pickers, question-history, confidence/
+   intent badge.** **Lean: DEFER all** — each needs a substrate-contract change (`Citation.ref`
+   is a free-form audit string, not a typed link target; `Answer` has no confidence/intent
+   field), a new table (history), or route data not currently passed (picker lists). Won't
+   ship brittle ref-string parsing or half-pickers; the 6b deep-links sidestep the picker
+   problem by pre-filling the exact key from the source page.
+
+**Substrate gaps (HOLD — not UI-buildable).** `failure_cause` has no `run_id` scope axis
+(only `recipe_id`); `Answer` carries no confidence / intent metadata; `Citation.ref` is a
+free-form audit string, not a structured link target. These bound forks 1, 3, 4.
+
+**Boundary.** Template + nav + an additive GET-prefill on the route. **No substrate write,
+no migration, no bridge contract change** in 6a/6b (the bridge signature widening is the
+deferred fork 1). The S7 package's LLM-free guard and the bridge's best-effort contract are
+untouched. Every grounded answer is a refusal until the live `#119` sync populates S6/S8 —
+6a's polish is verified on the refusal/empty paths (the live paths anyway). Commits to
+`main`.
+
+---
+
 ---
