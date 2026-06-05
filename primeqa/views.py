@@ -5413,58 +5413,22 @@ def requirements_list():
         except Exception as e:
             reqs, meta, query_error = [], {"total": 0, "page": 1, "per_page": per_page, "total_pages": 0}, str(e)
 
-        # Load TC counts + coverage breakdown + generation state per
-        # visible requirement in one query, so the list can show "5
-        # tests · positive 1 · negative 2..." badges and pick the right
-        # button label (Generate / Regenerate / Generate again).
-        tc_stats = {}  # requirement_id -> {total, coverage, any_draft_mine, any_approved_or_active}
-        if reqs:
-            from sqlalchemy import func as _sf
-            from primeqa.test_management.models import TestCase
-            rows = (db.query(
-                        TestCase.requirement_id,
-                        TestCase.status,
-                        TestCase.coverage_type,
-                        TestCase.owner_id,
-                    )
-                    .filter(
-                        TestCase.tenant_id == tid,
-                        TestCase.deleted_at.is_(None),
-                        TestCase.requirement_id.in_([r.id for r in reqs]),
-                    ).all())
-            for rid, status_, cov, owner in rows:
-                stats = tc_stats.setdefault(rid, {
-                    "total": 0, "coverage": {},
-                    "my_draft_count": 0,
-                    "approved_or_active_count": 0,
-                })
-                stats["total"] += 1
-                k = cov or "other"
-                stats["coverage"][k] = stats["coverage"].get(k, 0) + 1
-                if status_ == "draft" and owner == request.user["id"]:
-                    stats["my_draft_count"] += 1
-                if status_ in ("approved", "active"):
-                    stats["approved_or_active_count"] += 1
-
-        def _button_state(s):
-            """Pick between Generate / Regenerate / Generate again based
-            on what the user already has for this requirement."""
-            if not s:
-                return "generate"       # first-time generation
-            if s["my_draft_count"] > 0:
-                return "regenerate"     # supersede-in-place
-            if s["approved_or_active_count"] > 0:
-                return "generate_again" # alongside approved work
-            return "generate"
+        # D-165 (UI Area 2): the per-requirement count is now S2 claims (generated
+        # by S3), not v1 test_cases. One bulk read keyed by requirement external_key
+        # (_requirement_to_ref — the same key generation persisted). Generation +
+        # execution now happen on the detail page, so the list is browse + counts.
+        from primeqa.intelligence.s3_enqueue import _requirement_to_ref
+        from primeqa.intelligence.s3_generation_console import count_claims_by_requirement
+        req_keys = {r.id: _requirement_to_ref(r)["key"] for r in reqs}
+        claim_counts = count_claims_by_requirement(
+            tid, set(req_keys.values())).get("counts", {})
 
         reqs_data = [{
             "id": r.id, "jira_key": r.jira_key, "jira_summary": r.jira_summary,
             "acceptance_criteria": r.acceptance_criteria, "is_stale": r.is_stale,
             "source": r.source,
             "updated_at": r.updated_at.isoformat() if r.updated_at else "",
-            "tc_count": (tc_stats.get(r.id) or {}).get("total", 0),
-            "coverage_counts": (tc_stats.get(r.id) or {}).get("coverage", {}),
-            "button_state": _button_state(tc_stats.get(r.id)),
+            "claim_count": claim_counts.get(req_keys[r.id], 0),
         } for r in reqs]
         # Envs with their readiness for AI generation (needs LLM + metadata)
         envs_data = [{

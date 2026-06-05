@@ -264,3 +264,41 @@ def list_claims(tenant_id: int, *, page: int = 1, per_page: int = 20, q=None) ->
         log.warning("list_claims unavailable for tenant %s: %s", tenant_id, exc)
         return {"available": False, "claims": [], "total": 0,
                 "page": page, "per_page": per_page, "total_pages": 1}
+
+
+# --- read: per-requirement current-claim counts (the list chips) (2c/#143) ----
+
+def _count_claims_by_requirement(conn, keys) -> dict:
+    """Pure: ``{requirement_key: current-generated-claim count}`` for the given
+    keys on an open tenant conn. Counts distinct tests with a ``generated_from``
+    link whose claim is still current (valid_to IS NULL) — matches the detail."""
+    keys = list(keys)
+    if not keys:
+        return {}
+    from sqlalchemy import bindparam
+    stmt = text(
+        "SELECT l.external_key AS k, COUNT(DISTINCT l.test_id) AS n "
+        "FROM test_requirement_links l "
+        "JOIN test_claims c ON c.test_id = l.test_id AND c.valid_to IS NULL "
+        "WHERE l.external_system = 'jira' AND l.link_kind = 'generated_from' "
+        "AND l.external_key IN :keys GROUP BY l.external_key"
+    ).bindparams(bindparam("keys", expanding=True))
+    rows = conn.execute(stmt, {"keys": keys}).mappings().all()
+    return {r["k"]: r["n"] for r in rows}
+
+
+def count_claims_by_requirement(tenant_id: int, requirement_keys) -> dict:
+    """Best-effort bulk read of current generated-claim counts per requirement key
+    (the requirements-list chips). Never raises. Returns ``{available, counts}``;
+    missing keys simply don't appear in ``counts`` (caller defaults to 0)."""
+    keys = list(requirement_keys or [])
+    if not keys:
+        return {"available": True, "counts": {}}
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            return {"available": True, "counts": _count_claims_by_requirement(conn, keys)}
+    except Exception as exc:
+        log.warning("count_claims_by_requirement unavailable for tenant %s: %s",
+                    tenant_id, exc)
+        return {"available": False, "counts": {}}

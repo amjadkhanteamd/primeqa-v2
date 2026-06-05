@@ -19,6 +19,7 @@ from primeqa.generation.persistence import LedgerPersister
 from primeqa.intelligence.s3_generation_console import (
     _read_claims,
     _read_latest_job,
+    count_claims_by_requirement,
     list_claims,
     read_claim_detail,
     read_latest_s3_job,
@@ -129,3 +130,22 @@ def test_list_claims_paginates_and_searches(seeded):
 
 def test_list_claims_best_effort_bad_tenant():
     assert list_claims(-1)["available"] is False
+
+
+# --- #143: per-requirement claim counts (the list chips) ---------------------
+
+def test_count_claims_by_requirement(seeded):
+    _emit_run(seeded, [_grounded_rel()], persister=LedgerPersister(TEST_TENANT_ID))  # key R0, 1 claim
+    out = count_claims_by_requirement(TEST_TENANT_ID, ["R0", "R-absent"])
+    assert out["available"] is True
+    assert out["counts"].get("R0") == 1
+    assert "R-absent" not in out["counts"]          # keys with no claims are omitted
+
+
+def test_count_claims_by_requirement_empty_keys(seeded):
+    out = count_claims_by_requirement(TEST_TENANT_ID, [])
+    assert out["available"] is True and out["counts"] == {}
+
+
+def test_count_claims_by_requirement_bad_tenant():
+    assert count_claims_by_requirement(-1, ["R0"])["available"] is False
