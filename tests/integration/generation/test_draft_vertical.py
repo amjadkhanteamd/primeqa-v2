@@ -132,6 +132,44 @@ def test_draft_emitted_end_to_end(seeded):
 
 
 # ---------------------------------------------------------------------------
+# D-166: the persister records the generated_from requirement link, so
+# list_tests_by_requirement resolves the generated test — the surface UI Area 2
+# reads. Previously unwired, leaving that surface empty for every generated test.
+# ---------------------------------------------------------------------------
+
+def _requirement_links(external_key: str):
+    """Read the requirement links for a key on a fresh connection (post-run)."""
+    from sqlalchemy.orm import Session
+    from primeqa.semantic.connection import get_tenant_connection
+    from primeqa.test_representation.coordinator import SemanticTransactionCoordinator
+    with get_tenant_connection(TEST_TENANT_ID) as conn:
+        session = Session(bind=conn)
+        try:
+            return SemanticTransactionCoordinator().list_tests_by_requirement(
+                session, external_system="jira", external_key=external_key)
+        finally:
+            session.close()
+
+
+def test_draft_records_generated_from_requirement_link(seeded):
+    # _emit_run keys the single requirement "R0"; the persister now links the
+    # generated claim to it (generated_from) in the same atomic tx as the claim.
+    persister = LedgerPersister(TEST_TENANT_ID)
+    _, res = _emit_run(seeded, [_grounded_rel()], persister=persister)
+    test_id = res.results[0].outcome.claims_written[0].test_id
+
+    m = _requirement_links("R0")
+    assert [x.test_id for x in m] == [test_id]          # exactly the generated test
+    assert m[0].link_kind == "generated_from"
+    assert m[0].external_version is None                 # v1: no jira_version pinned
+
+    # same-hash re-emit drives the no-op claim path; the link is still written and
+    # is idempotent on its PK -> one row, same test (covers both persister paths).
+    _emit_run(seeded, [_grounded_rel()], persister=persister)
+    assert [x.test_id for x in _requirement_links("R0")] == [test_id]
+
+
+# ---------------------------------------------------------------------------
 # Atomicity: a mid-emission failure rolls back claim + recipe + outcome
 # ---------------------------------------------------------------------------
 

@@ -128,6 +128,21 @@ class LedgerPersister:
             semantic_conditions=emission.semantic_conditions,
         )
         outcome.claims_written = [ClaimRef(test_id=cr.test_id, version_seq=cr.version_seq)]
+
+        # D-166: record the generated_from requirement link — the documented-
+        # intended S3 behaviour (link_requirement's docstring), previously unwired —
+        # so list_tests_by_requirement resolves generated tests. Same atomic tx as
+        # the claim; idempotent on its PK, so it is written on both the new-claim
+        # and same-hash no-op paths. The key rides outcome.requirement_ref; a
+        # missing/blank key skips the link rather than raising.
+        req_key = (outcome.requirement_ref or {}).get("key")
+        if req_key:
+            self._coordinator.link_requirement(
+                session, actor="s3", test_id=cr.test_id,
+                external_system="jira", external_key=req_key,
+                link_kind="generated_from",
+            )
+
         if cr.was_noop:
             # Same-hash regeneration (SPEC §7.7): the equivalent test already
             # exists with its verification recipe — record it, mint nothing new.
