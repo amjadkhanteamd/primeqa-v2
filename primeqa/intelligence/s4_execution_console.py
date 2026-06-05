@@ -22,7 +22,13 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
+from sqlalchemy import text
+
 log = logging.getLogger(__name__)
+
+
+def _iso(v):
+    return v.isoformat() if v is not None and hasattr(v, "isoformat") else v
 
 
 # --- run a claim (sync; returns outcome + verdict) ---------------------------
@@ -67,16 +73,29 @@ def trigger_claim_run(tenant_id: int, test_id, environment_id: int, *,
 
 # --- read the claim's recent runs (S6 verdict surface) -----------------------
 
-def _read_claim_runs(session, test_id) -> list[dict]:
-    """Pure: the claim's runs (outcome + verdict per run) via the S6 read API.
-    A run whose best-effort interpret step failed has no S6 row and won't appear."""
-    from primeqa.interpretation.result_store import list_interpretations
-    rows = list_interpretations(session, claim_test_id=UUID(str(test_id)))
+# Read S4 runs (authoritative — they carry finished_at) LEFT JOINed to the S6
+# verdict, newest-first. The S6 read alone has no time axis (it orders by the
+# random-uuid run_id) and drops interpret-failed runs; reading S4 as the base
+# fixes both (true recency + a run with a failed interpret still shows, verdict
+# NULL). Tenant-scoped by the connection's search_path — no tenant_id column.
+_CLAIM_RUNS_SQL = (
+    "SELECT CAST(r.run_id AS text) AS run_id, CAST(r.recipe_id AS text) AS recipe_id, "
+    "r.outcome::text AS outcome, r.finished_at, i.verdict::text AS verdict "
+    "FROM s4_execution_runs r "
+    "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
+    "WHERE r.claim_test_id = CAST(:tid AS uuid) "
+    "ORDER BY r.finished_at DESC LIMIT :limit")
+
+
+def _read_claim_runs(session, test_id, *, limit: int = 50) -> list[dict]:
+    """Pure: the claim's runs newest-first — S4 outcome + finished_at LEFT JOINed
+    to the S6 verdict (verdict NULL when the best-effort interpret step failed)."""
+    rows = session.execute(
+        text(_CLAIM_RUNS_SQL), {"tid": str(test_id), "limit": limit}).mappings().all()
     return [{
-        "run_id": str(r.run_id),
-        "recipe_id": str(r.recipe_id),
-        "outcome": r.outcome,
-        "verdict": r.verdict,
+        "run_id": r["run_id"], "recipe_id": r["recipe_id"],
+        "outcome": r["outcome"], "verdict": r["verdict"],
+        "finished_at": _iso(r["finished_at"]),
     } for r in rows]
 
 

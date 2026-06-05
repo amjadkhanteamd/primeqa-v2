@@ -191,7 +191,10 @@
                 {% else %}bg-gray-100 text-gray-700{% endif %}">{{ r.outcome }}</span>
               {% if r.verdict %}<span class="text-xs text-gray-600">{{ r.verdict.replace('_', ' ') }}</span>{% endif %}
             </div>
-            <span class="text-xs text-gray-400 font-mono" title="{{ r.run_id }}">{{ r.run_id[:8] }}</span>
+            <div class="flex items-center gap-3 flex-shrink-0 ml-3">
+              {% if r.finished_at %}<span class="text-xs text-gray-400">{{ r.finished_at[:19] }}</span>{% endif %}
+              <span class="text-xs text-gray-400 font-mono" title="{{ r.run_id }}">{{ r.run_id[:8] }}</span>
+            </div>
           </li>
           {% endfor %}
         </ul>

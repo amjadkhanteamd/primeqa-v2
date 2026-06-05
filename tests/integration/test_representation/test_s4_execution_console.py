@@ -78,8 +78,29 @@ def test_map_run_result_no_eligible_recipe():
 
 
 def test_read_claim_runs_empty(session):
-    # a claim with no runs -> list_interpretations returns [] -> [].
+    # a claim with no runs -> [].
     assert _read_claim_runs(session, uuid4()) == []
+
+
+def test_read_claim_runs_orders_by_recency(session):
+    # two S4 runs for one claim, different finish times -> newest-first (the D-168
+    # 3a review fix: order by s4_execution_runs.finished_at, not the S6 run_id).
+    from sqlalchemy import text
+    tid = uuid4()
+    for fin, outcome in [("2026-06-01T10:00:00+00:00", "failed"),    # older
+                         ("2026-06-02T10:00:00+00:00", "passed")]:   # newer
+        session.execute(text(
+            "INSERT INTO s4_execution_runs (run_id, recipe_id, recipe_version_seq, "
+            "claim_test_id, environment_id, outcome, started_at, finished_at, evidence) "
+            "VALUES (CAST(:r AS uuid), CAST(:rec AS uuid), 1, CAST(:t AS uuid), 7, "
+            "CAST(:o AS run_outcome), CAST(:f AS timestamptz), CAST(:f AS timestamptz), "
+            "CAST('{}' AS jsonb))"),
+            {"r": str(uuid4()), "rec": str(uuid4()), "t": str(tid), "o": outcome, "f": fin})
+    session.flush()
+    got = _read_claim_runs(session, tid)
+    assert [r["outcome"] for r in got] == ["passed", "failed"]   # newest-first
+    assert got[0]["finished_at"] is not None
+    assert got[0]["verdict"] is None                              # no S6 row -> NULL via LEFT JOIN
 
 
 def test_trigger_claim_run_best_effort_bad_tenant():
