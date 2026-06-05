@@ -8707,4 +8707,82 @@ Run affordance real again on the new path. Accepted transitional state.
 
 ---
 
+## D-168 — UI Phase Area 3 (Execution / S4): design
+
+**Date:** 2026-06-05
+**Affected:** v2 runtime UI (execution surfaces) + a new v1→substrate bridge to S4
++ S6-verdict reads. Commits to `main`. **Status:** Active — UI Phase Area 3
+(sequence step 3). Closes the generate→run loop: makes everything Area 2 generates
+actually runnable.
+
+**The map (workflow `ww1dwx0e7`, 4 facets, file+line cited).**
+- The S4 execution engine is fully built and worker/scheduler-wired (run engine,
+  `finalize`, the `s4_execution_jobs` queue, consumer + reaper), but **nothing
+  enqueues jobs** — the worker no-ops ("queue empty until an enqueue source ships
+  (deferred)"). The seam `ExecutionJobStore(tid).create_or_get_job(test_id,
+  environment_id, created_by)` exists; only the caller is missing. This is Area 3's
+  D-166-analog gap.
+- A claim runs by **`test_id`** (the engine selects the one highest-priority
+  eligible recipe at run time via `select_recipe_for_execution`). The natural
+  trigger is from a **claim** — the S2→S4 entry, mirroring Area 2's per-requirement
+  generate.
+- **The verdict lives in S6, not S4.** S4 writes `s4_execution_runs` (outcome
+  `passed/failed/errored` + per-step `evidence` JSONB) at finalize; S6 owns the read
+  API (`interpretation/result_store.list_interpretations(session, claim_test_id=…)`
+  → outcome **+ verdict + cause**). The `/substrate-insights` bridge already reads S6
+  — the precedent idiom.
+
+**Three constraints (recorded; the Area-3 analog of D-166's gap surfacing).**
+1. **Async queue = metadata-recipe ONLY.** Data-recipes (behavioral-negative,
+   value-claims) raise `PlanTranslationError` on the queue path; only the
+   **synchronous** `run_recipe_execution_for_tenant` runs them (and returns
+   outcome+verdict in one call).
+2. **No production guard in the substrate** — zero `is_production` checks; the
+   data-recipe path *mutates the org*. The prod-confirm gate **must live in the UI
+   trigger** (reuse v1's `runs/bulk.environment_can_bulk_run` / the `is_production`
+   pattern).
+3. **No job→run link + no `list_runs`/`list_jobs`** — job↔run correlate only by
+   `(claim, env, recency)`; a runs index needs a new list read. (The sync path
+   sidesteps this — it returns the run result directly.)
+
+**User decision — SYNC-FIRST for the spine (3a).** 3a calls the synchronous
+`run_recipe_execution_for_tenant(tenant_id, test_id, environment_id=…)`: one
+blocking request (seconds of SF I/O) that runs **all** recipe kinds and returns
+`RunPathResult` (outcome + verdict + per-step evidence) directly — no poll, no
+job→run correlation gap. Simplest + complete proof of the loop. The async queue +
+bulk (and the correlation / async-data-recipe substrate work) come in 3d.
+
+**Verdict map.** Claim detail (`/claims/<id>`) → **net-new Run + results** (the
+spine). `/runs` list → **re-point** to S4 (needs a list read). `/runs/<id>` detail →
+**redesign** (S4 evidence steps + S6 verdict; defer agent-fix + cost). `/run` 4-mode
+picker → **reuse-chrome + re-point submit**, deferred to 3d (needs a v1-selection→S2
+mapping + the queue). `/runs/new` wizard + `/runs/scheduled*` → **reuse-chrome,
+defer**. `/results*` → **free** (redirects to `/runs`).
+
+**Slices.**
+- **3a — run-a-claim spine** (sync): a best-effort `primeqa/intelligence/s4_execution_console.py`
+  (`trigger_claim_run` — prod-confirm gate + `run_recipe_execution_for_tenant`,
+  returns outcome/verdict/per-step; tenant-scoped, never raises) + a **Run** form on
+  the claim detail (env picker + dynamic prod gate) + the result render (outcome +
+  S6 verdict + per-step evidence). Governance tests on the generation/exec harness.
+- **3b — runs history** (`/runs` → S4): a list read over `s4_execution_runs` (a small
+  read API or raw tenant-scoped bridge read), re-pointed, keeping the chrome
+  (breadcrumbs / pagination / status+label filters / My-vs-All).
+- **3c — run detail redesign** (`/runs/<id>` → S4): the run row + per-step evidence +
+  the S6 verdict/cause; agent-fix + cost + SSE-richness deferred.
+- **3d — async queue + bulk + `/run` re-point**: build the enqueuer route + poll,
+  close the job→run correlation gap (a small substrate fix — a `last_run_id` on the
+  job, mirroring S2's posture) and the async-data-recipe limit; re-point `/run`'s
+  submit.
+- **3e — close**: record deferred (scheduled, agent-fix, cost, wizard) + currency.
+
+**Boundary.** Best-effort bridges (never break the page). The **prod-confirm gate is
+the UI trigger's responsibility** (substrate enforces none). The sync 3a path holds a
+DB connection across SF I/O — acceptable for single-claim on the dev env; the queue
+(3d) is the scale path. v1 `pipeline_runs` surfaces stay until cutover Step 5. No
+migration in 3a (a `last_run_id` job column lands in 3d if we take that option).
+Commits to `main`.
+
+---
+
 ---
