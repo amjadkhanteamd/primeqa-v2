@@ -8600,4 +8600,59 @@ The end-to-end wiring + the close. v1 owns the bridge (the allowed v1→substrat
 
 ---
 
+## D-166 — Substrate gap-closure: S3 persister writes the `generated_from` requirement link
+
+**Date:** 2026-06-05
+**Affected:** `primeqa/generation/persistence.py` (S3 `LedgerPersister`) + a semantic-harness test. Commits to `main`. Unblocks UI Phase Area 2 slice 2a (D-165).
+**Status:** Active.
+
+**Context (premise break, found building D-165 slice 2a).** 2a specced
+`read_requirement_claims` to read via `coordinator.list_tests_by_requirement(
+external_system="jira", external_key=key)`. Building it surfaced that the S3
+generation pipeline **never writes a `TestRequirementLink`**:
+`LedgerPersister._write_emission` writes the claim + recipe + the
+`generation_outcomes.requirement_ref` ledger trace, but does not call
+`link_requirement`. The only callers of `coordinator.link_requirement` in the tree
+are its own unit tests. So `list_tests_by_requirement` returns empty for every
+generated test, and the re-pointed requirement detail would show zero claims after
+a successful generation.
+
+This contradicts the **documented-intended** behaviour: `link_requirement`'s
+docstring states *"Typically S3 creates `generated_from` links during generation"*
+and its authority gate explicitly admits `actor="s3"` (only `s4` is barred). The
+coordinator method is built and authority-cleared for exactly this write; the
+persister simply never makes the call — an unimplemented-but-specced gap, not a
+design choice.
+
+**Decision (root-cause, Option C).** Close the gap at the source rather than read
+the ledger as a UI-layer workaround. `LedgerPersister._write_emission` calls
+`coordinator.link_requirement(session, actor="s3", test_id=cr.test_id,
+external_system="jira", external_key=outcome.requirement_ref["key"],
+link_kind="generated_from")` immediately after `write_claim`, inside the **same
+atomic per-requirement transaction**. Written on **both** the new-claim and the
+same-hash no-op path (idempotent on the PK `(test_id, external_system,
+external_key, link_kind)`) so a re-generation that re-versions an existing test
+still records that this requirement generated it. `external_key` reads off
+`outcome.requirement_ref["key"]` (already populated on the outcome — no signature
+threading); guarded so a missing/blank key skips the link rather than raising.
+`external_version` stays NULL in v1 (the requirement_ref carries only `key`+`text`;
+no jira_version is pinned yet).
+
+**Boundary.** S3 substrate write-path, discovered mid-UI-phase. The CLAUDE.md
+branch model routes substrate work to a `phase-N-substrate-M` branch, but this is a
+~4-line gap-closure whose sole purpose is to unblock the UI phase's Area-2 read.
+Committed to `main` with this D-entry as the audit record (the UI phase is
+main-line), not a phase branch for one call.
+
+**Verification.** A semantic-harness test drives a full S3 draft (the existing
+draft-vertical setup) for a `requirement_ref` and asserts
+`list_tests_by_requirement(external_system="jira", external_key=key)` returns the
+test with `link_kind="generated_from"`. 2a then reads the clean surface exactly as
+D-165 designed (no D-165 amendment).
+
+**Unblocks.** UI Phase Area 2 slice 2a (now reads a populated surface); and S6
+impact-by-requirement / coverage queries gain `generated_from` links for free.
+
+---
+
 ---
