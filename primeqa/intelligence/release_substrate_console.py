@@ -26,7 +26,7 @@ def _assemble_release_substrate(session, external_keys) -> dict:
     """Pure: fan the release's requirement keys → claims → grounding + latest
     verdict, rolled up. Directly testable on the substrate session."""
     from primeqa.test_representation.coordinator import SemanticTransactionCoordinator
-    from primeqa.evolution import list_grounding_validity
+    from primeqa.evolution import list_grounding_validity, read_grounding_validity
     from primeqa.intelligence.s4_execution_console import _read_claim_runs
 
     coord = SemanticTransactionCoordinator()
@@ -44,8 +44,16 @@ def _assemble_release_substrate(session, external_keys) -> dict:
     vc = {"passed": 0, "failed": 0, "errored": 0, "never_run": 0}
     at_risk = []
     for tid in test_ids:
-        gv_rows = list_grounding_validity(session, test_id=tid)
-        gv = gv_rows[-1] if gv_rows else None          # ordered (test_id, version_seq) → last = latest
+        # Ground the APPROVED claim version (what the release ships) — not the
+        # newest version, which can be an unapproved draft after a hash-changing
+        # edit (D-172 5a review). Fall back to the latest grounding only when no
+        # approved version exists yet.
+        approved = coord.get_current_approved_claim(session, tid)
+        if approved is not None:
+            gv = read_grounding_validity(session, tid, approved.version_seq)
+        else:
+            gv_rows = list_grounding_validity(session, test_id=tid)
+            gv = gv_rows[-1] if gv_rows else None
         overall = gv.overall if gv is not None else None
         gc[overall if overall in gc else "not_computed"] += 1
 
@@ -60,7 +68,8 @@ def _assemble_release_substrate(session, external_keys) -> dict:
         if overall in _AT_RISK:                        # the actionable list
             at_risk.append({
                 "test_id": str(tid), "overall": overall,
-                "claim_verdict": gv.claim_verdict, "detail": gv.detail or {},
+                "evaluated_at_version_seq": gv.evaluated_at_version_seq,
+                "detail": gv.detail or {},
                 "latest_outcome": latest.get("outcome") if latest else None,
                 "latest_verdict": latest.get("verdict") if latest else None,
             })

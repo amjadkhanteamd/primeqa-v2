@@ -53,6 +53,10 @@ def test_assemble_release_substrate_rolls_up(session):
     persist_grounding_validity(
         session, test_id=cr.test_id, version_seq=cr.version_seq,
         evaluated_at_version_seq=5, validity=_gv(overall="drifted", claim_verdict="broken"))
+    # approve so the rollup grounds the APPROVED version (the 5a review fix), not
+    # the newest (possibly-draft) version.
+    coord.promote_claim_to_approved(
+        session, actor="human", test_id=cr.test_id, version_seq=cr.version_seq)
     _seed_run(session, claim_test_id=cr.test_id, outcome="failed",
               finished_at="2026-06-01T10:00:00+00:00")
     session.flush()
@@ -65,6 +69,7 @@ def test_assemble_release_substrate_rolls_up(session):
     a = out["at_risk"][0]
     assert a["test_id"] == str(cr.test_id) and a["overall"] == "drifted"
     assert a["latest_outcome"] == "failed"
+    assert a["evaluated_at_version_seq"] == 5      # grounded the APPROVED version
 
 
 def test_assemble_empty_for_unknown_key(session):

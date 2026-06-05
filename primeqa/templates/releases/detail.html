@@ -269,8 +269,9 @@
               <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium {% if c.overall == 'broken' %}bg-red-100 text-red-800{% else %}bg-amber-100 text-amber-800{% endif %}">{{ c.overall }}</span>
               {% set why = (c.detail.get('claim_grounding') or {}).get('reason') %}
               {% if why %}<span class="text-xs text-gray-500">{{ why.replace('_', ' ') }}</span>{% endif %}
+              {% if c.evaluated_at_version_seq is not none %}<span class="text-[11px] text-gray-400">@ S1 seq {{ c.evaluated_at_version_seq }}</span>{% endif %}
             </div>
-            <span class="text-xs text-gray-400 flex-shrink-0 ml-3">{% if c.latest_outcome %}last run: {{ c.latest_outcome }}{% else %}never run{% endif %}</span>
+            <span class="text-xs text-gray-400 flex-shrink-0 ml-3">{% if c.latest_outcome %}last run: {{ c.latest_outcome }}{% if c.latest_verdict %} &middot; {{ c.latest_verdict.replace('_', ' ') }}{% endif %}{% else %}never run{% endif %}</span>
           </li>
           {% endfor %}
         </ul>
