@@ -15,8 +15,10 @@ from primeqa.intelligence.s4_execution_console import (
     _approve_claim,
     _map_run_result,
     _read_claim_runs,
+    _list_runs,
     _read_run_detail,
     approve_claim,
+    list_runs,
     read_claim_runs,
     read_run_detail,
     trigger_claim_run,
@@ -170,3 +172,30 @@ def test_read_run_detail_not_found(session):
 
 def test_read_run_detail_best_effort_bad_tenant():
     assert read_run_detail(-1, str(uuid4()))["available"] is False
+
+
+# --- the global runs index ---------------------------------------------------
+
+def test_list_runs_orders_and_paginates(session):
+    from sqlalchemy import text
+    for fin, outcome in [("2026-06-01T10:00:00+00:00", "failed"),    # older
+                         ("2026-06-02T10:00:00+00:00", "passed")]:   # newer
+        session.execute(text(
+            "INSERT INTO s4_execution_runs (run_id, recipe_id, recipe_version_seq, "
+            "claim_test_id, environment_id, outcome, started_at, finished_at, evidence) "
+            "VALUES (CAST(:r AS uuid), CAST(:rec AS uuid), 1, CAST(:t AS uuid), 7, "
+            "CAST(:o AS run_outcome), CAST(:f AS timestamptz), CAST(:f AS timestamptz), "
+            "CAST('{}' AS jsonb))"),
+            {"r": str(uuid4()), "rec": str(uuid4()), "t": str(uuid4()), "o": outcome, "f": fin})
+    session.flush()
+
+    total, runs = _list_runs(session, limit=10, offset=0)
+    assert total == 2
+    assert [r["outcome"] for r in runs] == ["passed", "failed"]   # newest-first
+
+    total1, runs1 = _list_runs(session, limit=1, offset=0)        # page size 1
+    assert total1 == 2 and len(runs1) == 1 and runs1[0]["outcome"] == "passed"
+
+
+def test_list_runs_best_effort_bad_tenant():
+    assert list_runs(-1)["available"] is False

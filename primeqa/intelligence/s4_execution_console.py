@@ -181,6 +181,48 @@ def read_run_detail(tenant_id: int, run_id) -> dict:
         return {"available": False, "found": False, "run": None}
 
 
+# --- list all runs (the global runs index) (3b) ------------------------------
+
+_LIST_RUNS_SQL = (
+    "SELECT CAST(r.run_id AS text) AS run_id, CAST(r.claim_test_id AS text) AS claim_test_id, "
+    "r.outcome::text AS outcome, r.finished_at, r.duration_ms, r.environment_id, "
+    "i.verdict::text AS verdict "
+    "FROM s4_execution_runs r LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
+    "ORDER BY r.finished_at DESC LIMIT :limit OFFSET :offset")
+
+
+def _list_runs(conn, *, limit: int, offset: int):
+    """Pure: (total, page-rows) of all runs newest-first on an open tenant conn —
+    S4 outcome/timing LEFT JOINed to the S6 verdict (verdict NULL when absent)."""
+    total = conn.execute(text("SELECT COUNT(*) FROM s4_execution_runs")).scalar() or 0
+    rows = conn.execute(
+        text(_LIST_RUNS_SQL), {"limit": limit, "offset": offset}).mappings().all()
+    runs = [{"run_id": r["run_id"], "claim_test_id": r["claim_test_id"],
+             "outcome": r["outcome"], "verdict": r["verdict"],
+             "finished_at": _iso(r["finished_at"]), "duration_ms": r["duration_ms"],
+             "environment_id": r["environment_id"]} for r in rows]
+    return total, runs
+
+
+def list_runs(tenant_id: int, *, page: int = 1, per_page: int = 20) -> dict:
+    """Best-effort paginated read of the tenant's S4 runs (newest-first). Never
+    raises. ``per_page`` capped at 50. Returns
+    ``{available, runs, total, page, per_page, total_pages}``."""
+    page = max(1, page)
+    per_page = max(1, min(per_page, 50))
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            total, runs = _list_runs(conn, limit=per_page, offset=(page - 1) * per_page)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        return {"available": True, "runs": runs, "total": total,
+                "page": page, "per_page": per_page, "total_pages": total_pages}
+    except Exception as exc:
+        log.warning("list_runs unavailable for tenant %s: %s", tenant_id, exc)
+        return {"available": False, "runs": [], "total": 0,
+                "page": page, "per_page": per_page, "total_pages": 1}
+
+
 # --- approve a claim (the run-enabler) ---------------------------------------
 # S3 generates claims as `draft` and recipes as `generated_unapproved`, neither
 # of which `select_recipe_for_execution` will run (it needs an APPROVED claim +

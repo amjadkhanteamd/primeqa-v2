@@ -5664,6 +5664,20 @@ def claims_approve(test_id):
     return redirect(f"/claims/{test_id}")
 
 
+@views_bp.route("/runs/substrate")
+@login_required
+def s4_runs_list():
+    """D-168 (UI Area 3 slice 3b): the global S4 runs index — all execution runs,
+    newest-first. A focused new surface (the dense v1 /runs page is re-pointed at
+    cutover Step 5). Best-effort read via the s4_execution_console bridge."""
+    from primeqa.intelligence.s4_execution_console import list_runs
+    page = request.args.get("page", 1, type=int) or 1
+    per_page = request.args.get("per_page", 20, type=int) or 20
+    data = list_runs(request.user["tenant_id"], page=page, per_page=per_page)
+    return render_template("runs/s4_list.html", **ctx(
+        active_page="test_library", data=data))
+
+
 @views_bp.route("/runs/<uuid:run_id>")
 @login_required
 def s4_run_detail(run_id):

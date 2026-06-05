@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% from 'components/_empty_state.html' import empty_state %}
+{% from 'components/pagination.html' import render_pagination %}
+{% block title %}Runs - PrimeQA{% endblock %}
+{% block content %}
+
+{# D-168 (UI Area 3 slice 3b): the global S4 runs index — a focused new surface
+   (the dense v1 /runs page is re-pointed at cutover Step 5). #}
+<div class="max-w-5xl space-y-5">
+  <div>
+    <h1 class="text-xl font-semibold text-gray-900">Runs <span class="text-gray-400 text-base">(Substrate S4)</span></h1>
+    <p class="mt-1 text-sm text-gray-500">Every execution run, newest first &mdash; outcome + the S6 verdict. Click a run for its evidence.</p>
+  </div>
+
+  {% if not data or not data.available %}
+    {{ empty_state(title='Runs unavailable',
+        description='The substrate could not be read for your tenant right now.') }}
+  {% elif data.runs %}
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+      <table class="min-w-full divide-y divide-gray-200 text-sm">
+        <thead class="bg-gray-50">
+          <tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
+            <th class="px-4 py-2">Outcome</th>
+            <th class="px-4 py-2">Verdict</th>
+            <th class="px-4 py-2">Claim</th>
+            <th class="px-4 py-2">Finished</th>
+            <th class="px-4 py-2">Duration</th>
+            <th class="px-4 py-2">Run</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for r in data.runs %}
+          <tr class="hover:bg-gray-50">
+            <td class="px-4 py-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+                {% if r.outcome == 'passed' %}bg-green-100 text-green-800
+                {% elif r.outcome == 'failed' %}bg-red-100 text-red-800
+                {% elif r.outcome == 'errored' %}bg-amber-100 text-amber-800
+                {% else %}bg-gray-100 text-gray-700{% endif %}">{{ r.outcome }}</span>
+            </td>
+            <td class="px-4 py-2 text-gray-600">{{ r.verdict.replace('_', ' ') if r.verdict else '—' }}</td>
+            <td class="px-4 py-2"><a href="/claims/{{ r.claim_test_id }}" class="text-indigo-600 hover:underline font-mono text-xs">{{ r.claim_test_id[:8] }}</a></td>
+            <td class="px-4 py-2 text-gray-500">{{ r.finished_at[:19] if r.finished_at else '' }}</td>
+            <td class="px-4 py-2 text-gray-500">{% if r.duration_ms is not none %}{{ r.duration_ms }} ms{% endif %}</td>
+            <td class="px-4 py-2"><a href="/runs/{{ r.run_id }}" class="text-indigo-600 hover:underline font-mono text-xs">{{ r.run_id[:8] }} &rarr;</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="flex items-center justify-between">
+      <p class="text-xs text-gray-500">{{ data.total }} run{{ '' if data.total == 1 else 's' }}</p>
+      {{ render_pagination(data.page, data.total_pages, '/runs/substrate', '') }}
+    </div>
+  {% else %}
+    {{ empty_state(title='No runs yet',
+        description='Approve + run a claim to create execution runs.') }}
+  {% endif %}
+</div>
+{% endblock %}
