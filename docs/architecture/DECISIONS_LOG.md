@@ -9033,4 +9033,88 @@ panel notes this. Commits to `main`.
 
 ---
 
+## D-173 — UI Phase Area 5 (Releases & Decisions): close
+
+**Date:** 2026-06-06
+**Affected:** docs-only. Area 5 implementation landed in commits `f8dc4a0` (5a) +
+`1b89a61` (5a review fix) on `main`. **Status:** Area 5 COMPLETE — the release detail
+Decision tab carries an additive substrate-evidence panel. Area 6 (Conversation / S7
+polish) is next.
+
+**What shipped (D-172 design; slice 5a + its review fix).**
+- **5a — the substrate-evidence panel** (keystone): new best-effort bridge
+  `release_substrate_console.get_release_substrate(tenant_id, external_keys)` +
+  `_assemble_release_substrate`. `releases_detail` (only on `tab=='decision'`) derives
+  the release's requirement keys (`jira_key` or `req-<id>`), resolves them to claim
+  `test_id`s via `coordinator.list_tests_by_requirement(generated_from)`, and per claim
+  reads S8 grounding-validity + the S6 latest verdict (`_read_claim_runs` in-session).
+  The panel renders **two count cards** (grounding broken/drifted/intact/not-computed +
+  latest-run verdict passed/failed/errored/never-run) + an **at-risk claims list** with
+  the *why* (claim reason + unresolved subjects from the S8 `detail` JSONB), each claim
+  linking to `/claims/<test_id>`. The v1 `DecisionEngine` stays the GO/NO-GO authority —
+  the panel ADDS evidence, it does not produce or flip the verdict.
+- **5a review fix (`1b89a61`)**: ground the **approved** claim version
+  (`get_current_approved_claim` → `read_grounding_validity(test_id, approved.version_seq)`,
+  fallback to the latest grounding row only when no approved version exists), not the
+  newest (possibly-draft) version — a release ships the approved version. Dropped the
+  dead `claim_verdict` payload; render `latest_verdict` + `@ S1 seq N` (grounding
+  staleness).
+- **One shared tenant connection** (not N `read_claim_runs` calls), best-effort (never
+  raises; `available=False` on error), **read-only — no migration, no substrate write**.
+- **No substrate change** — every read pre-existed.
+
+**Verification.** 4 dedicated bridge tests pass (roll-up over the approved-version
+grounding path; unknown-key empty; empty-keys short-circuit `available=True/claim_count=0`;
+best-effort bad-tenant `available=False`) + the 5a adversarial review (workflow
+`wpgv6n1ph` — 3 confirmed of 7, all fixed in `1b89a61`) + a completeness-critic close
+sweep (workflow `wr9vn41w0`, 4 facets): the surface is integrity-clean — None/unavailable
+guarded before any dict deref, the empty-state guided, every template key produced by the
+bridge, at-risk links resolve to `/claims/<uuid>`.
+
+**Deferred (recorded, not done — from D-172 5b; verified none shipped).**
+- **Per-release at-risk chip on the `/releases` list** (+ other tabs) — reuse-only today;
+  the chip is a later follow-up (no substrate refs in `templates/releases/list.html`).
+- **The env-scoped `/dashboard` + `/shared/<token>` surfaces** stay pure-v1 (they key on
+  `pipeline_runs.release_status`; no release context to hang per-claim evidence on).
+- **Folding substrate evidence into the v1 `DecisionEngine`** — OUT OF SCOPE; no
+  substrate→v1 verdict dependency is specced. `DecisionEngine` / `RiskEngine` unchanged.
+- **Persisted release-grain verdicts** — OUT OF SCOPE (would need a migration; the
+  substrate has no release key, so the roll-up is computed live in the bridge each render).
+- **`/milestones`** stays v1.
+
+**Follow-ups (emerged in 5a + the reviews).**
+- **N+1 read loop** (`2·K` queries: per claim a `get_current_approved_claim` + grounding
+  read + `_read_claim_runs`) — un-batched; noise for 5a's empty-store reality, a batching
+  follow-up.
+- **Inlined key-mint** — `releases_detail` inlines `jira_key or req-<id>` rather than
+  calling the canonical `s3_enqueue._requirement_to_ref`. Byte-identical today (no bug),
+  but a drift-fragility; route both through the one helper.
+- **Panel copy** could explicitly name the v1 test-plan axis as the excluded path (it
+  conveys requirements-only today but does not spell out the dead end).
+
+**Substrate gaps (HOLD — not UI-buildable).**
+- **No release→runs / release→claims key** on `s6_interpretations` / `s8_grounding_validity`
+  (S8 PK is `(test_id, version_seq)`; S6 is keyed by `run_id`) → release-scoped clustering
+  is NOT buildable; only **per-claim aggregation** (join axis = claim `test_id`) is, and the
+  bridge does the roll-up itself.
+- **The substrate has no decision engine** — the v1 `DecisionEngine` stays authoritative.
+- **Requirements-only reachability** — the v1 test-plan axis (`release_test_plan_items` →
+  `test_cases`) is a substrate dead end (`test_cases` ≠ S2 claims). A requirement never
+  generated through the substrate contributes **zero claims silently** (`claim_count` just
+  stays lower).
+- **The run-verdict leg cannot be claim-version-pinned** (NEW, from the close sweep):
+  `s4_execution_runs` is keyed by `claim_test_id` + recipe version, not claim version, so
+  there is no DB path to co-version the "last run" verdict with the approved-version-pinned
+  grounding leg. The grounding leg is approved-version-pinned (5a fix); the "last run" is
+  the latest execution across **any** claim version (the label is temporal, honest).
+
+**Empty-state note.** The S6/S8 stores stay empty until the live `#119` sync + the first
+runs/recompute ticks; `available=True, claim_count=0` ("No substrate claims for this
+release yet") is the common production state — the panel ships before any populated
+substrate data exists.
+
+**Next.** Area 6 — Conversation (S7): `/ask` polish + nav (mostly reuse, per the U0 map).
+
+---
+
 ---
