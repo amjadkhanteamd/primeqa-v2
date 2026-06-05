@@ -27,32 +27,44 @@ from __future__ import annotations
 
 import logging
 
+from sqlalchemy import text
+
 from primeqa.evolution import list_grounding_validity
 from primeqa.interpretation import (
     cluster_by_vr,
     cluster_flapping,
     cluster_recurring_causes,
-    list_interpretations,
 )
 
 log = logging.getLogger(__name__)
 
 
-# --- flatteners: read DTOs (frozen dataclasses) -> JSON-safe plain dicts -----
+# --- recency-correct runs feed (D-170 4a keystone) ---------------------------
+# Section A reads s4_execution_runs (the only table with a time axis) LEFT JOIN
+# the S6 verdict/cause, newest-first. This fixes the S6-only read which ordered
+# by the random-uuid run_id AND silently dropped interpret-failed runs (a run
+# whose best-effort interpret step failed has no s6_interpretations row).
 
-def _interp_dict(r) -> dict:
-    return {
-        "run_id": str(r.run_id),
-        "recipe_id": str(r.recipe_id),
-        "claim_test_id": str(r.claim_test_id),
-        "outcome": r.outcome,
-        "verdict": r.verdict,
-        "attribution": r.attribution,
-        "cause": ({"cause_kind": r.cause.cause_kind, "vr_name": r.cause.vr_name,
-                   "detail": r.cause.detail} if r.cause else None),
-        "evidence_count": len(r.evidence_refs),
-        "has_phrasing": bool(r.phrasing),     # phrasing render is deferred (D-117)
-    }
+_RECENT_RUNS_SQL = (
+    "SELECT CAST(r.run_id AS text) AS run_id, CAST(r.claim_test_id AS text) AS claim_test_id, "
+    "r.outcome::text AS outcome, r.finished_at, i.verdict::text AS verdict, "
+    "i.cause_kind, i.vr_name "
+    "FROM s4_execution_runs r LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
+    "ORDER BY r.finished_at DESC LIMIT :limit")
+
+
+def _recent_runs(session, limit: int) -> list[dict]:
+    rows = session.execute(text(_RECENT_RUNS_SQL), {"limit": limit}).mappings().all()
+    return [{
+        "run_id": r["run_id"], "claim_test_id": r["claim_test_id"],
+        "outcome": r["outcome"], "verdict": r["verdict"],
+        "cause": ({"cause_kind": r["cause_kind"], "vr_name": r["vr_name"]}
+                  if r["cause_kind"] else None),
+        "finished_at": r["finished_at"].isoformat() if r["finished_at"] is not None else None,
+    } for r in rows]
+
+
+# --- flatteners: read DTOs (frozen dataclasses) -> JSON-safe plain dicts -----
 
 
 def _cause_cluster_dict(c) -> dict:
@@ -77,7 +89,7 @@ def _grounding_dict(r) -> dict:
 
 
 def _empty_payload(*, available: bool) -> dict:
-    return {"interpretations": [], "cause_clusters": [], "vr_clusters": [],
+    return {"recent_runs": [], "cause_clusters": [], "vr_clusters": [],
             "flapping": [], "grounding": [], "available": available, "empty": True}
 
 
@@ -87,8 +99,7 @@ def _assemble_insights(session, limit: int) -> dict:
     """Read S6 interpretations + clustering + S8 grounding verdicts on a
     **tenant-scoped** ``session`` and return JSON-safe plain dicts. Pure — no
     connection management; the caller owns the session's scope."""
-    interpretations = [_interp_dict(r)
-                       for r in list_interpretations(session, limit=limit)]
+    recent_runs = _recent_runs(session, limit)
     cause_clusters = [_cause_cluster_dict(c)
                       for c in cluster_recurring_causes(session, min_runs=2)]
     vr_clusters = [_vr_cluster_dict(c)
@@ -96,9 +107,9 @@ def _assemble_insights(session, limit: int) -> dict:
     flapping = [_flapping_dict(c) for c in cluster_flapping(session)]
     grounding = [_grounding_dict(r)
                  for r in list_grounding_validity(session, limit=limit)]
-    empty = not any([interpretations, cause_clusters, vr_clusters,
+    empty = not any([recent_runs, cause_clusters, vr_clusters,
                      flapping, grounding])
-    return {"interpretations": interpretations, "cause_clusters": cause_clusters,
+    return {"recent_runs": recent_runs, "cause_clusters": cause_clusters,
             "vr_clusters": vr_clusters, "flapping": flapping,
             "grounding": grounding, "available": True, "empty": empty}
 
