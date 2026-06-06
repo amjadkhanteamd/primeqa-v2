@@ -9953,4 +9953,51 @@ integration green.
 
 ---
 
+## D-184 (design) — `check_drift` reads the S1 sync anchor (cutover Step-5 companion to D-183)
+
+**Status:** Design. The companion to D-183: the run-preview path (`/runs/new/preview`) had two
+`meta_*` readers — Preflight (D-183) and the **metadata-drift banner**
+(`MetadataService.check_drift`). This re-points the drift check onto S1 behind the same
+`cutover_read_s1` flag, leaving the preview path `meta_*`-free behind the flag (so Step 5 — the
+`meta_*` drop — isn't blocked by it). No migration.
+
+**Key observation.** `check_drift` is **mostly live Salesforce**, not `meta_*`. Its ONLY `meta_*`
+dependency is the "drift since" anchor: `metadata_repo.get_current_version(env)` →
+`current.completed_at` (the timestamp the live-SF probes compare against) + `current.id` /
+`current.version_label` (banner text). The four count-only Tooling probes
+(`FieldDefinition` / `ValidationRule` / `Flow` / `ApexTrigger` `WHERE LastModifiedDate > since
+LIMIT 200`) and `drift_detected = any(count > 0)` are source-agnostic and stay. Single caller:
+`views.runs_new_preview` (~1689); the preview template reads
+`drift.{drift_detected, counts, current_meta_version_label, synced_at, has_current_meta, error}`,
+all anchor-derived → **no template change**.
+
+**Decision.** Extract the anchor resolution into a testable helper and flag-branch it; the live-SF
+drift comparison is untouched.
+- `MetadataService._resolve_drift_anchor(environment_id, tenant_id) -> {version_id, version_label,
+  synced_dt, source} | None`:
+  - flag ON + S1 provisioned (`cutover_read_s1_enabled` + `read_s1_freshness`, D-183): `usable` →
+    `{current_version_seq, "Org model v{seq}", fromisoformat(last_success_at), "s1"}`; not usable
+    (never synced THIS env) → `None`. Reuses D-183.1's env-scoped `read_s1_freshness`, so no
+    multi-env sibling-version contamination.
+  - else (flag off / S1 unprovisioned / S1 unavailable → parallel-window fallback): the v1
+    `get_current_version` row, or `None` when there's no current meta.
+- `check_drift` calls the helper; `None` → the existing `has_current_meta=False` shape; otherwise
+  the anchor's fields replace `current.id` / `version_label` / `completed_at` at all four return
+  points + `since_iso`. Adds a `metadata_source` marker (parity with D-183).
+
+**Forks (resolved, mirroring D-183).** meta_* fallback during parallel window; never-synced-this-
+env → `has_current_meta=False`; banner label `"Org model v{seq}"`.
+
+**Tests.** Unit on `_resolve_drift_anchor` (flag-off → meta; flag-on usable → s1 with the right
+label/synced_dt + `get_current_version` not called; not-usable → None; not-provisioned → meta
+fallback; fallback-with-no-current → None) + a `check_drift` `has_current_meta=False`-on-None test
+(no SF mocking). Self-review for the D-183-class env-scoping bug (reuses the fixed reader, so
+guarded). Full unit suite green. (JWT-gated Flask preview integration tests don't run locally.)
+
+**Boundary.** One helper + a flag-gated swap in `check_drift`, one accessor comment. No migration,
+no template change, no `meta_*` removal (Step 5). Commits to `main`. After this the preview path is
+`meta_*`-free behind the flag; remaining cutover work is Step 4 (parity) → Step 5.
+
+---
+
 ---
