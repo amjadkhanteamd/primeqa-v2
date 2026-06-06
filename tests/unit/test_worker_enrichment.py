@@ -290,23 +290,31 @@ class TestEmbeddingSubtick:
 # ----------------------------------------------------------------------
 
 class TestSummarySubtick:
-    def test_no_anthropic_key_returns_no_work_without_claiming(
-        self, monkeypatch,
-    ) -> None:
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    def test_no_key_for_org_fails_rows_permanently(self) -> None:
+        # D-179: no Anthropic key for the row's org's environment -> the row fails
+        # PERMANENTLY (so the queue drains + the sync_run finalizes), not a silent
+        # skip that strands the row in 'pending' forever.
         session = mock.MagicMock()
-        with _patch("_claim_batch") as mock_claim:
-            result = worker._summary_subtick(session, tenant_id=1)
-        assert result.did_work is False
-        mock_claim.assert_not_called()
+        with ExitStack() as s:
+            s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
+            s.enter_context(_patch("_claim_batch")).return_value = [
+                _claimed("q1", "e1", entity_type="Flow"),
+            ]
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = None
+            mock_fail = s.enter_context(_patch("_mark_failed"))
+            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: None))
+        mock_fail.assert_called_once()
+        assert mock_fail.call_args[0][2] is False  # no key → permanent
 
     def test_empty_queue_returns_no_work(self, monkeypatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
         session = mock.MagicMock()
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = []
-            result = worker._summary_subtick(session, tenant_id=1)
+            result = worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'))
         assert result.did_work is False
         assert result.claimed == 0
 
@@ -321,6 +329,7 @@ class TestSummarySubtick:
                               prompt_version="entity_summary_flow@v1")
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = claimed
             s.enter_context(_patch("_fetch_summary_context")).return_value = {
                 "name": "MyFlow",
@@ -333,7 +342,7 @@ class TestSummarySubtick:
             mock_embed.return_value = [[0.3] * 1024]
             mock_write = s.enter_context(_patch("_write_summary"))
             mock_ok = s.enter_context(_patch("_mark_succeeded"))
-            result = worker._summary_subtick(session, tenant_id=4)
+            result = worker._summary_subtick(session, tenant_id=4, api_key_resolver=(lambda *a: 'k'))
         assert result.did_work is True
         assert result.claimed == 1
         mock_write.assert_called_once()
@@ -351,6 +360,7 @@ class TestSummarySubtick:
                               prompt_version="v")
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = [
                 _claimed("q1", "e1", entity_type="ValidationRule"),
             ]
@@ -364,7 +374,7 @@ class TestSummarySubtick:
             s.enter_context(_patch("embed_batch")).return_value = [[0.1] * 1024]
             s.enter_context(_patch("_write_summary"))
             s.enter_context(_patch("_mark_succeeded"))
-            worker._summary_subtick(session, tenant_id=1)
+            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'))
         assert mock_llm.call_args.kwargs["task"] == "entity_summary_validation_rule"
 
     def test_llm_auth_error_is_permanent(self, monkeypatch) -> None:
@@ -373,6 +383,7 @@ class TestSummarySubtick:
         from primeqa.intelligence.llm.gateway import LLMError
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = [
                 _claimed("q1", "e1", entity_type="Flow"),
             ]
@@ -384,7 +395,7 @@ class TestSummarySubtick:
                 side_effect=LLMError("auth_error", "bad key"),
             ))
             mock_fail = s.enter_context(_patch("_mark_failed"))
-            worker._summary_subtick(session, tenant_id=1)
+            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'))
         mock_fail.assert_called_once()
         assert mock_fail.call_args[0][2] is False  # auth_error → permanent
 
@@ -394,6 +405,7 @@ class TestSummarySubtick:
         from primeqa.intelligence.llm.gateway import LLMError
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = [
                 _claimed("q1", "e1", entity_type="Flow"),
             ]
@@ -405,7 +417,7 @@ class TestSummarySubtick:
                 side_effect=LLMError("rate_limited", "slow down"),
             ))
             mock_fail = s.enter_context(_patch("_mark_failed"))
-            worker._summary_subtick(session, tenant_id=1)
+            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'))
         assert mock_fail.call_args[0][2] is True  # rate_limited → retryable
 
     def test_entity_not_found_is_permanent(self, monkeypatch) -> None:
@@ -413,12 +425,13 @@ class TestSummarySubtick:
         session = mock.MagicMock()
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = [
                 _claimed("q1", "e1", entity_type="Flow"),
             ]
             s.enter_context(_patch("_fetch_summary_context")).return_value = None
             mock_fail = s.enter_context(_patch("_mark_failed"))
-            worker._summary_subtick(session, tenant_id=1)
+            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'))
         assert mock_fail.call_args[0][2] is False
 
     def test_empty_summary_is_retryable(self, monkeypatch) -> None:
@@ -428,6 +441,7 @@ class TestSummarySubtick:
                               prompt_version="v")
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = [
                 _claimed("q1", "e1", entity_type="Flow"),
             ]
@@ -439,8 +453,49 @@ class TestSummarySubtick:
                 return_value=resp,
             ))
             mock_fail = s.enter_context(_patch("_mark_failed"))
-            worker._summary_subtick(session, tenant_id=1)
+            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'))
         assert mock_fail.call_args[0][2] is True
+
+
+# ----------------------------------------------------------------------
+# _resolve_org_keys — per-org → env → key (D-179)
+# ----------------------------------------------------------------------
+
+class TestResolveOrgKeys:
+    def test_maps_per_env_and_memoises(self) -> None:
+        # orgA+orgB share env 10; orgC → env 11; orgD → NULL env (no key).
+        session = mock.MagicMock()
+        session.execute.return_value.fetchall.return_value = [
+            ("orgA", 10), ("orgB", 10), ("orgC", 11), ("orgD", None),
+        ]
+        seen = []
+
+        def resolver(tid, env):
+            seen.append(env)
+            return f"key-{env}"
+
+        out = worker._resolve_org_keys(
+            session, 1, ["orgA", "orgB", "orgC", "orgD"], resolver)
+        assert out == {"orgA": "key-10", "orgB": "key-10",
+                       "orgC": "key-11", "orgD": None}
+        # env 10 resolved ONCE despite two orgs (memoised per tick).
+        assert sorted(seen) == [10, 11]
+
+    def test_resolver_error_degrades_to_no_key(self) -> None:
+        session = mock.MagicMock()
+        session.execute.return_value.fetchall.return_value = [("orgA", 10)]
+
+        def boom(tid, env):
+            raise ValueError("environment has no llm_connection_id")
+
+        out = worker._resolve_org_keys(session, 1, ["orgA"], boom)
+        assert out == {"orgA": None}      # degraded, not raised
+
+    def test_empty_org_ids_short_circuits(self) -> None:
+        session = mock.MagicMock()
+        out = worker._resolve_org_keys(session, 1, set(), lambda *a: "k")
+        assert out == {}
+        session.execute.assert_not_called()
 
 
 # ----------------------------------------------------------------------

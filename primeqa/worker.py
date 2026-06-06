@@ -1022,24 +1022,22 @@ def _embedding_subtick(session, tenant_id: int) -> TickResult:
     return result
 
 
-def _summary_subtick(session, tenant_id: int) -> TickResult:
+def _summary_subtick(session, tenant_id: int, api_key_resolver) -> TickResult:
     """Claim a small batch of summary rows for one tenant, generate a
     plain-English summary via the LLM gateway, embed it, write the
     detail-table summary_* fields.
+
+    D-179: the Anthropic key resolves PER-ORG from the env's LLM connection via
+    ``api_key_resolver(tenant_id, environment_id)`` — not a global env var. A row
+    whose org has no environment / no LLM connection / no key fails PERMANENTLY so
+    the sync_run can finalize. (The old no-key early-return stranded rows in
+    'pending' and hung finalization forever.)
 
     Returns a :class:`TickResult` with ``claimed`` count and a per-org
     breakdown of ``succeeded`` / ``failed_retryable`` /
     ``failed_permanent`` for the readiness wiring downstream.
     """
     result = TickResult()
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        # No key -> can't summarise. Leave rows pending (don't claim);
-        # log so the gap is visible.
-        log.warning("enrichment summary subtick: ANTHROPIC_API_KEY not "
-                    "set; skipping summary enrichment")
-        return result
-
     _reap_stalled(session, "summary")
     claimed = _claim_batch(session, "summary", SUMMARY_BATCH_LIMIT,
                            entity_types=["Flow", "ValidationRule"])
@@ -1048,6 +1046,10 @@ def _summary_subtick(session, tenant_id: int) -> TickResult:
         return result
 
     org_by_id = _fetch_org_ids(session, [r["entity_id"] for r in claimed])
+    # D-179: resolve the Anthropic key per claimed row's org -> environment ->
+    # LLM connection, memoised per env (one v1-session decrypt per env per tick).
+    key_by_org = _resolve_org_keys(
+        session, tenant_id, set(org_by_id.values()), api_key_resolver)
 
     def _credit_fail(r, retryable: bool, err: str):
         status = _mark_failed(session, r["queue_id"], retryable,
@@ -1062,6 +1064,13 @@ def _summary_subtick(session, tenant_id: int) -> TickResult:
     from primeqa.intelligence.llm.gateway import llm_call, LLMError
 
     for r in claimed:
+        api_key = key_by_org.get(org_by_id.get(r["entity_id"]))
+        if not api_key:
+            # D-179: no Anthropic key for this row's org -> permanent fail (so the
+            # queue drains and the sync_run finalizes), not a silent skip.
+            _credit_fail(r, False, "no Anthropic key: the org's environment has "
+                                   "no LLM connection / api_key configured")
+            continue
         et = r["entity_type"]
         context = _fetch_summary_context(session, et, r["entity_id"])
         if context is None:
@@ -1129,6 +1138,11 @@ def enrichment_tick(db_factory=None) -> bool:
         from primeqa.db import SessionLocal
         db_factory = SessionLocal
 
+    # D-179: the Anthropic summary key resolves per-env from the LLM connection
+    # (same resolver generation uses). Built once; opens its own v1 session per
+    # distinct env, memoised per tick inside _resolve_org_keys.
+    anthropic_resolver = _default_s3_api_key_resolver(db_factory)
+
     # Tenant discovery is a public-schema query — run it before any
     # per-tenant search_path is set.
     disc = db_factory()
@@ -1143,7 +1157,7 @@ def enrichment_tick(db_factory=None) -> bool:
         try:
             _set_tenant_context(session, schema_name, tenant_id)
             emb_result = _embedding_subtick(session, tenant_id)
-            sum_result = _summary_subtick(session, tenant_id)
+            sum_result = _summary_subtick(session, tenant_id, anthropic_resolver)
             if emb_result.did_work or sum_result.did_work:
                 did_work = True
 
@@ -1206,6 +1220,43 @@ def _default_s3_api_key_resolver(db_factory):
             db.close()
 
     return _resolve
+
+
+def _resolve_org_keys(session, tenant_id, org_ids, resolver) -> Dict[str, Optional[str]]:
+    """D-179: map each ``connected_org`` id to the api_key for its environment's
+    connection (via ``resolver(tenant_id, environment_id)``), or ``None`` when the
+    org has no ``environment_id``, no connection, or no key.
+
+    The enrichment worker has no environment_id in scope, so the env is derived
+    transitively: entity → ``last_synced_from_org_id`` (``org_by_id``) →
+    ``connected_orgs.environment_id``. The connected_orgs read uses the caller's
+    tenant-scoped ``session``; the ``resolver`` opens its own v1 (public-schema)
+    session. Memoised per env so each env's connection is decrypted at most once
+    per tick. Never raises — a failed resolve degrades that env's key to ``None``
+    (→ the row fails permanently, so the run still finalizes)."""
+    ids = sorted({str(o) for o in org_ids if o and str(o) != "None"})
+    if not ids:
+        return {}
+    rows = session.execute(_sa_text(
+        "SELECT CAST(id AS text), environment_id FROM connected_orgs "
+        "WHERE id = ANY(CAST(:ids AS uuid[]))"), {"ids": ids}).fetchall()
+    env_by_org = {r[0]: r[1] for r in rows}
+    key_by_env: Dict[object, Optional[str]] = {}
+    out: Dict[str, Optional[str]] = {}
+    for org in ids:
+        env_id = env_by_org.get(org)
+        if env_id is None:
+            out[org] = None
+            continue
+        if env_id not in key_by_env:
+            try:
+                key_by_env[env_id] = (resolver(tenant_id, env_id) or "").strip() or None
+            except Exception as exc:                 # noqa: BLE001 — degrade to no-key
+                log.warning("D-179 key resolve failed (tenant %s env %s): %s",
+                            tenant_id, env_id, exc)
+                key_by_env[env_id] = None
+        out[org] = key_by_env[env_id]
+    return out
 
 
 def s3_generation_tick(db_factory=None, *, tool_turn_fn=None, api_key_resolver=None) -> dict:
