@@ -275,22 +275,34 @@ def dead_mans_switch_check(ctx):
 
 
 def scheduler_tick(ctx):
-    """Single reaper iteration."""
-    reap_stuck_stages(ctx)
-    reap_stuck_slots(ctx)
-    reap_stuck_runs(ctx)          # audit F2 (2026-04-19)
-    reap_orphan_rtrs(ctx)          # worker-death recovery (2026-04-19)
-    reap_stale_workers(ctx)
-    fire_scheduled_runs(ctx)
-    dead_mans_switch_check(ctx)
-    reap_stalled_metadata_jobs(ctx)
-    reap_stale_generation_jobs(ctx)   # migration 044 / Prompt 11
-    s3_reaper_tick(ctx)               # D-106.4 slice 5 (substrate-3 queue)
-    s4_reaper_tick(ctx)               # D-132 (substrate-4 execution queue)
-    s8_grounding_tick(ctx)            # D-143 (substrate-8 grounding recompute)
-    s1_sync_enqueuer_tick(ctx)        # D-153 (substrate-1 sync cadence)
-    s1_sync_reaper_tick(ctx)          # D-153 (substrate-1 sync queue)
-    trim_run_events(ctx)
+    """Single reaper iteration. Each tick is isolated (D-178): one tick raising never
+    skips the ticks after it — the s1 sync enqueuer/reaper run LAST (after 12 others),
+    so an unguarded earlier tick used to starve them. Defense in depth on top of
+    ``run_scheduler``'s per-iteration guard. The tick list is built here (not at module
+    scope) so every tick function name is already defined when it's referenced."""
+    ticks = (
+        reap_stuck_stages,
+        reap_stuck_slots,
+        reap_stuck_runs,              # audit F2 (2026-04-19)
+        reap_orphan_rtrs,             # worker-death recovery (2026-04-19)
+        reap_stale_workers,
+        fire_scheduled_runs,
+        dead_mans_switch_check,
+        reap_stalled_metadata_jobs,
+        reap_stale_generation_jobs,   # migration 044 / Prompt 11
+        s3_reaper_tick,               # D-106.4 slice 5 (substrate-3 queue)
+        s4_reaper_tick,               # D-132 (substrate-4 execution queue)
+        s8_grounding_tick,            # D-143 (substrate-8 grounding recompute)
+        s1_sync_enqueuer_tick,        # D-153 (substrate-1 sync cadence)
+        s1_sync_reaper_tick,          # D-153 (substrate-1 sync queue)
+        trim_run_events,
+    )
+    for tick in ticks:
+        try:
+            tick(ctx)
+        except Exception:
+            log.exception("scheduler tick %s failed; continuing",
+                          getattr(tick, "__name__", tick))
 
 
 def reap_stale_generation_jobs(ctx):
@@ -482,7 +494,19 @@ def run_scheduler():
 
     try:
         while True:
-            scheduler_tick(ctx)
+            # D-178: a single tick failure (a transient DB blip, an unguarded tick
+            # raising) must NEVER kill the scheduler process — an unguarded throw here
+            # is what caused the 15h S1-sync outage (scheduler died → s1 reaper never
+            # ran → the orphaned sync job was never resumed). Log it, clear any poisoned
+            # transaction on the shared session, and continue the loop.
+            try:
+                scheduler_tick(ctx)
+            except Exception:
+                log.exception("scheduler_tick failed; continuing")
+                try:
+                    ctx["db"].rollback()
+                except Exception:
+                    log.exception("scheduler ctx db rollback failed")
             time.sleep(REAPER_INTERVAL)
     except KeyboardInterrupt:
         print("Scheduler shutting down")
