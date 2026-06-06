@@ -9463,4 +9463,78 @@ execution queue + bulk + `/run` re-point).
 
 ---
 
+## D-178 — S1 sync resilience: scheduler crash-isolation + periodic heartbeat (the 1d outage fix)
+
+**Date:** 2026-06-06
+**Affected:** `primeqa/scheduler.py` (`run_scheduler` loop + `scheduler_tick`),
+`primeqa/sync/consumer.py` (periodic heartbeat during `run_sync`), `primeqa/sync/jobs.py`
+(reaper window), `primeqa/metadata/s1_sync_console.py` + the env-detail panel (orphaned
+state). **No migration.** **Status:** Active — the proper fix for the parked `1d` / `#119`,
+surfaced by running the live sync. Commits to `main` (live-runtime hardening — it must
+deploy).
+
+**The bug (forensically confirmed, not asserted).** Running `#119` from the UI exposed the
+S1 sync stuck 15h at phase `Object` (146 entities, 0 edges, `sync_run.status='running'`).
+Root-caused via the live DB: `s1_sync_jobs.job=1` was `running`, `attempt_count=1`, heartbeat
+**904 min (15h) stale** — 20× past the 45-min reaper window — yet never reaped, despite the
+reaper SQL (`status IN ('claimed','running') AND COALESCE(heartbeat_at,claimed_at) < threshold`)
+matching it and `tenant_1` being enumerated. The decisive evidence: `worker_heartbeats.
+died_reason='heartbeat_timeout'` is stamped **only** by the scheduler's `reap_stale_workers`
+(an *early* tick in `scheduler_tick`); its last occurrence was `2026-06-05 08:58:58`, then
+**zero for 15h**. So `scheduler_tick` stopped running entirely ~15h ago — the **scheduler
+process died and never recovered**. The mechanism: `run_scheduler`'s `while True` loop wraps
+`scheduler_tick(ctx)` in `except KeyboardInterrupt` only — **any other tick exception
+propagates out of the loop and exits the process**. One transient failure → scheduler down →
+s1 reaper never runs → `job=1` orphaned → the enqueuer (which skips a tenant with an "active"
+`running` job) never enqueues a resume → 15h stall. (Re-clicking "Sync substrate" is a no-op:
+`create_or_get_job` returns the active `running` job.)
+
+**The fix (three root-cause changes; all code, no migration).**
+- **Fix 1 — `run_scheduler` per-iteration isolation (critical).** Wrap `scheduler_tick(ctx)`
+  in `try/except Exception` → log, best-effort `ctx["db"].rollback()` (clear a poisoned
+  transaction so the next tick isn't wedged), `continue`. A transient tick error can never
+  again kill the scheduler. *This alone revives the scheduler permanently and auto-reaps the
+  15h orphan.*
+- **Fix 2 — `scheduler_tick` per-tick isolation (defense in depth).** Run the tick sequence
+  in a guarded loop so one failing reaper can't skip the ones after it (the s1 ticks run
+  *last*, after 12 others). Logs the failing tick by name.
+- **Fix 3 — sync heartbeat hardening (the fragility that made a worker death invisible for
+  15h).** Realize the deferred (`consumer.py:25`) **daemon-thread periodic heartbeat** during
+  `run_sync` (beats ~every 30 s via `SyncJobStore.heartbeat`, which opens its own connection →
+  thread-safe), stopped in a `finally`. With real liveness signal, lower the s1 reaper window
+  (45 → ~10 min) for fast recovery without false-reap risk. The env-detail panel distinguishes
+  **orphaned** (`run=running` but the job heartbeat is stale) from actively-syncing.
+
+The orphaned `job=1` unblocks for free: the revived, crash-hardened scheduler reaps it on its
+first tick → enqueuer resumes from `Object` → worker (now beating) runs to `Flow`. **No manual
+SQL reset** (that would be the workaround).
+
+**Critical operational constraint.** Each push to `main` SIGTERMs the worker (138 SIGTERM
+deaths in `worker_heartbeats` — the deploy churn). So **all impl changes land in one push**,
+then **no further pushes until the resumed sync reaches `Flow`** — a second push mid-resume
+would re-kill it. The docs-only design commit may precede; the impl commit is the single
+runtime push.
+
+**Slices.**
+- **1d-a — scheduler resilience** (Fix 1 + Fix 2) + unit tests (loop survives a throwing tick;
+  every tick runs despite one throwing).
+- **1d-b — sync heartbeat + reaper window + panel orphaned-state** (Fix 3) + tests (the beat
+  thread beats then stops; orphaned-state derivation).
+- Both impl changes ship in **one** push; then the strict no-push hold.
+- **1d close (after live verification):** the resumed sync reaches `Flow` with `edges > 0` and
+  entities across types, the org-model browser renders it — the actual `#119` proving — then
+  close the parked `1d` / `#119`.
+
+**Verification.** Offline: the loop doesn't exit when a tick raises; `scheduler_tick` runs all
+ticks despite one throwing; the heartbeat thread beats + stops cleanly. Live (approved
+read-only queries): scheduler reaps `job=1` → resume → `sync_run` advances past `Object` →
+reaches `Flow` with edges + multi-type entities.
+
+**Boundary.** Live-runtime hardening on `main`; no migration, no substrate-contract change. The
+s1 reaper / enqueuer / resume machinery is already correct — this makes the **scheduler that
+drives it** crash-resilient and the **sync liveness** real-time, so a single worker death can
+never again become a silent multi-hour outage.
+
+---
+
 ---
