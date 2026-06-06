@@ -10000,4 +10000,53 @@ no template change, no `meta_*` removal (Step 5). Commits to `main`. After this 
 
 ---
 
+## D-185 (design) — Open cutover Step 4 (parallel-run validation): decompose + lead with parity
+
+**Status:** Design — opens cutover Step 4. Entry-gate (Step 3 flagged reads live) is satisfied
+(D-158–D-162 + D-183/D-184). Step 4's exit-gate is "a clean parity window — no divergence — across
+the rollout tenants; the GO/NO-GO + ledger seams landed" (`SEQUENCE.md:57`).
+
+**Decomposition.** Step 4's three `SEQUENCE.md` work-items are independent and at very different
+readiness; this opens them as three slices and fixes the order.
+
+- **4a — Metadata read-parity harness (lead; buildable now).** Prove S1-sourced reads equal
+  `meta_*`-sourced reads. `MetadataS1Reader` (`primeqa/metadata/s1_reader.py`) and
+  `MetadataRepository` expose matching reads. Build `MetadataParityChecker(meta_repo, s1_reader)`
+  diffing, for an env's current `meta_version` ↔ S1 version:
+  - objects by `api_name` → `{is_createable, is_custom}`;
+  - fields by `(object, field)` → `{field_type, is_required, is_custom, is_createable,
+    is_updateable, reference_to, picklist_values}` (the true parity axis);
+  - VRs by `(object, rule_name)` → presence + `error_message` (S1 doesn't sync
+    `error_condition_formula`/`is_active` — a documented gap, NOT a divergence).
+  **Design point:** separate **shape divergence** (a field BOTH have, but a CRUD flag differs → a
+  reader bug; the exit-gate) from **membership divergence** (a field in one but not the other →
+  sync-time drift between the independent meta/S1 syncs; expected — exactly what `check_drift`
+  surfaces). The exit-gate keys on the *intersection-shape* parity. Plus a `scripts/parity_check.py`
+  runner over the rollout tenants. Reuses `build_metadata_s1_reader`, `cutover_read_s1_enabled`, the
+  `diff_fields` keyed-diff pattern; unit-testable with synthetic readers.
+- **4c — Retire the S3 ledger → S2 provenance (self-contained, no v1 schema risk).** `test_provenance`
+  is **already fully written** by every S2 coordinator mutation; the gap is that
+  `get_provenance`/`get_recipe_provenance` are **reserved but unimplemented** (SPEC §10.2). Work =
+  build them on the S2 coordinator + rewire S3's eval/governance/routing readers off
+  `generation_outcomes` + verify equivalence + deprecate the ledger. `llm_calls` stays in S3 (D-074).
+- **4b — Fold S6 verdicts into GO/NO-GO (heaviest; carries a fork).** `release_runs` links only to
+  v1 `pipeline_runs` — there is **no `s4_execution_run_id`** column; the v1 + substrate execution
+  worlds are disjoint. *But* D-172/D-173 already shipped an additive **requirement-grain**
+  substrate-evidence panel (`release_substrate_console.get_release_substrate`) that surfaces
+  grounding + S6 verdicts and deliberately does NOT flip the verdict.
+  **Fork 4b (settle in its own pass):** add a `release_runs.s4_execution_run_id` migration + wire it
+  at execution-finalize + define a fold policy → a true release-grain fold into `DecisionEngine`;
+  **or** accept the existing requirement-grain evidence panel as "the additive fold" (human weighs
+  it; v1 stays the GO/NO-GO authority).
+
+**Sequence + lean: 4a → 4c → 4b.** 4a is the literal exit-gate mechanism and depends on nothing; 4c
+is self-contained; 4b is heaviest, carries the architectural fork, and the evidence panel already
+exists, so the GO/NO-GO fold is least-urgent. **Lead with 4a.**
+
+**Boundary (Step 4 overall).** Additive only — no v1 removal (that's Step 5). 4a adds a read-only
+harness + a script; 4c adds a read API + rewires S3-internal readers; 4b (if the fork goes that way)
+adds one nullable column + an additive decision input. Commits to `main`.
+
+---
+
 ---
