@@ -9603,4 +9603,61 @@ to `main`.
 
 ---
 
+## D-179 (close) — S1 enrichment provider keys now resolve per-env from the LLM connection
+
+**Status:** Built + shipped to `main` (Railway redeploys web/worker/scheduler). Slices A + B + C
+landed; no migration. Closes the enrichment-key half of the 1d outage work (D-178 fixed the
+scheduler/sync half).
+
+**Realized state.**
+- **Slice A (`76dc2c1`) — Anthropic per-env.** `worker._summary_subtick` no longer reads
+  `ANTHROPIC_API_KEY` / `os.environ`; it resolves the key per claimed row's org → environment →
+  `llm_connection_id` → `config['api_key']` via `_resolve_org_keys` (new helper: batch
+  `connected_orgs(id→environment_id)` lookup, then `_default_s3_api_key_resolver`, memoised per
+  env per tick). A row whose org has no env / no LLM connection / no key → `_credit_fail(
+  retryable=False)` → `failed_permanent`, so the run finalizes instead of hanging.
+- **Slice B (`880894b`) — Voyage per-env.** `voyage_api_key` is a second secret on the LLM
+  connection (`_sensitive_fields['llm']` → Fernet round-trip), with an optional input on the
+  connection new/edit UI. `embed_batch(api_key=None)` uses the passed key; `None`/blank → env-var
+  fallback **with a logged warning** (one-release safety net + system callers).
+  `_embedding_subtick` groups embeddable rows by their org's per-env Voyage key and embeds per
+  group; a no-key group → `failed_permanent` (queue drains, run finalizes). `_summary_subtick`
+  resolves the Voyage key the same way for its internal summary-embed.
+- **Slice C (this entry) — close.** Docs + the ops note below.
+
+**Verification.** `py_compile` clean (worker / embeddings / repository / views); Jinja-parse
+clean (connections new + edit). **Full unit suite 2263 green**, including 18 new Slice-A/B tests:
+embed_batch `api_key` (used / overrides-env / blank-falls-back-with-warning / missing-non-
+retryable), per-env Voyage grouping (distinct keys → N embed calls), no-key → fail-permanent
+(both subticks), and the `voyage_api_key` Fernet round-trip + sensitivity-set membership. Live
+finalization (`running → success/partial_success`) is the post-key-set confirmation — pending the
+ops step below.
+
+**OPS NOTE (action required for live finalization).** Enrichment now reads BOTH provider keys
+from the environment's LLM connection — nothing comes from worker env vars anymore. For an
+environment's syncs to finalize `success` (vs `partial_success`), that env's `llm_connection_id`
+connection must carry:
+- `api_key` (Anthropic) — already present in the production connection; and
+- `voyage_api_key` (Voyage) — **NEW field; set it via /connections → edit the LLM connection →
+  "Voyage embedding key".**
+Until the Voyage key is set, embedding rows fail `failed_permanent` and syncs finalize
+`partial_success`. **The org model is fully synced + readable regardless** (D-178) — only the
+semantic-search/summary enrichment layer is gated on the keys.
+
+**Deferred / carried.**
+- The `embed_batch` `VOYAGE_API_KEY` env-var fallback is retained **one release** (warned on use)
+  so a deploy doesn't go dark before the key is set; remove it in a follow-up once every env's
+  LLM connection carries the Voyage key.
+- `embeddings.py` keeps `model='voyage-3'` / dim 1024 hardcoded (the pgvector column dim is
+  fixed); the connection carries keys only, not the model. A configurable embedding model is a
+  separate change behind a dim-aware migration — not in scope.
+- 1d / #119 / D-178 close: the S1-sync proving is structurally achieved (org model synced +
+  readable, scheduler/sync resilient); the formal close is the next step once live enrichment
+  finalization is confirmed post-key-set.
+
+**Boundary held.** Worker + connections + the LLM-connection UI; zero migrations, zero
+substrate-schema change. Commits direct to `main`.
+
+---
+
 ---
