@@ -27,6 +27,7 @@ rare over-window reap cheap, so the daemon-thread periodic beat is deferred.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Callable, Optional
 
 from sqlalchemy import text
@@ -47,6 +48,11 @@ EngineFactory = Callable[[Any, Any, str], Any]
 
 # The only sync_run status that means the structural sync did NOT succeed.
 _SYNC_FAILED = "failure"
+
+# D-178: how often the consumer beats while run_sync runs (a long full-org sync).
+# A real periodic beat lets the reaper window drop from 45 min to a few minutes —
+# a worker death mid-sync is then caught fast instead of leaving a silent stall.
+_HEARTBEAT_INTERVAL_S = 30
 
 
 def _default_engine_factory(engine_db, sf_client, tenant_schema):
@@ -106,6 +112,22 @@ def process_sync_job_for_tenant(
         return None
     store.mark_running(job.id)
     store.heartbeat(job.id)
+    # D-178: beat periodically WHILE run_sync runs so the reaper's liveness signal is
+    # real — a worker death mid-sync is caught in minutes, not 45. The beat opens its
+    # own connection (SyncJobStore.heartbeat), so it is thread-safe alongside the
+    # engine's per-phase transactions. Best-effort: a failed beat never crashes the sync.
+    _stop_beat = threading.Event()
+
+    def _beat():
+        while not _stop_beat.wait(_HEARTBEAT_INTERVAL_S):
+            try:
+                store.heartbeat(job.id)
+            except Exception as exc:                # noqa: BLE001 — liveness ping is best-effort
+                log.debug("s1 sync heartbeat failed for job %s: %s", job.id, exc)
+
+    _beater = threading.Thread(
+        target=_beat, name=f"s1-sync-beat-{job.id}", daemon=True)
+    _beater.start()
     try:
         sf_client = sf_client_resolver(tenant_id, job.environment_id)
         engine = engine_factory(
@@ -117,6 +139,8 @@ def process_sync_job_for_tenant(
         store.fail(job.id, error_code=_classify_error(exc),
                    error_message=str(exc)[:500])
         return job.id
+    finally:
+        _stop_beat.set()        # stop the beater on success, failure, or raise
 
     outcome = _read_sync_run_outcome(tenant_id, sync_run_id)
     status = outcome["status"] if outcome else None
@@ -220,12 +244,14 @@ def run_s1_sync_enqueuer_tick(
 
 
 def run_s1_sync_reaper_tick(
-    tenant_ids, *, stale_minutes: int = 45,
+    tenant_ids, *, stale_minutes: int = 10,
 ) -> dict[int, int]:
     """The scheduler's reaper counterpart (D-153, mirrors ``run_s3_reaper_tick``):
     fail jobs stuck past the heartbeat timeout, per tenant, with per-tenant
-    isolation. ``stale_minutes=45`` (D-151) exceeds the longest legitimate sync; a
-    reaped job leaves its ``sync_run`` resumable, so a re-enqueue continues from
+    isolation. ``stale_minutes=10`` (D-178): the consumer now beats every ~30 s
+    *during* ``run_sync`` (not just once at start), so a 10-min-stale heartbeat is a
+    true worker-death signal — recovery in minutes instead of the old 45-min window.
+    A reaped job leaves its ``sync_run`` resumable, so a re-enqueue continues from
     ``last_completed_phase`` (D-152 carry-forward). Returns
     ``{tenant_id: reaped_count}``."""
     reaped: dict[int, int] = {}

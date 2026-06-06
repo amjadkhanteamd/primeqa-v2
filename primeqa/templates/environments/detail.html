@@ -139,6 +139,14 @@
             </div>
             {% set err = (run.error_message if run else None) or (job.error_message if job else None) %}
             {% if err %}<div class="mt-2 text-xs text-red-500">{{ err[:200] }}</div>{% endif %}
+            {# D-178: an orphaned sync (worker died mid-run, heartbeat stale) reads as
+               'running' but isn't progressing. Say so instead of implying progress. #}
+            {% if s1_status.orphaned %}
+            <div class="mt-2 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+              Stalled — the worker dropped mid-sync{% if job and job.heartbeat_age_s %} (no heartbeat for {{ job.heartbeat_age_s // 60 }} min){% endif %}.
+              It will auto-resume from the last completed phase; or click <strong>Sync substrate</strong> to nudge it.
+            </div>
+            {% endif %}
           {% endif %}
         </div>
       {% endif %}
@@ -153,7 +161,7 @@
 
       {% set _run = s1_status.run if s1_status else None %}
       {% set _job = s1_status.job if s1_status else None %}
-      {% set _active = (s1_status and s1_status.provisioned and (
+      {% set _active = (s1_status and s1_status.provisioned and not s1_status.orphaned and (
             (_run and _run.status in ['running','queued','claimed']) or
             (_job and _job.status in ['queued','claimed','running']))) %}
       <div id="s1-sync-live" class="mt-3" data-env-id="{{ env.id }}" data-active="{{ '1' if _active else '0' }}">

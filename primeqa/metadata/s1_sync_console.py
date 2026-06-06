@@ -28,10 +28,16 @@ log = logging.getLogger(__name__)
 _ORG_SQL = (
     "SELECT id, last_sync_completed_at FROM connected_orgs WHERE environment_id = :eid")
 _JOB_SQL = (
-    "SELECT status, error_code, error_message, created_at "
+    "SELECT status, error_code, error_message, created_at, "
+    "EXTRACT(EPOCH FROM (NOW() - COALESCE(heartbeat_at, claimed_at, created_at))) "
+    "  AS heartbeat_age_s "
     "FROM s1_sync_jobs "
     "WHERE connected_org_id = (SELECT id FROM connected_orgs WHERE environment_id = :eid) "
     "ORDER BY created_at DESC LIMIT 1")
+
+# D-178: a job claimed/running whose heartbeat is older than this is orphaned — the
+# worker died mid-sync. Matches the reaper window so the panel and the reaper agree.
+_ORPHAN_THRESHOLD_S = 10 * 60
 _RUN_SQL = (
     "SELECT status, last_completed_phase, started_at, completed_at, "
     "entities_inserted, edges_inserted, error_message "
@@ -52,13 +58,23 @@ def _read_status(conn, environment_id: int) -> dict:
         return {"available": True, "provisioned": False}
     job = conn.execute(text(_JOB_SQL), {"eid": environment_id}).mappings().first()
     run = conn.execute(text(_RUN_SQL), {"eid": environment_id}).mappings().first()
+    # D-178: distinguish an actively-running sync from an ORPHANED one (worker died
+    # mid-sync, heartbeat gone stale). Without this the panel showed "running"
+    # identically for a live sync and a 15h-dead one. The reaper will fail+resume an
+    # orphan within the window; the panel says so instead of implying progress.
+    hb_age = job["heartbeat_age_s"] if job else None
+    orphaned = bool(job and job["status"] in ("claimed", "running")
+                    and hb_age is not None and hb_age > _ORPHAN_THRESHOLD_S)
     return {
         "available": True,
         "provisioned": True,
         "last_sync_completed_at": _iso(org["last_sync_completed_at"]),
+        "orphaned": orphaned,
         "job": ({"status": job["status"], "error_code": job["error_code"],
                  "error_message": job["error_message"],
-                 "created_at": _iso(job["created_at"])} if job else None),
+                 "created_at": _iso(job["created_at"]),
+                 "heartbeat_age_s": (int(hb_age) if hb_age is not None else None),
+                 "orphaned": orphaned} if job else None),
         "run": ({"status": run["status"],
                  "last_completed_phase": run["last_completed_phase"],
                  "started_at": _iso(run["started_at"]),

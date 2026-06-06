@@ -23,13 +23,23 @@ def _seed_org(conn, env_id, *, instance_url="https://x.my.salesforce.com"):
 
 
 def _seed_run(conn, org_id, *, status="success", phase="Flow", ents=42, edges=99):
-    # status='success' is terminal -> completed_at must be non-NULL (the
-    # completion_implies_terminal CHECK).
+    # A terminal status must have completed_at non-NULL; a 'running' run must have it
+    # NULL (the completion_implies_terminal CHECK).
+    terminal = status in ("success", "partial_success", "failure")
     conn.execute(text(
         "INSERT INTO sync_runs (source_org_id, status, last_completed_phase, "
         "entities_inserted, edges_inserted, completed_at) "
-        "VALUES (CAST(:o AS uuid), :s, :p, :en, :ed, NOW())"),
+        "VALUES (CAST(:o AS uuid), :s, :p, :en, :ed, "
+        + ("NOW()" if terminal else "NULL") + ")"),
         {"o": str(org_id), "s": status, "p": phase, "en": ents, "ed": edges})
+
+
+def _seed_job(conn, org_id, env_id, *, status="running", hb_minutes_ago=0):
+    conn.execute(text(
+        "INSERT INTO s1_sync_jobs (connected_org_id, environment_id, status, "
+        "claimed_at, heartbeat_at) VALUES (CAST(:o AS uuid), :e, :s, NOW(), "
+        "NOW() - make_interval(mins => :m))"),
+        {"o": str(org_id), "e": env_id, "s": status, "m": hb_minutes_ago})
 
 
 def test_read_status_provisioned_with_run(conn):
@@ -46,6 +56,27 @@ def test_read_status_provisioned_no_run_yet(conn):
     _seed_org(conn, 78)
     st = _read_status(conn, 78)
     assert st["provisioned"] is True and st["run"] is None and st["job"] is None
+
+
+def test_read_status_flags_orphaned_sync(conn):
+    # D-178: a running job whose heartbeat is stale (worker died mid-sync) is
+    # orphaned — the panel must say so instead of implying progress.
+    org = _seed_org(conn, 91)
+    _seed_run(conn, org, status="running", phase="Object", ents=146, edges=0)
+    _seed_job(conn, org, 91, status="running", hb_minutes_ago=20)   # > 10-min window
+    st = _read_status(conn, 91)
+    assert st["orphaned"] is True
+    assert st["job"]["status"] == "running" and st["job"]["orphaned"] is True
+    assert st["job"]["heartbeat_age_s"] >= 19 * 60
+
+
+def test_read_status_active_sync_not_orphaned(conn):
+    # A fresh heartbeat (the new periodic beat) ⇒ actively running, not orphaned.
+    org = _seed_org(conn, 92)
+    _seed_run(conn, org, status="running", phase="Object", ents=10, edges=0)
+    _seed_job(conn, org, 92, status="running", hb_minutes_ago=0)
+    st = _read_status(conn, 92)
+    assert st["orphaned"] is False and st["job"]["orphaned"] is False
 
 
 def test_read_status_not_provisioned(conn):
