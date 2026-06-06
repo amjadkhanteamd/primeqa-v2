@@ -82,11 +82,40 @@ def test_run_scheduler_clean_exit_calls_close():
     _assert(db.close.called, "ctx db.close not called in finally")
 
 
+def test_scheduler_imports_text_at_module_scope():
+    """Regression (D-178 follow-on): the substrate ticks (s1/s3/s4/s8_*) call
+    text(...) at scheduler.py lines 341/365/388/411/434, but `text` was never
+    imported at module scope — so every substrate reaper/enqueuer raised
+    NameError: name 'text' is not defined, swallowed by each tick's own
+    try/except. The s1 reaper silently no-op'd → the orphaned sync job was never
+    reaped (the 16h S1-sync outage). `text` must be in module scope."""
+    from sqlalchemy import text as sa_text
+    _assert(getattr(sched, "text", None) is sa_text,
+            "scheduler.py must import `text` from sqlalchemy at module scope")
+    # And confirm a substrate tick can resolve text() without NameError: call the
+    # s1 reaper with a mocked DB layer and assert it reaches run_s1_sync_reaper_tick.
+    import primeqa.semantic.connection as conn_mod
+    import primeqa.sync.consumer as consumer_mod
+    conn = mock.MagicMock()
+    conn.execute.return_value.fetchall.return_value = [(1,)]
+    cm = mock.MagicMock()
+    cm.__enter__.return_value = conn
+    cm.__exit__.return_value = False
+    reaper = mock.MagicMock(return_value={1: 0})
+    with mock.patch.object(conn_mod, "admin_run_in_shared_schema", return_value=cm), \
+         mock.patch.object(consumer_mod, "run_s1_sync_reaper_tick", reaper):
+        sched.s1_sync_reaper_tick({"db": mock.MagicMock()})
+    _assert(reaper.called,
+            "s1_sync_reaper_tick never reached run_s1_sync_reaper_tick — text() NameError?")
+    reaper.assert_called_once_with([1])
+
+
 def run_tests():
     tests = [
         test_scheduler_tick_isolates_a_failing_tick,
         test_run_scheduler_survives_a_tick_exception,
         test_run_scheduler_clean_exit_calls_close,
+        test_scheduler_imports_text_at_module_scope,
     ]
     passed = 0
     for t in tests:
