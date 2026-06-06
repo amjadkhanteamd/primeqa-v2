@@ -99,6 +99,130 @@ def test_trigger_rejects_missing_instance_url():
     assert res["ok"] is False and "instance URL" in res["error"]
 
 
+# --- re-enrich requeue (D-180) -----------------------------------------------
+
+def _seed_entity(conn, org_id, version_seq, *, etype="Field",
+                 api="Acme__c.X__c", valid_to=None):
+    return conn.execute(text(
+        "INSERT INTO entities (entity_type, sf_api_name, valid_from_seq, "
+        "valid_to_seq, last_synced_at, last_synced_from_org_id) "
+        "VALUES (:t, :a, :s, :vt, NOW(), CAST(:o AS uuid)) RETURNING id"),
+        {"t": etype, "a": api, "s": version_seq, "vt": valid_to,
+         "o": str(org_id)}).scalar()
+
+
+def _seed_queue(conn, entity_id, *, etype="Field", primitive="embedding",
+                status="failed_permanent", attempts=5,
+                err="VOYAGE_API_KEY not set in environment"):
+    # ai_enrichment_queue_status_implies_timing: a terminal row needs started_at +
+    # completed_at; in_progress needs started_at; pending has neither. error_text
+    # only on failures.
+    if status == "pending":
+        timing = "NULL, NULL"
+    elif status == "in_progress":
+        timing = "NOW(), NULL"
+    else:                                  # succeeded / failed_permanent / failed_retryable
+        timing = "NOW(), NOW()"
+    err_val = err if str(status).startswith("failed") else None
+    conn.execute(text(
+        "INSERT INTO ai_enrichment_queue (entity_type, entity_id, primitive_type, "
+        "status, enqueued_at, attempts, started_at, completed_at, error_text) "
+        f"VALUES (:t, CAST(:e AS uuid), :p, :s, NOW(), :a, {timing}, :err)"),
+        {"t": etype, "e": str(entity_id), "p": primitive, "s": status,
+         "a": attempts, "err": err_val})
+
+
+def test_read_status_counts_failed_enrichment(conn, seed):
+    v = seed.version()
+    org = _seed_org(conn, 201)
+    e1 = _seed_entity(conn, org, v, api="A.f1")
+    e2 = _seed_entity(conn, org, v, api="A.f2")
+    _seed_queue(conn, e1, primitive="embedding")           # failed
+    _seed_queue(conn, e2, primitive="embedding")           # failed
+    _seed_queue(conn, e1, primitive="summary", status="succeeded")  # not counted
+    st = _read_status(conn, 201)
+    assert st["failed_enrichment"] == 2
+
+
+def test_read_status_failed_enrichment_zero_when_clean(conn, seed):
+    v = seed.version()
+    org = _seed_org(conn, 204)
+    e1 = _seed_entity(conn, org, v, api="D.f1")
+    _seed_queue(conn, e1, status="succeeded")
+    st = _read_status(conn, 204)
+    assert st["failed_enrichment"] == 0
+
+
+def test_requeue_failed_enrichment_resets_rows(conn, seed):
+    from primeqa.sync.readiness import (
+        count_failed_enrichment, requeue_failed_enrichment,
+    )
+    v = seed.version()
+    org = _seed_org(conn, 202)
+    e1 = _seed_entity(conn, org, v, api="B.f1")
+    _seed_queue(conn, e1, status="failed_permanent", attempts=5)
+    assert count_failed_enrichment(conn, org) == 1
+
+    n = requeue_failed_enrichment(conn, org)
+    assert n == 1
+    row = conn.execute(text(
+        "SELECT status, attempts, error_text, started_at, completed_at "
+        "FROM ai_enrichment_queue WHERE entity_id = CAST(:e AS uuid)"),
+        {"e": str(e1)}).mappings().first()
+    assert row["status"] == "pending"
+    assert row["attempts"] == 0
+    assert row["error_text"] is None
+    assert row["started_at"] is None and row["completed_at"] is None
+    # readiness flips off the failed count once the rows are pending again
+    assert count_failed_enrichment(conn, org) == 0
+
+
+def test_requeue_scoped_to_active_entities(conn, seed):
+    """A superseded entity's failed row (valid_to_seq set) is NOT
+    requeued — only the org's *active* entities."""
+    from primeqa.sync.readiness import requeue_failed_enrichment
+    v1 = seed.version()
+    v2 = seed.version()
+    org = _seed_org(conn, 203)
+    active = _seed_entity(conn, org, v1, api="C.f1", valid_to=None)
+    superseded = _seed_entity(conn, org, v1, api="C.f0", valid_to=v2)
+    _seed_queue(conn, active, status="failed_permanent")
+    _seed_queue(conn, superseded, status="failed_permanent")
+    n = requeue_failed_enrichment(conn, org)
+    assert n == 1
+
+
+def test_requeue_recomputes_org_status_off_complete(conn, seed):
+    """Org reads 'complete' (all terminal) → after requeue it must not
+    still read 'complete' (pending rows now exist)."""
+    from primeqa.sync.readiness import apply_org_status, requeue_failed_enrichment
+    v = seed.version()
+    org = _seed_org(conn, 205)
+    # 'complete' requires a finalized run linked as last_sync_run_id with a
+    # non-structural phase (else compute_org_status short-circuits to 'none').
+    run_id = conn.execute(text(
+        "INSERT INTO sync_runs (source_org_id, status, last_completed_phase, "
+        "phase, completed_at) VALUES (CAST(:o AS uuid), 'partial_success', "
+        "'Flow', 'done', NOW()) RETURNING id"), {"o": str(org)}).scalar()
+    conn.execute(text(
+        "UPDATE connected_orgs SET last_sync_run_id = CAST(:r AS uuid) "
+        "WHERE id = CAST(:o AS uuid)"), {"r": str(run_id), "o": str(org)})
+    e1 = _seed_entity(conn, org, v, api="E.f1")
+    _seed_queue(conn, e1, status="failed_permanent")   # only queue row → all terminal
+    assert apply_org_status(conn, org) == "complete"
+    requeue_failed_enrichment(conn, org)
+    new_status = conn.execute(text(
+        "SELECT ai_enrichment_status FROM connected_orgs WHERE id = CAST(:o AS uuid)"),
+        {"o": str(org)}).scalar()
+    assert new_status != "complete"
+
+
+def test_requeue_s1_enrichment_best_effort_on_bad_tenant():
+    from primeqa.metadata.s1_sync_console import requeue_s1_enrichment
+    res = requeue_s1_enrichment(-1, 1)
+    assert res["ok"] is False
+
+
 # --- org-model browser (1c) --------------------------------------------------
 
 def test_read_org_model_lists_objects(conn, seed):

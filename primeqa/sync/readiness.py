@@ -262,3 +262,76 @@ def maybe_finalize_run(session, connected_org_id) -> bool:
           AND status = 'running'
     """), {"terminal": terminal, "org": str(connected_org_id)})
     return (result.rowcount or 0) > 0
+
+
+# ---------------------------------------------------------------------
+# Operational requeue (D-180)
+# ---------------------------------------------------------------------
+
+def requeue_failed_enrichment(session, connected_org_id) -> int:
+    """Reset every ``failed_permanent`` enrichment queue row for an
+    org's active entities back to ``pending`` so the worker re-attempts
+    them (D-180).
+
+    Drains rows stranded by a *systemic* failure — e.g. the keyless
+    worker bug (D-179). Once the env's LLM connection carries the provider
+    keys, those terminal rows would otherwise never retry:
+    ``materialize._batch_upsert_queue`` only resets a row on a NEW
+    structural change to its entity, and an unchanged org re-enqueues
+    nothing (design §5). This is the product-level remedy that replaces
+    hand-run SQL.
+
+    Scope: rows joined to the org's active entities
+    (``entities.last_synced_from_org_id = org`` AND ``valid_to_seq IS
+    NULL``) with ``status='failed_permanent'``. The reset clears
+    ``attempts`` and the prior run timestamps / error text so each row
+    looks freshly enqueued. When ≥1 row is reset, recompute
+    ``ai_enrichment_status`` so the org flips off ``complete`` (pending
+    rows now exist) — keeping readiness honest before the next tick.
+
+    Note: a sync_run that was already finalized (``status='partial_success'``
+    before this requeue) is INTENTIONALLY not re-opened — ``maybe_finalize_run``
+    only acts on a ``running`` run, and re-finalizing a terminal run would
+    contradict the "consumers read ``connected_orgs.last_sync_run_id``, not
+    ``sync_runs.status``" contract. The honest post-drain state lives in
+    ``ai_enrichment_status`` (recomputed here + by the worker); the historical
+    run row stays as its audit record. A subsequent structural sync gets a fresh
+    run that finalizes ``success`` once the queue is clean.
+
+    Returns the number of rows requeued. Joins the caller's transaction;
+    the caller commits.
+    """
+    result = session.execute(text("""
+        UPDATE ai_enrichment_queue
+        SET status = 'pending',
+            attempts = 0,
+            started_at = NULL,
+            completed_at = NULL,
+            error_text = NULL
+        WHERE id IN (
+            SELECT q.id
+            FROM ai_enrichment_queue q
+            JOIN entities e ON e.id = q.entity_id
+            WHERE e.last_synced_from_org_id = :id
+              AND e.valid_to_seq IS NULL
+              AND q.status = 'failed_permanent'
+        )
+    """), {"id": str(connected_org_id)})
+    count = result.rowcount or 0
+    if count:
+        apply_org_status(session, connected_org_id)
+    return count
+
+
+def count_failed_enrichment(session, connected_org_id) -> int:
+    """Count an org's active-entity ``failed_permanent`` enrichment rows
+    (D-180) — drives the panel's conditional "Re-run enrichment (N)"
+    affordance. Same scoping as :func:`requeue_failed_enrichment`."""
+    return int(session.execute(text("""
+        SELECT COUNT(*)
+        FROM ai_enrichment_queue q
+        JOIN entities e ON e.id = q.entity_id
+        WHERE e.last_synced_from_org_id = :id
+          AND e.valid_to_seq IS NULL
+          AND q.status = 'failed_permanent'
+    """), {"id": str(connected_org_id)}).scalar() or 0)

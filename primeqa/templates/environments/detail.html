@@ -156,6 +156,20 @@
           {{ csrf_input | safe }}
           {{ btn_primary('Sync substrate', type='submit') }}
         </form>
+        {# D-180: re-run enrichment for rows stranded failed_permanent (e.g. before
+           the env's LLM connection carried the provider keys). Only shown when there
+           are failures to drain. #}
+        {% if s1_status and s1_status.failed_enrichment and s1_status.failed_enrichment > 0 %}
+        <form id="requeue-enrichment-form" method="POST"
+              action="/environments/{{ env.id }}/sync-substrate/requeue-enrichment" class="inline">{{ csrf_input | safe }}</form>
+        <button type="button"
+                class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+                data-confirm
+                data-confirm-title="Re-run enrichment?"
+                data-confirm-message="Requeue {{ s1_status.failed_enrichment }} failed enrichment row(s) for re-embedding? The worker processes them in the background."
+                data-confirm-submit="Re-run enrichment"
+                data-confirm-form="#requeue-enrichment-form">Re-run enrichment ({{ s1_status.failed_enrichment }} failed)</button>
+        {% endif %}
         <a href="/org-model" class="text-sm text-indigo-600 hover:text-indigo-800">Browse org model &rarr;</a>
       </div>
 

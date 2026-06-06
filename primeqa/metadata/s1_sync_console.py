@@ -65,11 +65,19 @@ def _read_status(conn, environment_id: int) -> dict:
     hb_age = job["heartbeat_age_s"] if job else None
     orphaned = bool(job and job["status"] in ("claimed", "running")
                     and hb_age is not None and hb_age > _ORPHAN_THRESHOLD_S)
+    # D-180: count of this org's terminal-failed enrichment rows — drives the panel's
+    # conditional "Re-run enrichment (N)" button. Best-effort; a count error -> 0.
+    try:
+        from primeqa.sync.readiness import count_failed_enrichment
+        failed_enrichment = count_failed_enrichment(conn, org["id"])
+    except Exception:
+        failed_enrichment = 0
     return {
         "available": True,
         "provisioned": True,
         "last_sync_completed_at": _iso(org["last_sync_completed_at"]),
         "orphaned": orphaned,
+        "failed_enrichment": failed_enrichment,
         "job": ({"status": job["status"], "error_code": job["error_code"],
                  "error_message": job["error_message"],
                  "created_at": _iso(job["created_at"]),
@@ -124,6 +132,31 @@ def trigger_s1_sync(tenant_id: int, environment_id: int, sf_instance_url: str, *
                 "job_id": job.id, "status": job.status}
     except Exception as exc:
         log.warning("trigger_s1_sync failed for tenant %s env %s: %s",
+                    tenant_id, environment_id, exc)
+        return {"ok": False, "error": str(exc)}
+
+
+def requeue_s1_enrichment(tenant_id: int, environment_id: int) -> dict:
+    """Reset the env's connected-org ``failed_permanent`` enrichment rows back to
+    ``pending`` (D-180) so the worker re-attempts them under the per-env provider
+    keys (D-179). Best-effort — returns ``{ok: False, error: ...}`` on any failure
+    (never raises). The worker's ``enrichment_tick`` drains the requeued rows; this
+    bridge does no embedding itself.
+
+    Returns ``{ok: True, requeued: N}`` (``N`` may be 0 if nothing was failed)."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.sync.readiness import requeue_failed_enrichment
+
+        with get_tenant_connection(tenant_id) as conn:          # commits on exit
+            org = conn.execute(text(_ORG_SQL),
+                               {"eid": environment_id}).mappings().first()
+            if org is None:
+                return {"ok": False, "error": "environment has no connected org"}
+            n = requeue_failed_enrichment(conn, org["id"])
+        return {"ok": True, "requeued": int(n)}
+    except Exception as exc:
+        log.warning("requeue_s1_enrichment failed for tenant %s env %s: %s",
                     tenant_id, environment_id, exc)
         return {"ok": False, "error": str(exc)}
 

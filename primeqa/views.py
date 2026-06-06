@@ -2864,6 +2864,32 @@ def environments_sync_substrate_status(env_id):
     return jsonify(read_s1_sync_status(request.user["tenant_id"], env_id))
 
 
+@views_bp.route("/environments/<int:env_id>/sync-substrate/requeue-enrichment",
+                methods=["POST"])
+@role_required("admin", "superadmin")
+def environments_requeue_enrichment(env_id):
+    """Reset the env's connected-org ``failed_permanent`` enrichment rows to
+    ``pending`` (D-180) so the worker re-embeds them under the per-env keys (D-179).
+    Async via the worker queue; reuses the ``trigger_metadata_sync`` permission."""
+    from urllib.parse import quote
+
+    from primeqa.core.permissions import _resolve_effective_permissions
+    from primeqa.metadata.s1_sync_console import requeue_s1_enrichment
+    if (request.user.get("role") != "superadmin"
+            and "trigger_metadata_sync" not in _resolve_effective_permissions()):
+        flash("You don't have permission to requeue enrichment.", "warning")
+        return redirect(f"/environments/{env_id}")
+    res = requeue_s1_enrichment(request.user["tenant_id"], env_id)
+    if res.get("ok"):
+        n = res.get("requeued", 0)
+        msg = (f"Requeued {n} enrichment row{'s' if n != 1 else ''} — the worker "
+               "will re-embed them in the background." if n
+               else "No failed enrichment rows to requeue.")
+    else:
+        msg = f"Requeue error: {res.get('error', 'could not requeue')}"
+    return redirect(f"/environments/{env_id}?message={quote(msg)}")
+
+
 @views_bp.route("/org-model")
 @role_required("admin", "superadmin")
 def org_model():

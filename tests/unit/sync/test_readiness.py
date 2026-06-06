@@ -253,6 +253,84 @@ class TestMaybeFinalizeRun:
 
 
 # ----------------------------------------------------------------------
+# requeue_failed_enrichment / count_failed_enrichment (D-180)
+# ----------------------------------------------------------------------
+
+class TestRequeueFailedEnrichment:
+    def _session(self, *, rowcount, status="partial"):
+        """execute() yields a fresh mock per call: the UPDATE reads
+        .rowcount; apply_org_status's compute-SELECT reads .fetchone."""
+        session = mock.MagicMock()
+
+        def _exec(*a, **k):
+            r = mock.MagicMock()
+            r.rowcount = rowcount
+            r.fetchone.return_value = (status,)
+            return r
+        session.execute.side_effect = _exec
+        return session
+
+    def test_resets_failed_permanent_to_pending(self) -> None:
+        session = self._session(rowcount=5)
+        n = readiness.requeue_failed_enrichment(session, ORG_A)
+        assert n == 5
+        upd = session.execute.call_args_list[0][0][0].text
+        assert "UPDATE ai_enrichment_queue" in upd
+        assert "failed_permanent" in upd
+        assert "'pending'" in upd
+        assert "attempts = 0" in upd
+        assert session.execute.call_args_list[0][0][1]["id"] == ORG_A
+
+    def test_recomputes_org_status_when_rows_reset(self) -> None:
+        """≥1 row reset → apply_org_status runs (SELECT compute + UPDATE
+        connected_orgs) so the org flips off 'complete'."""
+        session = self._session(rowcount=3)
+        readiness.requeue_failed_enrichment(session, ORG_A)
+        # UPDATE queue + apply_org_status(SELECT + UPDATE connected_orgs) = 3
+        assert session.execute.call_count == 3
+        assert "UPDATE connected_orgs" in \
+            session.execute.call_args_list[-1][0][0].text
+
+    def test_no_rows_skips_status_recompute(self) -> None:
+        session = self._session(rowcount=0)
+        n = readiness.requeue_failed_enrichment(session, ORG_A)
+        assert n == 0
+        assert session.execute.call_count == 1  # only the UPDATE, no apply
+
+    def test_null_rowcount_is_zero(self) -> None:
+        session = self._session(rowcount=None)
+        assert readiness.requeue_failed_enrichment(session, ORG_A) == 0
+
+    def test_org_id_stringified(self) -> None:
+        import uuid
+        session = self._session(rowcount=1)
+        readiness.requeue_failed_enrichment(session, uuid.UUID(ORG_A))
+        assert session.execute.call_args_list[0][0][1]["id"] == ORG_A
+
+
+class TestCountFailedEnrichment:
+    def test_returns_count(self) -> None:
+        session = mock.MagicMock()
+        session.execute.return_value.scalar.return_value = 42
+        assert readiness.count_failed_enrichment(session, ORG_A) == 42
+        sql = session.execute.call_args[0][0].text
+        assert "COUNT(*)" in sql
+        assert "failed_permanent" in sql
+
+    def test_none_scalar_is_zero(self) -> None:
+        session = mock.MagicMock()
+        session.execute.return_value.scalar.return_value = None
+        assert readiness.count_failed_enrichment(session, ORG_A) == 0
+
+    def test_org_id_stringified(self) -> None:
+        import uuid
+        session = mock.MagicMock()
+        session.execute.return_value.scalar.return_value = 0
+        readiness.count_failed_enrichment(session, uuid.UUID(ORG_A))
+        assert session.execute.call_args[0][1]["id"] == ORG_A
+
+
+# ----------------------------------------------------------------------
 # enrichment_tick harness — readiness wiring around the subticks
 # ----------------------------------------------------------------------
 
