@@ -147,7 +147,7 @@
               {% if r.status == 'approved' %}bg-blue-100 text-blue-800{% elif r.status == 'draft' %}bg-gray-100 text-gray-700{% else %}bg-amber-100 text-amber-800{% endif %}">{{ r.status }}</span>
             <span class="text-xs text-gray-400">priority {{ r.priority }} · v{{ r.version_seq }}</span>
           </div>
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="space-y-4">
             <div>
               <h4 class="text-xs font-medium text-gray-500 uppercase mb-1">Causal initiation</h4>
               {{ render_value(r.causal_initiation) }}
