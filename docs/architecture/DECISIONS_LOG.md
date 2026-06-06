@@ -10049,4 +10049,45 @@ adds one nullable column + an additive decision input. Commits to `main`.
 
 ---
 
+## D-186 (settlement) — Step 4c: the S3 generation ledger stays write-only; `get_provenance` deferred
+
+**Status:** Settled, docs-only (the D-156 pattern — a premise-break resolution, not a build). Closes
+Step 4 slice 4c. No code change, no migration.
+
+**Why this is a settlement, not a build.** Slice 4c was framed (`SEQUENCE.md:56`, carrying D-074) as
+"retire the S3 semantic ledger into S2 provenance once `get_provenance` ships" — implying: build
+`get_provenance`, then rewire the ledger's readers. **Verified ground truth says there is nothing to
+rewire and no consumer to build for:**
+- The S3 ledger (`generation_requests` / `generation_outcomes`) is **WRITE-ONLY**. Every `*Row` DB
+  reference in `primeqa/` is either the model definition (`generation/models_db.py`) or a
+  `persistence.py` `INSERT`. The `GenerationOutcome` / `GenerationRequest` names used throughout
+  `generation/` (governance, runtime, intake, routing, eval) are the in-memory **Pydantic DTOs**
+  (`generation/protocol.py`), NOT DB reads. There is **no `SELECT FROM generation_outcomes`** anywhere.
+- `get_provenance` / `get_recipe_provenance` are **unimplemented** (reserved in S2 SPEC §10.2) with
+  **zero consumers** — only doc/comment references. Building them now is speculative (YAGNI).
+- The ledger is **S3-internal, not `meta_*`** — it does not block the cutover `meta_*` drop (Step 5).
+
+**Decision.**
+- The generation ledger **stays** as a write-only audit / replay artifact — parallel to `llm_calls`,
+  which the SEQUENCE already keeps in S3 (D-074). It is not redundant with `test_provenance`:
+  `generation_outcomes` records the **generation event** (refusal_kind, explanation_hash, the
+  request→outcome lineage, deltas), whereas `test_provenance` records the **S2 claim/recipe lifecycle**
+  (created / edited / regenerated / approved). Different surfaces; no merge.
+- `test_provenance` is the canonical S2-lifecycle record (already fully written by the Coordinator).
+- `get_provenance` / `get_recipe_provenance` are **deferred to their first real consumer** (an S6 audit
+  or S8 drift surface). When one lands, the typed read API is built then — over `test_provenance`, with
+  the row-level fields (`refusal_kind`, `explanation_hash`, …) D-074 pre-exposed for exactly that.
+
+**Consequence for the cutover.** 4c is **off the critical path** — neither a Step-5 blocker nor
+cutover-coupled. Step 4's remaining real work is **4b** (fold S6 verdicts into GO/NO-GO + its
+run-key fork). 4a (the parity harness) is shipped; its live cross-tenant run is a separate ops step.
+
+**Carried (4a live verification).** The 4a harness + unit tests shipped, but the first live cross-tenant
+parity run was killed mid-hydration: `build_metadata_s1_reader` reads the whole org model
+(per-entity `get_entity_details` over thousands of entities) synchronously, which is too slow for a
+foreground run. The live "clean parity window" needs either a background-job runner or a lighter
+reader hydration — tracked, not blocking this settlement.
+
+---
+
 ---
