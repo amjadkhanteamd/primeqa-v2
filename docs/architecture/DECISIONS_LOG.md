@@ -9852,4 +9852,71 @@ the live "click Sync, watch it land" payoff is realized. Commits to `main`.
 
 ---
 
+## D-183 (design) — GAP-2: Preflight reads S1 freshness/health (cutover Step-5 prerequisite)
+
+**Status:** Design. The hard prerequisite gating cutover Step 5 (the irreversible `meta_*`
+drop). No migration — the `cutover_read_s1` flag already exists (migration 051, on prod).
+
+**Problem.** Cutover Steps 0–3 are live; generation + validator + linter read S1 behind the
+per-tenant `cutover_read_s1` flag via `MetadataAccessor` (D-158/D-159). But **Preflight still
+reads `meta_*`** — `MetaVersion.completed_at` (org-wide staleness) + `MetaSyncStatus` (per-
+category health) + the per-test skip-by-stale-category. The accessor's `get_version` explicitly
+left this open: *"Version/freshness stays on meta_* (no clean S1 map — GAP-2, D-158)."* The
+`meta_*` drop cannot proceed while Preflight reads `meta_*`. This is GAP-2, ratified as the
+Step-5 entry-gate in D-162.
+
+**Decision.** Switch Preflight's freshness + per-category-health onto the S1 substrate behind
+the same `cutover_read_s1` flag, with a `meta_*` fallback during the parallel window.
+
+**Mapping `meta_*` → S1.**
+- **Org-wide freshness:** `MetaVersion.completed_at` → the **latest `sync_runs` with
+  `status IN ('success','partial_success') AND completed_at IS NOT NULL`**, `.completed_at`.
+  NOT `connected_orgs.last_sync_completed_at` (observed NULL in prod even post-success). Same
+  thresholds (`METADATA_STALE_HOURS=168` warn / `METADATA_BLOCK_HOURS=720` block) — they're
+  product policy, not storage shape.
+- **Per-category health:** S1 has **no per-category partial state** (it syncs all entity types
+  into one versioned run). So `healthy_categories` collapses to **all-six when the org model is
+  usable, else empty** — and the per-test skip-by-stale-category becomes dormant in S1 mode
+  (correct: an S1 version is atomic). `_per_test_checks` / `_categories_for_refs` keep their
+  shape; they're just fed the S1-derived set.
+- **"Usable" / provisioned:** `connected_orgs` row exists AND
+  `SemanticOrgModel(conn).current_version_seq()` is not None. Not usable / never synced →
+  blocker (stable code `NO_METADATA`, S1-worded message).
+
+**Layers.**
+- **`metadata/s1_sync_console.read_s1_freshness(tenant_id, environment_id)`** — new best-effort
+  helper (own tenant conn, never raises; mirrors `read_s1_sync_status`). Returns
+  `{available, provisioned, last_success_at, age_hours, current_version_seq, usable}`.
+- **`runs/preflight.py`** — gate the freshness + healthy-categories on
+  `cutover_read_s1_enabled(self.db, tenant_id)` (reuse the accessor's flag helper). Flag-on +
+  S1 provisioned → S1 path; else (flag-off, or flag-on but S1 unprovisioned during parallel) →
+  the existing `meta_*` path, unchanged. Populate the existing `meta_version` summary keys from
+  S1 (so `preview.html` needs no change) + a `metadata_source: 's1'|'meta'` marker. Issue
+  **codes stay stable**; only message text varies by source.
+- **`metadata/accessor.py`** — update the `get_version` GAP-2 comment to point at the new
+  preflight helper (doc-only).
+
+**Forks (resolved).** F1 per-category → all-or-nothing in S1 (no partial state). F2 freshness →
+latest successful `sync_runs.completed_at` (the `connected_orgs` column is unreliable). F3
+fallback → `meta_*` when flag-on-but-S1-unprovisioned (parallel-window safety; retires at
+Step 5). F4 codes → stable, vary message (keeps the JWT-gated integration tests green). F5
+location → `s1_sync_console` (env-keyed status), not the `meta_version_id`-keyed accessor.
+
+**Out of scope / companion follow-up.** `MetadataService.check_drift` (the live-SF Tooling
+drift comparison in `views.runs_new_preview`) is a **separate** `meta_*` reader on the same
+preview path; it also blocks the `meta_*` drop and needs its own S1 re-point/disable before
+Step 5 — a distinct slice, not this one.
+
+**Tests.** Seeded-conn unit for `read_s1_freshness` (extend `tests/integration/semantic/
+test_s1_sync_console.py`): provisioned + success → usable + age; running-only + a version →
+usable + age None; not provisioned → unusable; partial_success-with-completed_at counts.
+Preflight unit (`tests/unit/`) mocking the flag + helper: flag-on fresh / very-stale / not-
+usable / not-provisioned-fallback / flag-off-unchanged. Adversarial review of the impl before
+the impl HOLD. (The JWT-gated Flask preflight integration tests don't run locally.)
+
+**Boundary.** One bridge helper, one flag-gated branch in preflight, one doc comment. No
+migration, no `meta_*` removal (that's Step 5). Commits to `main`.
+
+---
+
 ---
