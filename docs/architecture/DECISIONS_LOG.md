@@ -9919,4 +9919,38 @@ migration, no `meta_*` removal (that's Step 5). Commits to `main`.
 
 ---
 
+## D-183.1 (impl correction) — `_read_freshness` env-scopes the version (adversarial-review fix)
+
+**Status:** Impl-time correction to D-183, caught by the adversarial review before the impl
+commit. Folded into the impl.
+
+**Defect (HIGH, confirmed).** D-183's design specified the version from
+`SemanticOrgModel(conn).current_version_seq()` = `MAX(version_seq) FROM logical_versions` — a
+**tenant-schema-global** aggregate (`logical_versions` has no org/environment column; it's the
+tenant-wide version anchor shared by every org). In a multi-env tenant where env A is synced but
+env B was provisioned (`connected_orgs` row exists) and never synced its own org, `_read_freshness`
+for env B returned `usable=True` (it inherited env A's global MAX version) → the `NO_METADATA`
+blocker silently collapsed → env B passed the gate that immediately precedes the irreversible
+`meta_*` drop, and downstream generation/validation/execution would read a **sibling env's** org
+model. The v1 `meta_*` path this replaces is strictly per-env (`Environment.current_meta_version_id`
+is a per-row column), so a never-synced env B would correctly `NO_METADATA`-block — a genuine
+cutover-safety divergence. The single-env tests didn't exercise it.
+
+**Fix.** Env-scope the version: `sync_runs.logical_version_seq` is allocated per run and is already
+scoped by `source_org_id`, and `_read_freshness` already selects this env's latest successful
+`sync_run`. The query now also returns `logical_version_seq` from that same row;
+`current_version_seq` / `usable` derive from it (drops the `SemanticOrgModel` call). `usable` now
+strictly means "**this env's own** org model has a successful sync version" — a never-synced env
+(or a first-sync-still-running env) reads `usable=False` even when sibling envs have versions.
+Consequence: the prior "usable but `age_hours=None` (first sync running)" state no longer exists —
+a usable env always has a measured age; an in-progress first sync is `usable=False` and
+`NO_METADATA`-blocks until it succeeds (the conservative, v1-matching posture).
+
+**Regression test.** `test_freshness_env_scoped_not_contaminated_by_sibling` (two `connected_orgs`
+in one schema: A synced with a version, B provisioned + running-only) asserts
+`_read_freshness(B).usable is False` / `current_version_seq is None`. Full unit 2282 + semantic
+integration green.
+
+---
+
 ---

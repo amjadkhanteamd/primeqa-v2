@@ -223,6 +223,94 @@ def test_requeue_s1_enrichment_best_effort_on_bad_tenant():
     assert res["ok"] is False
 
 
+# --- S1 freshness for Preflight (D-183, GAP-2) -------------------------------
+
+def _seed_run_at(conn, org_id, *, status, hours_ago, version_seq=None):
+    """A terminal sync_run whose completed_at is `hours_ago` in the past, carrying
+    `version_seq` as its env-scoped logical_version_seq."""
+    conn.execute(text(
+        "INSERT INTO sync_runs (source_org_id, status, last_completed_phase, "
+        "logical_version_seq, entities_inserted, edges_inserted, completed_at) "
+        "VALUES (CAST(:o AS uuid), :s, 'Flow', :v, 1, 0, "
+        "NOW() - make_interval(hours => :h))"),
+        {"o": str(org_id), "s": status, "v": version_seq, "h": hours_ago})
+
+
+def _seed_running(conn, org_id):
+    conn.execute(text(
+        "INSERT INTO sync_runs (source_org_id, status, last_completed_phase, "
+        "entities_inserted, edges_inserted) "
+        "VALUES (CAST(:o AS uuid), 'running', 'Object', 1, 0)"),
+        {"o": str(org_id)})
+
+
+def test_freshness_not_provisioned(conn):
+    from primeqa.metadata.s1_sync_console import _read_freshness
+    f = _read_freshness(conn, 9001)              # no connected_orgs row
+    assert f["available"] is True and f["provisioned"] is False
+    assert f["usable"] is False and f["current_version_seq"] is None
+
+
+def test_freshness_provisioned_no_successful_run_not_usable(conn):
+    from primeqa.metadata.s1_sync_console import _read_freshness
+    org = _seed_org(conn, 9002)
+    _seed_running(conn, org)                      # provisioned, but no success yet
+    f = _read_freshness(conn, 9002)
+    assert f["provisioned"] is True
+    assert f["current_version_seq"] is None and f["usable"] is False
+    assert f["last_success_at"] is None and f["age_hours"] is None
+
+
+def test_freshness_usable_and_fresh(conn, seed):
+    from primeqa.metadata.s1_sync_console import _read_freshness
+    v = seed.version()
+    org = _seed_org(conn, 9003)
+    _seed_run_at(conn, org, status="success", hours_ago=2, version_seq=v)
+    f = _read_freshness(conn, 9003)
+    assert f["provisioned"] is True and f["usable"] is True
+    assert f["current_version_seq"] == v
+    assert f["last_success_at"] is not None
+    assert f["age_hours"] is not None and 1.5 < f["age_hours"] < 3.0
+
+
+def test_freshness_partial_success_counts(conn, seed):
+    from primeqa.metadata.s1_sync_console import _read_freshness
+    v = seed.version()
+    org = _seed_org(conn, 9005)
+    _seed_run_at(conn, org, status="partial_success", hours_ago=5, version_seq=v)
+    f = _read_freshness(conn, 9005)
+    assert f["usable"] is True and f["current_version_seq"] == v
+    assert 4.0 < f["age_hours"] < 6.0
+
+
+def test_freshness_picks_latest_success(conn, seed):
+    from primeqa.metadata.s1_sync_console import _read_freshness
+    v = seed.version()
+    org = _seed_org(conn, 9006)
+    _seed_run_at(conn, org, status="success", hours_ago=100, version_seq=v)  # older
+    _seed_run_at(conn, org, status="success", hours_ago=3, version_seq=v)    # newest
+    f = _read_freshness(conn, 9006)
+    assert 2.0 < f["age_hours"] < 4.0          # the newest, not the 100h one
+
+
+def test_freshness_env_scoped_not_contaminated_by_sibling(conn, seed):
+    """D-183 review regression: a never-synced env must read usable=False even when
+    a SIBLING env in the same tenant schema has a synced version. The version is
+    env-scoped via sync_runs.source_org_id, NOT the tenant-global MAX(version_seq)."""
+    from primeqa.metadata.s1_sync_console import _read_freshness
+    v = seed.version()                           # a tenant-global logical version
+    org_a = _seed_org(conn, 9010)                # env A: synced
+    _seed_run_at(conn, org_a, status="success", hours_ago=2, version_seq=v)
+    org_b = _seed_org(conn, 9011)                # env B: provisioned, never synced
+    _seed_running(conn, org_b)
+    fa = _read_freshness(conn, 9010)
+    fb = _read_freshness(conn, 9011)
+    assert fa["usable"] is True and fa["current_version_seq"] == v
+    # env B must NOT inherit env A's version
+    assert fb["provisioned"] is True
+    assert fb["usable"] is False and fb["current_version_seq"] is None
+
+
 # --- org-model browser (1c) --------------------------------------------------
 
 def test_read_org_model_lists_objects(conn, seed):

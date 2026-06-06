@@ -18,6 +18,7 @@ via ``get_tenant_connection``.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from sqlalchemy import text
 
@@ -108,6 +109,76 @@ def read_s1_sync_status(tenant_id: int, environment_id: int) -> dict:
         log.warning("s1 sync status unavailable for tenant %s env %s: %s",
                     tenant_id, environment_id, exc)
         return {"available": False, "provisioned": False}
+
+
+_FRESHNESS_FAIL = {"available": False, "provisioned": False, "last_success_at": None,
+                   "age_hours": None, "current_version_seq": None, "usable": False}
+
+
+def _read_freshness(conn, environment_id: int) -> dict:
+    """Pure: S1 freshness/health on an already-open **tenant-scoped** conn (D-183).
+    Directly testable on the semantic ``conn`` fixture (no own connection).
+
+    Returns ``{available, provisioned, last_success_at, age_hours,
+    current_version_seq, usable}``:
+      - ``provisioned`` — a ``connected_orgs`` row exists for the env.
+      - ``current_version_seq`` / ``last_success_at`` / ``age_hours`` — read from
+        **this env's own** latest ``sync_runs`` with a terminal-success status
+        (``success`` / ``partial_success``), non-NULL ``completed_at``, and a
+        non-NULL ``logical_version_seq``. ENV-SCOPED via ``source_org_id`` — NOT
+        the tenant-global ``MAX(logical_versions.version_seq)``, which would let a
+        never-synced env in a multi-env tenant inherit a sibling's version and
+        wrongly pass the gate (D-183 review). ``None`` when this env has no
+        successful sync yet (a first sync still running counts as not-yet-synced).
+        ``last_success_at`` deliberately NOT ``connected_orgs.last_sync_completed_at``
+        (observed unreliable / NULL in prod even post-success).
+      - ``age_hours`` — hours since ``last_success_at`` (``None`` when not usable).
+      - ``usable`` — ``provisioned AND current_version_seq is not None`` (this env's
+        own org model has been synced + is queryable for a run).
+    """
+    org = conn.execute(text(
+        "SELECT id FROM connected_orgs WHERE environment_id = :eid"),
+        {"eid": environment_id}).first()
+    if org is None:
+        return {"available": True, "provisioned": False, "last_success_at": None,
+                "age_hours": None, "current_version_seq": None, "usable": False}
+    last = conn.execute(text(
+        "SELECT completed_at, logical_version_seq FROM sync_runs "
+        "WHERE source_org_id = :oid "
+        "  AND status IN ('success', 'partial_success') "
+        "  AND completed_at IS NOT NULL "
+        "  AND logical_version_seq IS NOT NULL "
+        "ORDER BY completed_at DESC LIMIT 1"),
+        {"oid": str(org[0])}).first()
+    last_success_at = last[0] if last else None
+    current_version_seq = int(last[1]) if last else None
+    age_hours = None
+    if last_success_at is not None:
+        age_hours = (datetime.now(timezone.utc)
+                     - last_success_at).total_seconds() / 3600.0
+    return {
+        "available": True,
+        "provisioned": True,
+        "last_success_at": _iso(last_success_at),
+        "age_hours": age_hours,
+        "current_version_seq": current_version_seq,
+        "usable": current_version_seq is not None,
+    }
+
+
+def read_s1_freshness(tenant_id: int, environment_id: int) -> dict:
+    """Best-effort S1 freshness/health for an environment — the GAP-2 (D-183)
+    substitute for v1 metadata freshness in Preflight. Never raises;
+    ``available=False`` on any read error (caller falls back to ``meta_*`` during
+    the parallel window). Shape per :func:`_read_freshness`."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            return _read_freshness(conn, environment_id)
+    except Exception as exc:                     # absent schema / read error
+        log.warning("read_s1_freshness unavailable for tenant %s env %s: %s",
+                    tenant_id, environment_id, exc)
+        return dict(_FRESHNESS_FAIL)
 
 
 def trigger_s1_sync(tenant_id: int, environment_id: int, sf_instance_url: str, *,

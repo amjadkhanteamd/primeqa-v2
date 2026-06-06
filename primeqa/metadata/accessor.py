@@ -79,7 +79,12 @@ class MetadataAccessor:
                 else self._repo.get_object_by_api_name(meta_version_id, api_name))
 
     def get_version(self, version_id):
-        # Version/freshness stays on meta_* (no clean S1 map — GAP-2, D-158).
+        # The accessor's content reads are meta_version_id-keyed; this version row
+        # stays on meta_* (the S1 "version" is an env-keyed logical version_seq, a
+        # different space). Preflight's env-keyed freshness/health — the GAP-2 of
+        # D-158 — is now routed to S1 separately via
+        # s1_sync_console.read_s1_freshness behind the same cutover_read_s1 flag
+        # (D-183). MetadataService.check_drift remains a meta_* reader (Step-5 TODO).
         return self._repo.get_version(version_id)
 
     # -- everything else: transparent delegation to the repo ----------------
