@@ -9775,4 +9775,81 @@ Keep the worker's import list in sync with `app.py`'s registration block. Commit
 
 ---
 
+## D-180 (close) — Re-enrich requeue action proven live
+
+**Status:** Built + shipped (`7f0c6da` design, `d5f17e2` impl) + **proven live on tenant_1**. No
+migration.
+
+**Realized state.** The env-detail S1 panel now carries a "Re-run enrichment (N failed)" button
+(shown only when `failed_enrichment > 0`) → `POST /environments/<id>/sync-substrate/requeue-enrichment`
+→ `requeue_s1_enrichment` bridge → `readiness.requeue_failed_enrichment` resets the org's
+active-entity `failed_permanent` rows to `pending` (attempts=0, cleared timing+error) and recomputes
+`ai_enrichment_status` off `complete`. The worker's `enrichment_tick` drains them under the D-179
+per-env keys. Permission-gated identically to the sync trigger (`role_required` admin/superadmin +
+inner `trigger_metadata_sync`).
+
+**Live proof (tenant_1, env 59).** One button click requeued **5870 embedding + 63 summary** rows
+that the keyless worker had stranded `failed_permanent` (`error_text='VOYAGE_API_KEY not set'`). The
+worker drained them to **5870/5870 embeddings + 63/63 summaries `succeeded`, zero failures**;
+`ai_enrichment_status` → `complete`.
+
+**Adversarial review.** 3 lenses (SQL-correctness / security-permission / UI-kit) → verify: 12
+findings, 11 refuted, 1 confirmed (low/cosmetic) — the F2 staleness (a finalized run's
+`partial_success` badge isn't re-opened after a clean requeue). Confirmed harmless (no stranding, no
+spurious poll, the button correctly disappears at `failed_enrichment=0`); documented in
+`requeue_failed_enrichment`'s docstring rather than changed (re-opening a terminal run would break
+the documented `last_sync_run_id` contract).
+
+**Deferred / carried.** F1 error-substring scoping (blanket per-org reset shipped; bounded retries
+make it safe). A UX refinement to surface `ai_enrichment_status` beside the run badge (would erase
+the F2 cosmetic gap). Tests: 5 readiness unit + 6 seeded round-trip; full unit 2274 + semantic
+integration 75 green.
+
+**Boundary held.** One `readiness` fn (+ `count_failed_enrichment`), one bridge fn + a `_read_status`
+field, one route, one panel button. No migration. Commits to `main`.
+
+---
+
+## D-182 — S1-sync live-SF prod-proving achieved (1d / #119 / Cutover Step 0 exit-gate close)
+
+**Status:** **CLOSED.** The S1-sync exit-gate (task #119, Cutover Step 0; UI Area 1 slice 1d, #138)
+is met live on Railway prod — the substrate org model syncs, is readable, fully enriches, and a sync
+run finalizes `success`, all driven through the product UI.
+
+**The arc (one outage → four durable fixes → live green).** The live #119 sync stalled ~16h
+(screenshot: stuck at phase Object). Diagnosis + fixes, in order:
+- **D-178** — scheduler/sync resilience: per-iteration crash isolation + per-tick guards + a periodic
+  sync heartbeat + tightened reaper window (45→10 min) + the env-panel orphaned-state. The actual
+  root cause was a missing `from sqlalchemy import text` in `scheduler.py` (`b39960a`) — every
+  substrate tick's own try/except swallowed the `NameError` → 16h silent no-op. The resilience work
+  kept the scheduler alive to log it.
+- **D-179** — enrichment provider keys resolve per-env from the LLM connection (Anthropic via
+  `config.api_key`, Voyage via a new `config.voyage_api_key`), replacing bare worker env vars. No
+  migration.
+- **D-180** — the re-enrich requeue action: drain rows stranded `failed_permanent` by the keyless
+  worker, through the product (not psql).
+- **D-181** — register the full model set at worker module scope so `LLMUsageLog`'s cross-module FKs
+  resolve (exposed when D-179 made the worker call the LLM gateway).
+
+**Live exit-gate evidence (tenant_1).** 5870 active entities / 20264 edges synced + readable via
+`SemanticOrgModel` (current version); enrichment fully drained (5870/5870 embeddings, 63/63
+summaries succeeded); `ai_enrichment_status='complete'`; sync run `b1424380` finalized `status='success'`.
+End-to-end path was all product UI: **Sync substrate** → **Re-run enrichment** (after the Voyage key
+was set on the connection) → **Sync substrate** → `success`.
+
+**Carried (non-blocking).**
+- **D-181 usage logging is forward-looking.** This drain completed under the pre-D-181 worker, so its
+  `llm_usage_log` enrichment rows were dropped (the FK error, now fixed). Future enrichment runs log
+  usage → the superadmin `/settings/llm-usage` per-task breakdown populates going forward. Not
+  back-filled.
+- The D-179 `embed_batch` `VOYAGE_API_KEY` env-var fallback stays one release (warned), then removed.
+- D-180 F2 badge cosmetic (above).
+- A second connected_org (`b113a242`, `ai_status='none'`, no run) exists on tenant_1 — a separate
+  env's unprovisioned sync target, out of scope for this proving.
+
+**Canonical status update.** Cutover Step 0 exit-gate: **PASSED**. UI Area 1 (Org Model & Sync / S1):
+the live "click Sync, watch it land" payoff is realized. Commits to `main`.
+
+---
+
 ---
