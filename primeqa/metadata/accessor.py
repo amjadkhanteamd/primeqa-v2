@@ -84,7 +84,9 @@ class MetadataAccessor:
         # different space). Preflight's env-keyed freshness/health — the GAP-2 of
         # D-158 — is now routed to S1 separately via
         # s1_sync_console.read_s1_freshness behind the same cutover_read_s1 flag
-        # (D-183). MetadataService.check_drift remains a meta_* reader (Step-5 TODO).
+        # (D-183); MetadataService.check_drift's "drift since" anchor is routed the
+        # same way (D-184). Both consume the env-scoped read_s1_freshness, not this
+        # version row.
         return self._repo.get_version(version_id)
 
     # -- everything else: transparent delegation to the repo ----------------

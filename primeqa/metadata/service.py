@@ -63,8 +63,11 @@ class MetadataService:
         if not env:
             return {"error": "Environment not found"}
 
-        current = self.metadata_repo.get_current_version(environment_id)
-        if not current or not current.completed_at:
+        # D-184: the "drift since" anchor comes from S1 (behind cutover_read_s1) or
+        # the v1 meta_* current version (fallback). None -> this env has no synced
+        # metadata yet -> render "Never synced".
+        anchor = self._resolve_drift_anchor(environment_id, tenant_id)
+        if anchor is None:
             return {
                 "has_current_meta": False,
                 "current_meta_version_id": None,
@@ -76,8 +79,8 @@ class MetadataService:
             }
 
         # Cheap: one HTTP round-trip each, count-only Tooling queries
-        since_iso = current.completed_at.astimezone(_tz.utc) \
-                                        .strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        since_iso = anchor["synced_dt"].astimezone(_tz.utc) \
+                                       .strftime("%Y-%m-%dT%H:%M:%S.000Z")
         from primeqa.core.repository import ConnectionRepository
         conn_repo = ConnectionRepository(db)
         conn = conn_repo.get_connection_decrypted(env.connection_id, tenant_id) \
@@ -85,11 +88,12 @@ class MetadataService:
         if not conn:
             return {
                 "has_current_meta": True,
-                "current_meta_version_id": current.id,
-                "current_meta_version_label": current.version_label,
-                "synced_at": current.completed_at.isoformat(),
+                "current_meta_version_id": anchor["version_id"],
+                "current_meta_version_label": anchor["version_label"],
+                "synced_at": anchor["synced_dt"].isoformat(),
                 "drift_detected": False,
                 "counts": {},
+                "metadata_source": anchor["source"],
                 "error": "No Salesforce connection \u2014 skipping drift check",
             }
 
@@ -98,11 +102,12 @@ class MetadataService:
         except Exception as e:
             return {
                 "has_current_meta": True,
-                "current_meta_version_id": current.id,
-                "current_meta_version_label": current.version_label,
-                "synced_at": current.completed_at.isoformat(),
+                "current_meta_version_id": anchor["version_id"],
+                "current_meta_version_label": anchor["version_label"],
+                "synced_at": anchor["synced_dt"].isoformat(),
                 "drift_detected": False,
                 "counts": {},
+                "metadata_source": anchor["source"],
                 "error": f"Could not authenticate to Salesforce ({e})",
             }
 
@@ -133,23 +138,67 @@ class MetadataService:
             drift_detected = any(n > 0 for n in counts.values())
             return {
                 "has_current_meta": True,
-                "current_meta_version_id": current.id,
-                "current_meta_version_label": current.version_label,
-                "synced_at": current.completed_at.isoformat(),
+                "current_meta_version_id": anchor["version_id"],
+                "current_meta_version_label": anchor["version_label"],
+                "synced_at": anchor["synced_dt"].isoformat(),
                 "drift_detected": drift_detected,
                 "counts": counts,
+                "metadata_source": anchor["source"],
                 "error": None,
             }
         except Exception as e:
             return {
                 "has_current_meta": True,
-                "current_meta_version_id": current.id,
-                "current_meta_version_label": current.version_label,
-                "synced_at": current.completed_at.isoformat(),
+                "current_meta_version_id": anchor["version_id"],
+                "current_meta_version_label": anchor["version_label"],
+                "synced_at": anchor["synced_dt"].isoformat(),
                 "drift_detected": False,
                 "counts": {},
+                "metadata_source": anchor["source"],
                 "error": f"Drift check failed: {e}",
             }
+
+    def _resolve_drift_anchor(self, environment_id, tenant_id):
+        """Resolve the drift "synced since" anchor (D-184).
+
+        Behind the per-tenant ``cutover_read_s1`` flag the anchor is the env's last
+        successful S1 sync (``read_s1_freshness``, D-183 — env-scoped, so no
+        sibling-env contamination); otherwise the v1 ``meta_*`` current version
+        (parallel-window fallback). Returns ``{version_id, version_label, synced_dt,
+        source}`` or ``None`` when this env has no current synced metadata (caller
+        renders ``has_current_meta=False``). Only the anchor moves to S1 — the
+        live-SF Tooling drift probes are source-agnostic.
+        """
+        from datetime import datetime as _dt
+        db = self.metadata_repo.db
+        try:
+            from primeqa.metadata.accessor import cutover_read_s1_enabled
+            use_s1 = cutover_read_s1_enabled(db, tenant_id)
+        except Exception:
+            use_s1 = False
+        if use_s1:
+            from primeqa.metadata.s1_sync_console import read_s1_freshness
+            s1 = read_s1_freshness(tenant_id, environment_id)
+            if s1.get("available") and s1.get("provisioned"):
+                if not s1.get("usable"):
+                    return None                  # never synced THIS env
+                seq = s1.get("current_version_seq")
+                return {
+                    "version_id": seq,
+                    "version_label": f"Org model v{seq}",
+                    "synced_dt": _dt.fromisoformat(s1["last_success_at"]),
+                    "source": "s1",
+                }
+            # flag on but S1 unprovisioned / unavailable -> meta_* fallback.
+        current = self.metadata_repo.get_current_version(environment_id)
+        if not current or not current.completed_at:
+            return None
+        return {
+            "version_id": current.id,
+            "version_label": current.version_label,
+            "synced_dt": current.completed_at,
+            "source": "meta",
+        }
 
     # ------------------------------------------------------------------
     # Background-job entrypoint (migration 025).
