@@ -143,6 +143,87 @@ class TestHappyPath:
 
 
 # ----------------------------------------------------------------------
+# Explicit api_key (D-179) — per-env Voyage key from the LLM connection
+# ----------------------------------------------------------------------
+
+class TestExplicitApiKey:
+    def test_explicit_key_used_in_auth_header_no_env(
+        self, monkeypatch,
+    ) -> None:
+        """A passed api_key is used directly; the env var is never
+        consulted (the enrichment worker has no VOYAGE_API_KEY set)."""
+        monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+        seen = {}
+
+        def handler(request):
+            seen["auth"] = request.headers.get("authorization")
+            return httpx.Response(200, json=_ok_response(1))
+
+        with _patch_client(handler):
+            result = embed_batch(["x"], api_key="conn-voyage-key")
+        assert seen["auth"] == "Bearer conn-voyage-key"
+        assert len(result) == 1
+
+    def test_explicit_key_overrides_env(self, monkeypatch) -> None:
+        """When BOTH are present the explicit key wins — proves we
+        never silently fall back to a stale env var."""
+        monkeypatch.setenv("VOYAGE_API_KEY", "env-key")
+        seen = {}
+
+        def handler(request):
+            seen["auth"] = request.headers.get("authorization")
+            return httpx.Response(200, json=_ok_response(1))
+
+        with _patch_client(handler):
+            embed_batch(["x"], api_key="explicit-key")
+        assert seen["auth"] == "Bearer explicit-key"
+
+    def test_no_key_falls_back_to_env_with_warning(
+        self, monkeypatch, caplog,
+    ) -> None:
+        """No api_key → env-var fallback, and a warning is logged so the
+        fallback is visible in worker logs (D-179)."""
+        monkeypatch.setenv("VOYAGE_API_KEY", "env-key")
+        seen = {}
+
+        def handler(request):
+            seen["auth"] = request.headers.get("authorization")
+            return httpx.Response(200, json=_ok_response(1))
+
+        import logging
+        with caplog.at_level(logging.WARNING,
+                             logger="primeqa.intelligence.embeddings"):
+            with _patch_client(handler):
+                embed_batch(["x"])
+        assert seen["auth"] == "Bearer env-key"
+        assert any("falling back" in r.message for r in caplog.records)
+
+    def test_blank_explicit_key_falls_back_to_env(
+        self, monkeypatch,
+    ) -> None:
+        """A whitespace-only api_key strips to empty → env fallback (a
+        connection with a blank voyage_api_key shouldn't send 'Bearer ')."""
+        monkeypatch.setenv("VOYAGE_API_KEY", "env-key")
+        seen = {}
+
+        def handler(request):
+            seen["auth"] = request.headers.get("authorization")
+            return httpx.Response(200, json=_ok_response(1))
+
+        with _patch_client(handler):
+            embed_batch(["x"], api_key="   ")
+        assert seen["auth"] == "Bearer env-key"
+
+    def test_blank_explicit_key_no_env_raises(self, monkeypatch) -> None:
+        """Blank explicit key AND no env var → the same non-retryable
+        missing-key error as a keyless call."""
+        monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+        with pytest.raises(VoyageError) as exc:
+            embed_batch(["x"], api_key="  ")
+        assert exc.value.retryable is False
+
+
+# ----------------------------------------------------------------------
 # Batch splitting
 # ----------------------------------------------------------------------
 

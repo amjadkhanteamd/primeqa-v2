@@ -352,7 +352,9 @@ class ConnectionRepository:
         return {
             "salesforce": ["client_id", "client_secret", "password"],
             "jira": ["credentials", "api_token"],
-            "llm": ["api_key"],
+            # D-179: the LLM connection optionally carries a 2nd secret — the Voyage
+            # embedding key, used by S1 enrichment. Encrypted at rest like api_key.
+            "llm": ["api_key", "voyage_api_key"],
         }.get(connection_type, [])
 
     def _encrypt_config(self, connection_type, config):

@@ -135,8 +135,9 @@ class TestEmbeddingSubtick:
         session = mock.MagicMock()
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = []
-            result = worker._embedding_subtick(session, tenant_id=1)
+            result = worker._embedding_subtick(session, tenant_id=1, voyage_resolver=(lambda *a: 'vk'))
         assert result.did_work is False
         assert result.claimed == 0
 
@@ -145,6 +146,7 @@ class TestEmbeddingSubtick:
         claimed = [_claimed("q1", "e1"), _claimed("q2", "e2")]
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = claimed
             s.enter_context(_patch("_fetch_semantic_texts")).return_value = {
                 "e1": "text one", "e2": "text two",
@@ -160,14 +162,14 @@ class TestEmbeddingSubtick:
             mock_fail = s.enter_context(_patch("_mark_failed"))
             mock_usage = s.enter_context(_patch("record_embedding_usage"))
 
-            result = worker._embedding_subtick(session, tenant_id=7)
+            result = worker._embedding_subtick(session, tenant_id=7, voyage_resolver=(lambda *a: 'vk'))
 
         assert result.did_work is True
         assert result.claimed == 2
         assert result.succeeded_for(
             "00000000-0000-0000-0000-00000000000a") == 2
         mock_embed.assert_called_once_with(["text one", "text two"],
-                                           input_type="document")
+                                           input_type="document", api_key="k")
         assert mock_write.call_count == 2
         assert mock_ok.call_count == 2
         mock_fail.assert_not_called()
@@ -176,6 +178,69 @@ class TestEmbeddingSubtick:
         assert mock_usage.call_args[0][0] == 7
         assert mock_usage.call_args.kwargs["batch_size"] == 2
 
+    def test_distinct_voyage_keys_embed_per_group(self) -> None:
+        """D-179: two orgs with DIFFERENT Voyage keys in one tenant tick
+        → two embed_batch calls, each with its own key. Proves the
+        per-env grouping (a tick can span orgs/envs)."""
+        session = mock.MagicMock()
+        claimed = [_claimed("q1", "e1"), _claimed("q2", "e2")]
+        with ExitStack() as s:
+            s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_claim_batch")).return_value = claimed
+            s.enter_context(_patch("_fetch_semantic_texts")).return_value = {
+                "e1": "text a", "e2": "text b",
+            }
+            s.enter_context(_patch("_fetch_org_ids")).return_value = {
+                "e1": "org-a", "e2": "org-b",
+            }
+            s.enter_context(_patch("_resolve_org_keys")).return_value = {
+                "org-a": "ka", "org-b": "kb",
+            }
+            mock_embed = s.enter_context(_patch("embed_batch"))
+            mock_embed.return_value = [[0.1] * 1024]  # one row per group
+            s.enter_context(_patch("_write_embedding"))
+            s.enter_context(_patch("_mark_succeeded"))
+            s.enter_context(_patch("record_embedding_usage"))
+
+            result = worker._embedding_subtick(
+                session, tenant_id=1, voyage_resolver=(lambda *a: None))
+
+        assert mock_embed.call_count == 2
+        keys = {c.kwargs["api_key"] for c in mock_embed.call_args_list}
+        assert keys == {"ka", "kb"}
+        assert result.succeeded_for("org-a") == 1
+        assert result.succeeded_for("org-b") == 1
+
+    def test_no_voyage_key_for_org_fails_permanently(self) -> None:
+        """D-179: an org whose env has no Voyage key → rows fail
+        PERMANENTLY (so the queue drains + the run finalizes), and
+        embed_batch is never called for them."""
+        session = mock.MagicMock()
+        with ExitStack() as s:
+            s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_claim_batch")).return_value = [
+                _claimed("q1", "e1"),
+            ]
+            s.enter_context(_patch("_fetch_semantic_texts")).return_value = {
+                "e1": "real text",
+            }
+            s.enter_context(_patch("_fetch_org_ids")).return_value = {
+                "e1": "org-a",
+            }
+            s.enter_context(_patch("_resolve_org_keys")).return_value = {
+                "org-a": None,
+            }
+            mock_embed = s.enter_context(_patch("embed_batch"))
+            mock_fail = s.enter_context(_patch("_mark_failed"))
+            mock_fail.return_value = "failed_permanent"
+            result = worker._embedding_subtick(
+                session, tenant_id=1, voyage_resolver=(lambda *a: None))
+
+        mock_embed.assert_not_called()
+        mock_fail.assert_called_once()
+        assert mock_fail.call_args[0][2] is False  # not retryable
+        assert result.failed_permanent_for("org-a") == 1
+
     def test_null_semantic_text_marked_succeeded_not_embedded(self) -> None:
         """An entity whose semantic_text is NULL/blank is a no-op
         success — no embed call for it, no failure."""
@@ -183,6 +248,7 @@ class TestEmbeddingSubtick:
         claimed = [_claimed("q1", "e1"), _claimed("q2", "e2")]
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = claimed
             s.enter_context(_patch("_fetch_semantic_texts")).return_value = {
                 "e1": "real text", "e2": "   ",  # e2 blank
@@ -196,11 +262,11 @@ class TestEmbeddingSubtick:
             mock_ok = s.enter_context(_patch("_mark_succeeded"))
             s.enter_context(_patch("record_embedding_usage"))
 
-            worker._embedding_subtick(session, tenant_id=1)
+            worker._embedding_subtick(session, tenant_id=1, voyage_resolver=(lambda *a: 'vk'))
 
         # Only e1's text was embedded
         mock_embed.assert_called_once_with(["real text"],
-                                           input_type="document")
+                                           input_type="document", api_key="k")
         # e2 still marked succeeded (no-op), e1 marked after write
         assert mock_ok.call_count == 2
         assert mock_write.call_count == 1
@@ -209,6 +275,7 @@ class TestEmbeddingSubtick:
         session = mock.MagicMock()
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = [
                 _claimed("q1", "e1"),
             ]
@@ -220,7 +287,7 @@ class TestEmbeddingSubtick:
             }
             mock_embed = s.enter_context(_patch("embed_batch"))
             mock_ok = s.enter_context(_patch("_mark_succeeded"))
-            result = worker._embedding_subtick(session, tenant_id=1)
+            result = worker._embedding_subtick(session, tenant_id=1, voyage_resolver=(lambda *a: 'vk'))
         assert result.did_work is True  # rows were claimed
         assert result.claimed == 1
         mock_embed.assert_not_called()
@@ -231,6 +298,7 @@ class TestEmbeddingSubtick:
         claimed = [_claimed("q1", "e1", attempts=2)]
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = claimed
             s.enter_context(_patch("_fetch_semantic_texts")).return_value = {
                 "e1": "text",
@@ -240,7 +308,7 @@ class TestEmbeddingSubtick:
             )
             mock_fail = s.enter_context(_patch("_mark_failed"))
             s.enter_context(_patch("_mark_succeeded"))
-            worker._embedding_subtick(session, tenant_id=1)
+            worker._embedding_subtick(session, tenant_id=1, voyage_resolver=(lambda *a: 'vk'))
         mock_fail.assert_called_once()
         # (session, queue_id, retryable, err, attempts)
         assert mock_fail.call_args[0][1] == "q1"
@@ -250,6 +318,7 @@ class TestEmbeddingSubtick:
         session = mock.MagicMock()
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = [
                 _claimed("q1", "e1"),
             ]
@@ -260,7 +329,7 @@ class TestEmbeddingSubtick:
                 "auth error", retryable=False,
             )
             mock_fail = s.enter_context(_patch("_mark_failed"))
-            worker._embedding_subtick(session, tenant_id=1)
+            worker._embedding_subtick(session, tenant_id=1, voyage_resolver=(lambda *a: 'vk'))
         assert mock_fail.call_args[0][2] is False  # not retryable
 
     def test_vector_count_mismatch_marks_retryable(self) -> None:
@@ -268,6 +337,7 @@ class TestEmbeddingSubtick:
         session = mock.MagicMock()
         with ExitStack() as s:
             s.enter_context(_patch("_reap_stalled"))
+            s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = [
                 _claimed("q1", "e1"), _claimed("q2", "e2"),
             ]
@@ -279,7 +349,7 @@ class TestEmbeddingSubtick:
             ]
             mock_fail = s.enter_context(_patch("_mark_failed"))
             mock_write = s.enter_context(_patch("_write_embedding"))
-            worker._embedding_subtick(session, tenant_id=1)
+            worker._embedding_subtick(session, tenant_id=1, voyage_resolver=(lambda *a: 'vk'))
         assert mock_fail.call_count == 2
         assert all(c[0][2] is True for c in mock_fail.call_args_list)
         mock_write.assert_not_called()
@@ -303,7 +373,7 @@ class TestSummarySubtick:
             ]
             s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = None
             mock_fail = s.enter_context(_patch("_mark_failed"))
-            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: None))
+            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: None), voyage_resolver=(lambda *a: 'vk'))
         mock_fail.assert_called_once()
         assert mock_fail.call_args[0][2] is False  # no key → permanent
 
@@ -314,7 +384,7 @@ class TestSummarySubtick:
             s.enter_context(_patch("_reap_stalled"))
             s.enter_context(_patch("_resolve_org_keys")).return_value.get.return_value = "k"
             s.enter_context(_patch("_claim_batch")).return_value = []
-            result = worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'))
+            result = worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'), voyage_resolver=(lambda *a: 'vk'))
         assert result.did_work is False
         assert result.claimed == 0
 
@@ -342,7 +412,7 @@ class TestSummarySubtick:
             mock_embed.return_value = [[0.3] * 1024]
             mock_write = s.enter_context(_patch("_write_summary"))
             mock_ok = s.enter_context(_patch("_mark_succeeded"))
-            result = worker._summary_subtick(session, tenant_id=4, api_key_resolver=(lambda *a: 'k'))
+            result = worker._summary_subtick(session, tenant_id=4, api_key_resolver=(lambda *a: 'k'), voyage_resolver=(lambda *a: 'vk'))
         assert result.did_work is True
         assert result.claimed == 1
         mock_write.assert_called_once()
@@ -374,7 +444,7 @@ class TestSummarySubtick:
             s.enter_context(_patch("embed_batch")).return_value = [[0.1] * 1024]
             s.enter_context(_patch("_write_summary"))
             s.enter_context(_patch("_mark_succeeded"))
-            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'))
+            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'), voyage_resolver=(lambda *a: 'vk'))
         assert mock_llm.call_args.kwargs["task"] == "entity_summary_validation_rule"
 
     def test_llm_auth_error_is_permanent(self, monkeypatch) -> None:
@@ -395,7 +465,7 @@ class TestSummarySubtick:
                 side_effect=LLMError("auth_error", "bad key"),
             ))
             mock_fail = s.enter_context(_patch("_mark_failed"))
-            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'))
+            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'), voyage_resolver=(lambda *a: 'vk'))
         mock_fail.assert_called_once()
         assert mock_fail.call_args[0][2] is False  # auth_error → permanent
 
@@ -417,7 +487,7 @@ class TestSummarySubtick:
                 side_effect=LLMError("rate_limited", "slow down"),
             ))
             mock_fail = s.enter_context(_patch("_mark_failed"))
-            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'))
+            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'), voyage_resolver=(lambda *a: 'vk'))
         assert mock_fail.call_args[0][2] is True  # rate_limited → retryable
 
     def test_entity_not_found_is_permanent(self, monkeypatch) -> None:
@@ -431,7 +501,7 @@ class TestSummarySubtick:
             ]
             s.enter_context(_patch("_fetch_summary_context")).return_value = None
             mock_fail = s.enter_context(_patch("_mark_failed"))
-            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'))
+            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'), voyage_resolver=(lambda *a: 'vk'))
         assert mock_fail.call_args[0][2] is False
 
     def test_empty_summary_is_retryable(self, monkeypatch) -> None:
@@ -453,7 +523,7 @@ class TestSummarySubtick:
                 return_value=resp,
             ))
             mock_fail = s.enter_context(_patch("_mark_failed"))
-            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'))
+            worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'), voyage_resolver=(lambda *a: 'vk'))
         assert mock_fail.call_args[0][2] is True
 
 

@@ -936,9 +936,14 @@ def _fetch_summary_context(session, entity_type: str,
     return None
 
 
-def _embedding_subtick(session, tenant_id: int) -> TickResult:
+def _embedding_subtick(session, tenant_id: int, voyage_resolver) -> TickResult:
     """Claim a batch of embedding rows for one tenant, embed via the
     Voyage API, write entities.embedding, mark the queue rows.
+
+    D-179: the Voyage key resolves per-org from the env's LLM connection
+    (``voyage_resolver``). Rows are grouped by their env-key and embedded per
+    group; a row whose org has no Voyage key fails PERMANENTLY so the run
+    finalizes (instead of stranding the queue).
 
     Returns a :class:`TickResult` with ``claimed`` count and a per-org
     breakdown of ``succeeded`` / ``failed_retryable`` /
@@ -954,6 +959,8 @@ def _embedding_subtick(session, tenant_id: int) -> TickResult:
     entity_ids = [r["entity_id"] for r in claimed]
     texts_by_id = _fetch_semantic_texts(session, entity_ids)
     org_by_id = _fetch_org_ids(session, entity_ids)
+    vkey_by_org = _resolve_org_keys(
+        session, tenant_id, set(org_by_id.values()), voyage_resolver)
 
     # Partition: rows with usable semantic_text get embedded; rows with
     # NULL/blank text are a no-op success — defensive against a sync
@@ -983,46 +990,53 @@ def _embedding_subtick(session, tenant_id: int) -> TickResult:
                 result.credit(org_by_id.get(rr["entity_id"]),
                               failed_permanent=1)
 
-    try:
-        vectors = embed_batch(
-            [t for (_, t) in embeddable], input_type="document",
-        )
-    except VoyageError as e:
-        _credit_fail(embeddable, e.retryable, str(e))
-        session.commit()
-        return result
+    # D-179: group embeddable rows by the Voyage key of their org's environment
+    # and embed per group (a single tenant tick can span orgs/envs). A group with
+    # no key fails PERMANENTLY so the queue drains + the run finalizes; each group
+    # records its own usage row.
+    groups: Dict[Optional[str], list] = {}
+    for (r, st) in embeddable:
+        key = vkey_by_org.get(org_by_id.get(r["entity_id"]))
+        groups.setdefault(key, []).append((r, st))
 
-    if len(vectors) != len(embeddable):
-        # Voyage should return one vector per input — treat a count
-        # mismatch as a transient anomaly worth a retry.
-        _credit_fail(
-            embeddable, True,
-            f"Voyage returned {len(vectors)} vectors for "
-            f"{len(embeddable)} inputs",
-        )
-        session.commit()
-        return result
-
-    for (r, _), vec in zip(embeddable, vectors):
-        _write_embedding(session, r["entity_id"], vec)
-        _mark_succeeded(session, r["queue_id"])
-        result.credit(org_by_id.get(r["entity_id"]), succeeded=1)
+    for key, rows in groups.items():
+        if not key:
+            _credit_fail(rows, False, "no Voyage key: the org's environment has "
+                                      "no LLM connection / voyage_api_key configured")
+            continue
+        try:
+            vectors = embed_batch(
+                [t for (_, t) in rows], input_type="document", api_key=key)
+        except VoyageError as e:
+            _credit_fail(rows, e.retryable, str(e))
+            continue
+        if len(vectors) != len(rows):
+            # Voyage should return one vector per input — treat a count
+            # mismatch as a transient anomaly worth a retry.
+            _credit_fail(rows, True,
+                         f"Voyage returned {len(vectors)} vectors for "
+                         f"{len(rows)} inputs")
+            continue
+        for (r, _), vec in zip(rows, vectors):
+            _write_embedding(session, r["entity_id"], vec)
+            _mark_succeeded(session, r["queue_id"])
+            result.credit(org_by_id.get(r["entity_id"]), succeeded=1)
+        # Rate-limit accounting — one llm_usage_log row per Voyage batch.
+        try:
+            record_embedding_usage(
+                tenant_id, batch_size=len(rows),
+                model=EMBEDDING_MODEL_TAG,
+                context={"primitive": "embedding"},
+            )
+        except Exception as e:
+            log.warning("record_embedding_usage failed (tenant %s): %s",
+                        tenant_id, e)
     session.commit()
-
-    # Rate-limit accounting — one llm_usage_log row per Voyage batch.
-    try:
-        record_embedding_usage(
-            tenant_id, batch_size=len(embeddable),
-            model=EMBEDDING_MODEL_TAG,
-            context={"primitive": "embedding"},
-        )
-    except Exception as e:
-        log.warning("record_embedding_usage failed (tenant %s): %s",
-                    tenant_id, e)
     return result
 
 
-def _summary_subtick(session, tenant_id: int, api_key_resolver) -> TickResult:
+def _summary_subtick(session, tenant_id: int, api_key_resolver,
+                     voyage_resolver) -> TickResult:
     """Claim a small batch of summary rows for one tenant, generate a
     plain-English summary via the LLM gateway, embed it, write the
     detail-table summary_* fields.
@@ -1050,6 +1064,10 @@ def _summary_subtick(session, tenant_id: int, api_key_resolver) -> TickResult:
     # LLM connection, memoised per env (one v1-session decrypt per env per tick).
     key_by_org = _resolve_org_keys(
         session, tenant_id, set(org_by_id.values()), api_key_resolver)
+    # D-179: the Voyage key (for embedding the generated summary) resolves the same
+    # way — per-org from the env's LLM connection.
+    vkey_by_org = _resolve_org_keys(
+        session, tenant_id, set(org_by_id.values()), voyage_resolver)
 
     def _credit_fail(r, retryable: bool, err: str):
         status = _mark_failed(session, r["queue_id"], retryable,
@@ -1098,10 +1116,12 @@ def _summary_subtick(session, tenant_id: int, api_key_resolver) -> TickResult:
             _credit_fail(r, True, "LLM returned an empty summary")
             continue
 
-        # Embed the generated summary -> detail-table summary_embedding.
+        # Embed the generated summary -> detail-table summary_embedding (D-179:
+        # the Voyage key resolves per-org from the env's LLM connection).
         try:
             summary_vec = embed_batch(
                 [summary_text], input_type="document",
+                api_key=vkey_by_org.get(org_by_id.get(r["entity_id"])),
             )[0]
         except VoyageError as e:
             _credit_fail(r, e.retryable, f"summary embedding failed: {e}")
@@ -1138,10 +1158,12 @@ def enrichment_tick(db_factory=None) -> bool:
         from primeqa.db import SessionLocal
         db_factory = SessionLocal
 
-    # D-179: the Anthropic summary key resolves per-env from the LLM connection
-    # (same resolver generation uses). Built once; opens its own v1 session per
-    # distinct env, memoised per tick inside _resolve_org_keys.
+    # D-179: both enrichment keys resolve per-env from the env's LLM connection
+    # (Anthropic via config.api_key; Voyage via config.voyage_api_key). Built once;
+    # each opens its own v1 session per distinct env, memoised per tick in
+    # _resolve_org_keys.
     anthropic_resolver = _default_s3_api_key_resolver(db_factory)
+    voyage_resolver = _default_voyage_api_key_resolver(db_factory)
 
     # Tenant discovery is a public-schema query — run it before any
     # per-tenant search_path is set.
@@ -1156,8 +1178,9 @@ def enrichment_tick(db_factory=None) -> bool:
         session = db_factory()
         try:
             _set_tenant_context(session, schema_name, tenant_id)
-            emb_result = _embedding_subtick(session, tenant_id)
-            sum_result = _summary_subtick(session, tenant_id, anthropic_resolver)
+            emb_result = _embedding_subtick(session, tenant_id, voyage_resolver)
+            sum_result = _summary_subtick(
+                session, tenant_id, anthropic_resolver, voyage_resolver)
             if emb_result.did_work or sum_result.did_work:
                 did_work = True
 
@@ -1257,6 +1280,32 @@ def _resolve_org_keys(session, tenant_id, org_ids, resolver) -> Dict[str, Option
                 key_by_env[env_id] = None
         out[org] = key_by_env[env_id]
     return out
+
+
+def _default_voyage_api_key_resolver(db_factory):
+    """D-179: the Voyage embedding key rides the env's LLM connection as a second
+    secret (``config['voyage_api_key']``) — Option A, no separate connection type.
+    Returns ``(tenant_id, environment_id) -> voyage_api_key`` ('' when the env has
+    no LLM connection / no voyage key; the worker treats '' as no-key → the row
+    fails permanently → the run finalizes)."""
+    from primeqa.core.repository import ConnectionRepository, EnvironmentRepository
+
+    def _resolve(tenant_id, environment_id):
+        if environment_id is None:
+            raise ValueError(f"tenant {tenant_id} org has no environment_id")
+        db = db_factory()
+        try:
+            env = EnvironmentRepository(db).get_environment(environment_id, tenant_id)
+            if env is None or not env.llm_connection_id:
+                raise ValueError(
+                    f"environment {environment_id} has no llm_connection_id")
+            conn = ConnectionRepository(db).get_connection_decrypted(
+                env.llm_connection_id, tenant_id)
+            return (conn or {}).get("config", {}).get("voyage_api_key", "")
+        finally:
+            db.close()
+
+    return _resolve
 
 
 def s3_generation_tick(db_factory=None, *, tool_turn_fn=None, api_key_resolver=None) -> dict:

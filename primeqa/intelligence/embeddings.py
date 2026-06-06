@@ -73,6 +73,7 @@ def _get_api_key() -> str:
 def embed_batch(
     texts: list[str],
     input_type: str = "document",
+    api_key: str | None = None,
 ) -> list[list[float]]:
     """Embed a list of texts via the Voyage API.
 
@@ -88,13 +89,25 @@ def embed_batch(
     ``'query'`` for search-query encoding (Voyage embeds the two
     asymmetrically). The enrichment worker always uses ``'document'``.
 
+    ``api_key`` (D-179): when given, used directly — the enrichment worker
+    resolves it per-env from the LLM connection's ``voyage_api_key``. When
+    ``None``, falls back to the ``VOYAGE_API_KEY`` env var (system / non-worker
+    callers, and a one-release safety net) and logs a warning so the fallback is
+    visible. A missing key on either path raises ``VoyageError(retryable=False)``.
+
     Retry policy lives at the worker layer — this function raises
     ``VoyageError`` (with ``.retryable``) and does not retry itself.
     """
     if not texts:
         return []
 
-    api_key = _get_api_key()
+    if api_key:
+        api_key = api_key.strip()
+    if not api_key:
+        logger.warning("embed_batch: no api_key passed; falling back to the "
+                       "VOYAGE_API_KEY env var (D-179 — prefer a per-env LLM "
+                       "connection voyage_api_key)")
+        api_key = _get_api_key()
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",

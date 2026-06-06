@@ -4074,6 +4074,8 @@ def connections_create():
                 "provider": request.form.get("llm_provider", "anthropic"),
                 "api_key": request.form.get("llm_api_key", ""),
                 "model": request.form.get("llm_model", "claude-sonnet-4-20250514"),
+                # D-179: optional Voyage embedding key for S1 enrichment.
+                "voyage_api_key": request.form.get("llm_voyage_api_key", ""),
             }
         svc.create_connection(
             request.user["tenant_id"], ctype,
@@ -4209,6 +4211,11 @@ def connections_update(conn_id):
                 new_config["api_key"] = request.form["llm_api_key"]
             elif "api_key" in old_config:
                 new_config["api_key"] = old_config["api_key"]
+            # D-179: Voyage embedding key — same keep-current idiom (blank = keep).
+            if request.form.get("llm_voyage_api_key"):
+                new_config["voyage_api_key"] = request.form["llm_voyage_api_key"]
+            elif old_config.get("voyage_api_key"):
+                new_config["voyage_api_key"] = old_config["voyage_api_key"]
             updates["config"] = new_config
 
         svc.update_connection(conn_id, request.user["tenant_id"], updates)
