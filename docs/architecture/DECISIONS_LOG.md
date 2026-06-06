@@ -9537,4 +9537,70 @@ never again become a silent multi-hour outage.
 
 ---
 
+## D-179 — S1 enrichment provider keys resolve from per-env connections
+
+**Date:** 2026-06-06
+**Affected:** `primeqa/worker.py` (enrichment subticks + a new per-env key resolver),
+`primeqa/intelligence/embeddings.py` (`embed_batch` injected key), `primeqa/core/repository.py`
+(`_sensitive_fields['llm']` += `voyage_api_key`) + the LLM-connection UI. **No migration**
+(Option A). **Status:** Active. Commits to `main`. Surfaced by the `#119` live sync: the run
+finished structurally but the env-detail panel shows "running" forever because finalization is
+gated on enrichment, which was skipping on missing env vars.
+
+**The problem (forensic, from the live sync).** S1 enrichment has two providers — **summaries**
+(Anthropic, via the LLM gateway) and **embeddings** (Voyage). Both read **bare worker env vars**
+(`ANTHROPIC_API_KEY` at `worker.py:1035`; `VOYAGE_API_KEY` at `embeddings.py:64`). The user's
+Anthropic key already lives in the env's **LLM connection** (generation resolves it via
+`_default_s3_api_key_resolver`, `worker.py:1186`); enrichment just bypasses that. Worse, the
+summary subtick's no-key path **early-returns without claiming** (`worker.py:1036-1041`),
+stranding the queue rows in `pending` → `compute_org_status` never reaches `complete` →
+`maybe_finalize_run` never flips the run to terminal → **`sync_run.status='running'` forever**
+(the org model itself is fully readable regardless — version 43 current, 146 objects).
+
+**The map (workflow `win0o1xkd`, 3 facets).**
+- The correct Anthropic resolver already exists and is proven (`_default_s3_api_key_resolver`:
+  `(tenant_id, environment_id) → env.llm_connection_id → get_connection_decrypted →
+  config['api_key']`). Embeddings already classify a missing key as **non-retryable →
+  failed_permanent** (finalize-safe); only the summary early-return hangs finalization.
+- **Plumbing gap:** the enrichment worker has `tenant_id` but **no `environment_id`** (unlike the
+  s3/s4/s1 ticks, which carry it on a job row). The only bridge is per-row, transitive: entity →
+  `connected_org_id` (`_fetch_org_ids`, already computed as `org_by_id`) → `connected_orgs.
+  environment_id` → the env's connection. So keys resolve **per the row's org's environment**,
+  memoised per-tick to bound v1-session churn.
+- `connected_orgs.environment_id` is nullable; a NULL-env org (pre-D-150, or out-of-band) →
+  treat as **failed_permanent** (the run still finalizes `partial_success`), never re-hang.
+
+**Decision (the Voyage fork — Option A chosen).** The Voyage key rides the **existing LLM
+connection** as a second secret (`config['voyage_api_key']`), NOT a new connection type. Both
+enrichment keys then come from the env's `llm_connection_id` — no migration, no new
+`connection_type`, no `environments.embedding_connection_id` column, no env-edit-picker work.
+The dedicated-`embeddings`-type alternative (Option B) was ~5× the surface (CHECK migration + env
+FK column + connection UI + env create/edit pickers + a `test_connection` branch) for the
+identical outcome; rejected for scope. Trade-off accepted: one connection row holds two provider
+keys (Anthropic + Voyage).
+
+**Slices.**
+- **A — Anthropic from the LLM connection (worker-only):** add an org→env→key resolver +
+  per-tick memo; rewire `_summary_subtick` to resolve the Anthropic key per-row (drop the
+  `os.environ` read + early-return); no key / no LLM connection / NULL env → `_credit_fail(
+  retryable=False)` (failed_permanent) so the run finalizes. Tests. No migration, no UI.
+- **B — Voyage from the LLM connection:** add `voyage_api_key` to `_sensitive_fields['llm']`
+  (Fernet round-trip) + a Voyage-key input on the LLM-connection new/edit UI; add an `api_key`
+  param to `embed_batch` (env-var fallback retained for one release, with a warning); rewire
+  `_embedding_subtick` (and the summary subtick's internal `embed_batch` call) to resolve the
+  Voyage key per-org's-env from `config['voyage_api_key']`. Tests.
+- **C — close (D-179 close):** docs + the ops note.
+
+**Caveats.** Until an env's LLM connection carries the keys, enrichment fails-permanently and
+syncs finalize `partial_success` (org model still fully readable). The `embed_batch` env-var
+fallback stays one release (warned) so prod doesn't go dark on deploy. `embeddings.py` keeps
+`model='voyage-3'` / dim 1024 hardcoded (the pgvector column dim is fixed) — the connection
+carries only keys, not the model.
+
+**Boundary.** Worker + connections, no migration, no substrate-schema change. The org model is
+already synced + readable (D-178); this is the enrichment + status-finalization layer. Commits
+to `main`.
+
+---
+
 ---
