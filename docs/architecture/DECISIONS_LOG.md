@@ -9727,4 +9727,52 @@ button. No migration, no substrate-schema change. Commits to `main`.
 
 ---
 
+## D-181 — Worker registers the full SQLAlchemy model set (FK-resolution fix, exposed by D-179)
+
+**Status:** Built + shipped to `main`. One-cause mechanical fix; no migration. Surfaced live during
+the D-180 enrichment drain.
+
+**Symptom (live, tenant_1 worker logs).**
+`llm usage log write failed task=entity_summary_validation_rule tenant=1: Foreign key associated
+with column 'llm_usage_log.requirement_id' could not find table 'requirements' with which to
+generate a foreign key to target column 'id'`.
+
+**Root cause.** `app.py` (its model-registration block) imports the FULL model set so SQLAlchemy
+can resolve cross-module **string** ForeignKeys (`LLMUsageLog` FKs to `requirements`,
+`pipeline_runs`, `test_cases`, `generation_batches`, `users`, `tenants` — defined across
+`test_management/`, `execution/`, `core/` models). The **worker** is a separate process
+(`python -m primeqa.worker`) that never imports `app.py`; it loaded models only lazily/partially
+inside functions. When `usage.record` flushes an `LLMUsageLog` row, SQLAlchemy resolves those FK
+targets against `Base.metadata`; whichever defining module wasn't imported yet is absent →
+`NoReferencedTableError`. **D-179 is what exposed it**: before D-179 the summary subtick
+early-returned on the missing key, so the worker never called the LLM gateway / `usage.record`;
+once keys resolve from the connection, the worker hits that write for the first time.
+
+**Impact: non-fatal.** `usage.record` opens its own session and swallows the exception
+(fire-and-forget). Summaries + embeddings still succeed (the live drain was unaffected); the only
+loss was the `llm_usage_log` rows for S1 enrichment — so the superadmin `/settings/llm-usage`
+per-task cost breakdown showed nothing for enrichment, plus repeated log-warning noise.
+
+**Decision (Option A).** Register the full model set at worker import time — mirror `app.py`'s
+`import primeqa.{core,metadata,test_management,execution,intelligence,vector,release}.models`
+block (plus `core.permissions`, `intelligence.generation_jobs`, `execution.data_engine`,
+`runs.schedule`) at `worker.py` module scope. Smallest correct + **systemic** (fixes every worker
+model-flush path, not just usage logging), zero behaviour change, same pattern the web already
+uses; imports are cheap + idempotent. Rejected: B (extract a shared `import_all_models()` helper —
+DRYer but touches `app.py`, wider than the bug); C (localized import inside `usage.record` —
+whack-a-mole, leaves other worker cross-module FK flushes broken).
+
+**Proof (clean subprocesses).** Resolving `LLMUsageLog`'s FKs without the registration raises
+`NoReferencedTableError ('could not find table users')`; after `import primeqa.worker` it resolves
+cleanly to all six targets incl. `requirements`.
+
+**Tests.** `tests/unit/test_worker_model_registration.py` — 3 guards: source-level (pollution-proof:
+the model imports must exist at worker module scope), functional (LLMUsageLog FKs resolve after
+worker import), metadata-presence. Full unit suite 2274 green.
+
+**Boundary.** `worker.py` module-scope imports + one test file. No migration, no behaviour change.
+Keep the worker's import list in sync with `app.py`'s registration block. Commits to `main`.
+
+---
+
 ---
