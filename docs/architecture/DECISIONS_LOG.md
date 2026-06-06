@@ -10090,4 +10090,61 @@ reader hydration — tracked, not blocking this settlement.
 
 ---
 
+## D-187 (settlement) — Step 4b: the requirement-grain evidence panel IS the additive S6 fold
+
+**Status:** Settled, docs-only (the D-156 / D-186 pattern). Closes Step 4 slice 4b. No code, no
+migration.
+
+**The fork.** `SEQUENCE.md:56` (carrying D-111) lists "fold S6 verdicts into the GO/NO-GO decision
+(additive)". This is blocked from a *release-grain hard gate* because `release_runs` links only to v1
+`pipeline_runs` — there is no `s4_execution_run_id`; the v1 and substrate execution worlds are
+disjoint (no shared key, no write-path). Two ways: (A) add the run-key + a fold policy + a
+`DecisionEngine` input → a release-grain hard gate; or (B) accept the already-shipped requirement-grain
+substrate-evidence panel as the additive fold.
+
+**Decision — Option B.** D-172/D-173 (UI Area 5) already shipped
+`intelligence/release_substrate_console.get_release_substrate`, which reaches a release through its
+**requirements**, reads per-claim **S6 verdicts + S8 grounding validity**, rolls up at-risk counts, and
+renders them on the release surface — **deliberately advisory** ("does NOT produce or flip the verdict;
+the human weighs it alongside the v1 `DecisionEngine`", D-172). That IS the SEQUENCE's "additive" fold:
+the substrate evidence is folded into the human's GO/NO-GO judgment **without** the substrate gating a
+v1 decision. The v1 `DecisionEngine` (`release/decision_engine.py`) remains the GO/NO-GO authority.
+
+**Deferred (Option A — a release-grain hard gate).** Adding `release_runs.s4_execution_run_id` + wiring
+it at S4 execution-finalize + a verdict fold policy in `DecisionEngine` is deferred because: (1) it's a
+v1-schema change on the `release`/`pipeline_runs` path that Step 5 / the post-cutover release rework
+may itself replace — risking a throwaway key; (2) the evidence panel already delivers the additive
+signal a reviewer needs; (3) a *hard* substrate gate over a human-confirmed release decision is a policy
+choice the product has not asked for. Revisit if/when releases are re-pointed to substrate runs.
+
+---
+
+## D-188 (close) — Cutover Step 4 (parallel-run validation): seams landed; live parity-window carried
+
+**Status:** Step 4 build + settlements complete. The three work-items are resolved; **one exit-gate
+criterion — a clean LIVE parity window — is a carried ops verification** (honest: it is not yet
+demonstrated live), which becomes a Step-5 entry-gate.
+
+**Exit-gate review (`SEQUENCE.md:57` — "a clean parity window; the GO/NO-GO + ledger seams landed").**
+- **Parity window (4a):** the `MetadataParityChecker` + `scripts/parity_check.py` + unit tests shipped
+  (D-185, `baa417a`). The live cross-tenant *clean window* is **NOT yet captured** — the first run was
+  killed mid-hydration (synchronous full-org-model read; D-186 carry). Needs a background-job runner or
+  lighter hydration. **This is the one open exit-gate criterion.**
+- **GO/NO-GO seam (4b):** settled (D-187) — the requirement-grain substrate-evidence panel (D-172/173)
+  is the additive fold; v1 `DecisionEngine` stays the authority.
+- **Ledger seam (4c):** settled (D-186) — the S3 ledger stays write-only; `get_provenance` deferred.
+
+**What's actually landed vs carried.** Landed: the parity *instrument*; both seam settlements; the
+preflight + drift re-points (D-183/D-184) that the parity validates. Carried: the live clean-parity-
+window evidence (an ops run, gated on the runner fix), and — separately — the **Step-5 code prep** from
+the earlier `meta_*`-reader audit (relocate `MetadataS1Reader` out of `primeqa/metadata/`; the worker
+Name-check disposition; discard the v1 sync UI/routes).
+
+**Cutover position.** Steps 0–3 live; Step 4 seams landed. **Step 5 (the irreversible `meta_*` drop)
+entry-gate** = (a) a clean live parity window [4a ops run] **and** (b) `cutover_read_s1` ON for the
+rollout tenants **and** (c) the Step-5 reader-retirement prep. No `meta_*` removed yet. Commits to
+`main`.
+
+---
+
 ---
