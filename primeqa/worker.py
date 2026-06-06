@@ -13,6 +13,25 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# D-181: register the FULL SQLAlchemy model set at worker import time, mirroring
+# app.py. The worker is a separate process that never imports app.py, so without
+# this it only loaded models lazily/partially — and a flush of a model with a
+# cross-module string ForeignKey (e.g. LLMUsageLog.requirement_id -> requirements,
+# exercised by S1 summary enrichment since D-179) raised NoReferencedTableError
+# because the FK target table wasn't yet in Base.metadata. These imports are cheap
+# and idempotent; keep this list in sync with app.py's registration block.
+import primeqa.core.models  # noqa: E402,F401
+import primeqa.core.permissions  # noqa: E402,F401
+import primeqa.intelligence.generation_jobs  # noqa: E402,F401
+import primeqa.metadata.models  # noqa: E402,F401
+import primeqa.test_management.models  # noqa: E402,F401
+import primeqa.execution.models  # noqa: E402,F401
+import primeqa.intelligence.models  # noqa: E402,F401
+import primeqa.vector.models  # noqa: E402,F401
+import primeqa.release.models  # noqa: E402,F401
+import primeqa.execution.data_engine  # noqa: E402,F401
+import primeqa.runs.schedule  # noqa: E402,F401
+
 log = logging.getLogger(__name__)
 
 POLL_INTERVAL = 5
