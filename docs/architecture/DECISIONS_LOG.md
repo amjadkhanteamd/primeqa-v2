@@ -9660,4 +9660,71 @@ substrate-schema change. Commits direct to `main`.
 
 ---
 
+## D-180 (design) — Re-enrich requeue: drain stranded `failed_permanent` enrichment through the product
+
+**Status:** Design. Follows D-179. Triggered by the live finding below; user chose "build a requeue
+action first" over hand-running SQL. No migration.
+
+**Problem (confirmed live, tenant_1).** Enrichment queue rows that reach `failed_permanent` are
+reset to `pending` ONLY on a *new structural change* to that entity — `materialize._batch_upsert_
+queue`'s `ON CONFLICT (entity_type, entity_id, primitive_type) DO UPDATE` (materialize.py:769),
+and unchanged entities are deliberately NOT re-enqueued (design §5; `_batch_touch_existing` only
+refreshes `last_synced_at`). So when the failure was *systemic* — the keyless-worker bug D-179
+fixed — and the org is otherwise stable, the rows strand permanently: the org reads
+`ai_enrichment_status='complete'`, the run finalizes `partial_success`, and zero embeddings exist,
+with no product-level remedy short of `psql`. Live read: 5870 embedding + 63 summary rows all
+`failed_permanent` with `error_text='VOYAGE_API_KEY not set in environment'`, 0/5870 entities
+embedded; the concurrently-running sync (`0 inserted / 0 superseded / 5631 unchanged`) re-enqueues
+none of them.
+
+**Decision.** Add a per-org **requeue action** that resets an env's connected-org `failed_permanent`
+enrichment rows back to `pending`, recomputes `ai_enrichment_status`, and lets the worker's
+`enrichment_tick` drain them under the D-179 per-env keys. Mirrors the existing `sync-substrate`
+seam exactly (route → bridge → backend → panel). No migration; the queue table already exists.
+
+**Layers.**
+- **Backend** — `sync/readiness.requeue_failed_enrichment(session, connected_org_id) -> int`: a
+  scoped UPDATE over the org's active-entity (`entities.last_synced_from_org_id = org`,
+  `valid_to_seq IS NULL`) `failed_permanent` rows → `status='pending'`, `attempts=0`,
+  `started_at/completed_at/error_text = NULL`; then `apply_org_status(session, org)` so the org
+  flips off `complete`. Returns the count reset. Pure, joins the caller's tx, testable on the
+  seeded `conn` harness.
+- **Bridge** — `metadata/s1_sync_console.requeue_s1_enrichment(tenant_id, env_id) -> {ok,
+  requeued}`: resolve env→connected_org, open a tenant-scoped session, call the backend, commit,
+  best-effort wrapper (mirrors `trigger_s1_sync`, never raises hard). Also add a `failed_enrichment`
+  count to `_read_status` so the panel renders the button conditionally + shows N.
+- **Route** — `views.py POST /environments/<id>/sync-substrate/requeue-enrichment`,
+  `@role_required("admin","superadmin")` + the same inner `trigger_metadata_sync` permission gate
+  as the sync trigger; flash "Requeued N rows — the worker will re-embed them", redirect back.
+- **Panel** — `environments/detail.html`: a `btn_secondary` "Re-run enrichment (N failed)" next to
+  "Sync substrate", shown only when `s1_status.failed_enrichment > 0`, with `data-confirm` (bulk
+  reset → confirm modal, never native `confirm()`).
+
+**Forks (resolved).**
+- **F1 — reset scope: all `failed_permanent` (chosen) vs error_text-matched.** Terminal rows are
+  the only candidates; genuinely-bad rows (e.g. detail-row-not-found) just re-fail, bounded by the
+  attempts cap — so a blanket per-org reset is safe and simpler than threading an error-substring
+  filter through the UI. Error-substring scoping is a noted future refinement.
+- **F2 — re-finalize the already-terminal run? No.** `maybe_finalize_run` only acts on the
+  `running` run; the historical `partial_success` row stays as the audit record. The
+  currently-running sync (or the next one) finalizes `success` once the queue is clean — favorable
+  timing now (`7e03fb10` is running). Requeue populates embeddings; it does not rewrite history.
+- **F3 — placement: env-detail S1 panel (chosen)** vs a global admin page. Same per-org
+  boundary/permission, and the operator is already on the panel watching sync status.
+- **F4 — confirm UX:** the existing attribute-driven `data-confirm` modal.
+
+**Tests.** Backend unit on the seeded `conn` harness (seed `failed_permanent` rows → requeue →
+assert `pending` / `attempts=0` / count returned / `ai_enrichment_status` recomputed off `complete`);
+`_read_status` exposes `failed_enrichment`; route permission-gate smoke where runnable. Adversarial
+review of the impl before the HOLD.
+
+**Live verification (closes 1d / #119).** After merge+deploy, click "Re-run enrichment" on the env
+panel → worker drains under the D-179 keys → entities get embeddings → the running sync finalizes
+`success` → a real "running → success" *through the product*, which is the S1-sync proving exit-gate.
+
+**Boundary.** One `readiness` fn, one bridge fn + a `_read_status` field, one route, one panel
+button. No migration, no substrate-schema change. Commits to `main`.
+
+---
+
 ---
