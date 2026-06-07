@@ -10221,4 +10221,62 @@ carried since D-186/D-188.
 
 ---
 
+## D-190 (design) — `is_required` is a non-parity axis; the parity runner respects `is_active` (closes Step-4a)
+
+**Status:** Design (impl pending). Cutover Step-4 follow-on; closes Step-4a (the live clean parity
+window — the criterion carried since D-186/D-188). Touches the parity instrument (`metadata/parity.py`,
+`scripts/parity_check.py`) only. On `main`.
+
+**What the D-189 live run revealed.** With the runnable parity instrument (D-189) and after retiring the
+previous-version test environments (see *Data action* below), the **only** shape-axis divergence on the
+one real env (env 59, "Prime QA NEW") is `is_required` — 41 fields, all `{meta: True, s1: False}`. Every
+other shape axis is at **true parity**: objects (`is_createable`/`is_custom`) shape=0, fields
+(`field_type`/`is_custom`/**`is_createable`/`is_updateable`**) shape=0. The CRUD-flag mismatches in the
+first all-envs run (`Event.IsRecurrence2Exception`, `Contact.Name`) were all on now-retired **stale**
+envs, not the live one.
+
+**Root cause — a by-design definitional difference, not a reader bug.** `meta_*` computes
+`is_required = (not nillable) AND (not defaultedOnCreate)` (`metadata/service.py:437`) — a *schema*
+definition that over-marks system/permission fields (e.g. `ApexTrigger.UsageAfterDelete`,
+`PermissionSetLicense.Maximum*` flags as "required"). S1's `is_required` is a different concept (the
+UI/layout create-time enforcement flag; `semantic/entity_attributes.py:95-97`). The S1 reader faithfully
+returns S1's stored value — there is **no reader bug** to fix; the two systems simply define the field
+differently.
+
+**Decision.** Exclude `is_required` from parity's **shape axis** (`_FIELD_SHAPE` in `metadata/parity.py`)
+— exactly the treatment `reference_to` (S1 defers it) and `picklist_values` (stored differently) already
+receive. The parity gate exists to catch **reader bugs** (a value both sources have, read wrong by S1);
+a definitional difference is out of scope for that. Justification is airtight, not a judgment call:
+1. **By-design difference**, documented in S1's own `entity_attributes.py:95-97` — not a reader bug.
+2. **Drives no validator-blocking rule.** `intelligence/validator.py` does not read `is_required` at all;
+   its sole consumer is `intelligence/generation.py:323`, which uses it for "[required: …]" *prompt
+   hints*. So the divergence carries **zero cutover correctness risk** for the validator.
+3. `meta_*`'s definition is demonstrably noisy; S1's is at worst a sparser signal.
+
+This is **not** masking a symptom (the standing prohibition): there is no reader bug behind it, and the
+already-excluded `reference_to`/`picklist_values` set the precedent.
+
+**Companion fix — the runner respects `is_active`.** `scripts/parity_check.py` filtered only on
+`current_meta_version_id IS NOT NULL`, so it validated **deactivated** envs (retired test data with stale
+`meta_*` versions) and reported them as divergent. The runner now also filters `Environment.is_active`
+— a deactivated env's stale `meta_*` must not gate the parity window. (The product soft-delete path,
+`views.py` `environments_delete`, only flips `is_active`.)
+
+**Data action (recorded, reversible).** The pre-D-189-era test environments were retired: 5 active
+tenant-1 envs (`Production`, `Acme Production`, `Meta Test Sandbox`, `Intel Test 8d39c8`, `Acme UAT
+Sandbox`) were soft-deleted (`is_active=false`) so only env 59 ("Prime QA NEW") remains active. Soft
+delete — reversible, no cascade. The ~20 already-inactive envs are now correctly excluded by the
+`is_active` filter.
+
+**Honest downside (logged, not fixed here).** S1's `is_required` is sparser than `meta_*`'s, so the
+generation prompt lists fewer "[required: …]" hints under `cutover_read_s1`. Non-blocking quality nuance;
+a future enhancement — populate S1's `is_required` from the schema definition — is **deferred**, not done
+in this slice.
+
+**Exit-gate.** With both changes, env 59 parity → `shape=0` → **CLEAN**. That is the live clean parity
+window carried since D-186/D-188 — **Step-4a's exit-gate is met.** Step 5's entry-gate still also
+requires `cutover_read_s1` ON for the rollout tenant(s) + the Step-5 reader-retirement prep.
+
+---
+
 ---
