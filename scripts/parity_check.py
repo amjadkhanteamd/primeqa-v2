@@ -44,8 +44,12 @@ def run(tenant_id=None, verbose=False) -> int:
 
     db = _init_db()
     try:
+        # Only ACTIVE envs: a deactivated (is_active=false) env is retired test
+        # data — its stale meta_* version must not gate the parity window. (The
+        # soft-delete path, views.py environments_delete, only flips is_active.)
         q = db.query(Environment).filter(
-            Environment.current_meta_version_id.isnot(None))
+            Environment.current_meta_version_id.isnot(None),
+            Environment.is_active.is_(True))
         if tenant_id is not None:
             q = q.filter(Environment.tenant_id == tenant_id)
         envs = q.order_by(Environment.tenant_id, Environment.id).all()

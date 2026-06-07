@@ -18,9 +18,12 @@ Two kinds of divergence, deliberately kept distinct:
 
 Axes deliberately EXCLUDED from the shape comparison (documented gaps, not bugs):
 ``MetaField.reference_to`` (S1 defers it → always ``None``), ``picklist_values``
-(stored differently: v1 JSON dicts vs S1 ``list[str]``), and VR
-``error_condition_formula`` / ``is_active`` (S1 doesn't sync them, D-162). VR
-parity is membership-only.
+(stored differently: v1 JSON dicts vs S1 ``list[str]``), ``is_required`` (a
+**by-design definitional difference** — ``meta_*`` uses the schema rule
+``not nillable AND not defaultedOnCreate``; S1 uses the UI/layout enforcement flag;
+neither is a reader bug, and it drives no validator rule — only a generation prompt
+hint, D-190), and VR ``error_condition_formula`` / ``is_active`` (S1 doesn't sync
+them, D-162). VR parity is membership-only.
 """
 from __future__ import annotations
 
@@ -29,10 +32,11 @@ from typing import Any, Dict, List
 
 # Attributes both readers expose as plain, directly-comparable values. A
 # difference on one of these for an entity present in BOTH sources is a reader
-# bug — the Step-4 exit-gate. (reference_to / picklist_values are excluded — see
-# the module docstring.)
+# bug — the Step-4 exit-gate. (reference_to / picklist_values / is_required are
+# excluded — see the module docstring; is_required is a by-design definitional
+# difference, not a reader bug, D-190.)
 _OBJECT_SHAPE = ("is_createable", "is_custom")
-_FIELD_SHAPE = ("field_type", "is_required", "is_custom",
+_FIELD_SHAPE = ("field_type", "is_custom",
                 "is_createable", "is_updateable")
 
 

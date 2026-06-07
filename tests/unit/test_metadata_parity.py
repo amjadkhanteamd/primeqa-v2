@@ -96,6 +96,20 @@ class TestParityClean:
         rpt = MetadataParityChecker(meta, s1).check(1)
         assert rpt.clean is True
 
+    def test_is_required_difference_is_excluded_from_shape(self):
+        """is_required is a by-design definitional difference (meta_* schema rule
+        `not nillable AND not defaultedOnCreate` vs S1's layout flag), NOT a reader
+        bug — excluded from the shape axis (D-190). A field differing ONLY on
+        is_required stays clean."""
+        meta = _Reader([_obj(1, "Account")],
+                       [_field("Name", 1, is_required=True)], [])
+        s1 = _Reader([_obj("a", "Account")],
+                     [_field("Name", "a", is_required=False)], [])
+        rpt = MetadataParityChecker(meta, s1).check(1)
+        assert rpt.clean is True
+        assert rpt.shape_mismatches == 0
+        assert rpt.fields["both"] == 1
+
 
 class TestParityShapeDivergence:
     def test_field_flag_mismatch_fails_clean(self):
