@@ -1,7 +1,7 @@
 """Cutover Step 4a (D-185): metadata read-parity — S1 vs v1 ``meta_*``.
 
 The parallel-run-validation harness. Proves the S1 reader
-(:class:`primeqa.metadata.s1_reader.MetadataS1Reader`) returns the same semantic
+(:class:`primeqa.metadata_bridge.s1_reader.MetadataS1Reader`) returns the same semantic
 metadata as the v1 :class:`MetadataRepository` for the same environment, so the
 ``meta_*`` drop (Step 5) is safe.
 

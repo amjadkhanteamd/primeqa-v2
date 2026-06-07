@@ -39,8 +39,8 @@ def _init_db():
 def run(tenant_id=None, verbose=False) -> int:
     from primeqa.core.models import Environment
     from primeqa.metadata.repository import MetadataRepository
-    from primeqa.metadata.s1_reader import build_metadata_s1_reader
-    from primeqa.metadata.parity import MetadataParityChecker
+    from primeqa.metadata_bridge.s1_reader import build_metadata_s1_reader
+    from primeqa.metadata_bridge.parity import MetadataParityChecker
 
     db = _init_db()
     try:

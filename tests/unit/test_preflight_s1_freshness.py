@@ -21,7 +21,7 @@ from primeqa.runs.preflight import Preflight
 pytestmark = pytest.mark.unit
 
 _NOW = datetime.now(timezone.utc)
-_S1_PATCH = "primeqa.metadata.s1_sync_console.read_s1_freshness"
+_S1_PATCH = "primeqa.metadata_bridge.s1_sync_console.read_s1_freshness"
 
 
 def _resolved():

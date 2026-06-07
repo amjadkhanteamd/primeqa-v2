@@ -2812,7 +2812,7 @@ def environments_detail(env_id):
                 }
 
         # D-164 (UI Area 1): Substrate-1 sync status — best-effort, never breaks the page.
-        from primeqa.metadata.s1_sync_console import read_s1_sync_status
+        from primeqa.metadata_bridge.s1_sync_console import read_s1_sync_status
         s1_status = read_s1_sync_status(request.user["tenant_id"], env_id)
 
         return render_template("environments/detail.html", **ctx(
@@ -2834,7 +2834,7 @@ def environments_sync_substrate(env_id):
     from urllib.parse import quote
 
     from primeqa.core.permissions import _resolve_effective_permissions
-    from primeqa.metadata.s1_sync_console import trigger_s1_sync
+    from primeqa.metadata_bridge.s1_sync_console import trigger_s1_sync
     if (request.user.get("role") != "superadmin"
             and "trigger_metadata_sync" not in _resolve_effective_permissions()):
         flash("You don't have permission to trigger a substrate sync.", "warning")
@@ -2860,7 +2860,7 @@ def environments_sync_substrate(env_id):
 def environments_sync_substrate_status(env_id):
     """JSON S1-sync status for the env (D-164, 1b) — polled by the panel while a
     sync runs. Best-effort; always 200 with the status dict."""
-    from primeqa.metadata.s1_sync_console import read_s1_sync_status
+    from primeqa.metadata_bridge.s1_sync_console import read_s1_sync_status
     return jsonify(read_s1_sync_status(request.user["tenant_id"], env_id))
 
 
@@ -2874,7 +2874,7 @@ def environments_requeue_enrichment(env_id):
     from urllib.parse import quote
 
     from primeqa.core.permissions import _resolve_effective_permissions
-    from primeqa.metadata.s1_sync_console import requeue_s1_enrichment
+    from primeqa.metadata_bridge.s1_sync_console import requeue_s1_enrichment
     if (request.user.get("role") != "superadmin"
             and "trigger_metadata_sync" not in _resolve_effective_permissions()):
         flash("You don't have permission to requeue enrichment.", "warning")
@@ -2895,7 +2895,7 @@ def environments_requeue_enrichment(env_id):
 def org_model():
     """Read-only browser of the synced S1 org model (D-164, 1c). Tenant-level —
     S1 is one versioned org model per tenant. ``?object=ApiName`` drills in."""
-    from primeqa.metadata.s1_sync_console import read_org_model
+    from primeqa.metadata_bridge.s1_sync_console import read_org_model
     obj = request.args.get("object") or None
     data = read_org_model(request.user["tenant_id"], obj)
     return render_template("org_model.html", **ctx(

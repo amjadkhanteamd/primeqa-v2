@@ -119,12 +119,12 @@ class TestManagementService:
         is on (no wasted hydrate for flag-off tenants) and is best-effort
         (empty/error S1 → None → meta_*). The default ``False`` keeps any non-read
         caller (e.g. apply_fix-only paths) on meta_*."""
-        from primeqa.metadata.accessor import (
+        from primeqa.metadata_bridge.accessor import (
             MetadataAccessor, cutover_read_s1_enabled,
         )
         s1_reader = None
         if with_s1_reader and cutover_read_s1_enabled(metadata_repo.db, tenant_id):
-            from primeqa.metadata.s1_reader import build_metadata_s1_reader
+            from primeqa.metadata_bridge.s1_reader import build_metadata_s1_reader
             s1_reader = build_metadata_s1_reader(tenant_id)
         return MetadataAccessor(tenant_id, metadata_repo, s1_reader=s1_reader)
 

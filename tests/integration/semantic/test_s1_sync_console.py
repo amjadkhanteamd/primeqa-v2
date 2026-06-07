@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from sqlalchemy import text
 
-from primeqa.metadata.s1_sync_console import (
+from primeqa.metadata_bridge.s1_sync_console import (
     _read_status,
     read_s1_sync_status,
     trigger_s1_sync,
@@ -218,7 +218,7 @@ def test_requeue_recomputes_org_status_off_complete(conn, seed):
 
 
 def test_requeue_s1_enrichment_best_effort_on_bad_tenant():
-    from primeqa.metadata.s1_sync_console import requeue_s1_enrichment
+    from primeqa.metadata_bridge.s1_sync_console import requeue_s1_enrichment
     res = requeue_s1_enrichment(-1, 1)
     assert res["ok"] is False
 
@@ -245,14 +245,14 @@ def _seed_running(conn, org_id):
 
 
 def test_freshness_not_provisioned(conn):
-    from primeqa.metadata.s1_sync_console import _read_freshness
+    from primeqa.metadata_bridge.s1_sync_console import _read_freshness
     f = _read_freshness(conn, 9001)              # no connected_orgs row
     assert f["available"] is True and f["provisioned"] is False
     assert f["usable"] is False and f["current_version_seq"] is None
 
 
 def test_freshness_provisioned_no_successful_run_not_usable(conn):
-    from primeqa.metadata.s1_sync_console import _read_freshness
+    from primeqa.metadata_bridge.s1_sync_console import _read_freshness
     org = _seed_org(conn, 9002)
     _seed_running(conn, org)                      # provisioned, but no success yet
     f = _read_freshness(conn, 9002)
@@ -262,7 +262,7 @@ def test_freshness_provisioned_no_successful_run_not_usable(conn):
 
 
 def test_freshness_usable_and_fresh(conn, seed):
-    from primeqa.metadata.s1_sync_console import _read_freshness
+    from primeqa.metadata_bridge.s1_sync_console import _read_freshness
     v = seed.version()
     org = _seed_org(conn, 9003)
     _seed_run_at(conn, org, status="success", hours_ago=2, version_seq=v)
@@ -274,7 +274,7 @@ def test_freshness_usable_and_fresh(conn, seed):
 
 
 def test_freshness_partial_success_counts(conn, seed):
-    from primeqa.metadata.s1_sync_console import _read_freshness
+    from primeqa.metadata_bridge.s1_sync_console import _read_freshness
     v = seed.version()
     org = _seed_org(conn, 9005)
     _seed_run_at(conn, org, status="partial_success", hours_ago=5, version_seq=v)
@@ -284,7 +284,7 @@ def test_freshness_partial_success_counts(conn, seed):
 
 
 def test_freshness_picks_latest_success(conn, seed):
-    from primeqa.metadata.s1_sync_console import _read_freshness
+    from primeqa.metadata_bridge.s1_sync_console import _read_freshness
     v = seed.version()
     org = _seed_org(conn, 9006)
     _seed_run_at(conn, org, status="success", hours_ago=100, version_seq=v)  # older
@@ -297,7 +297,7 @@ def test_freshness_env_scoped_not_contaminated_by_sibling(conn, seed):
     """D-183 review regression: a never-synced env must read usable=False even when
     a SIBLING env in the same tenant schema has a synced version. The version is
     env-scoped via sync_runs.source_org_id, NOT the tenant-global MAX(version_seq)."""
-    from primeqa.metadata.s1_sync_console import _read_freshness
+    from primeqa.metadata_bridge.s1_sync_console import _read_freshness
     v = seed.version()                           # a tenant-global logical version
     org_a = _seed_org(conn, 9010)                # env A: synced
     _seed_run_at(conn, org_a, status="success", hours_ago=2, version_seq=v)
@@ -314,7 +314,7 @@ def test_freshness_env_scoped_not_contaminated_by_sibling(conn, seed):
 # --- org-model browser (1c) --------------------------------------------------
 
 def test_read_org_model_lists_objects(conn, seed):
-    from primeqa.metadata.s1_sync_console import _read_org_model
+    from primeqa.metadata_bridge.s1_sync_console import _read_org_model
     from primeqa.semantic.query import SemanticOrgModel
     v1 = seed.version()
     seed.entity("Object", "Account", v1)
@@ -325,7 +325,7 @@ def test_read_org_model_lists_objects(conn, seed):
 
 
 def test_read_org_model_object_detail(conn, seed):
-    from primeqa.metadata.s1_sync_console import _read_org_model
+    from primeqa.metadata_bridge.s1_sync_console import _read_org_model
     from primeqa.semantic.query import SemanticOrgModel
     v1 = seed.version()
     obj = seed.entity("Object", "Account", v1)
@@ -341,12 +341,12 @@ def test_read_org_model_object_detail(conn, seed):
 
 def test_read_org_model_raises_when_unsynced(conn):
     import pytest
-    from primeqa.metadata.s1_sync_console import _read_org_model
+    from primeqa.metadata_bridge.s1_sync_console import _read_org_model
     from primeqa.semantic.query import SemanticOrgModel, VersionNotFoundError
     with pytest.raises(VersionNotFoundError):       # no version seeded -> wrapper catches it
         _read_org_model(SemanticOrgModel(conn))
 
 
 def test_read_org_model_best_effort_bad_tenant():
-    from primeqa.metadata.s1_sync_console import read_org_model
+    from primeqa.metadata_bridge.s1_sync_console import read_org_model
     assert read_org_model(-1)["available"] is False

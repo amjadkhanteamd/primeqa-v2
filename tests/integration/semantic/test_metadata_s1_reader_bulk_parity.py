@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from sqlalchemy import text
 
-from primeqa.metadata.s1_reader import (
+from primeqa.metadata_bridge.s1_reader import (
     MetadataS1Reader,
     _APPLIES_TO,
     _BELONGS_TO,

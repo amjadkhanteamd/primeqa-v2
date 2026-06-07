@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from sqlalchemy import text
 
-from primeqa.metadata.s1_reader import hydrate_metadata_s1_reader
+from primeqa.metadata_bridge.s1_reader import hydrate_metadata_s1_reader
 from primeqa.semantic.query import SemanticOrgModel
 
 

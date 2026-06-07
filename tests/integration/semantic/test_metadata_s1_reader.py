@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from sqlalchemy import text
 
-from primeqa.metadata.s1_reader import (
+from primeqa.metadata_bridge.s1_reader import (
     build_metadata_s1_reader,
     hydrate_metadata_s1_reader,
 )

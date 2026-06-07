@@ -13,7 +13,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from primeqa.metadata.parity import MetadataParityChecker
+from primeqa.metadata_bridge.parity import MetadataParityChecker
 
 pytestmark = pytest.mark.unit
 

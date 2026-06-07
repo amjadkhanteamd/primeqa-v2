@@ -180,7 +180,7 @@ class Preflight:
         metadata_source = "meta"
         s1_seq = None
         if self._use_s1_freshness(tenant_id):
-            from primeqa.metadata.s1_sync_console import read_s1_freshness
+            from primeqa.metadata_bridge.s1_sync_console import read_s1_freshness
             s1 = read_s1_freshness(tenant_id, environment_id)
             if s1.get("available") and s1.get("provisioned"):
                 metadata_source = "s1"
@@ -310,7 +310,7 @@ class Preflight:
         accessor's tolerant flag helper (→ False on any DB error). When on, Preflight
         sources freshness/health from S1 instead of the v1 ``meta_*`` tables."""
         try:
-            from primeqa.metadata.accessor import cutover_read_s1_enabled
+            from primeqa.metadata_bridge.accessor import cutover_read_s1_enabled
             return cutover_read_s1_enabled(self.db, tenant_id)
         except Exception:
             return False

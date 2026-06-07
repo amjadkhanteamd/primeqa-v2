@@ -172,12 +172,12 @@ class MetadataService:
         from datetime import datetime as _dt
         db = self.metadata_repo.db
         try:
-            from primeqa.metadata.accessor import cutover_read_s1_enabled
+            from primeqa.metadata_bridge.accessor import cutover_read_s1_enabled
             use_s1 = cutover_read_s1_enabled(db, tenant_id)
         except Exception:
             use_s1 = False
         if use_s1:
-            from primeqa.metadata.s1_sync_console import read_s1_freshness
+            from primeqa.metadata_bridge.s1_sync_console import read_s1_freshness
             s1 = read_s1_freshness(tenant_id, environment_id)
             if s1.get("available") and s1.get("provisioned"):
                 if not s1.get("usable"):

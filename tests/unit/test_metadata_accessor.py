@@ -6,7 +6,7 @@ meta_*`. Mocked repo + s1_reader (no DB). Slice 3.1 ships `s1_reader=None`
 """
 from __future__ import annotations
 
-from primeqa.metadata.accessor import MetadataAccessor
+from primeqa.metadata_bridge.accessor import MetadataAccessor
 
 
 class _Row:

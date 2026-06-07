@@ -20,8 +20,8 @@ from primeqa.metadata.service import MetadataService
 pytestmark = pytest.mark.unit
 
 _NOW = datetime.now(timezone.utc)
-_FLAG = "primeqa.metadata.accessor.cutover_read_s1_enabled"
-_S1 = "primeqa.metadata.s1_sync_console.read_s1_freshness"
+_FLAG = "primeqa.metadata_bridge.accessor.cutover_read_s1_enabled"
+_S1 = "primeqa.metadata_bridge.s1_sync_console.read_s1_freshness"
 
 
 def _svc(*, current=None):
