@@ -80,12 +80,12 @@ class PreflightReport:
 class Preflight:
     """Pre-flight check runner. Builds a PreflightReport; does not queue anything."""
 
-    def __init__(self, db, *, env_repo, conn_repo, tc_repo, meta_repo):
+    def __init__(self, db, *, env_repo, conn_repo, tc_repo):
+        # GAP-2 (D-192): no ``meta_repo`` — preflight reads freshness/health from S1.
         self.db = db
         self.env_repo = env_repo
         self.conn_repo = conn_repo
         self.tc_repo = tc_repo
-        self.meta_repo = meta_repo
 
     def check(self, tenant_id: int, user: Dict[str, Any],
               environment_id: int, resolved: ResolvedRun) -> PreflightReport:
@@ -169,69 +169,39 @@ class Preflight:
                 f"AI-generated steps and the fix-and-rerun agent will be unavailable.",
             ))
 
-        # ---- 3. Metadata freshness -------------------------------------------
-        # GAP-2 (D-183): behind the per-tenant ``cutover_read_s1`` flag, freshness +
-        # per-category health come from the S1 substrate (the last successful sync_run
-        # + the current org-model version) instead of the v1 ``meta_*`` tables. The
-        # ``meta_*`` path stays as the flag-off / S1-unprovisioned fallback during the
-        # parallel window; it's removed at cutover Step 5 when ``meta_*`` is dropped.
-        meta_version = None              # v1 row (meta path only)
+        # ---- 3. Metadata freshness (S1 — GAP-2 / D-192) ----------------------
+        # Preflight reads the S1 substrate UNCONDITIONALLY: the env's last successful
+        # sync_run (``completed_at``) + the current org-model version. The v1
+        # ``meta_*`` fallback was removed at GAP-2 — the ``meta_*`` drop (Step 5)
+        # cannot proceed while preflight still reads ``meta_*``, and tenant reads are
+        # already on S1 (cutover_read_s1). Health is all-or-nothing: S1 syncs the
+        # whole org atomically, so a usable org model => every category is present.
         meta_age_hours = None
-        metadata_source = "meta"
+        metadata_source = "s1"
         s1_seq = None
-        if self._use_s1_freshness(tenant_id):
-            from primeqa.metadata_bridge.s1_sync_console import read_s1_freshness
-            s1 = read_s1_freshness(tenant_id, environment_id)
-            if s1.get("available") and s1.get("provisioned"):
-                metadata_source = "s1"
-                s1_seq = s1.get("current_version_seq")
-                meta_age_hours = s1.get("age_hours")
-                if not s1.get("usable"):
-                    report.blockers.append(self._issue(
-                        "NO_METADATA",
-                        f"Environment '{env.name}' has no synced org model (S1). "
-                        f"Run a substrate sync first.",
-                    ))
-                if meta_age_hours is not None:
-                    if meta_age_hours > METADATA_BLOCK_HOURS:
-                        report.blockers.append(self._issue(
-                            "METADATA_VERY_STALE",
-                            f"Org model is {meta_age_hours:.0f}h old "
-                            f"(> {METADATA_BLOCK_HOURS}h). Re-sync before running.",
-                        ))
-                    elif meta_age_hours > METADATA_STALE_HOURS:
-                        report.warnings.append(self._issue(
-                            "METADATA_STALE",
-                            f"Org model is {meta_age_hours:.0f}h old. "
-                            f"Consider re-syncing for accurate results.",
-                        ))
-
-        if metadata_source == "meta":
-            # v1 ``meta_*`` path (flag off, or flag on but S1 unprovisioned/unavailable).
-            if env.current_meta_version_id:
-                meta_version = self.meta_repo.get_version(env.current_meta_version_id)
-                if meta_version and meta_version.completed_at:
-                    meta_age_hours = (
-                        datetime.now(timezone.utc) - meta_version.completed_at
-                    ).total_seconds() / 3600.0
-            else:
-                report.blockers.append(self._issue(
-                    "NO_METADATA",
-                    f"Environment '{env.name}' has never had a metadata refresh. "
-                    f"Run metadata sync first.",
-                ))
-
+        from primeqa.metadata_bridge.s1_sync_console import read_s1_freshness
+        s1 = read_s1_freshness(tenant_id, environment_id)
+        if not (s1.get("available") and s1.get("provisioned") and s1.get("usable")):
+            report.blockers.append(self._issue(
+                "NO_METADATA",
+                f"Environment '{env.name}' has no synced org model (S1). "
+                f"Run a substrate sync first.",
+            ))
+        else:
+            s1_seq = s1.get("current_version_seq")
+            meta_age_hours = s1.get("age_hours")
             if meta_age_hours is not None:
                 if meta_age_hours > METADATA_BLOCK_HOURS:
                     report.blockers.append(self._issue(
                         "METADATA_VERY_STALE",
-                        f"Metadata is {meta_age_hours:.0f}h old (> {METADATA_BLOCK_HOURS}h). "
-                        f"Refresh it before running.",
+                        f"Org model is {meta_age_hours:.0f}h old "
+                        f"(> {METADATA_BLOCK_HOURS}h). Re-sync before running.",
                     ))
                 elif meta_age_hours > METADATA_STALE_HOURS:
                     report.warnings.append(self._issue(
                         "METADATA_STALE",
-                        f"Metadata is {meta_age_hours:.0f}h old. Consider refreshing for accurate results.",
+                        f"Org model is {meta_age_hours:.0f}h old. "
+                        f"Consider re-syncing for accurate results.",
                     ))
 
         # ---- 4. Prod-safety --------------------------------------------------
@@ -246,33 +216,28 @@ class Preflight:
         # For each test, look at referenced_entities on its current version; if
         # any entity references a category whose sync is missing/failed, mark
         # the test as skipped_metadata_stale (plan Q-pre, metadata partial).
-        # S1 mode has no per-category partial state, so healthy = all-or-nothing.
-        if metadata_source == "s1":
-            healthy_categories = _ALL_META_CATEGORIES if s1_seq is not None else set()
-        else:
-            healthy_categories = self._healthy_meta_categories(meta_version)
+        # S1 has no per-category partial state, so healthy = all-or-nothing: every
+        # category is present when the org model is usable (s1_seq set), else none.
+        healthy_categories = _ALL_META_CATEGORIES if s1_seq is not None else set()
         decisions = self._per_test_checks(
             tenant_id, resolved.test_case_ids, healthy_categories)
         report.per_test_decisions = decisions
 
         # ---- 6. Summary for preview screen -----------------------------------
-        # `meta_version` keys are populated from whichever source is active (S1 or
-        # meta_*) so templates/runs/preview.html renders unchanged; `metadata_source`
-        # marks which one (D-183).
+        # `meta_version` keys are populated from the S1 org model (GAP-2) so
+        # templates/runs/preview.html renders unchanged; `metadata_source` is always
+        # 's1' now that preflight no longer reads `meta_*`.
         report.summary = {
             "environment": {
                 "id": env.id, "name": env.name, "env_type": env.env_type,
                 "instance_url": env.sf_instance_url,
             },
             "meta_version": {
-                "id": (s1_seq if metadata_source == "s1"
-                       else (meta_version.id if meta_version else None)),
-                "version_label": (f"Org model v{s1_seq}"
-                                  if metadata_source == "s1" and s1_seq is not None
-                                  else (meta_version.version_label if meta_version else None)),
+                "id": s1_seq,
+                "version_label": f"Org model v{s1_seq}" if s1_seq is not None else None,
                 "age_hours": round(meta_age_hours, 1) if meta_age_hours is not None else None,
             },
-            "metadata_source": metadata_source,
+            "metadata_source": metadata_source,  # always 's1' (GAP-2)
             "llm_connection_id": env.llm_connection_id,
             "test_count": resolved.test_count,
             "will_run_count": report.will_run_count,
@@ -304,16 +269,6 @@ class Preflight:
             )
 
     # ---- Internals -----------------------------------------------------------
-
-    def _use_s1_freshness(self, tenant_id) -> bool:
-        """GAP-2 (D-183): is the per-tenant ``cutover_read_s1`` flag on? Reuses the
-        accessor's tolerant flag helper (→ False on any DB error). When on, Preflight
-        sources freshness/health from S1 instead of the v1 ``meta_*`` tables."""
-        try:
-            from primeqa.metadata_bridge.accessor import cutover_read_s1_enabled
-            return cutover_read_s1_enabled(self.db, tenant_id)
-        except Exception:
-            return False
 
     def _per_test_checks(self, tenant_id, test_case_ids,
                          healthy_categories) -> List[PerTestDecision]:
@@ -369,26 +324,6 @@ class Preflight:
             decisions.append(PerTestDecision(tc_id, True, "ok"))
 
         return decisions
-
-    def _healthy_meta_categories(self, meta_version) -> Set[str]:
-        """Return the set of healthy categories for this meta_version.
-
-        R3: reads `meta_sync_status` rows to answer per-category. Falls back
-        to the legacy "meta_version.status == 'complete' \u2192 all healthy"
-        if no status rows exist (pre-R3 meta versions).
-        """
-        if not meta_version:
-            return set()
-        from primeqa.metadata.models import MetaSyncStatus
-        rows = self.db.query(MetaSyncStatus).filter(
-            MetaSyncStatus.meta_version_id == meta_version.id,
-        ).all()
-        if not rows:
-            # Legacy meta_version, no per-category data
-            if meta_version.status == "complete":
-                return set(_ALL_META_CATEGORIES)
-            return set()
-        return {r.category for r in rows if r.status == "complete"}
 
     def _categories_for_refs(self, referenced_entities: List[Any]) -> Set[str]:
         """Map referenced_entities list -> the set of metadata categories they depend on.

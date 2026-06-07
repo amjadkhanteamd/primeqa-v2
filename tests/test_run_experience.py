@@ -238,8 +238,7 @@ def run_tests():
             pf = Preflight(db,
                 env_repo=EnvironmentRepository(db),
                 conn_repo=ConnectionRepository(db),
-                tc_repo=TestCaseRepository(db),
-                meta_repo=MetadataRepository(db))
+                tc_repo=TestCaseRepository(db))
             rep = pf.check(TENANT_ID, {"role": "admin"}, env.id,
                            ResolvedRun(test_case_ids=[], source_refs={}))
             codes = [b["code"] for b in rep.blockers]
@@ -262,8 +261,7 @@ def run_tests():
             pf = Preflight(db,
                 env_repo=EnvironmentRepository(db),
                 conn_repo=ConnectionRepository(db),
-                tc_repo=TestCaseRepository(db),
-                meta_repo=MetadataRepository(db))
+                tc_repo=TestCaseRepository(db))
             rep = pf.check(TENANT_ID, {"role": "admin"}, 999999,
                            ResolvedRun(test_case_ids=[1, 2, 3], source_refs={}))
             codes = [b["code"] for b in rep.blockers]

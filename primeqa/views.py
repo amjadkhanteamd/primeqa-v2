@@ -1645,7 +1645,6 @@ def runs_new_preview():
         section_repo = SectionRepository(db)
         tc_repo = TestCaseRepository(db)
         req_repo = RequirementRepository(db)
-        meta_repo = MetadataRepository(db)
 
         selection = _build_wizard_selection(request.form)
         environment_id = int(request.form["environment_id"])
@@ -1663,7 +1662,7 @@ def runs_new_preview():
 
         preflight = Preflight(
             db, env_repo=env_repo, conn_repo=conn_repo,
-            tc_repo=tc_repo, meta_repo=meta_repo,
+            tc_repo=tc_repo,
         )
         report = preflight.check(
             request.user["tenant_id"], request.user, environment_id, resolved,
@@ -1762,12 +1761,10 @@ def runs_create():
             from primeqa.runs.preflight import Preflight
             from primeqa.runs.wizard import ResolvedRun
             from primeqa.test_management.repository import TestCaseRepository
-            from primeqa.metadata.repository import MetadataRepository
             preflight = Preflight(
                 db, env_repo=EnvironmentRepository(db),
                 conn_repo=ConnectionRepository(db),
                 tc_repo=TestCaseRepository(db),
-                meta_repo=MetadataRepository(db),
             )
             resolved = ResolvedRun(
                 test_case_ids=test_case_ids,

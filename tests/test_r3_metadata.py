@@ -131,48 +131,11 @@ def run_tests():
     results.append(test("R3-4. Parent failure cascades skipped_parent_failed to dependents",
                         t_sync_engine_parent_fail_cascades))
 
-    def t_preflight_reads_meta_sync_status():
-        """Preflight recognizes per-category health via meta_sync_status rows."""
-        import uuid
-        from primeqa.db import SessionLocal
-        from primeqa.metadata.models import MetaVersion, MetaSyncStatus
-        from primeqa.runs.preflight import Preflight
-        from primeqa.core.models import Environment
-        db = SessionLocal()
-        try:
-            env = db.query(Environment).filter(Environment.tenant_id == TENANT_ID).first()
-            mv = MetaVersion(environment_id=env.id, version_label=f"r3p{uuid.uuid4().hex[:6]}",
-                             status="complete")
-            db.add(mv); db.commit(); db.refresh(mv)
-
-            # Only objects + fields healthy; validation_rules failed
-            for cat, st in [("objects","complete"),("fields","complete"),
-                            ("record_types","complete"),("validation_rules","failed"),
-                            ("flows","skipped"),("triggers","skipped")]:
-                db.add(MetaSyncStatus(meta_version_id=mv.id, category=cat, status=st,
-                                      items_count=0))
-            db.commit()
-
-            # Fake minimal repo objects \u2014 only env_repo matters here
-            from primeqa.core.repository import EnvironmentRepository, ConnectionRepository
-            from primeqa.test_management.repository import TestCaseRepository
-            from primeqa.metadata.repository import MetadataRepository
-            pf = Preflight(db,
-                env_repo=EnvironmentRepository(db),
-                conn_repo=ConnectionRepository(db),
-                tc_repo=TestCaseRepository(db),
-                meta_repo=MetadataRepository(db))
-            healthy = pf._healthy_meta_categories(mv)
-            assert healthy == {"objects", "fields", "record_types"}, f"got {healthy}"
-
-            # Cleanup
-            db.query(MetaSyncStatus).filter_by(meta_version_id=mv.id).delete()
-            db.query(MetaVersion).filter_by(id=mv.id).delete()
-            db.commit()
-        finally:
-            db.close()
-    results.append(test("R3-5. Preflight reads per-category health from meta_sync_status",
-                        t_preflight_reads_meta_sync_status))
+    # R3-5 (Preflight reads per-category health from meta_sync_status) was REMOVED at
+    # GAP-2 (D-192): preflight now reads freshness/health from S1 (all-or-nothing, no
+    # per-category partial state), so `_healthy_meta_categories` no longer exists. The
+    # v1 meta_sync_status sync itself (R3-1..R3-4 above) is unaffected until the Step-5
+    # meta_* drop.
 
     def t_api_sync_status_endpoint():
         # Login
