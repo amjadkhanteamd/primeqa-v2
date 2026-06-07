@@ -10279,4 +10279,49 @@ requires `cutover_read_s1` ON for the rollout tenant(s) + the Step-5 reader-reti
 
 ---
 
+## D-191 (design) — relocate the cutover read-bridge out of `primeqa/metadata/` (Step-5 prep, reversible)
+
+**Status:** Design (impl pending). Cutover Step-5 **prerequisite prep** — NOT the irreversible drop. Pure
+code relocation, no behavior change, no schema/prod impact. On `main`.
+
+**Why now — the Step-5 gate is unmet, so the drop is deferred.** "Step 5" (the irreversible act) drops
+`meta_*` + the v1 product tables `test_case_versions` / `requirements` / `metadata_impacts` (D-065) and
+deletes `primeqa/metadata/`. Its entry-gate (`SEQUENCE.md:64-65`) is materially **unmet**: GAP-2 — preflight
+still reads `meta_*` (`MetaSyncStatus` / `MetaVersion`, no clean S1 map); `cutover_read_s1` is OFF and the
+v1 metadata sync still actively writes `meta_*`; and `requirements` / `test_case_versions` still have dozens
+of live readers (`views.py`, `release/*`, `runs/{wizard,bulk,preflight,my_tickets}`, `execution/routes`,
+`risk_engine`, `agent`, `worker.py`). Dropping anything today would break production, and there is no
+rollback past the drop. So Step-5 work begins with the **reversible** slices; this is the first.
+
+**The mixed-concern problem.** `primeqa/metadata/` holds two unrelated concerns: the **v1-metadata to
+delete** (`models.py`, `repository.py`, `service.py`, `worker_runner.py`, `sync_engine.py`, `routes.py` —
+the `meta_*` ORM + repo + the v1 Tooling-API sync) and the **cutover read-bridge that must survive**
+(`accessor.py` = the flag-gated read switch; `s1_reader.py` = the S1→meta-shape reader; `parity.py` = the
+parity instrument; `s1_sync_console.py` = the v1 UI/ops bridge to the S1 sync + `read_s1_freshness`). The
+bridge reads **S1, never `meta_*`** (verified: zero module-level `primeqa.metadata.*` imports in the four,
+no cross-imports among them, only a docstring ref in `parity.py:4`).
+
+**Decision.** `git mv` the four bridge modules (filenames unchanged) into a new package
+**`primeqa/metadata_bridge/`** (+ empty `__init__.py`) and re-point every importer
+`primeqa.metadata.<mod>` → `primeqa.metadata_bridge.<mod>`. Import surface (mapped): 5 source files
+(`metadata/service.py`, `runs/preflight.py`, `test_management/service.py`, `views.py`,
+`scripts/parity_check.py`) + 6 test files (`tests/unit/test_metadata_accessor.py`,
+`tests/unit/test_metadata_parity.py`, and four `tests/integration/semantic/` files). Name rationale: it
+survives the eventual `delete primeqa/metadata/` and is self-documenting (mirrors the D-148 precedent that
+relocated S5 to `primeqa/knowledge/`). All four move together (one package, one re-point sweep, lowest
+risk); a later split of `s1_sync_console` → `primeqa/sync/` is a noted trivial follow-up.
+
+**Outcome.** `primeqa/metadata/` then contains only the v1-to-delete set, so Step 5's `delete
+primeqa/metadata/` becomes a clean removal that cannot accidentally take out the S1 read-path. No
+behavior changes — proven by the same 108 unit+semantic tests (D-190) passing against the new import
+paths, plus `grep` showing zero stale `primeqa.metadata.{accessor,s1_reader,parity,s1_sync_console}`
+importers and `primeqa/metadata/` reduced to the v1 set.
+
+**Deferred (the rest of Step 5, gate unmet).** GAP-2 (preflight off `meta_*`); flip `cutover_read_s1` ON +
+live-verify; retire the v1 metadata sync writer; retire the `requirements`/`test_case_versions` readers
+onto the spine; then — strictly last, with a final explicit go — the migration dropping `meta_*` + the
+D-065 product tables + deleting `primeqa/metadata/` + removing the flag.
+
+---
+
 ---
