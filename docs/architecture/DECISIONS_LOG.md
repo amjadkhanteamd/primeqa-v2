@@ -10147,4 +10147,78 @@ rollout tenants **and** (c) the Step-5 reader-retirement prep. No `meta_*` remov
 
 ---
 
+## D-189 (design) — bulk read primitives: the S1 metadata-reader O(entities) N+1 fix
+
+**Status:** Design (impl pending). Cutover follow-on enabling the Step-4a live parity window + the live
+read-switch. Touches S1 (`primeqa/semantic/query.py`, additive) + the cutover reader
+(`primeqa/metadata/s1_reader.py`). Commits to **`main`** (cutover rhythm + v2-runtime deploy-sync — this
+fixes a production read-path Railway deploys; user-confirmed this session).
+
+**The problem.** `hydrate_metadata_s1_reader` (`s1_reader.py:118`) builds the whole-org reader by calling
+`get_entity_details` **per object and per field**, `get_related` **per object** (fields) and **per VR**
+(object), and `get_picklist_values` **per picklist field**. For a real org (~2k objects / ~40k fields)
+that is **tens of thousands of sequential DB round-trips**. It (a) killed the Step-4a parity runner
+(`scripts/parity_check.py`) mid-hydration — the one open Step-4 exit-gate criterion (D-186/D-188 carry) —
+and (b) is a **latent blocker for the live read-switch**: the same `build_metadata_s1_reader` is on the
+generation+validation read-path (`test_management/service.py:128`) whenever `cutover_read_s1` is on, so
+any real tenant flipping the flag eats the N+1 on every generation.
+
+**The fork (resolved).** (A) **bulk read primitives** — collapse hydration to ~6 queries [chosen];
+(B) background-job runner — unblocks the ops script only, leaves the read-switch N+1 (a workaround,
+rejected per root-cause discipline); (C) lazy reader — rejected (the validator reads the whole-org field
+index, `validator.py:133`). The N+1 is intrinsic to per-entity hydration; the in-bounds fix is the bulk
+*form* of S1's typed reads.
+
+**Decision — three additive primitives on `SemanticOrgModel`** (`query.py`), each the bulk form of an
+already-shipped read, same contract every prior primitive followed (validated `at_seq` via
+`_validate_version`; the `_as_of` window join to `entities`; table names only via the trusted
+`_detail_table_for`/`TIER_1_ENTITIES` registry; no caller SQL; tenant-scoped connection):
+- `get_entity_details_bulk(entity_type, at_seq) -> {UUID: dict}` — `SELECT d.* FROM <detail_table> d
+  JOIN entities e ON e.id = d.entity_id WHERE e.entity_type = :entity_type AND <_as_of('e')>`. **INNER**
+  JOIN — detail tables carry no version columns (D-025), so pinning is the FK + `_as_of('e')`; an entity
+  with no detail row is simply absent, and the reader's `.get(id, {})` reproduces today's `od or {}`.
+- `get_related_bulk(edge_types, direction, at_seq) -> {UUID: list[RelatedEntity]}` — `_related_select`
+  with the near-id predicate **dropped** and `e.<near> AS near_id` **added**, grouped by `near_id`, each
+  `RelatedEntity` built by `_row_to_related` verbatim. Keeps **both** `_as_of('e')` (edge) and
+  `_as_of('t')` (far entity, in the JOIN ON) — dropping `_as_of('t')` would leak a superseded far entity.
+  `direction ∈ {inbound, outbound}` only (one grouping key needs one direction).
+- `get_picklist_values_bulk(at_seq) -> {UUID: list[dict]}` — `get_picklist_values` with the grouping
+  key `picklist_value_set_entity_id`, grouped + `ORDER BY …, sort_order`.
+
+**The reader rewrite is a byte-for-byte drop-in.** `hydrate_metadata_s1_reader` issues the ~6 bulk reads
+up front, then runs the **existing** object/field/VR construction loops unchanged in logic — each
+per-entity call swapped for a dict lookup. `build_metadata_s1_reader` (best-effort, catches all → None)
+is untouched. Every invariant is preserved and cited: object/field/VR sorts (`:123,:173,:188`); the
+field-name **parent-prefix strip** (`:145-147`, kept correct by leaving the field loop **nested** inside
+the object loop so `obj_api == e.sf_api_name`); `is_required` from `entities.attributes` not a detail
+column (`:165`); CRUD defaults True (`:169-170`); picklist `()`/`list[str]` shape (`:154-161`, the type
+`validator.py:89` requires) plus a **UUID-key coercion** before the picklist-set lookup (the bulk map
+keys by real `UUID`; `fd.get("picklist_value_set_entity_id")` may be str). The correctness gate is a
+**golden-equivalence test**: a vendored copy of the pre-D-189 hydrate (`_legacy_hydrate`, using the
+retained per-entity primitives) must produce identical `get_objects`/`get_fields`(whole-org + per-object)
+/`get_validation_rules` output — including `picklist_values` value **and `type`** — on a richer seeded
+org (objects with/without details, with/without fields, picklist with 2 values + a set with 0
+values-at-seq, VR with/without APPLIES_TO, a second version superseding a field).
+
+**Framing vs the lock.** SPEC §12 lists "Bulk operations" as deferred. These are the bulk *form* of
+already-shipped reads (same contract, one round-trip), **additive and uncovered** by D-022's five
+primitives — landing under D-024's "matters not covered" carve-out, the exact path `get_entity_details`
+(D-111.1) and `get_picklist_values` (D-119) took. SPEC §12's bullet is **annotated** (read-form
+realized), not contradicted; a general bulk-query DSL and any write/mutation bulk stay deferred.
+
+**Scope (smallest correct change).** Metadata reader only — S6 `S1VrReader` / S8 `S8S1Reader` read
+per-object (bounded N+1) and are **not** converted. The four per-entity primitives stay (S6/S8 consumers
++ the `_legacy_hydrate` reference) — the three bulk forms are added alongside, no removal. No row cap
+(returning the whole org is the point). The `field_details.object_entity_id` BELONGS_TO shortcut (one
+fewer query for fields) is **deferred** — the edge stays the parity source-of-truth to avoid
+edge-vs-column divergence.
+
+**Verification.** Local: the golden-equivalence + per-primitive tests against the semantic integration
+harness (`primeqa_test_semantic`) — a green local-PG run is the merge gate. Live: re-run
+`scripts/parity_check.py` against prod (read-only; explicit approval first) — it must complete at scale
+(not be killed) and report `PARITY CLEAN … divergent=0`, which **is** the Step-4a exit-gate evidence
+carried since D-186/D-188.
+
+---
+
 ---

@@ -515,7 +515,12 @@ class SemanticOrgModel:
 - Domain shortcuts
 - Query DSL
 - Caching strategy
-- Bulk operations
+- ~~Bulk operations~~ — **read-form realized (D-189).** `get_entity_details_bulk` /
+  `get_related_bulk` / `get_picklist_values_bulk` return a whole-org-at-a-version read in one
+  round-trip — the **bulk *form* of the already-shipped per-entity reads** (`get_entity_details` D-111.1,
+  `get_related`, `get_picklist_values` D-119), same `_as_of` window + trusted-registry table + no caller
+  SQL. Added for the metadata-reader hydration path (the O(entities) N+1 fix; additive under D-024's
+  carve-out, the D-119 precedent). A general bulk-query DSL and any write/mutation bulk remain deferred.
 
 ---
 
