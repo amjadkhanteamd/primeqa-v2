@@ -1292,10 +1292,15 @@ def list_environment_objects(env_id):
         env = db.query(Environment).filter(
             Environment.id == env_id, Environment.tenant_id == request.user["tenant_id"],
         ).first()
-        if not env or not env.current_meta_version_id:
+        if not env:
             return jsonify([]), 200
-        repo = MetadataRepository(db)
-        objects = repo.get_objects(env.current_meta_version_id)
+        # D-195 Step 5a.1: metadata reads are S1-only (tenant-scoped org model);
+        # gate on the S1 reader being hydrated, not on the inert meta_version id.
+        from primeqa.metadata_bridge.s1_reader import build_metadata_s1_reader
+        reader = build_metadata_s1_reader(request.user["tenant_id"])
+        if not reader:
+            return jsonify([]), 200
+        objects = reader.get_objects(None)
         if q:
             objects = [o for o in objects if q in o.api_name.lower() or q in (o.label or "").lower()]
         return jsonify([{
@@ -1315,13 +1320,17 @@ def list_object_fields(env_id, object_name):
         env = db.query(Environment).filter(
             Environment.id == env_id, Environment.tenant_id == request.user["tenant_id"],
         ).first()
-        if not env or not env.current_meta_version_id:
+        if not env:
             return jsonify([]), 200
-        repo = MetadataRepository(db)
-        obj = repo.get_object_by_api_name(env.current_meta_version_id, object_name)
+        # D-195 Step 5a.1: S1-only (see list_environment_objects).
+        from primeqa.metadata_bridge.s1_reader import build_metadata_s1_reader
+        reader = build_metadata_s1_reader(request.user["tenant_id"])
+        if not reader:
+            return jsonify([]), 200
+        obj = reader.get_object_by_api_name(None, object_name)
         if not obj:
             return jsonify([]), 200
-        fields = repo.get_fields(env.current_meta_version_id, obj.id)
+        fields = reader.get_fields(None, obj.id)
         if q:
             fields = [f for f in fields if q in f.api_name.lower() or q in (f.label or "").lower()]
         return jsonify([{

@@ -45,7 +45,7 @@ def _legacy_hydrate(model, seq) -> MetadataS1Reader:
                     key=lambda x: x.sf_api_name or ""):
         od = model.get_entity_details(e.id, at_seq=seq) or {}
         objects.append(_S1Object(
-            id=e.id, api_name=e.sf_api_name,
+            id=e.id, api_name=e.sf_api_name, label=e.display_name,
             is_createable=bool(od.get("is_createable", True)),
             is_custom=bool(od.get("is_custom", False))))
         obj_api = e.sf_api_name or ""
@@ -70,6 +70,7 @@ def _legacy_hydrate(model, seq) -> MetadataS1Reader:
                 ]
             flds.append(_S1Field(
                 api_name=bare,
+                label=fe.display_name,
                 field_type=fd.get("field_type"),
                 is_required=bool(attrs.get("is_required", False)),
                 is_custom=bool(fd.get("is_custom", False)),
@@ -191,7 +192,7 @@ def _seed_rich_org(seed, conn):
 
 def _field_tuple(f):
     return (
-        f.api_name, f.field_type, f.is_required, f.is_custom,
+        f.api_name, f.label, f.field_type, f.is_required, f.is_custom,
         f.is_createable, f.is_updateable, str(f.meta_object_id), f.reference_to,
         # value AND container type — a list→tuple drift (the validator's
         # isinstance(pv, list) gate) must fail the comparison.
@@ -200,7 +201,7 @@ def _field_tuple(f):
 
 
 def _reader_to_tuples(reader):
-    objs = [(str(o.id), o.api_name, o.is_createable, o.is_custom)
+    objs = [(str(o.id), o.api_name, o.label, o.is_createable, o.is_custom)
             for o in reader.get_objects()]
     whole = [_field_tuple(f) for f in reader.get_fields()]
     per_obj = {str(o.id): [_field_tuple(f) for f in reader.get_fields(object_id=o.id)]
@@ -248,6 +249,11 @@ def test_bulk_hydration_structural_cases(conn, seed):
     # - field WITH a value set but 0 values-at-seq → the empty LIST [] (pre-existing
     #   behavior, identical in both readers — the `if pvs_id:` branch yields []).
     assert contact_fields["LeadSource__c"].picklist_values == []
+
+    # (g) label = Entity.display_name (the seed defaults display_name to the api
+    #     name; in production it's the SF object/field label). The picker reads it.
+    assert objs["Account"].label == "Account"
+    assert acct_fields["Name"].label == "Account.Name"
 
     # (f) VR without an APPLIES_TO object → meta_object None; with → the object
     vrs = {v.rule_name: v for v in reader.get_validation_rules()}

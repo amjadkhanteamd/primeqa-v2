@@ -51,6 +51,7 @@ class _S1Object:
     api_name: str
     is_createable: bool
     is_custom: bool
+    label: Optional[str] = None   # SF object label (Entity.display_name); picker display
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,7 @@ class _S1Field:
     meta_object_id: Any        # the S1 Object entity UUID (== _S1Object.id)
     reference_to: Optional[str] = None       # (deferred) SOQL relationship checks
     picklist_values: Any = ()                # D-161: list[str] value api-names (()=none)
+    label: Optional[str] = None              # SF field label (Entity.display_name); picker display
 
 
 @dataclass(frozen=True)
@@ -145,7 +147,7 @@ def hydrate_metadata_s1_reader(model, seq) -> MetadataS1Reader:
     for e in object_entities:
         od = object_details_by_id.get(e.id, {})   # absent detail row → {} (was: ...or {})
         objects.append(_S1Object(
-            id=e.id, api_name=e.sf_api_name,
+            id=e.id, api_name=e.sf_api_name, label=e.display_name,
             is_createable=bool(od.get("is_createable", True)),
             is_custom=bool(od.get("is_custom", False))))
         obj_api = e.sf_api_name or ""     # stripped from qualified field names below
@@ -184,6 +186,7 @@ def hydrate_metadata_s1_reader(model, seq) -> MetadataS1Reader:
                 ]
             flds.append(_S1Field(
                 api_name=bare,
+                label=fe.display_name,
                 field_type=fd.get("field_type"),
                 is_required=bool(attrs.get("is_required", False)),
                 is_custom=bool(fd.get("is_custom", False)),

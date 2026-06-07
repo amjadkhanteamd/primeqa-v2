@@ -10531,4 +10531,55 @@ execution-engine replacement) stays deferred (D-194), untouched here.
 
 ---
 
+### D-195.1 — Step 5a.1 impl: every live metadata reader S1-only
+
+**What.** Retired the meta_* side of the read path so every *live* metadata read returns the S1
+semantic org model. Six edits:
+
+1. **`metadata_bridge/s1_reader.py`** — added `label` to `_S1Object` / `_S1Field`, populated from
+   `Entity.display_name` (= the SF object/field label: `presentation.label or name or external_id`,
+   per `sync/materialize.py`). The object/field picker needs it.
+2. **`metadata_bridge/accessor.py`** — `MetadataAccessor` is now **S1-only**: dropped the `_flag_on`
+   gate, the `meta_*` `_repo` path, `get_version`, and the `__getattr__` delegation; constructor is
+   `(tenant_id, s1_reader)`; reads delegate to the reader or return empty. Safe to delete the repo
+   path: the only consumers (`TestCaseGenerator`, `TestCaseValidator`) call **only** `get_objects` /
+   `get_fields` / `get_validation_rules` — never `get_version` or any `__getattr__`-delegated method
+   (verified by grep before removal).
+3. **`test_management/service.py` `_metadata_accessor`** — always builds the S1 reader (dropped the
+   `cutover_read_s1_enabled` gate); constructs the 2-arg accessor. The legacy `metadata_repo` param is
+   accepted but **ignored**.
+4. **`test_management/routes.py`** object/field picker — reads `build_metadata_s1_reader(tenant)`
+   instead of `MetadataRepository`; gates on the reader being hydrated, not on the (soon-inert)
+   `current_meta_version_id`.
+5. **`views.py`** test-case-edit `StepValidator` — gets the S1 reader (the validator is duck-typed; a
+   falsy reader short-circuits its metadata checks — no crash).
+6. **Tests** — deleted `tests/unit/test_metadata_accessor.py` (its whole subject — the flag gate,
+   meta_* passthrough, `get_version`-stays-meta — is gone); extended the golden-equivalence test
+   (`test_metadata_s1_reader_bulk_parity`) so `label` is populated in the per-entity oracle and
+   compared (object + field serializers) with a structural assertion.
+
+**Scope refinements vs the plan (recorded forks).**
+- **`metadata_repo` threading kept (deferred to 5a.3).** Rather than unthread `metadata_repo` from the
+  4 public methods (`generate_test_plan` / `revalidate_test_case_version` / `apply_validation_fix` /
+  `generate_test_case`) + their callers now, 5a.1 leaves the param in place (ignored). The callers'
+  `MetadataRepository(db)` constructions are **inert** — the accessor reads S1 regardless — and their
+  removal is cohesive with deleting `primeqa/metadata/` in 5a.3. Smaller, behavior-focused 5a.1.
+- **`check_drift` deferred *wholesale* to 5a.3 (not split).** Its S1-freshness anchor already resolves
+  to S1 for the live flag-on tenant (D-184), so no live reader is on meta_*. Relocating it out of the
+  to-be-deleted `metadata/service.py` is entangled with the **v1 `SalesforceClient`** (with
+  `query_tooling`) co-located in that same file — the canonical `integrations/sf_client.py` client has
+  only *typed* tooling methods, no generic `query_tooling`. That SF-client decision belongs with the
+  module dismantling in 5a.3, so anchor-S1-only + relocation move together there.
+- **`cutover_read_s1_enabled` kept** in `accessor.py` (its sole remaining caller is `check_drift`'s
+  anchor) until 5a.3 removes the flag.
+
+**Verification.** `import primeqa.app` clean; **2382 unit + semantic tests green**; the golden test
+proves bulk==per-entity hydration *including* `label`. Full reader inventory after 5a.1: the only
+remaining `MetadataRepository` sites are `/impacts` (views.py — 5a.2 removal), the **inert** generation
+threading (`generation_jobs:292`, `routes:1000/1030/1444`), and `check_drift` (views:1687) — all
+scoped to 5a.2/5a.3. No live user-facing reader (generation, validation, picker, step-validation) reads
+meta_*.
+
+---
+
 ---

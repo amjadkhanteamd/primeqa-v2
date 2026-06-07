@@ -107,26 +107,24 @@ class TestManagementService:
     # negative / boundary / edge / regression. Each becomes a TC row in
     # one generation batch so the user can see "why 5 TCs?" and audit cost.
 
-    def _metadata_accessor(self, tenant_id, metadata_repo, *, with_s1_reader=False):
-        """Cutover Step 3 (D-158/D-159): wrap the meta_* repo in the flag-gated
-        ``MetadataAccessor`` — the single switch point for v1's metadata reads.
+    def _metadata_accessor(self, tenant_id, metadata_repo=None, *, with_s1_reader=False):
+        """S1-only metadata read facade (D-195, cutover Step 5a.1).
 
-        ``with_s1_reader``: the GENERATION sites (D-159) and — since 3.4 (D-161) —
-        the VALIDATOR sites all pass ``True``. 3.3 made the field-CRUD flags real
-        and 3.4 populates picklist values, so the validator's CRITICAL
-        ``field_not_createable`` and WARNING ``picklist_value_not_allowed`` checks
-        read S1 at true parity. The S1 reader is built ONLY when ``cutover_read_s1``
-        is on (no wasted hydrate for flag-off tenants) and is best-effort
-        (empty/error S1 → None → meta_*). The default ``False`` keeps any non-read
-        caller (e.g. apply_fix-only paths) on meta_*."""
-        from primeqa.metadata_bridge.accessor import (
-            MetadataAccessor, cutover_read_s1_enabled,
-        )
+        Builds the S1 reader and wraps it in the S1-only ``MetadataAccessor``. The
+        GENERATION sites (D-159) and — since 3.4 (D-161) — the VALIDATOR sites pass
+        ``with_s1_reader=True``; 3.3 made the field-CRUD flags real and 3.4 populates
+        picklist values, so the validator's CRITICAL ``field_not_createable`` and
+        WARNING ``picklist_value_not_allowed`` checks read S1 at true parity. The
+        reader is best-effort: an empty/unavailable S1 → ``None`` → empty reads (no
+        meta_* fallback). The legacy ``metadata_repo`` arg is accepted but **ignored**
+        — meta_* is no longer consulted; its threading through the public methods is
+        removed with the ``primeqa/metadata/`` deletion in Step 5a.3."""
+        from primeqa.metadata_bridge.accessor import MetadataAccessor
         s1_reader = None
-        if with_s1_reader and cutover_read_s1_enabled(metadata_repo.db, tenant_id):
+        if with_s1_reader:
             from primeqa.metadata_bridge.s1_reader import build_metadata_s1_reader
             s1_reader = build_metadata_s1_reader(tenant_id)
-        return MetadataAccessor(tenant_id, metadata_repo, s1_reader=s1_reader)
+        return MetadataAccessor(tenant_id, s1_reader=s1_reader)
 
     def generate_test_plan(self, tenant_id, requirement_id, environment_id,
                            created_by, env_repo, conn_repo, metadata_repo,

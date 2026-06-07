@@ -2401,7 +2401,7 @@ def test_cases_update_steps(tc_id):
     try:
         from primeqa.test_management.repository import TestCaseRepository
         from primeqa.test_management.step_schema import StepValidator
-        from primeqa.metadata.repository import MetadataRepository
+        from primeqa.metadata_bridge.s1_reader import build_metadata_s1_reader
         tc_repo = TestCaseRepository(db)
         tc = tc_repo.get_test_case(tc_id, request.user["tenant_id"])
         if not tc:
@@ -2435,7 +2435,12 @@ def test_cases_update_steps(tc_id):
             env = EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"])
             if env and env.current_meta_version_id:
                 meta_version_id = env.current_meta_version_id
-                validator = StepValidator(MetadataRepository(db), env.current_meta_version_id)
+                # D-195 Step 5a.1: step validation reads the S1 org model (tenant-
+                # scoped). No reader (no org model) → StepValidator skips its
+                # metadata checks (its guard short-circuits on a falsy reader).
+                validator = StepValidator(
+                    build_metadata_s1_reader(request.user["tenant_id"]),
+                    env.current_meta_version_id)
                 ok, errors = validator.validate(steps)
                 if not ok:
                     flash("Validation errors: " + "; ".join(errors[:5]), "error")
