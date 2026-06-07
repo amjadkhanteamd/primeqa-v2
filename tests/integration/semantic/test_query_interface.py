@@ -349,3 +349,161 @@ def test_config_existence_grounding_via_get_entities(conn, seed):
                                filters={"sf_api_name": "Custom_Obj__c"})) == 1
     assert s1.get_entities("Object", at_seq=v1,
                            filters={"sf_api_name": "Nope__c"}) == []
+
+
+# ---------------------------------------------------------------------------
+# Bulk reads (D-189) — the whole-org-in-one-query forms the metadata reader
+# hydrates with. Each must equal the per-entity form it replaces.
+# ---------------------------------------------------------------------------
+
+def _object_details(conn, obj_id, *, is_createable=True, is_custom=False):
+    conn.execute(text(
+        "INSERT INTO object_details (entity_id, is_createable, is_custom) "
+        "VALUES (CAST(:e AS uuid), :c, :cu)"),
+        {"e": str(obj_id), "c": is_createable, "cu": is_custom})
+
+
+def _field_details(conn, field_id, obj_id, *, field_type="string", is_custom=False,
+                   is_createable=True, is_updateable=True, pvs_id=None):
+    conn.execute(text(
+        "INSERT INTO field_details "
+        "(entity_id, object_entity_id, field_type, is_custom, is_createable, "
+        " is_updateable, picklist_value_set_entity_id) "
+        "VALUES (CAST(:f AS uuid), CAST(:o AS uuid), :ft, :cu, :cr, :up, "
+        " CAST(:pvs AS uuid))"),
+        {"f": str(field_id), "o": str(obj_id), "ft": field_type, "cu": is_custom,
+         "cr": is_createable, "up": is_updateable,
+         "pvs": str(pvs_id) if pvs_id else None})
+
+
+def test_get_entity_details_bulk_keys_and_omits_no_detail_row(conn, seed):
+    # Two objects: one WITH an object_details row, one WITHOUT. The bulk map is
+    # keyed by entity_id and OMITS the entity that has no detail row (so the
+    # reader's `.get(id, {})` supplies the default — the per-entity `od or {}`).
+    v1 = seed.version()
+    acct = seed.entity("Object", "Account", v1)
+    _object_details(conn, acct, is_createable=True, is_custom=False)
+    contact = seed.entity("Object", "Contact", v1)  # no object_details
+    s1 = SemanticOrgModel(conn)
+
+    details = s1.get_entity_details_bulk("Object", at_seq=v1)
+    assert set(details) == {acct}                       # Contact omitted
+    assert details[acct]["is_createable"] is True
+    assert details[acct]["is_custom"] is False
+    # equals the per-entity read for the present row; absent for the missing one.
+    assert details[acct] == s1.get_entity_details(acct, at_seq=v1)
+    assert details.get(contact, {}) == {}
+
+
+def test_get_entity_details_bulk_unknown_type_is_empty(conn, seed):
+    v1 = seed.version()
+    s1 = SemanticOrgModel(conn)
+    assert s1.get_entity_details_bulk("NoSuchType", at_seq=v1) == {}
+
+
+def test_get_entity_details_bulk_as_of(conn, seed):
+    # A field-detail row whose entity is superseded must drop out at the later seq.
+    v1 = seed.version()
+    v2 = seed.version()
+    obj = seed.entity("Object", "Account", v1)
+    f = seed.entity("Field", "Account.Old__c", v1, valid_to_seq=v2)  # closes at v2
+    _field_details(conn, f, obj, field_type="string")
+    s1 = SemanticOrgModel(conn)
+
+    assert set(s1.get_entity_details_bulk("Field", at_seq=v1)) == {f}
+    assert s1.get_entity_details_bulk("Field", at_seq=v2) == {}  # entity out of window
+
+
+def test_get_entity_details_bulk_validates_at_seq(conn, seed):
+    seed.version()
+    s1 = SemanticOrgModel(conn)
+    with pytest.raises(VersionNotFoundError):
+        s1.get_entity_details_bulk("Object", at_seq=987654321)
+
+
+def test_get_related_bulk_inbound_grouped_by_near(conn, seed):
+    # Two objects, each with its own fields; inbound BELONGS_TO bulk groups by the
+    # near (object) id, and each group equals the per-entity get_related.
+    v1 = seed.version()
+    acct = seed.entity("Object", "Account", v1)
+    contact = seed.entity("Object", "Contact", v1)
+    a_name = seed.entity("Field", "Account.Name", v1)
+    a_rev = seed.entity("Field", "Account.Rev__c", v1)
+    c_email = seed.entity("Field", "Contact.Email", v1)
+    for f, o in [(a_name, acct), (a_rev, acct), (c_email, contact)]:
+        seed.edge(f, o, "BELONGS_TO", "STRUCTURAL", v1)
+    s1 = SemanticOrgModel(conn)
+
+    grouped = s1.get_related_bulk(["BELONGS_TO"], "inbound", at_seq=v1)
+    assert set(grouped) == {acct, contact}
+    assert {r.entity.id for r in grouped[acct]} == {a_name, a_rev}
+    assert {r.entity.id for r in grouped[contact]} == {c_email}
+    # the grouped value equals the per-entity inbound read (same RelatedEntity shape)
+    per_entity = s1.get_related(acct, ["BELONGS_TO"], "inbound", at_seq=v1)
+    assert {r.entity.id for r in grouped[acct]} == {r.entity.id for r in per_entity}
+    assert grouped[acct][0].direction == "inbound"
+
+
+def test_get_related_bulk_far_entity_as_of(conn, seed):
+    # The critical window: the far (field) entity is superseded across v2. At v1 the
+    # field is present; at v2 it must be absent (the JOIN keeps _as_of('t')).
+    v1 = seed.version()
+    v2 = seed.version()
+    obj = seed.entity("Object", "Account", v1)        # spans both
+    f = seed.entity("Field", "Account.Name", v1, valid_to_seq=v2)  # field closes at v2
+    seed.edge(f, obj, "BELONGS_TO", "STRUCTURAL", v1)  # edge spans (valid_to NULL)
+    s1 = SemanticOrgModel(conn)
+
+    at_v1 = s1.get_related_bulk(["BELONGS_TO"], "inbound", at_seq=v1)
+    assert {r.entity.id for r in at_v1.get(obj, [])} == {f}
+    # field out of window at v2 → the far entity drops, so the object has no group.
+    at_v2 = s1.get_related_bulk(["BELONGS_TO"], "inbound", at_seq=v2)
+    assert at_v2.get(obj, []) == []
+
+
+def test_get_related_bulk_empty_and_bad_direction(conn, seed):
+    v1 = seed.version()
+    s1 = SemanticOrgModel(conn)
+    assert s1.get_related_bulk([], "inbound", at_seq=v1) == {}
+    with pytest.raises(ValueError):
+        s1.get_related_bulk(["BELONGS_TO"], "both", at_seq=v1)
+
+
+def test_get_related_bulk_validates_at_seq(conn, seed):
+    seed.version()
+    s1 = SemanticOrgModel(conn)
+    with pytest.raises(VersionNotFoundError):
+        s1.get_related_bulk(["BELONGS_TO"], "inbound", at_seq=987654321)
+
+
+def test_get_picklist_values_bulk_grouped_and_ordered(conn, seed):
+    # Two value sets; bulk groups by picklist_value_set_entity_id, each group
+    # ordered by sort_order — equal to the per-entity get_picklist_values.
+    v1 = seed.version()
+    pvs_a = seed.entity("PicklistValueSet", "VS:A", v1)
+    pvs_b = seed.entity("PicklistValueSet", "VS:B", v1)
+    _pv(seed, conn, pvs_a, "Banking", v1, sort_order=1)
+    _pv(seed, conn, pvs_a, "Agriculture", v1, sort_order=0)
+    _pv(seed, conn, pvs_b, "Solo", v1, sort_order=0)
+    s1 = SemanticOrgModel(conn)
+
+    grouped = s1.get_picklist_values_bulk(at_seq=v1)
+    assert set(grouped) == {pvs_a, pvs_b}
+    assert [r["value_api_name"] for r in grouped[pvs_a]] == ["Agriculture", "Banking"]
+    assert [r["value_api_name"] for r in grouped[pvs_b]] == ["Solo"]
+    # per-row shape matches the per-entity read (pvs_id key is stripped per row)
+    assert grouped[pvs_a] == s1.get_picklist_values(pvs_a, at_seq=v1)
+
+
+def test_get_picklist_values_bulk_as_of(conn, seed):
+    v1 = seed.version()
+    v2 = seed.version()
+    pvs = seed.entity("PicklistValueSet", "VS:Status", v1)
+    _pv(seed, conn, pvs, "Open", v1, sort_order=0)             # spans both
+    _pv(seed, conn, pvs, "Legacy", v1, vto=v2, sort_order=1)   # closes at v2
+    s1 = SemanticOrgModel(conn)
+
+    assert {r["value_api_name"] for r in s1.get_picklist_values_bulk(at_seq=v1)[pvs]} \
+        == {"Open", "Legacy"}
+    assert {r["value_api_name"] for r in s1.get_picklist_values_bulk(at_seq=v2)[pvs]} \
+        == {"Open"}

@@ -408,3 +408,122 @@ class SemanticOrgModel:
             {"pvs_id": str(picklist_value_set_id), "at_seq": at_seq},
         ).mappings().all()
         return [dict(r) for r in rows]
+
+    # -- bulk reads: whole-org hydration in O(1) queries per shape (D-189) ----
+    # Each is the *bulk form* of an already-shipped per-entity read, realizing the
+    # same contract (validated at_seq, the _as_of window join to entities, a
+    # trusted-registry table name, no caller SQL) in ONE round-trip. They exist so
+    # the metadata-reader (s1_reader.hydrate_metadata_s1_reader) stops issuing
+    # tens-of-thousands of per-entity round-trips on a real org. Additive under
+    # D-024's carve-out — the path get_entity_details (D-111.1) / get_picklist_values
+    # (D-119) took. The per-entity primitives stay (other consumers + parity).
+
+    def get_entity_details_bulk(
+        self,
+        entity_type: str,
+        at_seq: int,
+    ) -> dict[UUID, dict[str, Any]]:
+        """Every ``entity_type`` entity's detail-table row at ``at_seq``, keyed by
+        ``entity_id`` — the bulk form of :meth:`get_entity_details` (D-189).
+
+        ``{}`` when the type has no detail table. An entity with **no** detail row
+        is simply *absent* from the map, so a caller's ``.get(id, {})`` reproduces
+        the per-entity ``None``/``{}`` default. INNER JOIN to ``entities`` windowed
+        by ``_as_of`` — the detail table carries no version columns (D-025), so
+        pinning is the FK + the entity's as-of window (exactly
+        :meth:`get_picklist_values`' pattern). The detail-table name is
+        registry-sourced (``_detail_table_for``), never caller input.
+        """
+        self._validate_version(at_seq)
+        detail_table = _detail_table_for(entity_type)
+        if detail_table is None:
+            return {}
+        sql = (
+            f"SELECT d.* FROM {detail_table} d "  # noqa: S608 — table from trusted registry
+            "JOIN entities e ON e.id = d.entity_id "
+            "WHERE e.entity_type = :entity_type AND " + _as_of("e")
+        )
+        rows = self._conn.execute(
+            text(sql),
+            {"at_seq": at_seq, "entity_type": entity_type},
+        ).mappings().all()
+        return {_as_uuid(r["entity_id"]): dict(r) for r in rows}
+
+    def get_related_bulk(
+        self,
+        edge_types: list[str],
+        direction: str,
+        at_seq: int,
+    ) -> dict[UUID, list[RelatedEntity]]:
+        """All ``edge_types`` edges of ``direction`` at ``at_seq``, grouped by the
+        **near** (queried-side) entity id — the bulk form of :meth:`get_related`
+        run over every near entity at once (D-189). ``{}`` for empty ``edge_types``.
+
+        This is :meth:`_related_select` with the ``WHERE e.<near> = :entity_id``
+        predicate removed and ``e.<near> AS near_id`` added for grouping; each value
+        is built by :meth:`_row_to_related` verbatim (it ignores the extra
+        ``near_id`` column), so every :class:`RelatedEntity` is identical to the
+        per-entity path. Keeps **both** as-of windows — ``_as_of('e')`` (edge) and
+        ``_as_of('t')`` (far entity, in the JOIN ON) — so a superseded far entity
+        cannot leak. ``direction`` is ``inbound`` | ``outbound`` only (a single
+        grouping key needs one direction; ``both`` is rejected).
+        """
+        if direction not in ("inbound", "outbound"):
+            raise ValueError(
+                f"get_related_bulk direction must be 'inbound' | 'outbound', "
+                f"got {direction!r}"
+            )
+        self._validate_version(at_seq)
+        if not edge_types:
+            return {}
+        near = "target_entity_id" if direction == "inbound" else "source_entity_id"
+        far = "source_entity_id" if direction == "inbound" else "target_entity_id"
+        sql = (
+            f"SELECT e.{near} AS near_id, "
+            "e.id AS edge_id, e.edge_type, e.edge_category, e.properties, "
+            f"'{direction}' AS direction, "
+            "t.id, t.entity_type, t.sf_id, t.sf_api_name, t.display_name, "
+            "t.attributes, t.valid_from_seq, t.valid_to_seq "
+            "FROM edges e "
+            f"JOIN entities t ON t.id = e.{far} AND {_as_of('t')} "
+            f"WHERE e.edge_type = ANY(:edge_types) AND {_as_of('e')}"
+        )
+        rows = self._conn.execute(
+            text(sql),
+            {"at_seq": at_seq, "edge_types": list(edge_types)},
+        ).mappings().all()
+        out: dict[UUID, list[RelatedEntity]] = {}
+        for m in rows:
+            out.setdefault(_as_uuid(m["near_id"]), []).append(
+                self._row_to_related(m))
+        return out
+
+    def get_picklist_values_bulk(
+        self,
+        at_seq: int,
+    ) -> dict[UUID, list[dict[str, Any]]]:
+        """Every PicklistValueSet's values at ``at_seq``, grouped by
+        ``picklist_value_set_entity_id`` and ordered within each group by
+        ``sort_order`` — the bulk form of :meth:`get_picklist_values` over all value
+        sets at once (D-189). Each per-row dict has the same keys
+        (``entity_id`` / ``value_api_name`` / ``value_label`` / ``is_active`` /
+        ``is_default`` / ``sort_order``); the as-of window applies to each value's
+        ``entities`` row (the detail table has no version columns).
+        """
+        self._validate_version(at_seq)
+        sql = (
+            "SELECT pvd.picklist_value_set_entity_id AS pvs_id, "
+            "pvd.entity_id, pvd.value_api_name, pvd.value_label, "
+            "pvd.is_active, pvd.is_default, pvd.sort_order "
+            "FROM picklist_value_details pvd "
+            "JOIN entities e ON e.id = pvd.entity_id "
+            "WHERE " + _as_of("e") + " "
+            "ORDER BY pvd.picklist_value_set_entity_id, pvd.sort_order"
+        )
+        rows = self._conn.execute(text(sql), {"at_seq": at_seq}).mappings().all()
+        out: dict[UUID, list[dict[str, Any]]] = {}
+        for r in rows:
+            d = dict(r)
+            pvs_id = _as_uuid(d.pop("pvs_id"))
+            out.setdefault(pvs_id, []).append(d)
+        return out

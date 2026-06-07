@@ -4,15 +4,19 @@ Translates the S1 semantic org model into the ``meta_*`` read-interface
 (``MetaObject``/``MetaField``/``MetaValidationRule`` duck-types) that v1's
 generation context (and, from 3.4, the validator) consume through
 ``MetadataAccessor``. Reads S1 **only** through its typed query interface
-(``SemanticOrgModel.get_entities`` / ``get_related`` / ``get_entity_details`` —
-the S6/S8 ``s1_reader`` pattern; no S1-local SQL).
+(``SemanticOrgModel.get_entities`` + the **bulk** reads ``get_entity_details_bulk`` /
+``get_related_bulk`` / ``get_picklist_values_bulk`` — D-189; no S1-local SQL).
 
-**Eager-hydrated.** :func:`build_metadata_s1_reader` opens one tenant connection,
-pins ``at_seq = current_version_seq()``, and loads the whole org's metadata into
-frozen dataclasses — a pure in-memory snapshot for the reader's lifetime
-(sidesteps the connection closing across the generation call). **Best-effort:** a
-tenant with no S1 versions (``VersionNotFoundError``) or any read error → ``None``,
-so the accessor falls back to ``meta_*`` (the parallel-run safety).
+**Eager-hydrated, in ~6 bulk queries (D-189).** :func:`build_metadata_s1_reader`
+opens one tenant connection, pins ``at_seq = current_version_seq()``, and loads the
+whole org's metadata into frozen dataclasses — a pure in-memory snapshot for the
+reader's lifetime (sidesteps the connection closing across the generation call). The
+hydration reads each shape in ONE query (objects, object-details, field-details,
+field→object edges, picklist values, VRs, VR→object edges) rather than a per-entity
+round-trip per object / field / VR / picklist set — the prior per-entity loop issued
+tens of thousands of queries on a real org. **Best-effort:** a tenant with no S1
+versions (``VersionNotFoundError``) or any read error → ``None``, so the accessor
+falls back to ``meta_*`` (the parallel-run safety).
 
 The per-field CRUD flags (``is_createable``/``is_updateable``) read ``field_details``
 with a default of ``True`` — **absent in 3.2** (→ True, the descriptive-generation
@@ -28,6 +32,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
+from uuid import UUID
 
 log = logging.getLogger(__name__)
 
@@ -117,24 +122,41 @@ def build_metadata_s1_reader(tenant_id, *, at_seq=None):
 
 def hydrate_metadata_s1_reader(model, seq) -> MetadataS1Reader:
     """Pure: translate S1 (`SemanticOrgModel` at version `seq`) → the snapshot.
-    Directly testable on a tenant-scoped connection (no own connection)."""
+    Directly testable on a tenant-scoped connection (no own connection).
+
+    D-189: the whole org is read in ~6 **bulk** queries (one per shape) instead of a
+    per-entity round-trip per object / field / VR / picklist set — the prior
+    per-entity loop issued tens of thousands of queries on a real org and was killed
+    mid-hydration. The construction logic below is **unchanged**; only the data
+    source moved from per-entity calls to pre-fetched bulk maps. Byte-for-byte
+    identical output, pinned by the golden-equivalence test.
+    """
+    object_entities = sorted(model.get_entities("Object", at_seq=seq),
+                             key=lambda x: x.sf_api_name or "")
+    object_details_by_id = model.get_entity_details_bulk("Object", at_seq=seq)
+    field_details_by_id = model.get_entity_details_bulk("Field", at_seq=seq)
+    fields_by_obj_edges = model.get_related_bulk([_BELONGS_TO], "inbound", at_seq=seq)
+    picklist_by_set = model.get_picklist_values_bulk(at_seq=seq)
+    vr_entities = model.get_entities("ValidationRule", at_seq=seq)
+    vr_obj_edges = model.get_related_bulk([_APPLIES_TO], "outbound", at_seq=seq)
+
     objects = []
     fields_by_obj = {}
-    for e in sorted(model.get_entities("Object", at_seq=seq),
-                    key=lambda x: x.sf_api_name or ""):
-        od = model.get_entity_details(e.id, at_seq=seq) or {}
+    for e in object_entities:
+        od = object_details_by_id.get(e.id, {})   # absent detail row → {} (was: ...or {})
         objects.append(_S1Object(
             id=e.id, api_name=e.sf_api_name,
             is_createable=bool(od.get("is_createable", True)),
             is_custom=bool(od.get("is_custom", False))))
         obj_api = e.sf_api_name or ""     # stripped from qualified field names below
         flds = []
-        for r in model.get_related(e.id, edge_types=[_BELONGS_TO],
-                                   direction="inbound", at_seq=seq):
+        # Field loop stays NESTED in the object loop so obj_api is the field's true
+        # PARENT (inbound BELONGS_TO groups by near = the Object id). Do not flatten.
+        for r in fields_by_obj_edges.get(e.id, []):
             fe = r.entity
             if fe.entity_type != "Field":
                 continue
-            fd = model.get_entity_details(fe.id, at_seq=seq) or {}
+            fd = field_details_by_id.get(fe.id, {})
             attrs = fe.attributes or {}
             # S1 stores a Field's sf_api_name object-qualified ("Account.Name",
             # per sync materialize._extract_external_id's f"{parent}.{name}"); v1
@@ -147,16 +169,17 @@ def hydrate_metadata_s1_reader(model, seq) -> MetadataS1Reader:
                     if obj_api and fe_api.startswith(obj_api + ".") else fe_api)
             # Picklist values via the 2-hop (D-161): field_details carries the
             # picklist_value_set_entity_id FK (NULL for non-picklist fields);
-            # get_picklist_values enumerates that set at `seq`. Emit a **list**
-            # of value api-names — the validator's _picklist_values needs
-            # isinstance(pv, list) (a tuple is skipped); empty stays () so a
-            # field with no captured values is skipped (no false-positive).
+            # the bulk map enumerates each set at `seq`. Emit a **list** of value
+            # api-names — the validator's _picklist_values needs isinstance(pv, list)
+            # (a tuple is skipped); empty stays () so a field with no captured values
+            # is skipped (no false-positive). The bulk map keys by real UUID, while
+            # the FK value may arrive as UUID or str — coerce before the lookup.
             pvs_id = fd.get("picklist_value_set_entity_id")
             picklist_values = ()
             if pvs_id:
                 picklist_values = [
                     pv["value_api_name"]
-                    for pv in model.get_picklist_values(pvs_id, at_seq=seq)
+                    for pv in picklist_by_set.get(UUID(str(pvs_id)), [])
                     if pv.get("value_api_name")
                 ]
             flds.append(_S1Field(
@@ -164,8 +187,8 @@ def hydrate_metadata_s1_reader(model, seq) -> MetadataS1Reader:
                 field_type=fd.get("field_type"),
                 is_required=bool(attrs.get("is_required", False)),
                 is_custom=bool(fd.get("is_custom", False)),
-                # real since 3.3 added the field_details columns (get_entity_details
-                # SELECT * picks them up; absent → True, SF's permissive default).
+                # real since 3.3 added the field_details columns (SELECT * picks them
+                # up; absent → True, SF's permissive default).
                 is_createable=bool(fd.get("is_createable", True)),
                 is_updateable=bool(fd.get("is_updateable", True)),
                 picklist_values=picklist_values,
@@ -173,10 +196,9 @@ def hydrate_metadata_s1_reader(model, seq) -> MetadataS1Reader:
         fields_by_obj[e.id] = tuple(sorted(flds, key=lambda f: f.api_name or ""))
 
     vrs = []
-    for vr in model.get_entities("ValidationRule", at_seq=seq):
+    for vr in vr_entities:
         obj_ref = None
-        for r in model.get_related(vr.id, edge_types=[_APPLIES_TO],
-                                   direction="outbound", at_seq=seq):
+        for r in vr_obj_edges.get(vr.id, []):
             if r.entity.entity_type == "Object":
                 obj_ref = _S1ObjRef(api_name=r.entity.sf_api_name)
                 break
