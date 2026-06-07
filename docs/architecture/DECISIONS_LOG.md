@@ -10480,4 +10480,55 @@ docs/scoping entry — no behavior change.
 
 ---
 
+## D-195 (design) — Step 5a: retire the last `meta_*` readers + the v1 metadata module, then drop the tables
+
+**Status:** Design (impl pending, multi-phase). Executes cutover **Step 5a** (D-194): `meta_*` → S1 is
+the sole metadata source. Ends in the **one irreversible migration** dropping the 8 `meta_*` tables +
+`metadata_impacts`. On `main`. Plan: `.claude/plans/abstract-forging-moonbeam.md`.
+
+**Shape — four phases; 5a.1–5a.3 reversible, 5a.4 irreversible (held last).** Each phase is its own
+impl commit; 5a.4 applies the prod migration **only after** the `meta_*`-free code is deployed + a
+zero-reader gate, with archive-first + a hard HOLD.
+
+- **5a.1 — every remaining metadata READER goes S1-only.** Add `label` (from `display_name`) to the S1
+  reader's `_S1Object`/`_S1Field` (the object/field picker needs it). Make `MetadataAccessor` S1-only
+  (drop the `_repo`/flag-gate/`get_version`; read methods → the s1_reader, or `[]` when no org model).
+  Re-point: `test_management/service._metadata_accessor` (drop the `metadata_repo` param, D-192
+  precedent) + its callers (generation_jobs, the generate routes); the object/field picker
+  (`test_management/routes.py`); `StepValidator` (`views.py:2438`); and **relocate check_drift** out of
+  the to-delete `metadata/service.py` into `metadata_bridge/drift.py` (it reads only the S1 anchor +
+  live SF Tooling), S1-only (no `meta_*` fallback).
+- **5a.2 — remove `/impacts` + the dead GET routes.** `/impacts` retires entirely (web + API routes +
+  the `MetadataImpact` model/repo/service + templates + the release "Impacts" tab) — decision: **remove**,
+  not re-source to S8 (the `/substrate-insights` drift board already shows "what drifted"; the writer
+  retired in D-193 so it's static). Delete the dead `metadata_bp` GET routes (current/diff/sync-status/
+  impacts) + its `app.py` registration.
+- **5a.3 — relocate `_oauth_token`, delete `primeqa/metadata/`, remove the flag.** Move `_oauth_token`
+  (shared with pipeline + S1/S4 sync) → `primeqa/core/oauth.py`; re-point its 6 importers + 2 test
+  patches. Delete the whole `primeqa/metadata/` module + the model-registration imports (app/scheduler/
+  worker). Remove the `cutover_read_s1` flag (column + helper + branches). **Tests:** delete
+  `test_r3_metadata` / `test_metadata_accessor` / `test_check_drift_anchor` (they test the removed sync/
+  flag/fallback); **skip+defer** the 5 `meta_*`-seeding integration files (`test_management`/`executor`/
+  `intelligence`/`cleanup`/`reliability_fixes` — they exercise 5b-bound v1 flows; decision this session);
+  the 3 S1 reader tests survive (verified: no `primeqa.metadata.*` import). **Readiness gate:** a grep
+  for every `meta_*`/`MetadataRepository`/`MetaVersion` reader returns zero outside `metadata_bridge`.
+- **5a.4 — the IRREVERSIBLE migration (hard HOLD).** Archive-first (`pg_dump` the 9 tables).
+  `migrations/052_drop_meta_tables.sql`: drop the external FK constraints from KEPT tables
+  (`environments.current_meta_version_id`; `test_case_versions.metadata_version_id` +
+  `validated_against_meta_version_id`; `entity_dependencies.meta_version_id`;
+  `release_impacts.metadata_impact_id` — columns stay inert), then `DROP TABLE` `release_impacts`,
+  `metadata_impacts`, and the 8 `meta_*` tables. Apply to Railway **only after** the `meta_*`-free app is
+  deployed + the gate is green + an explicit GO. (`entity_dependencies` is a live `intelligence` table —
+  its FK constraint drops, the table stays; the agents' "drop it" was wrong, verified.)
+
+**Sequencing (critical).** 5a.1→5a.2→5a.3 commit to `main` → Railway auto-deploys → the prod app becomes
+`meta_*`-free. The migration (5a.4) drops the tables only AFTER that deploy, so the running app never
+queries a dropped table. Rollback is per-commit git revert through 5a.3; **past the 5a.4 migration there
+is no rollback** — archive-first is the only safety.
+
+**Scope boundary.** 5b (the v1 product-table drop `test_case_versions`/`requirements` + the
+execution-engine replacement) stays deferred (D-194), untouched here.
+
+---
+
 ---
