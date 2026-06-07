@@ -57,14 +57,55 @@ Run both stacks; prove S1-sourced reads equal `meta_*`-sourced reads over a wind
 - **Exit-gate:** a clean parity window — no divergence — across the rollout tenants; the GO/NO-GO + ledger seams landed.
 - **Rollback:** extend the window or revert the flags to `meta_*`.
 
-## Step 5 — The `meta_*` drop *(LAST · irreversible)*
+> **Step 5 was split into 5a / 5b (D-194).** The original Step 5 bundled the `meta_*` metadata
+> drop with the v1 product-table drop (`test_case_versions` / `requirements` / `metadata_impacts`,
+> D-065). The reader audit found these have wildly different readiness: every `meta_*` reader is
+> retired (5a is ready), but the v1 test-authoring + **execution** + agent-repair flow still runs on
+> `test_case_versions` (5b is a substrate-execution program, not a reader re-point). Decoupled below.
 
-Retire v1 metadata: drop `public.meta_*` + the DROP tables in one migration; remove the v1 metadata module + the read-path flags. S1 is the sole metadata source.
+## Step 5a — The `meta_*` metadata drop *(READY · irreversible)*
 
-- **Entry-gate (the safety):** a clean parallel-run window (step 4) **and** S1 verified as the production data source (D-012) **and** preflight switched off `meta_*` onto an S1 freshness/health source (GAP-2 — Step 3 deferred preflight here; the `meta_*` drop cannot proceed while preflight still reads `meta_*`).
-- **Work:** one migration dropping `meta_versions` / `meta_objects` / `meta_fields` / `meta_validation_rules` / `meta_flows` / `meta_triggers` / `meta_record_types` / `meta_sync_status` + the DROP tables (`test_case_versions`, `requirements`, `metadata_impacts`, D-065); delete `primeqa/metadata/` + the read-path flags; `migrations/` for `meta_*` becomes archive-eligible. *(Carries: the `meta_*` re-sync completion + drop — D-012.)*
-- **Exit-gate:** `meta_*` gone; the product runs on the spine; the metadata suite is retired/rewritten to S1.
-- **Rollback:** **none past this point** — the entry-gate is the only safety. (Optionally archive `meta_*` as a snapshot for audit before the drop.)
+Drop the 8 `meta_*` metadata tables; S1 becomes the sole metadata source. Decoupled from the v1
+product-table drop (D-194).
+
+- **Entry-gate — MET (tenant 1):** clean parity window (D-190) · S1 verified as the production read
+  source (D-192) · GAP-2 preflight off `meta_*` (D-192) · v1 metadata-sync writer retired (D-193) · the
+  S1 read-bridge relocated out of `primeqa/metadata/` (D-191).
+- **Work (pre-drop checklist):** one migration dropping `meta_versions` / `meta_objects` / `meta_fields`
+  / `meta_validation_rules` / `meta_flows` / `meta_triggers` / `meta_record_types` / `meta_sync_status`;
+  resolve the FK web into `meta_versions` — `environments.current_meta_version_id`,
+  `test_case_versions.metadata_version_id` + `validated_against_meta_version_id` (drop the FK
+  constraints; the columns stay on the kept table, now inert), `entity_dependencies.meta_version_id`,
+  and `metadata_impacts`'s two `meta_version_id` FKs (`metadata_impacts` is now **static** — its writer
+  retired in D-193 — so it drops here with the `/impacts` UI re-sourced to S8 grounding, or only its FK
+  constraints drop); delete `primeqa/metadata/{models,repository,service,worker_runner,sync_engine,routes}.py`;
+  remove the `cutover_read_s1` flag + its branches (accessor / check_drift). Archive `meta_*` first.
+- **Exit-gate:** `meta_*` gone; S1 is the sole metadata source; the v1 metadata module is deleted.
+- **Rollback:** none past the migration — archive-first is the only safety.
+
+## Step 5b — The v1 product-table drop: `test_case_versions` / `requirements` *(DEFERRED · substrate-execution program)*
+
+**Finding (D-194):** the v1 test-authoring + **execution** + agent-repair flow is still the live product
+and runs on `test_case_versions` — the executor reads `TestCaseVersion.steps` to run against Salesforce
+(`worker.py:_run_execute_stage`); the agent fix-and-rerun loop writes new versions; the validation gate
+reads `validation_report`. The substrate spine (S2 claims / S3 generation / S4 execution / S6 / S8)
+exists and UI Areas 2–5 (D-166–173) added **parallel, mostly-read** surfaces, but there is **no
+substrate execution / repair / validation path yet**. So retiring these tables is **not a reader
+re-point — it is replacing the v1 execution engine with the S4/S3 spine + a data backfill + a dual-run
+cutover.**
+
+- **Entry-gate:** Step 5a done **and** S4 execution at v1 parity **and** every v1
+  `requirements`/`test_case_versions` reader retired (the ~28 views/template sites + the release/runs
+  resolvers + the intelligence/agent/validation core + the ~17-FK web).
+- **Phased (gated on S4 maturing):** A — S4 execution at v1 parity (run S3 recipes, write results);
+  B — agent fix-and-rerun + the validation gate on the spine; C — re-point the v1 reader surfaces (test
+  library, reviews, `/impacts`→S8, run history/detail, the `/run` 4-mode picker → S4, release
+  test-plan); D — backfill v1 `test_case_versions` → S3 recipes; E — dual-run flagged → cutover → drop
+  `test_case_versions` + `requirements` + the FK web (`run_test_results`, `agent_fix_attempts`,
+  `ba_reviews`, `test_case_data_bindings`, `release_*`, `generation_batches`, `llm_usage_log`,
+  `generation_quality_signals`).
+- **Not near-term** — substrate-roadmap scope, not Step-5-prep.
+- **Rollback:** none past the drop.
 
 ---
 
@@ -84,7 +125,8 @@ Every "deferred to the cutover" item across the substrate docs, mapped to its st
 | v1 read-path switch → S1: generation + validator/linter ✅ **built (D-158–D-162)**; preflight → Step 5 (GAP-2 — no clean S1 freshness map yet) | D-012 / D-003 | **3** |
 | Folding S6 verdicts into v1's GO/NO-GO | D-111 / D-137 | **4** |
 | S3 semantic-ledger retirement → S2 provenance (`get_provenance`) | D-074 | **4** |
-| `meta_*` re-sync completion + the `meta_*` / DROP-tables drop | D-012 / D-065 | **5** |
+| `meta_*` drop (the 8 metadata tables + the FK web) ✅ **prereqs met (D-189–193); decoupled (D-194)** | D-012 / D-065 | **5a** |
+| v1 product-table drop (`test_case_versions` / `requirements`) — substrate-execution program, gated on S4 parity (D-194) | D-065 | **5b** |
 
 **Explicitly NOT in the cutover** (post-cutover, per the SPEC §5): the MIGRATE tables (`test_suites` / `sections` / `suite_test_cases` / `ba_reviews` → future substrates, D-065); `llm_calls` (stays in S3, D-074); S4 F2/F4–F7 + the S8 mechanics phase.
 

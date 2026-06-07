@@ -10426,4 +10426,58 @@ v1-sync coverage (10 tests) — justified, the functionality is retired; the S1 
 
 ---
 
+## D-194 (scoping) — the reader-retirement long pole is an execution-engine program; split Step 5 into 5a / 5b
+
+**Status:** Scoping decision (docs-only). Settles the size + shape of the remaining cutover work after a
+four-way read-only audit of every `requirements` / `test_case_versions` / `metadata_impacts` reader.
+Splits SEQUENCE Step 5; defines the 5b phased plan. No code.
+
+**The audit finding.** The v1 test-authoring + **execution** + agent-repair flow is **still the live
+product** and runs on `test_case_versions`: the executor reads `TestCaseVersion.steps` to run against
+Salesforce (`worker.py:_run_execute_stage`), the agent fix-and-rerun loop writes new versions
+(`intelligence/agent.py`), and the pre-execution validation gate reads `validation_report`. The
+substrate spine exists and UI Areas 2–5 (D-166–173) added **parallel, mostly-read** surfaces — `/claims`,
+claim detail, a *sync* claim-run (S4), `/substrate-insights`, the release evidence panel — but **S3
+generation is a read-only intake channel and there is no substrate execution / repair / validation
+path.** So retiring `test_case_versions`/`requirements` is **NOT a reader re-point** (the ~28 views/
+template sites + ~14 release/runs resolvers are the *surface*); it is **replacing the v1 execution
+engine with the S4/S3 spine + a data backfill + a dual-run cutover** — substrate-roadmap scope, not
+Step-5 prep.
+
+**The decisive consequence — the two drops have wildly different readiness.** D-065 bundled the `meta_*`
+metadata drop with the v1 product-table drop into one Step 5. But:
+- **`meta_*` (the 8 metadata tables): READY.** Every reader is retired — reads on S1 (D-159–162),
+  preflight off `meta_*` (D-192), check_drift on S1 (D-184), the writer retired (D-193), parity clean
+  (D-190), the read-bridge relocated (D-191). The cutover's actual goal is achievable now.
+- **`test_case_versions` / `requirements`: FAR from ready** — the live execution engine runs on them.
+
+**Decision — split Step 5 (SEQUENCE updated):**
+- **Step 5a — the `meta_*` metadata drop (READY, irreversible).** Drop the 8 `meta_*` tables + resolve
+  the FK web into `meta_versions` (`environments.current_meta_version_id`;
+  `test_case_versions.metadata_version_id` + `validated_against_meta_version_id` → drop the FK
+  constraints, columns stay inert on the kept table; `entity_dependencies.meta_version_id`); delete the
+  v1 metadata module; remove the `cutover_read_s1` flag. **`metadata_impacts` is reassigned to 5a** — it
+  is metadata-impact tracking whose writer retired in D-193 (now static) and it FK-bridges
+  `meta_versions`↔`test_cases`; it drops in 5a (re-source the `/impacts` UI to S8 grounding, or drop only
+  its FK constraints). Archive-first; no rollback past the migration.
+- **Step 5b — the v1 product-table drop (`test_case_versions` / `requirements`), DEFERRED.** Phased,
+  gated on S4 execution reaching v1 parity: **A** S4 execution at v1 parity (run S3 recipes, write
+  results); **B** agent fix-and-rerun + validation gate on the spine; **C** re-point the v1 reader
+  surfaces (test library, reviews, `/impacts`→S8, run history/detail, `/run` 4-mode picker → S4, release
+  test-plan); **D** backfill v1 `test_case_versions` → S3 recipes; **E** dual-run flagged → cutover →
+  drop + the ~17-FK web (`run_test_results`, `agent_fix_attempts`, `ba_reviews`,
+  `test_case_data_bindings`, `release_*`, `generation_batches`, `llm_usage_log`,
+  `generation_quality_signals`).
+
+**Why decouple (not just sequence).** Bundling forces the *metadata* cutover — done — to wait on an
+unrelated, far-larger *execution-engine* program. 5a delivers the cutover thread's goal (S1 as the sole
+metadata source) on its own irreversible migration; 5b is its own roadmap.
+
+**Status of the cutover after this.** Metadata cutover effectively complete (reads/writer/preflight/
+drift all on S1; parity clean). 5a (the `meta_*` drop) is the next *achievable* irreversible step,
+pending its own pre-drop checklist + an explicit GO. 5b is deferred substrate-execution work. This is a
+docs/scoping entry — no behavior change.
+
+---
+
 ---
