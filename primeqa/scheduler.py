@@ -289,7 +289,6 @@ def scheduler_tick(ctx):
         reap_stale_workers,
         fire_scheduled_runs,
         dead_mans_switch_check,
-        reap_stalled_metadata_jobs,
         reap_stale_generation_jobs,   # migration 044 / Prompt 11
         s3_reaper_tick,               # D-106.4 slice 5 (substrate-3 queue)
         s4_reaper_tick,               # D-132 (substrate-4 execution queue)
@@ -473,19 +472,9 @@ def trim_run_events(ctx):
         log.warning("trim_run_events failed: %s", e)
 
 
-def reap_stalled_metadata_jobs(ctx):
-    """Fail metadata-sync jobs whose worker has gone silent > 2 min.
-
-    Added with migration 025 / background-job architecture. Matches the
-    existing pattern for reaping stuck pipeline stages.
-    """
-    try:
-        from primeqa.metadata.worker_runner import reap_stalled_jobs
-        reaped = reap_stalled_jobs(ctx["db"])
-        if reaped:
-            log.info("reaped %d stalled metadata sync job(s)", reaped)
-    except Exception as e:
-        log.warning("metadata reaper failed: %s", e)
+# reap_stalled_metadata_jobs — RETIRED (D-193). The v1 metadata sync writer is
+# gone (reads are on S1); there are no v1 meta_* sync jobs to reap. The S1 sync
+# has its own reaper (s1_sync_reaper_tick).
 
 
 def run_scheduler():

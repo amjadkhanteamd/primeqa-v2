@@ -32,23 +32,15 @@
           ({{ drift.synced_at[:19] if drift.synced_at else '?' }}).
         </p>
       </div>
-      <div class="flex space-x-2 ml-3">
-        <form method="POST" action="/environments/{{ environment_id }}/quick-refresh">
-            {{ csrf_input | safe }}
-          <button type="submit" class="rounded-md bg-yellow-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-yellow-500">
-            Quick-refresh changed
-          </button>
-        </form>
-        <form method="POST" action="/environments/{{ environment_id }}/refresh-metadata">
-            {{ csrf_input | safe }}
-          <button type="submit" class="rounded-md bg-white px-3 py-1.5 text-sm text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50">
-            Full re-sync
-          </button>
-        </form>
+      <div class="ml-3">
+        <a href="/environments/{{ environment_id }}"
+           class="inline-block rounded-md bg-yellow-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-yellow-500">
+          Re-sync in environment settings →
+        </a>
       </div>
     </div>
     <p class="mt-2 text-xs text-yellow-700">
-      Tip: Quick-refresh only pulls the changed entities (usually seconds), Full re-sync rebuilds the whole version.
+      Tip: open the environment's <strong>Substrate (S1) sync</strong> panel to re-sync the org model.
     </p>
   </div>
   {% elif drift and drift.error %}

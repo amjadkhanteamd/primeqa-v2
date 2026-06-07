@@ -20,7 +20,7 @@ import primeqa.scheduler as sched
 _TICK_NAMES = [
     "reap_stuck_stages", "reap_stuck_slots", "reap_stuck_runs", "reap_orphan_rtrs",
     "reap_stale_workers", "fire_scheduled_runs", "dead_mans_switch_check",
-    "reap_stalled_metadata_jobs", "reap_stale_generation_jobs",
+    "reap_stale_generation_jobs",
     "s3_reaper_tick", "s4_reaper_tick", "s8_grounding_tick",
     "s1_sync_enqueuer_tick", "s1_sync_reaper_tick", "trim_run_events",
 ]

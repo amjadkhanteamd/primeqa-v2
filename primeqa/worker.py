@@ -1457,15 +1457,9 @@ def worker_tick(ctx):
         if stage:
             process_run(run, ctx)
 
-    # 2) Metadata sync jobs (migration 025)
-    # Process at most one per tick to keep pipeline work responsive. The
-    # metadata sync is a long-running SF API burst, so one worker claims it
-    # and iterates categories; other workers (if any) still serve runs.
-    try:
-        from primeqa.metadata.worker_runner import poll_and_run_once
-        poll_and_run_once(ctx["db"], ctx["worker_id"])
-    except Exception as e:
-        log.warning("metadata worker tick failed: %s", e)
+    # 2) v1 metadata sync — RETIRED (D-193). Reads are on S1 (cutover_read_s1),
+    # so the v1 meta_* writer is gone; the S1 sync (step 3d below) is the live
+    # metadata source. (meta_* is now static until the Step-5 drop.)
 
     # 3) Generation jobs (migration 044). One per tick keeps cost under
     # control — each job is a 15-60s LLM round-trip. The claim uses
