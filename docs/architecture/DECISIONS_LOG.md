@@ -10377,4 +10377,53 @@ preflight code change is revertible by git — preflight would then need S1 (acc
 
 ---
 
+## D-193 (design) — retire the v1 metadata-sync WRITER + its UI/wiring (Step-5 prep)
+
+**Status:** Design (impl pending). Step-5 prep: stop all new `meta_*` writes so the table goes static
+before the drop. The S1 sync (D-164, the env-panel "Sync substrate") is the replacement; this removes
+the old v1 path. Reversible (git). On `main`.
+
+**Why.** With reads on S1 (D-192), the v1 metadata sync is a **redundant writer** — the `meta_*` it
+produces isn't read on the main paths for tenant 1. Retiring it makes `meta_*` static (no surprises)
+and shrinks the v1 surface the Step-5 drop has to reason about. User chose the **full** retirement.
+
+**Scope — REMOVE (the v1 sync writer + its now-dead UI):**
+- **worker.py** — the v1 metadata tick (`poll_and_run_once` block, ~1460-1468). KEEP `_oauth_token`
+  (137/175) — it is **shared** with pipeline execution + S1/S4 sync, not v1-sync-only.
+- **scheduler.py** — `reap_stalled_metadata_jobs` (def ~476-488) + its entry in the tick tuple (~292).
+  KEEP the S1 ticks + the `import primeqa.metadata.models` registration (line 179).
+- **views.py** — the 5 v1 sync routes: `environments_refresh_metadata` (2976, the full-sync writer),
+  `environments_quick_refresh` (3141, the delta writer), `environments_sync_progress` (3056) + the v1
+  sync `cancel` (3200) + `retry` (3231). (The S1 routes `/sync-substrate` + `/sync-substrate/status` at
+  2826/2855 STAY — the replacement.)
+- **metadata/routes.py** — the `/api/metadata/<id>/refresh` POST (writer) + the `/sync-events` SSE
+  (its only callers — detail.html:84 + sync_progress.html:304 — go with this slice). KEEP the GET
+  readers (`current` / `diff` / `impacts` / `sync-status`) — reader-retirement scope.
+- **templates** — `environments/detail.html`: remove the v1 refresh form (~40-73) + the v1 sync-events
+  progress JS (~80-90); the **S1 panel already on the same page** (D-164, lines 103-208) is the
+  user's path, so this is clean. `runs/preview.html`: replace the v1 quick/full buttons (~36-47) with a
+  link to the env-detail page (where the S1 sync lives). **Delete** `environments/sync_progress.html`.
+- **tests** — `tests/test_metadata.py` (the 10-test v1-sync integration suite) drives the removed
+  `POST /api/metadata/<id>/refresh` end-to-end, so it is **obsolete** — remove it. `test_r3_metadata.py`
+  (R3-1..R3-4) exercises `SyncEngine` **directly** (fake fetchers), which stays, so it is unaffected.
+
+**Scope — KEEP (deleted wholesale at the Step-5 `meta_*` drop, or reader scope):**
+- `primeqa/metadata/{models,repository,service,worker_runner,sync_engine}.py` internals — now
+  **unreachable for writes** (the service writer methods `refresh_metadata`/`run_queued_sync` + the
+  `worker_runner` claim/run functions become dead code), but they live in the module that the Step-5 drop
+  deletes in one shot, so re-deleting their internals here is redundant churn. The `meta_*` models +
+  GET readers + `_oauth_token` stay.
+
+**Outcome.** No new `meta_*` writes from any path; the v1 sync UI is gone; users sync via S1. `meta_*`
+becomes a static snapshot until the drop.
+
+**Verification.** App imports clean; no dangling refs to the removed routes/templates (grep). Full unit
+suite green. Manual: `/environments/<id>` shows only the S1 "Sync substrate" panel; `/runs/new/preview`
+drift banner links to env settings. **Rollback:** git revert (and the v1 routes/worker tick return).
+
+**Notable scope item (surface at the HOLD):** removing `test_metadata.py` drops the canonical suite's
+v1-sync coverage (10 tests) — justified, the functionality is retired; the S1 sync has its own coverage.
+
+---
+
 ---
