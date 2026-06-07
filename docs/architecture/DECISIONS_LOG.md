@@ -10324,4 +10324,57 @@ D-065 product tables + deleting `primeqa/metadata/` + removing the flag.
 
 ---
 
+## D-192 (design) — flip `cutover_read_s1` ON (tenant 1) + verify + preflight S1-only (closes GAP-2 + "S1 as production source")
+
+**Status:** Design (impl pending). Two Step-5 entry-gate conditions closed for the rollout tenant
+(tenant 1 / env 59): **S1 verified as the production read source** (flag flipped + live-verified) **and
+GAP-2** (preflight off `meta_*`). Reversible. On `main`.
+
+**Finding (premise-shift).** GAP-2 was framed as "preflight has a hard `meta_*` dependency with no S1
+map." Reading the live code: **D-183 already built it** — preflight reads S1 freshness + health when
+`cutover_read_s1` is on (`runs/preflight.py`, `read_s1_freshness`, 8 passing tests). The feared
+"`MetaSyncStatus` per-category health has no clean S1 map" is **resolved**: S1 syncs the whole org
+**atomically** (FK-ordered phases, one `sync_run`), so per-category partial state cannot exist — D-183
+correctly collapses health to **all-or-nothing** (`healthy_categories = all-six if the org model is
+usable, else none`). So GAP-2's only *remaining* work is **removing preflight's `meta_*` fallback** (the
+`MetaSyncStatus` import at `preflight.py:383`, the `MetaVersion.get_version` freshness reads, and the
+`_use_s1_freshness` flag gate) so preflight reads S1 **unconditionally** — the literal entry-gate ("the
+`meta_*` drop cannot proceed while preflight still reads `meta_*`").
+
+**Sequencing (why coupled).** Preflight's invariant is *check the same source the run will read.* Runs
+read metadata via the flag-gated accessor; the flag is **OFF**, so runs read `meta_*`. Making preflight
+S1-only while runs read `meta_*` would let preflight give false "fresh" confidence on a stale-`meta_*`
+run. So GAP-2's cut is coupled to flipping the flag **ON** (then preflight + runs are both S1, consistent).
+Flipping the flag is itself the entry-gate's *"S1 verified as the production data source"* step. (User
+chose "couple it" over a premature cut.)
+
+**Decision — one coherent slice, in order:**
+1. **Flip `cutover_read_s1` ON for tenant 1** (a reversible `tenant_agent_settings` flag write). This
+   moves tenant 1's *generation / validation* (`MetadataAccessor`) **and** `check_drift` (D-184) onto S1.
+   Net improvement: env 59 has a full S1 sync (~4866 fields) vs a stale partial `meta_*` (~700 fields).
+2. **Live-verify (read-only, no LLM, no product writes):** with the flag on, build the `MetadataAccessor`
+   for tenant 1 and confirm it **routes to S1** (`_use_s1=True`) and returns the full org
+   (`get_objects()` / `get_fields()` ≈ the env-59 counts). Proves generation/validation now read S1.
+3. **Preflight S1-only (the GAP-2 cut):** remove the `meta_*` fallback branch + `_healthy_meta_categories`
+   + the `MetaSyncStatus` import + the `_use_s1_freshness` gate. Preflight always calls
+   `read_s1_freshness`; S1 unprovisioned/unusable → the existing `NO_METADATA` blocker (no `meta_*`
+   fallback). Preserve every issue code (`NO_METADATA` / `METADATA_STALE` / `METADATA_VERY_STALE`), the
+   S1-worded messages, `metadata_source='s1'`, and the all-or-nothing per-test skip. Drop the now-unused
+   `meta_repo` freshness path (keep/drop the constructor param per its other uses; re-point callers if
+   dropped). Rewrite the 3 fallback tests (D-183 tests 6/7/8) — there is no `meta_*` fallback now: S1
+   unavailable/unprovisioned → `NO_METADATA` (degraded), not a meta read.
+
+**Scope boundary (still deferred).** This does NOT retire the v1 metadata **sync writer** (still writes
+`meta_*`), nor the *other* flag-gated readers' fallback (generation/validation accessor keeps its
+`meta_*` fallback for safety until the writer is retired), nor the `requirements`/`test_case_versions`
+reader retirement, nor the drop. It closes **preflight's** `meta_*` read + commits **tenant 1** to S1
+reads. The flag stays (removed only at the final drop); preflight just stops consulting it.
+
+**Verification + rollback.** Local: `pytest tests/unit/test_preflight_s1_freshness.py` + the metadata
+suites green against the S1-only preflight. Live: step-2 verify above. **Rollback:** flip the flag OFF
+(`UPDATE … SET cutover_read_s1=false`) reverts generation/validation/check_drift to `meta_*`; the
+preflight code change is revertible by git — preflight would then need S1 (acceptable, env 59 has it).
+
+---
+
 ---
