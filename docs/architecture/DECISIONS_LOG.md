@@ -10621,4 +10621,51 @@ semantic tests green**. 23 files, +32/−643.
 
 ---
 
+### D-195.3 — Step 5a re-scope (design): the `meta_*` drop is 5b-coupled; 5a = read-cutover + flag retirement + dead-table drop
+
+**How it surfaced.** Before touching 5a.3 (the planned "delete `primeqa/metadata/`"), a read-only
+mapping workflow (7 agents) charted the footprint. Its adversarial critic flagged — and I then
+**verified against ground truth** — a premise break in the D-195 plan.
+
+**The verified break.** `test_case_versions.metadata_version_id` (`test_management/models.py:135`) is
+`ForeignKey("meta_versions.id")` **`nullable=False`**, and is **runtime-populated on every test-case-
+version insert** (`service.py:347`, `:769` → `env.current_meta_version_id`; `repository.py:429`;
+`agent.py:506`). `environments.current_meta_version_id` (`core/models.py:105`) is also an FK to
+`meta_versions`. Because the FK is a string table-reference, the `meta_versions` Table must stay
+**registered** (`import primeqa.metadata.models` at boot) for the `TestCaseVersion` mapper to configure.
+⟹ `meta_versions` + the `MetaVersion` model + `MetadataRepository` are welded to the **live**
+`test_case_versions` product table, which is explicitly **5b** (D-194).
+
+**Consequence — D-195's plan was wrong on two counts:** (1) "5a.3 deletes `primeqa/metadata/`
+entirely" — false; `models`/`repository`/`service`(run_queued_sync) back the live TCV FK. (2) "5a.4
+drops the 8 `meta_*` tables" — false for `meta_versions` (the FK target). D-194 cleanly split *metadata*
+(5a) from *product tables* (5b), but a NOT-NULL FK straddles the line: the **physical** `meta_*` drop +
+`primeqa/metadata/` deletion are inherently gated on `test_case_versions` retirement (5b).
+
+**Re-scope (user-chosen — minimal close).** 5a's real deliverable, the **metadata READ cutover**, is
+**already done** (5a.1 every reader S1-only; 5a.2 impact subsystem gone). The tail:
+- **5a.3** = retire the `cutover_read_s1` flag only — `check_drift` / `_resolve_drift_anchor` S1-only
+  **in place** (`metadata/service.py`; drop the flag gate + the `meta_*` anchor fallback — the live-SF
+  Tooling drift probes are source-agnostic and stay; **no relocation**) + delete `cutover_read_s1_enabled`
+  (`accessor.py`) + the `TenantAgentSettings.cutover_read_s1` attr (`core/models.py`; **DB column left
+  inert** — not dropped) + simplify the cutover comments + cut the 1 unused module-scope import
+  (`test_management/routes.py:23`). Tests: delete `test_check_drift_anchor` (flag + fallback gone) +
+  `test_r3_metadata` (v1 SyncEngine, retired) + add an S1-only drift-anchor test.
+- **5a.4** (irreversible, hard HOLD) = a migration dropping **only** the two fully code-dead tables
+  `release_impacts` + `metadata_impacts` (writers retired D-193; all readers removed 5a.2). Archive-first.
+- **Deferred to 5b** (with `test_case_versions`): the `meta_versions`/`meta_objects`/`meta_fields`/
+  `meta_validation_rules`/`meta_flows`/`meta_triggers`/`meta_record_types`/`meta_sync_status` table drop
+  + the `metadata_version_id` FK relaxation; the `_oauth_token` + `check_drift` relocations out of
+  `primeqa/metadata/`; the canonical-`SalesforceClient` `query_tooling` addition; and the deletion of
+  `primeqa/metadata/{models,repository,service,worker_runner,sync_engine}.py`.
+
+**Verification of the map's own claims** (vetted, not assumed): the FK + nullable + runtime-population
+read directly from the cited files; the map's self-caught gap (`scripts/revalidate_test_cases.py:38` +
+`eval_sq205_domain_pack.py:34` module-import `MetadataRepository`) confirmed — both survive (repository
+stays). The map's MEDIUM-confidence spots (the canonical-client `api_version` `'v'`-prefix mismatch; the
+`views.py:1639` vs `:1683` import split; the exact relocated-`check_drift` line span) are **5b concerns**
+now — moot for the in-place 5a.3.
+
+---
+
 ---

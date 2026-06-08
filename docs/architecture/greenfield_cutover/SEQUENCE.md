@@ -63,25 +63,41 @@ Run both stacks; prove S1-sourced reads equal `meta_*`-sourced reads over a wind
 > retired (5a is ready), but the v1 test-authoring + **execution** + agent-repair flow still runs on
 > `test_case_versions` (5b is a substrate-execution program, not a reader re-point). Decoupled below.
 
-## Step 5a — The `meta_*` metadata drop *(READY · irreversible)*
+## Step 5a — The metadata READ cutover *(read cutover DONE; flag + dead-table tail remaining)*
 
-Drop the 8 `meta_*` metadata tables; S1 becomes the sole metadata source. Decoupled from the v1
-product-table drop (D-194).
+S1 becomes the sole metadata **read** source. **Re-scoped at 5a.3 (D-195.3):** the *physical* `meta_*`
+table drop + the `primeqa/metadata/` module deletion were found **5b-coupled** — `meta_versions` is the
+target of a **live NOT-NULL FK** `test_case_versions.metadata_version_id` (runtime-populated on every TCV
+insert) + `environments.current_meta_version_id`, and the `MetaVersion` model must stay registered for
+that FK to resolve. So `meta_versions` / the model / `MetadataRepository` retire **with
+`test_case_versions` (5b)**, not here. 5a delivers the read cutover + the flag retirement + the dead
+impact-table drop.
 
 - **Entry-gate — MET (tenant 1):** clean parity window (D-190) · S1 verified as the production read
   source (D-192) · GAP-2 preflight off `meta_*` (D-192) · v1 metadata-sync writer retired (D-193) · the
   S1 read-bridge relocated out of `primeqa/metadata/` (D-191).
-- **Work (pre-drop checklist):** one migration dropping `meta_versions` / `meta_objects` / `meta_fields`
-  / `meta_validation_rules` / `meta_flows` / `meta_triggers` / `meta_record_types` / `meta_sync_status`;
-  resolve the FK web into `meta_versions` — `environments.current_meta_version_id`,
-  `test_case_versions.metadata_version_id` + `validated_against_meta_version_id` (drop the FK
-  constraints; the columns stay on the kept table, now inert), `entity_dependencies.meta_version_id`,
-  and `metadata_impacts`'s two `meta_version_id` FKs (`metadata_impacts` is now **static** — its writer
-  retired in D-193 — so it drops here with the `/impacts` UI re-sourced to S8 grounding, or only its FK
-  constraints drop); delete `primeqa/metadata/{models,repository,service,worker_runner,sync_engine,routes}.py`;
-  remove the `cutover_read_s1` flag + its branches (accessor / check_drift). Archive `meta_*` first.
-- **Exit-gate:** `meta_*` gone; S1 is the sole metadata source; the v1 metadata module is deleted.
-- **Rollback:** none past the migration — archive-first is the only safety.
+- **Delivered:**
+  - **5a.1 (D-195.1)** — every live metadata reader S1-only (`MetadataAccessor` S1-only; picker +
+    `StepValidator` + generation/validator on S1; `label` added to the S1 reader).
+  - **5a.2 (D-195.2)** — the metadata-impact subsystem removed (`/impacts` UI + `MetadataImpact` /
+    `ReleaseImpact` models + repo + the RiskEngine impact-scoring + the GO/NO-GO impacts criterion +
+    the dead `metadata_bp`); test-plan ranking preserved.
+  - **5a.3 (D-195.3)** — retire the `cutover_read_s1` flag: `check_drift` S1-only **in place**
+    (`metadata/service.py`; drop the flag gate + the `meta_*` anchor fallback — its live-SF Tooling
+    probes are source-agnostic and stay) + delete `cutover_read_s1_enabled` + the
+    `TenantAgentSettings.cutover_read_s1` attr (DB column left inert) + the 1 unused module-scope import.
+  - **5a.4 (irreversible · hard HOLD)** — a migration dropping ONLY the two **fully code-dead** tables
+    `release_impacts` + `metadata_impacts` (writers retired D-193; all readers removed in 5a.2).
+    Archive-first.
+- **Exit-gate:** S1 is the sole metadata **read** source; the `cutover_read_s1` flag is gone; the two
+  dead impact tables are dropped.
+- **Deferred to 5b (with `test_case_versions`):** the `meta_versions` / `meta_objects` / `meta_fields` /
+  `meta_validation_rules` / `meta_flows` / `meta_triggers` / `meta_record_types` / `meta_sync_status`
+  table drop + the `metadata_version_id` FK relaxation; the `_oauth_token` + `check_drift` relocations
+  out of `primeqa/metadata/`; the canonical-`SalesforceClient` `query_tooling` addition; and the
+  deletion of `primeqa/metadata/{models,repository,service,worker_runner,sync_engine}.py`.
+- **Rollback:** 5a.1–5a.3 are reversible (git revert). Past the 5a.4 migration there is no rollback —
+  archive-first is the only safety.
 
 ## Step 5b — The v1 product-table drop: `test_case_versions` / `requirements` *(DEFERRED · substrate-execution program)*
 
