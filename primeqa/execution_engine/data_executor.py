@@ -50,6 +50,7 @@ from primeqa.execution_engine.evidence import (
     RunEvidence,
 )
 from primeqa.execution_engine.plan import DataRecipePlan
+from primeqa.execution_engine.provisioning import CreatedRecordTracker
 from primeqa.execution_engine.refs import resolve_step_refs
 from primeqa.execution_engine.world import resolve_operational_padding
 from primeqa.integrations.exceptions import SFClientError
@@ -178,12 +179,16 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
     # 3. Create succeeded → observe the record back (a distinct, async-ready
     #    phase: no immediate-consistency assumption is baked in here).
     c_end = _now()
+    tracker = CreatedRecordTracker()
+    tracker.record(sobject, record_id)          # F6.1: the target (parents join in F6.2)
     state = {create.step_id: {"id": record_id}}
     read_ev, read_err = _run_read_back(read, sobject, state, client, ordinal=1)
 
-    # 4. Teardown (k14) — the record exists and has been observed; leave the org
-    #    as found *before* grading, so a later fail-loud ground never leaks it.
-    cleanup = _best_effort_delete(client, sobject, record_id)
+    # 4. Teardown (k14) — every created record (the target, + from F6.2 any
+    #    provisioned parents), **reverse-order**, *before* grading, so a later
+    #    fail-loud ground never leaks them. The create_ev carries the target's
+    #    cleanup (reverse-order teardown → index 0 is the last-created = target).
+    cleanup = tracker.teardown(client, _best_effort_delete)[0]
     create_ev = _evidence(
         create, sobject, c_start, c_end, http_status=http_status, success=True,
         rejection_body=(), matched=None, cleanup=cleanup, field_values=field_values)
@@ -192,7 +197,8 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
     if read_err is not None:
         return _result(
             plan, run_id, started, environment_id,
-            (create_ev, read_ev), "errored", read_err)
+            (create_ev, read_ev), "errored", read_err,
+            created_records=tracker.records)
     if read_ev.row_count == 0:
         err = ErrorSurface(
             phase="read", error_type="RecordNotObserved",
@@ -200,13 +206,15 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
                      "(no immediate-consistency assumption)"))
         return _result(
             plan, run_id, started, environment_id,
-            (create_ev, read_ev), "errored", err)
+            (create_ev, read_ev), "errored", err,
+            created_records=tracker.records)
 
     assert_ev = _run_ground(assertion, read_ev, ordinal=2)
     outcome = "passed" if assert_ev.held else "failed"
     return _result(
         plan, run_id, started, environment_id,
-        (create_ev, read_ev, assert_ev), outcome, None)
+        (create_ev, read_ev, assert_ev), outcome, None,
+        created_records=tracker.records)
 
 
 def _grade_rejected_create(http_status, rejection_body, semantic_fields):
@@ -299,7 +307,8 @@ def _run_ground(assertion, read_ev, *, ordinal) -> AssertEvidence:
         held=held, started_at=start, finished_at=end, duration_ms=_ms(start, end))
 
 
-def _result(plan, run_id, started, environment_id, steps, outcome, error) -> RunEvidence:
+def _result(plan, run_id, started, environment_id, steps, outcome, error,
+            created_records=()) -> RunEvidence:
     """Assemble the positive vertical's :class:`RunEvidence` envelope."""
     return RunEvidence(
         run_id=run_id,
@@ -314,6 +323,7 @@ def _result(plan, run_id, started, environment_id, steps, outcome, error) -> Run
         finished_at=_now(),
         steps=steps,
         error=error,
+        created_records=created_records,
     )
 
 
