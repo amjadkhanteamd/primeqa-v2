@@ -63,7 +63,7 @@ Run both stacks; prove S1-sourced reads equal `meta_*`-sourced reads over a wind
 > retired (5a is ready), but the v1 test-authoring + **execution** + agent-repair flow still runs on
 > `test_case_versions` (5b is a substrate-execution program, not a reader re-point). Decoupled below.
 
-## Step 5a — The metadata READ cutover *(read cutover DONE; flag + dead-table tail remaining)*
+## Step 5a — The metadata READ cutover *(✅ DONE — D-195.1–.4)*
 
 S1 becomes the sole metadata **read** source. **Re-scoped at 5a.3 (D-195.3):** the *physical* `meta_*`
 table drop + the `primeqa/metadata/` module deletion were found **5b-coupled** — `meta_versions` is the
@@ -86,9 +86,9 @@ impact-table drop.
     (`metadata/service.py`; drop the flag gate + the `meta_*` anchor fallback — its live-SF Tooling
     probes are source-agnostic and stay) + delete `cutover_read_s1_enabled` + the
     `TenantAgentSettings.cutover_read_s1` attr (DB column left inert) + the 1 unused module-scope import.
-  - **5a.4 (irreversible · hard HOLD)** — a migration dropping ONLY the two **fully code-dead** tables
-    `release_impacts` + `metadata_impacts` (writers retired D-193; all readers removed in 5a.2).
-    Archive-first.
+  - **5a.4 (D-195.4 · ✅ APPLIED)** — `migrations/052` dropped the two **fully code-dead** tables
+    `release_impacts` + `metadata_impacts` (writers retired D-193; all readers removed in 5a.2) on the
+    Railway prod DB; archived first; `meta_versions`/`test_case_versions` verified untouched.
 - **Exit-gate:** S1 is the sole metadata **read** source; the `cutover_read_s1` flag is gone; the two
   dead impact tables are dropped.
 - **Deferred to 5b (with `test_case_versions`):** the `meta_versions` / `meta_objects` / `meta_fields` /

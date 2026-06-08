@@ -10681,4 +10681,25 @@ semantic green** (the 4 new drift cases included). 6 code files + 2 test deletio
 
 ---
 
+### D-195.4 — Step 5a.4 APPLIED + Step 5a CLOSED
+
+**The irreversible act, done.** `migrations/052_drop_dead_impact_tables.sql` applied to the Railway prod
+DB (`BEGIN / DROP TABLE release_impacts / DROP TABLE metadata_impacts / COMMIT`, exit 0).
+**Archive-first:** `pg_dump` of both tables (schema + data) captured to
+`/tmp/archive_impact_tables_20260608_144738.sql` (8.4 KB) before the drop — the only recovery path
+(ephemeral `/tmp`; dev env, backups waived by the user).
+
+**Verified post-drop:** `metadata_impacts` + `release_impacts` are gone (`pg_tables` query empty);
+`meta_versions` + `test_case_versions` are **untouched** (both still present) — only the two dead tables
+dropped, the load-bearing ones intact. `import primeqa.app` clean post-drop (no code references the
+dropped tables — all removed in 5a.2).
+
+**Step 5a is COMPLETE.** S1 is the sole metadata **read** source. Ledger: 5a.1 (D-195.1) every reader
+S1-only · 5a.2 (D-195.2) metadata-impact subsystem removed · 5a.3 (D-195.3) `cutover_read_s1` flag
+retired · 5a.4 (D-195.4) the two dead impact tables dropped. **Deferred to 5b** (gated on
+`test_case_versions`): the `meta_versions`/content-table drop, the `_oauth_token` + `check_drift`
+relocations, and the `primeqa/metadata/` module deletion.
+
+---
+
 ---
