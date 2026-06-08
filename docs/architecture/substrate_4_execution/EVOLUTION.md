@@ -85,3 +85,27 @@ The generation→execution gap, closed for the pure-S4 set, plus the async-trigg
 - **D-132 B3.** The firing wiring: `worker.py` `_default_s4_client_resolver` + `s4_execution_tick` (into `worker_tick`); `scheduler.py` `s4_reaper_tick` (into `scheduler_tick`). The production loop ships **live + idle** — both ticks no-op on the empty queue until an enqueue source lands (deferred).
 
 **Verified.** `execution_engine` unit + governance-DB integration (jobs 14 + consumer 8) + worker-wiring 3 + the run-path-adjacent generation/representation/interpretation suites — green. One migration, applied to the governance DB via `alembic upgrade tenant@head`. **Deferred (D-133):** capability+layout execution (Option-X recipe enrichment, reopens S2/S3), `is_required`/`field_type`/`matches_pattern` predicates, the data-path async bracketing, and the product enqueue source. Live-sandbox proof deferred (the inspection spine is already live-proven). DECISIONS_LOG D-127…D-133.
+
+## D-196 — F6 test-data provisioning + dependency-aware cleanup (vertical opening)
+
+After the greenfield cutover's Step 5a (the `meta_*` read-cutover) completed and the disposable v1 test
+corpus was deleted (D-195.5), the product runs entirely on the substrate (S3 generates, S4 executes).
+Growing S4's executable envelope is the path forward, and the substrate's own roadmap names **F6 —
+test-data provisioning + cleanup** as the load-bearing next frontier: S4's positive vertical can today
+create records with required **scalars** only (`world.py` fences off required lookups — the §3 fence),
+so the large class of master-detail/lookup objects is unexecutable.
+
+Vertical phasing (branch `phase-22-substrate-4-provisioning`):
+- **F6.1 — cleanup spine.** Per-tenant `s4_created_records` (alembic tenant branch, schema-isolated) +
+  a `CreatedRecordTracker` with **reverse-order** teardown, generalizing `_run_positive`'s inline single
+  `_best_effort_delete` to N records (audit persisted at `finalize_run`). Behavior-neutral for the
+  single-create case; the spine F6.2 fills.
+- **F6.2 — parent-lookup provisioning.** `world.py` recursively constructs required master-detail/lookup
+  parents (bounded recursion + cycle guard), lifting the §3 fence; the positive vertical reaches
+  lookup-needing objects.
+- **F6.3 — live proof on env 59** (parent→target→read→assert→reverse-order cleanup, zero PQA_% leak).
+
+Decisions: teardown in-execution + finalize-persisted audit (the crash-recovery reaper needs pre-teardown
+brief-tx durability — deferred); minimal F1 lift-to-neutral (extend S4-native `world.py`, lift only the
+`PQA_%`/REST create-delete/`classify_failure` primitives); cleanup multi-pass deferred (reverse-order
+single-pass first). DECISIONS_LOG D-196.
