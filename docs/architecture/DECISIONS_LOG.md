@@ -10666,6 +10666,19 @@ stays). The map's MEDIUM-confidence spots (the canonical-client `api_version` `'
 `views.py:1639` vs `:1683` import split; the exact relocated-`check_drift` line span) are **5b concerns**
 now — moot for the in-place 5a.3.
 
+**Impl landed (5a.3).** `_resolve_drift_anchor` (`metadata/service.py`) rewritten **S1-only** — reads only
+`read_s1_freshness`, returns `None` when S1 is unavailable/unprovisioned/unusable; the `cutover_read_s1`
+flag gate + the `self.metadata_repo.get_current_version` meta_* fallback are gone. `cutover_read_s1_enabled`
+deleted from `accessor.py` (its `text`/`logging` imports too); the `TenantAgentSettings.cutover_read_s1`
+model attr unmapped (DB column left inert); the cutover comments in `accessor`/`metadata_bridge.__init__`/
+`preflight`/`worker` simplified. Tests: deleted `test_check_drift_anchor` + `test_r3_metadata`; added
+`tests/unit/test_drift_anchor_s1.py` (4 cases — usable→anchor, and unusable/unprovisioned/unavailable→None,
+each asserting **no** meta_* fallback). **Deviation from the 5a.3 map:** it claimed
+`test_management/routes.py:23 from primeqa.metadata.repository import MetadataRepository` was unused — but
+it's used at `routes.py:1360` (`generate_test_case`, no local re-import), so it was **kept** (and
+`metadata.repository` survives to 5b regardless). Verified: `import primeqa.app` clean; **2378 unit +
+semantic green** (the 4 new drift cases included). 6 code files + 2 test deletions + 1 new test.
+
 ---
 
 ---

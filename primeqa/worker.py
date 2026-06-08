@@ -1457,9 +1457,9 @@ def worker_tick(ctx):
         if stage:
             process_run(run, ctx)
 
-    # 2) v1 metadata sync — RETIRED (D-193). Reads are on S1 (cutover_read_s1),
-    # so the v1 meta_* writer is gone; the S1 sync (step 3d below) is the live
-    # metadata source. (meta_* is now static until the Step-5 drop.)
+    # 2) v1 metadata sync — RETIRED (D-193). Reads are on S1, so the v1 meta_*
+    # writer is gone; the S1 sync (step 3d below) is the live metadata source.
+    # (meta_* is now static until the Step-5 drop.)
 
     # 3) Generation jobs (migration 044). One per tick keeps cost under
     # control — each job is a 15-60s LLM round-trip. The claim uses

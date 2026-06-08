@@ -63,8 +63,8 @@ class MetadataService:
         if not env:
             return {"error": "Environment not found"}
 
-        # D-184: the "drift since" anchor comes from S1 (behind cutover_read_s1) or
-        # the v1 meta_* current version (fallback). None -> this env has no synced
+        # D-184: the "drift since" anchor comes from S1 (S1-only since D-195.3
+        # retired the cutover_read_s1 flag). None -> this env has no usable S1
         # metadata yet -> render "Never synced".
         anchor = self._resolve_drift_anchor(environment_id, tenant_id)
         if anchor is None:
@@ -159,45 +159,27 @@ class MetadataService:
             }
 
     def _resolve_drift_anchor(self, environment_id, tenant_id):
-        """Resolve the drift "synced since" anchor (D-184).
+        """Resolve the drift "synced since" anchor from S1 (D-184; S1-only since
+        D-195.3 retired the ``cutover_read_s1`` flag).
 
-        Behind the per-tenant ``cutover_read_s1`` flag the anchor is the env's last
-        successful S1 sync (``read_s1_freshness``, D-183 — env-scoped, so no
-        sibling-env contamination); otherwise the v1 ``meta_*`` current version
-        (parallel-window fallback). Returns ``{version_id, version_label, synced_dt,
-        source}`` or ``None`` when this env has no current synced metadata (caller
-        renders ``has_current_meta=False``). Only the anchor moves to S1 — the
-        live-SF Tooling drift probes are source-agnostic.
+        The anchor is the env's last successful S1 sync (``read_s1_freshness``,
+        D-183 — env-scoped, so no sibling-env contamination). Returns
+        ``{version_id, version_label, synced_dt, source}`` or ``None`` when this env
+        has no usable S1 metadata (caller renders ``has_current_meta=False``). Only
+        the anchor is S1-sourced — ``check_drift``'s live-SF Tooling drift probes are
+        source-agnostic.
         """
         from datetime import datetime as _dt
-        db = self.metadata_repo.db
-        try:
-            from primeqa.metadata_bridge.accessor import cutover_read_s1_enabled
-            use_s1 = cutover_read_s1_enabled(db, tenant_id)
-        except Exception:
-            use_s1 = False
-        if use_s1:
-            from primeqa.metadata_bridge.s1_sync_console import read_s1_freshness
-            s1 = read_s1_freshness(tenant_id, environment_id)
-            if s1.get("available") and s1.get("provisioned"):
-                if not s1.get("usable"):
-                    return None                  # never synced THIS env
-                seq = s1.get("current_version_seq")
-                return {
-                    "version_id": seq,
-                    "version_label": f"Org model v{seq}",
-                    "synced_dt": _dt.fromisoformat(s1["last_success_at"]),
-                    "source": "s1",
-                }
-            # flag on but S1 unprovisioned / unavailable -> meta_* fallback.
-        current = self.metadata_repo.get_current_version(environment_id)
-        if not current or not current.completed_at:
-            return None
+        from primeqa.metadata_bridge.s1_sync_console import read_s1_freshness
+        s1 = read_s1_freshness(tenant_id, environment_id)
+        if not (s1.get("available") and s1.get("provisioned") and s1.get("usable")):
+            return None                  # never synced / unprovisioned THIS env
+        seq = s1.get("current_version_seq")
         return {
-            "version_id": current.id,
-            "version_label": current.version_label,
-            "synced_dt": current.completed_at,
-            "source": "meta",
+            "version_id": seq,
+            "version_label": f"Org model v{seq}",
+            "synced_dt": _dt.fromisoformat(s1["last_success_at"]),
+            "source": "s1",
         }
 
     # ------------------------------------------------------------------

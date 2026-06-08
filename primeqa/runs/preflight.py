@@ -174,7 +174,7 @@ class Preflight:
         # sync_run (``completed_at``) + the current org-model version. The v1
         # ``meta_*`` fallback was removed at GAP-2 — the ``meta_*`` drop (Step 5)
         # cannot proceed while preflight still reads ``meta_*``, and tenant reads are
-        # already on S1 (cutover_read_s1). Health is all-or-nothing: S1 syncs the
+        # already on S1. Health is all-or-nothing: S1 syncs the
         # whole org atomically, so a usable org model => every category is present.
         meta_age_hours = None
         metadata_source = "s1"
