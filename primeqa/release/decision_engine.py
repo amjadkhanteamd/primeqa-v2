@@ -18,7 +18,7 @@ class DecisionEngine:
         warnings = 0
 
         # Gather metrics
-        from primeqa.release.models import ReleaseRun, ReleaseImpact, ReleaseTestPlanItem
+        from primeqa.release.models import ReleaseRun, ReleaseTestPlanItem
         from primeqa.execution.models import PipelineRun, RunTestResult
         release_runs = self.db.query(ReleaseRun).filter(ReleaseRun.release_id == release.id).all()
         run_ids = [rr.pipeline_run_id for rr in release_runs]
@@ -71,22 +71,9 @@ class DecisionEngine:
                 criteria_met["critical_tests"] = False
                 blockers += 1
 
-        # Check 3: High-risk impacts resolved
-        if criteria.get("no_unresolved_high_risk_impacts", True):
-            from primeqa.test_management.models import MetadataImpact
-            unresolved_high = self.db.query(ReleaseImpact).filter(
-                ReleaseImpact.release_id == release.id,
-                ReleaseImpact.risk_level.in_(["high", "critical"]),
-            ).count()
-            if unresolved_high == 0:
-                reasoning.append({"check": "impacts_resolved", "status": "pass",
-                                 "detail": "No unresolved high-risk impacts"})
-                criteria_met["impacts_resolved"] = True
-            else:
-                reasoning.append({"check": "impacts_resolved", "status": "warn",
-                                 "detail": f"{unresolved_high} high-risk impact(s) in release"})
-                criteria_met["impacts_resolved"] = False
-                warnings += 1
+        # (The "high-risk impacts resolved" check was removed with the
+        # metadata-impact subsystem in D-195.2 — its feeder table was already
+        # retired in D-193, so the criterion was a no-op on real data.)
 
         # Determine recommendation
         if blockers == 0 and warnings == 0:

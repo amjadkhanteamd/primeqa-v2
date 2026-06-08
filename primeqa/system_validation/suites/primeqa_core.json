@@ -294,7 +294,6 @@
              "expect_status": 200},
             {"action": "http", "method": "GET", "url": "/suites", "expect_status": 200},
             {"action": "http", "method": "GET", "url": "/reviews", "expect_status": 200},
-            {"action": "http", "method": "GET", "url": "/impacts", "expect_status": 200},
             {"action": "http", "method": "GET", "url": "/settings", "expect_status": 200},
             {"action": "http", "method": "GET", "url": "/settings/agent", "save_as": "agent_settings",
              "expect_status": 200},

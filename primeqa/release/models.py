@@ -30,7 +30,6 @@ class Release(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     requirements = relationship("ReleaseRequirement", back_populates="release", cascade="all, delete-orphan")
-    impacts = relationship("ReleaseImpact", back_populates="release", cascade="all, delete-orphan")
     test_plan_items = relationship("ReleaseTestPlanItem", back_populates="release", cascade="all, delete-orphan")
     runs = relationship("ReleaseRun", back_populates="release", cascade="all, delete-orphan")
     decisions = relationship("ReleaseDecision", back_populates="release", cascade="all, delete-orphan")
@@ -54,25 +53,6 @@ class ReleaseRequirement(Base):
 
     __table_args__ = (
         UniqueConstraint("release_id", "requirement_id", name="release_requirements_unique"),
-    )
-
-
-class ReleaseImpact(Base):
-    __tablename__ = "release_impacts"
-
-    id = Column(Integer, primary_key=True)
-    release_id = Column(Integer, ForeignKey("releases.id", ondelete="CASCADE"), nullable=False)
-    metadata_impact_id = Column(Integer, ForeignKey("metadata_impacts.id", ondelete="CASCADE"), nullable=False)
-    risk_score = Column(Integer)
-    risk_level = Column(String(20))
-    risk_reasoning = Column(JSON)
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-    release = relationship("Release", back_populates="impacts")
-
-    __table_args__ = (
-        UniqueConstraint("release_id", "metadata_impact_id", name="release_impacts_unique"),
-        CheckConstraint("risk_level IS NULL OR risk_level IN ('low', 'medium', 'high', 'critical')"),
     )
 
 

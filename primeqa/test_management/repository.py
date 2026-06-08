@@ -1,7 +1,7 @@
 """Repository for the test management domain.
 
 DB queries scoped to: sections, requirements, test_cases, test_case_versions,
-                      test_suites, suite_test_cases, ba_reviews, metadata_impacts
+                      test_suites, suite_test_cases, ba_reviews
 
 All list queries delegate pagination / search / sort / filter to
 `primeqa.shared.query_builder.ListQuery` so there is a single code path for
@@ -16,7 +16,7 @@ from sqlalchemy import func
 from primeqa.shared.query_builder import ListQuery, PageResult
 from primeqa.test_management.models import (
     Section, Requirement, TestCase, TestCaseVersion,
-    TestSuite, SuiteTestCase, BAReview, MetadataImpact,
+    TestSuite, SuiteTestCase, BAReview,
 )
 
 
@@ -816,93 +816,5 @@ class BAReviewRepository:
         if not review:
             return False
         self.db.delete(review)
-        self.db.commit()
-        return True
-
-
-# ---------- Metadata impacts --------------------------------------------------
-
-class MetadataImpactRepository:
-    def __init__(self, db):
-        self.db = db
-
-    def get_impact(self, impact_id, tenant_id, include_deleted=False):
-        q = self.db.query(MetadataImpact).join(
-            TestCase, MetadataImpact.test_case_id == TestCase.id,
-        ).filter(
-            MetadataImpact.id == impact_id,
-            TestCase.tenant_id == tenant_id,
-        )
-        if not include_deleted:
-            q = q.filter(MetadataImpact.deleted_at.is_(None))
-        return q.first()
-
-    def list_pending_impacts(self, tenant_id, include_deleted=False):
-        q = self.db.query(MetadataImpact).join(
-            TestCase, MetadataImpact.test_case_id == TestCase.id,
-        ).filter(
-            TestCase.tenant_id == tenant_id,
-            MetadataImpact.resolution == "pending",
-        )
-        if not include_deleted:
-            q = q.filter(MetadataImpact.deleted_at.is_(None))
-        return q.all()
-
-    def list_page(self, tenant_id, *, page=1, per_page=20, q=None,
-                  sort="created_at", order="desc", filters=None,
-                  include_deleted=False) -> PageResult:
-        base = self.db.query(MetadataImpact).join(
-            TestCase, MetadataImpact.test_case_id == TestCase.id,
-        ).filter(TestCase.tenant_id == tenant_id)
-        return (ListQuery(base, MetadataImpact,
-                          search_fields=["entity_ref"],
-                          sort_whitelist=["created_at", "updated_at", "entity_ref", "impact_type"],
-                          filter_spec={
-                              "resolution": MetadataImpact.resolution,
-                              "impact_type": MetadataImpact.impact_type,
-                              "test_case_id": MetadataImpact.test_case_id,
-                          },
-                          default_sort="created_at")
-                .with_soft_delete(MetadataImpact, include_deleted=include_deleted)
-                .search(q).filter_by(filters or {}).sort(sort, order)
-                .paginate(page, per_page))
-
-    def resolve_impact(self, impact_id, resolution, resolved_by):
-        impact = self.db.query(MetadataImpact).filter(
-            MetadataImpact.id == impact_id,
-        ).first()
-        if not impact:
-            return None
-        impact.resolution = resolution
-        impact.resolved_by = resolved_by
-        impact.resolved_at = _now()
-        impact.updated_at = _now()
-        self.db.commit()
-        self.db.refresh(impact)
-        return impact
-
-    def soft_delete_impact(self, impact_id, tenant_id, user_id):
-        impact = self.get_impact(impact_id, tenant_id)
-        if not impact:
-            return None
-        impact.deleted_at = _now()
-        impact.deleted_by = user_id
-        self.db.commit()
-        return impact
-
-    def restore_impact(self, impact_id, tenant_id):
-        impact = self.get_impact(impact_id, tenant_id, include_deleted=True)
-        if not impact:
-            return None
-        impact.deleted_at = None
-        impact.deleted_by = None
-        self.db.commit()
-        return impact
-
-    def purge_impact(self, impact_id, tenant_id):
-        impact = self.get_impact(impact_id, tenant_id, include_deleted=True)
-        if not impact:
-            return False
-        self.db.delete(impact)
         self.db.commit()
         return True

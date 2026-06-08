@@ -30,7 +30,7 @@ class TestManagementService:
     """
 
     def __init__(self, section_repo, requirement_repo, test_case_repo,
-                 suite_repo, review_repo, impact_repo,
+                 suite_repo, review_repo,
                  activity_repo=None):
         missing = [name for name, val in [
             ("section_repo", section_repo),
@@ -38,7 +38,6 @@ class TestManagementService:
             ("test_case_repo", test_case_repo),
             ("suite_repo", suite_repo),
             ("review_repo", review_repo),
-            ("impact_repo", impact_repo),
         ] if val is None]
         if missing:
             raise TypeError(
@@ -49,7 +48,6 @@ class TestManagementService:
         self.test_case_repo = test_case_repo
         self.suite_repo = suite_repo
         self.review_repo = review_repo
-        self.impact_repo = impact_repo
         # activity log is optional — if absent we silently skip writes
         self.activity_repo = activity_repo
 
@@ -64,42 +62,6 @@ class TestManagementService:
             )
         except Exception as e:
             log.warning("activity log write failed: %s", e)
-
-    # ---- AI generation / regeneration ---------------------------------------
-
-    def regenerate_for_impact(self, tenant_id, impact_id, created_by,
-                              env_repo, conn_repo, metadata_repo):
-        """Regenerate a test case for a metadata impact."""
-        from primeqa.test_management.models import MetadataImpact, TestCase
-        from primeqa.core.models import Environment
-        impact = self.impact_repo.db.query(MetadataImpact).filter(
-            MetadataImpact.id == impact_id,
-        ).first()
-        if not impact:
-            raise NotFoundError("Impact not found")
-
-        tc = self.test_case_repo.get_test_case(impact.test_case_id, tenant_id)
-        if not tc:
-            raise NotFoundError("Test case not found")
-
-        env = env_repo.db.query(Environment).filter(
-            Environment.tenant_id == tenant_id,
-            Environment.current_meta_version_id == impact.new_meta_version_id,
-        ).first()
-        if not env:
-            raise NotFoundError("Environment not found for impact")
-
-        if not tc.requirement_id:
-            raise ValidationError("Test case has no linked requirement")
-
-        result = self.generate_test_case(
-            tenant_id=tenant_id, requirement_id=tc.requirement_id,
-            environment_id=env.id, created_by=created_by,
-            env_repo=env_repo, conn_repo=conn_repo, metadata_repo=metadata_repo,
-            test_case_id=tc.id,
-        )
-        self.impact_repo.resolve_impact(impact_id, "regenerated", created_by)
-        return result
 
     # ---- Multi-TC plan generation ----------------------------------------
     # "One click \u2192 one test case" hid coverage gaps. generate_test_plan
@@ -1542,41 +1504,6 @@ class TestManagementService:
             raise NotFoundError("Review not found")
         self._log(tenant_id, user_id, "purge", "ba_review", review_id)
 
-    # ---- Impacts -------------------------------------------------------------
-
-    def list_pending_impacts(self, tenant_id):
-        impacts = self.impact_repo.list_pending_impacts(tenant_id)
-        return [self._impact_dict(i) for i in impacts]
-
-    def list_impacts_page(self, tenant_id, **params):
-        page = self.impact_repo.list_page(tenant_id, **params)
-        return page, self._impact_dict
-
-    def resolve_impact(self, impact_id, resolution, resolved_by):
-        impact = self.impact_repo.resolve_impact(impact_id, resolution, resolved_by)
-        if not impact:
-            raise NotFoundError("Impact not found")
-        return self._impact_dict(impact)
-
-    def delete_impact(self, impact_id, tenant_id, user_id):
-        i = self.impact_repo.soft_delete_impact(impact_id, tenant_id, user_id)
-        if not i:
-            raise NotFoundError("Impact not found")
-        self._log(tenant_id, user_id, "soft_delete", "metadata_impact", impact_id)
-        return self._impact_dict(i)
-
-    def restore_impact(self, impact_id, tenant_id, user_id):
-        i = self.impact_repo.restore_impact(impact_id, tenant_id)
-        if not i:
-            raise NotFoundError("Impact not found")
-        self._log(tenant_id, user_id, "restore", "metadata_impact", impact_id)
-        return self._impact_dict(i)
-
-    def purge_impact(self, impact_id, tenant_id, user_id):
-        if not self.impact_repo.purge_impact(impact_id, tenant_id):
-            raise NotFoundError("Impact not found")
-        self._log(tenant_id, user_id, "purge", "metadata_impact", impact_id)
-
     # ---- Jira helpers --------------------------------------------------------
 
     def _fetch_jira_issue(self, base_url, key, auth=None):
@@ -1675,19 +1602,6 @@ class TestManagementService:
             "reviewed_at": r.reviewed_at.isoformat() if r.reviewed_at else None,
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "deleted_at": r.deleted_at.isoformat() if getattr(r, "deleted_at", None) else None,
-        }
-
-    @staticmethod
-    def _impact_dict(i):
-        return {
-            "id": i.id, "test_case_id": i.test_case_id,
-            "impact_type": i.impact_type, "entity_ref": i.entity_ref,
-            "resolution": i.resolution,
-            "change_details": i.change_details,
-            "new_meta_version_id": i.new_meta_version_id,
-            "prev_meta_version_id": i.prev_meta_version_id,
-            "created_at": i.created_at.isoformat() if i.created_at else None,
-            "deleted_at": i.deleted_at.isoformat() if getattr(i, "deleted_at", None) else None,
         }
 
 

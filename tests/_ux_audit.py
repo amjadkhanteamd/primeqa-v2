@@ -28,7 +28,6 @@ PAGES = [
     ("/suites", "Suites list"),
     ("/milestones", "Milestones"),
     ("/reviews", "Reviews queue"),
-    ("/impacts", "Impacts"),
     ("/settings", "Settings home"),
     ("/settings/connections", "Settings: Connections"),
     ("/settings/environments", "Settings: Environments"),
@@ -53,7 +52,7 @@ CHECKS = [
     ])),
     ("row link", lambda h: any(p in h for p in [
         'href="/requirements/', 'href="/test-cases/', 'href="/suites/',
-        'href="/reviews/', 'href="/releases/', 'href="/impacts/',
+        'href="/reviews/', 'href="/releases/',
         'href="/runs/', 'href="/settings/environments/', 'href="/settings/connections/',
         'href="/settings/groups/', 'href="/settings/users/',
         'onclick="window.location', 'data-href=',

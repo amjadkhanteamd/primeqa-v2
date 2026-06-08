@@ -69,9 +69,6 @@
             <a href="?tab=requirements" class="{% if tab == 'requirements' or not tab %}border-indigo-500 text-indigo-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} whitespace-nowrap border-b-2 py-3 text-sm font-medium">
                 Requirements ({{ release.requirements|length }})
             </a>
-            <a href="?tab=impacts" class="{% if tab == 'impacts' %}border-indigo-500 text-indigo-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} whitespace-nowrap border-b-2 py-3 text-sm font-medium">
-                Impacts ({{ release.impacts|length }})
-            </a>
             <a href="?tab=test_plan" class="{% if tab == 'test_plan' %}border-indigo-500 text-indigo-600{% else %}border-transparent text-gray-500 hover:text-gray-700{% endif %} whitespace-nowrap border-b-2 py-3 text-sm font-medium">
                 Test Plan ({{ release.test_plan|length }})
             </a>
@@ -85,31 +82,7 @@
     </div>
 
     <!-- Tab Content -->
-    {% if tab == 'impacts' %}
-    <div class="bg-white shadow rounded-lg p-6">
-        {% if release.impacts %}
-        <ul class="divide-y divide-gray-200">
-            {% for i in release.impacts %}
-            <li class="py-3 flex justify-between items-center">
-                <div>
-                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
-                        {% if i.risk_level == 'critical' %}bg-red-100 text-red-800
-                        {% elif i.risk_level == 'high' %}bg-orange-100 text-orange-800
-                        {% elif i.risk_level == 'medium' %}bg-yellow-100 text-yellow-800
-                        {% else %}bg-gray-100 text-gray-800{% endif %}">
-                        {{ i.risk_level or 'not scored' }}
-                    </span>
-                    <span class="ml-2 text-sm text-gray-700">Impact #{{ i.metadata_impact_id }}</span>
-                </div>
-                {% if i.risk_score %}<span class="text-sm font-medium text-gray-900">{{ i.risk_score }}/100</span>{% endif %}
-            </li>
-            {% endfor %}
-        </ul>
-        {% else %}
-        <p class="text-sm text-gray-500 text-center py-8">No metadata impacts yet. Run metadata refresh to detect changes.</p>
-        {% endif %}
-    </div>
-    {% elif tab == 'test_plan' %}
+    {% if tab == 'test_plan' %}
     <div class="bg-white shadow rounded-lg">
         <div class="px-6 py-3 border-b flex items-center justify-between">
             <h3 class="text-sm font-medium text-gray-700">Test Plan <span class="text-gray-500 font-normal">({{ release.test_plan | length }})</span></h3>

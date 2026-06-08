@@ -133,7 +133,6 @@ def run_tests():
                 section_repo=object(), requirement_repo=object(),
                 test_case_repo=object(), suite_repo=object(),
                 review_repo=None,   # <-- this is the bug's old home
-                impact_repo=object(),
             )
             raise AssertionError("expected TypeError for missing review_repo")
         except TypeError as e:

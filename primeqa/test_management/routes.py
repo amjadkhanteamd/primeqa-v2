@@ -29,7 +29,7 @@ from primeqa.shared.api import (
 )
 from primeqa.shared.query_builder import QueryBuilderError
 from primeqa.test_management.repository import (
-    BAReviewRepository, MetadataImpactRepository, RequirementRepository,
+    BAReviewRepository, RequirementRepository,
     SectionRepository, TestCaseRepository, TestSuiteRepository,
 )
 from primeqa.test_management.service import TestManagementService
@@ -45,7 +45,6 @@ def _get_service():
         test_case_repo=TestCaseRepository(db),
         suite_repo=TestSuiteRepository(db),
         review_repo=BAReviewRepository(db),
-        impact_repo=MetadataImpactRepository(db),
         activity_repo=ActivityLogRepository(db),
     )
     return svc, db
@@ -367,7 +366,7 @@ def bulk_generate_requirements():
     from primeqa.core.models import Environment
     from primeqa.test_management.repository import (
         RequirementRepository, SectionRepository, TestCaseRepository,
-        TestSuiteRepository, BAReviewRepository, MetadataImpactRepository,
+        TestSuiteRepository, BAReviewRepository,
     )
     from primeqa.test_management.service import TestManagementService
     from primeqa.db import SessionLocal
@@ -449,7 +448,7 @@ def bulk_generate_requirements():
             svc = TestManagementService(
                 SectionRepository(db), RequirementRepository(db),
                 TestCaseRepository(db), TestSuiteRepository(db),
-                BAReviewRepository(db), MetadataImpactRepository(db),
+                BAReviewRepository(db),
             )
 
             # Default section: oldest non-deleted section in the tenant.
@@ -1159,89 +1158,6 @@ def purge_review(review_id):
     try:
         def run():
             svc.purge_review(review_id, request.user["tenant_id"], request.user["id"])
-            return jsonify({"message": "Purged"}), 200
-        return _handle(run)
-    finally:
-        db.close()
-
-
-# ---- Impacts ----------------------------------------------------------------
-
-@test_management_bp.route("/api/impacts", methods=["GET"])
-@require_auth
-def list_impacts():
-    svc, db = _get_service()
-    try:
-        if "page" in request.args or "per_page" in request.args or "q" in request.args:
-            params = parse_list_params(
-                request, allowed_filters=["resolution", "impact_type", "test_case_id"],
-                default_sort="created_at",
-            )
-            def run():
-                page, serializer = svc.list_impacts_page(
-                    request.user["tenant_id"],
-                    page=params["page"], per_page=params["per_page"],
-                    q=params["q"], sort=params["sort"], order=params["order"],
-                    filters=params["filters"], include_deleted=params["show_deleted"],
-                )
-                return json_page(page, serialize=serializer)
-            return _handle(run)
-        return jsonify(svc.list_pending_impacts(request.user["tenant_id"])), 200
-    finally:
-        db.close()
-
-
-@test_management_bp.route("/api/impacts/<int:impact_id>/resolve", methods=["POST"])
-@require_role("admin", "tester")
-def resolve_impact(impact_id):
-    data = request.get_json(silent=True) or {}
-    if not data.get("resolution"):
-        return json_error("VALIDATION_ERROR", "resolution is required")
-    if data["resolution"] not in ("regenerated", "edited", "dismissed"):
-        return json_error("VALIDATION_ERROR", "Invalid resolution")
-    svc, db = _get_service()
-    try:
-        def run():
-            impact = svc.resolve_impact(impact_id, data["resolution"], request.user["id"])
-            return jsonify(impact), 200
-        return _handle(run)
-    finally:
-        db.close()
-
-
-@test_management_bp.route("/api/impacts/<int:impact_id>", methods=["DELETE"])
-@require_role("admin", "tester")
-def delete_impact(impact_id):
-    svc, db = _get_service()
-    try:
-        def run():
-            i = svc.delete_impact(impact_id, request.user["tenant_id"], request.user["id"])
-            return jsonify(i), 200
-        return _handle(run)
-    finally:
-        db.close()
-
-
-@test_management_bp.route("/api/impacts/<int:impact_id>/restore", methods=["POST"])
-@require_role("admin", "tester")
-def restore_impact(impact_id):
-    svc, db = _get_service()
-    try:
-        def run():
-            i = svc.restore_impact(impact_id, request.user["tenant_id"], request.user["id"])
-            return jsonify(i), 200
-        return _handle(run)
-    finally:
-        db.close()
-
-
-@test_management_bp.route("/api/impacts/<int:impact_id>/purge", methods=["POST"])
-@require_role("admin")
-def purge_impact(impact_id):
-    svc, db = _get_service()
-    try:
-        def run():
-            svc.purge_impact(impact_id, request.user["tenant_id"], request.user["id"])
             return jsonify({"message": "Purged"}), 200
         return _handle(run)
     finally:

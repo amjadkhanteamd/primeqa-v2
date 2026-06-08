@@ -3,7 +3,6 @@
 DEFAULT_DECISION_CRITERIA = {
     "min_pass_rate": 95,
     "critical_tests_must_pass": True,
-    "no_unresolved_high_risk_impacts": True,
     "max_flaky_test_percent": 10,
 }
 
@@ -59,7 +58,6 @@ class ReleaseService:
         if not r:
             return None
         requirements = self.release_repo.list_requirements(release_id)
-        impacts = self.release_repo.list_impacts(release_id)
         test_plan = self.release_repo.list_test_plan(release_id)
         runs = self.release_repo.list_runs(release_id)
         latest_decision = self.release_repo.get_latest_decision(release_id)
@@ -70,10 +68,6 @@ class ReleaseService:
                 "id": req.id, "jira_key": req.jira_key,
                 "jira_summary": req.jira_summary, "is_stale": req.is_stale,
             } for req in requirements],
-            "impacts": [{
-                "id": i.id, "metadata_impact_id": i.metadata_impact_id,
-                "risk_score": i.risk_score, "risk_level": i.risk_level,
-            } for i in impacts],
             "test_plan": self._enrich_test_plan(test_plan, tenant_id),
             "runs": [{
                 "id": run.id, "pipeline_run_id": run.pipeline_run_id,

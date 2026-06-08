@@ -64,7 +64,7 @@ from primeqa.test_management.models import (
 )
 from primeqa.test_management.service import TestManagementService
 from primeqa.test_management.repository import (
-    BAReviewRepository, MetadataImpactRepository, RequirementRepository,
+    BAReviewRepository, RequirementRepository,
     SectionRepository, TestCaseRepository, TestSuiteRepository,
 )
 from primeqa.core.repository import ActivityLogRepository
@@ -138,7 +138,6 @@ def _mk_service(db) -> TestManagementService:
         test_case_repo=TestCaseRepository(db),
         suite_repo=TestSuiteRepository(db),
         review_repo=BAReviewRepository(db),
-        impact_repo=MetadataImpactRepository(db),
         activity_repo=ActivityLogRepository(db),
     )
 

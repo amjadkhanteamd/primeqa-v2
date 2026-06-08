@@ -31,7 +31,6 @@ import primeqa.runs.schedule  # noqa: F401 \u2014 R4 ScheduledRun model
 
 from primeqa.core import csrf
 from primeqa.core.routes import core_bp
-from primeqa.metadata.routes import metadata_bp
 from primeqa.test_management.routes import test_management_bp
 from primeqa.execution.routes import execution_bp
 from primeqa.intelligence.routes import intelligence_bp
@@ -52,7 +51,6 @@ def create_app():
         init_db(database_url)
 
     application.register_blueprint(core_bp)
-    application.register_blueprint(metadata_bp)
     application.register_blueprint(test_management_bp)
     application.register_blueprint(execution_bp)
     application.register_blueprint(intelligence_bp)

@@ -32,7 +32,7 @@ from primeqa.db import SessionLocal
 from primeqa.shared.api import ConflictError
 from primeqa.test_management.models import BAReview, TestCase, TestCaseVersion
 from primeqa.test_management.repository import (
-    BAReviewRepository, MetadataImpactRepository, RequirementRepository,
+    BAReviewRepository, RequirementRepository,
     SectionRepository, TestCaseRepository, TestSuiteRepository,
 )
 from primeqa.test_management.service import TestManagementService
@@ -62,7 +62,6 @@ def _service(db):
         test_case_repo=TestCaseRepository(db),
         suite_repo=TestSuiteRepository(db),
         review_repo=BAReviewRepository(db),
-        impact_repo=MetadataImpactRepository(db),
         activity_repo=ActivityLogRepository(db),
     )
 

@@ -38,7 +38,7 @@ from primeqa.test_management.models import (
 )
 from primeqa.test_management.service import TestManagementService
 from primeqa.test_management.repository import (
-    BAReviewRepository, MetadataImpactRepository, RequirementRepository,
+    BAReviewRepository, RequirementRepository,
     SectionRepository, TestCaseRepository, TestSuiteRepository,
 )
 from primeqa.core.repository import ActivityLogRepository

@@ -3586,155 +3586,6 @@ def api_activate_user(user_id):
     return _do()
 
 
-# --- Impacts ---
-
-@views_bp.route("/impacts")
-@role_required("admin", "tester")
-def impacts_list():
-    db = next(get_db())
-    try:
-        from primeqa.test_management.repository import MetadataImpactRepository
-        repo = MetadataImpactRepository(db)
-        page = request.args.get("page", 1, type=int)
-        per_page = request.args.get("per_page", 20, type=int)
-        q = (request.args.get("q") or "").strip()
-        sort = request.args.get("sort", "created_at")
-        order = request.args.get("order", "desc")
-        show_deleted = request.args.get("deleted", "").lower() in ("1", "true", "yes")
-        filters = {}
-        resolution = request.args.get("resolution", "pending")
-        if resolution:
-            filters["resolution"] = resolution
-        if request.args.get("impact_type"):
-            filters["impact_type"] = request.args.get("impact_type")
-
-        try:
-            result = repo.list_page(
-                request.user["tenant_id"],
-                page=page, per_page=per_page, q=q, sort=sort, order=order,
-                filters=filters, include_deleted=show_deleted,
-            )
-            impacts = result.items
-            meta = {"total": result.total, "page": result.page,
-                    "per_page": result.per_page, "total_pages": result.total_pages}
-            query_error = None
-        except Exception as e:
-            impacts, meta, query_error = [], {"total": 0, "page": 1, "per_page": per_page, "total_pages": 0}, str(e)
-
-        impacts_data = [{
-            "id": i.id, "test_case_id": i.test_case_id,
-            "impact_type": i.impact_type, "entity_ref": i.entity_ref,
-            "resolution": i.resolution,
-            "created_at": i.created_at.isoformat() if i.created_at else "",
-        } for i in impacts]
-        return render_template("impacts/list.html", **ctx(
-            active_page="impacts", impacts=impacts_data,
-            meta=meta, search=q, resolution_filter=resolution,
-            show_deleted=show_deleted, query_error=query_error,
-        ))
-    finally:
-        db.close()
-
-
-@views_bp.route("/impacts/<int:impact_id>")
-@role_required("admin", "tester", "superadmin")
-def impacts_detail(impact_id):
-    """Detail page for one metadata impact \u2014 shows the entity, change
-    details (diff), affected test case, and resolve/regenerate actions."""
-    db = next(get_db())
-    try:
-        from primeqa.test_management.repository import (
-            MetadataImpactRepository, TestCaseRepository,
-        )
-        from primeqa.test_management.models import MetadataImpact, TestCase
-
-        tid = request.user["tenant_id"]
-        impact_repo = MetadataImpactRepository(db)
-        impact = impact_repo.get_impact(impact_id, tid, include_deleted=True)
-        if not impact:
-            return redirect("/impacts")
-
-        tc = TestCaseRepository(db).get_test_case(impact.test_case_id, tid)
-        tc_data = None
-        if tc:
-            tc_data = {
-                "id": tc.id, "title": tc.title, "status": tc.status,
-                "visibility": tc.visibility,
-            }
-
-        # Meta version labels for context
-        from primeqa.metadata.repository import MetadataRepository
-        meta_repo = MetadataRepository(db)
-        new_mv = meta_repo.get_version(impact.new_meta_version_id)
-        prev_mv = meta_repo.get_version(impact.prev_meta_version_id)
-
-        impact_data = {
-            "id": impact.id, "impact_type": impact.impact_type,
-            "entity_ref": impact.entity_ref,
-            "resolution": impact.resolution,
-            "test_case_id": impact.test_case_id,
-            "change_details": impact.change_details or {},
-            "resolved_by": impact.resolved_by,
-            "resolved_at": impact.resolved_at.isoformat() if impact.resolved_at else None,
-            "created_at": impact.created_at.isoformat() if impact.created_at else "",
-            "deleted_at": impact.deleted_at.isoformat() if getattr(impact, "deleted_at", None) else None,
-            "new_meta_version_label": new_mv.version_label if new_mv else None,
-            "prev_meta_version_label": prev_mv.version_label if prev_mv else None,
-        }
-        return render_template("impacts/detail.html", **ctx(
-            active_page="impacts", impact=impact_data, test_case=tc_data,
-        ))
-    finally:
-        db.close()
-
-
-@views_bp.route("/impacts/<int:impact_id>/resolve", methods=["POST"])
-@role_required("admin", "tester")
-def impacts_resolve(impact_id):
-    db = next(get_db())
-    try:
-        from primeqa.test_management.repository import MetadataImpactRepository
-        repo = MetadataImpactRepository(db)
-        repo.resolve_impact(impact_id, request.form["resolution"], request.user["id"])
-        return redirect("/impacts")
-    finally:
-        db.close()
-
-
-@views_bp.route("/impacts/<int:impact_id>/regenerate", methods=["POST"])
-@role_required("admin", "tester")
-def impacts_regenerate(impact_id):
-    from flask import flash
-    db = next(get_db())
-    try:
-        from primeqa.test_management.repository import (
-            SectionRepository, RequirementRepository, TestCaseRepository,
-            TestSuiteRepository, BAReviewRepository, MetadataImpactRepository,
-        )
-        from primeqa.test_management.service import TestManagementService
-        from primeqa.metadata.repository import MetadataRepository
-        svc = TestManagementService(
-            SectionRepository(db), RequirementRepository(db),
-            TestCaseRepository(db), TestSuiteRepository(db),
-            BAReviewRepository(db), MetadataImpactRepository(db),
-        )
-        svc.review_repo = BAReviewRepository(db)
-        result = svc.regenerate_for_impact(
-            tenant_id=request.user["tenant_id"], impact_id=impact_id,
-            created_by=request.user["id"],
-            env_repo=EnvironmentRepository(db),
-            conn_repo=ConnectionRepository(db),
-            metadata_repo=MetadataRepository(db),
-        )
-        flash(f"Regenerated test case #{result['test_case_id']}", "success")
-        return redirect(f"/test-cases/{result['test_case_id']}")
-    except Exception as e:
-        flash(f"Regeneration failed: {e}", "error")
-    finally:
-        db.close()
-    return redirect("/impacts")
-
-
 # --- Connections ---
 
 @views_bp.route("/connections")
@@ -5495,13 +5346,13 @@ def requirements_create_manual():
     try:
         from primeqa.test_management.repository import (
             SectionRepository, RequirementRepository, TestCaseRepository,
-            TestSuiteRepository, BAReviewRepository, MetadataImpactRepository,
+            TestSuiteRepository, BAReviewRepository,
         )
         from primeqa.test_management.service import TestManagementService
         svc = TestManagementService(
             SectionRepository(db), RequirementRepository(db),
             TestCaseRepository(db), TestSuiteRepository(db),
-            BAReviewRepository(db), MetadataImpactRepository(db),
+            BAReviewRepository(db),
         )
         title = (request.form.get("title") or "").strip()
         section_id = request.form.get("section_id", type=int)
@@ -5551,13 +5402,13 @@ def requirements_import_jira():
     try:
         from primeqa.test_management.repository import (
             SectionRepository, RequirementRepository, TestCaseRepository,
-            TestSuiteRepository, BAReviewRepository, MetadataImpactRepository,
+            TestSuiteRepository, BAReviewRepository,
         )
         from primeqa.test_management.service import TestManagementService
         svc = TestManagementService(
             SectionRepository(db), RequirementRepository(db),
             TestCaseRepository(db), TestSuiteRepository(db),
-            BAReviewRepository(db), MetadataImpactRepository(db),
+            BAReviewRepository(db),
         )
         conn_id = int(request.form["jira_connection_id"])
         conn_data = ConnectionRepository(db).get_connection_decrypted(conn_id, request.user["tenant_id"])
@@ -6262,7 +6113,6 @@ def releases_create():
             "min_pass_rate": int(request.form.get("min_pass_rate", 95)),
             "max_flaky_percent": int(request.form.get("max_flaky_percent", 10)),
             "critical_tests_must_pass": "critical_tests_must_pass" in request.form,
-            "no_unresolved_high_risk_impacts": "no_unresolved_high_risk_impacts" in request.form,
         }
         target_date = request.form.get("target_date") or None
         result = svc.create_release(
@@ -6374,9 +6224,8 @@ def releases_score_risks(release_id):
         if not release:
             return redirect("/releases")
         engine = RiskEngine(db)
-        impact_count = engine.score_all_release_impacts(release_id)
         plan_count = engine.rank_release_test_plan(release_id)
-        flash(f"Scored {impact_count} impacts, ranked {plan_count} test plan items", "success")
+        flash(f"Ranked {plan_count} test plan items", "success")
     except Exception as e:
         flash(f"Risk scoring failed: {e}", "error")
     finally:

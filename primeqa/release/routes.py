@@ -438,10 +438,8 @@ def score_release_risks(release_id):
         if not release:
             return json_error("NOT_FOUND", "Release not found", http=404)
         engine = RiskEngine(db)
-        impact_count = engine.score_all_release_impacts(release_id)
         plan_count = engine.rank_release_test_plan(release_id)
         return jsonify({
-            "impacts_scored": impact_count,
             "plan_items_ranked": plan_count,
         }), 200
     finally:

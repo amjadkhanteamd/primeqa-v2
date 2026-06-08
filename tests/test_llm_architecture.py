@@ -502,7 +502,7 @@ def test_user_edited_captured_on_ai_tc_edit():
     from primeqa.test_management.service import TestManagementService
     from primeqa.test_management.repository import (
         SectionRepository, RequirementRepository, TestCaseRepository,
-        TestSuiteRepository, BAReviewRepository, MetadataImpactRepository,
+        TestSuiteRepository, BAReviewRepository,
     )
     from primeqa.core.repository import ActivityLogRepository
     from primeqa.test_management.models import TestCase, TestCaseVersion
@@ -549,7 +549,6 @@ def test_user_edited_captured_on_ai_tc_edit():
             test_case_repo=TestCaseRepository(db),
             suite_repo=TestSuiteRepository(db),
             review_repo=BAReviewRepository(db),
-            impact_repo=MetadataImpactRepository(db),
             activity_repo=ActivityLogRepository(db),
         )
 

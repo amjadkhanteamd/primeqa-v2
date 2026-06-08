@@ -340,30 +340,3 @@ class TestCaseParameterSet(Base):
     is_default = Column(Boolean, nullable=False, server_default="false")
     position = Column(Integer, nullable=False, server_default="0")
     __table_args__ = (UniqueConstraint("test_case_version_id", "name", name="test_case_parameter_sets_unique"),)
-
-
-class MetadataImpact(Base):
-    __tablename__ = "metadata_impacts"
-
-    id = Column(Integer, primary_key=True)
-    new_meta_version_id = Column(Integer, ForeignKey("meta_versions.id", ondelete="CASCADE"), nullable=False)
-    prev_meta_version_id = Column(Integer, ForeignKey("meta_versions.id", ondelete="CASCADE"), nullable=False)
-    test_case_id = Column(Integer, ForeignKey("test_cases.id", ondelete="CASCADE"), nullable=False)
-    impact_type = Column(String(30), nullable=False)
-    entity_ref = Column(String(255), nullable=False)
-    change_details = Column(JSON, nullable=False, server_default="{}")
-    resolution = Column(String(20), nullable=False, server_default="pending")
-    resolved_by = Column(Integer, ForeignKey("users.id"))
-    resolved_at = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    deleted_at = Column(DateTime(timezone=True))
-    deleted_by = Column(Integer, ForeignKey("users.id"))
-
-    __table_args__ = (
-        CheckConstraint(
-            "impact_type IN ('field_removed', 'field_added', 'field_changed', "
-            "'vr_changed', 'flow_changed', 'trigger_changed')"
-        ),
-        CheckConstraint("resolution IN ('pending', 'regenerated', 'edited', 'dismissed')"),
-    )

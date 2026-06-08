@@ -10582,4 +10582,43 @@ meta_*.
 
 ---
 
+### D-195.2 — Step 5a.2 impl: remove the metadata-impact subsystem (full)
+
+**Premise break (surfaced + decided).** The plan treated `/impacts` as a self-contained feature.
+Ground truth: `MetadataImpact` is the spine of the v1 "metadata-impact → risk-score → GO/NO-GO" chain,
+woven into *live* code — `RiskEngine.score_impact`/`score_all_release_impacts` (read it, reachable from
+the live `/releases/:id/score-risks` endpoints), `decision_engine`'s GO/NO-GO "high-risk impacts"
+criterion, and `MetadataImpactRepository` as a **required** `TestManagementService` constructor arg
+(~6 app sites + 6 test files). Both feeder tables are already **dead-data** (writers retired in D-193:
+`metadata_impacts` ← `run_impact_analysis` no callers; `release_impacts` ← `add_impact` no callers).
+**User chose full subsystem removal now** (vs. defer the chain to 5b / re-scope).
+
+**Removed.** `/impacts` UI (4 web routes + 5 API routes in `test_management/routes.py` +
+`templates/impacts/`); `MetadataImpact` model + `MetadataImpactRepository` + the 6 impact service
+methods + `regenerate_for_impact` + `_impact_dict`; the `impact_repo` constructor arg (re-pointed all 6
+app sites + 6 test files); `RiskEngine.score_impact` + `score_all_release_impacts` (+ the dead
+`import json`); `ReleaseImpact` model + `Release.impacts` relationship + `add_impact`/`list_impacts` +
+`release_service.get_release_detail`'s impacts block; `decision_engine` Check 3 + the
+`no_unresolved_high_risk_impacts` criterion (release-create handler + default + `new.html` checkbox);
+the release-detail **Impacts tab**; the dead `metadata_bp` blueprint (`metadata/routes.py` deleted +
+`app.py` unwired); the `/impacts` step in `system_validation/primeqa_core.json` + `_ux_audit.py`.
+
+**Preserved (judgment call — not part of the impact subsystem).** `RiskEngine.score_test_case_priority`
++ `rank_release_test_plan` read run-history / `ReleaseTestPlanItem` (not impacts), so the two
+score-risks endpoints stay — now **ranking-only** (dropped the `score_all_release_impacts` line; the
+release-detail "Score risks" form still works). The GO/NO-GO decision loses one criterion (dead-data
+today, so a no-op on real decisions).
+
+**Deferred.** The `metadata_impacts` + `release_impacts` **tables** are untouched (inert); they drop in
+the 5a.4 migration as originally planned — the ORM models are gone now, so that drop is clean.
+`primeqa/metadata/service.py`'s `run_impact_analysis` (the dead writer, still imports `MetadataImpact`
+function-locally — no callers) goes with the whole `primeqa/metadata/` deletion in 5a.3.
+
+**Verification.** `import primeqa.app` clean; py_compile (incl. the 6 integration tests, which can't run
+locally) clean; grep gate **zero** `MetadataImpact`/`ReleaseImpact`/`impact_repo`/`score_impact`/
+`/impacts`/`metadata_bp` refs outside `primeqa/metadata/`; `primeqa_core.json` valid; **2382 unit +
+semantic tests green**. 23 files, +32/−643.
+
+---
+
 ---

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func
 
 from primeqa.release.models import (
-    Release, ReleaseRequirement, ReleaseImpact,
+    Release, ReleaseRequirement,
     ReleaseTestPlanItem, ReleaseRun, ReleaseDecision,
 )
 
@@ -120,29 +120,6 @@ class ReleaseRepository:
         return self.db.query(Requirement).join(
             ReleaseRequirement, ReleaseRequirement.requirement_id == Requirement.id,
         ).filter(ReleaseRequirement.release_id == release_id).all()
-
-    # --- Impacts ---
-
-    def add_impact(self, release_id, metadata_impact_id, risk_score=None, risk_level=None, risk_reasoning=None):
-        existing = self.db.query(ReleaseImpact).filter(
-            ReleaseImpact.release_id == release_id,
-            ReleaseImpact.metadata_impact_id == metadata_impact_id,
-        ).first()
-        if existing:
-            return existing
-        ri = ReleaseImpact(
-            release_id=release_id, metadata_impact_id=metadata_impact_id,
-            risk_score=risk_score, risk_level=risk_level, risk_reasoning=risk_reasoning,
-        )
-        self.db.add(ri)
-        self.db.commit()
-        self.db.refresh(ri)
-        return ri
-
-    def list_impacts(self, release_id):
-        return self.db.query(ReleaseImpact).filter(
-            ReleaseImpact.release_id == release_id,
-        ).order_by(ReleaseImpact.risk_score.desc().nullslast()).all()
 
     # --- Test Plan Items ---
 

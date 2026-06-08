@@ -266,7 +266,7 @@ def process_job(job: GenerationJob, *, db_factory) -> None:
         )
         from primeqa.metadata.repository import MetadataRepository
         from primeqa.test_management.repository import (
-            BAReviewRepository, MetadataImpactRepository, RequirementRepository,
+            BAReviewRepository, RequirementRepository,
             SectionRepository, TestCaseRepository, TestSuiteRepository,
         )
         from primeqa.test_management.service import TestManagementService
@@ -274,7 +274,7 @@ def process_job(job: GenerationJob, *, db_factory) -> None:
         svc = TestManagementService(
             SectionRepository(db), RequirementRepository(db),
             TestCaseRepository(db), TestSuiteRepository(db),
-            BAReviewRepository(db), MetadataImpactRepository(db),
+            BAReviewRepository(db),
         )
         svc.review_repo = BAReviewRepository(db)
 
