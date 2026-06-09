@@ -120,6 +120,28 @@ def _execute_negative(
 _SUPPORTED_DATA_PREDICATES = frozenset({"equals"})
 
 
+def _sf_field(name: str, sobject: str) -> str:
+    """An S1 *qualified* field name (``{Object}.{field}``) → its bare Salesforce
+    API name (``{field}``). S1 names fields object-qualified for graph uniqueness
+    (``sync.phases`` field phase); the live REST / SOQL API speaks **bare** names.
+    A name without the ``{sobject}.`` self-prefix — already bare, or a relationship
+    path like ``Owner.Name`` — passes through unchanged."""
+    return name.removeprefix(f"{sobject}.")
+
+
+def _sf_fields(field_values: dict, sobject: str) -> dict:
+    """Bare-ify the keys of a create payload (recipe field(s) + operational
+    padding) for the live create."""
+    return {_sf_field(k, sobject): v for k, v in field_values.items()}
+
+
+def _sf_soql(soql: str, sobject: str) -> str:
+    """Bare-ify self-qualified field references in a SOQL string
+    (``{sobject}.X`` → ``X``). ``FROM {sobject}`` (no trailing dot) and
+    relationship paths (``Owner.Name``) are untouched."""
+    return soql.replace(f"{sobject}.", "")
+
+
 def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> RunEvidence:
     """The positive create-and-verify path (D-115): construct-world →
     create-expect-success → observe → ground ``field == V`` → teardown (k14).
@@ -161,7 +183,10 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
         return _result(plan, run_id, started, environment_id, (), "errored", err,
                        created_records=tracker.records)
 
-    field_values = {**create.field_values, **scalar_filler, **parent_filler}
+    # Bare-ify field names for the live API: the recipe + padding speak S1's
+    # object-qualified names ({Object}.field); Salesforce creates want bare names.
+    field_values = _sf_fields(
+        {**create.field_values, **scalar_filler, **parent_filler}, sobject)
 
     # 2. Create the target — expect success.
     c_start = _now()
@@ -281,7 +306,10 @@ def _run_read_back(read, sobject, state, client, *, ordinal):
     the row(s). Returns (:class:`DataReadEvidence`, error|None). A transport
     failure → error → the caller renders ``errored``; an unresolved reference
     fail-loud (:class:`StepRefResolutionError`) propagates (a recipe defect)."""
-    soql = resolve_step_refs(read.soql or "", state)    # fail-loud on a bad ref
+    # Bare-ify the SOQL + captured field names for the live API (SF returns rows
+    # keyed by bare names); resolve the $<step>.id ref first so the WHERE id is intact.
+    soql = _sf_soql(resolve_step_refs(read.soql or "", state), sobject)
+    captured = tuple(_sf_field(f, sobject) for f in read.fields_to_capture)
     start = _now()
     try:
         rows = client.query(soql)
@@ -290,14 +318,14 @@ def _run_read_back(read, sobject, state, client, *, ordinal):
         err = ErrorSurface("read", type(e).__name__, str(e))
         ev = DataReadEvidence(
             step_id=read.step_id, ordinal=ordinal, soql=soql, sobject=sobject,
-            fields_captured=tuple(read.fields_to_capture), row_count=0, rows=(),
+            fields_captured=captured, row_count=0, rows=(),
             started_at=start, finished_at=end, duration_ms=_ms(start, end),
             error=err)
         return ev, err
     end = _now()
     ev = DataReadEvidence(
         step_id=read.step_id, ordinal=ordinal, soql=soql, sobject=sobject,
-        fields_captured=tuple(read.fields_to_capture), row_count=len(rows),
+        fields_captured=captured, row_count=len(rows),
         rows=tuple(rows), started_at=start, finished_at=end,
         duration_ms=_ms(start, end))
     return ev, None
@@ -320,6 +348,8 @@ def _run_ground(assertion, read_ev, *, ordinal) -> AssertEvidence:
         raise AssertionResolutionError(
             f"assertion {assertion.step_id!r} subject_ref {pred.subject_ref!r} "
             f"must be '{read_ev.step_id}.<field>' (the read-back's captured field)")
+    # The captured field is keyed bare in the SF response (see _run_read_back).
+    field = _sf_field(field, read_ev.sobject)
     start = _now()
     observed = read_ev.rows[0].get(field)
     held = observed == pred.value

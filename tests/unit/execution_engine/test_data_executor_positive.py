@@ -538,3 +538,40 @@ def test_s1_read_error_mid_construct_is_errored_and_first_parent_torn_down():
     # the first parent (Account) was built, then torn down — no leak, no target create.
     assert client.deletes == [("Account", "id-Account-1")]
     assert all(c[0] != "Thing" for c in client.creates)     # target never attempted
+
+
+def _qualified_plan(obj="Opportunity", field="StageName", value="Prospecting"):
+    q = f"{obj}.{field}"
+    target = LogicalRef(entity_type="Object", external_id=obj)
+    return DataRecipePlan(
+        recipe_id=uuid4(), recipe_version_seq=2, claim_test_id=uuid4(),
+        claim_version_seq=None, api_choice="rest",
+        steps=(
+            PlannedCreate(step_id="create-record", target_object=target,
+                          field_values={q: value}, expect_rejection=None),
+            PlannedDataRead(step_id="read-created", target=target,
+                            soql=f"SELECT {q} FROM {obj} WHERE Id = '$create-record.id'",
+                            fields_to_capture=(q,)),
+            PlannedAssertion(step_id="assert-value",
+                             predicate=AssertionPredicate(
+                                 subject_ref=f"read-created.{q}", predicate="equals", value=value)),
+        ))
+
+
+def test_object_qualified_field_names_are_bare_ified_for_salesforce():
+    # The recipe + padding speak S1's object-qualified names (Opportunity.StageName);
+    # the executor must translate to bare SF names (StageName) at every SF call —
+    # create payload, read SOQL, and the assert's field lookup (SF returns bare keys).
+    s1 = _StubS1("Opportunity", fields=[
+        {"api": "Opportunity.StageName", "field_type": "picklist", "is_nillable": True},
+        {"api": "Opportunity.Name", "field_type": "string", "is_nillable": False}])
+    client = _StubClient(create_result=_success("006Z"),
+                         query_result=[{"StageName": "Prospecting"}])   # SF returns BARE keys
+    ev = _run(_qualified_plan(), client, s1)
+
+    assert ev.outcome == "passed" and ev.steps[2].held is True
+    # create payload keys are bare (the 'Opportunity.' self-prefix stripped).
+    assert client.creates[0][1] == {"StageName": "Prospecting", "Name": "PQA"}
+    # the read SOQL is bare; FROM Opportunity (no dot) untouched.
+    assert client.queries == ["SELECT StageName FROM Opportunity WHERE Id = '006Z'"]
+    assert client.deletes == [("Opportunity", "006Z")]      # k14 teardown
