@@ -10845,4 +10845,51 @@ confirms zero PQA_% leak.
 
 ---
 
+### D-196.2 — F6.2 refocus: the `is_createable` gap (corpus-grounded) + the construct leak fix
+
+**The corpus check changed the picture.** A read-only census of the live org (env 59 → `tenant_1`) for the
+F2 "unblocks real recipes today" assumption found it false *and* surfaced a pre-existing gap. The corpus
+has exactly **one** data-recipe — a positive create on **Opportunity**. Its required references
+(`is_nillable=False` + reference) are **all Salesforce-managed**: `CreatedById`, `LastModifiedById` (audit)
+and `OwnerId` (owner, defaulted). Several required **scalars** (`CreatedDate`, `SystemModstamp`, …) are
+`is_createable=False`. The padding loop filtered only on `is_nillable`, so it would try to *set* those
+Salesforce-managed fields → the org rejects the whole create. So the real blocker for the one live recipe
+was never "build a parent" — it was **"stop setting non-createable fields."** No object in `tenant_1`'s
+org needs a business parent for the current corpus; the dominant required references are `OwnerId` (almost
+every object) + audit fields.
+
+**The adversarial review** (3 independent lenses over `construct_world`) verified termination, cycle/depth
+guards, reverse-order teardown, single-create behavior-neutrality, and audit correctness — and found **one
+real leak**: `construct_world` calls S1 reads (`get_entities`/`get_related`/`get_entity_details`) that
+raise `VersionNotFoundError`/`ValueError`, NOT `SFClientError`; `_run_positive`'s construct `except` caught
+only `SFClientError`, so an S1 read error after a parent was built would escape uncaught and leak it.
+
+**Decision (refocus — chosen over "principled `defaultedOnCreate` now" and "drop the parent code").**
+F6.2 ships:
+1. **`is_createable` filter** in `resolve_operational_padding` — skip required fields that are
+   `is_createable=False` (Salesforce-managed: `CreatedById`, `CreatedDate`, `SystemModstamp`, …). The
+   corpus-grounded correctness fix; it also repairs a *pre-existing* latent gap (the single-create vertical
+   would have rejected on `CreatedDate` against the current synced field set).
+2. **Owner/queue reference skip** in `construct_world` — a required createable reference whose target is
+   `User`/`Group` is **omitted** (Salesforce defaults `OwnerId`); we never build a User to own a test
+   record. `_DEFAULTED_REF_OBJECTS = {User, Group}`. A genuinely-required *non*-defaulted User lookup is
+   then omitted too → an honest pre-create rejection, never a wrongly-built User.
+3. **Construct leak fix** — `_run_positive`'s construct `except SFClientError` widened to `except Exception`
+   (tear down built parents, return `errored`); `_best_effort_delete` widened to `except Exception`
+   (teardown can never raise / flip the outcome).
+The **parent-construction recursion (D-196.1) stays** — written, 3-lens-verified, unit + integration tested
+— but is **dormant** for the current corpus: it activates the moment a recipe targets an object with a
+required createable **business** lookup (Contact→Account, a master-detail child, …).
+
+**Deferred.** (a) Capture Salesforce's **`defaultedOnCreate`** in S1 (sync-mapper + `field_details` column
++ migration) — the principled way to distinguish "must provide" from "defaulted" (`OwnerId`), replacing the
+`User`/`Group` heuristic. Its own slice. (b) Live exercise of parent-construction on env 59 once a
+business-lookup recipe exists (F6.3 may hand-craft one).
+
+**Verification.** 164 execution_engine unit + 2756 broad unit/semantic green. New tests: `is_createable`
+skip (scalar + reference), owner-reference omit, non-createable-reference skip, and the
+S1-error-mid-construct leak (errored + first parent torn down).
+
+---
+
 ---

@@ -128,3 +128,16 @@ the recursion (keeping `resolve_operational_padding` the pure leaf resolver), de
 discriminator), with an Object-`entity_id` **cycle guard** and a `MAX_PARENT_DEPTH = 3` bound. Forks
 resolved: minimal F1 lift, F6.2 unblocks already-emitted lookup-object recipes (assumed; corpus-confirmed at
 impl), reverse-order single-pass cleanup. DECISIONS_LOG D-196.1.
+
+## D-196.2 — F6.2 refocus: `is_createable` filter + construct leak fix (corpus-grounded)
+
+The F2 corpus check (read-only env 59 → `tenant_1`) found the "build a parent" premise false for the current
+corpus — the one data-recipe (Opportunity) needs no business parent; its required references are owner/audit
+(`OwnerId`, `CreatedById`). It also surfaced a pre-existing gap: `world.py` padded on `is_nillable` alone, so
+it would set Salesforce-managed fields (`CreatedDate`, `SystemModstamp`) → create rejected. F6.2 refocuses
+(user decision): (1) an `is_createable` filter skips Salesforce-managed required fields; (2) `construct_world`
+omits owner/queue references (`User`/`Group`) — Salesforce defaults them; (3) the construct path's `except`
+widens to all exceptions (an S1 read error mid-build no longer leaks a built parent — the adversarial review's
+one real finding); `_best_effort_delete` likewise hardened. The parent-construction recursion (D-196.1) stays,
+3-lens-verified + tested, **dormant** until a business-lookup recipe exists. Deferred: `defaultedOnCreate` in
+S1 (the principled `OwnerId` distinction). 164 execution_engine + 2756 broad green. DECISIONS_LOG D-196.2.
