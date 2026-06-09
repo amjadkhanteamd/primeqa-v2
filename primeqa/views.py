@@ -5724,6 +5724,75 @@ def api_s3_generation_status(job_id):
     return (body, 200)
 
 
+@views_bp.route("/api/s4-execution-jobs", methods=["POST"])
+@_require_auth_api
+def api_s4_execution_enqueue():
+    """Enqueue an S4 recipe-execution job (async; the worker's s4_execution_tick
+    runs it). Authed; gated on the run role (admin / tester, superadmin bypass —
+    mirrors /claims/<id>/run). Validates the environment + applies the
+    production-confirm gate at **enqueue** time (the run is deferred to the worker,
+    so the human confirm must happen here — not at run time as the sync button
+    does), then pins a queued job and returns 202; poll GET /api/s4-execution-jobs/<id>."""
+    from uuid import UUID
+
+    if request.user.get("role") not in ("admin", "tester", "superadmin"):
+        return ({"error": {"code": "FORBIDDEN",
+                           "message": "Running requires the tester or admin role."}}, 403)
+    body = request.get_json(silent=True) or {}
+    try:
+        test_id = str(UUID(str(body["test_id"])))
+        environment_id = int(body["environment_id"])
+    except (KeyError, TypeError, ValueError):
+        return ({"error": {"code": "BAD_REQUEST",
+                           "message": "test_id (uuid) and environment_id (int) are required."}}, 400)
+    confirm_production = bool(body.get("confirm_production"))
+
+    tenant_id = request.user["tenant_id"]
+    db = next(get_db())
+    try:
+        from primeqa.core.repository import EnvironmentRepository
+        from primeqa.runs.bulk import environment_can_bulk_run
+        env = EnvironmentRepository(db).get_environment(environment_id, tenant_id)
+        if env is None:
+            return ({"error": {"code": "NOT_FOUND", "message": "Environment not found."}}, 404)
+        ok, msg = environment_can_bulk_run(env, confirm_production)
+        if not ok:
+            return ({"error": {"code": "PRODUCTION_CONFIRM_REQUIRED", "message": msg}}, 400)
+    finally:
+        db.close()
+
+    from primeqa.execution_engine.intake import enqueue_s4_execution
+    try:
+        job = enqueue_s4_execution(
+            tenant_id=tenant_id, test_id=test_id,
+            environment_id=environment_id, created_by=request.user["id"])
+    except Exception as e:
+        return ({"error": {"code": "ENQUEUE_FAILED",
+                           "message": f"Cannot enqueue: {e}"}}, 409)
+    return ({"job_id": job.id, "status": job.status}, 202)
+
+
+@views_bp.route("/api/s4-execution-jobs/<int:job_id>", methods=["GET"])
+@_require_auth_api
+def api_s4_execution_status(job_id):
+    """Poll an S4 execution job (per-tenant; schema-isolated by tenant)."""
+    from primeqa.execution_engine.jobs import ExecutionJobStore
+    job = ExecutionJobStore(request.user["tenant_id"]).get_job(job_id)
+    if job is None:
+        return ({"error": {"code": "NOT_FOUND", "message": "Job not found"}}, 404)
+    out = {
+        "job_id": job.id, "status": job.status,
+        "test_id": job.test_id, "environment_id": job.environment_id,
+        "attempt_count": job.attempt_count,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
+    if job.status in ("failed", "cancelled"):
+        out["error_code"] = job.error_code
+        out["error_message"] = job.error_message
+    return (out, 200)
+
+
 @views_bp.route("/api/s3-generation-jobs/<int:job_id>/cancel", methods=["POST"])
 @_require_auth_api
 def api_s3_generation_cancel(job_id):
