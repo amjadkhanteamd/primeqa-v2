@@ -154,3 +154,19 @@ by construction (bare names pass through unchanged → existing tests green). Re
 the live Opportunity create would now be `{StageName, CloseDate, Name}` + `SELECT StageName FROM Opportunity
 WHERE Id = '<id>'` — both valid. 165 execution_engine + 22 integration + 2779 broad green. DECISIONS_LOG
 D-196.3. Next: the live run on env 59 (org write needs explicit go-ahead + post-run leak check).
+
+## D-197 — S4 enqueue source: the spine + a manual queue endpoint
+
+The execution loop was wired but idle (D-132) — nothing enqueued a job. This opens the enqueue source. The
+load-bearing decision: the consumer's default `run_fn` flips from `run_recipe_execution_async` (which **refuses
+every data-recipe** — metadata-path-only, D-129) to the **sync** `run_recipe_execution_for_tenant`, which runs
+*all* recipe kinds (holding a connection per run — the accepted low-volume interim; the data-path async
+bracketing stays deferred-proper). `client_resolver` becomes optional; the default path passes `client=None` so
+the sync run fn self-resolves the per-kind client (Tooling/Data) after selection; `worker.py` drops the
+Tooling-only `_default_s4_client_resolver` injection (kept defined for the future async path). New
+`execution_engine/intake.py` `enqueue_s4_execution` — a thin wrapper over the idempotent
+`ExecutionJobStore.create_or_get_job` (mirror of `enqueue_s3_generation`). The manual queue route
+(`POST /api/s4-execution-jobs` + status poll) lands on `main` after the substrate merges, moving the
+prod-confirm gate to enqueue time. 193 execution_engine green incl. the full offline spine loop
+(`enqueue → run_s4_execution_tick → completed`). Deferred: the automated triggers (approval-hook, scheduled
+re-verification); the data-path async bracketing. DECISIONS_LOG D-197.

@@ -1,17 +1,26 @@
 """Substrate-4 execution consumer + reaper ticks (D-131, Phase 3 slice B2).
 
-The worker-layer loop that drives the async run (:func:`run_recipe_execution_async`)
-off the ``s4_execution_jobs`` queue. Per-tenant; mirrors S3's ``consumer.py``
-lifecycle (claim -> run -> complete/fail) with per-tenant isolation.
+The worker-layer loop that drives a run off the ``s4_execution_jobs`` queue.
+Per-tenant; mirrors S3's ``consumer.py`` lifecycle (claim -> run -> complete/fail)
+with per-tenant isolation.
+
+The default ``run_fn`` is the **synchronous** :func:`run_recipe_execution_for_tenant`
+— it runs **all** recipe kinds (metadata + data), holding a connection across the
+run (boundary A). This is deliberate: the enqueue source must run data recipes,
+and the async wrapper (:func:`run_recipe_execution_async`) **refuses** them (it
+reads S1 mid-execute; metadata-path-only, D-129). Holding one connection per
+in-flight job is the accepted low-volume interim; the data-path async bracketing
+is the deferred-proper path (then ``run_fn`` becomes a metadata->async /
+data->sync dispatcher).
 
 Two injected seams (D-131.A):
-  - ``client_resolver``: ``(tenant_id, environment_id) -> client`` — resolves the
-    Tooling/data client worker-side (the S3 ``api_key_resolver`` discipline), so
-    the consumer stays decoupled from the v1 connection store + is stub-testable.
-    Resolved **up front** so the async run holds no DB connection across the live
-    read. The production resolver is wired in B3.
-  - ``run_fn``: defaults to :func:`run_recipe_execution_async`; injectable so the
-    consumer's orchestration is tested without seeding a full approved recipe.
+  - ``client_resolver``: ``(tenant_id, environment_id) -> client`` — **optional**.
+    The default sync ``run_fn`` self-resolves the per-kind client (Tooling for
+    metadata, Data for data) *after* it selects the recipe — the consumer cannot
+    know the kind up front, so it passes ``client=None``. A resolver is injected
+    only by tests + a future async ``run_fn``.
+  - ``run_fn``: defaults to :func:`run_recipe_execution_for_tenant`; injectable so
+    the consumer's orchestration is tested without seeding a full approved recipe.
 """
 from __future__ import annotations
 
@@ -20,7 +29,7 @@ from typing import Callable, Optional
 from uuid import UUID
 
 from primeqa.execution_engine.jobs import ExecutionJobStore
-from primeqa.execution_engine.run import run_recipe_execution_async
+from primeqa.execution_engine.run import run_recipe_execution_for_tenant
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +57,8 @@ def _classify_error(exc: Exception) -> str:
 
 
 def process_execution_job_for_tenant(
-    tenant_id: int, *, client_resolver: ClientResolver, run_fn=run_recipe_execution_async,
+    tenant_id: int, *, client_resolver: Optional[ClientResolver] = None,
+    run_fn=run_recipe_execution_for_tenant,
 ) -> Optional[int]:
     """Claim and run one queued execution job for ``tenant_id``. Returns the
     processed job id, or ``None`` when the tenant's queue is empty.
@@ -68,7 +78,13 @@ def process_execution_job_for_tenant(
     store.heartbeat(job.id)
     store.start_attempt(job.id)
     try:
-        client = client_resolver(tenant_id, job.environment_id)
+        # The default run_fn (sync run_recipe_execution_for_tenant) self-resolves
+        # the per-kind client (Tooling for metadata, Data for data) AFTER it selects
+        # the recipe — the consumer can't know the kind up front, so it passes
+        # client=None. A client_resolver is injected only by tests + a future
+        # async run_fn.
+        client = (client_resolver(tenant_id, job.environment_id)
+                  if client_resolver else None)
         result = run_fn(
             tenant_id, UUID(job.test_id),
             environment_id=job.environment_id, client=client)
@@ -85,7 +101,8 @@ def process_execution_job_for_tenant(
 
 
 def run_s4_execution_tick(
-    tenant_ids, *, client_resolver: ClientResolver, run_fn=run_recipe_execution_async,
+    tenant_ids, *, client_resolver: Optional[ClientResolver] = None,
+    run_fn=run_recipe_execution_for_tenant,
 ) -> dict[int, str]:
     """One job per tenant, with per-tenant isolation: a tenant whose
     claim/processing raises is logged and skipped — it never starves the others.
