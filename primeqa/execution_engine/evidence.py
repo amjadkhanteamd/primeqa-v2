@@ -180,3 +180,7 @@ class RunEvidence:
     error: Optional[ErrorSurface] = None    # top-level surface for an errored run
     # read-only-vertical N/As, reserved:
     artifacts: tuple = ()
+    # Records S4 created during this run (positive vertical) — the cleanup audit
+    # (F6.1, D-196). Empty for read-only / rejected-create runs. ``CreatedRecord``s
+    # from ``provisioning.CreatedRecordTracker``; persisted to s4_created_records.
+    created_records: tuple = ()

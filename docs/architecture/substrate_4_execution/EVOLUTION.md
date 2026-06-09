@@ -85,3 +85,72 @@ The generation→execution gap, closed for the pure-S4 set, plus the async-trigg
 - **D-132 B3.** The firing wiring: `worker.py` `_default_s4_client_resolver` + `s4_execution_tick` (into `worker_tick`); `scheduler.py` `s4_reaper_tick` (into `scheduler_tick`). The production loop ships **live + idle** — both ticks no-op on the empty queue until an enqueue source lands (deferred).
 
 **Verified.** `execution_engine` unit + governance-DB integration (jobs 14 + consumer 8) + worker-wiring 3 + the run-path-adjacent generation/representation/interpretation suites — green. One migration, applied to the governance DB via `alembic upgrade tenant@head`. **Deferred (D-133):** capability+layout execution (Option-X recipe enrichment, reopens S2/S3), `is_required`/`field_type`/`matches_pattern` predicates, the data-path async bracketing, and the product enqueue source. Live-sandbox proof deferred (the inspection spine is already live-proven). DECISIONS_LOG D-127…D-133.
+
+## D-196 — F6 test-data provisioning + dependency-aware cleanup (vertical opening)
+
+After the greenfield cutover's Step 5a (the `meta_*` read-cutover) completed and the disposable v1 test
+corpus was deleted (D-195.5), the product runs entirely on the substrate (S3 generates, S4 executes).
+Growing S4's executable envelope is the path forward, and the substrate's own roadmap names **F6 —
+test-data provisioning + cleanup** as the load-bearing next frontier: S4's positive vertical can today
+create records with required **scalars** only (`world.py` fences off required lookups — the §3 fence),
+so the large class of master-detail/lookup objects is unexecutable.
+
+Vertical phasing (branch `phase-22-substrate-4-provisioning`):
+- **F6.1 — cleanup spine.** Per-tenant `s4_created_records` (alembic tenant branch, schema-isolated) +
+  a `CreatedRecordTracker` with **reverse-order** teardown, generalizing `_run_positive`'s inline single
+  `_best_effort_delete` to N records (audit persisted at `finalize_run`). Behavior-neutral for the
+  single-create case; the spine F6.2 fills.
+- **F6.2 — parent-lookup provisioning.** `world.py` recursively constructs required master-detail/lookup
+  parents (bounded recursion + cycle guard), lifting the §3 fence; the positive vertical reaches
+  lookup-needing objects.
+- **F6.3 — live proof on env 59** (parent→target→read→assert→reverse-order cleanup, zero PQA_% leak).
+
+Decisions: teardown in-execution + finalize-persisted audit (the crash-recovery reaper needs pre-teardown
+brief-tx durability — deferred); minimal F1 lift-to-neutral (extend S4-native `world.py`, lift only the
+`PQA_%`/REST create-delete/`classify_failure` primitives); cleanup multi-pass deferred (reverse-order
+single-pass first). DECISIONS_LOG D-196.
+
+## D-196.1 — F6.1 cleanup spine realized; F6.2 parent provisioning designed
+
+**F6.1 (realized, `33023d3`).** The cleanup spine landed: per-tenant `s4_created_records` (alembic tenant
+`20260608_0010`, schema-isolated) + `provisioning.CreatedRecordTracker` — `record()` accumulates
+`(sobject, record_id)` in create order, `teardown(client, delete_fn)` deletes **reversed** (children before
+parents) via an injected delete (no executor import cycle). `_run_positive` swaps its inline single
+`_best_effort_delete` for the tracker (byte-identical for the single-create case), threads
+`RunEvidence.created_records`, and `persist_run_evidence` writes one audit row per created record. 150
+execution_engine unit + 2383 broad green; behavior-neutral.
+
+**F6.2 (designed, D-196.1).** A 6-agent read of the live code settled the shape: parent construction is
+contained to `world.py` + `data_executor.py` — **bridge/plan untouched** (the positive plan stays a pure
+3-step triple; provisioning is a runtime side-effect). A new `world.py` `construct_world` entrypoint drives
+the recursion (keeping `resolve_operational_padding` the pure leaf resolver), detecting required parents by
+**requiredness × `references_object_entity_id`** (master-detail/lookup are not branched — requiredness is the
+discriminator), with an Object-`entity_id` **cycle guard** and a `MAX_PARENT_DEPTH = 3` bound. Forks
+resolved: minimal F1 lift, F6.2 unblocks already-emitted lookup-object recipes (assumed; corpus-confirmed at
+impl), reverse-order single-pass cleanup. DECISIONS_LOG D-196.1.
+
+## D-196.2 — F6.2 refocus: `is_createable` filter + construct leak fix (corpus-grounded)
+
+The F2 corpus check (read-only env 59 → `tenant_1`) found the "build a parent" premise false for the current
+corpus — the one data-recipe (Opportunity) needs no business parent; its required references are owner/audit
+(`OwnerId`, `CreatedById`). It also surfaced a pre-existing gap: `world.py` padded on `is_nillable` alone, so
+it would set Salesforce-managed fields (`CreatedDate`, `SystemModstamp`) → create rejected. F6.2 refocuses
+(user decision): (1) an `is_createable` filter skips Salesforce-managed required fields; (2) `construct_world`
+omits owner/queue references (`User`/`Group`) — Salesforce defaults them; (3) the construct path's `except`
+widens to all exceptions (an S1 read error mid-build no longer leaks a built parent — the adversarial review's
+one real finding); `_best_effort_delete` likewise hardened. The parent-construction recursion (D-196.1) stays,
+3-lens-verified + tested, **dormant** until a business-lookup recipe exists. Deferred: `defaultedOnCreate` in
+S1 (the principled `OwnerId` distinction). 164 execution_engine + 2756 broad green. DECISIONS_LOG D-196.2.
+
+## D-196.3 — F6.3a: bare Salesforce field-name translation at the executor boundary
+
+The read-only readiness check for the live Opportunity run found one more blocker — pre-existing, not F6.2.
+The recipe + padding speak S1's **object-qualified** field names (`Opportunity.StageName`); S1 names every
+Field `{Object}.{field}` for graph uniqueness. Salesforce's create/SOQL want **bare** names (`StageName`),
+and nothing translated, so a live create/read would be rejected. Fix at the executor — the logical→physical
+boundary: three pure helpers (`_sf_field` strips the `{sobject}.` self-prefix; `_sf_fields`/`_sf_soql` apply
+it) at the create payload, the read SOQL + captured fields, and the assert's field lookup. Back-compatible
+by construction (bare names pass through unchanged → existing tests green). Read-only readiness on real S1:
+the live Opportunity create would now be `{StageName, CloseDate, Name}` + `SELECT StageName FROM Opportunity
+WHERE Id = '<id>'` — both valid. 165 execution_engine + 22 integration + 2779 broad green. DECISIONS_LOG
+D-196.3. Next: the live run on env 59 (org write needs explicit go-ahead + post-run leak check).

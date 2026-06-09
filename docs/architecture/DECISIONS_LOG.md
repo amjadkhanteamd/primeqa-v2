@@ -10702,4 +10702,265 @@ relocations, and the `primeqa/metadata/` module deletion.
 
 ---
 
+### D-195.5 — 5b assessment → census STOP → v1 test corpus deleted → pivot to S4 envelope growth
+
+**5b (v1 product-table retirement) assessed; the dual-run probe correctly stopped.** A read-only
+mapping + 3-agent assessment found the 5b entry-gate **not met**: S4 execution is ~40% of v1's envelope
+(read-inspection + single negative-reject + partial single positive-CRUD; missing full provisioning,
+dependency-aware cleanup, multi-step `$var` chaining, agent fix-and-rerun, validation gate), there is
+**no** v1→S2 backfill path, and the v1 tables are woven through the views/generation/release/runs/agent
+core + a ~13-FK web. A de-risking probe (5b-A0: a v1→S2 translator + dual-run parity harness) was scoped
++ approved, then its **A0.0 census gate** (read-only `classify_archetype` over the corpus) returned
+**0/15 in-envelope** (8 lone-`query` smoke-tests + 6 empty + 1 full CRUD lifecycle; corpus-wide
+`expect_fail`=0) — the probe would have zero coverage. STOP, per the gate's design.
+
+**The user declared the v1 test data disposable and directed its deletion.** Archived first (full
+`pg_dump public` → `/tmp/archive_v1_testdata_20260608_153004.sql`, 36 MB), then an ordered `DELETE`
+(honoring `SET NULL`, so `worker_heartbeats`/`llm_usage_log`/`activity_log`/`users`/`environments`
+survive) cleared the whole v1 corpus: **154 test_cases, 173 versions, 97 requirements, 170 runs, 726
+stages, 3041 run-events, 230 quality-signals, 34 batches, 27 suites, 54 sections, …** — every
+test-management + execution + generation + release row to 0. `import primeqa.app` clean post-delete.
+`TRUNCATE … CASCADE` was rejected (it would have nuked `worker_heartbeats`/`llm_usage_log` via their
+`SET NULL` FKs); `DELETE` was the correct tool.
+
+**Pivot (user-directed):** grow S4's executable envelope so the substrate (S3 generates, S4 executes)
+is a capable test engine. Detailed below in **D-196**. (5b table-retirement itself stays gated on S4
+reaching parity + the reader retirement — now *without* a backfill, since the data is gone.)
+
+---
+
+### D-196 — Grow S4's executable envelope: F6 test-data provisioning + dependency-aware cleanup (design)
+
+**Why.** With the v1 corpus gone, the product runs entirely on the substrate. S4 executes three
+archetypes today (metadata-inspection, single behavioral-negative, single positive create→read→assert,
+D-115). The positive vertical's ceiling: `world.py` `resolve_operational_padding` pads required
+**scalars** only and **fences off required lookups/master-detail** ("no parent construction — the §3
+fence", `world.py:106`), so any object needing a required parent record can't be created. The
+substrate's own roadmap (`substrate_4_execution/DEFERRED_ITEMS.md`) names **F6 — test-data provisioning
++ cleanup** as the load-bearing next frontier: the shared prerequisite for the next verticals
+(update/delete-rejected negatives, multi-step positives) and an immediate broadening of the positive
+vertical to the large class of lookup/master-detail objects.
+
+**Goal.** Make S4 execute positive data-recipes on objects requiring required lookup/master-detail
+parents — construct the parent(s), track every created record, tear them down reverse-order.
+
+**Phasing (each its own design→HOLD→impl on `phase-22-substrate-4-provisioning`):**
+- **F6.1 — cleanup spine (first).** New per-tenant `s4_created_records` table (alembic tenant branch,
+  no `tenant_id` col — schema isolation, mirroring `s4_execution_runs`). A `CreatedRecordTracker`
+  accumulates `(sobject, record_id)` in create order; teardown deletes **reverse-order** (children
+  before parents) reusing `data_executor._best_effort_delete` + the `PQA_%` convention. `_run_positive`
+  swaps its inline single delete (`data_executor.py:186`) for the tracker — behavior unchanged for the
+  single-create case; N-record-ready for F6.2. The tracked records persist to `s4_created_records` at
+  `finalize_run` (audit).
+- **F6.2 — parent-lookup provisioning.** Extend `world.py` to recursively construct required parent
+  records (read `references_object_entity_id` → build parent → thread its id into the child lookup;
+  bounded recursion + cycle guard); `_run_positive` provisions parents before the target create; all
+  flow into the F6.1 tracker. The §3 fence is lifted for required references.
+- **F6.3 — live proving (env 59).** A positive recipe on a lookup-needing object: parent created →
+  target created → read-back → assert → every PQA_% record deleted (post-run SOQL confirms no leak).
+
+**Central decisions / forks (recorded):**
+1. **Teardown in-execution; audit at finalize; reaper deferred.** F6.1 tears down reverse-order over the
+   in-memory tracker before grading (as today); `s4_created_records` is the finalize-persisted audit.
+   A crash-recovery **reaper** (deleting PQA_% records leaked if the process dies mid-run) needs
+   *pre-teardown* durability (a brief-tx write per create, the async-B0 pattern) — scoped as a follow-on,
+   NOT F6.1, to keep the spine clean.
+2. **F1 lift-to-neutral: minimal.** Extend the already-S4-native `world.py` + a thin cleanup; lift only
+   the specific v1 primitives needed (`PQA_%` naming, REST create/delete, `cleanup.classify_failure`) —
+   not a wholesale `data_engine` port.
+3. **S3 object-selection coverage** (the buildable-now unknown): whether `generation/emission.py`
+   `_author_positive` currently picks lookup-needing objects sets how many recipes F6.2 unblocks
+   immediately; F6 is the right capability-first foundation regardless. Verify during F6.2.
+4. **Cleanup multi-pass** (v1's dependency-retry) deferred — start reverse-order single-pass; add retry
+   only if live runs leak.
+
+---
+
+### D-196.1 — F6.2 parent-lookup provisioning: the `construct_world` recursion (design)
+
+**Grounding.** A 6-agent read of the live code (`world.py`, `data_executor.py`, `bridge.py`, `plan.py`,
+`data_mutation_client.py`, `generation/emission.py`, `governance_core.py`) settled the shape: F6.2 is
+contained to the **S4 execution layer**. The bridge and plan are **not touched** — `bridge._project_positive`
+(`bridge.py:340-349`) hard-asserts the 3-step `(Create, Read, Assert)` triple and carries `field_values`
+verbatim; parent provisioning is a **runtime side-effect inside `_run_positive`**, never a plan step. Only
+`world.py` + `data_executor.py` change; `provisioning.py` (the F6.1 tracker), `data_mutation_client.py`,
+`bridge.py`, `plan.py` are unchanged.
+
+**The entrypoint.** Parent construction needs live org creates (`client.create`) + recursive S1 padding, so
+it cannot live inside the *pure* `resolve_operational_padding` (no client; value-only `PaddingResult`). A
+new `world.py` entrypoint drives it while keeping the existing function as the leaf scalar resolver:
+`construct_world(object_api, semantic_fields, *, s1, client, tracker, at_seq, _visited=frozenset(),
+_depth=0) -> (scalar_filler, parent_filler, unfillable)`.
+
+**Detection — requiredness, not relationship-type.** The fence at `world.py:107` keys off
+`references_object_entity_id` (set for any lookup/master-detail). S1 does **not** distinguish master-detail
+from lookup, and F6.2 does not need it to: the gate that decides whether a parent **must** exist is
+**requiredness** (`is_nillable == False`, checked at `world.py:102` *before* the reference check). A
+master-detail (always required) and a required lookup both get a parent built; an **optional** lookup is
+filtered out before the reference check ever runs. We build precisely the parents Salesforce would reject
+the create without — no more.
+
+**Algorithm.** (1) Resolve leaf scalars via the existing function, but split the loop's output into three
+buckets: `scalar_filler` · `required_refs = [(field_api, ref_object_entity_id)]` (the lifted lookups — no
+longer dumped into `unfillable`) · `unfillable` (genuinely unsynthesizable **non-reference** types, still a
+hard stop). (2) For each required parent: depth-bound check → cycle-guard check → fetch the parent Object
+(`get_entities("Object", filters={"id": ref_object_entity_id})`) → **recurse** for the parent's own required
+fields/parents → `client.create(parent)` → `tracker.record(...)` immediately (creation order) → thread the
+new id into `parent_filler`. (3) Back in `_run_positive`: if `unfillable` non-empty → tear down any parents
+already created (construct can now have org side-effects) then return `errored` pre-target-create; else
+create the target (recorded **last**, so reverse teardown deletes it before its parents).
+- **Cycle guard:** the Object `entity_id` (UUID) tracked in a `_visited` frozenset — catches self-reference
+  (depth 1) and N-hop object cycles.
+- **Depth bound:** `MAX_PARENT_DEPTH = 3` (named constant). Real required chains are 1–2 hops; deeper is
+  almost always a cycle/misconfig the guard catches. Over-deep → honest `unfillable` → `errored`, never a
+  partial write.
+
+**Forks resolved (from D-196):**
+1. **F1 lift-to-neutral — minimal.** Add `construct_world` to the S4-native `world.py`; reuse F6.1's tracker
+   + `_best_effort_delete` unchanged. No v1 `data_engine` port.
+2. **F2 S3 coverage — F6.2 unblocks already-emitted recipes; no S3 change.** S3 emission (`emission.py:650`)
+   and grounding (`governance_core.py:271-291`) apply **zero** filtering for required parents — Contact→Account
+   etc. are already groundable + emitted, blocked only by the world.py fence. *Marked assumed (reader-level);
+   impl step 1 corpus-confirms ≥1 emitted positive recipe on a required-parent object before the F6.3
+   "immediate win" claim.*
+3. **F3 cleanup — reverse-order single-pass.** A child is always created after its parents, so reverse order
+   is a valid delete order for the tree S4 built; multi-pass retry only if live F6.3 leaks.
+
+**Open questions / leans (none block the design):**
+- **Parent Name run-scoping.** The scalar filler gives a required text field the constant `'PQA'`
+  (`world.py:141`) — *pre-existing* for the target; F6.2 inherits it for parents. **Lean: keep `'PQA'`,
+  defer run-scoped naming as a uniform follow-on** (applies to target + parents alike); fine for F6.3
+  single-run proving.
+- **Depth = 3** confirmable with a max-chain query over env 59 at impl; tunable constant.
+- **Master-detail vs lookup** — requiredness already discriminates (see Detection); asserted by a test.
+- **Optional parents** out of scope (only required parents built).
+- **Errored-path audit** — `created_records` threaded into the errored envelope too so the
+  created-then-deleted audit stays complete.
+
+**Verification.** Unit (stub S1 + stub create/delete): one-hop happy path, two-level chain, cycle-guard
+fires, depth-bound, **scalar-only byte-identical** (no-regression), parent-create-rejected; existing
+world/data_executor suites green. Integration: lookup-needing recipe still projects to the 3-step plan;
+`RunEvidence.created_records` carries parent + target. Live (F6.3): real run on env 59, post-run SOQL
+confirms zero PQA_% leak.
+
+---
+
+### D-196.2 — F6.2 refocus: the `is_createable` gap (corpus-grounded) + the construct leak fix
+
+**The corpus check changed the picture.** A read-only census of the live org (env 59 → `tenant_1`) for the
+F2 "unblocks real recipes today" assumption found it false *and* surfaced a pre-existing gap. The corpus
+has exactly **one** data-recipe — a positive create on **Opportunity**. Its required references
+(`is_nillable=False` + reference) are **all Salesforce-managed**: `CreatedById`, `LastModifiedById` (audit)
+and `OwnerId` (owner, defaulted). Several required **scalars** (`CreatedDate`, `SystemModstamp`, …) are
+`is_createable=False`. The padding loop filtered only on `is_nillable`, so it would try to *set* those
+Salesforce-managed fields → the org rejects the whole create. So the real blocker for the one live recipe
+was never "build a parent" — it was **"stop setting non-createable fields."** No object in `tenant_1`'s
+org needs a business parent for the current corpus; the dominant required references are `OwnerId` (almost
+every object) + audit fields.
+
+**The adversarial review** (3 independent lenses over `construct_world`) verified termination, cycle/depth
+guards, reverse-order teardown, single-create behavior-neutrality, and audit correctness — and found **one
+real leak**: `construct_world` calls S1 reads (`get_entities`/`get_related`/`get_entity_details`) that
+raise `VersionNotFoundError`/`ValueError`, NOT `SFClientError`; `_run_positive`'s construct `except` caught
+only `SFClientError`, so an S1 read error after a parent was built would escape uncaught and leak it.
+
+**Decision (refocus — chosen over "principled `defaultedOnCreate` now" and "drop the parent code").**
+F6.2 ships:
+1. **`is_createable` filter** in `resolve_operational_padding` — skip required fields that are
+   `is_createable=False` (Salesforce-managed: `CreatedById`, `CreatedDate`, `SystemModstamp`, …). The
+   corpus-grounded correctness fix; it also repairs a *pre-existing* latent gap (the single-create vertical
+   would have rejected on `CreatedDate` against the current synced field set).
+2. **Owner/queue reference skip** in `construct_world` — a required createable reference whose target is
+   `User`/`Group` is **omitted** (Salesforce defaults `OwnerId`); we never build a User to own a test
+   record. `_DEFAULTED_REF_OBJECTS = {User, Group}`. A genuinely-required *non*-defaulted User lookup is
+   then omitted too → an honest pre-create rejection, never a wrongly-built User.
+3. **Construct leak fix** — `_run_positive`'s construct `except SFClientError` widened to `except Exception`
+   (tear down built parents, return `errored`); `_best_effort_delete` widened to `except Exception`
+   (teardown can never raise / flip the outcome).
+The **parent-construction recursion (D-196.1) stays** — written, 3-lens-verified, unit + integration tested
+— but is **dormant** for the current corpus: it activates the moment a recipe targets an object with a
+required createable **business** lookup (Contact→Account, a master-detail child, …).
+
+**Deferred.** (a) Capture Salesforce's **`defaultedOnCreate`** in S1 (sync-mapper + `field_details` column
++ migration) — the principled way to distinguish "must provide" from "defaulted" (`OwnerId`), replacing the
+`User`/`Group` heuristic. Its own slice. (b) Live exercise of parent-construction on env 59 once a
+business-lookup recipe exists (F6.3 may hand-craft one).
+
+**Verification.** 164 execution_engine unit + 2756 broad unit/semantic green. New tests: `is_createable`
+skip (scalar + reference), owner-reference omit, non-createable-reference skip, and the
+S1-error-mid-construct leak (errored + first parent torn down).
+
+---
+
+### D-196.3 — F6.3a: bare Salesforce field-name translation at the executor boundary
+
+**The blocker the read-only proof found.** F6.2's `is_createable` fix made the live Opportunity recipe's
+world *buildable* (proven read-only against `tenant_1`'s S1). But the recipe + padding speak S1's
+**object-qualified** field names (`Opportunity.StageName`, `Opportunity.Name`) — S1 names every Field
+`{Object}.{field}` for graph uniqueness (`sync.phases` field phase, ~line 405). Salesforce's REST create
+and SOQL speak **bare** names (`StageName`). Nothing in the execution path translated between them, so a
+live create / read would be rejected by the org. Pre-existing, independent of F6.2; latent because no data
+recipe had run live since field names became qualified.
+
+**Root cause + layer.** S1's qualified names are correct *internally* (uniqueness); the executor is the
+logical→physical boundary where they must become the org's bare API names. Fix there — NOT by re-emitting
+recipes (heavy) or adding a bare-name S1 column (the bare name is derivable: drop the `{object}.` prefix).
+
+**The fix (all in `data_executor.py`).** Three pure helpers — `_sf_field(name, sobject)` (strip the
+`{sobject}.` self-prefix via `removeprefix`; a bare name, or a relationship path like `Owner.Name`, passes
+through unchanged), `_sf_fields` (bare-ify create-payload keys), `_sf_soql` (bare-ify self-qualified field
+tokens in a SOQL string) — applied at the **three** SF-facing points:
+1. the create payload (recipe field(s) + operational padding, merged) before `client.create`;
+2. the read-back SOQL (after `$<step>.id` resolution, so the WHERE id stays intact) + the captured field names;
+3. the assert's `subject_ref` field lookup (SF returns rows keyed by bare names).
+
+**Back-compatible by construction.** A name without the `{sobject}.` prefix is unchanged, so the existing
+positive tests (bare names) stay green — verified.
+
+**Readiness (read-only, real S1).** For the live Opportunity recipe the executor would now send create
+`{StageName: 'Prospecting', CloseDate: '2026-06-09', Name: 'PQA'}` + SOQL
+`SELECT StageName FROM Opportunity WHERE Id = '<id>'` — both valid. No parent construction (clean).
+
+**Verification.** 165 execution_engine unit + 22 integration + 2779 broad green; new test feeds qualified
+names and asserts bare create / SOQL / assert. **Next:** the live run on env 59 (the actual org write needs
+an explicit go-ahead + a post-run leak check).
+
+---
+
+### D-196.4 — F6 close: provisioning + cleanup vertical realized; merge to main
+
+F6 (test-data provisioning + dependency-aware cleanup) is built, green, and read-only-proven against the
+live org. Three slices landed on `phase-22-substrate-4-provisioning`:
+- **F6.1** (`33023d3`) — `s4_created_records` + `CreatedRecordTracker` reverse-order cleanup spine (the
+  inline single-delete generalized to N records).
+- **F6.2** (`32e7a14`, D-196.1/.2) — `construct_world` recursive parent provisioning (Object-`entity_id`
+  cycle guard + `MAX_PARENT_DEPTH=3`, owner/queue refs omitted) + the corpus-grounded `is_createable`
+  filter + the construct-path leak fix.
+- **F6.3a** (`d879289`, D-196.3) — bare SF field-name translation at the executor boundary
+  (`_sf_field` / `_sf_fields` / `_sf_soql`).
+
+**Verification.** 165 execution_engine unit + 22 integration + 2779 broad green. A 3-lens adversarial review
+verified the recursion (its one real finding — a construct leak — fixed). Read-only proofs against
+`tenant_1`'s real S1: the live Opportunity recipe's world is buildable + the executor would send a valid
+bare create (`{StageName, CloseDate, Name}`) + bare SOQL.
+
+**The live run (F6.3) is deferred — blocked externally.** Executing the recipe against env 59 failed at
+Salesforce OAuth (`invalid_client_id`) **before any org write** (zero side effects; the DB tx rolled back).
+The connection "Prime QA SFDC" (id 2, `client_credentials`) has an invalid / stale Connected-App consumer
+key (stored `client_id` is 204 chars vs the ~85 of a real key). Refreshing those credentials is the user's
+action; the live proof re-runs unchanged once it's fixed. Logged as task #193.
+
+**Merge.** `phase-22-substrate-4-provisioning` → `main` (`--no-ff`), the substrate convention at phase
+close; the merge gate is the green suite above. The data-recipe path deploys **inert** — no enqueue source
+(the production loop is live + idle, D-132) — so the positive-vertical breadth ships dormant until a data
+recipe is intentionally run.
+
+**Deferred (DEFERRED_ITEMS, dated 2026-06-09).** The live run (creds); `defaultedOnCreate` in S1 (the
+principled `OwnerId` distinction, replacing the `User`/`Group` heuristic); the crash-recovery reaper
+(pre-teardown brief-tx durability); live exercise of the dormant parent-construction (needs a business-lookup
+recipe); the next verticals (update/delete-rejected negatives, multi-step positives — both now unblocked by
+F6).
+
+---
+
 ---

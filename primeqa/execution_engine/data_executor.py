@@ -50,8 +50,9 @@ from primeqa.execution_engine.evidence import (
     RunEvidence,
 )
 from primeqa.execution_engine.plan import DataRecipePlan
+from primeqa.execution_engine.provisioning import CreatedRecordTracker
 from primeqa.execution_engine.refs import resolve_step_refs
-from primeqa.execution_engine.world import resolve_operational_padding
+from primeqa.execution_engine.world import construct_world
 from primeqa.integrations.exceptions import SFClientError
 
 # A Salesforce **business** rejection (validation rule, required-field,
@@ -119,6 +120,28 @@ def _execute_negative(
 _SUPPORTED_DATA_PREDICATES = frozenset({"equals"})
 
 
+def _sf_field(name: str, sobject: str) -> str:
+    """An S1 *qualified* field name (``{Object}.{field}``) → its bare Salesforce
+    API name (``{field}``). S1 names fields object-qualified for graph uniqueness
+    (``sync.phases`` field phase); the live REST / SOQL API speaks **bare** names.
+    A name without the ``{sobject}.`` self-prefix — already bare, or a relationship
+    path like ``Owner.Name`` — passes through unchanged."""
+    return name.removeprefix(f"{sobject}.")
+
+
+def _sf_fields(field_values: dict, sobject: str) -> dict:
+    """Bare-ify the keys of a create payload (recipe field(s) + operational
+    padding) for the live create."""
+    return {_sf_field(k, sobject): v for k, v in field_values.items()}
+
+
+def _sf_soql(soql: str, sobject: str) -> str:
+    """Bare-ify self-qualified field references in a SOQL string
+    (``{sobject}.X`` → ``X``). ``FROM {sobject}`` (no trailing dot) and
+    relationship paths (``Owner.Name``) are untouched."""
+    return soql.replace(f"{sobject}.", "")
+
+
 def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> RunEvidence:
     """The positive create-and-verify path (D-115): construct-world →
     create-expect-success → observe → ground ``field == V`` → teardown (k14).
@@ -131,30 +154,53 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
     sobject = create.target_object.external_id
     semantic_fields = set(create.field_values)      # the recipe-set keys (k16)
 
-    # 1. Construct the operational world — pad the required fields S4 can fill.
+    # 1. Construct the operational world — pad required scalars + recursively
+    #    build required lookup/master-detail PARENTS (F6.2). Every created record
+    #    (parents, in creation order) lands on the tracker; the target joins last.
     at_seq = s1.current_version_seq()
-    padding = resolve_operational_padding(
-        sobject, semantic_fields, s1=s1, at_seq=at_seq)
-    if padding.unfillable:
+    tracker = CreatedRecordTracker()
+    try:
+        scalar_filler, parent_filler, unfillable = construct_world(
+            sobject, semantic_fields, s1=s1, client=client, tracker=tracker,
+            at_seq=at_seq)
+    except Exception as e:
+        # ANY failure mid-construct — a transport raise (SFClientError) OR an S1
+        # read raise (VersionNotFoundError / ValueError) — must tear down any
+        # parents already built before surfacing the errored run. Catching only
+        # SFClientError here would leak a built parent on an S1 read error.
+        tracker.teardown(client, _best_effort_delete)
+        err = ErrorSurface("construct", type(e).__name__, str(e))
+        return _result(plan, run_id, started, environment_id, (), "errored", err,
+                       created_records=tracker.records)
+    if unfillable:
+        # A required field/parent could not be constructed — tear down any parents
+        # already built (a later required-ref failed after an earlier one landed).
+        tracker.teardown(client, _best_effort_delete)
         err = ErrorSurface(
             phase="construct", error_type="UnfillableWorld",
-            message=("required field(s) S4 cannot synthesize in slice 1: "
-                     + ", ".join(padding.unfillable)))
-        return _result(plan, run_id, started, environment_id, (), "errored", err)
+            message=("required field(s)/parent(s) S4 could not construct: "
+                     + ", ".join(unfillable)))
+        return _result(plan, run_id, started, environment_id, (), "errored", err,
+                       created_records=tracker.records)
 
-    field_values = {**create.field_values, **padding.filler}
+    # Bare-ify field names for the live API: the recipe + padding speak S1's
+    # object-qualified names ({Object}.field); Salesforce creates want bare names.
+    field_values = _sf_fields(
+        {**create.field_values, **scalar_filler, **parent_filler}, sobject)
 
-    # 2. Create — expect success.
+    # 2. Create the target — expect success.
     c_start = _now()
     try:
         env = client.create(sobject, field_values)
     except SFClientError as e:
+        tracker.teardown(client, _best_effort_delete)   # tear down built parents
         err = ErrorSurface("create", type(e).__name__, str(e))
         ev = _evidence(
             create, sobject, c_start, _now(), http_status=None, success=False,
             rejection_body=(), matched=None, cleanup=CleanupRecord(attempted=False),
             error=err, field_values=field_values)
-        return _result(plan, run_id, started, environment_id, (ev,), "errored", err)
+        return _result(plan, run_id, started, environment_id, (ev,), "errored", err,
+                       created_records=tracker.records)
 
     http_status = env["http_status"]
     success = env["success"]
@@ -163,7 +209,9 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
     rejection_body = _as_error_tuple(body)
 
     if not success:
-        # The create the recipe specified did not land — no record was made.
+        # The target create did not land — no target record made; tear down the
+        # parents (if any) that were built for it.
+        tracker.teardown(client, _best_effort_delete)
         outcome, top_error = _grade_rejected_create(
             http_status, rejection_body, semantic_fields)
         ev = _evidence(
@@ -173,17 +221,22 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
             error=(top_error if outcome == "errored" else None),
             field_values=field_values)
         return _result(
-            plan, run_id, started, environment_id, (ev,), outcome, top_error)
+            plan, run_id, started, environment_id, (ev,), outcome, top_error,
+            created_records=tracker.records)
 
-    # 3. Create succeeded → observe the record back (a distinct, async-ready
+    # 3. Create succeeded → record the target (LAST, so reverse teardown deletes
+    #    it before its parents) → observe the record back (a distinct, async-ready
     #    phase: no immediate-consistency assumption is baked in here).
     c_end = _now()
+    tracker.record(sobject, record_id)          # F6.2: target after its parents
     state = {create.step_id: {"id": record_id}}
     read_ev, read_err = _run_read_back(read, sobject, state, client, ordinal=1)
 
-    # 4. Teardown (k14) — the record exists and has been observed; leave the org
-    #    as found *before* grading, so a later fail-loud ground never leaks it.
-    cleanup = _best_effort_delete(client, sobject, record_id)
+    # 4. Teardown (k14) — every created record (the target, + from F6.2 any
+    #    provisioned parents), **reverse-order**, *before* grading, so a later
+    #    fail-loud ground never leaks them. The create_ev carries the target's
+    #    cleanup (reverse-order teardown → index 0 is the last-created = target).
+    cleanup = tracker.teardown(client, _best_effort_delete)[0]
     create_ev = _evidence(
         create, sobject, c_start, c_end, http_status=http_status, success=True,
         rejection_body=(), matched=None, cleanup=cleanup, field_values=field_values)
@@ -192,7 +245,8 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
     if read_err is not None:
         return _result(
             plan, run_id, started, environment_id,
-            (create_ev, read_ev), "errored", read_err)
+            (create_ev, read_ev), "errored", read_err,
+            created_records=tracker.records)
     if read_ev.row_count == 0:
         err = ErrorSurface(
             phase="read", error_type="RecordNotObserved",
@@ -200,13 +254,15 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
                      "(no immediate-consistency assumption)"))
         return _result(
             plan, run_id, started, environment_id,
-            (create_ev, read_ev), "errored", err)
+            (create_ev, read_ev), "errored", err,
+            created_records=tracker.records)
 
     assert_ev = _run_ground(assertion, read_ev, ordinal=2)
     outcome = "passed" if assert_ev.held else "failed"
     return _result(
         plan, run_id, started, environment_id,
-        (create_ev, read_ev, assert_ev), outcome, None)
+        (create_ev, read_ev, assert_ev), outcome, None,
+        created_records=tracker.records)
 
 
 def _grade_rejected_create(http_status, rejection_body, semantic_fields):
@@ -250,7 +306,10 @@ def _run_read_back(read, sobject, state, client, *, ordinal):
     the row(s). Returns (:class:`DataReadEvidence`, error|None). A transport
     failure → error → the caller renders ``errored``; an unresolved reference
     fail-loud (:class:`StepRefResolutionError`) propagates (a recipe defect)."""
-    soql = resolve_step_refs(read.soql or "", state)    # fail-loud on a bad ref
+    # Bare-ify the SOQL + captured field names for the live API (SF returns rows
+    # keyed by bare names); resolve the $<step>.id ref first so the WHERE id is intact.
+    soql = _sf_soql(resolve_step_refs(read.soql or "", state), sobject)
+    captured = tuple(_sf_field(f, sobject) for f in read.fields_to_capture)
     start = _now()
     try:
         rows = client.query(soql)
@@ -259,14 +318,14 @@ def _run_read_back(read, sobject, state, client, *, ordinal):
         err = ErrorSurface("read", type(e).__name__, str(e))
         ev = DataReadEvidence(
             step_id=read.step_id, ordinal=ordinal, soql=soql, sobject=sobject,
-            fields_captured=tuple(read.fields_to_capture), row_count=0, rows=(),
+            fields_captured=captured, row_count=0, rows=(),
             started_at=start, finished_at=end, duration_ms=_ms(start, end),
             error=err)
         return ev, err
     end = _now()
     ev = DataReadEvidence(
         step_id=read.step_id, ordinal=ordinal, soql=soql, sobject=sobject,
-        fields_captured=tuple(read.fields_to_capture), row_count=len(rows),
+        fields_captured=captured, row_count=len(rows),
         rows=tuple(rows), started_at=start, finished_at=end,
         duration_ms=_ms(start, end))
     return ev, None
@@ -289,6 +348,8 @@ def _run_ground(assertion, read_ev, *, ordinal) -> AssertEvidence:
         raise AssertionResolutionError(
             f"assertion {assertion.step_id!r} subject_ref {pred.subject_ref!r} "
             f"must be '{read_ev.step_id}.<field>' (the read-back's captured field)")
+    # The captured field is keyed bare in the SF response (see _run_read_back).
+    field = _sf_field(field, read_ev.sobject)
     start = _now()
     observed = read_ev.rows[0].get(field)
     held = observed == pred.value
@@ -299,7 +360,8 @@ def _run_ground(assertion, read_ev, *, ordinal) -> AssertEvidence:
         held=held, started_at=start, finished_at=end, duration_ms=_ms(start, end))
 
 
-def _result(plan, run_id, started, environment_id, steps, outcome, error) -> RunEvidence:
+def _result(plan, run_id, started, environment_id, steps, outcome, error,
+            created_records=()) -> RunEvidence:
     """Assemble the positive vertical's :class:`RunEvidence` envelope."""
     return RunEvidence(
         run_id=run_id,
@@ -314,6 +376,7 @@ def _result(plan, run_id, started, environment_id, steps, outcome, error) -> Run
         finished_at=_now(),
         steps=steps,
         error=error,
+        created_records=created_records,
     )
 
 
@@ -413,7 +476,9 @@ def _best_effort_delete(client, sobject, record_id) -> CleanupRecord:
         env = client.delete(sobject, record_id)
         return CleanupRecord(
             attempted=True, succeeded=bool(env.get("success")), record_id=record_id)
-    except SFClientError:
+    except Exception:
+        # Best-effort: a failed delete (transport OR anything else) is recorded,
+        # never raised — teardown must not be able to flip the outcome or escape.
         return CleanupRecord(attempted=True, succeeded=False, record_id=record_id)
 
 

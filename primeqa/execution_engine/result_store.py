@@ -17,7 +17,7 @@ from __future__ import annotations
 import dataclasses
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Integer, Text
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, Text, func, text
 from sqlalchemy.dialects.postgresql import ENUM, JSONB, UUID
 
 from primeqa.db import Base
@@ -55,8 +55,30 @@ class S4ExecutionRun(Base):
     evidence = Column(JSONB, nullable=False)
 
 
+class S4CreatedRecord(Base):
+    """One record S4 created during a run — the provisioning cleanup audit
+    (F6.1, D-196). Per-tenant (no ``tenant_id`` — isolation by schema). One row
+    per created record (target + provisioned parents); the executor tears them
+    down reverse-order in-run, so ``cleaned`` is the future-reaper flag, not the
+    in-run teardown result. DDL in
+    ``alembic/.../20260608_0010_s4_created_records.py``."""
+
+    __tablename__ = "s4_created_records"
+    __test__ = False  # pytest collection: not a test class
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    run_id = Column(UUID(as_uuid=True), nullable=False)
+    sobject = Column(Text, nullable=False)
+    record_id = Column(Text, nullable=False)
+    created_seq = Column(Integer, nullable=False)
+    cleaned = Column(Boolean, nullable=False, server_default=text("false"))
+    created_at = Column(DateTime(timezone=True), nullable=False,
+                        server_default=func.now())
+
+
 def persist_run_evidence(session, evidence: RunEvidence):
-    """Persist one :class:`RunEvidence` as an ``s4_execution_runs`` row.
+    """Persist one :class:`RunEvidence` as an ``s4_execution_runs`` row, plus an
+    ``s4_created_records`` audit row per record the run created (F6.1).
 
     Maps the in-memory evidence to typed columns + an ``evidence`` JSONB trace,
     adds + flushes on the caller's ``session`` (no commit — the caller owns the
@@ -76,6 +98,10 @@ def persist_run_evidence(session, evidence: RunEvidence):
         evidence=_evidence_trace(evidence),
     )
     session.add(row)
+    for cr in evidence.created_records:          # F6.1 provisioning audit
+        session.add(S4CreatedRecord(
+            run_id=evidence.run_id, sobject=cr.sobject,
+            record_id=cr.record_id, created_seq=cr.created_seq))
     session.flush()
     return evidence.run_id
 
