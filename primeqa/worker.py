@@ -1393,8 +1393,11 @@ def s4_execution_tick(db_factory=None, *, client_resolver=None) -> dict:
     if not tenant_ids:
         return {}
 
-    if client_resolver is None:
-        client_resolver = _default_s4_client_resolver(db_factory)
+    # Production passes client_resolver=None: the consumer's default sync run_fn
+    # (run_recipe_execution_for_tenant) self-resolves the correct client per
+    # recipe-kind (Tooling vs Data) after selection. _default_s4_client_resolver
+    # is Tooling-only — retained (below) only for the future async/dispatching
+    # run_fn (the data-path async bracketing), not used on the live path today.
     from primeqa.execution_engine.consumer import run_s4_execution_tick
     return run_s4_execution_tick(tenant_ids, client_resolver=client_resolver)
 

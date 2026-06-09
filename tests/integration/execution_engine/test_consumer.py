@@ -120,6 +120,35 @@ def test_ran_false_completes_the_job():
     assert s.get_job(job.id).status == "completed"
 
 
+def test_default_path_no_resolver_passes_client_none():
+    # Production default: no client_resolver injected → the consumer passes
+    # client=None, so the sync run_fn self-resolves the per-kind client (Tooling
+    # for metadata, Data for data) after it selects the recipe.
+    s = _store()
+    job = s.create_or_get_job(test_id=uuid4(), environment_id=7)
+    run = _RecordingRun()
+    jid = process_execution_job_for_tenant(TEST_TENANT_ID, run_fn=run)   # no resolver
+    assert jid == job.id
+    assert run.calls[0]["client"] is None
+    assert s.get_job(job.id).status == "completed"
+
+
+def test_default_run_fn_is_the_sync_for_tenant_path():
+    # Drift-guard for the load-bearing decision (the enqueue source must run data
+    # recipes): the default run_fn is the SYNC path — which runs all recipe kinds —
+    # NOT the async wrapper, which refuses data recipes (reads S1 mid-execute).
+    import inspect
+
+    from primeqa.execution_engine.run import (
+        run_recipe_execution_async,
+        run_recipe_execution_for_tenant,
+    )
+    default = inspect.signature(
+        process_execution_job_for_tenant).parameters["run_fn"].default
+    assert default is run_recipe_execution_for_tenant
+    assert default is not run_recipe_execution_async
+
+
 # ---------------------------------------------------------------------------
 # run_s4_execution_tick — per-tenant outcomes + isolation
 # ---------------------------------------------------------------------------
