@@ -141,3 +141,16 @@ widens to all exceptions (an S1 read error mid-build no longer leaks a built par
 one real finding); `_best_effort_delete` likewise hardened. The parent-construction recursion (D-196.1) stays,
 3-lens-verified + tested, **dormant** until a business-lookup recipe exists. Deferred: `defaultedOnCreate` in
 S1 (the principled `OwnerId` distinction). 164 execution_engine + 2756 broad green. DECISIONS_LOG D-196.2.
+
+## D-196.3 — F6.3a: bare Salesforce field-name translation at the executor boundary
+
+The read-only readiness check for the live Opportunity run found one more blocker — pre-existing, not F6.2.
+The recipe + padding speak S1's **object-qualified** field names (`Opportunity.StageName`); S1 names every
+Field `{Object}.{field}` for graph uniqueness. Salesforce's create/SOQL want **bare** names (`StageName`),
+and nothing translated, so a live create/read would be rejected. Fix at the executor — the logical→physical
+boundary: three pure helpers (`_sf_field` strips the `{sobject}.` self-prefix; `_sf_fields`/`_sf_soql` apply
+it) at the create payload, the read SOQL + captured fields, and the assert's field lookup. Back-compatible
+by construction (bare names pass through unchanged → existing tests green). Read-only readiness on real S1:
+the live Opportunity create would now be `{StageName, CloseDate, Name}` + `SELECT StageName FROM Opportunity
+WHERE Id = '<id>'` — both valid. 165 execution_engine + 22 integration + 2779 broad green. DECISIONS_LOG
+D-196.3. Next: the live run on env 59 (org write needs explicit go-ahead + post-run leak check).

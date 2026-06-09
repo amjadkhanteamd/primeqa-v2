@@ -10892,4 +10892,39 @@ S1-error-mid-construct leak (errored + first parent torn down).
 
 ---
 
+### D-196.3 — F6.3a: bare Salesforce field-name translation at the executor boundary
+
+**The blocker the read-only proof found.** F6.2's `is_createable` fix made the live Opportunity recipe's
+world *buildable* (proven read-only against `tenant_1`'s S1). But the recipe + padding speak S1's
+**object-qualified** field names (`Opportunity.StageName`, `Opportunity.Name`) — S1 names every Field
+`{Object}.{field}` for graph uniqueness (`sync.phases` field phase, ~line 405). Salesforce's REST create
+and SOQL speak **bare** names (`StageName`). Nothing in the execution path translated between them, so a
+live create / read would be rejected by the org. Pre-existing, independent of F6.2; latent because no data
+recipe had run live since field names became qualified.
+
+**Root cause + layer.** S1's qualified names are correct *internally* (uniqueness); the executor is the
+logical→physical boundary where they must become the org's bare API names. Fix there — NOT by re-emitting
+recipes (heavy) or adding a bare-name S1 column (the bare name is derivable: drop the `{object}.` prefix).
+
+**The fix (all in `data_executor.py`).** Three pure helpers — `_sf_field(name, sobject)` (strip the
+`{sobject}.` self-prefix via `removeprefix`; a bare name, or a relationship path like `Owner.Name`, passes
+through unchanged), `_sf_fields` (bare-ify create-payload keys), `_sf_soql` (bare-ify self-qualified field
+tokens in a SOQL string) — applied at the **three** SF-facing points:
+1. the create payload (recipe field(s) + operational padding, merged) before `client.create`;
+2. the read-back SOQL (after `$<step>.id` resolution, so the WHERE id stays intact) + the captured field names;
+3. the assert's `subject_ref` field lookup (SF returns rows keyed by bare names).
+
+**Back-compatible by construction.** A name without the `{sobject}.` prefix is unchanged, so the existing
+positive tests (bare names) stay green — verified.
+
+**Readiness (read-only, real S1).** For the live Opportunity recipe the executor would now send create
+`{StageName: 'Prospecting', CloseDate: '2026-06-09', Name: 'PQA'}` + SOQL
+`SELECT StageName FROM Opportunity WHERE Id = '<id>'` — both valid. No parent construction (clean).
+
+**Verification.** 165 execution_engine unit + 22 integration + 2779 broad green; new test feeds qualified
+names and asserts bare create / SOQL / assert. **Next:** the live run on env 59 (the actual org write needs
+an explicit go-ahead + a post-run leak check).
+
+---
+
 ---
