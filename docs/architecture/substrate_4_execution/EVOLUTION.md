@@ -109,3 +109,22 @@ Decisions: teardown in-execution + finalize-persisted audit (the crash-recovery 
 brief-tx durability — deferred); minimal F1 lift-to-neutral (extend S4-native `world.py`, lift only the
 `PQA_%`/REST create-delete/`classify_failure` primitives); cleanup multi-pass deferred (reverse-order
 single-pass first). DECISIONS_LOG D-196.
+
+## D-196.1 — F6.1 cleanup spine realized; F6.2 parent provisioning designed
+
+**F6.1 (realized, `33023d3`).** The cleanup spine landed: per-tenant `s4_created_records` (alembic tenant
+`20260608_0010`, schema-isolated) + `provisioning.CreatedRecordTracker` — `record()` accumulates
+`(sobject, record_id)` in create order, `teardown(client, delete_fn)` deletes **reversed** (children before
+parents) via an injected delete (no executor import cycle). `_run_positive` swaps its inline single
+`_best_effort_delete` for the tracker (byte-identical for the single-create case), threads
+`RunEvidence.created_records`, and `persist_run_evidence` writes one audit row per created record. 150
+execution_engine unit + 2383 broad green; behavior-neutral.
+
+**F6.2 (designed, D-196.1).** A 6-agent read of the live code settled the shape: parent construction is
+contained to `world.py` + `data_executor.py` — **bridge/plan untouched** (the positive plan stays a pure
+3-step triple; provisioning is a runtime side-effect). A new `world.py` `construct_world` entrypoint drives
+the recursion (keeping `resolve_operational_padding` the pure leaf resolver), detecting required parents by
+**requiredness × `references_object_entity_id`** (master-detail/lookup are not branched — requiredness is the
+discriminator), with an Object-`entity_id` **cycle guard** and a `MAX_PARENT_DEPTH = 3` bound. Forks
+resolved: minimal F1 lift, F6.2 unblocks already-emitted lookup-object recipes (assumed; corpus-confirmed at
+impl), reverse-order single-pass cleanup. DECISIONS_LOG D-196.1.

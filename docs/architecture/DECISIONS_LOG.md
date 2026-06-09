@@ -10776,4 +10776,73 @@ parents — construct the parent(s), track every created record, tear them down 
 
 ---
 
+### D-196.1 — F6.2 parent-lookup provisioning: the `construct_world` recursion (design)
+
+**Grounding.** A 6-agent read of the live code (`world.py`, `data_executor.py`, `bridge.py`, `plan.py`,
+`data_mutation_client.py`, `generation/emission.py`, `governance_core.py`) settled the shape: F6.2 is
+contained to the **S4 execution layer**. The bridge and plan are **not touched** — `bridge._project_positive`
+(`bridge.py:340-349`) hard-asserts the 3-step `(Create, Read, Assert)` triple and carries `field_values`
+verbatim; parent provisioning is a **runtime side-effect inside `_run_positive`**, never a plan step. Only
+`world.py` + `data_executor.py` change; `provisioning.py` (the F6.1 tracker), `data_mutation_client.py`,
+`bridge.py`, `plan.py` are unchanged.
+
+**The entrypoint.** Parent construction needs live org creates (`client.create`) + recursive S1 padding, so
+it cannot live inside the *pure* `resolve_operational_padding` (no client; value-only `PaddingResult`). A
+new `world.py` entrypoint drives it while keeping the existing function as the leaf scalar resolver:
+`construct_world(object_api, semantic_fields, *, s1, client, tracker, at_seq, _visited=frozenset(),
+_depth=0) -> (scalar_filler, parent_filler, unfillable)`.
+
+**Detection — requiredness, not relationship-type.** The fence at `world.py:107` keys off
+`references_object_entity_id` (set for any lookup/master-detail). S1 does **not** distinguish master-detail
+from lookup, and F6.2 does not need it to: the gate that decides whether a parent **must** exist is
+**requiredness** (`is_nillable == False`, checked at `world.py:102` *before* the reference check). A
+master-detail (always required) and a required lookup both get a parent built; an **optional** lookup is
+filtered out before the reference check ever runs. We build precisely the parents Salesforce would reject
+the create without — no more.
+
+**Algorithm.** (1) Resolve leaf scalars via the existing function, but split the loop's output into three
+buckets: `scalar_filler` · `required_refs = [(field_api, ref_object_entity_id)]` (the lifted lookups — no
+longer dumped into `unfillable`) · `unfillable` (genuinely unsynthesizable **non-reference** types, still a
+hard stop). (2) For each required parent: depth-bound check → cycle-guard check → fetch the parent Object
+(`get_entities("Object", filters={"id": ref_object_entity_id})`) → **recurse** for the parent's own required
+fields/parents → `client.create(parent)` → `tracker.record(...)` immediately (creation order) → thread the
+new id into `parent_filler`. (3) Back in `_run_positive`: if `unfillable` non-empty → tear down any parents
+already created (construct can now have org side-effects) then return `errored` pre-target-create; else
+create the target (recorded **last**, so reverse teardown deletes it before its parents).
+- **Cycle guard:** the Object `entity_id` (UUID) tracked in a `_visited` frozenset — catches self-reference
+  (depth 1) and N-hop object cycles.
+- **Depth bound:** `MAX_PARENT_DEPTH = 3` (named constant). Real required chains are 1–2 hops; deeper is
+  almost always a cycle/misconfig the guard catches. Over-deep → honest `unfillable` → `errored`, never a
+  partial write.
+
+**Forks resolved (from D-196):**
+1. **F1 lift-to-neutral — minimal.** Add `construct_world` to the S4-native `world.py`; reuse F6.1's tracker
+   + `_best_effort_delete` unchanged. No v1 `data_engine` port.
+2. **F2 S3 coverage — F6.2 unblocks already-emitted recipes; no S3 change.** S3 emission (`emission.py:650`)
+   and grounding (`governance_core.py:271-291`) apply **zero** filtering for required parents — Contact→Account
+   etc. are already groundable + emitted, blocked only by the world.py fence. *Marked assumed (reader-level);
+   impl step 1 corpus-confirms ≥1 emitted positive recipe on a required-parent object before the F6.3
+   "immediate win" claim.*
+3. **F3 cleanup — reverse-order single-pass.** A child is always created after its parents, so reverse order
+   is a valid delete order for the tree S4 built; multi-pass retry only if live F6.3 leaks.
+
+**Open questions / leans (none block the design):**
+- **Parent Name run-scoping.** The scalar filler gives a required text field the constant `'PQA'`
+  (`world.py:141`) — *pre-existing* for the target; F6.2 inherits it for parents. **Lean: keep `'PQA'`,
+  defer run-scoped naming as a uniform follow-on** (applies to target + parents alike); fine for F6.3
+  single-run proving.
+- **Depth = 3** confirmable with a max-chain query over env 59 at impl; tunable constant.
+- **Master-detail vs lookup** — requiredness already discriminates (see Detection); asserted by a test.
+- **Optional parents** out of scope (only required parents built).
+- **Errored-path audit** — `created_records` threaded into the errored envelope too so the
+  created-then-deleted audit stays complete.
+
+**Verification.** Unit (stub S1 + stub create/delete): one-hop happy path, two-level chain, cycle-guard
+fires, depth-bound, **scalar-only byte-identical** (no-regression), parent-create-rejected; existing
+world/data_executor suites green. Integration: lookup-needing recipe still projects to the 3-step plan;
+`RunEvidence.created_records` carries parent + target. Live (F6.3): real run on env 59, post-run SOQL
+confirms zero PQA_% leak.
+
+---
+
 ---
