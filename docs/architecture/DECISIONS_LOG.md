@@ -10927,4 +10927,40 @@ an explicit go-ahead + a post-run leak check).
 
 ---
 
+### D-196.4 — F6 close: provisioning + cleanup vertical realized; merge to main
+
+F6 (test-data provisioning + dependency-aware cleanup) is built, green, and read-only-proven against the
+live org. Three slices landed on `phase-22-substrate-4-provisioning`:
+- **F6.1** (`33023d3`) — `s4_created_records` + `CreatedRecordTracker` reverse-order cleanup spine (the
+  inline single-delete generalized to N records).
+- **F6.2** (`32e7a14`, D-196.1/.2) — `construct_world` recursive parent provisioning (Object-`entity_id`
+  cycle guard + `MAX_PARENT_DEPTH=3`, owner/queue refs omitted) + the corpus-grounded `is_createable`
+  filter + the construct-path leak fix.
+- **F6.3a** (`d879289`, D-196.3) — bare SF field-name translation at the executor boundary
+  (`_sf_field` / `_sf_fields` / `_sf_soql`).
+
+**Verification.** 165 execution_engine unit + 22 integration + 2779 broad green. A 3-lens adversarial review
+verified the recursion (its one real finding — a construct leak — fixed). Read-only proofs against
+`tenant_1`'s real S1: the live Opportunity recipe's world is buildable + the executor would send a valid
+bare create (`{StageName, CloseDate, Name}`) + bare SOQL.
+
+**The live run (F6.3) is deferred — blocked externally.** Executing the recipe against env 59 failed at
+Salesforce OAuth (`invalid_client_id`) **before any org write** (zero side effects; the DB tx rolled back).
+The connection "Prime QA SFDC" (id 2, `client_credentials`) has an invalid / stale Connected-App consumer
+key (stored `client_id` is 204 chars vs the ~85 of a real key). Refreshing those credentials is the user's
+action; the live proof re-runs unchanged once it's fixed. Logged as task #193.
+
+**Merge.** `phase-22-substrate-4-provisioning` → `main` (`--no-ff`), the substrate convention at phase
+close; the merge gate is the green suite above. The data-recipe path deploys **inert** — no enqueue source
+(the production loop is live + idle, D-132) — so the positive-vertical breadth ships dormant until a data
+recipe is intentionally run.
+
+**Deferred (DEFERRED_ITEMS, dated 2026-06-09).** The live run (creds); `defaultedOnCreate` in S1 (the
+principled `OwnerId` distinction, replacing the `User`/`Group` heuristic); the crash-recovery reaper
+(pre-teardown brief-tx durability); live exercise of the dormant parent-construction (needs a business-lookup
+recipe); the next verticals (update/delete-rejected negatives, multi-step positives — both now unblocked by
+F6).
+
+---
+
 ---
