@@ -52,7 +52,7 @@ from primeqa.execution_engine.evidence import (
 from primeqa.execution_engine.plan import DataRecipePlan
 from primeqa.execution_engine.provisioning import CreatedRecordTracker
 from primeqa.execution_engine.refs import resolve_step_refs
-from primeqa.execution_engine.world import resolve_operational_padding
+from primeqa.execution_engine.world import construct_world
 from primeqa.integrations.exceptions import SFClientError
 
 # A Salesforce **business** rejection (validation rule, required-field,
@@ -132,30 +132,50 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
     sobject = create.target_object.external_id
     semantic_fields = set(create.field_values)      # the recipe-set keys (k16)
 
-    # 1. Construct the operational world — pad the required fields S4 can fill.
+    # 1. Construct the operational world — pad required scalars + recursively
+    #    build required lookup/master-detail PARENTS (F6.2). Every created record
+    #    (parents, in creation order) lands on the tracker; the target joins last.
     at_seq = s1.current_version_seq()
-    padding = resolve_operational_padding(
-        sobject, semantic_fields, s1=s1, at_seq=at_seq)
-    if padding.unfillable:
+    tracker = CreatedRecordTracker()
+    try:
+        scalar_filler, parent_filler, unfillable = construct_world(
+            sobject, semantic_fields, s1=s1, client=client, tracker=tracker,
+            at_seq=at_seq)
+    except Exception as e:
+        # ANY failure mid-construct — a transport raise (SFClientError) OR an S1
+        # read raise (VersionNotFoundError / ValueError) — must tear down any
+        # parents already built before surfacing the errored run. Catching only
+        # SFClientError here would leak a built parent on an S1 read error.
+        tracker.teardown(client, _best_effort_delete)
+        err = ErrorSurface("construct", type(e).__name__, str(e))
+        return _result(plan, run_id, started, environment_id, (), "errored", err,
+                       created_records=tracker.records)
+    if unfillable:
+        # A required field/parent could not be constructed — tear down any parents
+        # already built (a later required-ref failed after an earlier one landed).
+        tracker.teardown(client, _best_effort_delete)
         err = ErrorSurface(
             phase="construct", error_type="UnfillableWorld",
-            message=("required field(s) S4 cannot synthesize in slice 1: "
-                     + ", ".join(padding.unfillable)))
-        return _result(plan, run_id, started, environment_id, (), "errored", err)
+            message=("required field(s)/parent(s) S4 could not construct: "
+                     + ", ".join(unfillable)))
+        return _result(plan, run_id, started, environment_id, (), "errored", err,
+                       created_records=tracker.records)
 
-    field_values = {**create.field_values, **padding.filler}
+    field_values = {**create.field_values, **scalar_filler, **parent_filler}
 
-    # 2. Create — expect success.
+    # 2. Create the target — expect success.
     c_start = _now()
     try:
         env = client.create(sobject, field_values)
     except SFClientError as e:
+        tracker.teardown(client, _best_effort_delete)   # tear down built parents
         err = ErrorSurface("create", type(e).__name__, str(e))
         ev = _evidence(
             create, sobject, c_start, _now(), http_status=None, success=False,
             rejection_body=(), matched=None, cleanup=CleanupRecord(attempted=False),
             error=err, field_values=field_values)
-        return _result(plan, run_id, started, environment_id, (ev,), "errored", err)
+        return _result(plan, run_id, started, environment_id, (ev,), "errored", err,
+                       created_records=tracker.records)
 
     http_status = env["http_status"]
     success = env["success"]
@@ -164,7 +184,9 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
     rejection_body = _as_error_tuple(body)
 
     if not success:
-        # The create the recipe specified did not land — no record was made.
+        # The target create did not land — no target record made; tear down the
+        # parents (if any) that were built for it.
+        tracker.teardown(client, _best_effort_delete)
         outcome, top_error = _grade_rejected_create(
             http_status, rejection_body, semantic_fields)
         ev = _evidence(
@@ -174,13 +196,14 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
             error=(top_error if outcome == "errored" else None),
             field_values=field_values)
         return _result(
-            plan, run_id, started, environment_id, (ev,), outcome, top_error)
+            plan, run_id, started, environment_id, (ev,), outcome, top_error,
+            created_records=tracker.records)
 
-    # 3. Create succeeded → observe the record back (a distinct, async-ready
+    # 3. Create succeeded → record the target (LAST, so reverse teardown deletes
+    #    it before its parents) → observe the record back (a distinct, async-ready
     #    phase: no immediate-consistency assumption is baked in here).
     c_end = _now()
-    tracker = CreatedRecordTracker()
-    tracker.record(sobject, record_id)          # F6.1: the target (parents join in F6.2)
+    tracker.record(sobject, record_id)          # F6.2: target after its parents
     state = {create.step_id: {"id": record_id}}
     read_ev, read_err = _run_read_back(read, sobject, state, client, ordinal=1)
 
@@ -423,7 +446,9 @@ def _best_effort_delete(client, sobject, record_id) -> CleanupRecord:
         env = client.delete(sobject, record_id)
         return CleanupRecord(
             attempted=True, succeeded=bool(env.get("success")), record_id=record_id)
-    except SFClientError:
+    except Exception:
+        # Best-effort: a failed delete (transport OR anything else) is recorded,
+        # never raised — teardown must not be able to flip the outcome or escape.
         return CleanupRecord(attempted=True, succeeded=False, record_id=record_id)
 
 

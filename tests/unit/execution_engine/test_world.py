@@ -41,6 +41,7 @@ class _StubS1:
                 "field_type": f.get("field_type", "string"),
                 "is_nillable": f.get("is_nillable", True),
                 "is_calculated": f.get("is_calculated", False),
+                "is_createable": f.get("is_createable", True),
                 "references_object_entity_id": f.get("references_object_entity_id"),
                 "picklist_value_set_entity_id": f.get("picklist_value_set_entity_id"),
                 "length": f.get("length"),
@@ -128,20 +129,53 @@ def test_types_filled_by_kind():
 
 
 # ---------------------------------------------------------------------------
-# Unfillable (the §3 scope fence)
+# Required references (F6.2 — collected for construct_world, no longer fenced)
+# + genuinely-unfillable types (still a hard stop)
 # ---------------------------------------------------------------------------
 
-def test_required_lookup_is_unfillable():
+def test_required_lookup_goes_to_required_refs():
+    # F6.2: a required reference is no longer fenced into unfillable — it is
+    # collected as a required_ref (field_api, referenced_object_entity_id) so
+    # construct_world can build the parent and thread its id.
     s1 = _StubS1("Account", [
         {"api": "Owner__c", "field_type": "reference", "is_nillable": False,
          "references_object_entity_id": "obj-User"}])
     res = _pad(s1)
-    assert res.filler == {} and res.unfillable == ("Owner__c",)
+    assert res.filler == {} and res.unfillable == ()
+    assert res.required_refs == (("Owner__c", "obj-User"),)
+
+
+def test_optional_lookup_is_skipped_not_a_required_ref():
+    # A nillable reference is filtered before the reference check (Salesforce
+    # does not force it on create) — neither padded, required, nor unfillable.
+    s1 = _StubS1("Account", [
+        {"api": "Opt__c", "field_type": "reference", "is_nillable": True,
+         "references_object_entity_id": "obj-User"}])
+    res = _pad(s1)
+    assert res.filler == {} and res.unfillable == () and res.required_refs == ()
 
 
 def test_unknown_type_is_unfillable():
     s1 = _StubS1("Account", [{"api": "Loc__c", "field_type": "location", "is_nillable": False}])
-    assert _pad(s1).unfillable == ("Loc__c",)
+    res = _pad(s1)
+    assert res.unfillable == ("Loc__c",) and res.required_refs == ()
+
+
+def test_non_createable_required_fields_are_skipped():
+    # is_nillable=False but is_createable=False — Salesforce-managed audit/system
+    # fields (CreatedDate scalar, CreatedById reference). Setting EITHER gets the
+    # whole create rejected, so both are skipped: not padded, not a required_ref,
+    # not unfillable. Only the createable scalar is padded.
+    s1 = _StubS1("Account", [
+        {"api": "CreatedDate", "field_type": "datetime", "is_nillable": False,
+         "is_createable": False},
+        {"api": "CreatedById", "field_type": "reference", "is_nillable": False,
+         "is_createable": False, "references_object_entity_id": "obj-User"},
+        {"api": "Name", "field_type": "string", "is_nillable": False,
+         "is_createable": True}])
+    res = _pad(s1)
+    assert res.filler == {"Name": "PQA"}
+    assert res.unfillable == () and res.required_refs == ()
 
 
 def test_missing_object_yields_empty_padding():

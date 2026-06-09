@@ -376,3 +376,165 @@ def test_s3_emitted_positive_recipe_executes_to_passed():
     assert client.deletes == [("Account", "001Z")]                  # k14 teardown
     # k16 — the requirement's value flowed verbatim through to the create.
     assert client.creates[0][1]["Status__c"] == "Active"
+
+
+# ---------------------------------------------------------------------------
+# F6.2 — parent provisioning end-to-end through _run_positive: a target with a
+# required lookup builds its parent first, both land in created_records, and
+# reverse-order teardown deletes the target before its parent.
+# ---------------------------------------------------------------------------
+
+class _GraphS1ById:
+    """A multi-object S1 over a ``{object_api: [field-spec]}`` graph that resolves
+    get_entities by ``sf_api_name`` OR ``id`` (construct_world fetches parents by
+    id)."""
+
+    def __init__(self, graph, version=5, raise_on_id=()):
+        self._version = version
+        self._raise_on_id = set(raise_on_id)        # by-id fetches that raise ValueError
+        self._objs = {api: "obj-" + api for api in graph}
+        self._byid = {oid: api for api, oid in self._objs.items()}
+        self._fields, self._detail = {}, {}
+        for api, fields in graph.items():
+            ents = []
+            for f in fields:
+                fid = f"fld-{api}-{f['api']}"
+                ents.append(_Ent(fid, "Field", f["api"]))
+                self._detail[fid] = {
+                    "field_type": f.get("field_type", "string"),
+                    "is_nillable": f.get("is_nillable", True),
+                    "is_calculated": False,
+                    "is_createable": f.get("is_createable", True),
+                    "references_object_entity_id": f.get("references_object_entity_id"),
+                    "picklist_value_set_entity_id": None, "length": None}
+            self._fields["obj-" + api] = ents
+
+    def current_version_seq(self):
+        return self._version
+
+    def get_entities(self, entity_type, at_seq, filters=None):
+        if entity_type != "Object" or not filters:
+            return []
+        if "sf_api_name" in filters:
+            oid = self._objs.get(filters["sf_api_name"])
+            return [_Ent(oid, "Object", filters["sf_api_name"])] if oid else []
+        if "id" in filters:
+            if filters["id"] in self._raise_on_id:   # simulate an S1 read failure
+                raise ValueError(f"S1 read boom on {filters['id']}")
+            api = self._byid.get(filters["id"])
+            return [_Ent(filters["id"], "Object", api)] if api else []
+        return []
+
+    def get_related(self, entity_id, edge_types, direction, at_seq):
+        return [_Rel(e) for e in self._fields.get(entity_id, [])]
+
+    def get_entity_details(self, entity_id, at_seq):
+        return self._detail.get(entity_id)
+
+
+class _CountingClient:
+    """create → a unique id per call; query → fixed rows; delete → recorded."""
+
+    def __init__(self, query_result):
+        self._q = query_result
+        self.creates, self.queries, self.deletes = [], [], []
+        self._n = 0
+
+    def create(self, sobject, field_values):
+        self.creates.append((sobject, dict(field_values)))
+        self._n += 1
+        return _success(f"id-{sobject}-{self._n}")
+
+    def query(self, soql):
+        self.queries.append(soql)
+        return list(self._q)
+
+    def delete(self, sobject, record_id):
+        self.deletes.append((sobject, record_id))
+        return {"success": True}
+
+
+def _contact_plan():
+    target = LogicalRef(entity_type="Object", external_id="Contact")
+    return DataRecipePlan(
+        recipe_id=uuid4(), recipe_version_seq=2, claim_test_id=uuid4(),
+        claim_version_seq=None, api_choice="rest",
+        steps=(
+            PlannedCreate(step_id="create-record", target_object=target,
+                          field_values={"Email": "a@b.com"}, expect_rejection=None),
+            PlannedDataRead(
+                step_id="read-created", target=target,
+                soql="SELECT Email FROM Contact WHERE Id = '$create-record.id'",
+                fields_to_capture=("Email",)),
+            PlannedAssertion(
+                step_id="assert-value",
+                predicate=AssertionPredicate(
+                    subject_ref="read-created.Email", predicate="equals", value="a@b.com")),
+        ))
+
+
+def test_positive_with_required_parent_builds_threads_and_tears_down():
+    s1 = _GraphS1ById({
+        "Contact": [
+            {"api": "Email", "field_type": "email", "is_nillable": True},  # semantic (recipe-set)
+            {"api": "LastName", "field_type": "string", "is_nillable": False},
+            {"api": "AccountId", "field_type": "reference", "is_nillable": False,
+             "references_object_entity_id": "obj-Account"}],
+        "Account": [{"api": "Name", "field_type": "string", "is_nillable": False}],
+    })
+    client = _CountingClient(query_result=[{"Email": "a@b.com"}])
+    ev = execute_data_recipe(_contact_plan(), client=client, environment_id=_ENV_ID, s1=s1)
+
+    assert ev.outcome == "passed"
+    # the parent Account was built first, then the target Contact.
+    assert [c[0] for c in client.creates] == ["Account", "Contact"]
+    # the parent id was threaded into the Contact's AccountId lookup.
+    assert client.creates[1][1]["AccountId"] == "id-Account-1"
+    # k16 — the semantic value flowed verbatim; LastName was operationally padded.
+    assert client.creates[1][1]["Email"] == "a@b.com"
+    assert client.creates[1][1]["LastName"] == "PQA"
+    # created_records audits BOTH, in creation order (parent then target).
+    assert [(c.sobject, c.created_seq) for c in ev.created_records] == [
+        ("Account", 0), ("Contact", 1)]
+    # reverse-order teardown: the target Contact deleted BEFORE its Account parent.
+    assert client.deletes == [("Contact", "id-Contact-2"), ("Account", "id-Account-1")]
+
+
+def _thing_plan():
+    target = LogicalRef(entity_type="Object", external_id="Thing")
+    return DataRecipePlan(
+        recipe_id=uuid4(), recipe_version_seq=2, claim_test_id=uuid4(),
+        claim_version_seq=None, api_choice="rest",
+        steps=(
+            PlannedCreate(step_id="create-record", target_object=target,
+                          field_values={"X__c": "v"}, expect_rejection=None),
+            PlannedDataRead(step_id="read-created", target=target,
+                            soql="SELECT X__c FROM Thing WHERE Id = '$create-record.id'",
+                            fields_to_capture=("X__c",)),
+            PlannedAssertion(step_id="assert-value",
+                             predicate=AssertionPredicate(
+                                 subject_ref="read-created.X__c", predicate="equals", value="v")),
+        ))
+
+
+def test_s1_read_error_mid_construct_is_errored_and_first_parent_torn_down():
+    # An S1 read error (ValueError — NOT SFClientError) while fetching the SECOND
+    # required parent must tear down the FIRST (already-built) parent and surface an
+    # errored run. Catching only SFClientError would leak the first parent.
+    s1 = _GraphS1ById({
+        "Thing": [
+            {"api": "AccountId", "field_type": "reference", "is_nillable": False,
+             "references_object_entity_id": "obj-Account"},
+            {"api": "WidgetId", "field_type": "reference", "is_nillable": False,
+             "references_object_entity_id": "obj-Widget"}],
+        "Account": [{"api": "Name", "field_type": "string", "is_nillable": False}],
+        "Widget": [{"api": "Name", "field_type": "string", "is_nillable": False}],
+    }, raise_on_id={"obj-Widget"})       # the 2nd parent's S1 fetch blows up
+    client = _CountingClient(query_result=[])
+    ev = execute_data_recipe(_thing_plan(), client=client, environment_id=_ENV_ID, s1=s1)
+
+    assert ev.outcome == "errored"
+    assert ev.error.phase == "construct" and ev.error.error_type == "ValueError"
+    # the first parent (Account) was built, then torn down — no leak, no target create.
+    assert client.deletes == [("Account", "id-Account-1")]
+    assert all(c[0] != "Thing" for c in client.creates)     # target never attempted
