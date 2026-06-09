@@ -10963,4 +10963,57 @@ F6).
 
 ---
 
+### D-197 — S4 enqueue source: the spine + a manual queue endpoint
+
+**Why.** S4's execution loop is **wired but idle** (D-132): the `s4_execution_jobs` queue, `ExecutionJobStore`,
+the consumer, and the reaper exist and fire every tick — but nothing enqueues a job, so no recipe runs in
+production. This opens the **enqueue source**: the thing that puts a recipe-execution job on the queue. It's
+the foundation the later automated triggers (approval-hook, scheduled re-verification) reuse unchanged.
+
+**The load-bearing decision — the consumer runs all recipe kinds via the SYNC path.** The async consumer
+default (`run_recipe_execution_async`) **refuses every data-recipe** (positive *and* behavioral-negative) — it
+is metadata-path-only by design (D-129; the data vertical reads S1 mid-execute, and the async wrapper holds no
+DB connection across SF I/O). So F6's data recipes can't flow through it. **Decision:** flip the consumer's
+default `run_fn` to the **synchronous** `run_recipe_execution_for_tenant` (`run.py:230`), which runs *all*
+recipe kinds (it holds a connection across the run — boundary A — exactly as the existing sync "Run" button
+does). `client_resolver` becomes **optional**; the default path passes `client=None` so the sync run fn
+self-resolves the correct client per kind (Tooling/Data) *after* it selects the recipe (the consumer can't know
+the kind up front). `worker.py` `s4_execution_tick` drops the Tooling-only `_default_s4_client_resolver`
+injection (the resolver stays *defined*, reserved for the future async path). Holding one DB connection per
+in-flight job is an accepted low-volume interim; the **data-path async bracketing** (restructuring the
+mid-execute S1 read into brief transactions) stays the deferred-proper path — when it lands, the default
+`run_fn` becomes a metadata→async / data→sync dispatcher and `_default_s4_client_resolver` re-enters,
+kind-aware.
+
+**The enqueue function.** `execution_engine/intake.py` `enqueue_s4_execution(*, tenant_id, test_id,
+environment_id, created_by=None)` — a thin wrapper over the already-built idempotent
+`ExecutionJobStore.create_or_get_job` (mirror of `enqueue_s3_generation`). Thinner than S3's: no S1-version
+pin, no requirement read — the job carries only `(test_id, environment_id, created_by)` and the recipe is
+selected at run time by `test_id`.
+
+**The manual queue endpoint (v1 runtime, lands on `main` after the substrate merges).** `POST
+/api/s4-execution-jobs` (+ `GET /api/s4-execution-jobs/<id>` status poll), mirroring the S3 enqueue route. The
+**production-confirm gate moves to ENQUEUE time** (reusing `runs/bulk.py environment_can_bulk_run`): the sync
+"Run" button gates *before* its immediate run, but this route defers the run to the worker, so the human
+confirm must happen at enqueue — else an unconfirmed prod data-recipe would mutate the org on the next tick.
+The user-chosen first trigger; the sync "Run" button stays.
+
+**Branch split.** Substrate (`consumer.py`, new `intake.py`, the `worker.py` firing tweak) → a feature branch,
+merged to `main` at slice close; the Flask route → `main` directly (v1 runtime), landed after the substrate
+merges (it lazy-imports `enqueue_s4_execution`, no import-time coupling). Seam discipline mirrors S3: the route
+validates the env + gates prod + closes its db *before* calling the substrate, which opens its own tenant
+connection.
+
+**Verification.** 193 execution_engine unit + integration green: consumer default-path regression (no resolver
+→ `client=None`), a drift-guard binding the default `run_fn` to the sync path (not the data-refusing async
+one), `enqueue_s4_execution` idempotency + re-runnability, and the **full offline spine loop** (`enqueue →
+run_s4_execution_tick (production defaults) → completed`). Route tests + the live run land with the `main`
+route.
+
+**Deferred.** The other two triggers — approval-hook (needs an env-selection policy: approval carries no target
+env) + scheduled re-verification (a `test`/`recipe` column on `scheduled_runs` + a firer branch); the
+data-path async bracketing (above); cancel/SSE/run↔job-correlation UI.
+
+---
+
 ---
