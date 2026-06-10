@@ -80,9 +80,13 @@ def test_two_provenance_events_for_two_versions(session) -> None:
         observation_realization=build_minimal_data_recipe_body(),
         execution_environment=build_minimal_execution_environment_body(),
     )
+    # event_at is per-transaction NOW() — identical across one test's writes — so
+    # it alone under-specifies the order (heap-order flake); tiebreak on the
+    # version each event minted.
     events = session.query(TestProvenance).filter(
         TestProvenance.recipe_id == r1.recipe_id,
-    ).order_by(TestProvenance.event_at).all()
+    ).order_by(TestProvenance.event_at,
+               TestProvenance.event_data["new_version_seq"].as_integer()).all()
     assert [e.event_kind for e in events] == [
         "recipe_created", "recipe_edited",
     ]
@@ -161,9 +165,13 @@ def test_s8_rewrite_chain_with_distinct_event_kinds(session) -> None:
         observation_realization=build_minimal_data_recipe_body(),
         execution_environment=build_minimal_execution_environment_body(),
     )
+    # event_at is per-transaction NOW() — identical across one test's writes — so
+    # it alone under-specifies the order (heap-order flake); tiebreak on the
+    # version each event minted.
     events = session.query(TestProvenance).filter(
         TestProvenance.recipe_id == r1.recipe_id,
-    ).order_by(TestProvenance.event_at).all()
+    ).order_by(TestProvenance.event_at,
+               TestProvenance.event_data["new_version_seq"].as_integer()).all()
     assert [e.event_kind for e in events] == [
         # First write by S8 still classes as "created" — S8
         # authored the recipe; the rewrite event_kind applies
