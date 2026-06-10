@@ -6340,8 +6340,9 @@ def releases_detail(release_id):
         substrate = None
         if tab == "decision":
             from primeqa.intelligence.release_substrate_console import get_release_substrate
-            external_keys = [(r.get("jira_key") or ("req-%d" % r["id"]))
-                             for r in release.get("requirements", []) if r.get("id")]
+            from primeqa.release.decision_composer import external_keys_for_requirements
+            external_keys = external_keys_for_requirements(
+                release.get("requirements", []))
             substrate = get_release_substrate(tid, external_keys)
 
         return render_template("releases/detail.html", **ctx(

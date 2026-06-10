@@ -248,22 +248,21 @@ def remove_test_plan_item(release_id, tc_id):
 @release_bp.route("/api/releases/<int:release_id>/evaluate-decision", methods=["POST"])
 @require_role("admin", "tester")
 def evaluate_decision(release_id):
-    from primeqa.release.decision_engine import DecisionEngine
+    # D-198: the composer runs BOTH engines — v1 (zero-diff) + the substrate's
+    # evidence-grounded recommendation — combines per
+    # decision_criteria.substrate_mode (default advisory), and records ONE
+    # decision row whose reasoning JSON carries the full envelope. The response
+    # stays v1-shaped at the top level (byte-identical when no substrate
+    # evidence applies).
+    from primeqa.release.decision_composer import evaluate_and_record
     svc, db = _get_service()
     try:
         release = svc.release_repo.get_release(release_id, request.user["tenant_id"])
         if not release:
             return json_error("NOT_FOUND", "Release not found", http=404)
-        engine = DecisionEngine(db)
-        result = engine.evaluate(release)
-        svc.release_repo.create_decision(
-            release_id=release_id,
-            recommendation=result["recommendation"],
-            confidence=result["confidence"],
-            reasoning=result,
-            criteria_met=result["criteria_met"],
-            recommended_by="ai",
-        )
+        result = evaluate_and_record(
+            db, release, request.user["tenant_id"],
+            release_repo=svc.release_repo)
         return jsonify(result), 200
     finally:
         db.close()
