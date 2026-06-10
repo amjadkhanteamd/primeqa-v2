@@ -419,26 +419,46 @@ def ci_webhook_trigger():
             ReleaseTestPlanItem.release_id == release_id,
         ).all()
         tc_ids = [item.test_case_id for item in plan_items]
-        if not tc_ids:
-            return json_error("VALIDATION_ERROR", "No test cases in release plan", http=400)
 
-        svc = PipelineService(
-            PipelineRunRepository(db), PipelineStageRepository(db),
-            ExecutionSlotRepository(db), WorkerHeartbeatRepository(db),
-        )
-        result = svc.create_run(
-            tenant_id=release.tenant_id, environment_id=environment_id,
-            triggered_by=release.created_by, run_type="execute_only",
-            source_type="release", source_ids=tc_ids, priority="high",
-            config={"commit_sha": commit_sha, "release_id": release_id},
-        )
-        rr = ReleaseRun(release_id=release_id, pipeline_run_id=result["id"],
-                       triggered_by=release.created_by)
-        db.add(rr)
-        db.commit()
+        # D-199 trigger 3: re-verify the release's SUBSTRATE claims on this env
+        # (best-effort, never blocks the v1 run). CI then polls /status whose
+        # D-198 substrate block carries the verdict over fresh evidence.
+        from primeqa.intelligence.s4_execution_console import enqueue_claims_for_keys
+        from primeqa.release.decision_composer import external_keys_for_requirements
+        from primeqa.release.repository import ReleaseRepository
+        keys = external_keys_for_requirements(
+            ReleaseRepository(db).list_requirements(release_id))
+        substrate = enqueue_claims_for_keys(
+            release.tenant_id, keys, environment_id)
+
+        if not tc_ids and not substrate.get("enqueued"):
+            return json_error(
+                "VALIDATION_ERROR",
+                "No test cases in release plan and no substrate claims to verify",
+                http=400)
+
+        run_id = None
+        if tc_ids:
+            svc = PipelineService(
+                PipelineRunRepository(db), PipelineStageRepository(db),
+                ExecutionSlotRepository(db), WorkerHeartbeatRepository(db),
+            )
+            result = svc.create_run(
+                tenant_id=release.tenant_id, environment_id=environment_id,
+                triggered_by=release.created_by, run_type="execute_only",
+                source_type="release", source_ids=tc_ids, priority="high",
+                config={"commit_sha": commit_sha, "release_id": release_id},
+            )
+            run_id = result["id"]
+            rr = ReleaseRun(release_id=release_id, pipeline_run_id=run_id,
+                           triggered_by=release.created_by)
+            db.add(rr)
+            db.commit()
 
         return jsonify({
-            "run_id": result["id"],
+            "run_id": run_id,
+            "substrate": {"enqueued_jobs": substrate.get("enqueued", []),
+                          "claim_count": substrate.get("claim_count", 0)},
             "status_url": f"/api/releases/{release_id}/status",
         }), 201
     finally:

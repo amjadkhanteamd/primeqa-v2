@@ -15,6 +15,7 @@ from croniter import CroniterBadCronError, croniter
 from sqlalchemy import (
     Boolean, CheckConstraint, Column, DateTime, ForeignKey, Integer, String,
 )
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.sql import func
 
 from primeqa.db import Base
@@ -76,7 +77,11 @@ class ScheduledRun(Base):
 
     id = Column(Integer, primary_key=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
-    suite_id = Column(Integer, ForeignKey("test_suites.id", ondelete="CASCADE"), nullable=False)
+    suite_id = Column(Integer, ForeignKey("test_suites.id", ondelete="CASCADE"), nullable=True)
+    # D-199 trigger 2: a schedule may target a SUBSTRATE claim instead of a v1
+    # suite (logical FK to the tenant-schema test_claims.test_id — not
+    # DB-enforced across schemas; migration 053 enforces one-source-set).
+    substrate_test_id = Column(PG_UUID(as_uuid=True), nullable=True)
     environment_id = Column(Integer, ForeignKey("environments.id"), nullable=False)
     cron_expr = Column(String(100), nullable=False)
     preset_label = Column(String(40))
@@ -211,10 +216,26 @@ class FireResult:
     error: Optional[str] = None
 
 
+def fire_substrate_schedule(sched) -> FireResult:
+    """D-199 trigger 2: fire a substrate schedule — enqueue the claim's
+    execution on the schedule's environment (the worker tick runs it). No
+    pipeline_run is created; the job id is logged. Extracted so it unit-tests
+    with a stub schedule + a monkeypatched enqueue."""
+    from primeqa.execution_engine.intake import enqueue_s4_execution
+    job = enqueue_s4_execution(
+        tenant_id=sched.tenant_id, test_id=sched.substrate_test_id,
+        environment_id=sched.environment_id, created_by=sched.created_by)
+    log.info("scheduler: fired substrate schedule=%s job=%s test=%s env=%s",
+             sched.id, job.id, sched.substrate_test_id, sched.environment_id)
+    return FireResult(sched.id, None, "fired_substrate")
+
+
 def fire_due_schedules(db) -> List[FireResult]:
     """Scheduler daemon calls this on its tick; creates pipeline_runs for due schedules.
 
     Uses PipelineService.create_run. One failure doesn't stop the batch.
+    D-199: a schedule with ``substrate_test_id`` set fires the SUBSTRATE path
+    (enqueue_s4_execution) instead of a v1 suite run.
     """
     from primeqa.execution.repository import (
         PipelineRunRepository, PipelineStageRepository,
@@ -237,6 +258,12 @@ def fire_due_schedules(db) -> List[FireResult]:
     results: List[FireResult] = []
     for sched in due:
         try:
+            # D-199: substrate schedules branch FIRST (suite_id may be NULL).
+            if getattr(sched, "substrate_test_id", None):
+                results.append(fire_substrate_schedule(sched))
+                repo.mark_fired(sched.id, None)
+                continue
+
             suite = suite_repo.get_suite(sched.suite_id, sched.tenant_id)
             if not suite:
                 log.warning("schedule %s: suite %s missing; disabling",

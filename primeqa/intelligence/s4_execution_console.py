@@ -264,10 +264,113 @@ def approve_claim(tenant_id: int, test_id) -> dict:
             try:
                 out = _approve_claim(session, test_id)
                 session.flush()
-                return out
             finally:
                 session.close()
+        # D-199 trigger 1: the approval transaction has committed (the context
+        # exit above) — best-effort auto-enqueue on the auto-verify envs. An
+        # enqueue failure never un-approves.
+        if out.get("ok"):
+            auto = auto_enqueue_on_approval(tenant_id, test_id)
+            out["auto_enqueued"] = len(auto["enqueued"])
+        return out
     except Exception as exc:
         log.warning("approve_claim failed for tenant %s test %s: %s",
                     tenant_id, test_id, exc)
         return {"ok": False, "error": str(exc)}
+
+
+# --- D-199 trigger 1: auto-enqueue on approval --------------------------------
+
+def auto_verify_environment_ids(db, tenant_id: int) -> list:
+    """The D-199 env-selection policy: every ACTIVE, NON-PRODUCTION environment
+    with a Salesforce connection — "verify everywhere it is safe." Production is
+    structurally excluded (prod runs keep the human confirm_production path)."""
+    from primeqa.core.models import Environment
+    rows = (db.query(Environment.id)
+            .filter(Environment.tenant_id == tenant_id,
+                    Environment.is_active.is_(True),
+                    Environment.is_production.is_(False),
+                    Environment.connection_id.isnot(None))
+            .all())
+    return [r[0] for r in rows]
+
+
+def auto_enqueue_on_approval(tenant_id: int, test_id, *, created_by=None) -> dict:
+    """D-199 trigger 1: after a claim is approved, queue its execution on every
+    auto-verify environment. Best-effort — never raises, never blocks the
+    approval. Idempotent per env (the queue's active-set dedup). Returns
+    ``{enqueued: [...job ids...], environments: [...ids...]}``."""
+    try:
+        from primeqa.db import get_db
+        from primeqa.execution_engine.intake import enqueue_s4_execution
+        db = next(get_db())
+        try:
+            env_ids = auto_verify_environment_ids(db, tenant_id)
+        finally:
+            db.close()
+        jobs = []
+        for eid in env_ids:
+            try:
+                job = enqueue_s4_execution(
+                    tenant_id=tenant_id, test_id=test_id,
+                    environment_id=eid, created_by=created_by)
+                jobs.append(job.id)
+            except Exception as exc:                       # one env never blocks the rest
+                log.warning("auto-enqueue failed for tenant %s test %s env %s: %s",
+                            tenant_id, test_id, eid, exc)
+        return {"enqueued": jobs, "environments": env_ids}
+    except Exception as exc:
+        log.warning("auto-enqueue skipped for tenant %s test %s: %s",
+                    tenant_id, test_id, exc)
+        return {"enqueued": [], "environments": []}
+
+
+# --- D-199 trigger 3: bulk-enqueue a release's claims (the CI gate re-verify) --
+
+def enqueue_claims_for_keys(tenant_id: int, external_keys, environment_id: int,
+                            *, created_by=None) -> dict:
+    """Enqueue every ``generated_from`` claim behind ``external_keys`` for
+    execution on ``environment_id`` (deduped; best-effort per claim). The CI
+    webhook's re-verify path — CI then polls /status for the D-198 substrate
+    verdict over FRESH evidence. Never raises."""
+    keys = [k for k in (external_keys or []) if k]
+    if not keys:
+        return {"enqueued": [], "claim_count": 0}
+    try:
+        from sqlalchemy.orm import Session
+
+        from primeqa.execution_engine.intake import enqueue_s4_execution
+        from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.test_representation.coordinator import (
+            SemanticTransactionCoordinator,
+        )
+        coord = SemanticTransactionCoordinator()
+        test_ids, seen = [], set()
+        with get_tenant_connection(tenant_id) as conn:
+            session = Session(bind=conn)
+            try:
+                for key in keys:
+                    for m in coord.list_tests_by_requirement(
+                            session, external_system="jira", external_key=key,
+                            link_kind="generated_from"):
+                        sid = str(m.test_id)
+                        if sid not in seen:
+                            seen.add(sid)
+                            test_ids.append(m.test_id)
+            finally:
+                session.close()
+        jobs = []
+        for tid in test_ids:
+            try:
+                job = enqueue_s4_execution(
+                    tenant_id=tenant_id, test_id=tid,
+                    environment_id=environment_id, created_by=created_by)
+                jobs.append(job.id)
+            except Exception as exc:
+                log.warning("release-claim enqueue failed tenant %s test %s: %s",
+                            tenant_id, tid, exc)
+        return {"enqueued": jobs, "claim_count": len(test_ids)}
+    except Exception as exc:
+        log.warning("enqueue_claims_for_keys failed for tenant %s: %s",
+                    tenant_id, exc)
+        return {"enqueued": [], "claim_count": 0}
