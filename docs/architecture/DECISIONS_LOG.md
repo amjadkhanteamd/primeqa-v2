@@ -11643,6 +11643,35 @@ envelope adjudicates on the periodic ANTHROPIC_API_KEY run, not PR-gating; SELEC
 Next per the ratified plan: **D-208 (5b-3 corpus breadth)** — bulk-generate across the imported
 requirement set, drafts to AK's inbox, AK-gated approvals queue the live runs.
 
+### D-208 — 5b-3 corpus breadth: sweep the live corpus through v5 generation, AK-gated approvals
+
+**Context.** The D-202 5b-3 charter: generate + approve claims across the real requirement set so
+the substrate decision card can GO/NO-GO a real release on substrate evidence alone. Ratified
+posture (2026-06-11 AskUserQuestion): **AK approves every draft manually** in the D-206 inbox;
+approval auto-queues first runs on auto-verify envs (D-199). Both prerequisites landed this arc:
+D-206 (the approval surface) and D-207 (multi-claim generation, live-proven on req-283).
+
+**Premise correction (code is ground truth).** The expected "SQ-* set" is not in the store: the
+live corpus is **4 requirements** (SQ-211 the only Jira import; req-280/282/283 manual), 3 already
+carrying claims. Real breadth needs AK importing more Jira tickets — his UI action, not mine.
+5b-3 proceeds on the available corpus; the breadth gate widens as imports land.
+
+**Decisions.**
+1. **The sweep is pure ops — zero code.** Enqueue an S3 generation job at the current S1 seq for
+   every active requirement whose latest outcome predates generation@v5 (SQ-211, req-280,
+   req-282; req-283 ran in D-207.1). Job idempotency on (key, s1_seq) makes re-sweeps safe;
+   per-bundle identity dedup (proven live, D-207.1) means existing claims re-link rather than
+   duplicate, and only genuinely NEW intents mint drafts into the inbox.
+2. **D-129 deferral stands for this volume** (verified at the source): the S4 consumer claims ONE
+   job per tenant per tick (SKIP LOCKED) — a burst of approvals queues jobs that drain serially;
+   no async bracketing needed at 4-requirement scale. Re-assess at real corpus volume.
+3. **Approvals stay human.** I sweep generation; AK approves in `/claims/inbox`; D-199 queues the
+   live runs; S6 verdicts land per run. No auto-approve anywhere.
+
+**Exit gate.** Every active requirement has a generation outcome at the current S1 seq under v5;
+the inbox holds the resulting drafts; AK's approved claims show live env-59 runs with S6 verdicts.
+Decision-card readiness on a constructed release is D-209's gate, not this one.
+
 ---
 
 ---
