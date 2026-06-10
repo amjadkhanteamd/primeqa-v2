@@ -139,12 +139,19 @@ def _read_run_detail(session, run_id) -> dict | None:
         from primeqa.interpretation.result_store import read_interpretation
         ir = read_interpretation(session, UUID(str(run_id)))
         if ir is not None:
+            # D-201: the substrate agent's deterministic, human-gated repair
+            # suggestions over the S6 vocabulary (empty for passing verdicts).
+            from primeqa.evolution.repair import suggest_repairs
             interp = {
                 "verdict": ir.verdict,
                 "attribution": ir.attribution,
                 "cause": ({"cause_kind": ir.cause.cause_kind, "vr_name": ir.cause.vr_name}
                           if ir.cause is not None else None),
                 "phrasing": ir.phrasing,
+                "repair_suggestions": suggest_repairs(
+                    ir.verdict,
+                    cause_kind=(ir.cause.cause_kind if ir.cause else None),
+                    vr_name=(ir.cause.vr_name if ir.cause else None)),
             }
     except Exception:                                  # S6 read is best-effort
         interp = None
