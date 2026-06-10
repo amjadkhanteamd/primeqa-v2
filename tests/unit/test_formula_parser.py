@@ -173,3 +173,37 @@ def test_representative_formulas_structure():
     n = parse("ISCHANGED(OwnerId) && ISPICKVAL(StageName, \"Closed Won\")")
     assert isinstance(n, And)
     assert n.operands[0] == FunctionCall("ISCHANGED", (FieldRef(("OwnerId",)),))
+
+
+# ---------------------------------------------------------------------------
+# Single-quoted string literals (D-209) — the admin-written quote style
+# ---------------------------------------------------------------------------
+
+def test_single_quoted_literal_parses_identically():
+    # byte-identical AST to the double-quoted twin (claim identity unaffected)
+    assert parse("ISPICKVAL(StageName, 'Closed Won')") == \
+        parse('ISPICKVAL(StageName, "Closed Won")')
+
+
+def test_single_quoted_comparison():
+    assert parse("Status = 'Active'") == \
+        Comparison("=", FieldRef(("Status",)), Literal("Active", "string"))
+
+
+def test_real_org_formula_now_parses():
+    # the live env-59 rule that was NotParsed pre-D-209
+    n = parse("AND(ISPICKVAL(StageName, 'Closed Won'), Amount <= 0)")
+    assert isinstance(n, And) and len(n.operands) == 2
+
+
+def test_quote_styles_do_not_cross_terminate():
+    # a double quote inside a single-quoted string is content, and vice versa
+    assert parse("Name = 'a\"b'") == \
+        Comparison("=", FieldRef(("Name",)), Literal('a"b', "string"))
+    assert parse('Name = "a\'b"') == \
+        Comparison("=", FieldRef(("Name",)), Literal("a'b", "string"))
+
+
+def test_unterminated_single_quote_not_parsed():
+    from primeqa.semantic.formula import NotParsed
+    assert isinstance(parse("Status = 'Active"), NotParsed)
