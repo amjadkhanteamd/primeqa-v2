@@ -11148,4 +11148,43 @@ theme-4 auto-triggers ship; the decision-ledger home after 5b.
 
 ---
 
+### D-199 — Automate the execution triggers (product theme #4, design)
+
+**Why.** D-197 shipped the enqueue source but only the manual trigger; every substrate run still needs a
+human. The vision needs runs to fire on their own: on approval, on a cadence, and at the CI gate — all
+three reuse `enqueue_s4_execution` unchanged (the point of the D-197 spine). Batch-authorized by AK
+(2026-06-10): themes #4/#5/#6/#2 proceed without per-slice GOs; irreversible actions still hard-HOLD.
+
+**Trigger 1 — auto-enqueue on claim approval (the env-selection policy, resolved).** Approval carries no
+target environment. Policy: **enqueue to every ACTIVE, NON-PRODUCTION environment with a Salesforce
+connection** (`is_active AND NOT is_production AND connection_id IS NOT NULL`) — "verify everywhere it is
+safe." Production is structurally excluded (prod runs keep the human `confirm_production` path; the
+gating semantics of D-197 are preserved). Idempotent by construction (the queue's active-set dedup).
+Hook: `s4_execution_console.approve_claim` — after the approval transaction commits, best-effort enqueue
+(an enqueue failure never un-approves or blocks).
+
+**Trigger 2 — scheduled re-verification.** `scheduled_runs` (public, v1) gains a nullable
+`substrate_test_id UUID`; `suite_id` relaxes to nullable with a CHECK that at least one source is set
+(migration 053, idempotent). `fire_due_schedules` branches FIRST on `substrate_test_id` →
+`enqueue_s4_execution(tenant_id, test_id, environment_id=sched.environment_id)` (the env is already on
+the schedule row) → `mark_fired(sched.id, None)` (no pipeline_run for a substrate fire; the job id is
+logged). The substrate branch is extracted as `fire_substrate_schedule(sched)` so it unit-tests with a
+stub.
+
+**Trigger 3 — the CI gate re-verify.** The existing HMAC `ci-trigger` webhook additionally enqueues the
+release's substrate claims for execution on the given environment (release → requirements →
+`external_keys_for_requirements` → `generated_from` claims → enqueue each; deduped; best-effort — the v1
+run creation is untouched). CI then polls `/api/releases/:id/status` whose D-198 `substrate` block carries
+the verdict — the gate reads fresh evidence instead of stale. Helper:
+`s4_execution_console.enqueue_claims_for_keys(tenant_id, external_keys, environment_id)`, shared by the
+webhook (and any future bulk trigger).
+
+**Out of scope / deferred:** per-claim target-env preferences (the all-safe-envs policy is the v1
+default; a `auto_verify_environment_id` tenant setting is the refinement); UI to create substrate
+schedules (the column + firer land first; the picker follows with the surfaces theme); flipping
+`substrate_mode` to gating-by-default (the D-198 product call — revisit once auto-runs make evidence
+plentiful).
+
+---
+
 ---
