@@ -287,6 +287,10 @@ def _edges_from_flow_row(
         )
         return []
     properties = {"trigger_type": trigger_type}
+    # Post-cutover Flow rows carry no entry condition AT ALL (attributes is the
+    # raw Tooling record, `{Id}` only — the Tier-2 parse deferral, D-204); the
+    # designed key fires only on seed/pre-cutover rows. The property is optional
+    # by design, so its absence degrades the edge, never breaks it.
     condition_text = attributes.get("entry_condition_text")
     if condition_text:
         properties["condition_text"] = condition_text

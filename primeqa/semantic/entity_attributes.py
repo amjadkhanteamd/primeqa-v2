@@ -1,23 +1,31 @@
-"""Substrate 1 — Tier 1 entity attribute schemas (per D-025).
+"""Substrate 1 — Tier 1 entity attribute schemas + the attributes read API.
 
-Per D-016: JSONB validation lives at the application layer. The DB-level
-CHECK on entities.attributes only enforces `jsonb_typeof = 'object'`.
-Per-entity-type structure is enforced here via Pydantic v2.
+**The storage contract (D-204, ratified).** `entities.attributes` JSONB
+stores the sync's **normalized raw Tooling record** (`materialize.py` —
+`json.dumps(e.normalized)`). Rows written by seeds or the pre-cutover
+writer carry the DESIGNED sparse shape below instead, and — because SCD
+Type 2 + content-hash change detection means a row keeps its birth shape
+until its content changes — **both shapes coexist in the store
+permanently**. Never assume one shape; never read per-type keys with
+ad-hoc `attributes->>'...'` SQL or `.get(...)`.
 
-Per D-025: detail tables capture hot columns (queryable, filterable,
-joinable across entities); entities.attributes JSONB carries sparse
-metadata (accessed by name from a single entity, not queried across
-the population). This file holds one Pydantic class per entity_type
-defining the JSONB structure.
+**The read API.** Per-type keys are read through the shape-tolerant
+extractors at the bottom of this module (`vr_formula_text`,
+`vr_error_message` — designed key preferred, raw Tooling fallback;
+D-203.1). The family grows as new per-type keys gain readers.
 
-The TIER_1_ENTITIES registry maps entity_type -> metadata so the sync
-engine and query layer can look up the right schema and detail table
-without if/elif chains. Mirrors the TIER_1_EDGES pattern in edges.py.
+**What the schemas below are now.** The per-type `_EntityAttributes`
+classes (D-025) document the DESIGNED key vocabulary the extractors
+prefer, and the `TIER_1_ENTITIES` registry maps entity_type -> detail
+table for the sync engine + query layer (mirrors TIER_1_EDGES).
+`validate_entity_attributes` has no production writer since the
+greenfield sync cutover (D-150+) — it remains as the schema-conformance
+checker its unit suite exercises.
 
-Phase 1 grows this file incrementally as detail tables ship. Today:
-ObjectAttributes (paired with object_details) and FieldAttributes
-(paired with field_details). Eight more entity types to follow as their
-detail tables land.
+Per D-016: the DB-level CHECK on entities.attributes only enforces
+`jsonb_typeof = 'object'`; structure beyond that is this module's
+concern. Detail tables capture hot columns (queryable across the
+population); attributes carries sparse per-row metadata.
 """
 
 from __future__ import annotations
