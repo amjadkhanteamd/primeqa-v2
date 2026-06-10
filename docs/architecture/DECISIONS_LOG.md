@@ -11440,4 +11440,54 @@ parser learns them); the D-203 residual list; the sync attributes projection (ra
 
 ---
 
+### D-205 — 5b-2: multi-step positives (the N-create chain with cross-step references)
+
+**The arc.** Second arc of the D-202 program: lift the positive data vertical from the exact triple
+(create → read → assert, D-115) to **N-create chains** where a later create's field values reference
+an earlier create's record (`"AccountId": "$create-account.id"`). Exit gate per the charter: a
+2-create chain with a cross-step reference live-proven on env 59.
+
+**Correction to D-202's charter (the S3 leg).** The charter said "S3 multi-step emission". Grounded
+against the code, **no emission is buildable yet**: every grounded claim kind is single-object —
+value-claim grounds field-on-object via BELONGS_TO; state-transition / automation-effect (the kinds
+that semantically span two records) are EMISSION-DEFERRED **and** their groundings name a single
+subject (a VR edge / a Flow edge — S1 does not model "this Flow affects Objects A and B"). For
+ordinary value-claims an explicit chain would duplicate F6.2 (required parents are provisioned
+invisibly as padding — the k16 boundary says the recipe never encodes operational scaffolding). So
+5b-2 ships **engine capability** (S2 can already represent N-create bodies — the at-most-one
+expect_rejection validator is the only step constraint; S4 learns to run them), with S3 multi-step
+emission **gated on multi-object grounding** (S1 automation-dependency modeling — the residual).
+Same honest narrowing as 5b-1's delete leg (D-203).
+
+**The shape.** Bridge `_project_positive` partitions ``[CreateStep × N (no expect_rejection),
+ReadStep, AssertStep]`` (N ≥ 1; everything else keeps failing loud) → ``(PlannedCreate × N,
+PlannedDataRead, PlannedAssertion)``. The executor's positive path becomes a **loop**: per create —
+construct-world (per-create semantic fields), resolve ``$step.attr`` references in the create's
+field values against the accumulated state (NEW ``refs.resolve_field_value_refs`` — string values
+only, the SOQL resolver's regex + fail-loud discipline; resolution after the padding merge, before
+``_sf_fields`` bare-ification), create, ``tracker.record``, ``state[step_id] = {"id": …}``. A
+mid-chain rejection grades with THAT create's semantic-vs-padding disambiguation (D-115.2) and tears
+down everything already built. Teardown stays single + reverse-order (the tracker already handles
+parents-then-children across N creates); **cleanup attribution by record id** — teardown's
+CleanupRecords are mapped back to each create's evidence via ``record_id`` (no index arithmetic).
+The read-back + ground are unchanged (state now carries every create's id for SOQL refs).
+
+**Zero changes**: S2 recipe model, the plan-step union, the coordinator, provisioning, world.
+Zero migrations.
+
+**Live proof shape (genuinely additive, not padding-redundant).** Contact's Account lookup is
+OPTIONAL in Salesforce — padding never builds it — so an explicit
+``create Account → create Contact(AccountId="$create-account.id", …) → read → assert`` chain
+exercises a real recipe-authored cross-step reference. Procedure mirrors D-203.2: requirement →
+generate (the current single-create triple) → re-version the recipe to the 2-create chain via the
+Coordinator (the recipe-update path, recipe v1 → v2 history) → approve → the deployed worker runs it
+live → evidence shows the Contact created with the resolved Account id + reverse-order cleanup of
+both records.
+
+**Residuals.** (1) S3 multi-step emission — gated on multi-object grounding (S1 automation
+dependencies); (2) chains beyond create (read-between-creates, multi-assert) — deferred until a
+consumer; (3) non-string ref values (refs inside lists/nested dicts) — strings only in v1.
+
+---
+
 ---
