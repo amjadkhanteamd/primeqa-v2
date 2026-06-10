@@ -32,7 +32,7 @@ violating assignment for ISBLANK / ISNULL).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 from primeqa.semantic.formula import (
     And, Comparison, FieldRef, FunctionCall, Literal, Not, NotParsed, Or, walk,
@@ -49,6 +49,19 @@ class VerifiedNegative:
 
 
 @dataclass(frozen=True)
+class VerifiedUpdateNegative:
+    """The 2-step update-rejected pair (D-203): a create-time state that does
+    NOT violate the formula (the setup record) + the field changes that DO
+    (the update the org must reject). Both certainty-derived — only formulas
+    satisfiable in BOTH directions qualify (comparisons; NOT-ISPICKVAL /
+    NOT-ISBLANK have no certain non-violating assignment and stay
+    NotDerivable)."""
+
+    setup_payload: dict[str, Any]       # non-violating create-time state
+    violating_changes: dict[str, Any]   # the update that fires the rejection
+
+
+@dataclass(frozen=True)
 class NotDerivable:
     reason: str
 
@@ -59,14 +72,9 @@ class _Undecidable(Exception):
 
 def derive(ast) -> Union[VerifiedNegative, NotDerivable]:
     """Derive the violating payload, or NotDerivable (fail-loud)."""
-    if isinstance(ast, NotParsed) or ast is None:
-        return NotDerivable("formula not parsed")
-    # Pre-scan: anything that can't be a same-object create-time predicate.
-    for n in walk(ast):
-        if isinstance(n, FunctionCall) and n.name in _ORG_STATE_FUNCS:
-            return NotDerivable(f"org-state function {n.name} (needs prior/changed/new record state)")
-        if isinstance(n, FieldRef) and n.is_dotted:
-            return NotDerivable(f"cross-object ref {n.name} (needs related-record state)")
+    blocked = _pre_scan(ast)
+    if blocked is not None:
+        return blocked
     try:
         payload = _satisfy(ast, True)
     except _Undecidable as e:
@@ -74,6 +82,38 @@ def derive(ast) -> Union[VerifiedNegative, NotDerivable]:
     if not payload:
         return NotDerivable("no field assignment derivable (constant predicate)")
     return VerifiedNegative(payload)
+
+
+def derive_update(ast) -> Union[VerifiedUpdateNegative, NotDerivable]:
+    """Derive the 2-step update-rejected pair (D-203): setup =
+    ``_satisfy(ast, False)`` (a create the rule does NOT reject), violating
+    changes = ``_satisfy(ast, True)`` (the update it MUST). Same pre-scan +
+    certainty bar as :func:`derive`; either direction underivable →
+    NotDerivable (the caller's graded fallback)."""
+    blocked = _pre_scan(ast)
+    if blocked is not None:
+        return blocked
+    try:
+        setup = _satisfy(ast, False)
+        violating = _satisfy(ast, True)
+    except _Undecidable as e:
+        return NotDerivable(str(e))
+    if not setup or not violating:
+        return NotDerivable("no field assignment derivable (constant predicate)")
+    return VerifiedUpdateNegative(
+        setup_payload=setup, violating_changes=violating)
+
+
+def _pre_scan(ast) -> Optional[NotDerivable]:
+    """Anything that can't be a same-object, flat-state predicate."""
+    if isinstance(ast, NotParsed) or ast is None:
+        return NotDerivable("formula not parsed")
+    for n in walk(ast):
+        if isinstance(n, FunctionCall) and n.name in _ORG_STATE_FUNCS:
+            return NotDerivable(f"org-state function {n.name} (needs prior/changed/new record state)")
+        if isinstance(n, FieldRef) and n.is_dotted:
+            return NotDerivable(f"cross-object ref {n.name} (needs related-record state)")
+    return None
 
 
 def _satisfy(node, want_true: bool) -> dict[str, Any]:

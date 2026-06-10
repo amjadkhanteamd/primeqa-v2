@@ -24,24 +24,27 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v3():
-    # D-125: CURRENT bumped to v3 (the Tier-1 breadth live-reach prompt — existence
-    # / property / capability / layout become LLM-proposable). v1/v2 stay frozen +
-    # pinned-resolvable (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v3"
-    assert registry.get() == registry.get("generation@v3")
+def test_current_resolves_to_v4():
+    # D-203: CURRENT bumped to v4 (prohibition guidance names WHICH operation is
+    # prohibited via target_subject_hint.operation — update/delete dispatch).
+    # v1/v2/v3 stay frozen + pinned-resolvable
+    # (test_runtime_honors_pinned_prompt_version).
+    assert registry.CURRENT == "generation@v4"
+    assert registry.get() == registry.get("generation@v4")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # the substance the schemas don't enforce (D-103.3) is present
     assert "bounded cognition provider" in sys
     assert "Transcribe admissibility" in sys
-    assert "Tier-1 breadth live-reach" in sys               # v3's title
     # v2's value-claim guidance is carried forward
     assert "fully-qualified" in sys and "expected_value" in sys
-    # v3's added breadth guidance — the four new kinds + their hint keys
+    # v3's breadth guidance — the four kinds + their hint keys, carried forward
     assert "existence-claim" in sys and "property-claim" in sys
     assert "capability-claim" in sys and "granted_capability" in sys and "grant_type" in sys
     assert "layout-claim" in sys
+    # v4's operation guidance (D-203)
+    assert "modify_record" in sys and '"delete"' in sys
+    assert "WHICH operation is prohibited" in sys
 
 
 def test_unknown_version_raises():

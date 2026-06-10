@@ -43,7 +43,12 @@ from uuid import UUID
 
 from primeqa.generation.enums import AdmissibilityLayer, CaveatKind
 from primeqa.generation.semantic_completeness import caveat_kind, requires_caveat
-from primeqa.generation.verified_negative import VerifiedNegative, derive
+from primeqa.generation.verified_negative import (
+    VerifiedNegative,
+    VerifiedUpdateNegative,
+    derive,
+    derive_update,
+)
 from primeqa.semantic.formula import parse
 from primeqa.test_representation.models.claims.configuration import (
     ExistenceClaimBody,
@@ -80,6 +85,7 @@ from primeqa.test_representation.models.recipes.data_recipe import (
     CreateStep,
     DataRecipeBody,
     ReadStep,
+    UpdateStep,
 )
 from primeqa.test_representation.models.recipes.metadata_recipe import (
     AssertStep,
@@ -524,6 +530,21 @@ def _author_layout(g: GroundedLayout) -> EmissionBundle:
     )
 
 
+def _derive_update_violation(
+    formulas: tuple[str, ...],
+) -> Optional[VerifiedUpdateNegative]:
+    """The update-shape gate (D-203): the first grounding VR formula derivable
+    in BOTH directions — a non-violating setup state AND violating changes.
+    Only comparisons qualify (NOT-ISPICKVAL / NOT-ISBLANK have no certain
+    non-violating assignment); ``None`` → the caller's graded fallback
+    (create-rejected when ``_derive_violation`` still succeeds, else caveated)."""
+    for text in formulas:
+        result = derive_update(parse(text))
+        if isinstance(result, VerifiedUpdateNegative):
+            return result
+    return None
+
+
 def _derive_violation(formulas: tuple[str, ...]) -> Optional[VerifiedNegative]:
     """The verified-vs-caveated gate AND the violating-payload source (D-107 /
     D-110.3). Returns the first grounding VR formula whose error-condition
@@ -577,6 +598,52 @@ def _behavioral_recipe(
     return trigger, recipe, env
 
 
+def _update_rejected_recipe(
+    *, subject_entity_type: str, subject_external_id: str,
+    setup_payload: dict, violating_changes: dict, env_detail: str,
+) -> tuple[DataMutationTriggerBody, DataRecipeBody, ExecutionEnvironmentBody]:
+    """Build the (trigger, recipe, env) triple for an **update-rejected**
+    negative (D-203): a setup ``CreateStep`` carrying the derived non-violating
+    state, then an ``UpdateStep`` carrying the violating changes +
+    ``expect_rejection``. Field names are **object-qualified**
+    (``{Object}.{field}`` — the positive vertical's convention) so S4's world
+    construction treats them as the semantic fields: bare formula names would
+    dodge the padding-exclusion and could be silently overwritten in the
+    ``_sf_fields`` merge."""
+    target = LogicalRef(
+        entity_type=subject_entity_type, external_id=subject_external_id)
+
+    def _qualified(payload: dict) -> dict:
+        return {f"{subject_external_id}.{f}": v for f, v in payload.items()}
+
+    trigger = DataMutationTriggerBody(
+        operation="update", target=target,
+        identity_context="system", volume="single",
+    )
+    recipe = DataRecipeBody(
+        api_choice="rest", identity_context="system",
+        execution_mechanism="direct_api",
+        steps=[
+            CreateStep(
+                step_id="create-setup",
+                target_object=target,
+                field_values=_qualified(setup_payload),
+            ),
+            UpdateStep(
+                step_id="update-violating",
+                target=target,
+                field_changes=_qualified(violating_changes),
+                expect_rejection=RejectionExpectation(
+                    error_code=_VR_REJECTION_ERROR_CODE),
+            ),
+        ],
+    )
+    env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
+        auth_kind="data_api_user", details=env_detail,
+    )])
+    return trigger, recipe, env
+
+
 def _author_negative(g: GroundedNegative) -> EmissionBundle:
     subject_ref = IdentityBearingRef(
         entity_type=g.subject.entity_type, entity_id=g.subject.entity_id,
@@ -586,13 +653,29 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
     # to a safe generic when unspecified/invalid (D-101.2).
     operation = (g.operation_hint if g.operation_hint in _PROHIBITION_OPERATIONS
                  else _DEFAULT_OPERATION)
-    # Verified-vs-caveated gate (D-107) + the violating-payload source (D-110.3):
-    # does a grounding VR formula certainly derive a violating value? The payload
-    # rides the RECIPE (operational), never the claim — so the claim body is
-    # byte-identical whether verified or caveated (the Option-C identity_hash
-    # invariant; verified below by a stability test).
-    violation = _derive_violation(g.vr_formulas)
-    verified = violation is not None
+    # Graded operation dispatch (D-203) over the verified-vs-caveated gate
+    # (D-107). The derived payloads ride the RECIPE (operational), never the
+    # claim — the claim body is byte-identical across ALL recipe shapes (the
+    # Option-C identity_hash invariant; verified by a stability test).
+    #
+    #   modify_record / modify_field → try the UPDATE shape (setup +
+    #     violating changes, both derivable); when only the violation derives,
+    #     fall back to TODAY'S create-rejected (no regression — a state-only VR
+    #     fires on insert too); when neither, caveated.
+    #   create_duplicate → create-rejected (as today).
+    #   delete / share / transfer_ownership → caveated inspection ALWAYS:
+    #     VRs never fire on delete (and shares/transfers are not VR-rejectable
+    #     creates) — a create-rejected recipe here would test the wrong
+    #     operation (the pre-D-203 semantic blur, closed).
+    update_pair = None
+    violation = None
+    if operation in ("modify_record", "modify_field"):
+        update_pair = _derive_update_violation(g.vr_formulas)
+        if update_pair is None:
+            violation = _derive_violation(g.vr_formulas)
+    elif operation == "create_duplicate":
+        violation = _derive_violation(g.vr_formulas)
+    verified = update_pair is not None or violation is not None
     claim = ProhibitionClaimBody(
         target=subject_ref,
         operation=operation,
@@ -608,12 +691,24 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
     # claim is unconditional at this layer (the marker/caveat carry the verdict).
     conditions = SemanticConditionsBody(conditions=[])
 
-    # D-110.3 (S3-thin): a VERIFIED negative emits the BEHAVIORAL recipe — a
-    # create carrying the parser-derived violating payload + expect_rejection
-    # (behavioral subsumes structural: it tests the VR *enforces*). A CAVEATED
-    # negative (no derivable formula) stays the INSPECTION re-verify (there is no
+    # D-110.3 (S3-thin) + D-203: a VERIFIED negative emits the BEHAVIORAL
+    # recipe — the 2-step update-rejected shape when both directions derived,
+    # else the create-rejected (behavioral subsumes structural: it tests the VR
+    # *enforces*). A CAVEATED negative (no derivable formula, or a
+    # non-VR-testable operation) stays the INSPECTION re-verify (there is no
     # violation to construct). Replace, not augment (single-recipe; D-110.3).
-    if verified:
+    if update_pair is not None:
+        trigger, recipe, env = _update_rejected_recipe(
+            subject_entity_type=g.subject.entity_type,
+            subject_external_id=g.subject.external_id,
+            setup_payload=update_pair.setup_payload,
+            violating_changes=update_pair.violating_changes,
+            env_detail=(f"create a valid {g.subject.external_id} record, then "
+                        f"update it into violation of the grounding validation "
+                        f"rule (expect rejection)"),
+        )
+        trigger_kind, recipe_kind = "data-mutation-trigger", "data-recipe"
+    elif verified:
         trigger, recipe, env = _behavioral_recipe(
             subject_entity_type=g.subject.entity_type,
             subject_external_id=g.subject.external_id,

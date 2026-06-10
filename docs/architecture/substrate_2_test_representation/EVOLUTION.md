@@ -287,3 +287,15 @@ Phase 1 of the program roadmap (breadth-first: confirm each substrate complete b
 **Forward-compat reserved slots confirmed non-blocking for v1 breadth:** semantic-conditions graphification, the operational-linkage layer, richer runtime-state resolution, run-history-beyond-last-run, recipe-approval auto-preservation, merge / rebase semantics, registry-based `external_system`, replay-sensitive recipe selection. None is hit by S3 / S4 v1 breadth; each reopens with its own consumer.
 
 No product code; deterministic merge gate (Phase 1 touches no Salesforce). See D-121. On `phase-9-substrate-2-readiness`.
+
+## 2026-06-10 — expect_rejection on Update/Delete: the 2-step negative becomes representable (D-203)
+
+The D-110.1 deferral closes: `UpdateStep` / `DeleteStep` (in the union since D-054) gain
+`expect_rejection: Optional[RejectionExpectation]` — two optional fields, nothing else. The
+at-most-one validator was written forward-compatible ("counted automatically without touching this
+check") and needed zero changes: a 2-step negative (setup create with `None` + one flagged mutation)
+is valid; two flagged steps stay rejected. `body_schema_version` stays 1 (additive); claim identity is
+untouched (recipes are operational layer, excluded from `identity_hash` per SPEC §6.3.1 — proven at
+the signature level). Coordinator write/read round-trips the 2-step shape with no write-path change
+(no step-kind whitelist exists). Corrects D-202's measured gap ("S2 has no Update/Delete step
+models" — wrong against the code; the gap was the flag, not the models). DECISIONS_LOG D-203.

@@ -158,3 +158,102 @@ def test_deterministic():
         body=[{"errorCode": _VR, "message": "x"}])])
     a, b = interpret_run(ev), interpret_run(ev)
     assert a == b
+
+
+# ---------------------------------------------------------------------------
+# D-203 — the 2-step negative is graded against the MUTATION, never the setup
+# ---------------------------------------------------------------------------
+
+from primeqa.execution_engine.evidence import (  # noqa: E402
+    DeleteAttemptEvidence,
+    UpdateAttemptEvidence,
+)
+
+
+def _setup_create(record_id="006A"):
+    """The 2-step negative's setup create — succeeded, subject torn down."""
+    return CreateAttemptEvidence(
+        step_id="create-setup", ordinal=0, sobject="Opportunity",
+        field_values={"Amount": 500, "Name": "PQA"}, http_status=201,
+        success=True, error_code=None, message=None, rejection_body=(),
+        matched=None,
+        cleanup=CleanupRecord(attempted=True, succeeded=True, record_id=record_id),
+        started_at=_T, finished_at=_T, duration_ms=1)
+
+
+def _mutation(kind, *, success, matched, http_status, body, error=None):
+    common = dict(
+        step_id=f"{kind}-violating", ordinal=1, sobject="Opportunity",
+        record_id="006A", http_status=http_status, success=success,
+        error_code=(body[0]["errorCode"] if body else None),
+        message=(body[0].get("message") if body else None),
+        rejection_body=tuple(body), matched=matched,
+        started_at=_T, finished_at=_T, duration_ms=1, error=error)
+    if kind == "update":
+        return UpdateAttemptEvidence(field_changes={"Amount": 2000000}, **common)
+    return DeleteAttemptEvidence(**common)
+
+
+def test_two_step_passed_is_prohibition_enforced_on_the_update():
+    ev = _run(outcome="passed", steps=[
+        _setup_create(),
+        _mutation("update", success=False, matched=True, http_status=400,
+                  body=[{"errorCode": _VR, "message": "no"}])])
+    interp = interpret_run(ev)
+    assert interp.verdict == "prohibition_enforced"
+    assert "violating update" in interp.attribution
+    # The ref cites the MUTATION step, not the setup create.
+    assert interp.evidence_refs[0].step_id == "update-violating"
+
+
+def test_two_step_failed_success_is_not_enforced_never_misread_as_setup():
+    # The regression D-203 exists to prevent: a successful setup create must
+    # NOT be graded — the verdict reads the mutation's success.
+    ev = _run(outcome="failed", steps=[
+        _setup_create(),
+        _mutation("update", success=True, matched=False, http_status=204, body=[])])
+    interp = interpret_run(ev)
+    assert interp.verdict == "prohibition_not_enforced"
+    assert "violating update" in interp.attribution
+    # The subject's id rides the evidence ref (the create vertical's convention).
+    assert "006A" in interp.evidence_refs[0].detail
+
+
+def test_two_step_wrong_code_is_rejected_unasserted():
+    ev = _run(outcome="failed", steps=[
+        _setup_create(),
+        _mutation("delete", success=False, matched=False, http_status=400,
+                  body=[{"errorCode": "DELETE_FAILED", "message": "ref"}])])
+    interp = interpret_run(ev)
+    assert interp.verdict == "rejected_unasserted_reason"
+    assert "DELETE_FAILED" in interp.attribution
+
+
+def test_two_step_errored_is_not_evaluated():
+    err = ErrorSurface(phase="update", error_type="SFRequestError", message="down")
+    ev = _run(outcome="errored", steps=[
+        _setup_create(),
+        _mutation("update", success=False, matched=None, http_status=None,
+                  body=[], error=err)], error=err)
+    interp = interpret_run(ev)
+    assert interp.verdict == "not_evaluated"
+
+
+def test_two_step_delete_passed_words_the_delete():
+    ev = _run(outcome="passed", steps=[
+        _setup_create(),
+        _mutation("delete", success=False, matched=True, http_status=400,
+                  body=[{"errorCode": _VR, "message": "no"}])])
+    interp = interpret_run(ev)
+    assert interp.verdict == "prohibition_enforced"
+    assert "violating delete" in interp.attribution
+
+
+def test_one_step_negative_dispatch_unchanged():
+    # Regression: the 1-step create-rejected still grades the create.
+    ev = _run(outcome="passed", steps=[_create(
+        success=False, matched=True, http_status=400,
+        body=[{"errorCode": _VR, "message": "x"}])])
+    interp = interpret_run(ev)
+    assert interp.verdict == "prohibition_enforced"
+    assert "violating create" in interp.attribution

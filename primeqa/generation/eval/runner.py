@@ -236,6 +236,15 @@ class EvalHarness:
                     got = getattr(emission, k, None)
                     if got != v:
                         m.append(f"recipe.{k}: expected {v!r}, got {got!r}")
+        if "trigger_operation" in e:
+            # The trigger body's operation — discriminates the D-203 2-step
+            # update-rejected shape from the create-rejected fallback (both are
+            # data-recipe / data-mutation-trigger, so kinds alone can't).
+            got = getattr(getattr(emission, "causal_initiation", None),
+                          "operation", None)
+            if got != e["trigger_operation"]:
+                m.append(f"trigger_operation: expected "
+                         f"{e['trigger_operation']!r}, got {got!r}")
 
         return CaseResult(
             case_id=case.id, category=case.category, passed=not m, mismatches=m,

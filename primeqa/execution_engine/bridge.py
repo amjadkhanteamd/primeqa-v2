@@ -29,7 +29,9 @@ from primeqa.execution_engine.plan import (
     PlannedAssertion,
     PlannedCreate,
     PlannedDataRead,
+    PlannedDelete,
     PlannedRead,
+    PlannedUpdate,
     PlanStep,
 )
 from primeqa.test_representation.coordinator import RecipeRead
@@ -40,7 +42,9 @@ from primeqa.test_representation.models.recipes.data_recipe import (
     AssertStep as DataAssertStep,
     CreateStep,
     DataRecipeBody,
+    DeleteStep,
     ReadStep,
+    UpdateStep,
 )
 from primeqa.test_representation.models.recipes.metadata_recipe import (
     AssertStep,
@@ -226,14 +230,15 @@ def build_data_recipe_plan(recipe: RecipeRead) -> DataRecipePlan:
 
     Validates the common envelope (a data-mutation trigger + a data-recipe body
     beginning with a ``CreateStep`` on a :class:`LogicalRef`), then dispatches on
-    the first create's ``expect_rejection``: **set** → the thinnest behavioral
-    negative (a single create-rejected step); **absent** → the positive triple
-    (``CreateStep`` → ``ReadStep`` → ``AssertStep``). Narrows + projects each
-    shape's steps into the S4-owned plan.
+    the **rejection-bearing step** (S2 guarantees at most one): any step flagged
+    → a behavioral negative (1-step create-rejected, D-110.2, or 2-step setup
+    create → rejected update/delete, D-203); none → the positive triple
+    (``CreateStep`` → ``ReadStep`` → ``AssertStep``, D-115). Narrows + projects
+    each shape's steps into the S4-owned plan.
 
     Raises :class:`PlanTranslationError` if ``recipe`` is not a shape this bridge
-    can plan (the message names the specific mismatch). Multi-step / provisioned
-    negatives and multi-step positives are deferred (D-110 / D-115).
+    can plan (the message names the specific mismatch). N-step negatives and
+    multi-step positives are deferred (5b-2).
     """
     rid = recipe.recipe_id
 
@@ -294,8 +299,11 @@ def build_data_recipe_plan(recipe: RecipeRead) -> DataRecipePlan:
             recipe_id=rid,
         )
 
-    # 6. dispatch on expect_rejection → project the vertical's steps.
-    if create.expect_rejection is not None:
+    # 6. dispatch on the REJECTION-BEARING step (S2 guarantees at most one,
+    #    D-110.1): any step flagged → a behavioral negative (1-step
+    #    create-rejected, D-110.2, or 2-step setup + rejected mutation, D-203);
+    #    none flagged → the positive triple.
+    if any(getattr(s, "expect_rejection", None) is not None for s in body.steps):
         steps = _project_negative(body.steps, recipe_id=rid)
     else:
         steps = _project_positive(body.steps, recipe_id=rid)
@@ -311,23 +319,105 @@ def build_data_recipe_plan(recipe: RecipeRead) -> DataRecipePlan:
 
 
 def _project_negative(steps, *, recipe_id) -> tuple:
-    """Project the behavioral negative (D-110.2): the thinnest negative is a
-    single create-rejected step. Multi-step / provisioned negatives deferred.
-    ``steps[0]`` is already validated as a ``CreateStep`` on a ``LogicalRef``."""
-    if len(steps) != 1:
+    """Project a behavioral negative — exactly two shapes, every other fails
+    loud:
+
+      - **1-step** (D-110.2): a single ``CreateStep`` carrying
+        ``expect_rejection`` → ``(PlannedCreate,)``;
+      - **2-step** (D-203): a setup ``CreateStep`` (no expectation) followed by
+        an ``UpdateStep`` / ``DeleteStep`` carrying ``expect_rejection`` →
+        ``(PlannedCreate, PlannedUpdate|PlannedDelete)``. The mutation's
+        ``target`` must name the same object as the setup's ``target_object``
+        (the positional binding the executor resolves — D-203).
+
+    ``steps[0]`` is already validated as a ``CreateStep`` on a ``LogicalRef``.
+    """
+    create = steps[0]
+
+    if len(steps) == 1:
+        if create.expect_rejection is None:
+            raise PlanTranslationError(
+                "a 1-step behavioral negative must carry expect_rejection on "
+                "its create step; got none",
+                recipe_id=recipe_id,
+            )
+        return (
+            PlannedCreate(
+                step_id=create.step_id,
+                target_object=create.target_object,
+                field_values=dict(create.field_values),
+                expect_rejection=create.expect_rejection,
+            ),
+        )
+
+    if len(steps) != 2:
+        shape = ", ".join(type(s).__name__ for s in steps)
         raise PlanTranslationError(
-            f"data-recipe behavioral-negative vertical plans a single "
-            f"create-rejected step; got {len(steps)} steps "
-            f"(multi-step / provisioned negatives are deferred)",
+            f"a behavioral negative is 1 step (create-rejected) or 2 steps "
+            f"(setup create -> rejected update/delete); got {len(steps)} "
+            f"steps [{shape}] (N-step negatives are deferred, 5b-2)",
             recipe_id=recipe_id,
         )
-    create = steps[0]
+
+    # 2-step: the flag must sit on the mutation, not the setup create.
+    if create.expect_rejection is not None:
+        raise PlanTranslationError(
+            f"a create-rejected negative is single-step; a 2-step negative's "
+            f"setup create {create.step_id!r} must not carry expect_rejection",
+            recipe_id=recipe_id,
+        )
+    mutation = steps[1]
+    if not isinstance(mutation, (UpdateStep, DeleteStep)):
+        raise PlanTranslationError(
+            f"step 2 of a 2-step behavioral negative must be an UpdateStep or "
+            f"DeleteStep; got {type(mutation).__name__}",
+            recipe_id=recipe_id,
+        )
+    if mutation.expect_rejection is None:
+        raise PlanTranslationError(
+            f"{mutation.kind} {mutation.step_id!r} in a 2-step behavioral "
+            f"negative must carry expect_rejection",
+            recipe_id=recipe_id,
+        )
+    if not isinstance(mutation.target, LogicalRef):
+        raise PlanTranslationError(
+            f"{mutation.kind} {mutation.step_id!r} must target a LogicalRef; "
+            f"got a {type(mutation.target).__name__}",
+            recipe_id=recipe_id,
+        )
+    if mutation.target.external_id != create.target_object.external_id:
+        raise PlanTranslationError(
+            f"{mutation.kind} {mutation.step_id!r} targets "
+            f"{mutation.target.external_id!r} but the setup create provisions "
+            f"{create.target_object.external_id!r} — the rejected mutation "
+            f"must act on the record the setup creates (D-203)",
+            recipe_id=recipe_id,
+        )
+
+    planned_setup = PlannedCreate(
+        step_id=create.step_id,
+        target_object=create.target_object,
+        field_values=dict(create.field_values),
+        expect_rejection=None,
+    )
+    if isinstance(mutation, UpdateStep):
+        return (
+            planned_setup,
+            PlannedUpdate(
+                step_id=mutation.step_id,
+                target_object=mutation.target,
+                field_changes=dict(mutation.field_changes),
+                expect_rejection=mutation.expect_rejection,
+                setup_step_id=create.step_id,
+            ),
+        )
     return (
-        PlannedCreate(
-            step_id=create.step_id,
-            target_object=create.target_object,
-            field_values=dict(create.field_values),
-            expect_rejection=create.expect_rejection,
+        planned_setup,
+        PlannedDelete(
+            step_id=mutation.step_id,
+            target_object=mutation.target,
+            expect_rejection=mutation.expect_rejection,
+            setup_step_id=create.step_id,
         ),
     )
 

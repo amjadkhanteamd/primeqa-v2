@@ -28,6 +28,12 @@ grammar — incl. the 400-rejection disambiguation by offending field (semantic 
 ``failed`` / padding → ``errored``) — is DECISIONS_LOG D-115.2. Still produce-only;
 it reads S1 requiredness through an injected ``SemanticOrgModel`` port (``s1=``),
 never its own SQL.
+
+The **2-step negative** (D-203) dispatches on a flagged update/delete: construct
+the world + setup create (the positive's machinery) → attempt the prohibited
+mutation → the same 4-way grading as the 1-step negative → teardown always. Any
+setup failure is ``errored`` (the prohibition was never exercised), never
+``failed``.
 """
 from __future__ import annotations
 
@@ -46,10 +52,16 @@ from primeqa.execution_engine.evidence import (
     CleanupRecord,
     CreateAttemptEvidence,
     DataReadEvidence,
+    DeleteAttemptEvidence,
     ErrorSurface,
     RunEvidence,
+    UpdateAttemptEvidence,
 )
-from primeqa.execution_engine.plan import DataRecipePlan
+from primeqa.execution_engine.plan import (
+    DataRecipePlan,
+    PlannedCreate,
+    PlannedUpdate,
+)
 from primeqa.execution_engine.provisioning import CreatedRecordTracker
 from primeqa.execution_engine.refs import resolve_step_refs
 from primeqa.execution_engine.world import construct_world
@@ -68,20 +80,30 @@ def execute_data_recipe(
     """Execute a data-recipe plan against ``client``; dispatch on the first
     step's ``expect_rejection``.
 
-    ``client`` is anything with ``create`` / ``delete`` (+ ``query`` for the
-    positive read-back) returning the normalized envelope (injected; unit tests
-    drive a stub). ``s1`` is a ``SemanticOrgModel``-shaped requiredness reader,
-    **required for the positive vertical** (the run path injects it; the negative
-    ignores it). Returns a :class:`RunEvidence` carrying the grounded outcome +
-    per-step evidence."""
-    create = plan.steps[0]
-    if getattr(create, "expect_rejection", None) is not None:
+    ``client`` is anything with ``create`` / ``update`` / ``delete`` (+
+    ``query`` for the positive read-back) returning the normalized envelope
+    (injected; unit tests drive a stub). ``s1`` is a
+    ``SemanticOrgModel``-shaped requiredness reader, required by every path
+    that constructs a world (the positive vertical AND the 2-step negative —
+    both begin with an ordinary setup create; the run path injects it whenever
+    ``steps[0].expect_rejection is None``). Returns a :class:`RunEvidence`
+    carrying the grounded outcome + per-step evidence."""
+    flagged = next(
+        (s for s in plan.steps
+         if getattr(s, "expect_rejection", None) is not None), None)
+    if flagged is not None and isinstance(flagged, PlannedCreate):
+        # 1-step create-rejected (D-110.2) — no world to construct.
         return _execute_negative(
             plan, client=client, environment_id=environment_id)
     if s1 is None:
         raise PlanTranslationError(
-            "a positive data-recipe needs an S1 requiredness reader (s1=); none "
-            "was injected", recipe_id=plan.recipe_id)
+            "a data-recipe with an ordinary (setup) create needs an S1 "
+            "requiredness reader (s1=); none was injected",
+            recipe_id=plan.recipe_id)
+    if flagged is not None:
+        # 2-step setup create -> rejected update/delete (D-203).
+        return _run_negative_with_setup(
+            plan, client=client, environment_id=environment_id, s1=s1)
     return _run_positive(
         plan, client=client, environment_id=environment_id, s1=s1)
 
@@ -113,6 +135,177 @@ def _execute_negative(
         steps=(step,),
         error=top_error,
     )
+
+
+def _run_negative_with_setup(
+    plan: DataRecipePlan, *, client, environment_id: int, s1,
+) -> RunEvidence:
+    """The 2-step behavioral negative (D-203): construct-world → setup
+    create-expect-success → attempt the prohibited update/delete → grade the
+    rejection (the same 4-way eval as the 1-step negative) → teardown (always).
+
+    The plan is the bridge-guaranteed pair ``(PlannedCreate(no expectation),
+    PlannedUpdate|PlannedDelete)``. **Any** setup failure — transport, an
+    unfillable world, or the org rejecting the setup create itself — is
+    ``errored``: the prohibition under test was never exercised, so there is
+    nothing to grade (never ``failed``, which would falsely indict the org).
+    """
+    run_id = uuid4()
+    started = _now()
+    setup, mutation = plan.steps
+    sobject = setup.target_object.external_id
+    semantic_fields = set(setup.field_values)
+
+    # 1. Construct the operational world for the setup create — the same
+    #    machinery as the positive vertical (padding + parents + tracker, F6).
+    at_seq = s1.current_version_seq()
+    tracker = CreatedRecordTracker()
+    try:
+        scalar_filler, parent_filler, unfillable = construct_world(
+            sobject, semantic_fields, s1=s1, client=client, tracker=tracker,
+            at_seq=at_seq)
+    except Exception as e:
+        tracker.teardown(client, _best_effort_delete)
+        err = ErrorSurface("construct", type(e).__name__, str(e))
+        return _result(plan, run_id, started, environment_id, (), "errored", err,
+                       created_records=tracker.records)
+    if unfillable:
+        tracker.teardown(client, _best_effort_delete)
+        err = ErrorSurface(
+            phase="construct", error_type="UnfillableWorld",
+            message=("required field(s)/parent(s) S4 could not construct: "
+                     + ", ".join(unfillable)))
+        return _result(plan, run_id, started, environment_id, (), "errored", err,
+                       created_records=tracker.records)
+
+    field_values = _sf_fields(
+        {**setup.field_values, **scalar_filler, **parent_filler}, sobject)
+
+    # 2. The setup create — expect success.
+    c_start = _now()
+    try:
+        env = client.create(sobject, field_values)
+    except SFClientError as e:
+        tracker.teardown(client, _best_effort_delete)
+        err = ErrorSurface("create", type(e).__name__, str(e))
+        ev = _evidence(
+            setup, sobject, c_start, _now(), http_status=None, success=False,
+            rejection_body=(), matched=None, cleanup=CleanupRecord(attempted=False),
+            error=err, field_values=field_values)
+        return _result(plan, run_id, started, environment_id, (ev,), "errored",
+                       err, created_records=tracker.records)
+
+    http_status = env["http_status"]
+    if not env["success"]:
+        tracker.teardown(client, _best_effort_delete)
+        rejection_body = _as_error_tuple(env["api_response"]["body"])
+        err = ErrorSurface(
+            phase="create", error_type="SetupRejected",
+            message=(f"setup create returned HTTP {http_status}; the negative "
+                     f"could not be staged — the prohibited {mutation.kind} "
+                     f"was never attempted"))
+        ev = _evidence(
+            setup, sobject, c_start, _now(), http_status=http_status,
+            success=False, rejection_body=rejection_body, matched=None,
+            cleanup=CleanupRecord(attempted=False), error=err,
+            field_values=field_values)
+        return _result(plan, run_id, started, environment_id, (ev,), "errored",
+                       err, created_records=tracker.records)
+
+    record_id = env["record_id"]
+    c_end = _now()
+    tracker.record(sobject, record_id)      # the subject joins after its parents
+
+    # 3. The prohibited mutation — the same 4-way grading as the 1-step negative.
+    mut_ev, outcome, top_error = _run_mutation_attempt(
+        mutation, sobject, record_id, client)
+
+    # 4. Teardown ALWAYS (reverse order: the subject, then any parents). The
+    #    subject's CleanupRecord rides the setup create's evidence — the step
+    #    that created the record (the established convention). A subject a
+    #    wrongly-successful delete already removed 404s here; best-effort
+    #    records that, never raises.
+    cleanup = tracker.teardown(client, _best_effort_delete)[0]
+    setup_ev = _evidence(
+        setup, sobject, c_start, c_end, http_status=http_status, success=True,
+        rejection_body=(), matched=None, cleanup=cleanup,
+        field_values=field_values)
+
+    return _result(plan, run_id, started, environment_id, (setup_ev, mut_ev),
+                   outcome, top_error, created_records=tracker.records)
+
+
+def _run_mutation_attempt(mutation, sobject, record_id, client):
+    """Attempt the prohibited update/delete on the setup record + evaluate —
+    the D-203 mirror of :func:`_run_create`'s 4-way grading. Returns
+    (evidence, outcome, top_error)."""
+    is_update = isinstance(mutation, PlannedUpdate)
+    phase = "update" if is_update else "delete"
+    changes = _sf_fields(mutation.field_changes, sobject) if is_update else None
+    start = _now()
+    try:
+        if is_update:
+            env = client.update(sobject, record_id, changes)
+        else:
+            env = client.delete(sobject, record_id)
+    except SFClientError as e:
+        end = _now()
+        err = ErrorSurface(phase=phase, error_type=type(e).__name__,
+                           message=str(e))
+        ev = _mutation_evidence(
+            mutation, sobject, record_id, changes, start, end,
+            http_status=None, success=False, rejection_body=(), matched=None,
+            error=err)
+        return ev, "errored", err
+
+    http_status = env["http_status"]
+    rejection_body = _as_error_tuple(env["api_response"]["body"])
+    end = _now()
+
+    if env["success"]:
+        # The prohibition did NOT enforce — the org accepted the mutation.
+        ev = _mutation_evidence(
+            mutation, sobject, record_id, changes, start, end,
+            http_status=http_status, success=True, rejection_body=(),
+            matched=False)
+        return ev, "failed", None
+
+    if http_status == _BUSINESS_REJECTION_STATUS:
+        # The org evaluated + rejected on business rules — the grounded eval.
+        matched = _matches(mutation.expect_rejection, rejection_body)
+        ev = _mutation_evidence(
+            mutation, sobject, record_id, changes, start, end,
+            http_status=http_status, success=False,
+            rejection_body=rejection_body, matched=matched)
+        return ev, ("passed" if matched else "failed"), None
+
+    err = ErrorSurface(
+        phase=phase, error_type="UnexpectedResponse",
+        message=f"{phase} returned HTTP {http_status} (not a business rejection)")
+    ev = _mutation_evidence(
+        mutation, sobject, record_id, changes, start, end,
+        http_status=http_status, success=False, rejection_body=rejection_body,
+        matched=None, error=err)
+    return ev, "errored", err
+
+
+def _mutation_evidence(mutation, sobject, record_id, changes, start, end, *,
+                       http_status, success, rejection_body, matched,
+                       error=None):
+    """Assemble Update/DeleteAttemptEvidence. ``changes`` is the bare-ified
+    payload actually PATCHed (the api_request analog); None for a delete."""
+    first = rejection_body[0] if rejection_body else {}
+    common = dict(
+        step_id=mutation.step_id, ordinal=1, sobject=sobject,
+        record_id=record_id, http_status=http_status, success=success,
+        error_code=(first.get("errorCode") if isinstance(first, dict) else None),
+        message=(first.get("message") if isinstance(first, dict) else None),
+        rejection_body=rejection_body, matched=matched,
+        started_at=start, finished_at=end, duration_ms=_ms(start, end),
+        error=error)
+    if isinstance(mutation, PlannedUpdate):
+        return UpdateAttemptEvidence(field_changes=dict(changes or {}), **common)
+    return DeleteAttemptEvidence(**common)
 
 
 # Predicates the positive ground step can faithfully evaluate. Side A emits

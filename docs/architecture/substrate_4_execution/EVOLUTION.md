@@ -181,3 +181,21 @@ migration applied to prod en route, `20260608_0010`, user-GO'd). En-route findin
 `invalid_client_id` was environmental — local runs lack `CREDENTIAL_ENCRYPTION_KEY` and
 `get_connection_decrypted` silently falls back to ciphertext (latent foot-gun, candidate hardening). F6 is
 fully closed: F6.1/F6.2/F6.3a built + merged, F6.3 live-proven through the D-197 queue. DECISIONS_LOG D-197.1.
+
+## D-203 — 5b-1: the 2-step behavioral negative (setup create → rejected update/delete)
+
+The first D-202 re-platform arc. The bridge dispatches on the REJECTION-BEARING step (S2 guarantees
+at most one) and projects exactly two negative shapes — the 1-step create-rejected (D-110.2) and the
+new 2-step `(PlannedCreate(no expectation), PlannedUpdate|PlannedDelete)` with **positional**
+`setup_step_id` binding (no `$ref` machinery); every other shape fails loud. `DataMutationClient`
+gains `update` (PATCH, the create-style envelope — a rejection is captured data; 204 → success).
+`_run_negative_with_setup`: construct-world + setup create through the F6 machinery (padding +
+parents + tracker), the prohibited mutation, the SAME 4-way grading as the 1-step negative, teardown
+ALWAYS — a wrongly-successful delete's teardown 404 is recorded best-effort, never raised. Any setup
+failure is `errored` (the prohibition was never exercised), never `failed`. New
+`Update/DeleteAttemptEvidence` flow through the kind-agnostic persister + run-detail UI unchanged;
+the subject's CleanupRecord rides the setup create's evidence (the step that created the record —
+the established convention). Zero migrations; zero consumer/worker changes (the sync run path runs
+all recipe kinds, D-197); `run.py` unchanged in logic (`steps[0].expect_rejection is None` already
+injects S1 for any plan that constructs a world). 40 new unit tests; S4 suites green (190 unit + 28
+integration). DECISIONS_LOG D-203.

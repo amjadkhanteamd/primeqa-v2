@@ -161,10 +161,48 @@ class PlannedDataRead:
     kind: Literal["read"] = "read"
 
 
-DataPlanStep = Union[PlannedCreate, PlannedDataRead, PlannedAssertion]
-"""One ordered step of a data-recipe plan: a create, a read-back, or an
-assertion. The behavioral negative (D-110.2) is a single :class:`PlannedCreate`
-(``expect_rejection`` set); the positive create-and-verify (D-115) is a
+@dataclass(frozen=True)
+class PlannedUpdate:
+    """A planned update the org should **reject** (D-203 — the 2-step
+    behavioral negative).
+
+    Narrowed from a recipe's ``UpdateStep`` carrying ``expect_rejection``.
+    ``setup_step_id`` is the **positional binding** to the plan's setup
+    :class:`PlannedCreate` — the executor mutates the record that setup step
+    created (no ``$ref`` machinery; the bridge validates the pairing).
+    ``field_changes`` is carried verbatim (S1-qualified names; the executor
+    bare-ifies at the live boundary). ``expect_rejection`` is **required**:
+    an ordinary (positive) update step is a 5b-2 concern, not planned here.
+    """
+
+    step_id: str
+    target_object: LogicalRef
+    field_changes: dict
+    expect_rejection: RejectionExpectation
+    setup_step_id: str
+    kind: Literal["update"] = "update"
+
+
+@dataclass(frozen=True)
+class PlannedDelete:
+    """A planned delete the org should **reject** (D-203) — same positional
+    ``setup_step_id`` binding + required ``expect_rejection`` semantics as
+    :class:`PlannedUpdate`, minus a payload (a delete carries none)."""
+
+    step_id: str
+    target_object: LogicalRef
+    expect_rejection: RejectionExpectation
+    setup_step_id: str
+    kind: Literal["delete"] = "delete"
+
+
+DataPlanStep = Union[
+    PlannedCreate, PlannedDataRead, PlannedAssertion, PlannedUpdate, PlannedDelete]
+"""One ordered step of a data-recipe plan: a create, a read-back, an assertion,
+or a rejected mutation. The behavioral negative is a single
+:class:`PlannedCreate` (``expect_rejection`` set, D-110.2) **or** a setup
+:class:`PlannedCreate` followed by a :class:`PlannedUpdate` /
+:class:`PlannedDelete` (D-203); the positive create-and-verify (D-115) is a
 :class:`PlannedCreate` (no ``expect_rejection``) → :class:`PlannedDataRead` →
 :class:`PlannedAssertion`. ``isinstance`` dispatch in the executor; ``kind`` is
 the explicit serialization label."""
@@ -176,14 +214,14 @@ class DataRecipePlan:
     verticals (D-110.2 behavioral negative + D-115 positive create-and-verify).
 
     Produced by :func:`primeqa.execution_engine.bridge.build_data_recipe_plan`;
-    consumed by ``execute_data_recipe``, which dispatches on the first step's
-    ``expect_rejection``: present → the behavioral negative (attempt the create →
-    evaluate the rejection against the carried ``RejectionExpectation``); absent →
-    the positive create-and-verify (pad → create → read back → ground
-    ``field == V``). Same identity-carried-not-resolved discipline as
-    :class:`MetadataInspectionPlan`. The negative is a single create-rejected
-    step; the positive is create → read → assert. Multi-step / provisioned
-    negatives remain deferred (D-110).
+    consumed by ``execute_data_recipe``, which dispatches on the
+    **rejection-bearing step** (S2 guarantees at most one): a flagged create →
+    the 1-step behavioral negative (D-110.2); a flagged update/delete → the
+    2-step provisioned negative (D-203: setup create → rejected mutation →
+    teardown); none → the positive create-and-verify (pad → create → read back
+    → ground ``field == V``, D-115). Same identity-carried-not-resolved
+    discipline as :class:`MetadataInspectionPlan`. N-step shapes beyond these
+    remain deferred (5b-2).
     """
 
     recipe_id: UUID

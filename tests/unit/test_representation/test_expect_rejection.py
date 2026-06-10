@@ -148,3 +148,86 @@ def test_round_trip_decode_preserves_expect_rejection():
     assert restored.steps[0].expect_rejection.error_code == _VR_CODE
     # still v1 — additive, no version bump.
     assert restored.body_schema_version == 1
+
+
+# ---------------------------------------------------------------------------
+# D-203 — expect_rejection on Update / Delete steps (the 2-step negative)
+# ---------------------------------------------------------------------------
+
+def _update(step_id="update-violating", *, expect_rejection=None) -> dict:
+    d = {"kind": "update", "step_id": step_id, "target": _logical(),
+         "field_changes": {"Lead.Status": "Closed"}}
+    if expect_rejection is not None:
+        d["expect_rejection"] = expect_rejection
+    return d
+
+
+def _delete(step_id="delete-violating", *, expect_rejection=None) -> dict:
+    d = {"kind": "delete", "step_id": step_id, "target": _logical()}
+    if expect_rejection is not None:
+        d["expect_rejection"] = expect_rejection
+    return d
+
+
+def test_update_and_delete_steps_default_to_no_rejection():
+    body = DataRecipeBody.model_validate(_body([_create(), _update(), _delete()]))
+    assert all(s.expect_rejection is None for s in body.steps)
+
+
+def test_two_step_update_rejected_negative_is_valid():
+    # The D-203 shape: setup create (None) + flagged update.
+    body = DataRecipeBody.model_validate(_body([
+        _create("create-setup"),
+        _update(expect_rejection={"error_code": _VR_CODE}),
+    ]))
+    assert body.steps[0].expect_rejection is None
+    assert body.steps[1].expect_rejection.error_code == _VR_CODE
+
+
+def test_two_step_delete_rejected_negative_is_valid():
+    body = DataRecipeBody.model_validate(_body([
+        _create("create-setup"),
+        _delete(expect_rejection={"error_code": _VR_CODE}),
+    ]))
+    assert body.steps[1].expect_rejection.error_code == _VR_CODE
+
+
+def test_at_most_one_counts_mixed_step_kinds():
+    # A flagged create AND a flagged update in one recipe violate D-110.1.
+    with pytest.raises(ValidationError, match="at most one"):
+        DataRecipeBody.model_validate(_body([
+            _create(expect_rejection={"error_code": _VR_CODE}),
+            _update(expect_rejection={"error_code": "DUPLICATE_VALUE"}),
+        ]))
+
+
+def test_two_step_negative_passes_no_identity_bearing_refs():
+    body = DataRecipeBody.model_validate(_body([
+        _create("create-setup"),
+        _update(expect_rejection={"error_code": _VR_CODE,
+                                  "error_message_pattern": "cannot exceed"}),
+    ]))
+    assert _verify_no_identity_bearing_refs(body, "observation_realization") is None
+
+
+def test_round_trip_preserves_mutation_expect_rejection():
+    body = DataRecipeBody.model_validate(_body([
+        _create("create-setup"),
+        _delete(expect_rejection={"error_code": _VR_CODE}),
+    ]))
+    dumped = body.model_dump(mode="json")
+    restored = get_body_model(
+        dumped["kind"], dumped["body_schema_version"]).model_validate(dumped)
+    assert restored.steps[1].expect_rejection.error_code == _VR_CODE
+    assert restored.body_schema_version == 1   # additive — still v1
+
+
+def test_identity_hash_cannot_see_recipes():
+    # The Option-C invariant, proven at the signature level: identity hashing
+    # takes ONLY the claim's identity-bearing bodies — a recipe gaining steps
+    # or flags (D-203) structurally cannot churn claim identity.
+    import inspect
+    from primeqa.test_representation.identity_hash import compute_identity_hash
+    params = set(inspect.signature(compute_identity_hash).parameters)
+    assert params == {"archetype", "claim_kind",
+                      "asserted_truth", "semantic_conditions"}

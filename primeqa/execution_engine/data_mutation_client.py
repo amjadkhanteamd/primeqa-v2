@@ -1,6 +1,7 @@
 """Thin S4-local data-mutation client (D-110.2, Fork D = build-thin).
 
-Authenticated data-REST `create` + `delete` + `query` — **nothing more**. Per the SPEC §3
+Authenticated data-REST `create` + `update` + `delete` + `query` — **nothing
+more**. Per the SPEC §3
 boundary (the `ToolingReadClient` precedent), this client must **never**
 accumulate entity semantics, outcome judgment, or VR interpretation. It POSTs /
 DELETEs and returns a normalized envelope; it is the **executor** that judges
@@ -64,9 +65,25 @@ class DataMutationClient:
             raise SFRequestError(f"Network error during create: {e}") from e
         return self._envelope(resp, "POST", url, field_values)
 
+    def update(self, sobject: str, record_id: str, field_changes: dict) -> dict:
+        """PATCH `/sobjects/{sobject}/{record_id}` with ``field_changes``;
+        return the normalized envelope (a 204 No Content success has an empty
+        body — ``success=True``, ``record_id=None``). Like :meth:`create`, an
+        HTTP error *response* is captured data (a VR rejection of the update IS
+        the behavioral-negative evidence, D-203); raises
+        :class:`SFRequestError` only on a transport/network failure."""
+        url = f"{self._base}/sobjects/{sobject}/{record_id}"
+        try:
+            resp = self._session.patch(url, json=field_changes, timeout=_TIMEOUT)
+        except requests.RequestException as e:
+            raise SFRequestError(f"Network error during update: {e}") from e
+        return self._envelope(resp, "PATCH", url, field_changes)
+
     def delete(self, sobject: str, record_id: str) -> dict:
         """DELETE `/sobjects/{sobject}/{record_id}`; return the envelope. Used
-        only for the N-5 targeted best-effort cleanup. Raises only on
+        for the N-5 targeted best-effort cleanup AND as the rejected-mutation
+        attempt of a delete-rejected negative (D-203 — same envelope
+        semantics: a rejection response is captured data). Raises only on
         transport/network failure."""
         url = f"{self._base}/sobjects/{sobject}/{record_id}"
         try:

@@ -222,3 +222,111 @@ def test_outcome_never_mutated_and_deterministic():
     a, b = _interp(ev, s1), _interp(ev, s1)
     assert a.outcome == "failed"             # carried, never recomputed
     assert a == b                            # deterministic
+
+
+# ---------------------------------------------------------------------------
+# D-203 — the 2-step negative: effective-state evaluation (update) +
+# cause-less pass-through (delete)
+# ---------------------------------------------------------------------------
+
+from primeqa.execution_engine.evidence import (  # noqa: E402
+    DeleteAttemptEvidence,
+    UpdateAttemptEvidence,
+)
+
+
+def _setup(field_values=None):
+    return CreateAttemptEvidence(
+        step_id="create-setup", ordinal=0, sobject="Opportunity",
+        field_values=field_values if field_values is not None else
+        {"Amount": 500, "Name": "PQA"},
+        http_status=201, success=True, error_code=None, message=None,
+        rejection_body=(), matched=None,
+        cleanup=CleanupRecord(attempted=True, succeeded=True, record_id="006A"),
+        started_at=_T, finished_at=_T, duration_ms=1)
+
+
+def _mutation(kind, *, success, matched, http_status, body, field_changes=None):
+    common = dict(
+        step_id=f"{kind}-violating", ordinal=1, sobject="Opportunity",
+        record_id="006A", http_status=http_status, success=success,
+        error_code=(body[0]["errorCode"] if body else None),
+        message=(body[0].get("message") if body else None),
+        rejection_body=tuple(body), matched=matched,
+        started_at=_T, finished_at=_T, duration_ms=1)
+    if kind == "update":
+        return UpdateAttemptEvidence(
+            field_changes=field_changes or {"Amount": 2000000}, **common)
+    return DeleteAttemptEvidence(**common)
+
+
+def _run2(*, outcome, steps):
+    return RunEvidence(
+        run_id=uuid4(), recipe_id=uuid4(), recipe_version_seq=1,
+        claim_test_id=uuid4(), claim_version_seq=None, environment_id=7,
+        api_choice="rest", outcome=outcome, started_at=_T, finished_at=_T,
+        steps=tuple(steps))
+
+
+def test_update_not_enforced_evaluates_the_effective_state():
+    # Setup Amount=500 (non-violating); the update pushed Amount=2000000 —
+    # the EFFECTIVE state violates `Amount > 1000000`, so a successful update
+    # is a real enforcement gap. Evaluating the setup payload alone (500)
+    # would have mis-read this as drift.
+    ev = _run2(outcome="failed", steps=[
+        _setup(),
+        _mutation("update", success=True, matched=False, http_status=204, body=[])])
+    s1 = _StubS1([VrMeta("Discount_Guard", True, "Amount > 1000000", "too big")])
+    interp = _interp(ev, s1)
+    assert interp.cause.cause_kind == "enforcement_gap"
+    assert interp.cause.vr_name == "Discount_Guard"
+    assert "update" in interp.cause.detail
+    assert s1.calls == ["Opportunity"]       # the MUTATION step's sobject
+
+
+def test_update_not_enforced_ischanged_formula_is_indeterminate():
+    # An org-state formula (ISCHANGED) is NonEvaluable on a flat payload —
+    # honest indeterminate, never a guessed drift.
+    ev = _run2(outcome="failed", steps=[
+        _setup(),
+        _mutation("update", success=True, matched=False, http_status=204, body=[])])
+    s1 = _StubS1([VrMeta("NoStageMove", True,
+                         "ISCHANGED(StageName)", "no stage moves")])
+    interp = _interp(ev, s1)
+    assert interp.cause.cause_kind == "vr_formula_indeterminate"
+
+
+def test_update_unasserted_other_vr_fired():
+    ev = _run2(outcome="failed", steps=[
+        _setup(),
+        _mutation("update", success=False, matched=False, http_status=400,
+                  body=[{"errorCode": _VR, "message": "other rule"}])])
+    s1 = _StubS1([VrMeta("OtherRule", True, "Amount > 5", "other rule")])
+    interp = _interp(ev, s1)
+    assert interp.cause.cause_kind == "other_vr_fired"
+    assert interp.cause.vr_name == "OtherRule"
+    assert "update" in interp.cause.detail
+
+
+def test_delete_not_enforced_passes_through_causeless():
+    # VRs cannot enforce delete prohibitions — a formula-derived cause would
+    # be fabricated. Verdict survives; cause stays None (repair.py handles it).
+    ev = _run2(outcome="failed", steps=[
+        _setup(),
+        _mutation("delete", success=True, matched=False, http_status=204, body=[])])
+    s1 = _StubS1([VrMeta("Discount_Guard", True, "Amount > 1000000", "too big")])
+    interp = _interp(ev, s1)
+    assert interp.verdict == "prohibition_not_enforced"
+    assert interp.cause is None
+
+
+def test_delete_unasserted_still_attributes_from_the_rejection_body():
+    # The unasserted path is rejection-body-driven — it works for deletes
+    # (e.g. a platform restriction fired instead of the asserted signal).
+    ev = _run2(outcome="failed", steps=[
+        _setup(),
+        _mutation("delete", success=False, matched=False, http_status=400,
+                  body=[{"errorCode": "DELETE_FAILED", "message": "ref"}])])
+    interp = _interp(ev, _StubS1([]))
+    assert interp.cause.cause_kind == "platform_constraint"
+    assert "delete" in interp.cause.detail

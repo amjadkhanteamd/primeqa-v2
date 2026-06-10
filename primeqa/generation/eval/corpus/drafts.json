@@ -1,289 +1,829 @@
 [
-  {
-    "id": "config-verified-draft",
-    "description": "Config metadata-relationship: VR APPLIES_TO Case is verified -> Layer-1-complete verified draft, no caveat.",
-    "category": "draft",
-    "fixture": {
-      "entities": [
-        {"entity_type": "Object", "sf_api_name": "Case"},
-        {"entity_type": "ValidationRule", "sf_api_name": "Case.RequireReason"}
-      ],
-      "edges": [
-        {"source": "Case.RequireReason", "target": "Case", "edge_type": "APPLIES_TO", "edge_category": "BEHAVIOR"}
-      ]
+ {
+  "id": "config-verified-draft",
+  "description": "Config metadata-relationship: VR APPLIES_TO Case is verified -> Layer-1-complete verified draft, no caveat.",
+  "category": "draft",
+  "fixture": {
+   "entities": [
+    {
+     "entity_type": "Object",
+     "sf_api_name": "Case"
     },
-    "turns": [
-      {"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "Requirement assumes Validation Rule Case.RequireReason applies to Case.", "intent_descriptor": {"archetype_hint": "configuration", "polarity_hint": "positive", "claim_kind_hint": "metadata-relationship-claim", "target_subject_hint": {"edge_type": "APPLIES_TO", "source": {"entity_type": "ValidationRule", "sf_api_name": "Case.RequireReason"}, "target": {"entity_type": "Object", "sf_api_name": "Case"}}}}},
-      {"tool": "emit_outcome", "input": {"outcome_kind": "draft", "payload": {"admissibility_layer": "layer_1"}}}
-    ],
-    "expect": {
-      "outcome_kind": "draft",
-      "admissibility_layer": "layer_1",
-      "caveat_required": false,
-      "caveat_kind": null,
-      "claim": {"archetype": "configuration", "claim_kind": "metadata-relationship-claim"},
-      "recipe": {"trigger_kind": "inspection-trigger", "recipe_kind": "metadata-recipe"}
-    },
-    "live": {
-      "requirement_text": "The Case object must carry a validation rule that requires a reason before a Case is saved — Validation Rule Case.RequireReason applies to Case.",
-      "envelope": {
-        "invariant": [
-          {"field": "outcome_kind", "op": "eq", "value": "draft"},
-          {"field": "archetype", "op": "eq", "value": "configuration"},
-          {"field": "caveat_required", "op": "is_false"}
-        ],
-        "acceptable_variants": [
-          {"field": "claim_kind", "op": "in", "value": ["metadata-relationship-claim", "existence-claim", "property-claim"]}
-        ],
-        "benign": ["explanation", "phrasing", "excerpt", "subject"],
-        "_note": "existence-claim/property-claim are now emittable (D-122), so an existence/property reading of this requirement is a genuine acceptable_variant — a draft, not a refusal (no longer auto-fails). The invariant stays outcome=draft + archetype=configuration + no-caveat; the specific claim_kind is the acceptable variant (not forced into the invariant — that would make the probe brittle to which coherent reading the LLM picks). Each new kind has its own dedicated probe (config-existence-draft, etc.)."
-      }
+    {
+     "entity_type": "ValidationRule",
+     "sf_api_name": "Case.RequireReason"
     }
+   ],
+   "edges": [
+    {
+     "source": "Case.RequireReason",
+     "target": "Case",
+     "edge_type": "APPLIES_TO",
+     "edge_category": "BEHAVIOR"
+    }
+   ]
   },
-  {
-    "id": "caveated-prohibition-negative",
-    "description": "data_behavior prohibition negative on Case (which HAS a VR) -> Layer-1-plausible caveated draft; the first caveat firing.",
-    "category": "caveated_draft",
-    "fixture": {
-      "entities": [
-        {"entity_type": "Object", "sf_api_name": "Case"},
-        {"entity_type": "ValidationRule", "sf_api_name": "Case.RequireReason"}
-      ],
-      "edges": [
-        {"source": "Case.RequireReason", "target": "Case", "edge_type": "APPLIES_TO", "edge_category": "BEHAVIOR"}
-      ]
-    },
-    "turns": [
-      {"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The system shall reject the prohibited operation on Case.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "negative", "claim_kind_hint": "prohibition-claim", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Case"}}}},
-      {"tool": "emit_outcome", "input": {"outcome_kind": "draft", "payload": {"admissibility_layer": "layer_1"}}}
-    ],
-    "expect": {
-      "outcome_kind": "draft",
-      "admissibility_layer": "layer_1",
-      "caveat_required": true,
-      "caveat_kind": "deeper_verification_layer_unparsed",
-      "claim": {"archetype": "data_behavior", "claim_kind": "prohibition-claim"},
-      "recipe": {"trigger_kind": "inspection-trigger", "recipe_kind": "metadata-recipe"}
-    },
-    "live": {
-      "requirement_text": "Users must not be able to close a Case without entering a reason; the platform should reject the save.",
-      "envelope": {
-        "invariant": [
-          {"field": "outcome_kind", "op": "eq", "value": "draft"},
-          {"field": "archetype", "op": "eq", "value": "data_behavior"},
-          {"field": "caveat_required", "op": "is_true"}
-        ],
-        "acceptable_variants": [
-          {"field": "claim_kind", "op": "in", "value": ["prohibition-claim", "state-transition-claim"]}
-        ],
-        "benign": ["explanation", "phrasing", "excerpt", "subject", "caveat_kind"],
-        "_note": "caveat_required is_true: this VR carries NO formula, so nothing derives and the negative stays Layer-1-plausible -> caveated. A non-caveated data_behavior draft would be the D-096.2 overclaim (e.g. a value-claim positive misread). The formula parser has now landed (D-107): a VR with a DERIVABLE formula yields a non-caveated Layer-2 verified negative instead -- see verified-prohibition-negative."
+  "turns": [
+   {
+    "tool": "propose_semantic_intent",
+    "input": {
+     "requirement_excerpt": "Requirement assumes Validation Rule Case.RequireReason applies to Case.",
+     "intent_descriptor": {
+      "archetype_hint": "configuration",
+      "polarity_hint": "positive",
+      "claim_kind_hint": "metadata-relationship-claim",
+      "target_subject_hint": {
+       "edge_type": "APPLIES_TO",
+       "source": {
+        "entity_type": "ValidationRule",
+        "sf_api_name": "Case.RequireReason"
+       },
+       "target": {
+        "entity_type": "Object",
+        "sf_api_name": "Case"
+       }
       }
+     }
     }
+   },
+   {
+    "tool": "emit_outcome",
+    "input": {
+     "outcome_kind": "draft",
+     "payload": {
+      "admissibility_layer": "layer_1"
+     }
+    }
+   }
+  ],
+  "expect": {
+   "outcome_kind": "draft",
+   "admissibility_layer": "layer_1",
+   "caveat_required": false,
+   "caveat_kind": null,
+   "claim": {
+    "archetype": "configuration",
+    "claim_kind": "metadata-relationship-claim"
+   },
+   "recipe": {
+    "trigger_kind": "inspection-trigger",
+    "recipe_kind": "metadata-recipe"
+   }
   },
-  {
-    "id": "verified-prohibition-negative",
-    "description": "data_behavior prohibition negative on Lead, whose VR formula ISBLANK(Reason__c) parses AND derives a certain violating value -> Layer-2 VERIFIED draft, no caveat (D-107). The first LAYER_2 firing; the verified-vs-caveated line is the derivable/not-derivable line.",
-    "category": "verified_negative",
-    "fixture": {
-      "entities": [
-        {"entity_type": "Object", "sf_api_name": "Lead"},
-        {"entity_type": "ValidationRule", "sf_api_name": "Lead.RequireReason", "attributes": {"formula_text": "ISBLANK(Reason__c)"}}
-      ],
-      "edges": [
-        {"source": "Lead.RequireReason", "target": "Lead", "edge_type": "APPLIES_TO", "edge_category": "BEHAVIOR"}
-      ]
-    },
-    "turns": [
-      {"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The system shall reject saving a Lead without a reason.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "negative", "claim_kind_hint": "prohibition-claim", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Lead"}}}},
-      {"tool": "emit_outcome", "input": {"outcome_kind": "draft", "payload": {"admissibility_layer": "layer_2"}}}
+  "live": {
+   "requirement_text": "The Case object must carry a validation rule that requires a reason before a Case is saved \u2014 Validation Rule Case.RequireReason applies to Case.",
+   "envelope": {
+    "invariant": [
+     {
+      "field": "outcome_kind",
+      "op": "eq",
+      "value": "draft"
+     },
+     {
+      "field": "archetype",
+      "op": "eq",
+      "value": "configuration"
+     },
+     {
+      "field": "caveat_required",
+      "op": "is_false"
+     }
     ],
-    "expect": {
-      "outcome_kind": "draft",
-      "admissibility_layer": "layer_2",
-      "caveat_required": false,
-      "caveat_kind": null,
-      "claim": {"archetype": "data_behavior", "claim_kind": "prohibition-claim"},
-      "recipe": {"trigger_kind": "data-mutation-trigger", "recipe_kind": "data-recipe"}
-    },
-    "live": {
-      "requirement_text": "Users must not be able to save a Lead without entering a reason; the platform should reject the save.",
-      "envelope": {
-        "invariant": [
-          {"field": "outcome_kind", "op": "eq", "value": "draft"},
-          {"field": "archetype", "op": "eq", "value": "data_behavior"},
-          {"field": "caveat_required", "op": "is_false"}
-        ],
-        "acceptable_variants": [
-          {"field": "claim_kind", "op": "in", "value": ["prohibition-claim"]}
-        ],
-        "benign": ["explanation", "phrasing", "excerpt", "subject", "caveat_kind"],
-        "_note": "caveat_required is_false: the grounding VR formula (ISBLANK(Reason__c)) parses and derives a certain violating value, so the negative is Layer-2-verified (D-107) and carries no caveat. A state-transition reading is emission-deferred (capability-gated, as in the caveated probe), so only prohibition-claim is an acceptable variant."
-      }
-    }
-  },
-  {
-    "id": "value-claim-positive-draft",
-    "description": "data_behavior value-claim positive on Account.Status: the named field grounds (verify-at-grounding, D-115.3) and the requirement-sourced value carries verbatim -> Layer-1 draft, no caveat. The first positive emit; the LLM supplies the fully-qualified field_name + expected_value (D-115.4 prompt v2 guidance).",
-    "category": "value_claim",
-    "fixture": {
-      "entities": [
-        {"entity_type": "Object", "sf_api_name": "Account"},
-        {"entity_type": "Field", "sf_api_name": "Account.Status"}
-      ],
-      "edges": [
-        {"source": "Account.Status", "target": "Account", "edge_type": "BELONGS_TO", "edge_category": "STRUCTURAL"}
+    "acceptable_variants": [
+     {
+      "field": "claim_kind",
+      "op": "in",
+      "value": [
+       "metadata-relationship-claim",
+       "existence-claim",
+       "property-claim"
       ]
-    },
-    "turns": [
-      {"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "A new Account's Status must be set to Active.", "intent_descriptor": {"archetype_hint": "data_behavior", "polarity_hint": "positive", "claim_kind_hint": "value-claim", "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Account", "field_name": "Account.Status", "expected_value": "Active"}}}},
-      {"tool": "emit_outcome", "input": {"outcome_kind": "draft", "payload": {"admissibility_layer": "layer_1"}}}
+     }
     ],
-    "expect": {
-      "outcome_kind": "draft",
-      "admissibility_layer": "layer_1",
-      "caveat_required": false,
-      "caveat_kind": null,
-      "claim": {"archetype": "data_behavior", "claim_kind": "value-claim"},
-      "recipe": {"trigger_kind": "data-mutation-trigger", "recipe_kind": "data-recipe"}
-    },
-    "live": {
-      "requirement_text": "When a new Account is created, its Status field must be set to 'Active'.",
-      "envelope": {
-        "invariant": [
-          {"field": "outcome_kind", "op": "eq", "value": "draft"},
-          {"field": "archetype", "op": "eq", "value": "data_behavior"},
-          {"field": "caveat_required", "op": "is_false"}
-        ],
-        "acceptable_variants": [
-          {"field": "claim_kind", "op": "in", "value": ["value-claim"]}
-        ],
-        "benign": ["explanation", "phrasing", "excerpt", "subject", "caveat_kind"],
-        "_note": "The live LLM (prompt generation@v2) must propose a value-claim naming the field as the fully-qualified Account.Status with expected_value 'Active' (D-115.4). value-claim is a Layer-1 positive, uncaveated. A bare unqualified field_name would miss grounding -> not a draft -> this probe fails, surfacing the format gap. A state-transition reading is emission-deferred (not yet emittable), so only value-claim is an acceptable variant."
-      }
-    }
-  },
-  {
-    "id": "config-existence-draft",
-    "description": "Config existence-claim: the Account.Industry field exists -> Layer-1-complete draft, no caveat (D-122 emission, D-125 live-reach). The flat {entity_type, sf_api_name} subject hint.",
-    "category": "draft",
-    "fixture": {
-      "entities": [
-        {"entity_type": "Object", "sf_api_name": "Account"},
-        {"entity_type": "Field", "sf_api_name": "Account.Industry"}
-      ],
-      "edges": [
-        {"source": "Account.Industry", "target": "Account", "edge_type": "BELONGS_TO", "edge_category": "STRUCTURAL"}
-      ]
-    },
-    "turns": [
-      {"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The Account object has an Industry field.", "intent_descriptor": {"archetype_hint": "configuration", "polarity_hint": "positive", "claim_kind_hint": "existence-claim", "target_subject_hint": {"entity_type": "Field", "sf_api_name": "Account.Industry"}}}},
-      {"tool": "emit_outcome", "input": {"outcome_kind": "draft", "payload": {"admissibility_layer": "layer_1"}}}
+    "benign": [
+     "explanation",
+     "phrasing",
+     "excerpt",
+     "subject"
     ],
-    "expect": {
-      "outcome_kind": "draft",
-      "admissibility_layer": "layer_1",
-      "caveat_required": false,
-      "caveat_kind": null,
-      "claim": {"archetype": "configuration", "claim_kind": "existence-claim"},
-      "recipe": {"trigger_kind": "inspection-trigger", "recipe_kind": "metadata-recipe"}
-    },
-    "live": {
-      "requirement_text": "The Account object must have an Industry field.",
-      "envelope": {
-        "invariant": [
-          {"field": "outcome_kind", "op": "eq", "value": "draft"},
-          {"field": "archetype", "op": "eq", "value": "configuration"},
-          {"field": "caveat_required", "op": "is_false"}
-        ],
-        "acceptable_variants": [
-          {"field": "claim_kind", "op": "in", "value": ["existence-claim", "metadata-relationship-claim"]}
-        ],
-        "benign": ["explanation", "phrasing", "excerpt", "subject"],
-        "_note": "Either an existence-claim (the field exists) or a metadata-relationship-claim (Field BELONGS_TO Account) is a coherent, groundable reading on this fixture; both are Layer-1-complete drafts. A property-claim reading would over-read (no value stated) and miss grounding (no field_details seeded), so it is NOT an acceptable variant here."
-      }
-    }
-  },
-  {
-    "id": "permission-capability-draft",
-    "description": "Permission capability-claim: the Admin profile grants edit on Account.AnnualRevenue (the GRANTS_FIELD_ACCESS edge carries can_edit=true) -> Layer-1-complete draft, no caveat (D-123 emission, D-125 live-reach). The four-key {grantee, target, granted_capability, grant_type} hint; the grant edge's bit is checked.",
-    "category": "draft",
-    "fixture": {
-      "entities": [
-        {"entity_type": "Profile", "sf_api_name": "Admin"},
-        {"entity_type": "Field", "sf_api_name": "Account.AnnualRevenue"}
-      ],
-      "edges": [
-        {"source": "Admin", "target": "Account.AnnualRevenue", "edge_type": "GRANTS_FIELD_ACCESS", "edge_category": "PERMISSION", "properties": {"can_read": true, "can_edit": true}}
-      ]
-    },
-    "turns": [
-      {"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The Admin profile can edit Account.AnnualRevenue.", "intent_descriptor": {"archetype_hint": "permission", "polarity_hint": "positive", "claim_kind_hint": "capability-claim", "target_subject_hint": {"grantee": {"entity_type": "Profile", "sf_api_name": "Admin"}, "target": {"entity_type": "Field", "sf_api_name": "Account.AnnualRevenue"}, "granted_capability": "edit", "grant_type": "field"}}}},
-      {"tool": "emit_outcome", "input": {"outcome_kind": "draft", "payload": {"admissibility_layer": "layer_1"}}}
-    ],
-    "expect": {
-      "outcome_kind": "draft",
-      "admissibility_layer": "layer_1",
-      "caveat_required": false,
-      "caveat_kind": null,
-      "claim": {"archetype": "permission", "claim_kind": "capability-claim"},
-      "recipe": {"trigger_kind": "inspection-trigger", "recipe_kind": "metadata-recipe"}
-    },
-    "live": {
-      "requirement_text": "The Admin profile must be able to edit the Account AnnualRevenue field.",
-      "envelope": {
-        "invariant": [
-          {"field": "outcome_kind", "op": "eq", "value": "draft"},
-          {"field": "archetype", "op": "eq", "value": "permission"},
-          {"field": "caveat_required", "op": "is_false"}
-        ],
-        "acceptable_variants": [
-          {"field": "claim_kind", "op": "in", "value": ["capability-claim"]}
-        ],
-        "benign": ["explanation", "phrasing", "excerpt", "subject"],
-        "_note": "The live LLM (generation@v3) must propose a capability-claim with grantee=Profile Admin, target=Field Account.AnnualRevenue, granted_capability=edit, grant_type=field (D-125 permission fragment). The grant edge carries can_edit=true so it grounds Layer-1-complete; a claim of edit on a read-only grant would refuse, surfacing the bit-check."
-      }
-    }
-  },
-  {
-    "id": "ui-layout-draft",
-    "description": "UI layout-claim: Account.Industry is placed on the Account layout (the INCLUDES_FIELD edge) -> Layer-1-complete draft, no caveat (D-124 emission, D-125 live-reach). The two-key {layout, field} hint; metadata-recipe (NOT ui-recipe).",
-    "category": "draft",
-    "fixture": {
-      "entities": [
-        {"entity_type": "Layout", "sf_api_name": "Account-Account Layout"},
-        {"entity_type": "Field", "sf_api_name": "Account.Industry"}
-      ],
-      "edges": [
-        {"source": "Account-Account Layout", "target": "Account.Industry", "edge_type": "INCLUDES_FIELD", "edge_category": "CONFIG", "properties": {"section_name": "Details", "section_order": 0, "row": 0, "column": 0}}
-      ]
-    },
-    "turns": [
-      {"tool": "propose_semantic_intent", "input": {"requirement_excerpt": "The Industry field appears on the Account layout.", "intent_descriptor": {"archetype_hint": "ui", "polarity_hint": "positive", "claim_kind_hint": "layout-claim", "target_subject_hint": {"layout": {"entity_type": "Layout", "sf_api_name": "Account-Account Layout"}, "field": {"entity_type": "Field", "sf_api_name": "Account.Industry"}}}}},
-      {"tool": "emit_outcome", "input": {"outcome_kind": "draft", "payload": {"admissibility_layer": "layer_1"}}}
-    ],
-    "expect": {
-      "outcome_kind": "draft",
-      "admissibility_layer": "layer_1",
-      "caveat_required": false,
-      "caveat_kind": null,
-      "claim": {"archetype": "ui", "claim_kind": "layout-claim"},
-      "recipe": {"trigger_kind": "inspection-trigger", "recipe_kind": "metadata-recipe"}
-    },
-    "live": {
-      "requirement_text": "The Industry field must appear on the Account page layout.",
-      "envelope": {
-        "invariant": [
-          {"field": "outcome_kind", "op": "eq", "value": "draft"},
-          {"field": "archetype", "op": "eq", "value": "ui"},
-          {"field": "caveat_required", "op": "is_false"}
-        ],
-        "acceptable_variants": [
-          {"field": "claim_kind", "op": "in", "value": ["layout-claim"]}
-        ],
-        "benign": ["explanation", "phrasing", "excerpt", "subject"],
-        "_note": "The live LLM (generation@v3) must propose a layout-claim with layout=Layout 'Account-Account Layout' and field=Field Account.Industry (D-125 ui fragment). The INCLUDES_FIELD placement edge grounds it Layer-1-complete via a metadata-recipe (NOT a ui-recipe — placement is a metadata fact, D-124)."
-      }
-    }
+    "_note": "existence-claim/property-claim are now emittable (D-122), so an existence/property reading of this requirement is a genuine acceptable_variant \u2014 a draft, not a refusal (no longer auto-fails). The invariant stays outcome=draft + archetype=configuration + no-caveat; the specific claim_kind is the acceptable variant (not forced into the invariant \u2014 that would make the probe brittle to which coherent reading the LLM picks). Each new kind has its own dedicated probe (config-existence-draft, etc.)."
+   }
   }
+ },
+ {
+  "id": "caveated-prohibition-negative",
+  "description": "data_behavior prohibition negative on Case (which HAS a VR) -> Layer-1-plausible caveated draft; the first caveat firing.",
+  "category": "caveated_draft",
+  "fixture": {
+   "entities": [
+    {
+     "entity_type": "Object",
+     "sf_api_name": "Case"
+    },
+    {
+     "entity_type": "ValidationRule",
+     "sf_api_name": "Case.RequireReason"
+    }
+   ],
+   "edges": [
+    {
+     "source": "Case.RequireReason",
+     "target": "Case",
+     "edge_type": "APPLIES_TO",
+     "edge_category": "BEHAVIOR"
+    }
+   ]
+  },
+  "turns": [
+   {
+    "tool": "propose_semantic_intent",
+    "input": {
+     "requirement_excerpt": "The system shall reject the prohibited operation on Case.",
+     "intent_descriptor": {
+      "archetype_hint": "data_behavior",
+      "polarity_hint": "negative",
+      "claim_kind_hint": "prohibition-claim",
+      "target_subject_hint": {
+       "entity_type": "Object",
+       "sf_api_name": "Case"
+      }
+     }
+    }
+   },
+   {
+    "tool": "emit_outcome",
+    "input": {
+     "outcome_kind": "draft",
+     "payload": {
+      "admissibility_layer": "layer_1"
+     }
+    }
+   }
+  ],
+  "expect": {
+   "outcome_kind": "draft",
+   "admissibility_layer": "layer_1",
+   "caveat_required": true,
+   "caveat_kind": "deeper_verification_layer_unparsed",
+   "claim": {
+    "archetype": "data_behavior",
+    "claim_kind": "prohibition-claim"
+   },
+   "recipe": {
+    "trigger_kind": "inspection-trigger",
+    "recipe_kind": "metadata-recipe"
+   }
+  },
+  "live": {
+   "requirement_text": "Users must not be able to close a Case without entering a reason; the platform should reject the save.",
+   "envelope": {
+    "invariant": [
+     {
+      "field": "outcome_kind",
+      "op": "eq",
+      "value": "draft"
+     },
+     {
+      "field": "archetype",
+      "op": "eq",
+      "value": "data_behavior"
+     },
+     {
+      "field": "caveat_required",
+      "op": "is_true"
+     }
+    ],
+    "acceptable_variants": [
+     {
+      "field": "claim_kind",
+      "op": "in",
+      "value": [
+       "prohibition-claim",
+       "state-transition-claim"
+      ]
+     }
+    ],
+    "benign": [
+     "explanation",
+     "phrasing",
+     "excerpt",
+     "subject",
+     "caveat_kind"
+    ],
+    "_note": "caveat_required is_true: this VR carries NO formula, so nothing derives and the negative stays Layer-1-plausible -> caveated. A non-caveated data_behavior draft would be the D-096.2 overclaim (e.g. a value-claim positive misread). The formula parser has now landed (D-107): a VR with a DERIVABLE formula yields a non-caveated Layer-2 verified negative instead -- see verified-prohibition-negative."
+   }
+  }
+ },
+ {
+  "id": "verified-prohibition-negative",
+  "description": "data_behavior prohibition negative on Lead, whose VR formula ISBLANK(Reason__c) parses AND derives a certain violating value -> Layer-2 VERIFIED draft, no caveat (D-107). The first LAYER_2 firing; the verified-vs-caveated line is the derivable/not-derivable line.",
+  "category": "verified_negative",
+  "fixture": {
+   "entities": [
+    {
+     "entity_type": "Object",
+     "sf_api_name": "Lead"
+    },
+    {
+     "entity_type": "ValidationRule",
+     "sf_api_name": "Lead.RequireReason",
+     "attributes": {
+      "formula_text": "ISBLANK(Reason__c)"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "source": "Lead.RequireReason",
+     "target": "Lead",
+     "edge_type": "APPLIES_TO",
+     "edge_category": "BEHAVIOR"
+    }
+   ]
+  },
+  "turns": [
+   {
+    "tool": "propose_semantic_intent",
+    "input": {
+     "requirement_excerpt": "The system shall reject saving a Lead without a reason.",
+     "intent_descriptor": {
+      "archetype_hint": "data_behavior",
+      "polarity_hint": "negative",
+      "claim_kind_hint": "prohibition-claim",
+      "target_subject_hint": {
+       "entity_type": "Object",
+       "sf_api_name": "Lead"
+      }
+     }
+    }
+   },
+   {
+    "tool": "emit_outcome",
+    "input": {
+     "outcome_kind": "draft",
+     "payload": {
+      "admissibility_layer": "layer_2"
+     }
+    }
+   }
+  ],
+  "expect": {
+   "outcome_kind": "draft",
+   "admissibility_layer": "layer_2",
+   "caveat_required": false,
+   "caveat_kind": null,
+   "claim": {
+    "archetype": "data_behavior",
+    "claim_kind": "prohibition-claim"
+   },
+   "recipe": {
+    "trigger_kind": "data-mutation-trigger",
+    "recipe_kind": "data-recipe"
+   }
+  },
+  "live": {
+   "requirement_text": "Users must not be able to save a Lead without entering a reason; the platform should reject the save.",
+   "envelope": {
+    "invariant": [
+     {
+      "field": "outcome_kind",
+      "op": "eq",
+      "value": "draft"
+     },
+     {
+      "field": "archetype",
+      "op": "eq",
+      "value": "data_behavior"
+     },
+     {
+      "field": "caveat_required",
+      "op": "is_false"
+     }
+    ],
+    "acceptable_variants": [
+     {
+      "field": "claim_kind",
+      "op": "in",
+      "value": [
+       "prohibition-claim"
+      ]
+     }
+    ],
+    "benign": [
+     "explanation",
+     "phrasing",
+     "excerpt",
+     "subject",
+     "caveat_kind"
+    ],
+    "_note": "caveat_required is_false: the grounding VR formula (ISBLANK(Reason__c)) parses and derives a certain violating value, so the negative is Layer-2-verified (D-107) and carries no caveat. A state-transition reading is emission-deferred (capability-gated, as in the caveated probe), so only prohibition-claim is an acceptable variant."
+   }
+  }
+ },
+ {
+  "id": "value-claim-positive-draft",
+  "description": "data_behavior value-claim positive on Account.Status: the named field grounds (verify-at-grounding, D-115.3) and the requirement-sourced value carries verbatim -> Layer-1 draft, no caveat. The first positive emit; the LLM supplies the fully-qualified field_name + expected_value (D-115.4 prompt v2 guidance).",
+  "category": "value_claim",
+  "fixture": {
+   "entities": [
+    {
+     "entity_type": "Object",
+     "sf_api_name": "Account"
+    },
+    {
+     "entity_type": "Field",
+     "sf_api_name": "Account.Status"
+    }
+   ],
+   "edges": [
+    {
+     "source": "Account.Status",
+     "target": "Account",
+     "edge_type": "BELONGS_TO",
+     "edge_category": "STRUCTURAL"
+    }
+   ]
+  },
+  "turns": [
+   {
+    "tool": "propose_semantic_intent",
+    "input": {
+     "requirement_excerpt": "A new Account's Status must be set to Active.",
+     "intent_descriptor": {
+      "archetype_hint": "data_behavior",
+      "polarity_hint": "positive",
+      "claim_kind_hint": "value-claim",
+      "target_subject_hint": {
+       "entity_type": "Object",
+       "sf_api_name": "Account",
+       "field_name": "Account.Status",
+       "expected_value": "Active"
+      }
+     }
+    }
+   },
+   {
+    "tool": "emit_outcome",
+    "input": {
+     "outcome_kind": "draft",
+     "payload": {
+      "admissibility_layer": "layer_1"
+     }
+    }
+   }
+  ],
+  "expect": {
+   "outcome_kind": "draft",
+   "admissibility_layer": "layer_1",
+   "caveat_required": false,
+   "caveat_kind": null,
+   "claim": {
+    "archetype": "data_behavior",
+    "claim_kind": "value-claim"
+   },
+   "recipe": {
+    "trigger_kind": "data-mutation-trigger",
+    "recipe_kind": "data-recipe"
+   }
+  },
+  "live": {
+   "requirement_text": "When a new Account is created, its Status field must be set to 'Active'.",
+   "envelope": {
+    "invariant": [
+     {
+      "field": "outcome_kind",
+      "op": "eq",
+      "value": "draft"
+     },
+     {
+      "field": "archetype",
+      "op": "eq",
+      "value": "data_behavior"
+     },
+     {
+      "field": "caveat_required",
+      "op": "is_false"
+     }
+    ],
+    "acceptable_variants": [
+     {
+      "field": "claim_kind",
+      "op": "in",
+      "value": [
+       "value-claim"
+      ]
+     }
+    ],
+    "benign": [
+     "explanation",
+     "phrasing",
+     "excerpt",
+     "subject",
+     "caveat_kind"
+    ],
+    "_note": "The live LLM (prompt generation@v2) must propose a value-claim naming the field as the fully-qualified Account.Status with expected_value 'Active' (D-115.4). value-claim is a Layer-1 positive, uncaveated. A bare unqualified field_name would miss grounding -> not a draft -> this probe fails, surfacing the format gap. A state-transition reading is emission-deferred (not yet emittable), so only value-claim is an acceptable variant."
+   }
+  }
+ },
+ {
+  "id": "config-existence-draft",
+  "description": "Config existence-claim: the Account.Industry field exists -> Layer-1-complete draft, no caveat (D-122 emission, D-125 live-reach). The flat {entity_type, sf_api_name} subject hint.",
+  "category": "draft",
+  "fixture": {
+   "entities": [
+    {
+     "entity_type": "Object",
+     "sf_api_name": "Account"
+    },
+    {
+     "entity_type": "Field",
+     "sf_api_name": "Account.Industry"
+    }
+   ],
+   "edges": [
+    {
+     "source": "Account.Industry",
+     "target": "Account",
+     "edge_type": "BELONGS_TO",
+     "edge_category": "STRUCTURAL"
+    }
+   ]
+  },
+  "turns": [
+   {
+    "tool": "propose_semantic_intent",
+    "input": {
+     "requirement_excerpt": "The Account object has an Industry field.",
+     "intent_descriptor": {
+      "archetype_hint": "configuration",
+      "polarity_hint": "positive",
+      "claim_kind_hint": "existence-claim",
+      "target_subject_hint": {
+       "entity_type": "Field",
+       "sf_api_name": "Account.Industry"
+      }
+     }
+    }
+   },
+   {
+    "tool": "emit_outcome",
+    "input": {
+     "outcome_kind": "draft",
+     "payload": {
+      "admissibility_layer": "layer_1"
+     }
+    }
+   }
+  ],
+  "expect": {
+   "outcome_kind": "draft",
+   "admissibility_layer": "layer_1",
+   "caveat_required": false,
+   "caveat_kind": null,
+   "claim": {
+    "archetype": "configuration",
+    "claim_kind": "existence-claim"
+   },
+   "recipe": {
+    "trigger_kind": "inspection-trigger",
+    "recipe_kind": "metadata-recipe"
+   }
+  },
+  "live": {
+   "requirement_text": "The Account object must have an Industry field.",
+   "envelope": {
+    "invariant": [
+     {
+      "field": "outcome_kind",
+      "op": "eq",
+      "value": "draft"
+     },
+     {
+      "field": "archetype",
+      "op": "eq",
+      "value": "configuration"
+     },
+     {
+      "field": "caveat_required",
+      "op": "is_false"
+     }
+    ],
+    "acceptable_variants": [
+     {
+      "field": "claim_kind",
+      "op": "in",
+      "value": [
+       "existence-claim",
+       "metadata-relationship-claim"
+      ]
+     }
+    ],
+    "benign": [
+     "explanation",
+     "phrasing",
+     "excerpt",
+     "subject"
+    ],
+    "_note": "Either an existence-claim (the field exists) or a metadata-relationship-claim (Field BELONGS_TO Account) is a coherent, groundable reading on this fixture; both are Layer-1-complete drafts. A property-claim reading would over-read (no value stated) and miss grounding (no field_details seeded), so it is NOT an acceptable variant here."
+   }
+  }
+ },
+ {
+  "id": "permission-capability-draft",
+  "description": "Permission capability-claim: the Admin profile grants edit on Account.AnnualRevenue (the GRANTS_FIELD_ACCESS edge carries can_edit=true) -> Layer-1-complete draft, no caveat (D-123 emission, D-125 live-reach). The four-key {grantee, target, granted_capability, grant_type} hint; the grant edge's bit is checked.",
+  "category": "draft",
+  "fixture": {
+   "entities": [
+    {
+     "entity_type": "Profile",
+     "sf_api_name": "Admin"
+    },
+    {
+     "entity_type": "Field",
+     "sf_api_name": "Account.AnnualRevenue"
+    }
+   ],
+   "edges": [
+    {
+     "source": "Admin",
+     "target": "Account.AnnualRevenue",
+     "edge_type": "GRANTS_FIELD_ACCESS",
+     "edge_category": "PERMISSION",
+     "properties": {
+      "can_read": true,
+      "can_edit": true
+     }
+    }
+   ]
+  },
+  "turns": [
+   {
+    "tool": "propose_semantic_intent",
+    "input": {
+     "requirement_excerpt": "The Admin profile can edit Account.AnnualRevenue.",
+     "intent_descriptor": {
+      "archetype_hint": "permission",
+      "polarity_hint": "positive",
+      "claim_kind_hint": "capability-claim",
+      "target_subject_hint": {
+       "grantee": {
+        "entity_type": "Profile",
+        "sf_api_name": "Admin"
+       },
+       "target": {
+        "entity_type": "Field",
+        "sf_api_name": "Account.AnnualRevenue"
+       },
+       "granted_capability": "edit",
+       "grant_type": "field"
+      }
+     }
+    }
+   },
+   {
+    "tool": "emit_outcome",
+    "input": {
+     "outcome_kind": "draft",
+     "payload": {
+      "admissibility_layer": "layer_1"
+     }
+    }
+   }
+  ],
+  "expect": {
+   "outcome_kind": "draft",
+   "admissibility_layer": "layer_1",
+   "caveat_required": false,
+   "caveat_kind": null,
+   "claim": {
+    "archetype": "permission",
+    "claim_kind": "capability-claim"
+   },
+   "recipe": {
+    "trigger_kind": "inspection-trigger",
+    "recipe_kind": "metadata-recipe"
+   }
+  },
+  "live": {
+   "requirement_text": "The Admin profile must be able to edit the Account AnnualRevenue field.",
+   "envelope": {
+    "invariant": [
+     {
+      "field": "outcome_kind",
+      "op": "eq",
+      "value": "draft"
+     },
+     {
+      "field": "archetype",
+      "op": "eq",
+      "value": "permission"
+     },
+     {
+      "field": "caveat_required",
+      "op": "is_false"
+     }
+    ],
+    "acceptable_variants": [
+     {
+      "field": "claim_kind",
+      "op": "in",
+      "value": [
+       "capability-claim"
+      ]
+     }
+    ],
+    "benign": [
+     "explanation",
+     "phrasing",
+     "excerpt",
+     "subject"
+    ],
+    "_note": "The live LLM (generation@v3) must propose a capability-claim with grantee=Profile Admin, target=Field Account.AnnualRevenue, granted_capability=edit, grant_type=field (D-125 permission fragment). The grant edge carries can_edit=true so it grounds Layer-1-complete; a claim of edit on a read-only grant would refuse, surfacing the bit-check."
+   }
+  }
+ },
+ {
+  "id": "ui-layout-draft",
+  "description": "UI layout-claim: Account.Industry is placed on the Account layout (the INCLUDES_FIELD edge) -> Layer-1-complete draft, no caveat (D-124 emission, D-125 live-reach). The two-key {layout, field} hint; metadata-recipe (NOT ui-recipe).",
+  "category": "draft",
+  "fixture": {
+   "entities": [
+    {
+     "entity_type": "Layout",
+     "sf_api_name": "Account-Account Layout"
+    },
+    {
+     "entity_type": "Field",
+     "sf_api_name": "Account.Industry"
+    }
+   ],
+   "edges": [
+    {
+     "source": "Account-Account Layout",
+     "target": "Account.Industry",
+     "edge_type": "INCLUDES_FIELD",
+     "edge_category": "CONFIG",
+     "properties": {
+      "section_name": "Details",
+      "section_order": 0,
+      "row": 0,
+      "column": 0
+     }
+    }
+   ]
+  },
+  "turns": [
+   {
+    "tool": "propose_semantic_intent",
+    "input": {
+     "requirement_excerpt": "The Industry field appears on the Account layout.",
+     "intent_descriptor": {
+      "archetype_hint": "ui",
+      "polarity_hint": "positive",
+      "claim_kind_hint": "layout-claim",
+      "target_subject_hint": {
+       "layout": {
+        "entity_type": "Layout",
+        "sf_api_name": "Account-Account Layout"
+       },
+       "field": {
+        "entity_type": "Field",
+        "sf_api_name": "Account.Industry"
+       }
+      }
+     }
+    }
+   },
+   {
+    "tool": "emit_outcome",
+    "input": {
+     "outcome_kind": "draft",
+     "payload": {
+      "admissibility_layer": "layer_1"
+     }
+    }
+   }
+  ],
+  "expect": {
+   "outcome_kind": "draft",
+   "admissibility_layer": "layer_1",
+   "caveat_required": false,
+   "caveat_kind": null,
+   "claim": {
+    "archetype": "ui",
+    "claim_kind": "layout-claim"
+   },
+   "recipe": {
+    "trigger_kind": "inspection-trigger",
+    "recipe_kind": "metadata-recipe"
+   }
+  },
+  "live": {
+   "requirement_text": "The Industry field must appear on the Account page layout.",
+   "envelope": {
+    "invariant": [
+     {
+      "field": "outcome_kind",
+      "op": "eq",
+      "value": "draft"
+     },
+     {
+      "field": "archetype",
+      "op": "eq",
+      "value": "ui"
+     },
+     {
+      "field": "caveat_required",
+      "op": "is_false"
+     }
+    ],
+    "acceptable_variants": [
+     {
+      "field": "claim_kind",
+      "op": "in",
+      "value": [
+       "layout-claim"
+      ]
+     }
+    ],
+    "benign": [
+     "explanation",
+     "phrasing",
+     "excerpt",
+     "subject"
+    ],
+    "_note": "The live LLM (generation@v3) must propose a layout-claim with layout=Layout 'Account-Account Layout' and field=Field Account.Industry (D-125 ui fragment). The INCLUDES_FIELD placement edge grounds it Layer-1-complete via a metadata-recipe (NOT a ui-recipe \u2014 placement is a metadata fact, D-124)."
+   }
+  }
+ },
+ {
+  "id": "update-rejected-prohibition-negative",
+  "description": "data_behavior prohibition negative on Opportunity with operation=modify_record and a two-way-derivable comparison formula -> the D-203 2-step update-rejected behavioral recipe (trigger operation=update), Layer-2 verified, no caveat.",
+  "category": "verified_negative",
+  "fixture": {
+   "entities": [
+    {
+     "entity_type": "Object",
+     "sf_api_name": "Opportunity"
+    },
+    {
+     "entity_type": "ValidationRule",
+     "sf_api_name": "Opportunity.Discount_Guard",
+     "attributes": {
+      "formula_text": "Discount_Percent__c > 40"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "source": "Opportunity.Discount_Guard",
+     "target": "Opportunity",
+     "edge_type": "APPLIES_TO",
+     "edge_category": "BEHAVIOR"
+    }
+   ]
+  },
+  "turns": [
+   {
+    "tool": "propose_semantic_intent",
+    "input": {
+     "requirement_excerpt": "The system shall reject updating an Opportunity's discount above 40 percent.",
+     "intent_descriptor": {
+      "archetype_hint": "data_behavior",
+      "polarity_hint": "negative",
+      "claim_kind_hint": "prohibition-claim",
+      "target_subject_hint": {
+       "entity_type": "Object",
+       "sf_api_name": "Opportunity",
+       "operation": "modify_record"
+      }
+     }
+    }
+   },
+   {
+    "tool": "emit_outcome",
+    "input": {
+     "outcome_kind": "draft",
+     "payload": {
+      "admissibility_layer": "layer_2"
+     }
+    }
+   }
+  ],
+  "expect": {
+   "outcome_kind": "draft",
+   "admissibility_layer": "layer_2",
+   "caveat_required": false,
+   "caveat_kind": null,
+   "claim": {
+    "archetype": "data_behavior",
+    "claim_kind": "prohibition-claim"
+   },
+   "recipe": {
+    "trigger_kind": "data-mutation-trigger",
+    "recipe_kind": "data-recipe"
+   },
+   "trigger_operation": "update"
+  }
+ }
 ]

@@ -21,7 +21,12 @@ from primeqa.execution_engine import (
     PlanTranslationError,
     build_data_recipe_plan,
 )
-from primeqa.execution_engine.plan import PlannedAssertion, PlannedDataRead
+from primeqa.execution_engine.plan import (
+    PlannedAssertion,
+    PlannedDataRead,
+    PlannedDelete,
+    PlannedUpdate,
+)
 from primeqa.test_representation.coordinator import RecipeRead
 from primeqa.test_representation.models.environment import ExecutionEnvironmentBody
 from primeqa.test_representation.models.recipes.data_recipe import DataRecipeBody
@@ -215,12 +220,13 @@ def test_rejects_lone_positive_create():
         build_data_recipe_plan(recipe)
 
 
-def test_rejects_multi_step_recipe():
-    # Multi-step / provisioned negatives are deferred (D-110).
+def test_rejects_flagged_create_with_extra_step():
+    # A create-rejected negative is single-step (D-110.2); a 2-step negative
+    # carries the flag on the MUTATION, never the setup create (D-203).
     extra = [{"kind": "read", "step_id": "read-back",
               "target": {"ref_kind": "logical", "entity_type": "Object", "external_id": "Lead"}}]
     recipe = _recipe_read(observation_realization=_negative_body(extra_steps=extra))
-    with pytest.raises(PlanTranslationError, match="single create-rejected step"):
+    with pytest.raises(PlanTranslationError, match="must not carry expect_rejection"):
         build_data_recipe_plan(recipe)
 
 
@@ -257,3 +263,106 @@ def test_planned_create_is_frozen():
     plan = build_data_recipe_plan(_recipe_read())
     with pytest.raises(Exception):
         plan.steps[0].step_id = "mutated"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# D-203 — the 2-step negative (setup create -> rejected update/delete)
+# ---------------------------------------------------------------------------
+
+def _two_step_body(*, mutation_kind="update", flag_mutation=True,
+                   mutation_object="Lead") -> DataRecipeBody:
+    target = {"ref_kind": "logical", "entity_type": "Object", "external_id": "Lead"}
+    mut_target = {"ref_kind": "logical", "entity_type": "Object",
+                  "external_id": mutation_object}
+    mutation = {"kind": mutation_kind, "step_id": f"{mutation_kind}-violating",
+                "target": mut_target}
+    if mutation_kind == "update":
+        mutation["field_changes"] = {"Lead.AnnualRevenue": 2000000}
+    if flag_mutation:
+        mutation["expect_rejection"] = {"error_code": _VR_CODE}
+    return DataRecipeBody.model_validate({
+        "api_choice": "rest", "identity_context": "system",
+        "execution_mechanism": "direct_api",
+        "steps": [{"kind": "create", "step_id": "create-setup",
+                   "target_object": target,
+                   "field_values": {"Lead.Company": "Acme"}},
+                  mutation],
+    })
+
+
+def test_decodes_two_step_update_rejected_to_plan():
+    plan = build_data_recipe_plan(
+        _recipe_read(observation_realization=_two_step_body()))
+    assert len(plan.steps) == 2
+    setup, mutation = plan.steps
+    assert isinstance(setup, PlannedCreate) and setup.expect_rejection is None
+    assert setup.step_id == "create-setup"
+    assert isinstance(mutation, PlannedUpdate)
+    assert mutation.step_id == "update-violating"
+    assert mutation.setup_step_id == "create-setup"          # positional binding
+    assert mutation.field_changes == {"Lead.AnnualRevenue": 2000000}
+    assert mutation.expect_rejection.error_code == _VR_CODE
+
+
+def test_decodes_two_step_delete_rejected_to_plan():
+    plan = build_data_recipe_plan(
+        _recipe_read(observation_realization=_two_step_body(mutation_kind="delete")))
+    setup, mutation = plan.steps
+    assert isinstance(mutation, PlannedDelete)
+    assert mutation.setup_step_id == "create-setup"
+    assert mutation.expect_rejection.error_code == _VR_CODE
+
+
+def test_unflagged_create_update_pair_routes_to_positive_and_fails_loud():
+    # No step carries expect_rejection → the positive vertical, whose triple
+    # gate names the mismatch (an ordinary update step is a 5b-2 concern).
+    recipe = _recipe_read(
+        observation_realization=_two_step_body(flag_mutation=False))
+    with pytest.raises(PlanTranslationError, match="CreateStep -> ReadStep -> AssertStep"):
+        build_data_recipe_plan(recipe)
+
+
+def test_rejects_mutation_on_a_different_object_than_setup():
+    recipe = _recipe_read(observation_realization=_two_step_body(
+        mutation_object="Account"))
+    with pytest.raises(PlanTranslationError,
+                       match="must act on the record the setup creates"):
+        build_data_recipe_plan(recipe)
+
+
+def test_rejects_three_step_negative():
+    body = _two_step_body()
+    three = DataRecipeBody.model_validate({
+        "api_choice": "rest", "identity_context": "system",
+        "execution_mechanism": "direct_api",
+        "steps": ([s.model_dump(mode="json") for s in body.steps]
+                  + [{"kind": "read", "step_id": "read-after",
+                      "target": {"ref_kind": "logical", "entity_type": "Object",
+                                 "external_id": "Lead"}}]),
+    })
+    recipe = _recipe_read(observation_realization=three)
+    with pytest.raises(PlanTranslationError, match="N-step negatives are deferred"):
+        build_data_recipe_plan(recipe)
+
+
+def test_rejects_lone_flagged_update():
+    # The common floor still demands the recipe begin with a CreateStep — a
+    # flagged update with no setup has no record to mutate.
+    body = DataRecipeBody.model_validate({
+        "api_choice": "rest", "identity_context": "system",
+        "execution_mechanism": "direct_api",
+        "steps": [{"kind": "update", "step_id": "update-violating",
+                   "target": {"ref_kind": "logical", "entity_type": "Object",
+                              "external_id": "Lead"},
+                   "field_changes": {"Lead.Status": "x"},
+                   "expect_rejection": {"error_code": _VR_CODE}}],
+    })
+    with pytest.raises(PlanTranslationError, match="begin with a CreateStep"):
+        build_data_recipe_plan(_recipe_read(observation_realization=body))
+
+
+def test_planned_update_is_frozen():
+    plan = build_data_recipe_plan(
+        _recipe_read(observation_realization=_two_step_body()))
+    with pytest.raises(Exception):
+        plan.steps[1].step_id = "mutated"  # type: ignore[misc]

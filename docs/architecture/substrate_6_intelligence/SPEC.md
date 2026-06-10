@@ -1,6 +1,6 @@
 # Substrate 6 — Observation & Interpretation (Intelligence / Attribution) — SPEC
 
-**Status:** Realized through Phase 5 (program). The deterministic interpreter covers the **full realized S4 execution surface** — inspection (existence + property) + the data-recipe behavioral negative + the positive value-claim — persists eagerly in the run-path (D-111.2), and is consumable: cross-run clustering (D-116), LLM phrasing (D-117), and an in-substrate **read API + phrasing live-fire** (D-137).
+**Status:** Realized through Phase 5 (program). The deterministic interpreter covers the **full realized S4 execution surface** — inspection (existence + property) + the data-recipe behavioral negatives (1-step create-rejected AND the D-203 2-step update/delete-rejected, graded against the rejection-bearing mutation step) + the positive value-claim — persists eagerly in the run-path (D-111.2), and is consumable: cross-run clustering (D-116), LLM phrasing (D-117), and an in-substrate **read API + phrasing live-fire** (D-137).
 
 **Last substantive update:** 2026-06-03 (Phase 5 — full-surface verdicts + the in-substrate consumer; D-136 / D-137)
 
