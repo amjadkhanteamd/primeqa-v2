@@ -84,52 +84,96 @@ _CLAIM_KINDS = [
 _POLARITY = ["positive", "negative"]
 _RATIONALE_KINDS = ["highest_specificity", "only_admissible", "other_substrate_authorized"]
 
+# D-207: the multi-intent envelope cap. One propose call carries every distinct
+# testable intent the requirement implies; the cap bounds token spend per turn
+# (mirrors v1's 3-6 TCs-per-requirement envelope, with headroom).
+MAX_INTENTS = 6
+
 
 # ---------------------------------------------------------------------------
 # Tool schemas (Anthropic format: name / description / input_schema)
 # ---------------------------------------------------------------------------
 
+# The shared per-intent descriptor fields (used nested in the legacy singular
+# form and flat in each D-207 array item).
+_DESCRIPTOR_FIELD_PROPS = {
+    "archetype_hint": {"type": "string", "enum": _ARCHETYPES},
+    "target_subject_hint": {
+        "type": "object",
+        "description": "An S1 entity reference or a descriptive selector.",
+    },
+    "polarity_hint": {"type": "string", "enum": _POLARITY},
+    "failure_mode_framing": {
+        "type": "string",
+        "description": "Optional; for negatives, the distinct failure mode implied.",
+    },
+    "claim_kind_hint": {
+        "type": "string",
+        "enum": _CLAIM_KINDS,
+        "description": "Optional; the substrate may select a different claim_kind if grounding is stronger.",
+    },
+}
+
 PROPOSE_SEMANTIC_INTENT_SCHEMA = {
     "name": TOOL_PROPOSE,
     "description": (
-        "Propose what the requirement implies semantically. The substrate "
-        "derives candidates, computes admissibility, and replies with "
-        "admissibly-grounded candidates (or routes to refusal). You do not "
-        "author admissibility."
+        "Propose every distinct testable intent the requirement implies "
+        "(intent_descriptors — preferred). The substrate derives candidates, "
+        "computes admissibility per intent, and replies with admissibly-"
+        "grounded candidates (or routes to refusal). You do not author "
+        "admissibility."
     ),
     "input_schema": {
         "type": "object",
         "additionalProperties": False,
-        "required": ["requirement_excerpt", "intent_descriptor"],
+        # D-207: exactly one of the two forms — enforced at Layer A (JSON
+        # Schema oneOf is not expressible in the flat tool surface). The array
+        # form is preferred; the singular form remains for pinned-prompt replay.
+        "required": [],
         "properties": {
+            "intent_descriptors": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_INTENTS,
+                "description": (
+                    "One entry per distinct testable intent the requirement "
+                    "implies — the positive behavior, one negative per "
+                    "prohibition/condition, configuration checks. Each entry "
+                    "carries its own verbatim requirement_excerpt "
+                    "(Guardrail-3 anchor)."
+                ),
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["requirement_excerpt", "archetype_hint",
+                                  "target_subject_hint", "polarity_hint"],
+                    "properties": {
+                        "requirement_excerpt": {
+                            "type": "string",
+                            "description": (
+                                "Verbatim excerpt from the requirement text "
+                                "supporting THIS intent (Guardrail-3 anchor; "
+                                "mandatory per intent)."
+                            ),
+                        },
+                        **_DESCRIPTOR_FIELD_PROPS,
+                    },
+                },
+            },
             "requirement_excerpt": {
                 "type": "string",
                 "description": (
-                    "Verbatim excerpt from the requirement text supporting "
-                    "this intent (Guardrail-3 anchor; mandatory)."
+                    "Legacy single-intent form: verbatim excerpt from the "
+                    "requirement text supporting the intent (Guardrail-3 "
+                    "anchor; mandatory with intent_descriptor)."
                 ),
             },
             "intent_descriptor": {
                 "type": "object",
                 "additionalProperties": False,
                 "required": ["archetype_hint", "target_subject_hint", "polarity_hint"],
-                "properties": {
-                    "archetype_hint": {"type": "string", "enum": _ARCHETYPES},
-                    "target_subject_hint": {
-                        "type": "object",
-                        "description": "An S1 entity reference or a descriptive selector.",
-                    },
-                    "polarity_hint": {"type": "string", "enum": _POLARITY},
-                    "failure_mode_framing": {
-                        "type": "string",
-                        "description": "Optional; for negatives, the distinct failure mode implied.",
-                    },
-                    "claim_kind_hint": {
-                        "type": "string",
-                        "enum": _CLAIM_KINDS,
-                        "description": "Optional; the substrate may select a different claim_kind if grounding is stronger.",
-                    },
-                },
+                "description": "Legacy single-intent form (one intent only).",
+                "properties": _DESCRIPTOR_FIELD_PROPS,
             },
         },
     },
@@ -253,8 +297,71 @@ def validate_layer_a(tool_name: str, tool_input: dict) -> LayerAResult:
     return _validate_emit(tool_input)
 
 
+def normalize_propose_input(inp: dict) -> list[dict]:
+    """Normalize a (Layer-A-valid) propose input to a list of per-intent inputs
+    in the legacy single shape ``{requirement_excerpt, intent_descriptor}`` —
+    the shape every downstream resolver speaks (D-207). The singular legacy
+    form normalizes to a one-element list."""
+    arr = inp.get("intent_descriptors")
+    if isinstance(arr, list) and arr:
+        out: list[dict] = []
+        for item in arr:
+            item = dict(item or {})
+            excerpt = item.pop("requirement_excerpt", None)
+            out.append({"requirement_excerpt": excerpt, "intent_descriptor": item})
+        return out
+    return [inp]
+
+
+def _validate_descriptor_fields(desc: dict, errors: list[str], prefix: str) -> None:
+    """The shared per-intent descriptor checks (legacy nested form and D-207
+    flat array items carry the same fields)."""
+    arch = desc.get("archetype_hint")
+    if arch not in _ARCHETYPES:
+        errors.append(f"{prefix}archetype_hint must be one of {_ARCHETYPES}")
+    if not isinstance(desc.get("target_subject_hint"), dict):
+        errors.append(f"{prefix}target_subject_hint is required and must be an object")
+    pol = desc.get("polarity_hint")
+    if pol not in _POLARITY:
+        errors.append(f"{prefix}polarity_hint must be one of {_POLARITY}")
+    ck = desc.get("claim_kind_hint")
+    if ck is not None and ck not in _CLAIM_KINDS:
+        errors.append(f"{prefix}claim_kind_hint, if present, must be one of {_CLAIM_KINDS}")
+
+
 def _validate_propose(inp: dict) -> LayerAResult:
     errors: list[str] = []
+    has_array = "intent_descriptors" in inp
+    has_single = "intent_descriptor" in inp or "requirement_excerpt" in inp
+
+    # D-207: exactly one of the two forms.
+    if has_array and "intent_descriptor" in inp:
+        return LayerAResult(False, [
+            "provide either intent_descriptors (array) or the legacy "
+            "intent_descriptor (single) — not both"])
+    if not has_array and not has_single:
+        return LayerAResult(False, [
+            "intent_descriptors is required: one entry per distinct testable "
+            "intent the requirement implies"])
+
+    if has_array:
+        arr = inp.get("intent_descriptors")
+        if not isinstance(arr, list) or not (1 <= len(arr) <= MAX_INTENTS):
+            return LayerAResult(False, [
+                f"intent_descriptors must be an array of 1..{MAX_INTENTS} intent objects"])
+        for i, item in enumerate(arr):
+            prefix = f"intent_descriptors[{i}]."
+            if not isinstance(item, dict):
+                errors.append(f"intent_descriptors[{i}] must be an object")
+                continue
+            excerpt = item.get("requirement_excerpt")
+            if not _is_str(excerpt) or not excerpt.strip():
+                errors.append(f"{prefix}requirement_excerpt is required and must be a "
+                              "non-empty string (Guardrail-3 anchor)")
+            _validate_descriptor_fields(item, errors, prefix)
+        return LayerAResult(not errors, errors)
+
+    # Legacy singular form (pinned-prompt replay; D-207 keeps it accepted).
     excerpt = inp.get("requirement_excerpt")
     # Guardrail-3 syntactic precondition: excerpt present + non-empty.
     if not _is_str(excerpt) or not excerpt.strip():
@@ -263,17 +370,7 @@ def _validate_propose(inp: dict) -> LayerAResult:
     if not isinstance(desc, dict):
         errors.append("intent_descriptor is required and must be an object")
         return LayerAResult(not errors, errors)
-    arch = desc.get("archetype_hint")
-    if arch not in _ARCHETYPES:
-        errors.append(f"intent_descriptor.archetype_hint must be one of {_ARCHETYPES}")
-    if not isinstance(desc.get("target_subject_hint"), dict):
-        errors.append("intent_descriptor.target_subject_hint is required and must be an object")
-    pol = desc.get("polarity_hint")
-    if pol not in _POLARITY:
-        errors.append(f"intent_descriptor.polarity_hint must be one of {_POLARITY}")
-    ck = desc.get("claim_kind_hint")
-    if ck is not None and ck not in _CLAIM_KINDS:
-        errors.append(f"intent_descriptor.claim_kind_hint, if present, must be one of {_CLAIM_KINDS}")
+    _validate_descriptor_fields(desc, errors, "intent_descriptor.")
     return LayerAResult(not errors, errors)
 
 

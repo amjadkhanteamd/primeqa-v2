@@ -147,7 +147,11 @@ class OutcomeVerdict:
     # typed Any to keep this seam free of an S2 import, matching ``state: Any``).
     # The persister writes them in one Session (D-097.4 / D-099); refs do not
     # exist until post-write. None on refusal/override.
+    # D-207: ``emissions`` carries ALL bundles (one per grounded intent, in
+    # propose order); ``emission`` stays as the first bundle for single-bundle
+    # readers (always ``emissions[0]`` by construction in finalize_outcome).
     emission: Optional[Any] = None
+    emissions: Optional[list[Any]] = None
 
 
 # ---------------------------------------------------------------------------

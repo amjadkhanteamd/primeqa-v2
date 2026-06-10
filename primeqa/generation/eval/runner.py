@@ -160,7 +160,7 @@ class EvalHarness:
 
     def _run_once(self, case, vseq: int):
         """Run the case's scripted turns once against an already-seeded version.
-        Returns (outcome, emission)."""
+        Returns the RequirementResult (outcome + emission(s))."""
         req = self._make_request(vseq)
         fn = _ScriptedToolTurnFn(case.turns, repeat_last=case.repeat_last_on_exhaust)
         with get_tenant_connection(self._tenant_id) as conn:
@@ -169,36 +169,39 @@ class EvalHarness:
                 request=req, seam=gov, tool_turn_fn=fn,
                 persister=LedgerPersister(self._tenant_id),
             )
-        r = result.results[0]
-        return r.outcome, r.emission
+        return result.results[0]
 
     # -- public: score one case ----------------------------------------
     def run_case(self, case) -> CaseResult:
         with get_tenant_connection(self._tenant_id) as conn:
             vseq = self._seed(conn, case.fixture)
-        outcome, emission = self._run_once(case, vseq)
+        r = self._run_once(case, vseq)
         if case.emit_twice:
             # dedup: re-run on the SAME version -> same identity_hash -> was_noop.
-            outcome, emission = self._run_once(case, vseq)
-        return self._score(case, outcome, emission)
+            r = self._run_once(case, vseq)
+        return self._score(case, r.outcome, r.emission, r.emissions)
 
     # -- public: two-invariant replay stability ------------------------
     def replay_stable(self, case) -> StabilityResult:
         with get_tenant_connection(self._tenant_id) as conn:
             vseq = self._seed(conn, case.fixture)
-        o1, e1 = self._run_once(case, vseq)
-        o2, e2 = self._run_once(case, vseq)
+        r1 = self._run_once(case, vseq)
+        r2 = self._run_once(case, vseq)
+        o1, o2 = r1.outcome, r2.outcome
         explanation_stable = (o1.explanation_hash == o2.explanation_hash
                               and len(o1.explanation_hash) == 64)
         # identity continuity (drafts): the same input re-emitted on the same
-        # version dedups iff its identity_hash matched -> was_noop.
+        # version dedups iff its identity_hash matched -> was_noop. D-207: a
+        # multi-bundle draft must dedup EVERY bundle on the re-run.
         identity_stable = True
-        if e1 is not None:
-            identity_stable = o2.equivalent_existing is not None
+        if r1.emission is not None:
+            expected = len(r1.emissions or [r1.emission])
+            identity_stable = (o2.equivalent_existing is not None
+                               and len(o2.equivalent_existing) == expected)
         return StabilityResult(case.id, explanation_stable, identity_stable)
 
     # -- scoring: governed properties only (never phrasing, D-090(f)) ---
-    def _score(self, case, outcome, emission) -> CaseResult:
+    def _score(self, case, outcome, emission, emissions=None) -> CaseResult:
         e = case.expect
         m: list[str] = []
 
@@ -236,6 +239,19 @@ class EvalHarness:
                     got = getattr(emission, k, None)
                     if got != v:
                         m.append(f"recipe.{k}: expected {v!r}, got {got!r}")
+        if "claims" in e:
+            # D-207: ordered multi-claim expectation — one entry per emitted
+            # bundle, matched positionally on governed fields.
+            got_emissions = emissions or ([] if emission is None else [emission])
+            if len(got_emissions) != len(e["claims"]):
+                m.append(f"claims: expected {len(e['claims'])} emitted claims, "
+                         f"got {len(got_emissions)}")
+            else:
+                for i, (exp_claim, em) in enumerate(zip(e["claims"], got_emissions)):
+                    for k, v in exp_claim.items():
+                        got = getattr(em, k, None)
+                        if got != v:
+                            m.append(f"claims[{i}].{k}: expected {v!r}, got {got!r}")
         if "trigger_operation" in e:
             # The trigger body's operation — discriminates the D-203 2-step
             # update-rejected shape from the create-rejected fallback (both are
@@ -280,6 +296,6 @@ class EvalHarness:
             result = GenerationRuntime().run(
                 request=req, seam=gov, tool_turn_fn=tool_turn_fn, persister=None)
         r = result.results[0]
-        observed = observe(r.outcome, r.emission)
+        observed = observe(r.outcome, r.emission, emissions=r.emissions)
         return score_live(case, observed,
                           prompt_version=prompt_version or registry.CURRENT, model=model)

@@ -11557,6 +11557,63 @@ direct to main.
 (2) title templates cover the 7 emitted kinds + fallback — new kinds land with the fallback until
 templated; (3) inbox bulk-approve — deferred until single-approve friction is observed.
 
+### D-207 — Multi-claim generation: one requirement -> N intents -> N claims, one outcome
+
+**Context.** Every layer of S3 generation today carries exactly one test intent per requirement:
+the `propose_semantic_intent` schema takes one `intent_descriptor`, `RequirementState` stashes one
+grounding, `finalize_outcome` authors one bundle, the persister writes one claim. A real requirement
+("the field must save; the org must reject X; the layout must show Y") implies several distinct
+testable intents — v1's engine produced 3-6 TCs per requirement for exactly this reason. AK ratified
+**multiple claims per requirement** for the 5b-3 corpus arc. Verified against the code: the protocol
+shape is ALREADY plural (`GenerationOutcome.claims_written` / `recipes_written` /
+`equivalent_existing` are lists, today always length 1) — the 1:1 lives only in the propose schema,
+the singular state stashes, finalize's first-non-None pick, and the persister's single-bundle write.
+
+**Decisions.**
+1. **One propose call carries ALL intents.** `propose_semantic_intent` gains `intent_descriptors`
+   (array, 1..6, each with its own verbatim `requirement_excerpt` per Guardrail-3). Chosen over a
+   propose-N-times loop: per-phase tool forcing stays deterministic (no ambiguous tool_choice),
+   one decomposition is one turn, and the substrate sees the full claimed coverage at once.
+   Back-compat: the singular `intent_descriptor` stays accepted at Layer A as a 1-element array —
+   pinned v4 replays are untouched.
+2. **D-072 stands: one outcome per requirement.** The N claims ride the existing list fields.
+   **Zero DB migrations.**
+3. **Partial grounding is a draft, not a refusal.** Each descriptor resolves independently through
+   the existing per-archetype machinery (extracted `_resolve_one`); a failed intent becomes a
+   dismissal recorded in `attempted_interpretation` under its own path id (`c0..c{n-1}` — ending
+   today's hardcoded `"c0"` everywhere); the **refusal outcome fires only when zero intents
+   ground** (route the first directive; carrying one RefusalEntry per failed intent via D-073
+   multiplicity is a residual refinement). The emittability gate (D-105.2) applies per intent.
+4. **`RequirementState` accumulates an ordered `groundings` list**; the singular
+   `grounded_emission` / `grounded_negative` / `grounded_positive` stashes retire in favor of
+   appends. `finalize_outcome` authors one `EmissionBundle` per grounding (`author_emission`
+   unchanged — it already dispatches on the grounding type); `OutcomeVerdict` / `RequirementResult`
+   carry `emissions: list`.
+5. **Outcome-level epistemic posture aggregates conservatively**: `admissibility_layer` = LAYER_2
+   only when ALL bundles verified, else LAYER_1; `caveat_required = any(bundle.caveat_required)`;
+   `caveat_kind` = the first caveated bundle's kind. Per-claim posture on the outcome row is a
+   residual (each claim's own recipe still tells the truth per-claim).
+6. **The persister loops bundles in the same atomic transaction**: per-bundle identity-hash dedup
+   (a deduped intent appends to `equivalent_existing` and mints no recipe; the others still
+   write), `generated_from` requirement link per claim (idempotent PK as today).
+7. **SELECT stays dormant.** Decomposition still returns <=1 grounded candidate per intent, so
+   AWAIT_SELECTION cannot trigger; intent-scoped selection is deliberately out of scope.
+8. **`check_refs_exist` iterates descriptors** — any unresolved ref rejects the whole call as an
+   operational correction (Layer A semantics; the model fixes that descriptor and retries).
+9. **Prompt freeze `generation@v5`**: instruct full-coverage decomposition — the positive
+   behavior, one negative per prohibition/condition, configuration checks — each as its own
+   descriptor with its own verbatim excerpt; registry ritual (versions file, RECORDED_HASHES,
+   CURRENT bump, hash-guard test). `_present_candidates` reply enriched to per-intent
+   grounded/dismissed status so the model's emit turn sees what survived.
+
+**Out of scope.** Jobs/queue/consumer (already multiplicity-agnostic); S4/S6 (consume claims
+one at a time regardless of sibling count); the D-206 dedup banner keeps its boolean read
+(per-intent dedup counts are a residual).
+
+**Exit gate.** Generation suites green per-suite, plus a **live multi-claim generation on env 59**:
+one requirement implying a positive + a prohibition produces one outcome with >=2 claims written,
+both drafts landing in the D-206 approval inbox.
+
 ---
 
 ---

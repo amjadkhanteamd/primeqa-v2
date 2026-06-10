@@ -24,13 +24,13 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v4():
-    # D-203: CURRENT bumped to v4 (prohibition guidance names WHICH operation is
-    # prohibited via target_subject_hint.operation — update/delete dispatch).
-    # v1/v2/v3 stay frozen + pinned-resolvable
+def test_current_resolves_to_v5():
+    # D-207: CURRENT bumped to v5 (multi-intent coverage — every distinct
+    # testable intent proposed as the intent_descriptors array).
+    # v1..v4 stay frozen + pinned-resolvable
     # (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v4"
-    assert registry.get() == registry.get("generation@v4")
+    assert registry.CURRENT == "generation@v5"
+    assert registry.get() == registry.get("generation@v5")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # the substance the schemas don't enforce (D-103.3) is present
@@ -45,6 +45,10 @@ def test_current_resolves_to_v4():
     # v4's operation guidance (D-203)
     assert "modify_record" in sys and '"delete"' in sys
     assert "WHICH operation is prohibited" in sys
+    # v5's multi-intent decomposition guidance (D-207)
+    assert "intent_descriptors" in sys
+    assert "Decompose for full coverage" in sys
+    assert "one negative per prohibition" in sys
 
 
 def test_unknown_version_raises():

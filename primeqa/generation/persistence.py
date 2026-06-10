@@ -79,15 +79,22 @@ class LedgerPersister:
         across requirements.
 
         ``result`` is a runtime.RequirementResult (outcome + llm_calls +
-        optional emission)."""
+        optional emission(s))."""
         outcome: GenerationOutcome = result.outcome
-        emission = getattr(result, "emission", None)
+        # D-207: a draft may carry N bundles (one per grounded intent). All
+        # write in the SAME transaction — claims, recipes, links, ledger,
+        # commit-once. Older single-bundle results fall back to ``emission``.
+        emissions = list(getattr(result, "emissions", None) or [])
+        if not emissions:
+            single = getattr(result, "emission", None)
+            if single is not None:
+                emissions = [single]
         with get_tenant_connection(self._tenant_id) as conn:
             session = Session(bind=conn)
             try:
                 # S2 first: write the claim + recipe so their refs exist before
                 # the outcome row that records them (D-099).
-                if emission is not None:
+                for emission in emissions:
                     self._write_emission(session, outcome, emission)
                 self._insert_outcome(session, outcome)
                 self._insert_llm_calls(session, outcome, result.llm_calls)
@@ -127,7 +134,9 @@ class LedgerPersister:
             asserted_truth=emission.asserted_truth,
             semantic_conditions=emission.semantic_conditions,
         )
-        outcome.claims_written = [ClaimRef(test_id=cr.test_id, version_seq=cr.version_seq)]
+        # D-207: append — one outcome accumulates refs across N bundles.
+        outcome.claims_written = (outcome.claims_written or []) + [
+            ClaimRef(test_id=cr.test_id, version_seq=cr.version_seq)]
 
         # D-166: record the generated_from requirement link — the documented-
         # intended S3 behaviour (link_requirement's docstring), previously unwired —
@@ -146,7 +155,8 @@ class LedgerPersister:
         if cr.was_noop:
             # Same-hash regeneration (SPEC §7.7): the equivalent test already
             # exists with its verification recipe — record it, mint nothing new.
-            outcome.equivalent_existing = [cr.test_id]
+            # D-207: append — sibling bundles in the same outcome still write.
+            outcome.equivalent_existing = (outcome.equivalent_existing or []) + [cr.test_id]
             return
 
         rr = self._coordinator.write_recipe(
@@ -157,7 +167,8 @@ class LedgerPersister:
             execution_environment=emission.execution_environment,
             claim_version_seq=cr.version_seq,
         )
-        outcome.recipes_written = [RecipeRef(recipe_id=rr.recipe_id, version_seq=rr.version_seq)]
+        outcome.recipes_written = (outcome.recipes_written or []) + [
+            RecipeRef(recipe_id=rr.recipe_id, version_seq=rr.version_seq)]
 
     # -- ledger rows (same Session / same transaction) ----------------------
     def _insert_outcome(self, session: Session, outcome: GenerationOutcome) -> None:

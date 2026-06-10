@@ -245,7 +245,10 @@ class RequirementResult:
     # Substrate-authored S2 bodies for a draft (an ``emission.EmissionBundle``;
     # Any to avoid an S2 import here). The persister writes claim + recipe +
     # ledger atomically (D-097.4 / D-099). None on refusal.
+    # D-207: ``emissions`` carries ALL bundles (one per grounded intent);
+    # ``emission`` is the first bundle for single-bundle readers.
     emission: Optional[Any] = None
+    emissions: Optional[list] = None
 
 
 @dataclass
@@ -296,13 +299,15 @@ class RequirementState:
     candidates_admissibly_grounded: int = 0
     canonicals_selected: int = 0
     presented_candidates: list = field(default_factory=list)
-    # Grounding facts stashed by governance during config grounding (an
-    # ``emission.GroundedEmission``); finalize_outcome authors the bodies from
-    # it (D-097.5). None until an admissibly-grounded config candidate forms.
-    grounded_emission: Optional[Any] = None
-    # Likewise for a grounded prohibition negative (an ``emission.GroundedNegative``,
-    # D-101.1). None until an admissibly-grounded prohibition candidate forms.
-    grounded_negative: Optional[Any] = None
+    # Grounding facts stashed by governance during resolve (D-097.5 / D-207):
+    # an ORDERED list, one entry per admissibly-grounded intent, in propose
+    # order. finalize_outcome authors one EmissionBundle per entry. Governance
+    # appends via its ``_stash_grounding`` helper; empty until a grounded
+    # candidate forms. (The pre-D-207 singular ``grounded_emission`` /
+    # ``grounded_negative`` / ``grounded_positive`` attributes are retired —
+    # finalize still honors them as a legacy one-element fallback when set
+    # directly by older callers/tests.)
+    groundings: list = field(default_factory=list)
 
     def merge_interpretation(self, delta: Optional[dict]) -> None:
         """Store a governance-authored semantic-provenance fragment. The spine
@@ -486,7 +491,8 @@ class GenerationRuntime:
             if ov.override is not None:
                 return self._route(ov.override, ctx, state, seam)
             return RequirementResult(outcome=ov.outcome, llm_calls=state.llm_calls,
-                                     emission=ov.emission)
+                                     emission=ov.emission,
+                                     emissions=getattr(ov, "emissions", None))
 
     # -- helpers ---------------------------------------------------------
     def _reject(self, state: RequirementState, tu: ToolUseBlock, feedback: str,
