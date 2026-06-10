@@ -11614,6 +11614,35 @@ one at a time regardless of sibling count); the D-206 dedup banner keeps its boo
 one requirement implying a positive + a prohibition produces one outcome with >=2 claims written,
 both drafts landing in the D-206 approval inbox.
 
+### D-207.1 — Multi-claim generation CLOSED: 2 claims from one requirement, live through the production loop
+
+2026-06-11, env 59, S3 job 10 (s1 seq 52, prompt **generation@v5**, both tool calls operational
+first-try): manual requirement **req-283** ("When an Opportunity is created, its Amount must save
+as 5000. The org must reject any edit that raises an Opportunity's Amount above 10,000.") produced
+**one draft outcome carrying TWO claims** — the live LLM proposed the `intent_descriptors` array
+unprompted-by-script and the substrate grounded both:
+
+- **value-claim** `95a3b823` (NEW, v1): `Opportunity.Amount saves as "5000"` — the requirement's
+  literal carried verbatim (the D-205.1 placeholder regression did NOT recur); recipe minted;
+  draft → the D-206 approval inbox, title + behavioral badge rendering correctly.
+- **prohibition-claim** `71583230` — **per-bundle dedup demonstrated live**: the second intent's
+  identity hash matched the D-203 approved update-rejected test; `equivalent_existing` records it,
+  no duplicate minted, no second recipe, and the `generated_from` link to req-283 was still
+  written — the approved test now correctly covers both requirements. `claims_written` carries
+  both refs; `recipes_written` exactly the fresh one.
+
+Outcome posture aggregated as designed (layer_1, no caveat). The D-206 surfaces close the loop:
+inbox shows 1 draft awaiting AK; the requirement page shows both tests + the deduped-generation
+banner (`read_latest_generation_note` → deduped=true).
+
+**D-207 exit gate met** (suites green per-suite: 232 generation + 1503 cross-gate with
+representation; live multi-claim outcome observed). Residuals carried: per-claim epistemic posture
+on the outcome row (outcome-level is the conservative aggregate); refusal multiplicity (one
+RefusalEntry per failed intent — first-directive-routes today); the live `claims_count >= 2`
+envelope adjudicates on the periodic ANTHROPIC_API_KEY run, not PR-gating; SELECT stays dormant.
+Next per the ratified plan: **D-208 (5b-3 corpus breadth)** — bulk-generate across the imported
+requirement set, drafts to AK's inbox, AK-gated approvals queue the live runs.
+
 ---
 
 ---
