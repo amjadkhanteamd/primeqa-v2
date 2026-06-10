@@ -825,5 +825,116 @@
    },
    "trigger_operation": "update"
   }
+ },
+ {
+  "id": "multiclaim-two-intent-draft",
+  "description": "D-207 multi-intent coverage: ONE propose call carries two intents (the config relationship VR APPLIES_TO Lead + the verified Lead prohibition) -> ONE outcome with TWO claims + TWO recipes. The outcome marker aggregates conservatively (config bundle is Layer-1 -> outcome layer_1; neither bundle caveats).",
+  "category": "multiclaim_draft",
+  "fixture": {
+   "entities": [
+    {
+     "entity_type": "Object",
+     "sf_api_name": "Lead"
+    },
+    {
+     "entity_type": "ValidationRule",
+     "sf_api_name": "Lead.RequireReason",
+     "attributes": {
+      "formula_text": "ISBLANK(Reason__c)"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "source": "Lead.RequireReason",
+     "target": "Lead",
+     "edge_type": "APPLIES_TO",
+     "edge_category": "BEHAVIOR"
+    }
+   ]
+  },
+  "turns": [
+   {
+    "tool": "propose_semantic_intent",
+    "input": {
+     "intent_descriptors": [
+      {
+       "requirement_excerpt": "Validation Rule Lead.RequireReason applies to Lead.",
+       "archetype_hint": "configuration",
+       "polarity_hint": "positive",
+       "claim_kind_hint": "metadata-relationship-claim",
+       "target_subject_hint": {
+        "edge_type": "APPLIES_TO",
+        "source": {
+         "entity_type": "ValidationRule",
+         "sf_api_name": "Lead.RequireReason"
+        },
+        "target": {
+         "entity_type": "Object",
+         "sf_api_name": "Lead"
+        }
+       }
+      },
+      {
+       "requirement_excerpt": "The system shall reject saving a Lead without a reason.",
+       "archetype_hint": "data_behavior",
+       "polarity_hint": "negative",
+       "claim_kind_hint": "prohibition-claim",
+       "target_subject_hint": {
+        "entity_type": "Object",
+        "sf_api_name": "Lead"
+       }
+      }
+     ]
+    }
+   },
+   {
+    "tool": "emit_outcome",
+    "input": {
+     "outcome_kind": "draft",
+     "payload": {
+      "admissibility_layer": "layer_1"
+     }
+    }
+   }
+  ],
+  "expect": {
+   "outcome_kind": "draft",
+   "admissibility_layer": "layer_1",
+   "caveat_required": false,
+   "caveat_kind": null,
+   "claims": [
+    {
+     "archetype": "configuration",
+     "claim_kind": "metadata-relationship-claim"
+    },
+    {
+     "archetype": "data_behavior",
+     "claim_kind": "prohibition-claim"
+    }
+   ]
+  },
+  "live": {
+   "requirement_text": "Every Lead must record a reason before it can be saved: the Lead.RequireReason validation rule applies to the Lead object, and an attempt to save a Lead without a reason must be rejected.",
+   "envelope": {
+    "invariant": [
+     {
+      "field": "outcome_kind",
+      "op": "eq",
+      "value": "draft"
+     },
+     {
+      "field": "claims_count",
+      "op": "gte",
+      "value": 2
+     }
+    ],
+    "benign": [
+     "claim_kind",
+     "archetype",
+     "caveat_required"
+    ]
+   }
+  }
  }
 ]

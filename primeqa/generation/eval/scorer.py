@@ -88,15 +88,18 @@ class ObservedOutcome:
     claim_kind: Optional[str] = None
     caveat_required: bool = False
     refusal_kind: Optional[str] = None
+    # D-207: how many claims the draft emitted (multi-intent coverage probe).
+    claims_count: int = 0
 
 
-def observe(outcome, emission) -> ObservedOutcome:
+def observe(outcome, emission, emissions=None) -> ObservedOutcome:
     return ObservedOutcome(
         outcome_kind=outcome.outcome_kind.value,
         archetype=getattr(emission, "archetype", None),
         claim_kind=getattr(emission, "claim_kind", None),
         caveat_required=bool(outcome.caveat_required),
         refusal_kind=outcome.refusal_kind.value if outcome.refusal_kind else None,
+        claims_count=(len(emissions) if emissions else (1 if emission is not None else 0)),
     )
 
 
@@ -132,6 +135,8 @@ def _eval_predicate(observed: ObservedOutcome, p: dict[str, Any]) -> bool:
         return not val
     if op == "is_true":
         return bool(val)
+    if op == "gte":
+        return val is not None and val >= p["value"]
     raise ValueError(f"unknown envelope op: {op!r}")
 
 

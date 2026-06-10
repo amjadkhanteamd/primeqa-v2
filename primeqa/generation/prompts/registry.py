@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v4"
+CURRENT = "generation@v5"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -36,6 +36,7 @@ _FILES = {
     "generation@v2": _VERSIONS_DIR / "generation_v2.md",
     "generation@v3": _VERSIONS_DIR / "generation_v3.md",
     "generation@v4": _VERSIONS_DIR / "generation_v4.md",
+    "generation@v5": _VERSIONS_DIR / "generation_v5.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -48,6 +49,10 @@ RECORDED_HASHES = {
     # v4 (D-203): prohibition guidance names WHICH operation is prohibited via
     # target_subject_hint.operation (update/delete-rejected dispatch).
     "generation@v4": "135bdd3f49a37869bb73c09298015b58ca5cfbf4c57879eabb2bbce3fe289225",
+    # v5 (D-207): multi-intent coverage — propose EVERY distinct testable
+    # intent as the intent_descriptors array (positive + one negative per
+    # prohibition/condition + config checks), each on its own verbatim excerpt.
+    "generation@v5": "b2b6c8f7519947c4c1af446d719430fb5c78408a6d659a69d7a0aceca9ae8117",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).
