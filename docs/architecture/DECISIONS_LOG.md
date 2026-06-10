@@ -11282,4 +11282,69 @@ arc to open.
 
 ---
 
+### D-203 — 5b-1: update/delete-rejected negatives (the 2-step behavioral shape)
+
+**The arc.** First arc of the D-202 program: teach the substrate the v1 verbs "this UPDATE must be
+rejected" / "this DELETE must be rejected". The shape is necessarily two steps — provision a valid
+subject record, then attempt the prohibited mutation — so the arc spans S2 (vocabulary), S3
+(authoring), S4 (execution), S6 (interpretation).
+
+**Correction to D-202's measured gap.** D-202 stated "S2 has no Update/Delete step models". Wrong
+against the code: `UpdateStep` / `DeleteStep` exist in the data-recipe union (`data_recipe.py:86–98`,
+D-054 vocabulary) and the D-110.1 at-most-one-`expect_rejection` validator was written
+forward-compatible for them ("counted automatically without touching this check"). The S2 gap is two
+optional fields, not two models. Claim identity is untouched throughout — recipes are operational
+layer, excluded from `identity_hash` per SPEC §6.3.1. **Zero DB migrations in the whole arc**
+(evidence rides the `s4_execution_runs` JSONB via kind-agnostic `dataclasses.asdict`; recipe bodies
+are JSONB with no step-kind constraints).
+
+**The shape (bounded, fails loud).** A behavioral negative is either the existing 1-step
+create-rejected, or exactly `[CreateStep(expect_rejection=None), UpdateStep|DeleteStep(expect_rejection
+set)]`. The bridge's negative projection lifts from "exactly one step" to exactly these two shapes;
+every other shape keeps failing loud. Target binding is **positional**: `PlannedUpdate`/`PlannedDelete`
+carry `setup_step_id` and the executor resolves the record id from the setup create — no `$ref`
+machinery (refs.py untouched; the cross-step graph validation D-060 §4.7.6 aspires to still doesn't
+exist; the positional contract is documented at the bridge).
+
+**Platform fact that splits the scope.** Salesforce validation rules fire on insert and update —
+**never on delete**. So update-rejected gets the full vertical (VR-grounded, formula-derived,
+auto-emitted, live-proven); delete-rejected ships as **engine capability** (S2 can represent, S4 can
+run, S6 can interpret a hand-authored delete-rejected recipe) but S3 routes `delete` prohibitions to
+the caveated inspection path — trigger/restricted-lookup grounding is the logged residual. This also
+fixes an existing semantic blur: a "cannot delete X" requirement that grounded + derived used to emit
+a CREATE-rejected behavioral recipe — the wrong operation testing the wrong thing.
+
+**Graded operation dispatch in S3 (`_author_negative`).** `modify_record`/`modify_field`: try the
+update shape — setup payload = `_satisfy(ast, False)` (a non-violating create), violating changes =
+`_satisfy(ast, True)`; if only the violation derives, **fall back to today's create-rejected** (no
+regression — a state-only VR fires on insert too); if nothing derives, caveated. `create_duplicate`:
+create-rejected as today. `delete`/`share`/`transfer_ownership`: caveated always. Two derivation
+facts recorded plainly: (a) only **comparisons** derive both directions — `NOT ISPICKVAL` / `NOT
+ISBLANK` raise `_Undecidable` (`verified_negative.py:166–178`), so the live proof needs a
+numeric-comparison VR; (b) the 2-step recipe's payload field names are **object-qualified**
+(`Opportunity.Amount`, the positive vertical's convention) — bare VR-formula names would dodge
+`construct_world`'s padding-exclusion and could be silently overwritten in the `_sf_fields` merge.
+
+**S6 must re-dispatch.** The interpreter grades "create with no assert" as the behavioral negative —
+against a 2-step negative it would grade the **setup create** (which succeeded) and emit a false
+`prohibition_not_enforced`. Both `interpreter.py` and `attribution.py` select the *rejection-bearing
+mutation step*. Verdict vocabulary unchanged. Cause attribution for update evaluates VR formulas
+against the effective state `{**setup.field_values, **field_changes}` (ISCHANGED → NonEvaluable →
+the existing honest `vr_formula_indeterminate`); for delete it attaches **no cause** rather than a
+fabricated one (`repair.py` already handles cause-less verdicts with verdict-level defaults).
+
+**Exit gate.** The live update-rejected run observed **passed** through the production loop on env 59
+(setup create 201 → violating PATCH 400 `FIELD_CUSTOM_VALIDATION_EXCEPTION` matched → cleanup
+succeeded → S6 `prohibition_enforced` referencing the update step). Delete vertical: offline-proven
+only — not the gate.
+
+**Residuals.** (1) delete-prohibition grounding (Apex trigger / restricted lookup); (2)
+ISCHANGED/PRIORVALUE update derivation (needs before/after-state modeling); (3) S1-value-set-aware
+picklist alternatives for setup-underivable formulas; (4) repair.py create-specific wording; (5)
+before-state capture on update evidence (fields reserved); (6) coordinator cross-step graph
+validation; (7) data-path async bracketing (D-129) — the 2-step run holds the connection one extra
+org round-trip.
+
+---
+
 ---
