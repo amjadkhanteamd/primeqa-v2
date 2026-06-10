@@ -28,7 +28,7 @@ import logging
 
 from sqlalchemy import text
 
-from primeqa.intelligence.claim_presentation import claim_depth, claim_title
+from primeqa.intelligence.claim_presentation import claim_depth, claim_title, refusal_plain
 
 log = logging.getLogger(__name__)
 
@@ -306,30 +306,36 @@ def list_claims(tenant_id: int, *, page: int = 1, per_page: int = 20, q=None,
 # --- read: the latest generation outcome's dedup note (D-206) -----------------
 
 def read_latest_generation_note(tenant_id: int, requirement_key: str) -> dict:
-    """Best-effort: did the requirement's most recent generation DE-DUPLICATE
-    (match an already-existing equivalent test) rather than mint a new one?
-    Powers the requirement page's "this test already exists" note — without it
-    a dedup looks like Generate silently did nothing. Never raises. Returns
-    ``{available, deduped, outcome_kind}``."""
+    """Best-effort: what did the requirement's most recent generation actually
+    DO? Surfaces the two notes the page would otherwise hide (both read as
+    "Generate silently did nothing"): a DEDUP (matched an already-existing
+    equivalent test, minted nothing new) and a REFUSAL (the engine declined,
+    with its recorded reason — D-206.1, the SQ-205 confusion). Never raises.
+    Returns ``{available, deduped, outcome_kind, refusal_kind, refusal_plain}``."""
+    out = {"available": True, "deduped": False, "outcome_kind": None,
+           "refusal_kind": None, "refusal_plain": None}
     try:
         from primeqa.semantic.connection import get_tenant_connection
         with get_tenant_connection(tenant_id) as conn:
             row = conn.execute(text(
-                "SELECT outcome_kind::text AS outcome_kind, equivalent_existing "
+                "SELECT outcome_kind::text AS outcome_kind, equivalent_existing, "
+                "       refusal_kind::text AS refusal_kind, refusals "
                 "FROM generation_outcomes "
                 "WHERE requirement_ref->>'key' = :rk "
                 "ORDER BY created_at DESC LIMIT 1"),
                 {"rk": requirement_key}).mappings().first()
         if row is None:
-            return {"available": True, "deduped": False, "outcome_kind": None}
-        ee = row["equivalent_existing"]
-        return {"available": True,
-                "deduped": bool(ee),
-                "outcome_kind": row["outcome_kind"]}
+            return out
+        out["deduped"] = bool(row["equivalent_existing"])
+        out["outcome_kind"] = row["outcome_kind"]
+        out["refusal_kind"] = row["refusal_kind"]
+        out["refusal_plain"] = refusal_plain(row["refusal_kind"], row["refusals"])
+        return out
     except Exception as exc:
         log.warning("read_latest_generation_note unavailable for tenant %s key %s: %s",
                     tenant_id, requirement_key, exc)
-        return {"available": False, "deduped": False, "outcome_kind": None}
+        out["available"] = False
+        return out
 
 
 # --- read: per-requirement current-claim counts (the list chips) (2c/#143) ----

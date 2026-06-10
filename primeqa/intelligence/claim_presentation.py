@@ -145,3 +145,69 @@ def verdict_plain(verdict: Optional[str], outcome: Optional[str] = None) -> str:
     if outcome and outcome in _OUTCOME_PLAIN:
         return _OUTCOME_PLAIN[outcome]
     return "No result recorded"
+
+
+# ---------------------------------------------------------------------------
+# Plain-words refusal note (D-206.1)
+# ---------------------------------------------------------------------------
+
+# One plain sentence per S3 refusal kind — WHY a generation produced no tests.
+# Without this a refusal renders as "No test plan yet" and reads as a silent
+# failure (the SQ-205 confusion).
+_REFUSAL_PLAIN = {
+    "underspecified-requirement":
+        "The requirement is too vague to anchor a test — it does not name a "
+        "concrete behavior or target.",
+    "no-relevant-context":
+        "The requirement references things that do not exist in the synced "
+        "org model.",
+    "ambiguous-reference":
+        "The requirement matched more than one thing in the org — it could "
+        "not be resolved to a single target.",
+    "ungrounded-claim":
+        "The org has no rule or configuration backing this — there is "
+        "nothing real to test against.",
+    "structural-validation-failure":
+        "The AI could not produce a valid proposal for this requirement "
+        "(often: it names objects or fields that do not exist in the org).",
+    "low-generation-confidence":
+        "The engine was not confident enough in any interpretation to "
+        "commit to a test.",
+    "no-admissible-negative-scenario-found":
+        "No org rule exists that would reject this — there is no real "
+        "enforcement to test.",
+    "operational-budget-exhausted":
+        "Generation ran out of its processing budget before finishing — "
+        "try again.",
+    "emission-deferred":
+        "The engine understood the requirement and found it testable, but "
+        "authoring this kind of test is not built yet.",
+}
+
+
+def refusal_plain(refusal_kind: Optional[str],
+                  refusals: Any = None) -> Optional[str]:
+    """The refusal as one plain sentence, with the substrate's recorded detail
+    appended when present (e.g. WHICH claim kind was deferred, WHICH refs were
+    missing). ``refusals`` is the outcome's typed refusal list
+    ``[{refusal_kind, payload}, ...]``. None when there is no refusal."""
+    if not refusal_kind:
+        return None
+    base = _REFUSAL_PLAIN.get(refusal_kind,
+                              refusal_kind.replace("-", " ").capitalize())
+    detail = None
+    try:
+        for entry in refusals or ():
+            payload = (entry or {}).get("payload") or {}
+            detail = (payload.get("detail")
+                      or payload.get("missing_refs")
+                      or payload.get("reason"))
+            if detail:
+                break
+    except Exception:
+        detail = None
+    if detail:
+        if isinstance(detail, (list, tuple)):
+            detail = ", ".join(str(d) for d in detail)
+        return f"{base} ({detail})"
+    return base
