@@ -21,7 +21,8 @@ _OLD = "2026-05-01T10:00:00+00:00"            # ~40 days old — outside 168h
 
 
 def _claim(outcome="passed", *, overall="intact", stale=False, never=False,
-           superseded=False, version_unknown=False, finished_at=_FRESH):
+           superseded=False, version_unknown=False, finished_at=_FRESH,
+           flaky=False, recent=None):
     return {
         "test_id": "t",
         "approved_seq": 1,
@@ -32,6 +33,8 @@ def _claim(outcome="passed", *, overall="intact", stale=False, never=False,
             "finished_at": finished_at, "version_unknown": version_unknown},
         "superseded_newer_run": superseded,
         "never_run": never,
+        "flaky": flaky,
+        "recent_outcomes": recent or ([] if never else [outcome]),
     }
 
 
@@ -141,3 +144,49 @@ def test_output_mirrors_v1_shape_keys():
     for key in ("recommendation", "confidence", "reasoning", "criteria_met",
                 "metrics", "risk"):
         assert key in out
+
+
+# --- D-200: flake quarantine ---------------------------------------------------
+
+def test_flaky_failure_is_quarantined_not_blocking():
+    # A chronically-flipping claim whose latest run failed must NOT block the
+    # release — it leaves the pass rate and surfaces as a quarantine warning.
+    out = compute_substrate_decision(
+        [_claim(), _claim("failed", flaky=True,
+                          recent=["failed", "passed", "failed", "passed"])],
+        now=_NOW)
+    assert out["recommendation"] == "conditional_go"       # warn, not no_go
+    assert _checks(out)["flaky_quarantine"] == "warn"
+    assert _checks(out)["pass_rate"] == "pass"             # 1/1 scored = 100%
+    assert out["metrics"]["quarantined"] == 1
+
+
+def test_flaky_but_passing_counts_normally():
+    out = compute_substrate_decision(
+        [_claim(flaky=True, recent=["passed", "failed", "passed"])], now=_NOW)
+    assert out["metrics"]["quarantined"] == 0
+    assert _checks(out)["pass_rate"] == "pass"
+
+
+def test_stable_regression_is_never_quarantined():
+    # One pass->fail edge is a REAL regression: flaky=False from _is_flaky, so
+    # the failure blocks as it should.
+    out = compute_substrate_decision(
+        [_claim("failed", recent=["failed", "passed", "passed"])], now=_NOW)
+    assert out["recommendation"] == "no_go"
+    assert "flaky_quarantine" not in _checks(out)
+
+
+def test_quarantine_opt_out_via_criteria():
+    out = compute_substrate_decision(
+        [_claim("failed", flaky=True, recent=["failed", "passed", "failed"])],
+        {"substrate_quarantine_flaky": False}, now=_NOW)
+    assert out["recommendation"] == "no_go"                # blocks when opted out
+
+
+def test_is_flaky_detection_thresholds():
+    from primeqa.intelligence.substrate_decision import _is_flaky
+    assert _is_flaky(["failed", "passed", "failed"]) is True       # 2 transitions
+    assert _is_flaky(["failed", "passed", "passed"]) is False      # 1 = regression
+    assert _is_flaky(["passed", "passed", "passed"]) is False
+    assert _is_flaky(["passed"]) is False and _is_flaky([]) is False

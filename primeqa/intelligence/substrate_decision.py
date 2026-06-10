@@ -30,11 +30,14 @@ from sqlalchemy import text
 
 log = logging.getLogger(__name__)
 
-# The latest COUNTED run: S4 as the base (true recency; interpret-failed runs
-# still show, verdict NULL — the _CLAIM_RUNS_SQL discipline) + the D-198 version
-# filter. :seq is the approved version_seq; pass NULL to disable the filter
-# (unapproved claim — no reference version to count against).
-_COUNTED_RUN_SQL = (
+# The recent COUNTED runs, newest-first: S4 as the base (true recency;
+# interpret-failed runs still show, verdict NULL — the _CLAIM_RUNS_SQL
+# discipline) + the D-198 version filter. Row 0 is the counted latest; the
+# window (5) feeds the D-200 flakiness detection. :seq is the approved
+# version_seq; pass NULL to disable the filter (unapproved claim).
+_FLAKE_WINDOW = 5
+
+_COUNTED_RUNS_SQL = (
     "SELECT CAST(r.run_id AS text) AS run_id, r.outcome::text AS outcome, "
     "r.finished_at, r.claim_version_seq, i.verdict::text AS verdict "
     "FROM s4_execution_runs r "
@@ -42,7 +45,15 @@ _COUNTED_RUN_SQL = (
     "WHERE r.claim_test_id = CAST(:tid AS uuid) "
     "AND (CAST(:seq AS int) IS NULL "
     "     OR r.claim_version_seq IS NULL OR r.claim_version_seq = :seq) "
-    "ORDER BY r.finished_at DESC LIMIT 1")
+    f"ORDER BY r.finished_at DESC LIMIT {_FLAKE_WINDOW}")
+
+
+def _is_flaky(outcomes) -> bool:
+    """D-200 quarantine detection: ≥2 outcome transitions across the recent
+    counted runs (newest-first) — the chronically-flipping signature. A stable
+    pass→fail edge (one transition) is a REAL regression, never quarantined."""
+    transitions = sum(1 for a, b in zip(outcomes, outcomes[1:]) if a != b)
+    return transitions >= 2
 
 # Is there a NEWER run of a DIFFERENT (non-NULL) version than the approved one?
 # (Superseded evidence newer than what we counted — the decision warns on it.)
@@ -113,9 +124,10 @@ def _assemble_claim_evidence(session, external_keys) -> list[dict]:
             grounding = {"overall": gv.overall, "stale": stale,
                          "evaluated_at_version_seq": gv.evaluated_at_version_seq}
 
-        row = session.execute(text(_COUNTED_RUN_SQL),
-                              {"tid": str(tid), "seq": approved_seq}
-                              ).mappings().first()
+        rows = session.execute(text(_COUNTED_RUNS_SQL),
+                               {"tid": str(tid), "seq": approved_seq}
+                               ).mappings().all()
+        row = rows[0] if rows else None
         latest_run = None
         if row is not None:
             latest_run = {
@@ -125,6 +137,8 @@ def _assemble_claim_evidence(session, external_keys) -> list[dict]:
                                 if row["finished_at"] else None),
                 "version_unknown": row["claim_version_seq"] is None,
             }
+        recent_outcomes = [r["outcome"] for r in rows]
+        flaky = _is_flaky(recent_outcomes)
 
         superseded_newer = False
         if approved_seq is not None:
@@ -141,6 +155,8 @@ def _assemble_claim_evidence(session, external_keys) -> list[dict]:
             "latest_run": latest_run,
             "superseded_newer_run": superseded_newer,
             "never_run": latest_run is None,
+            "flaky": flaky,
+            "recent_outcomes": recent_outcomes,
         })
     return out
 
@@ -198,9 +214,21 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
 
     counted = [c for c in claim_evidence if c["latest_run"] is not None]
     never_run = [c for c in claim_evidence if c["never_run"]]
-    passed = sum(1 for c in counted if c["latest_run"]["outcome"] == "passed")
-    failed = sum(1 for c in counted if c["latest_run"]["outcome"] == "failed")
-    errored = sum(1 for c in counted if c["latest_run"]["outcome"] == "errored")
+
+    # D-200 flake quarantine: a chronically-flipping claim whose latest run is
+    # not-passed is QUARANTINED — excluded from the pass-rate (it must not block
+    # a good release) and surfaced as its own warning. A flaky claim that
+    # currently PASSES counts normally. Opt out via
+    # criteria['substrate_quarantine_flaky'] = False.
+    quarantine_on = criteria.get("substrate_quarantine_flaky", True)
+    quarantined = [c for c in counted
+                   if quarantine_on and c.get("flaky")
+                   and c["latest_run"]["outcome"] != "passed"]
+    scored = [c for c in counted if c not in quarantined]
+
+    passed = sum(1 for c in scored if c["latest_run"]["outcome"] == "passed")
+    failed = sum(1 for c in scored if c["latest_run"]["outcome"] == "failed")
+    errored = sum(1 for c in scored if c["latest_run"]["outcome"] == "errored")
 
     # has_runs — no evidence at all is a blocker (the v1 no-runs parallel).
     if not counted:
@@ -212,9 +240,9 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
     else:
         criteria_met["has_runs"] = True
 
-    # pass_rate over the counted latest runs.
-    pass_rate = (passed / len(counted) * 100) if counted else 0.0
-    if counted:
+    # pass_rate over the scored latest runs (quarantined claims excluded).
+    pass_rate = (passed / len(scored) * 100) if scored else 0.0
+    if scored:
         if pass_rate >= min_pass_rate:
             reasoning.append({"check": "pass_rate", "status": "pass",
                               "detail": f"Pass rate {pass_rate:.1f}% meets "
@@ -253,6 +281,14 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
         reasoning.append({"check": "grounding_integrity", "status": "pass",
                           "detail": "All claim groundings intact and current"})
         criteria_met["grounding_integrity"] = True
+
+    # flake quarantine — surfaced, never silent (D-200).
+    if quarantined:
+        reasoning.append({"check": "flaky_quarantine", "status": "warn",
+                          "detail": f"{len(quarantined)} chronically-flipping "
+                                    "claim(s) quarantined from the pass rate — "
+                                    "stabilize or review them"})
+        warnings += 1
 
     # coverage — partial never_run is a warning (total never_run already blocked).
     if counted and never_run:
@@ -308,6 +344,7 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
             "counted_runs": len(counted),
             "passed": passed, "failed": failed, "errored": errored,
             "never_run": len(never_run),
+            "quarantined": len(quarantined),
             "pass_rate": round(pass_rate, 1),
             "grounding": {"broken": len(broken), "drifted": len(drifted),
                           "stale": len(stale)},

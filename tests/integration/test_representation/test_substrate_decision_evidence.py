@@ -211,7 +211,7 @@ def test_e2e_clean_evidence_yields_go(session):
     assert out["recommendation"] == "go"
     assert out["metrics"] == {
         "claim_count": 1, "counted_runs": 1, "passed": 1, "failed": 0,
-        "errored": 0, "never_run": 0, "pass_rate": 100.0,
+        "errored": 0, "never_run": 0, "quarantined": 0, "pass_rate": 100.0,
         "grounding": {"broken": 0, "drifted": 0, "stale": 0},
         "blockers": 0, "warnings": 0}
     assert out["risk"]["level"] == "low"

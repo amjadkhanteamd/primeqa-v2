@@ -95,4 +95,13 @@ def evaluate_and_record(db, release, tenant_id, *, release_repo) -> dict:
         criteria_met=combined.get("criteria_met"),
         recommended_by="ai",
     )
+
+    # D-200: heads-up email on a non-clean verdict (best-effort, never blocks
+    # the decision; the log provider is the safe default).
+    try:
+        from primeqa.shared.notifications import notify_release_decision
+        notify_release_decision(
+            db, tenant_id, getattr(release, "name", f"#{release.id}"), envelope)
+    except Exception:                                    # pragma: no cover
+        pass
     return envelope
