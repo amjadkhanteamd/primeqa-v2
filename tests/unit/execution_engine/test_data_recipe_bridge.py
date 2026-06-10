@@ -182,13 +182,13 @@ def test_decodes_positive_recipe_to_plan():
 
 def test_rejects_positive_missing_assert():
     recipe = _recipe_read(observation_realization=_positive_body(omit_assert=True))
-    with pytest.raises(PlanTranslationError, match="CreateStep -> ReadStep -> AssertStep"):
+    with pytest.raises(PlanTranslationError, match="ReadStep -> AssertStep"):
         build_data_recipe_plan(recipe)
 
 
 def test_rejects_positive_missing_read():
     recipe = _recipe_read(observation_realization=_positive_body(omit_read=True))
-    with pytest.raises(PlanTranslationError, match="CreateStep -> ReadStep -> AssertStep"):
+    with pytest.raises(PlanTranslationError, match="ReadStep -> AssertStep"):
         build_data_recipe_plan(recipe)
 
 
@@ -216,7 +216,7 @@ def test_rejects_lone_positive_create():
     # A create with no expect_rejection is now a *positive* (D-115) — but a lone
     # create (no read + assert) is an incomplete positive: the triple is required.
     recipe = _recipe_read(observation_realization=_negative_body(expect_rejection=False))
-    with pytest.raises(PlanTranslationError, match="CreateStep -> ReadStep -> AssertStep"):
+    with pytest.raises(PlanTranslationError, match="ReadStep -> AssertStep"):
         build_data_recipe_plan(recipe)
 
 
@@ -318,7 +318,7 @@ def test_unflagged_create_update_pair_routes_to_positive_and_fails_loud():
     # gate names the mismatch (an ordinary update step is a 5b-2 concern).
     recipe = _recipe_read(
         observation_realization=_two_step_body(flag_mutation=False))
-    with pytest.raises(PlanTranslationError, match="CreateStep -> ReadStep -> AssertStep"):
+    with pytest.raises(PlanTranslationError, match="ReadStep -> AssertStep"):
         build_data_recipe_plan(recipe)
 
 
@@ -366,3 +366,59 @@ def test_planned_update_is_frozen():
         _recipe_read(observation_realization=_two_step_body()))
     with pytest.raises(Exception):
         plan.steps[1].step_id = "mutated"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# D-205 — the N-create positive chain
+# ---------------------------------------------------------------------------
+
+def _chain_body(*, insert_read_between=False) -> DataRecipeBody:
+    account = {"ref_kind": "logical", "entity_type": "Object", "external_id": "Account"}
+    contact = {"ref_kind": "logical", "entity_type": "Object", "external_id": "Contact"}
+    steps = [
+        {"kind": "create", "step_id": "create-account",
+         "target_object": account, "field_values": {"Account.Name": "PQA Chain"}},
+    ]
+    if insert_read_between:
+        steps.append({"kind": "read", "step_id": "read-mid", "target": account,
+                      "soql": "SELECT Id FROM Account", "fields_to_capture": ["Id"]})
+    steps += [
+        {"kind": "create", "step_id": "create-contact",
+         "target_object": contact,
+         "field_values": {"Contact.Email": "pqa@example.com",
+                          "Contact.AccountId": "$create-account.id"}},
+        {"kind": "read", "step_id": "read-contact", "target": contact,
+         "soql": "SELECT Email FROM Contact WHERE Id = '$create-contact.id'",
+         "fields_to_capture": ["Contact.Email"]},
+        {"kind": "assert", "step_id": "assert-email",
+         "predicate": {"subject_ref": "read-contact.Contact.Email",
+                       "predicate": "equals", "value": "pqa@example.com"}},
+    ]
+    return DataRecipeBody.model_validate({
+        "api_choice": "rest", "identity_context": "system",
+        "execution_mechanism": "direct_api", "steps": steps,
+    })
+
+
+def test_decodes_two_create_chain_to_plan():
+    plan = build_data_recipe_plan(
+        _recipe_read(observation_realization=_chain_body()))
+    kinds = [type(s).__name__ for s in plan.steps]
+    assert kinds == ["PlannedCreate", "PlannedCreate", "PlannedDataRead",
+                     "PlannedAssertion"]
+    first, second = plan.steps[0], plan.steps[1]
+    assert first.step_id == "create-account"
+    assert second.step_id == "create-contact"
+    # the cross-step reference survives projection VERBATIM (the executor
+    # resolves it at run time).
+    assert second.field_values["Contact.AccountId"] == "$create-account.id"
+    assert first.expect_rejection is None and second.expect_rejection is None
+
+
+def test_rejects_read_between_creates():
+    # The chain is creates-then-read-then-assert; an interleaved read is not a
+    # plannable shape (deferred until a consumer needs it, D-205 residual 2).
+    recipe = _recipe_read(
+        observation_realization=_chain_body(insert_read_between=True))
+    with pytest.raises(PlanTranslationError, match="ReadStep -> AssertStep"):
+        build_data_recipe_plan(recipe)

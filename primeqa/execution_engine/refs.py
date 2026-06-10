@@ -55,3 +55,24 @@ def resolve_step_refs(soql: str, state: dict[str, dict[str, Any]]) -> str:
         return str(bag[attr])
 
     return _REF.sub(_sub, soql)
+
+
+def resolve_field_value_refs(
+    field_values: dict[str, Any], state: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Resolve ``$<step_id>.<attr>`` references in a create's field VALUES
+    (D-205 — the N-create chain): a later create may set a lookup from an
+    earlier create's record, e.g. ``{"AccountId": "$create-account.id"}``.
+
+    String values run through :func:`resolve_step_refs` (same token grammar,
+    same fail-loud :class:`StepRefResolutionError` discipline — a reference to
+    a step that has not produced a record is a recipe defect, never a silently
+    unresolved lookup). Non-string values pass through unchanged; strings
+    without a ``$`` token are returned verbatim (the regex simply finds no
+    match). v1 scope: refs in flat string values only — lists / nested dicts
+    are not walked.
+    """
+    return {
+        k: resolve_step_refs(v, state) if isinstance(v, str) else v
+        for k, v in field_values.items()
+    }

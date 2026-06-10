@@ -423,34 +423,56 @@ def _project_negative(steps, *, recipe_id) -> tuple:
 
 
 def _project_positive(steps, *, recipe_id) -> tuple:
-    """Project the positive create-and-verify (D-115 side B): a ``CreateStep``
-    (no expect_rejection) → ``ReadStep`` → ``AssertStep``. The slice plans
-    exactly this triple; multi-step / multi-read positives are deferred.
-    ``steps[0]`` is already validated as a ``CreateStep`` on a ``LogicalRef``."""
-    if (len(steps) != 3
-            or not isinstance(steps[1], ReadStep)
-            or not isinstance(steps[2], DataAssertStep)):
+    """Project the positive create-and-verify (D-115 side B, N-create chains
+    D-205): ``CreateStep × N`` (N ≥ 1, none carrying ``expect_rejection``) →
+    ``ReadStep`` → ``AssertStep``. A later create's field values may reference
+    an earlier create's record (``"$<step_id>.id"`` — the executor resolves).
+    Every other shape fails loud. ``steps[0]`` is already validated as a
+    ``CreateStep`` on a ``LogicalRef``."""
+    n = 0
+    while n < len(steps) and isinstance(steps[n], CreateStep):
+        create = steps[n]
+        if create.expect_rejection is not None:
+            # Unreachable via build_data_recipe_plan (a flagged step routes to
+            # the negative projection) — kept as a loud guard for direct calls.
+            raise PlanTranslationError(
+                f"create {create.step_id!r} in a positive recipe must not "
+                f"carry expect_rejection",
+                recipe_id=recipe_id,
+            )
+        if not isinstance(create.target_object, LogicalRef):
+            raise PlanTranslationError(
+                f"create {create.step_id!r} must target a LogicalRef (the "
+                f"sobject by name); got a {type(create.target_object).__name__}",
+                recipe_id=recipe_id,
+            )
+        n += 1
+
+    if (n == 0 or len(steps) != n + 2
+            or not isinstance(steps[n], ReadStep)
+            or not isinstance(steps[n + 1], DataAssertStep)):
         shape = ", ".join(type(s).__name__ for s in steps) or "(empty)"
         raise PlanTranslationError(
-            f"positive data-recipe (a create with no expect_rejection) must be "
-            f"CreateStep -> ReadStep -> AssertStep; got [{shape}] "
-            f"(multi-step positives are deferred)",
+            f"positive data-recipe must be CreateStep x N (N >= 1) -> ReadStep "
+            f"-> AssertStep; got [{shape}]",
             recipe_id=recipe_id,
         )
-    create, read, assertion = steps
+    read, assertion = steps[n], steps[n + 1]
     if not isinstance(read.target, LogicalRef):
         raise PlanTranslationError(
             f"read {read.step_id!r} must target a LogicalRef (the FROM object by "
             f"name); got a {type(read.target).__name__}",
             recipe_id=recipe_id,
         )
-    return (
+    return tuple(
         PlannedCreate(
-            step_id=create.step_id,
-            target_object=create.target_object,
-            field_values=dict(create.field_values),
+            step_id=c.step_id,
+            target_object=c.target_object,
+            field_values=dict(c.field_values),
             expect_rejection=None,
-        ),
+        )
+        for c in steps[:n]
+    ) + (
         PlannedDataRead(
             step_id=read.step_id,
             target=read.target,

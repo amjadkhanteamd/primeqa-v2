@@ -38,6 +38,7 @@ setup failure is ``errored`` (the prohibition was never exercised), never
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
@@ -45,6 +46,7 @@ from uuid import uuid4
 from primeqa.execution_engine.errors import (
     AssertionResolutionError,
     PlanTranslationError,
+    StepRefResolutionError,
     UnsupportedPredicateError,
 )
 from primeqa.execution_engine.evidence import (
@@ -63,7 +65,7 @@ from primeqa.execution_engine.plan import (
     PlannedUpdate,
 )
 from primeqa.execution_engine.provisioning import CreatedRecordTracker
-from primeqa.execution_engine.refs import resolve_step_refs
+from primeqa.execution_engine.refs import resolve_field_value_refs, resolve_step_refs
 from primeqa.execution_engine.world import construct_world
 from primeqa.integrations.exceptions import SFClientError
 
@@ -336,109 +338,141 @@ def _sf_soql(soql: str, sobject: str) -> str:
 
 
 def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> RunEvidence:
-    """The positive create-and-verify path (D-115): construct-world →
-    create-expect-success → observe → ground ``field == V`` → teardown (k14).
+    """The positive create-and-verify path (D-115; N-create chains D-205):
+    per create — construct-world → resolve cross-step refs → create-expect-
+    success → thread state — then observe the read-back → teardown (k14,
+    always, before grading) → ground ``field == V``.
 
-    The plan is the bridge-guaranteed triple ``(PlannedCreate, PlannedDataRead,
-    PlannedAssertion)``. The full outcome grammar is DECISIONS_LOG D-115.2."""
+    The plan is the bridge-guaranteed shape ``(PlannedCreate × N,
+    PlannedDataRead, PlannedAssertion)``. The full outcome grammar is
+    DECISIONS_LOG D-115.2; any pre-read failure tears down everything already
+    built (creates + their provisioned parents) and surfaces honestly."""
     run_id = uuid4()
     started = _now()
-    create, read, assertion = plan.steps
-    sobject = create.target_object.external_id
-    semantic_fields = set(create.field_values)      # the recipe-set keys (k16)
+    *creates, read, assertion = plan.steps
 
-    # 1. Construct the operational world — pad required scalars + recursively
-    #    build required lookup/master-detail PARENTS (F6.2). Every created record
-    #    (parents, in creation order) lands on the tracker; the target joins last.
     at_seq = s1.current_version_seq()
     tracker = CreatedRecordTracker()
-    try:
-        scalar_filler, parent_filler, unfillable = construct_world(
-            sobject, semantic_fields, s1=s1, client=client, tracker=tracker,
-            at_seq=at_seq)
-    except Exception as e:
-        # ANY failure mid-construct — a transport raise (SFClientError) OR an S1
-        # read raise (VersionNotFoundError / ValueError) — must tear down any
-        # parents already built before surfacing the errored run. Catching only
-        # SFClientError here would leak a built parent on an S1 read error.
-        tracker.teardown(client, _best_effort_delete)
-        err = ErrorSurface("construct", type(e).__name__, str(e))
-        return _result(plan, run_id, started, environment_id, (), "errored", err,
-                       created_records=tracker.records)
-    if unfillable:
-        # A required field/parent could not be constructed — tear down any parents
-        # already built (a later required-ref failed after an earlier one landed).
-        tracker.teardown(client, _best_effort_delete)
-        err = ErrorSurface(
-            phase="construct", error_type="UnfillableWorld",
-            message=("required field(s)/parent(s) S4 could not construct: "
-                     + ", ".join(unfillable)))
-        return _result(plan, run_id, started, environment_id, (), "errored", err,
-                       created_records=tracker.records)
+    state: dict[str, dict] = {}
+    create_evs: list = []
+    record_ids: list = []           # parallel to create_evs (None = not created)
 
-    # Bare-ify field names for the live API: the recipe + padding speak S1's
-    # object-qualified names ({Object}.field); Salesforce creates want bare names.
-    field_values = _sf_fields(
-        {**create.field_values, **scalar_filler, **parent_filler}, sobject)
+    def _torn_down() -> tuple:
+        """Teardown everything built (reverse order — children before parents,
+        across all creates) and attach each create's CleanupRecord to its
+        evidence BY RECORD ID (D-205 — provisioned parents interleave with the
+        chain's creates, so index arithmetic would mis-attribute)."""
+        cleanups = tracker.teardown(client, _best_effort_delete)
+        by_id = {c.record_id: c for c in cleanups if c.record_id}
+        return tuple(
+            replace(ev, cleanup=by_id[rid]) if rid in by_id else ev
+            for ev, rid in zip(create_evs, record_ids))
 
-    # 2. Create the target — expect success.
-    c_start = _now()
-    try:
-        env = client.create(sobject, field_values)
-    except SFClientError as e:
-        tracker.teardown(client, _best_effort_delete)   # tear down built parents
-        err = ErrorSurface("create", type(e).__name__, str(e))
-        ev = _evidence(
-            create, sobject, c_start, _now(), http_status=None, success=False,
-            rejection_body=(), matched=None, cleanup=CleanupRecord(attempted=False),
-            error=err, field_values=field_values)
-        return _result(plan, run_id, started, environment_id, (ev,), "errored", err,
-                       created_records=tracker.records)
+    for ordinal, create in enumerate(creates):
+        sobject = create.target_object.external_id
+        semantic_fields = set(create.field_values)      # the recipe-set keys (k16)
 
-    http_status = env["http_status"]
-    success = env["success"]
-    body = env["api_response"]["body"]
-    record_id = env["record_id"]
-    rejection_body = _as_error_tuple(body)
+        # 1. Construct the operational world for THIS create — pad required
+        #    scalars + recursively build required lookup/master-detail PARENTS
+        #    (F6.2). Parents land on the shared tracker in creation order.
+        try:
+            scalar_filler, parent_filler, unfillable = construct_world(
+                sobject, semantic_fields, s1=s1, client=client, tracker=tracker,
+                at_seq=at_seq)
+        except Exception as e:
+            # ANY failure mid-construct (transport OR an S1 read raise) tears
+            # down everything already built — including earlier chain creates.
+            err = ErrorSurface("construct", type(e).__name__, str(e))
+            return _result(plan, run_id, started, environment_id, _torn_down(),
+                           "errored", err, created_records=tracker.records)
+        if unfillable:
+            err = ErrorSurface(
+                phase="construct", error_type="UnfillableWorld",
+                message=("required field(s)/parent(s) S4 could not construct: "
+                         + ", ".join(unfillable)))
+            return _result(plan, run_id, started, environment_id, _torn_down(),
+                           "errored", err, created_records=tracker.records)
 
-    if not success:
-        # The target create did not land — no target record made; tear down the
-        # parents (if any) that were built for it.
-        tracker.teardown(client, _best_effort_delete)
-        outcome, top_error = _grade_rejected_create(
-            http_status, rejection_body, semantic_fields)
-        ev = _evidence(
-            create, sobject, c_start, _now(), http_status=http_status,
-            success=False, rejection_body=rejection_body, matched=None,
-            cleanup=CleanupRecord(attempted=False),
-            error=(top_error if outcome == "errored" else None),
-            field_values=field_values)
-        return _result(
-            plan, run_id, started, environment_id, (ev,), outcome, top_error,
-            created_records=tracker.records)
+        # 2. Resolve cross-step references in the SEMANTIC values against the
+        #    chain's accumulated state (D-205 — e.g. AccountId="$create-account
+        #    .id"; padding never carries refs), then bare-ify the keys for the
+        #    live API ({Object}.field → field).
+        try:
+            semantic_resolved = resolve_field_value_refs(create.field_values, state)
+        except StepRefResolutionError as e:
+            err = ErrorSurface("create", type(e).__name__, str(e))
+            return _result(plan, run_id, started, environment_id, _torn_down(),
+                           "errored", err, created_records=tracker.records)
+        field_values = _sf_fields(
+            {**semantic_resolved, **scalar_filler, **parent_filler}, sobject)
 
-    # 3. Create succeeded → record the target (LAST, so reverse teardown deletes
-    #    it before its parents) → observe the record back (a distinct, async-ready
-    #    phase: no immediate-consistency assumption is baked in here).
-    c_end = _now()
-    tracker.record(sobject, record_id)          # F6.2: target after its parents
-    state = {create.step_id: {"id": record_id}}
-    read_ev, read_err = _run_read_back(read, sobject, state, client, ordinal=1)
+        # 3. Create — expect success.
+        c_start = _now()
+        try:
+            env = client.create(sobject, field_values)
+        except SFClientError as e:
+            err = ErrorSurface("create", type(e).__name__, str(e))
+            create_evs.append(_evidence(
+                create, sobject, c_start, _now(), http_status=None,
+                success=False, rejection_body=(), matched=None,
+                cleanup=CleanupRecord(attempted=False), error=err,
+                field_values=field_values, ordinal=ordinal))
+            record_ids.append(None)
+            return _result(plan, run_id, started, environment_id, _torn_down(),
+                           "errored", err, created_records=tracker.records)
 
-    # 4. Teardown (k14) — every created record (the target, + from F6.2 any
-    #    provisioned parents), **reverse-order**, *before* grading, so a later
-    #    fail-loud ground never leaks them. The create_ev carries the target's
-    #    cleanup (reverse-order teardown → index 0 is the last-created = target).
-    cleanup = tracker.teardown(client, _best_effort_delete)[0]
-    create_ev = _evidence(
-        create, sobject, c_start, c_end, http_status=http_status, success=True,
-        rejection_body=(), matched=None, cleanup=cleanup, field_values=field_values)
+        http_status = env["http_status"]
+        body = env["api_response"]["body"]
+        record_id = env["record_id"]
+        rejection_body = _as_error_tuple(body)
 
-    # 5. Ground field == V (or errored when the record could not be observed).
+        if not env["success"]:
+            # This create did not land — grade with THIS create's semantic
+            # fields (D-115.2 disambiguation), tear down everything prior.
+            # BARE-ified for the intersection: Salesforce's rejection `fields`
+            # arrays carry bare names, while the recipe's semantic keys are
+            # S1-qualified — comparing them un-bare-ified could never match
+            # (a latent D-115.2 gap surfaced by the D-205 chain tests).
+            outcome, top_error = _grade_rejected_create(
+                http_status, rejection_body,
+                {_sf_field(k, sobject) for k in semantic_fields})
+            create_evs.append(_evidence(
+                create, sobject, c_start, _now(), http_status=http_status,
+                success=False, rejection_body=rejection_body, matched=None,
+                cleanup=CleanupRecord(attempted=False),
+                error=(top_error if outcome == "errored" else None),
+                field_values=field_values, ordinal=ordinal))
+            record_ids.append(None)
+            return _result(plan, run_id, started, environment_id, _torn_down(),
+                           outcome, top_error, created_records=tracker.records)
+
+        # 4. Created → track (after its parents, so reverse teardown deletes it
+        #    first) → thread the chain state for later creates' refs + the read.
+        c_end = _now()
+        tracker.record(sobject, record_id)
+        state[create.step_id] = {"id": record_id}
+        create_evs.append(_evidence(
+            create, sobject, c_start, c_end, http_status=http_status,
+            success=True, rejection_body=(), matched=None,
+            cleanup=CleanupRecord(attempted=False),     # attached at teardown
+            field_values=field_values, ordinal=ordinal))
+        record_ids.append(record_id)
+
+    # 5. Observe the record back (records still alive; state carries every
+    #    create's id for the SOQL's $refs).
+    read_sobject = read.target.external_id
+    read_ev, read_err = _run_read_back(
+        read, read_sobject, state, client, ordinal=len(creates))
+
+    # 6. Teardown (k14) — every created record, reverse-order, BEFORE grading,
+    #    so a later fail-loud ground never leaks them.
+    create_steps = _torn_down()
+
+    # 7. Ground field == V (or errored when the record could not be observed).
     if read_err is not None:
         return _result(
             plan, run_id, started, environment_id,
-            (create_ev, read_ev), "errored", read_err,
+            create_steps + (read_ev,), "errored", read_err,
             created_records=tracker.records)
     if read_ev.row_count == 0:
         err = ErrorSurface(
@@ -447,14 +481,14 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
                      "(no immediate-consistency assumption)"))
         return _result(
             plan, run_id, started, environment_id,
-            (create_ev, read_ev), "errored", err,
+            create_steps + (read_ev,), "errored", err,
             created_records=tracker.records)
 
-    assert_ev = _run_ground(assertion, read_ev, ordinal=2)
+    assert_ev = _run_ground(assertion, read_ev, ordinal=len(creates) + 1)
     outcome = "passed" if assert_ev.held else "failed"
     return _result(
         plan, run_id, started, environment_id,
-        (create_ev, read_ev, assert_ev), outcome, None,
+        create_steps + (read_ev, assert_ev), outcome, None,
         created_records=tracker.records)
 
 
@@ -629,14 +663,15 @@ def _run_create(create, sobject, client):
 
 def _evidence(create, sobject, start, end, *, http_status, success,
               rejection_body, matched, cleanup, error=None,
-              field_values=None) -> CreateAttemptEvidence:
+              field_values=None, ordinal=0) -> CreateAttemptEvidence:
     first = rejection_body[0] if rejection_body else {}
     # The actual posted payload — for the positive vertical that is the semantic
     # field + S4's operational padding; for the negative it is the create's own
-    # field_values (the default).
+    # field_values (the default). ``ordinal`` positions the step in an N-create
+    # chain (D-205); the single-create verticals keep the default 0.
     posted = field_values if field_values is not None else create.field_values
     return CreateAttemptEvidence(
-        step_id=create.step_id, ordinal=0, sobject=sobject,
+        step_id=create.step_id, ordinal=ordinal, sobject=sobject,
         field_values=dict(posted), http_status=http_status,
         success=success,
         error_code=(first.get("errorCode") if isinstance(first, dict) else None),

@@ -575,3 +575,161 @@ def test_object_qualified_field_names_are_bare_ified_for_salesforce():
     # the read SOQL is bare; FROM Opportunity (no dot) untouched.
     assert client.queries == ["SELECT StageName FROM Opportunity WHERE Id = '006Z'"]
     assert client.deletes == [("Opportunity", "006Z")]      # k14 teardown
+
+
+# ---------------------------------------------------------------------------
+# D-205 — the N-create chain (Account -> Contact with a cross-step ref)
+# ---------------------------------------------------------------------------
+
+class _TwoObjStubS1:
+    """Account (required Name) + Contact (required LastName, OPTIONAL AccountId
+    reference — padding never builds the Account; the chain's explicit ref is
+    what threads it)."""
+
+    _FIELDS = {
+        "Account": [("Name", "string", False, None)],
+        "Contact": [("LastName", "string", False, None),
+                    ("Email", "email", True, None),
+                    ("AccountId", "reference", True, "obj-Account")],
+    }
+
+    def current_version_seq(self):
+        return 7
+
+    def get_entities(self, entity_type, at_seq, filters=None):
+        api = (filters or {}).get("sf_api_name")
+        if entity_type == "Object" and api in self._FIELDS:
+            return [_Ent("obj-" + api, "Object", api)]
+        return []
+
+    def get_related(self, entity_id, edge_types, direction, at_seq):
+        api = entity_id.removeprefix("obj-")
+        if api in self._FIELDS:
+            return [_Rel(_Ent(f"fld-{api}-{n}", "Field", f"{api}.{n}"))
+                    for n, *_ in self._FIELDS[api]]
+        return []
+
+    def get_entity_details(self, entity_id, at_seq):
+        _, api, name = entity_id.split("-", 2)
+        for n, ftype, nillable, ref in self._FIELDS[api]:
+            if n == name:
+                return {"field_type": ftype, "is_nillable": nillable,
+                        "is_calculated": False, "is_createable": True,
+                        "references_object_entity_id": ref,
+                        "picklist_value_set_entity_id": None, "length": None}
+        return None
+
+    def get_picklist_values(self, pvs_id, at_seq):
+        return []
+
+
+class _SeqClient:
+    """Create results consumed in call order; query + delete as the plain stub."""
+
+    def __init__(self, create_results, query_result=None):
+        self._create_results = list(create_results)
+        self._query_result = query_result or []
+        self.creates, self.queries, self.deletes = [], [], []
+
+    def create(self, sobject, field_values):
+        self.creates.append((sobject, dict(field_values)))
+        return self._create_results.pop(0)
+
+    def query(self, soql):
+        self.queries.append(soql)
+        return list(self._query_result)
+
+    def delete(self, sobject, record_id):
+        self.deletes.append((sobject, record_id))
+        return {"success": True}
+
+
+def _chain_plan(*, account_ref="$create-account.id"):
+    account = LogicalRef(entity_type="Object", external_id="Account")
+    contact = LogicalRef(entity_type="Object", external_id="Contact")
+    return DataRecipePlan(
+        recipe_id=uuid4(), recipe_version_seq=2, claim_test_id=uuid4(),
+        claim_version_seq=None, api_choice="rest",
+        steps=(
+            PlannedCreate(step_id="create-account", target_object=account,
+                          field_values={"Account.Name": "PQA Chain"},
+                          expect_rejection=None),
+            PlannedCreate(step_id="create-contact", target_object=contact,
+                          field_values={"Contact.Email": "pqa@example.com",
+                                        "Contact.AccountId": account_ref},
+                          expect_rejection=None),
+            PlannedDataRead(
+                step_id="read-contact", target=contact,
+                soql="SELECT Email FROM Contact WHERE Id = '$create-contact.id'",
+                fields_to_capture=("Contact.Email",)),
+            PlannedAssertion(
+                step_id="assert-email",
+                predicate=AssertionPredicate(
+                    subject_ref="read-contact.Contact.Email",
+                    predicate="equals", value="pqa@example.com")),
+        ))
+
+
+def test_two_create_chain_passes_with_resolved_ref():
+    client = _SeqClient(
+        [_success("001ACC"), _success("003CON")],
+        query_result=[{"Email": "pqa@example.com"}])
+    ev = execute_data_recipe(
+        _chain_plan(), client=client, environment_id=_ENV_ID, s1=_TwoObjStubS1())
+    assert ev.outcome == "passed"
+    assert [s.kind for s in ev.steps] == ["create", "create", "read", "assert"]
+    assert [s.ordinal for s in ev.steps] == [0, 1, 2, 3]
+    # The second create POSTED the RESOLVED first-create id, bare-keyed.
+    contact_posted = client.creates[1][1]
+    assert contact_posted["AccountId"] == "001ACC"
+    assert contact_posted["Email"] == "pqa@example.com"
+    assert contact_posted["LastName"] == "PQA"               # padding
+    # The read resolved the second create's id.
+    assert client.queries == ["SELECT Email FROM Contact WHERE Id = '003CON'"]
+    # Teardown reverse order: Contact before Account.
+    assert client.deletes == [("Contact", "003CON"), ("Account", "001ACC")]
+    # Cleanup attribution by record id — each create's evidence carries ITS
+    # record's teardown.
+    assert ev.steps[0].cleanup.record_id == "001ACC"
+    assert ev.steps[1].cleanup.record_id == "003CON"
+    assert ev.steps[0].cleanup.succeeded and ev.steps[1].cleanup.succeeded
+
+
+def test_mid_chain_rejection_grades_and_tears_down():
+    # Create #2 rejected on ITS semantic field -> failed; create #1 torn down.
+    client = _SeqClient([
+        _success("001ACC"),
+        _rejected(fields=["Email"]),
+    ])
+    ev = execute_data_recipe(
+        _chain_plan(), client=client, environment_id=_ENV_ID, s1=_TwoObjStubS1())
+    assert ev.outcome == "failed"
+    assert [s.kind for s in ev.steps] == ["create", "create"]
+    assert ev.steps[1].success is False
+    assert client.deletes == [("Account", "001ACC")]
+    assert ev.steps[0].cleanup.record_id == "001ACC"         # attributed teardown
+
+
+def test_unresolved_chain_ref_is_errored_and_torn_down():
+    client = _SeqClient([_success("001ACC")])
+    ev = execute_data_recipe(
+        _chain_plan(account_ref="$create-acount.id"),        # typo'd step id
+        client=client, environment_id=_ENV_ID, s1=_TwoObjStubS1())
+    assert ev.outcome == "errored"
+    assert ev.error.phase == "create"
+    assert "create-acount" in ev.error.message
+    assert client.deletes == [("Account", "001ACC")]         # no leak
+
+
+def test_chain_evidence_persists_jsonb_safe():
+    client = _SeqClient(
+        [_success("001ACC"), _success("003CON")],
+        query_result=[{"Email": "pqa@example.com"}])
+    ev = execute_data_recipe(
+        _chain_plan(), client=client, environment_id=_ENV_ID, s1=_TwoObjStubS1())
+    session = _FakeSession()
+    persist_run_evidence(session, ev)
+    row = session.added[0]
+    json.dumps(row.evidence)
+    assert [s["kind"] for s in row.evidence["steps"]] == [
+        "create", "create", "read", "assert"]
