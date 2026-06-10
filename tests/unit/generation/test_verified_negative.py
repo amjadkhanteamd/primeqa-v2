@@ -126,3 +126,70 @@ def test_not_or_requires_all_disjuncts_not_derivable():
     # NOT(OR(Amount<0, ISBLANK(R))) = AND(NOT(Amount<0), NOT(ISBLANK)) -> the
     # NOT(ISBLANK) leg is undecidable -> the whole merge is NotDerivable.
     assert isinstance(_d("NOT(Amount < 0 || ISBLANK(R__c))"), NotDerivable)
+
+
+# ---------------------------------------------------------------------------
+# D-203 — derive_update: the 2-step pair (setup = satisfy(False),
+# violating changes = satisfy(True))
+# ---------------------------------------------------------------------------
+
+from primeqa.generation.verified_negative import (  # noqa: E402
+    VerifiedUpdateNegative, derive_update,
+)
+
+
+def _du(formula):
+    return derive_update(parse(formula))
+
+
+def _pair(formula):
+    r = _du(formula)
+    assert isinstance(r, VerifiedUpdateNegative), f"{formula!r} -> {r!r}"
+    return r.setup_payload, r.violating_changes
+
+
+def _du_reason(formula):
+    r = _du(formula)
+    assert isinstance(r, NotDerivable), f"{formula!r} -> {r!r}"
+    return r.reason
+
+
+def test_update_numeric_comparisons_derive_both_directions():
+    setup, violating = _pair("Amount > 1000000")
+    assert violating == {"Amount": 1000001}
+    assert setup == {"Amount": 1000000}          # <= bound: does not violate
+    setup, violating = _pair("Discount__c >= 40")
+    assert violating == {"Discount__c": 40}
+    assert setup == {"Discount__c": 39}
+
+
+def test_update_equality_derives_both_directions():
+    setup, violating = _pair("Amount__c = 0")
+    assert violating == {"Amount__c": 0}
+    assert setup == {"Amount__c": 1}             # any value <> 0
+
+
+def test_update_isblank_not_derivable():
+    # Only one direction derives (no certain non-blank value) — the graded
+    # fallback to create-rejected handles it upstream.
+    assert "ISBLANK" in _du_reason("ISBLANK(Reason__c)")
+
+
+def test_update_ispickval_not_derivable():
+    assert "ISPICKVAL" in _du_reason('ISPICKVAL(StageName, "Closed Won")')
+
+
+def test_update_org_state_functions_pre_scanned_out():
+    assert "ISCHANGED" in _du_reason("ISCHANGED(StageName)")
+    assert "PRIORVALUE" in _du_reason('PRIORVALUE(StageName) = "Closed Won"')
+
+
+def test_update_cross_object_pre_scanned_out():
+    assert "cross-object" in _du_reason('Account.Industry = "Banking"')
+
+
+def test_update_compound_and_merges_both_sides():
+    setup, violating = _pair("Amount > 100 && Quantity__c > 5")
+    assert violating == {"Amount": 101, "Quantity__c": 6}
+    # NOT(AND) = OR(NOT ops): the first derivable disjunct suffices for setup.
+    assert setup == {"Amount": 100}

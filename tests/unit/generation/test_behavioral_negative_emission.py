@@ -72,10 +72,21 @@ def test_verified_negative_emits_behavioral_recipe():
     assert create.target_object.external_id == "Lead"
 
 
-def test_violating_payload_from_a_comparison_formula():
+def test_comparison_formula_with_modify_hint_emits_update_rejected():
+    # D-203: a comparison derives BOTH directions, so a modify_* prohibition
+    # upgrades to the 2-step update-rejected shape — setup create in the
+    # non-violating state, update into violation. Field names come out
+    # object-QUALIFIED (the positive vertical's convention; Correction B).
     bundle = author_emission(_grounded(formulas=_DERIVABLE_CMP))
     assert bundle.recipe_kind == "data-recipe"
-    assert bundle.observation_realization.steps[0].field_values == {"Amount__c": 0}
+    assert bundle.causal_initiation.operation == "update"
+    setup, mutation = bundle.observation_realization.steps
+    assert isinstance(setup, CreateStep) and setup.expect_rejection is None
+    assert setup.step_id == "create-setup"
+    assert setup.field_values == {"Lead.Amount__c": 1}       # satisfy(False): <> 0
+    assert mutation.kind == "update"
+    assert mutation.field_changes == {"Lead.Amount__c": 0}   # satisfy(True): = 0
+    assert mutation.expect_rejection.error_code == _VR_CODE
 
 
 def test_behavioral_recipe_carries_expect_rejection_projection():
@@ -163,3 +174,91 @@ def test_behavioral_recipe_round_trips_through_registry():
     assert cls is DataRecipeBody
     restored = cls.model_validate(dumped)
     assert restored.steps[0].expect_rejection.error_code == _VR_CODE
+
+
+# ---------------------------------------------------------------------------
+# D-203 — graded operation dispatch
+# ---------------------------------------------------------------------------
+
+def _grounded_op(operation_hint, formulas):
+    return GroundedNegative(
+        archetype="data_behavior", claim_kind="prohibition-claim",
+        operation_hint=operation_hint, version_seq=7,
+        subject=_Endpoint(entity_id=uuid4(), entity_type="Object",
+                          external_id="Lead"),
+        requirement_excerpt="x", vr_formulas=formulas)
+
+
+def test_isblank_with_modify_hint_falls_back_to_create_rejected():
+    # Graded fallback: ISBLANK derives only the violating direction (no certain
+    # non-blank setup), so modify_record drops back to TODAY'S create-rejected —
+    # no regression for the existing corpus.
+    bundle = author_emission(_grounded_op("modify_record", _DERIVABLE))
+    assert bundle.recipe_kind == "data-recipe"
+    assert bundle.causal_initiation.operation == "create"
+    assert len(bundle.observation_realization.steps) == 1
+    assert bundle.observation_realization.steps[0].field_values == {"Reason__c": None}
+
+
+def test_create_duplicate_hint_keeps_create_rejected():
+    bundle = author_emission(_grounded_op("create_duplicate", _DERIVABLE_CMP))
+    assert bundle.causal_initiation.operation == "create"
+    steps = bundle.observation_realization.steps
+    assert len(steps) == 1 and steps[0].field_values == {"Amount__c": 0}
+
+
+def test_delete_hint_stays_caveated_even_when_derivable():
+    # The semantic-blur fix: VRs never fire on delete — a create-rejected
+    # recipe would test the wrong operation, so a delete prohibition routes to
+    # the caveated inspection regardless of formula derivability.
+    bundle = author_emission(_grounded_op("delete", _DERIVABLE_CMP))
+    assert bundle.recipe_kind == "metadata-recipe"
+    assert bundle.trigger_kind == "inspection-trigger"
+    assert bundle.caveat_required is True
+
+
+def test_update_shape_is_layer_2_no_caveat():
+    bundle = author_emission(_grounded_op("modify_record", _DERIVABLE_CMP))
+    assert bundle.admissibility_layer.value == "layer_2"
+    assert bundle.caveat_required is False
+
+
+def test_claim_identity_stable_across_all_three_recipe_shapes():
+    # The Option-C invariant extended to D-203: update-rejected vs
+    # create-rejected vs caveated-inspection — the CLAIM body never varies.
+    eid = uuid4()
+
+    def _g(formulas):
+        return GroundedNegative(
+            archetype="data_behavior", claim_kind="prohibition-claim",
+            operation_hint="modify_record", version_seq=7,
+            subject=_Endpoint(entity_id=eid, entity_type="Object",
+                              external_id="Lead"),
+            requirement_excerpt="x", vr_formulas=formulas)
+
+    b_update = author_emission(_g(_DERIVABLE_CMP))     # 2-step update shape
+    b_create = author_emission(_g(_DERIVABLE))         # create-rejected fallback
+    b_caveat = author_emission(_g(_NOT_DERIVABLE))     # inspection
+
+    assert b_update.causal_initiation.operation == "update"
+    assert b_create.causal_initiation.operation == "create"
+    assert b_caveat.recipe_kind == "metadata-recipe"
+    assert (b_update.asserted_truth.model_dump()
+            == b_create.asserted_truth.model_dump()
+            == b_caveat.asserted_truth.model_dump())
+    hashes = {
+        compute_identity_hash(b.archetype, b.claim_kind,
+                              b.asserted_truth, b.semantic_conditions)
+        for b in (b_update, b_create, b_caveat)
+    }
+    assert len(hashes) == 1
+
+
+def test_update_recipe_round_trips_through_registry():
+    from primeqa.test_representation.models.registry import get_body_model
+    bundle = author_emission(_grounded_op("modify_record", _DERIVABLE_CMP))
+    dumped = bundle.observation_realization.model_dump(mode="json")
+    restored = get_body_model(
+        dumped["kind"], dumped["body_schema_version"]).model_validate(dumped)
+    assert restored.steps[1].kind == "update"
+    assert restored.steps[1].expect_rejection.error_code == _VR_CODE

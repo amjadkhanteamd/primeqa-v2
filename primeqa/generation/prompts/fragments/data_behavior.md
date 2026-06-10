@@ -2,12 +2,18 @@ Data-behavior claims concern how records and fields behave at runtime.
 
 - **Negatives (prohibition).** When the requirement asserts an operation is
   *rejected* ("must not", "cannot", "is prevented from"), propose a
-  `prohibition-claim` with negative polarity on the target Object. The substrate
-  grounds it on a Validation Rule that applies to that Object. This is
-  Layer-1-*plausible*: the rule's existence is verified, its formula is not (the
-  parser is unbuilt), so the substrate attaches a caveat. Propose the negative
-  even though it will be caveated — a caveated grounded negative is the honest
-  artifact, not an overclaim.
+  `prohibition-claim` with negative polarity on the target Object. In
+  `target_subject_hint`, set `operation` to name WHICH operation is prohibited:
+  `"modify_record"` or `"modify_field"` for update/edit/change prohibitions
+  ("cannot edit a closed Opportunity", "Stage must not change after Closed"),
+  `"delete"` for delete prohibitions ("cannot delete an Account with open
+  Cases"), `"create_duplicate"` for duplicate-create prohibitions. Omit
+  `operation` only when the requirement does not say which operation is
+  blocked. The substrate grounds the claim on a Validation Rule that applies
+  to that Object and dispatches the test's shape on the operation (an update
+  prohibition is tested by creating a valid record and attempting the
+  forbidden edit). Propose the negative even when it will be caveated — a
+  caveated grounded negative is the honest artifact, not an overclaim.
 - **Positives (value-claim).** When the requirement asserts a *specific field*
   holds a *specific value* (e.g. "Account.Status is 'Active'", "Case.Priority
   defaults to 'High'"), propose a `value-claim` with positive polarity. Put the
