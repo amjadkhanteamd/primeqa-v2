@@ -11240,4 +11240,46 @@ Theme #6 is OPENED at honest scope, not at v1 parity — recorded plainly.
 
 ---
 
+### D-202 — Finish the re-platform (product theme #2): the 5b program charter
+
+**Honest status.** Theme #2 cannot be batch-completed: it is a multi-arc program ending at an
+**irreversible** v1-table drop (hard-HOLD regardless of any batch authorization). This entry converts
+the vague "gated on S4 parity" into a concrete, sequenced, gated program — the charter the next arcs
+execute.
+
+**The measured parity gap (verified in code, 2026-06-10):** v1's `execution/executor.py` speaks **7
+verbs** (`create / update / query / verify / delete / wait / convert`); the substrate's data-recipe
+representation speaks **3** (`CreateStep / ReadStep / DataAssertStep`) with the bridge hard-asserting
+the single triple (`bridge.py:340`, multi-step deferred). S2 has **no Update/Delete step models** — the
+verticals are representation-first, not executor-first. Everything else 5b once feared is now DONE:
+provisioning + cleanup (F6), the enqueue loop + auto-triggers (D-197/D-199), the decision consumer
+(D-198), the live proof (D-197.1), quarantine + notifications (D-200), the repair opening (D-201).
+
+**The program (each arc = its own design→impl cycle):**
+- **5b-1 — update/delete-rejected negatives.** S2: `UpdateStep`/`DeleteStep` models (+ identity-hash
+  treatment); S3: the negative authors for "must not update/delete X"; S4: bridge projection + executor
+  branches (the F6 tracker already owns created-record lifecycle; an update needs before-state capture —
+  the evidence shape reserved the fields). Exit: live-proven on env 59.
+- **5b-2 — multi-step positives.** Lift `bridge.py:340`'s triple gate to N-step chains with `$var`
+  threading across steps (the refs machinery exists); S3 multi-step emission. Exit: a 2-create chain
+  with a cross-step reference live-proven.
+- **5b-3 — corpus breadth.** Generate + approve claims across the real requirement set (the auto-enqueue
+  + scheduled triggers now keep their evidence fresh by themselves). Exit: the substrate decision card
+  GO/NO-GOs a real release on substrate evidence alone (gating mode candidate).
+- **5b-4 — the dual-run window.** Run v1 and the substrate side-by-side on the same releases (the
+  composer already records both verdicts per decision — the comparison ledger is FREE); divergences
+  triaged to zero or explained. Exit: N consecutive releases with substrate-verdict parity-or-better.
+- **5b-5 — retire.** Re-point the remaining v1 surfaces, freeze v1 writes, archive (`pg_dump`), then the
+  irreversible drop of the v1 product tables (`test_cases`, `pipeline_runs`, `run_*`, the v1 executor
+  modules) — **named user GO required at the drop, archive-first, exactly the Step-5a discipline.**
+- **Cross-cutting residual:** the data-path async bracketing (D-129/D-197 interim — one held connection
+  per in-flight job) should land before 5b-3's volume makes it bite.
+
+**Why charter-not-build now:** 5b-1/5b-2 reopen S2's identity-bearing representation (claim/recipe
+hashes, migrations on the per-tenant store) — exactly the kind of arc the working agreement says must
+not be rushed inside a batch. The charter IS the theme-#2 deliverable of this batch; 5b-1 is the next
+arc to open.
+
+---
+
 ---
