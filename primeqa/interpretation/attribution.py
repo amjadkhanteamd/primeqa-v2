@@ -8,6 +8,11 @@ the two *failed* behavioral verdicts (`prohibition_not_enforced`,
 other verdict. It reads S1 read-only and **never re-judges the outcome** (S4 owns
 it) — it only deepens `attribution` and attaches `cause`.
 
+The graded step is the rejection-bearing one: a 2-step negative's update/delete
+(D-203 — formulas evaluate against the *effective* state, setup payload +
+field_changes; a delete has no state and passes through cause-less), else the
+flagged create (D-110.2).
+
 S6 reads S1 through the :class:`S1VrReader` port (D-111.1 / S6-3): the
 inter-substrate read-through pattern. Slice 2a defines the **port** (and is
 tested with a stub); slice 2b provides the production reader that delegates to
@@ -18,7 +23,12 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Optional, Protocol
 
-from primeqa.execution_engine.evidence import CreateAttemptEvidence, RunEvidence
+from primeqa.execution_engine.evidence import (
+    CreateAttemptEvidence,
+    DeleteAttemptEvidence,
+    RunEvidence,
+    UpdateAttemptEvidence,
+)
 from primeqa.interpretation.model import Cause, Interpretation
 from primeqa.semantic.formula import NonEvaluable, evaluate, parse
 
@@ -58,15 +68,23 @@ def attribute_run(
     carried outcome."""
     if interpretation.verdict not in _ENRICHED:
         return interpretation
-    create = _create_step(evidence)
-    if create is None:
+    # The graded step: the rejection-bearing mutation of a 2-step negative
+    # (D-203) when present, else the flagged create (D-110.2).
+    step = _mutation_step(evidence) or _create_step(evidence)
+    if step is None:
         return interpretation
 
-    vrs = s1.vrs_for_object(create.sobject)
+    vrs = s1.vrs_for_object(step.sobject)
     if interpretation.verdict == "prohibition_not_enforced":
-        cause = _attribute_not_enforced(create, vrs)
+        cause = _attribute_not_enforced(step, vrs, evidence)
     else:
-        cause = _attribute_unasserted(create, vrs)
+        cause = _attribute_unasserted(step, vrs)
+    if cause is None:
+        # Delete not-enforced: VRs cannot enforce delete prohibitions, so a
+        # formula-derived cause would be fabricated — honest pass-through
+        # (D-203; repair.py handles cause-less verdicts with verdict-level
+        # defaults).
+        return interpretation
 
     return replace(
         interpretation,
@@ -85,13 +103,18 @@ def attribute_run(
 # (org-state / unset fields) so violation can't be computed.
 # ---------------------------------------------------------------------------
 
-def _attribute_not_enforced(create: CreateAttemptEvidence, vrs) -> Cause:
+def _attribute_not_enforced(step, vrs, evidence) -> Optional[Cause]:
+    state = _effective_state(step, evidence)
+    if state is None:
+        # A delete leaves no field state to evaluate a formula against — and
+        # VRs cannot enforce delete prohibitions anyway. No fabricated cause.
+        return None
     violated_active, violated_inactive, indeterminate = [], [], []
     active_not_violated = False
     for vr in vrs:
         if not vr.formula_text:
             continue
-        result = evaluate(parse(vr.formula_text), create.field_values)
+        result = evaluate(parse(vr.formula_text), state)
         if result is True:
             (violated_active if vr.is_active else violated_inactive).append(vr)
         elif isinstance(result, NonEvaluable):
@@ -100,14 +123,15 @@ def _attribute_not_enforced(create: CreateAttemptEvidence, vrs) -> Cause:
             active_not_violated = True   # active rule, formula evaluable + not violated
         # inactive + not violated → no bucket (an inactive rule doesn't enforce anyway).
 
+    op = step.kind
     # A confirmed violation wins (it fixes the loosened-still-violating false-drift:
     # `99` violates a current `Amount < 200`, so this is an enforcement gap, not drift).
     if violated_active:
         vr = violated_active[0]
         return Cause("enforcement_gap", vr_name=vr.name,
-                     detail="the VR is active and its current formula is violated by "
-                            "the create payload, yet the create succeeded — a real "
-                            "enforcement gap")
+                     detail=f"the VR is active and its current formula is violated by "
+                            f"the {op} payload, yet the {op} succeeded — a real "
+                            f"enforcement gap")
     if violated_inactive:
         vr = violated_inactive[0]
         return Cause("vr_inactive", vr_name=vr.name,
@@ -118,17 +142,17 @@ def _attribute_not_enforced(create: CreateAttemptEvidence, vrs) -> Cause:
     if indeterminate:
         vr = indeterminate[0]
         return Cause("vr_formula_indeterminate", vr_name=vr.name,
-                     detail="the VR's current formula could not be evaluated on the "
-                            "create payload (it references org-state or unset fields) — "
-                            "whether it should have fired is indeterminate; the rule may "
-                            "have been edited since generation")
+                     detail=f"the VR's current formula could not be evaluated on the "
+                            f"{op} payload (it references org-state or unset fields) — "
+                            f"whether it should have fired is indeterminate; the rule may "
+                            f"have been edited since generation")
     # An active VR is evaluable and not violated → confirmed drift (the rule was edited
     # so the payload no longer trips it).
     if active_not_violated:
         return Cause("vr_formula_drift",
-                     detail="an active VR's current formula is evaluable but not "
-                            "violated by the create payload — the rule was edited "
-                            "since generation")
+                     detail=f"an active VR's current formula is evaluable but not "
+                            f"violated by the {op} payload — the rule was edited "
+                            f"since generation")
     # The residual: no active VR enforces the prohibition (removed / deactivated, and
     # no matching inactive rule). The old code mis-labeled this as drift; closed here,
     # matching S8's `no_active_vr`.
@@ -141,17 +165,18 @@ def _attribute_not_enforced(create: CreateAttemptEvidence, vrs) -> Cause:
 # rejected_unasserted_reason — other VR fired / platform constraint
 # ---------------------------------------------------------------------------
 
-def _attribute_unasserted(create: CreateAttemptEvidence, vrs) -> Cause:
-    errors = [e for e in create.rejection_body if isinstance(e, dict)]
+def _attribute_unasserted(step, vrs) -> Cause:
+    op = step.kind
+    errors = [e for e in step.rejection_body if isinstance(e, dict)]
     vr_msgs = [e.get("message") for e in errors if e.get("errorCode") == _VR_CODE]
     if vr_msgs:
         matched = _match_vr_by_message(vr_msgs, vrs)
         return Cause("other_vr_fired", vr_name=(matched.name if matched else None),
-                     detail=f"a different validation rule rejected the create: {vr_msgs}")
+                     detail=f"a different validation rule rejected the {op}: {vr_msgs}")
     codes = [e.get("errorCode") for e in errors]
     return Cause("platform_constraint",
                  detail=f"a platform constraint (not a validation rule) rejected "
-                        f"the create: {codes}")
+                        f"the {op}: {codes}")
 
 
 def _match_vr_by_message(messages, vrs) -> Optional[VrMeta]:
@@ -172,6 +197,34 @@ def _create_step(evidence: RunEvidence):
     for s in evidence.steps:
         if isinstance(s, CreateAttemptEvidence):
             return s
+    return None
+
+
+def _mutation_step(evidence: RunEvidence):
+    """The rejection-bearing update/delete attempt of a 2-step negative
+    (D-203), if present."""
+    for s in evidence.steps:
+        if isinstance(s, (UpdateAttemptEvidence, DeleteAttemptEvidence)):
+            return s
+    return None
+
+
+def _effective_state(step, evidence: RunEvidence) -> Optional[dict]:
+    """The field state a VR formula is evaluated against (D-203):
+
+      - create: the attempted payload as-is;
+      - update: the setup create's posted payload overlaid with the attempted
+        ``field_changes`` — the record state the org evaluated at update time
+        (both are bare-named posted payloads, matching formula field names);
+      - delete: ``None`` — no field state; the caller passes through.
+    """
+    if isinstance(step, CreateAttemptEvidence):
+        return step.field_values
+    if isinstance(step, UpdateAttemptEvidence):
+        setup = _create_step(evidence)
+        state = dict(setup.field_values) if setup is not None else {}
+        state.update(step.field_changes)
+        return state
     return None
 
 
