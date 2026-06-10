@@ -11215,4 +11215,29 @@ nothing (no noise).
 
 ---
 
+### D-201 — The substrate repair agent opens, evidence-first (product theme #6)
+
+**Why + the deliberate scope.** v1's fix-and-rerun agent proposes LLM fixes and auto-applies on
+sandbox. The substrate deliberately deferred its agent (evidence-first). This opens the substrate's
+repair loop at the scope the evidence supports today: **deterministic, human-gated repair suggestions**
+derived from the S6 interpretation's CLOSED verdict + cause vocabulary — no LLM call, no auto-apply.
+The vocabulary is finite and machine-attributed (D-111.1), so the suggestion map is exact, auditable,
+and free: every failing verdict/cause pair maps to a suggestion that names **who owns the fix** —
+`org` (Salesforce config: re-activate the VR, restore drifted metadata, a genuine enforcement defect),
+`claim` (the asserted truth drifted: re-point at the firing rule, update the expected value),
+`recipe` (the execution shape: enrich the payload past a platform constraint), or `ops`
+(credentials/infra → re-run). Passing verdicts suggest nothing.
+
+**Where.** Pure `evolution/repair.py suggest_repairs(verdict, cause_kind, vr_name)` (S8 owns the repair
+loop); the run-detail console read attaches `repair_suggestions` to the interpretation; the run-detail
+page renders them as an owner-badged list under the S6 verdict ("agent · human-gated").
+
+**Deferred (the v1-parity ladder, in order):** (1) LLM-proposed recipe rewrites through the existing
+`recipe_s8_rewrite` provenance path (the write machinery already exists — `write_recipe(actor='s8')`),
+human-applied; (2) one-click apply of a suggestion (e.g. "update claim value" → a prefilled edit);
+(3) sandbox auto-apply with the v1 confidence-gating discipline — only after (1)/(2) have human mileage.
+Theme #6 is OPENED at honest scope, not at v1 parity — recorded plainly.
+
+---
+
 ---
