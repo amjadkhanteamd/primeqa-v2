@@ -329,3 +329,22 @@ The fourth Phase-2 slice — the **end-to-end live-reach** for the four kinds sl
 **Honest scope cut — property's eval probe defers (with #83).** property-claim grounding reads `get_entity_details`, which hits a per-type **detail table** (`field_details`) the eval `_seed` (and the integration `seeded` fixture) doesn't populate — the same blocker that deferred the property grounded integration test (#83). property's *live-reach still ships* (the `configuration.md` fragment); only its deterministic probe folds into #83. existence + capability + layout ship full offline+live probes now.
 
 **Verified.** `compose_working()` round-trips; the v3 content-hash guard; `test_current_resolves_to_v3` (CURRENT + v3 title + the four new-kind keywords); `test_compose_working_has_all_fragments` (+ui); the 3 new offline probes draft deterministically (`test_eval_corpus_full_spectrum` asserts zero failures + `passed == total`) and are replay-stable; 1081 generation + representation green + the eval-harness regression (15). The live envelopes are authored + skipped (the real-LLM confirmation runs periodically with `ANTHROPIC_API_KEY`, as value-claim's live twin). No S2 / S1 change, no migration. DECISIONS_LOG D-125. On `phase-10-substrate-3-breadth`.
+
+## 2026-06-10 — Update-rejected emission: graded operation dispatch + generation@v4 (D-203)
+
+`_author_negative` now dispatches the recipe SHAPE on the bound prohibition operation.
+`derive_update(ast)` (verified_negative) derives the 2-step pair — setup = `_satisfy(ast, False)` (a
+create the rule does NOT reject), violating changes = `_satisfy(ast, True)` — behind the same
+pre-scan + certainty bar as `derive`; only comparisons derive both directions (`NOT ISPICKVAL` /
+`NOT ISBLANK` have no certain non-violating assignment). The grade: `modify_record`/`modify_field` →
+try the update shape, fall back to the create-rejected when only the violation derives (no corpus
+regression), caveated when neither; `create_duplicate` → create-rejected as before;
+`delete`/`share`/`transfer_ownership` → caveated inspection ALWAYS — closing the pre-D-203 blur where
+a derivable delete-prohibition emitted a CREATE-rejected recipe (VRs never fire on delete). The
+emitted `_update_rejected_recipe` carries object-QUALIFIED field names (`Opportunity.Amount` — the
+positive vertical's convention) so S4's world construction treats them as semantic. Claim bodies are
+byte-identical across all three recipe shapes (Option-C, tested). Prompt: `data_behavior.md` now
+instructs `target_subject_hint.operation`; frozen as **generation@v4** (hash recorded, CURRENT
+bumped, v1–v3 untouched). Eval: the scorer gains a generic `trigger_operation` expectation; a new
+`update-rejected-prohibition-negative` probe discriminates the update shape from the create
+fallback. S3 suites green (215). DECISIONS_LOG D-203.

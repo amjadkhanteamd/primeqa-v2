@@ -57,3 +57,16 @@ The second phase-7 S6 layer: **LLM phrasing** — the other held `DEFERRED_ITEMS
 **Slice 2 — the in-substrate consumer (D-137).** S6 was **write-only** (`persist_interpretation` + `set_phrasing` only; the clustering reads + `get_or_phrase` fired only from tests). Now: a **pure read API** on `result_store` (`InterpretationRead` DTO + `read_interpretation` / `list_interpretations` + row→model/DTO hydrators that rebuild the evidence refs + structured cause from `detail` JSONB), re-exported from `interpretation/__init__` alongside the clustering reads as one coherent S6 consumer surface; and the **phrasing live-fire** — `read_and_phrase` finally fires `get_or_phrase` on a real read path. **The realized seam:** the per-tenant flag `llm_enable_interpretation_phrasing` lives on the **v1 public-schema `tenant_agent_settings`** (keyed by `tenant_id`), unreachable from the substrate's per-tenant session — so `read_and_phrase` takes a **resolved `phrasing_enabled` boolean** (flag-as-param) and a v1-side `interpretation_phrasing_enabled` (a targeted single-column SELECT, **fails closed** — no ORM blast radius if migration 050 is unapplied) supplies it. The substrate read API stays LLM-free + v1-DB-free; the live-fire + flag-read live in v1 (the allowed v1→substrate direction). Verified: 14 consumer tests; full S6 regression (59) + the v1 phrasing (7) / S5 contract (12) suites green; the v1 app imports.
 
 **Still deferred:** the **user-facing UI/dashboard** over substrate runs (Phase-7 cutover — substrate runs ≠ v1 pipeline-runs) + a standing production consumer wired into a tick; folding S6 verdicts into v1's GO/NO-GO; **cause attribution for positive/property failures** (the *why* — value drift / org change); the **dormant verticals'** verdicts (ui/event/callout — no executor emits their evidence). On `phase-13-substrate-6-interpretation` (D-138 close).
+
+## 2026-06-10 — The rejection-bearing mutation step is what gets graded (D-203)
+
+A 2-step negative's evidence is `(CreateAttemptEvidence(success), Update|DeleteAttemptEvidence)` —
+the old shape-dispatch would have graded the SETUP create (which succeeded by construction) and
+emitted a false `prohibition_not_enforced`. `interpret_run` now checks for a mutation-attempt step
+FIRST and grades it; `_interpret_behavioral` is generalized over the three mutation evidence kinds
+with operation-aware wording. Verdict vocabulary unchanged. `attribute_run` selects the same step;
+update causes evaluate VR formulas against the EFFECTIVE state (`setup.field_values` overlaid with
+`field_changes` — evaluating the setup payload alone would mis-read enforcement gaps as drift);
+ISCHANGED-style formulas stay honestly `vr_formula_indeterminate`; a delete not-enforced passes
+through CAUSE-LESS (VRs cannot enforce delete prohibitions — no fabricated cause; repair suggestions
+fall back to verdict-level defaults). 11 new unit tests; S6 suite green (41). DECISIONS_LOG D-203.

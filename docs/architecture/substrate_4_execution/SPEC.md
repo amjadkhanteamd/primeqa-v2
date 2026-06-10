@@ -1,6 +1,6 @@
 # Substrate 4 — Execution Engine — SPEC
 
-**Status:** First vertical realized — **metadata-inspection**, built + merged + live-proven against the sandbox (bridge → executor → result store → finalize → run path). F1 / F2 / F3 realized; F4–F7 still triaged/deferred (DECISIONS_LOG D-108 → D-108.4). See the footer Status block, `DEFERRED_ITEMS.md`, and `EVOLUTION.md`.
+**Status:** First vertical realized — **metadata-inspection**, built + merged + live-proven against the sandbox (bridge → executor → result store → finalize → run path). F1 / F2 / F3 realized; data verticals since: the 1-step create-rejected negative (D-110.2), the positive create-and-verify (D-115), provisioning + cleanup (F6, D-196), the enqueue loop (D-197), and the **2-step update/delete-rejected negative** (D-203 — setup create through the F6 machinery → rejected mutation → 4-way grading → teardown always). See the footer Status block, `DEFERRED_ITEMS.md`, and `EVOLUTION.md`.
 
 **Last substantive update:** 2026-05-27 (first-vertical phase close-out)
 

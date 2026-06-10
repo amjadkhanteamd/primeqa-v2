@@ -1,6 +1,6 @@
 # Substrate 3 — Generation Engine — SPEC
 
-**Status:** Phase 1 (design) complete — Themes 1–7 (D-070–D-094). Phase 2 (implementation) complete — D-095–D-106. Phase 3 increments: verified negatives — D-107; **behavioral negatives — D-110.3** (`_author_negative` emits the violating *create* + `expect_rejection` for a verified negative, replacing the inspection re-verify — the S3 leg of the S4 CRUD vertical, live-proven end-to-end). See §9–§10 + DECISIONS_LOG D-110.3.
+**Status:** Phase 1 (design) complete — Themes 1–7 (D-070–D-094). Phase 2 (implementation) complete — D-095–D-106. Phase 3 increments: verified negatives — D-107; **behavioral negatives — D-110.3** (`_author_negative` emits the violating *create* + `expect_rejection` for a verified negative, replacing the inspection re-verify — the S3 leg of the S4 CRUD vertical, live-proven end-to-end); **update-rejected negatives — D-203** (graded operation dispatch: `derive_update` two-way derivation → the 2-step setup-create → rejected-update recipe; delete prohibitions route to caveated inspection — VRs never fire on delete; prompt `generation@v4` instructs `target_subject_hint.operation`). See §9–§10 + DECISIONS_LOG D-110.3 / D-203.
 
 **Last substantive update:** 2026-05-27 (D-110.3 — S3 behavioral-negative emission).
 

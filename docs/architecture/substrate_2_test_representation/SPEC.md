@@ -1,7 +1,10 @@
 # Substrate 2 — Test Representation — SPEC
 
 **Status:** All sections substantively complete per D-051 through
-D-065. §1 (synthesis overview) composing §2–§11.
+D-065. §1 (synthesis overview) composing §2–§11. D-203 closes the
+D-110.1 deferral: `UpdateStep`/`DeleteStep` carry `expect_rejection`
+(the 2-step behavioral negative is representable; still body schema
+v1, claim identity untouched).
 
 **Last substantive update:** 2026-05-18 (§1 synthesis)
 
