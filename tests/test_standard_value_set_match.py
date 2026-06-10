@@ -105,3 +105,43 @@ def test_match_end_to_end_shapes():
              "LeadSource": _svs([("Web", True), ("Phone", True)])}
     index = build_svs_index(cache)
     assert match_standard_value_set(field_active_value_names(field), index) == "Industry"
+
+
+# ---------------------------------------------------------------------------
+# D-204.1 — isActive: null means ACTIVE (the live-org shape)
+# ---------------------------------------------------------------------------
+# Salesforce returns ``isActive: null`` for never-deactivated standard values
+# (verified against the live SVS:OpportunityStage record); ``.get(key, True)``
+# treats present-null as falsy, which read EVERY standard value set as empty —
+# no field ever content-matched (0/360 linked) until the D-203 live proof hit
+# an unfillable Opportunity.StageName.
+
+def test_svs_null_isactive_is_active():
+    meta = _svs([("Prospecting", None), ("Closed Won", None)])
+    idx = build_svs_index({"OpportunityStage": meta})
+    assert frozenset({"Prospecting", "Closed Won"}) in idx
+
+
+def test_svs_explicit_false_still_excluded():
+    meta = _svs([("Prospecting", None), ("Retired", False)])
+    idx = build_svs_index({"OpportunityStage": meta})
+    assert frozenset({"Prospecting"}) in idx
+
+
+def test_field_null_active_is_active():
+    field = {"picklistValues": [
+        {"value": "Prospecting", "active": None},
+        {"value": "Closed Won", "active": True},
+        {"value": "Old", "active": False},
+    ]}
+    assert field_active_value_names(field) == {"Prospecting", "Closed Won"}
+
+
+def test_null_isactive_end_to_end_match():
+    # The live-org shape end to end: null-active SVS values match the field's
+    # describe values and link.
+    meta = _svs([("A", None), ("B", None)])
+    idx = build_svs_index({"MySet": meta})
+    field = {"picklistValues": [
+        {"value": "A", "active": True}, {"value": "B", "active": True}]}
+    assert match_standard_value_set(field_active_value_names(field), idx) == "MySet"

@@ -31,11 +31,15 @@ from typing import Optional
 def field_active_value_names(field: dict) -> set:
     """A standard field's active picklist value api-names, from its REST
     describe ``picklistValues`` (each entry ``{value, label, active, ...}``).
-    Skips inactive entries and entries missing ``value``."""
+    Skips inactive entries and entries missing ``value``. Active-by-default:
+    only an explicit ``False`` excludes — Salesforce sends ``null`` for
+    never-deactivated values, and ``.get(key, True)`` would wrongly drop
+    those (the default fires only on a MISSING key, not a null one)."""
     return {
         pv["value"]
         for pv in (field.get("picklistValues") or [])
-        if isinstance(pv, dict) and pv.get("value") and pv.get("active", True)
+        if isinstance(pv, dict) and pv.get("value")
+        and pv.get("active") is not False
     }
 
 
@@ -44,11 +48,19 @@ def _svs_active_value_names(metadata: dict) -> set:
     ``standardValue`` list (each entry ``{valueName, label, isActive, ...}``).
     Mirrors ``extract_picklist_value_payloads_from_metadata``'s ``valueName`` +
     skip-non-dict / skip-missing-valueName handling, plus an ``isActive``
-    filter so the comparison is active-values-on-both-sides."""
+    filter so the comparison is active-values-on-both-sides.
+
+    ``is not False`` (the detail-mapper idiom), NOT ``.get(..., True)``:
+    Salesforce returns ``isActive: null`` on never-deactivated standard
+    values, and the ``.get`` default fires only on a MISSING key — the
+    null made every SVS read as EMPTY, so no standard picklist field ever
+    content-matched (0/360 linked; surfaced by the D-203 live proof when
+    world construction found Opportunity.StageName unfillable). D-204.1."""
     return {
         v["valueName"]
         for v in (metadata.get("standardValue") or [])
-        if isinstance(v, dict) and v.get("valueName") and v.get("isActive", True)
+        if isinstance(v, dict) and v.get("valueName")
+        and v.get("isActive") is not False
     }
 
 
