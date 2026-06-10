@@ -169,3 +169,18 @@ def test_unapproved_claim_counts_any_version_run(session):
 
 def test_unknown_key_yields_empty(session):
     assert _assemble_claim_evidence(session, ["NO-SUCH-KEY"]) == []
+
+
+def test_wrapper_empty_keys_not_applicable():
+    from primeqa.intelligence.substrate_decision import (
+        get_release_substrate_decision,
+    )
+    out = get_release_substrate_decision(1, [])
+    assert out["available"] is True and out["applicable"] is False
+
+
+def test_wrapper_best_effort_bad_tenant():
+    from primeqa.intelligence.substrate_decision import (
+        get_release_substrate_decision,
+    )
+    assert get_release_substrate_decision(-1, ["X-1"])["available"] is False
