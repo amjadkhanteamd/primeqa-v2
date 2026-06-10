@@ -11116,4 +11116,36 @@ is deliberately left open by the composer isolation.
 
 ---
 
+### D-198.5 — Theme #3 CLOSED: the decision loop on the substrate is wired end-to-end
+
+All four D-198 slices landed on `main` (v2-runtime work):
+- **D-198.1** — `intelligence/substrate_decision.py` `_assemble_claim_evidence`: the recency- and
+  grounding-correct evidence chain (version-correct counted runs, NULL-seq tolerance with
+  `version_unknown`, tolerant staleness). 7 integration tests; plus a root-caused fix to a pre-existing
+  provenance-ordering flake the new tests surfaced (`order_by(event_at)` under-specified within one tx —
+  both sites now tiebreak on `event_data['new_version_seq']`).
+- **D-198.2** — `compute_substrate_decision` (pure; six checks → go/conditional_go/no_go + the
+  substrate-native 0–100 risk, v1-shape output) + the best-effort `get_release_substrate_decision`
+  wrapper. 15 unit + 2 wrapper tests.
+- **D-198.3** — `release/decision_composer.py` `evaluate_and_record`: both engines, mode-combine
+  (off/advisory/gating degrade-only), ONE `ReleaseDecision` row carrying the `{v1, substrate, mode,
+  recommendation_source}` envelope; the shared `external_keys_for_requirements` builder; the API
+  evaluate route re-pointed. 7 unit tests incl. the byte-identical v1 regression guard.
+- **D-198.4** — the surfaces: the Decision-tab **Substrate recommendation card** (badge + risk + checks +
+  advisory/gating banner; conditional render), the **web Evaluate button re-routed through the composer**
+  (a second uncomposed `DecisionEngine` call site found + fixed in this slice), the CI
+  `/api/releases/:id/status` **`substrate` block** (projected from the stored envelope — no substrate
+  query on the CI hot path), and the seeded E2E both directions (clean evidence → go/low; broken
+  grounding + failed run → no_go/critical).
+
+**Verification.** 33 theme-3 tests (11 integration incl. both E2E directions, 15 compute, 7 composer);
+the template compiles; 2697 broad green. The v1 engine is zero-diff throughout.
+
+**The loop now closes:** substrate run results → S6 verdicts + S8 grounding → risk rollup → GO/NO-GO →
+the release page + CI — with the human still confirming (recommendation-only, as ever). Product theme #3
+complete. Deferred (recorded in D-198): the 168 h freshness default + gating-by-default revisit when
+theme-4 auto-triggers ship; the decision-ledger home after 5b.
+
+---
+
 ---
