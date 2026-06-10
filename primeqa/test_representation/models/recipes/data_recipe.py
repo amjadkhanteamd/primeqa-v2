@@ -59,8 +59,8 @@ class CreateStep(_StepBase):
     the operational projection of the prohibition claim's
     ``expected_rejection`` — scalars only (no IdentityBearingRef), so
     the recipe stays in the operational layer. ``None`` (the default)
-    is an ordinary create. (Update / delete expect-rejection deferred
-    per D-110.)
+    is an ordinary create — including the *setup* create of a 2-step
+    update/delete-rejected negative (D-203).
     """
 
     kind: Literal["create"] = "create"
@@ -84,18 +84,33 @@ class ReadStep(_StepBase):
 
 
 class UpdateStep(_StepBase):
-    """Update an existing record."""
+    """Update an existing record.
+
+    ``expect_rejection`` (D-203) makes this the rejected mutation of a
+    *behavioral-negative* recipe: the update is expected to be rejected
+    by the org, verified against the carried
+    :class:`RejectionExpectation`. The subject record comes from the
+    recipe's prior setup :class:`CreateStep` (positional binding — the
+    bridge resolves it; see D-203). ``None`` is an ordinary update.
+    """
 
     kind: Literal["update"] = "update"
     target: OperationalRef
     field_changes: dict[str, Any]
+    expect_rejection: Optional[RejectionExpectation] = None
 
 
 class DeleteStep(_StepBase):
-    """Delete a record."""
+    """Delete a record.
+
+    ``expect_rejection`` (D-203): same behavioral-negative semantics as
+    :class:`UpdateStep` — the delete is expected to be rejected by the
+    org. ``None`` is an ordinary delete.
+    """
 
     kind: Literal["delete"] = "delete"
     target: OperationalRef
+    expect_rejection: Optional[RejectionExpectation] = None
 
 
 class AssertStep(_StepBase):
@@ -187,9 +202,10 @@ class DataRecipeBody(BodyBase):
         rejected — a recipe asserts at most one prohibition.
 
         At-most-one (not exactly-one) so positive data-recipes (zero
-        expect_rejection) stay valid. ``getattr`` keeps it
-        forward-compatible: when update / delete steps gain the flag,
-        they are counted automatically without touching this check.
+        expect_rejection) stay valid. Update / delete steps carry the
+        flag since D-203 and are counted here — a 2-step negative
+        (setup create with ``None`` + one flagged mutation) passes;
+        two flagged steps do not.
         """
         n = sum(
             1 for s in self.steps

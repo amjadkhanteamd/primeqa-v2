@@ -57,3 +57,42 @@ def test_write_recipe_accepts_behavioral_negative(session):
     step = read.observation_realization.steps[0]
     assert step.expect_rejection is not None
     assert step.expect_rejection.error_code == _VR_CODE
+
+
+def _two_step_update_rejected_recipe() -> DataRecipeBody:
+    """The D-203 shape: setup create (no expectation) + rejected update."""
+    lead = {"ref_kind": "logical", "entity_type": "Object", "external_id": "Lead"}
+    return DataRecipeBody.model_validate({
+        "api_choice": "rest",
+        "identity_context": "system",
+        "execution_mechanism": "direct_api",
+        "steps": [
+            {"kind": "create", "step_id": "create-setup",
+             "target_object": lead, "field_values": {"Lead.Company": "Acme"}},
+            {"kind": "update", "step_id": "update-violating",
+             "target": lead, "field_changes": {"Lead.AnnualRevenue": 2000000},
+             "expect_rejection": {"error_code": _VR_CODE}},
+        ],
+    })
+
+
+def test_write_recipe_accepts_two_step_update_rejected(session):
+    # D-203: the 2-step negative clears the same write path — registry
+    # dispatch, body validation, the operational-layer walk — and the
+    # mutation step's expectation survives the JSONB round-trip.
+    coord = SemanticTransactionCoordinator()
+    test_id, _ = arrange_approved_claim(session, coord)
+
+    written = coord.write_recipe(
+        session, actor="human", recipe_id=None, claim_test_id=test_id,
+        trigger_kind="data-mutation-trigger", recipe_kind="data-recipe",
+        causal_initiation=build_minimal_data_mutation_trigger_body(),
+        observation_realization=_two_step_update_rejected_recipe(),
+        execution_environment=build_minimal_execution_environment_body())
+
+    read = coord.get_recipe_latest(session, written.recipe_id)
+    setup, mutation = read.observation_realization.steps
+    assert setup.kind == "create" and setup.expect_rejection is None
+    assert mutation.kind == "update"
+    assert mutation.expect_rejection.error_code == _VR_CODE
+    assert mutation.field_changes == {"Lead.AnnualRevenue": 2000000}
