@@ -45,9 +45,13 @@ def _tokenize(s: str) -> list[tuple[str, object]]:
         if c.isspace():
             i += 1
             continue
-        if c == '"':
+        if c in ('"', "'"):
+            # Salesforce formulas accept BOTH quote styles for text literals;
+            # admin-written rules mostly use single quotes ('Closed Won').
+            # A string ends at the SAME quote character it opened with (D-209).
+            quote = c
             j, buf = i + 1, []
-            while j < n and s[j] != '"':
+            while j < n and s[j] != quote:
                 if s[j] == "\\" and j + 1 < n:        # \" and \\ escapes
                     buf.append(s[j + 1])
                     j += 2

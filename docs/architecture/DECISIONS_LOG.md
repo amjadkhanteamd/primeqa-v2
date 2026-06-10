@@ -11672,6 +11672,28 @@ carrying claims. Real breadth needs AK importing more Jira tickets — his UI ac
 the inbox holds the resulting drafts; AK's approved claims show live env-59 runs with S6 verdicts.
 Decision-card readiness on a constructed release is D-209's gate, not this one.
 
+### D-209 — Formula parser: single-quoted string literals (the 'Closed Won' gap)
+
+**Context.** Salesforce formula syntax accepts BOTH quote styles for text literals; admin-written
+validation rules overwhelmingly use single quotes (`ISPICKVAL(StageName, 'Closed Won')`). The D-107
+tokenizer (`primeqa/semantic/formula/parser.py`) opens a string only on `"` — a `'` falls to the
+unexpected-character branch → `NotParsed` → the D-107 verified-vs-caveated gate marks every such
+negative **caveated** (configuration-check badge) even when the rule is trivially derivable. Logged
+as an open residual since D-203; on the live env-59 org it currently blinds the deriver to
+`Opportunity.Contract_Value_Required_On_Closed_Won` and `Lost_Reason_Required_On_Closed_Lost`.
+Build 2 of the 2026-06-11 ratified list.
+
+**Decision.** Tokenizer-only fix: either quote character opens a string literal terminated by the
+SAME character, with the existing backslash-escape handling. No grammar, node, deriver, or
+canonicalization change — a single-quoted literal produces a byte-identical `Literal(value,
+"string")` to its double-quoted twin, so claim identity hashes are unaffected (re-generation on
+already-claimed rules dedups; only the derivability verdict improves). Fail-loud posture preserved
+(unterminated strings still `NotParsed`).
+
+**Effect.** Single-quoted comparison/ISPICKVAL formulas become parseable → their negatives clear
+the D-107 gate as verified Layer-2 (behavioral) instead of caveated, wherever a violating value
+derives. No migration; no API change.
+
 ---
 
 ---
