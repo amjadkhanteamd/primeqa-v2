@@ -11718,6 +11718,53 @@ observation arrives).
 different seam fed by S1-typed values, not SF JSON — left unchanged; noted for review if a false
 failure ever appears there.
 
+### D-210 — 5b-5 OPEN: automation-effect + state-transition authoring & execution (Build 3)
+
+**Context.** The two deliberately-deferred Tier-2 data-behavior kinds are now the proven corpus
+gap: SQ-205 grounded as a state-transition-claim and refused emission-deferred (D-206.1 made that
+visible). "When X happens, record Y is created / field Z changes" is the most common real
+requirement shape. Recon (verified at source): **S2 is complete** (both claim bodies fully modeled
+— automation/triggering_action/expected_effect with FieldChangeEffect|BlockedOperation|SideEffect;
+subject/from_state/to_state; six recipe step kinds incl. ReadStep-with-SOQL + AssertStep);
+**S3 grounding is ready** (`_NEGATIVE_LAYER1_DIM` already binds state-transition→VR APPLIES_TO and
+automation-effect→Flow TRIGGERS_ON, with the Apex ontology-gap refusal); **S4 has the parts**
+(query-by-criteria with pagination, cross-step `$step.attr` resolution, the D-115 create→read→assert
+shape, D-205 N-create chains). The gaps: emission authoring (neither kind in EMITTABLE; no grounded
+shapes), bridge recognition of the new recipe shapes, async observation (no retry/poll anywhere),
+and S6 verdicts (vocabulary has nothing for side-effects/transitions).
+
+**Decisions (charter; per-slice amendments follow).**
+1. **Recipe shapes reuse the existing vocabulary — no new step kinds.**
+   *Automation-effect*: `CreateStep(trigger object) → ReadStep(SOQL over the EFFECT object,
+   correlated via $create.id) → AssertStep(exists | field equals)`. *State-transition*:
+   `CreateStep(from_state) [→ UpdateStep(trigger event)] → ReadStep(same record) →
+   AssertStep(to_state fields)`. Both are recognizable extensions of the D-115/D-205 positive
+   family.
+2. **Async observation is an OPERATIONAL concern, not semantic vocabulary**: the executor gives
+   side-effect ReadSteps a bounded retry (N attempts, fixed backoff) instead of minting a WaitStep.
+   Same-transaction effects (before/after-save Flows) pass on attempt 1; scheduled-path/queueable
+   automation stays a logged residual beyond the retry window.
+3. **Automation-created records get torn down too**: the side-effect ReadStep's result ids are
+   registered with the cleanup tracker (best-effort, reverse-order) — the executor didn't create
+   them, but the test caused them; leaving them would dirty the org run over run.
+4. **v1 epistemic posture: caveated Layer-1.** S1 does not capture Flow entry conditions (logged
+   Tier-2 residual), so the engine cannot verify the Flow produces the ASSERTED effect — the
+   emitted artifact carries the plausibility caveat (the honest D-107 analogue; no formula-derivation
+   equivalent exists for Flows in v1).
+5. **S6 verdict additions**: `automation_triggered` / `automation_not_triggered` and
+   `state_transitioned` / `state_not_transitioned` (+ existing `not_evaluated`); cause attribution
+   v1 is pass-through (the delete-vertical precedent) — Flow-state cause analysis deferred.
+
+**Slices.** 5b5-1: S3 grounded shapes + authoring + EMITTABLE + drift-guards (+ prompt fragment
+line if needed — v5 already teaches the kinds exist). 5b5-2: S4 bridge shapes + executor
+side-effect read with bounded retry + side-effect teardown registration. 5b5-3: S6 verdicts +
+interpreter dispatch. 5b5-4: eval probes offline + suites green; live proof.
+
+**Live-gate dependency (AK).** env 59 has 13 Flows, **zero record-triggered** (no TRIGGERS_ON
+edges) — automation-effect cannot ground against today's org. The live proof rides AK building a
+record-triggered Flow in the sandbox; the SQ-205 escalation feature is the natural fixture (it
+also closes SQ-205's generation gap end-to-end). State-transition's negative dimension can ground
+on existing VRs meanwhile.
 ---
 
 ---
