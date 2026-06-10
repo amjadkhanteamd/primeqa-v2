@@ -170,3 +170,14 @@ Tooling-only `_default_s4_client_resolver` injection (kept defined for the futur
 prod-confirm gate to enqueue time. 193 execution_engine green incl. the full offline spine loop
 (`enqueue → run_s4_execution_tick → completed`). Deferred: the automated triggers (approval-hook, scheduled
 re-verification); the data-path async bracketing. DECISIONS_LOG D-197.
+
+## D-197.1 — F6.3 closed: the first live data-mutation run, through the production loop
+
+2026-06-10, env 59, job 5, run `6aab8882-…`: the approved Opportunity value-claim recipe executed live —
+enqueue → the deployed worker tick → the sync run path → real Salesforce. Create HTTP 201 (bare
+`{StageName, Name, CloseDate}` payload — D-196.3 live-verified), read-back 1 row, `equals` held → **passed**
+(1.4 s); cleanup delete Salesforce-confirmed; `s4_created_records` audit row persisted (the F6.1 tenant
+migration applied to prod en route, `20260608_0010`, user-GO'd). En-route finding: the earlier
+`invalid_client_id` was environmental — local runs lack `CREDENTIAL_ENCRYPTION_KEY` and
+`get_connection_decrypted` silently falls back to ciphertext (latent foot-gun, candidate hardening). F6 is
+fully closed: F6.1/F6.2/F6.3a built + merged, F6.3 live-proven through the D-197 queue. DECISIONS_LOG D-197.1.

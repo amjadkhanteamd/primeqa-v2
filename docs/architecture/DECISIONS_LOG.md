@@ -11016,4 +11016,39 @@ data-path async bracketing (above); cancel/SSE/run↔job-correlation UI.
 
 ---
 
+### D-197.1 — F6.3 CLOSED: the live data-recipe proof, through the production loop
+
+**The proof (2026-06-10, env 59 "Prime QA NEW", job 5, run `6aab8882-…`).** The approved Opportunity
+value-claim recipe ran **live against the real org through the full production chain** — `enqueue_s4_execution`
+→ the deployed Railway worker's `s4_execution_tick` → `run_recipe_execution_for_tenant` (the D-197 sync
+default) → live Salesforce. Observed: create **HTTP 201** (bare payload `{StageName, Name, CloseDate}` — the
+D-196.3 translation live-verified), read-back `SELECT StageName FROM Opportunity WHERE Id='006Ip…'` → 1 row,
+`equals` **held** → outcome **passed** (1.4 s); cleanup delete **succeeded** (Salesforce-confirmed);
+`s4_created_records` audit row persisted. This simultaneously live-proves F6.2's `is_createable` padding,
+F6.3a's bare-name translation, the F6.1 audit table, AND the D-197 enqueue→consume chain — the first
+data-mutation run the substrate has ever executed against a live org, and it went through the queue.
+
+**Two findings en route (both resolved):**
+1. **The `invalid_client_id` OAuth failure was environmental, not stale credentials.** The local machine lacks
+   `CREDENTIAL_ENCRYPTION_KEY`; `get_connection_decrypted` swallows the decrypt failure (`except: pass`,
+   `core/repository.py`) and returns the **raw Fernet ciphertext**, which local runs then sent to Salesforce as
+   the client_id. The deployed services (which hold the key) authenticate fine. Lesson recorded: local live-run
+   attempts require the key, or must route via the deployed worker (the production loop — as this proof did).
+   The silent-fallback-to-ciphertext behavior is a latent foot-gun (a clear raise would have named the real
+   cause two days earlier) — candidate hardening, not changed here.
+2. **The F6.1 tenant migration had not been applied to prod** (its application was deferred to F6.3 by design).
+   First live attempt (job 4) ran the org-side spine fully (create/read/assert/teardown — no org leak; teardown
+   is in-run, independent of the DB tx) and failed only at persist (`UndefinedTable: s4_created_records`), with
+   a clean rollback. Applied with explicit user GO: `alembic -x mode=all_tenants upgrade tenant@head` →
+   `20260604_0030 → 20260608_0010` on `tenant_1`, verified, then job 5 passed end-to-end.
+
+**Leak check.** The run's own evidence: cleanup `attempted=True succeeded=True` is Salesforce's response to the
+DELETE (org-confirmed). An independent post-run SOQL was not run locally (the ciphertext constraint above);
+the org-side confirmation + the in-run read-back (1 row found, then deleted) is the accepted proof.
+
+**F6 is now fully closed** (F6.1/F6.2/F6.3a built + merged; F6.3 live-proven). Product theme #1 ("prove it on
+a real org") complete.
+
+---
+
 ---
