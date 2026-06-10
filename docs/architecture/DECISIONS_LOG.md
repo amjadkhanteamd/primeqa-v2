@@ -11412,4 +11412,32 @@ per-type keys gain readers.
 
 ---
 
+### D-203.2 — 5b-1 CLOSED: the update-rejected negative live-proven through the production loop
+
+2026-06-10, env 59, S4 job 9, run `3363f1e4-0ced-4c93-b56e-66979931c5d6` (3.1 s): the approved
+prohibition claim `71583230` (operation `modify_field`, grounded on the user-authored
+`Opportunity.Amount` VR, `Amount > 10000`) executed the **2-step behavioral negative** live —
+**setup create** HTTP 201 (`006Ip000003Kdz9IAC`; semantic `Amount=10000` + padded
+`{Name, StageName: "Prospecting", CloseDate}` — the picklist filler live-exercised) → **prohibited
+update** PATCH `{Amount: 10001}` → HTTP 400 `FIELD_CUSTOM_VALIDATION_EXCEPTION`
+("Amount should be greater than 10000"), `matched=true` → **passed** → teardown delete
+Salesforce-confirmed → `s4_created_records` audit row → S6 verdict **`prohibition_enforced`**
+referencing the `update-violating` step. The claim's recipe history honestly shows the journey:
+v1 (caveated inspection, authored under the D-203.1 formula blindness) → v2 (the 2-step shape,
+re-authored via the Coordinator's recipe re-version after the fix).
+
+**Four latent defects flushed out en route — none in the 5b-1 code itself** (each root-caused,
+regression-tested, deployed): D-203.1 (formula readers blind to the post-cutover attribute shape —
+every negative silently caveated since 2026-06-04), D-204 (the attributes storage contract
+ratified), D-204.1 (`isActive: null` read as inactive — 0/360 picklist fields linked to their value
+sets), D-204.2 (picklist padding walked containment edges that by design do not exist — only its
+stubs ever satisfied it). The arc is the theme-#1 thesis demonstrated: only live runs against a
+real org surface this class of defect.
+
+**5b-1 exit gate met.** Next arc per D-202: 5b-2 (multi-step positives). Open residuals carried:
+single-quoted formula literals (the org's other three Opportunity rules stay caveated until the
+parser learns them); the D-203 residual list; the sync attributes projection (ratified-raw, D-204).
+
+---
+
 ---

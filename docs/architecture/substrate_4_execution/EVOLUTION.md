@@ -199,3 +199,13 @@ the established convention). Zero migrations; zero consumer/worker changes (the 
 all recipe kinds, D-197); `run.py` unchanged in logic (`steps[0].expect_rejection is None` already
 injects S1 for any plan that constructs a world). 40 new unit tests; S4 suites green (190 unit + 28
 integration). DECISIONS_LOG D-203.
+
+## D-203.2 — 5b-1 closed: the first live update-rejected run
+
+2026-06-10, env 59, job 9, run `3363f1e4-…` (3.1 s): setup create 201 (padding live-proven incl.
+the D-204.2-fixed picklist filler — StageName "Prospecting") → prohibited update PATCH
+`{Amount: 10001}` → 400 `FIELD_CUSTOM_VALIDATION_EXCEPTION` matched → **passed**; teardown
+Salesforce-confirmed; audit row persisted; S6 `prohibition_enforced` on the update step. Four
+latent pre-existing defects fixed en route (D-203.1 / D-204 / D-204.1 / D-204.2 — formula-reader
+shape blindness, the attributes contract, isActive-null, edge-walking picklist enumeration).
+DECISIONS_LOG D-203.2.
