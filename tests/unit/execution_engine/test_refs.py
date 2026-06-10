@@ -48,3 +48,43 @@ def test_none_value_raises():
     with pytest.raises(StepRefResolutionError):
         resolve_step_refs(
             "WHERE Id = '$create-record.id'", {"create-record": {"id": None}})
+
+
+# ---------------------------------------------------------------------------
+# D-205 — resolve_field_value_refs (cross-step refs in create field VALUES)
+# ---------------------------------------------------------------------------
+
+from primeqa.execution_engine.refs import resolve_field_value_refs  # noqa: E402
+
+
+def test_field_value_ref_resolves_against_state():
+    out = resolve_field_value_refs(
+        {"Contact.AccountId": "$create-account.id", "Contact.LastName": "PQA"},
+        {"create-account": {"id": "001ABC"}})
+    assert out == {"Contact.AccountId": "001ABC", "Contact.LastName": "PQA"}
+
+
+def test_field_value_non_strings_pass_through():
+    out = resolve_field_value_refs(
+        {"Amount": 10000, "Active__c": True, "Note__c": None},
+        {})
+    assert out == {"Amount": 10000, "Active__c": True, "Note__c": None}
+
+
+def test_field_value_without_token_is_verbatim():
+    out = resolve_field_value_refs({"Name": "no refs here, $ alone is fine"}, {})
+    assert out == {"Name": "no refs here, $ alone is fine"}
+
+
+def test_field_value_unresolved_ref_fails_loud():
+    import pytest
+    from primeqa.execution_engine.errors import StepRefResolutionError
+    with pytest.raises(StepRefResolutionError, match="create-account"):
+        resolve_field_value_refs(
+            {"AccountId": "$create-account.id"}, {"other-step": {"id": "x"}})
+
+
+def test_field_value_input_dict_not_mutated():
+    src = {"AccountId": "$s.id"}
+    resolve_field_value_refs(src, {"s": {"id": "001"}})
+    assert src == {"AccountId": "$s.id"}
