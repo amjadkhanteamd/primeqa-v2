@@ -28,6 +28,8 @@ import logging
 
 from sqlalchemy import text
 
+from primeqa.intelligence.claim_presentation import claim_depth, claim_title
+
 log = logging.getLogger(__name__)
 
 _LATEST_JOB_SQL = (
@@ -98,6 +100,9 @@ def _read_claims(session, requirement_key: str) -> list[dict]:
             "recipes": [{"trigger_kind": r.trigger_kind, "recipe_kind": r.recipe_kind,
                          "priority": r.priority, "status": r.status} for r in recipes],
             "linked_at": _iso(m.linked_at),
+            # D-206 triage surface: the claim AS a sentence + the honesty badge.
+            "title": claim_title(claim.claim_kind, _dump(claim.asserted_truth)),
+            "depth": claim_depth([r.recipe_kind for r in recipes]),
         })
     # deterministic: archetype then claim_kind then test_id
     claims.sort(key=lambda c: (c["archetype"] or "", c["claim_kind"] or "", c["test_id"]))
@@ -174,6 +179,7 @@ def _read_claim_detail(session, test_id) -> dict | None:
     if claim is None:
         return None
     recipes = coord.list_active_recipes(session, test_id)
+    asserted = _dump(claim.asserted_truth)
     return {
         "test_id": str(test_id),
         "archetype": claim.archetype,
@@ -182,7 +188,10 @@ def _read_claim_detail(session, test_id) -> dict | None:
         "version_seq": claim.version_seq,
         "valid_from": _iso(claim.valid_from),
         "identity_hash": claim.identity_hash,
-        "asserted_truth": _dump(claim.asserted_truth),
+        # D-206 triage surface: the claim AS a sentence + the honesty badge.
+        "title": claim_title(claim.claim_kind, asserted),
+        "depth": claim_depth([r.recipe_kind for r in recipes]),
+        "asserted_truth": asserted,
         "semantic_conditions": _dump(claim.semantic_conditions),
         "recipes": [{
             "recipe_id": str(r.recipe_id),
@@ -223,32 +232,59 @@ def read_claim_detail(tenant_id: int, test_id) -> dict:
 # test_claims directly (the s1_sync_console pattern: a tenant-scoped raw read).
 # "Current" = valid_to IS NULL, matching get_latest_claim's filter.
 
-def _list_claims(conn, *, limit: int, offset: int, q=None):
+def _list_claims(conn, *, limit: int, offset: int, q=None, status=None):
     """Pure: (total, page-rows) of current claims on an open tenant conn. ``q``
-    ILIKE-matches claim_kind / archetype / test_id (enum cols cast to text)."""
+    ILIKE-matches claim_kind / archetype / test_id (enum cols cast to text);
+    ``status`` filters exactly (the drafts inbox passes ``'draft'``).
+
+    Each row also carries the D-206 triage surface — ``title`` (the claim AS a
+    plain-English sentence, from ``asserted_truth``), ``depth`` (behavioral vs
+    configuration-check, from the current recipes' kinds), and the most recent
+    ``generated_from`` requirement key — all batched in one statement (no N+1)."""
     clause, qp = "", {}
     if q:
-        clause = (" AND (claim_kind::text ILIKE :q OR archetype::text ILIKE :q "
-                  "OR CAST(test_id AS text) ILIKE :q)")
-        qp = {"q": f"%{q}%"}
+        clause += (" AND (c.claim_kind::text ILIKE :q OR c.archetype::text ILIKE :q "
+                   "OR CAST(c.test_id AS text) ILIKE :q)")
+        qp["q"] = f"%{q}%"
+    if status:
+        clause += " AND c.status::text = :status"
+        qp["status"] = status
     total = conn.execute(text(
-        f"SELECT COUNT(*) FROM test_claims WHERE valid_to IS NULL{clause}"), qp).scalar()
+        f"SELECT COUNT(*) FROM test_claims c WHERE c.valid_to IS NULL{clause}"),
+        qp).scalar()
     rows = conn.execute(text(
-        "SELECT CAST(test_id AS text) AS test_id, archetype::text AS archetype, "
-        "claim_kind::text AS claim_kind, status::text AS status, version_seq, updated_at "
-        f"FROM test_claims WHERE valid_to IS NULL{clause} "
-        "ORDER BY updated_at DESC, test_id LIMIT :limit OFFSET :offset"),
+        "SELECT CAST(c.test_id AS text) AS test_id, c.archetype::text AS archetype, "
+        "c.claim_kind::text AS claim_kind, c.status::text AS status, "
+        "c.version_seq, c.updated_at, c.asserted_truth, "
+        "COALESCE(rk.kinds, ARRAY[]::text[]) AS recipe_kinds, "
+        "req.external_key AS requirement_key "
+        "FROM test_claims c "
+        "LEFT JOIN LATERAL ("
+        "  SELECT array_agg(DISTINCT r.recipe_kind::text) AS kinds "
+        "  FROM test_recipes r "
+        "  WHERE r.claim_test_id = c.test_id AND r.valid_to IS NULL) rk ON true "
+        "LEFT JOIN LATERAL ("
+        "  SELECT l.external_key FROM test_requirement_links l "
+        "  WHERE l.test_id = c.test_id AND l.link_kind = 'generated_from' "
+        "  ORDER BY l.linked_at DESC LIMIT 1) req ON true "
+        f"WHERE c.valid_to IS NULL{clause} "
+        "ORDER BY c.updated_at DESC, c.test_id LIMIT :limit OFFSET :offset"),
         {**qp, "limit": limit, "offset": offset}).mappings().all()
     claims = [{"test_id": r["test_id"], "archetype": r["archetype"],
                "claim_kind": r["claim_kind"], "status": r["status"],
-               "version_seq": r["version_seq"], "updated_at": _iso(r["updated_at"])}
+               "version_seq": r["version_seq"], "updated_at": _iso(r["updated_at"]),
+               "title": claim_title(r["claim_kind"], r["asserted_truth"]),
+               "depth": claim_depth(r["recipe_kinds"]),
+               "requirement_key": r["requirement_key"]}
               for r in rows]
     return (total or 0), claims
 
 
-def list_claims(tenant_id: int, *, page: int = 1, per_page: int = 20, q=None) -> dict:
+def list_claims(tenant_id: int, *, page: int = 1, per_page: int = 20, q=None,
+                status=None) -> dict:
     """Best-effort paginated read of the tenant's current claims (the claims
-    library). Never raises. ``per_page`` capped at 50. Returns
+    library; ``status='draft'`` powers the approval inbox). Never raises.
+    ``per_page`` capped at 50. Returns
     ``{available, claims, total, page, per_page, total_pages}``."""
     page = max(1, page)
     per_page = max(1, min(per_page, 50))
@@ -256,7 +292,8 @@ def list_claims(tenant_id: int, *, page: int = 1, per_page: int = 20, q=None) ->
         from primeqa.semantic.connection import get_tenant_connection
         with get_tenant_connection(tenant_id) as conn:
             total, claims = _list_claims(
-                conn, limit=per_page, offset=(page - 1) * per_page, q=q)
+                conn, limit=per_page, offset=(page - 1) * per_page, q=q,
+                status=status)
         total_pages = max(1, (total + per_page - 1) // per_page)
         return {"available": True, "claims": claims, "total": total,
                 "page": page, "per_page": per_page, "total_pages": total_pages}
@@ -264,6 +301,35 @@ def list_claims(tenant_id: int, *, page: int = 1, per_page: int = 20, q=None) ->
         log.warning("list_claims unavailable for tenant %s: %s", tenant_id, exc)
         return {"available": False, "claims": [], "total": 0,
                 "page": page, "per_page": per_page, "total_pages": 1}
+
+
+# --- read: the latest generation outcome's dedup note (D-206) -----------------
+
+def read_latest_generation_note(tenant_id: int, requirement_key: str) -> dict:
+    """Best-effort: did the requirement's most recent generation DE-DUPLICATE
+    (match an already-existing equivalent test) rather than mint a new one?
+    Powers the requirement page's "this test already exists" note — without it
+    a dedup looks like Generate silently did nothing. Never raises. Returns
+    ``{available, deduped, outcome_kind}``."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            row = conn.execute(text(
+                "SELECT outcome_kind::text AS outcome_kind, equivalent_existing "
+                "FROM generation_outcomes "
+                "WHERE requirement_ref->>'key' = :rk "
+                "ORDER BY created_at DESC LIMIT 1"),
+                {"rk": requirement_key}).mappings().first()
+        if row is None:
+            return {"available": True, "deduped": False, "outcome_kind": None}
+        ee = row["equivalent_existing"]
+        return {"available": True,
+                "deduped": bool(ee),
+                "outcome_kind": row["outcome_kind"]}
+    except Exception as exc:
+        log.warning("read_latest_generation_note unavailable for tenant %s key %s: %s",
+                    tenant_id, requirement_key, exc)
+        return {"available": False, "deduped": False, "outcome_kind": None}
 
 
 # --- read: per-requirement current-claim counts (the list chips) (2c/#143) ----

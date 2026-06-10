@@ -9,10 +9,17 @@
 <div class="max-w-5xl space-y-5">
   <div class="flex items-start justify-between gap-4">
     <div>
-      <h1 class="text-xl font-semibold text-gray-900">Claims <span class="text-gray-400 text-base">(Substrate S2)</span></h1>
-      <p class="mt-1 text-sm text-gray-500">Every current semantic claim generated for your org &mdash; the substrate test library. Each links to its detail + recipes.</p>
+      <h1 class="text-xl font-semibold text-gray-900">Tests <span class="text-gray-400 text-base">(Substrate S2)</span></h1>
+      <p class="mt-1 text-sm text-gray-500">Every current test generated for your org. Each links to its detail + how it verifies.</p>
     </div>
-    <a href="/runs/substrate" class="text-sm text-indigo-600 hover:text-indigo-800 whitespace-nowrap mt-1">All runs &rarr;</a>
+    <div class="flex items-center gap-3 mt-1 whitespace-nowrap">
+      {% if pending_total %}
+      <a href="/claims/inbox" class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800 hover:bg-amber-200">
+        {{ pending_total }} awaiting approval &rarr;
+      </a>
+      {% endif %}
+      <a href="/runs/substrate" class="text-sm text-indigo-600 hover:text-indigo-800">All runs &rarr;</a>
+    </div>
   </div>
 
   {{ render_search('/claims', q, 'Search claim kind or archetype…') }}
@@ -25,10 +32,10 @@
       <table class="min-w-full divide-y divide-gray-200 text-sm">
         <thead class="bg-gray-50">
           <tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
-            <th class="px-4 py-2">Claim</th>
-            <th class="px-4 py-2">Archetype</th>
+            <th class="px-4 py-2">Test</th>
+            <th class="px-4 py-2">Depth</th>
             <th class="px-4 py-2">Status</th>
-            <th class="px-4 py-2">Version</th>
+            <th class="px-4 py-2">From</th>
             <th class="px-4 py-2">Updated</th>
           </tr>
         </thead>
@@ -36,16 +43,24 @@
           {% for c in data.claims %}
           <tr class="hover:bg-gray-50">
             <td class="px-4 py-2">
-              <a href="/claims/{{ c.test_id }}" class="font-medium text-indigo-600 hover:underline">{{ c.claim_kind.replace('-', ' ') }}</a>
+              <a href="/claims/{{ c.test_id }}" class="font-medium text-indigo-600 hover:underline">{{ c.title }}</a>
+              <div class="text-xs text-gray-400 mt-0.5">{{ c.claim_kind.replace('-', ' ') }} &middot; {{ c.archetype.replace('_', ' ') }} &middot; v{{ c.version_seq }}</div>
             </td>
-            <td class="px-4 py-2"><span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-600">{{ c.archetype.replace('_', ' ') }}</span></td>
+            <td class="px-4 py-2">
+              {# D-206: the honesty badge — does the test exercise the org, or
+                 only check configuration exists? #}
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                {% if c.depth == 'behavioral' %}bg-emerald-100 text-emerald-800{% else %}bg-slate-100 text-slate-600{% endif %}"
+                title="{{ 'Actually exercises the org (creates/edits records and observes the response)' if c.depth == 'behavioral' else 'Checks the configuration exists — does not exercise enforcement' }}">
+                {{ 'behavioral' if c.depth == 'behavioral' else 'config check' }}</span>
+            </td>
             <td class="px-4 py-2">
               <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
                 {% if c.status == 'approved' %}bg-blue-100 text-blue-800
                 {% elif c.status == 'draft' %}bg-gray-100 text-gray-700
                 {% else %}bg-amber-100 text-amber-800{% endif %}">{{ c.status }}</span>
             </td>
-            <td class="px-4 py-2 text-gray-500">v{{ c.version_seq }}</td>
+            <td class="px-4 py-2 text-gray-500 text-xs">{{ c.requirement_key or '' }}</td>
             <td class="px-4 py-2 text-gray-500">{{ c.updated_at[:10] if c.updated_at else '' }}</td>
           </tr>
           {% endfor %}

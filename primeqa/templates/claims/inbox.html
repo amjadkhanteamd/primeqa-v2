@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% from 'components/_empty_state.html' import empty_state %}
+{% from 'components/pagination.html' import render_pagination %}
+{% from 'components/breadcrumbs.html' import breadcrumbs %}
+{% block title %}Approval inbox - PrimeQA{% endblock %}
+{% block content %}
+
+{# D-206: the approval inbox — every draft test awaiting a human decision.
+   Approving makes a test runnable AND auto-queues its first runs on every
+   safe (non-production, connected) environment. #}
+{{ breadcrumbs([('Tests', '/claims'), ('Approval inbox', None)]) }}
+
+<div class="max-w-5xl space-y-5">
+  <div>
+    <h1 class="text-xl font-semibold text-gray-900">Approval inbox</h1>
+    <p class="mt-1 text-sm text-gray-500">
+      AI-generated tests waiting for your decision. Approving makes a test runnable
+      and queues its first run on every safe sandbox automatically.
+      <span class="text-gray-400">Behavioral tests exercise the org for real;
+      config checks only confirm the setup exists.</span>
+    </p>
+  </div>
+
+  {% if not data or not data.available %}
+    {{ empty_state(title='Inbox unavailable',
+        description='The substrate could not be read for your tenant right now.') }}
+  {% elif data.claims %}
+    <div class="bg-white shadow rounded-lg overflow-hidden">
+      <table class="min-w-full divide-y divide-gray-200 text-sm">
+        <thead class="bg-gray-50">
+          <tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
+            <th class="px-4 py-2">Test</th>
+            <th class="px-4 py-2">Depth</th>
+            <th class="px-4 py-2">From</th>
+            <th class="px-4 py-2 text-right">Decision</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for c in data.claims %}
+          <tr class="hover:bg-gray-50">
+            <td class="px-4 py-2">
+              <a href="/claims/{{ c.test_id }}" class="font-medium text-indigo-600 hover:underline">{{ c.title }}</a>
+              <div class="text-xs text-gray-400 mt-0.5">{{ c.claim_kind.replace('-', ' ') }} &middot; v{{ c.version_seq }}</div>
+            </td>
+            <td class="px-4 py-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+                {% if c.depth == 'behavioral' %}bg-emerald-100 text-emerald-800{% else %}bg-slate-100 text-slate-600{% endif %}"
+                title="{{ 'Actually exercises the org' if c.depth == 'behavioral' else 'Configuration existence only — enforcement not exercised' }}">
+                {{ 'behavioral' if c.depth == 'behavioral' else 'config check' }}</span>
+            </td>
+            <td class="px-4 py-2 text-gray-500 text-xs">{{ c.requirement_key or '' }}</td>
+            <td class="px-4 py-2 text-right">
+              <form method="POST" action="/claims/{{ c.test_id }}/approve" class="inline">
+                {{ csrf_input | safe }}
+                <input type="hidden" name="next" value="/claims/inbox?page={{ data.page }}">
+                <button type="submit"
+                        class="inline-flex items-center rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500">
+                  Approve</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="flex items-center justify-between">
+      <p class="text-xs text-gray-500">{{ data.total }} awaiting approval</p>
+      {{ render_pagination(data.page, data.total_pages, '/claims/inbox', '') }}
+    </div>
+  {% else %}
+    {{ empty_state(title='Inbox zero',
+        description='No draft tests are waiting. Generate test plans from requirements to fill the inbox.',
+        cta_label='Go to requirements', cta_url='/requirements') }}
+  {% endif %}
+</div>
+{% endblock %}

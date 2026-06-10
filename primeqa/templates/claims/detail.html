@@ -36,8 +36,8 @@
 {% set c = detail.claim if detail else None %}
 
 {{ breadcrumbs([
-  ('Claims', '/claims'),
-  (c.claim_kind.replace('-', ' ') if c else 'Claim', None),
+  ('Tests', '/claims'),
+  (c.title if c and c.title else (c.claim_kind.replace('-', ' ') if c else 'Test'), None),
 ]) }}
 
 <div class="max-w-4xl space-y-6">
@@ -51,6 +51,12 @@
     <!-- Header -->
     <div>
       <div class="flex items-center gap-2 flex-wrap">
+        {# D-206: the depth badge — does the test exercise the org, or only
+           confirm configuration exists? #}
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium
+          {% if c.depth == 'behavioral' %}bg-emerald-100 text-emerald-800{% else %}bg-slate-100 text-slate-600{% endif %}"
+          title="{{ 'Actually exercises the org (creates/edits records and observes the response)' if c.depth == 'behavioral' else 'Checks the configuration exists — does not exercise enforcement' }}">
+          {{ 'behavioral' if c.depth == 'behavioral' else 'config check' }}</span>
         <span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-600">{{ c.archetype.replace('_', ' ') }}</span>
         <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
           {% if c.status == 'approved' %}bg-blue-100 text-blue-800
@@ -58,8 +64,8 @@
           {% else %}bg-amber-100 text-amber-800{% endif %}">{{ c.status }}</span>
         <span class="text-xs text-gray-400">v{{ c.version_seq }}</span>
       </div>
-      <h1 class="mt-2 text-2xl font-bold text-gray-900">{{ c.claim_kind.replace('-', ' ') }}</h1>
-      <p class="mt-1 text-xs text-gray-400 font-mono break-all" title="{{ c.test_id }}">{{ c.test_id }}</p>
+      <h1 class="mt-2 text-2xl font-bold text-gray-900">{{ c.title or c.claim_kind.replace('-', ' ') }}</h1>
+      <p class="mt-1 text-xs text-gray-400">{{ c.claim_kind.replace('-', ' ') }} &middot; <span class="font-mono break-all" title="{{ c.test_id }}">{{ c.test_id[:8] }}</span></p>
     </div>
 
     <!-- Approve (a draft claim is not runnable until approved) -->
@@ -104,70 +110,84 @@
     </div>
     {% endif %}
 
-    <!-- Asserted truth -->
-    <div class="bg-white shadow rounded-lg">
-      <div class="px-4 py-3 border-b">
-        <h3 class="text-sm font-semibold text-gray-700">Asserted truth</h3>
-        <p class="text-xs text-gray-400">What this claim says is true about the org.</p>
-      </div>
-      <div class="px-6 py-4">
-        {% if c.asserted_truth %}{{ render_value(c.asserted_truth) }}
-        {% else %}<p class="text-sm text-gray-400 italic">No asserted truth recorded.</p>{% endif %}
-      </div>
-    </div>
+    {# D-206: the semantic internals stay one click away — triage reads the
+       title, depth badge and plain run lines; engineers expand this. #}
+    <details class="bg-white shadow rounded-lg group">
+      <summary class="px-4 py-3 cursor-pointer select-none text-sm font-semibold text-gray-700 flex items-center justify-between">
+        <span>Technical details
+          <span class="text-gray-400 font-normal">&mdash; asserted truth, conditions, recipes</span></span>
+        <span class="text-xs text-gray-400 group-open:hidden">Show &darr;</span>
+        <span class="text-xs text-gray-400 hidden group-open:inline">Hide &uarr;</span>
+      </summary>
+      <div class="border-t divide-y divide-gray-200">
 
-    <!-- Semantic conditions -->
-    <div class="bg-white shadow rounded-lg">
-      <div class="px-4 py-3 border-b">
-        <h3 class="text-sm font-semibold text-gray-700">Semantic conditions</h3>
-        <p class="text-xs text-gray-400">The conditions under which the claim holds.</p>
-      </div>
-      <div class="px-6 py-4">
-        {% if c.semantic_conditions %}{{ render_value(c.semantic_conditions) }}
-        {% else %}<p class="text-sm text-gray-400 italic">No conditions recorded.</p>{% endif %}
-      </div>
-    </div>
-
-    <!-- Recipes -->
-    <div class="bg-white shadow rounded-lg">
-      <div class="px-4 py-3 border-b flex items-center justify-between">
-        <h3 class="text-sm font-semibold text-gray-700">Recipes
-          <span class="text-gray-500 font-normal">({{ c.recipes | length }})</span>
-        </h3>
-        <span class="text-xs text-gray-400">How the claim is verified.</span>
-      </div>
-      {% if c.recipes %}
-      <div class="divide-y divide-gray-200">
-        {% for r in c.recipes %}
-        <div class="px-6 py-4 space-y-3">
-          <div class="flex items-center gap-2 flex-wrap">
-            <span class="text-sm font-medium text-gray-900">{{ r.recipe_kind.replace('-', ' ') }}</span>
-            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-indigo-50 text-indigo-700">{{ r.trigger_kind.replace('-', ' ') }}</span>
-            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
-              {% if r.status == 'approved' %}bg-blue-100 text-blue-800{% elif r.status == 'draft' %}bg-gray-100 text-gray-700{% else %}bg-amber-100 text-amber-800{% endif %}">{{ r.status }}</span>
-            <span class="text-xs text-gray-400">priority {{ r.priority }} · v{{ r.version_seq }}</span>
+        <!-- Asserted truth -->
+        <div>
+          <div class="px-4 py-3">
+            <h3 class="text-sm font-semibold text-gray-700">Asserted truth</h3>
+            <p class="text-xs text-gray-400">What this claim says is true about the org.</p>
           </div>
-          <div class="space-y-4">
-            <div>
-              <h4 class="text-xs font-medium text-gray-500 uppercase mb-1">Causal initiation</h4>
-              {{ render_value(r.causal_initiation) }}
-            </div>
-            <div>
-              <h4 class="text-xs font-medium text-gray-500 uppercase mb-1">Observation</h4>
-              {{ render_value(r.observation_realization) }}
-            </div>
-            <div>
-              <h4 class="text-xs font-medium text-gray-500 uppercase mb-1">Environment</h4>
-              {{ render_value(r.execution_environment) }}
-            </div>
+          <div class="px-6 pb-4">
+            {% if c.asserted_truth %}{{ render_value(c.asserted_truth) }}
+            {% else %}<p class="text-sm text-gray-400 italic">No asserted truth recorded.</p>{% endif %}
           </div>
         </div>
-        {% endfor %}
+
+        <!-- Semantic conditions -->
+        <div>
+          <div class="px-4 py-3">
+            <h3 class="text-sm font-semibold text-gray-700">Semantic conditions</h3>
+            <p class="text-xs text-gray-400">The conditions under which the claim holds.</p>
+          </div>
+          <div class="px-6 pb-4">
+            {% if c.semantic_conditions %}{{ render_value(c.semantic_conditions) }}
+            {% else %}<p class="text-sm text-gray-400 italic">No conditions recorded.</p>{% endif %}
+          </div>
+        </div>
+
+        <!-- Recipes -->
+        <div>
+          <div class="px-4 py-3 flex items-center justify-between">
+            <h3 class="text-sm font-semibold text-gray-700">Recipes
+              <span class="text-gray-500 font-normal">({{ c.recipes | length }})</span>
+            </h3>
+            <span class="text-xs text-gray-400">How the claim is verified.</span>
+          </div>
+          {% if c.recipes %}
+          <div class="divide-y divide-gray-200 border-t">
+            {% for r in c.recipes %}
+            <div class="px-6 py-4 space-y-3">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-sm font-medium text-gray-900">{{ r.recipe_kind.replace('-', ' ') }}</span>
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-indigo-50 text-indigo-700">{{ r.trigger_kind.replace('-', ' ') }}</span>
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+                  {% if r.status == 'approved' %}bg-blue-100 text-blue-800{% elif r.status == 'draft' %}bg-gray-100 text-gray-700{% else %}bg-amber-100 text-amber-800{% endif %}">{{ r.status }}</span>
+                <span class="text-xs text-gray-400">priority {{ r.priority }} · v{{ r.version_seq }}</span>
+              </div>
+              <div class="space-y-4">
+                <div>
+                  <h4 class="text-xs font-medium text-gray-500 uppercase mb-1">Causal initiation</h4>
+                  {{ render_value(r.causal_initiation) }}
+                </div>
+                <div>
+                  <h4 class="text-xs font-medium text-gray-500 uppercase mb-1">Observation</h4>
+                  {{ render_value(r.observation_realization) }}
+                </div>
+                <div>
+                  <h4 class="text-xs font-medium text-gray-500 uppercase mb-1">Environment</h4>
+                  {{ render_value(r.execution_environment) }}
+                </div>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="px-6 pb-6 text-sm text-gray-500">No active recipes for this claim.</div>
+          {% endif %}
+        </div>
+
       </div>
-      {% else %}
-      <div class="px-6 py-6 text-sm text-gray-500">No active recipes for this claim.</div>
-      {% endif %}
-    </div>
+    </details>
 
     <!-- Recent runs (S4 outcome + S6 verdict) -->
     <div class="bg-white shadow rounded-lg">
@@ -189,7 +209,8 @@
                 {% elif r.outcome == 'failed' %}bg-red-100 text-red-800
                 {% elif r.outcome == 'errored' %}bg-amber-100 text-amber-800
                 {% else %}bg-gray-100 text-gray-700{% endif %}">{{ r.outcome }}</span>
-              {% if r.verdict %}<span class="text-xs text-gray-600">{{ r.verdict.replace('_', ' ') }}</span>{% endif %}
+              {# D-206: plain-words verdict line; raw S6 verdict stays as the tooltip #}
+              <span class="text-xs text-gray-600" {% if r.verdict %}title="{{ r.verdict }}"{% endif %}>{{ r.plain or (r.verdict.replace('_', ' ') if r.verdict else '') }}</span>
             </div>
             <div class="flex items-center gap-3 flex-shrink-0 ml-3">
               {% if r.finished_at %}<span class="text-xs text-gray-400">{{ r.finished_at[:19] }}</span>{% endif %}

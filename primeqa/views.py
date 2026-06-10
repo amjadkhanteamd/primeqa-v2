@@ -5099,10 +5099,14 @@ def requirements_detail(req_id):
         # never drifts from what generation wrote per D-166).
         from primeqa.intelligence.s3_enqueue import _requirement_to_ref
         from primeqa.intelligence.s3_generation_console import (
-            read_requirement_claims, read_latest_s3_job)
+            read_requirement_claims, read_latest_s3_job,
+            read_latest_generation_note)
         req_key = _requirement_to_ref(req)["key"]
         s2 = read_requirement_claims(tid, req_key)
         s3_job = read_latest_s3_job(tid, req_key)
+        # D-206: surface a dedup honestly — "Generate matched an existing test"
+        # instead of looking like it silently did nothing.
+        gen_note = read_latest_generation_note(tid, req_key)
 
         envs = EnvironmentRepository(db).list_environments(
             tid, request.user["id"], request.user["role"])
@@ -5131,7 +5135,7 @@ def requirements_detail(req_id):
         return render_template("requirements/detail.html", **ctx(
             active_page="requirements", req=req_data,
             environments=envs_data, req_key=req_key,
-            s2_claims=s2, s3_job=s3_job,
+            s2_claims=s2, s3_job=s3_job, gen_note=gen_note,
         ))
     finally:
         db.close()
@@ -5176,8 +5180,27 @@ def claims_list():
     per_page = request.args.get("per_page", 20, type=int) or 20
     q = (request.args.get("q") or "").strip() or None
     data = list_claims(request.user["tenant_id"], page=page, per_page=per_page, q=q)
+    # The inbox chip: how many drafts are waiting for approval (D-206).
+    pending = list_claims(request.user["tenant_id"], page=1, per_page=1, status="draft")
     return render_template("claims/list.html", **ctx(
-        active_page="test_library", data=data, q=q or ""))
+        active_page="test_library", data=data, q=q or "",
+        pending_total=pending.get("total", 0)))
+
+
+@views_bp.route("/claims/inbox")
+@role_required("admin", "tester", "superadmin")
+def claims_inbox():
+    """D-206: the approval inbox — every draft claim awaiting a human decision,
+    with the plain-English title + the behavioral/configuration-check depth
+    badge + the source requirement, and a per-row Approve. Approval is the
+    human gate that makes a claim runnable (and auto-queues its first runs),
+    so this page is the manual-approval workflow's home."""
+    from primeqa.intelligence.s3_generation_console import list_claims
+    page = request.args.get("page", 1, type=int) or 1
+    data = list_claims(request.user["tenant_id"], page=page, per_page=50,
+                       status="draft")
+    return render_template("claims/inbox.html", **ctx(
+        active_page="test_library", data=data))
 
 
 @views_bp.route("/claims/<uuid:test_id>")
@@ -5188,11 +5211,14 @@ def claims_detail(test_id):
     The substrate replacement for the v1 test-case detail page. Best-effort read
     via the s3_generation_console bridge; renders an empty state when the claim is
     gone or the substrate is unavailable."""
+    from primeqa.intelligence.claim_presentation import verdict_plain
     from primeqa.intelligence.s3_generation_console import read_claim_detail
     from primeqa.intelligence.s4_execution_console import read_claim_runs
     tid = request.user["tenant_id"]
     detail = read_claim_detail(tid, test_id)
     runs = read_claim_runs(tid, test_id)              # D-168 (3a): recent runs (S6)
+    for r in runs.get("runs") or []:                  # D-206: plain-words line
+        r["plain"] = verdict_plain(r.get("verdict"), r.get("outcome"))
     # Environments for the Run picker (tester+; gated in the template). is_production
     # drives the dynamic prod-confirm gate; has_connection flags runnable envs.
     db = next(get_db())
@@ -5266,6 +5292,11 @@ def claims_approve(test_id):
         flash("Claim approved — it's now runnable.", "success")
     else:
         flash(f"Could not approve: {res.get('error', 'unknown error')}", "error")
+    # D-206: the inbox approves in place — return there when asked. Same-page
+    # paths only (no open redirect).
+    nxt = request.form.get("next") or ""
+    if nxt.startswith("/claims"):
+        return redirect(nxt)
     return redirect(f"/claims/{test_id}")
 
 
