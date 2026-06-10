@@ -348,3 +348,28 @@ instructs `target_subject_hint.operation`; frozen as **generation@v4** (hash rec
 bumped, v1–v3 untouched). Eval: the scorer gains a generic `trigger_operation` expectation; a new
 `update-rejected-prohibition-negative` probe discriminates the update shape from the create
 fallback. S3 suites green (215). DECISIONS_LOG D-203.
+
+## 2026-06-11 — Multi-claim generation: one requirement → N intents → N claims, one outcome (D-207)
+
+The 1:1 requirement→claim cardinality is gone. The propose surface gains `intent_descriptors`
+(1..6 flat items, each with its OWN verbatim `requirement_excerpt`); Layer A enforces
+exactly-one-form (array XOR the legacy singular, which stays accepted for pinned-prompt replay) and
+`normalize_propose_input` flattens either form to the legacy per-intent shape every resolver already
+speaks. `resolve_intent` loops the extracted `_resolve_one` per descriptor, re-indexes path ids
+`c0..c{n-1}` (ending the hardcoded-"c0" era), merges deltas, and **refuses only at zero grounded** —
+a failed intent is a dismissal, not a veto (partial grounding is a draft). The 7 per-archetype
+grounding stashes became `_stash_grounding` appends to an ordered `state.groundings` list;
+`finalize_outcome` authors one bundle per entry and aggregates the outcome posture CONSERVATIVELY
+(LAYER_2 only when every bundle verified; any caveated bundle caveats the outcome; multi drafts
+record `selected_path_ids`). The persister loops bundles in the SAME atomic transaction —
+`claims_written` / `recipes_written` / `equivalent_existing` append per bundle (the protocol fields
+were ALREADY lists, length-1 until now: zero migrations), per-bundle identity dedup, the
+`generated_from` link per claim. Prompt: base.md teaches full-coverage decomposition (the positive +
+one negative per prohibition/condition + config checks, each on its own excerpt; a one-entry array
+is correct, not under-coverage); frozen as **generation@v5** (hash recorded, CURRENT bumped, v1–v4
+untouched). Eval: `claims` (plural, positional) expectation; `ObservedOutcome.claims_count` + `gte`
+op; replay identity now requires EVERY bundle to dedup; new `multiclaim_draft` golden case (config
+relationship + verified Lead prohibition in ONE propose → 2 claims, 1 outcome, layer_1 aggregate,
+no caveat) with a live envelope (`draft` + `claims_count >= 2`). SELECT stays dormant (decomposition
+still yields ≤1 grounded candidate per intent). Jobs/queue/consumer untouched (already
+multiplicity-agnostic). S3 suites green (232 + representation 1503 cross-gate). DECISIONS_LOG D-207.
