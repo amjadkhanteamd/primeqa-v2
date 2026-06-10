@@ -161,12 +161,13 @@ def _execute_for_kind(recipe, session, environment_id: int, client):
     if recipe.recipe_kind == _DATA_RECIPE_KIND:
         plan = build_data_recipe_plan(recipe)
         data_client = client or resolve_data_mutation_client(session, environment_id)
-        # The positive vertical (D-115) reads S1 requiredness to construct the
-        # operational world (k16 padding); the behavioral negative does not.
-        # Build the read-through port **only for the positive plan**, from the
-        # run-path's own connection — the same idiom as the S6 interpret stage —
-        # so the padding reflects the org the run executes against. (The negative
-        # never touches the connection here.)
+        # Any plan that begins with an ORDINARY create constructs a world and
+        # so reads S1 requiredness (k16 padding): the positive vertical (D-115)
+        # and the 2-step negative's setup create (D-203). Only the 1-step
+        # create-rejected negative (steps[0] flagged) skips it. Build the
+        # read-through port from the run-path's own connection — the same idiom
+        # as the S6 interpret stage — so the padding reflects the org the run
+        # executes against.
         s1 = None
         if plan.steps[0].expect_rejection is None:
             from primeqa.semantic.query import SemanticOrgModel

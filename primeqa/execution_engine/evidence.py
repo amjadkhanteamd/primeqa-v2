@@ -26,7 +26,8 @@ class ErrorSurface:
     S4 *records* it; it does not classify or attribute it (that is S6's job).
     ``error_type`` is the exception class name, not an interpreted category."""
 
-    phase: Literal["translate", "read", "assert", "create", "construct"]
+    phase: Literal["translate", "read", "assert", "create", "construct",
+                   "update", "delete"]
     error_type: str
     message: str
 
@@ -150,8 +151,67 @@ class DataReadEvidence:
     field_diff: None = None
 
 
+@dataclass(frozen=True)
+class UpdateAttemptEvidence:
+    """Evidence for one rejected-update attempt (D-203 — the 2-step
+    behavioral negative).
+
+    ``record_id`` names the subject record the mutation targeted (the setup
+    create's record). The subject's teardown is reported **once**, on the setup
+    create's evidence (the step that created the record — the established
+    convention), not here. ``before/after_state`` + ``field_diff`` stay
+    reserved (before-state capture is a logged D-203 residual)."""
+
+    step_id: str
+    ordinal: int
+    sobject: str
+    record_id: Optional[str]        # the subject record (from the setup create)
+    field_changes: dict             # the attempted mutation (api_request analog)
+    http_status: Optional[int]      # None when the update couldn't be attempted
+    success: bool                   # was the update accepted (2xx)?
+    error_code: Optional[str]       # convenience: an errorCode from the body
+    message: Optional[str]          # convenience: an error message from the body
+    rejection_body: tuple           # the FULL error body (api_response analog)
+    matched: Optional[bool]         # did the rejection match expect_rejection?
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int
+    kind: Literal["update"] = "update"
+    error: Optional[ErrorSurface] = None
+    # N/As, reserved (before-state capture is a D-203 residual):
+    before_state: None = None
+    after_state: None = None
+    field_diff: None = None
+
+
+@dataclass(frozen=True)
+class DeleteAttemptEvidence:
+    """Evidence for one rejected-delete attempt (D-203) — same semantics as
+    :class:`UpdateAttemptEvidence`, minus a payload (a delete carries none)."""
+
+    step_id: str
+    ordinal: int
+    sobject: str
+    record_id: Optional[str]        # the subject record (from the setup create)
+    http_status: Optional[int]
+    success: bool                   # was the delete accepted (2xx)?
+    error_code: Optional[str]
+    message: Optional[str]
+    rejection_body: tuple
+    matched: Optional[bool]
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int
+    kind: Literal["delete"] = "delete"
+    error: Optional[ErrorSurface] = None
+    before_state: None = None
+    after_state: None = None
+    field_diff: None = None
+
+
 StepEvidence = Union[
-    ReadEvidence, AssertEvidence, CreateAttemptEvidence, DataReadEvidence]
+    ReadEvidence, AssertEvidence, CreateAttemptEvidence, DataReadEvidence,
+    UpdateAttemptEvidence, DeleteAttemptEvidence]
 
 
 @dataclass(frozen=True)
