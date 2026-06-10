@@ -184,3 +184,59 @@ def test_wrapper_best_effort_bad_tenant():
         get_release_substrate_decision,
     )
     assert get_release_substrate_decision(-1, ["X-1"])["available"] is False
+
+
+# ---------------------------------------------------------------------------
+# Seeded end-to-end (slices 1+2 over REAL rows): a release's claims with runs →
+# the recommendation comes out right, both directions (D-198 slice 4).
+# ---------------------------------------------------------------------------
+
+def test_e2e_clean_evidence_yields_go(session):
+    from primeqa.intelligence.substrate_decision import compute_substrate_decision
+    coord = SemanticTransactionCoordinator()
+    cr = _approved_claim(session, coord, key="E2E-GO")
+    _seed_s1_version(session, 4)
+    persist_grounding_validity(
+        session, test_id=cr.test_id, version_seq=cr.version_seq,
+        evaluated_at_version_seq=4, validity=_gv(overall="intact"))
+    _seed_run(session, claim_test_id=cr.test_id, outcome="passed",
+              finished_at="2026-06-10T09:00:00+00:00",
+              claim_version_seq=cr.version_seq)
+    session.flush()
+
+    from datetime import datetime, timezone
+    out = compute_substrate_decision(
+        _assemble_claim_evidence(session, ["E2E-GO"]),
+        now=datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc))
+    assert out["recommendation"] == "go"
+    assert out["metrics"] == {
+        "claim_count": 1, "counted_runs": 1, "passed": 1, "failed": 0,
+        "errored": 0, "never_run": 0, "pass_rate": 100.0,
+        "grounding": {"broken": 0, "drifted": 0, "stale": 0},
+        "blockers": 0, "warnings": 0}
+    assert out["risk"]["level"] == "low"
+
+
+def test_e2e_broken_grounding_and_failed_run_yields_no_go(session):
+    from primeqa.intelligence.substrate_decision import compute_substrate_decision
+    coord = SemanticTransactionCoordinator()
+    cr = _approved_claim(session, coord, key="E2E-NOGO")
+    _seed_s1_version(session, 4)
+    persist_grounding_validity(
+        session, test_id=cr.test_id, version_seq=cr.version_seq,
+        evaluated_at_version_seq=4,
+        validity=_gv(overall="broken", claim_verdict="broken"))
+    _seed_run(session, claim_test_id=cr.test_id, outcome="failed",
+              finished_at="2026-06-10T09:00:00+00:00",
+              claim_version_seq=cr.version_seq)
+    session.flush()
+
+    from datetime import datetime, timezone
+    out = compute_substrate_decision(
+        _assemble_claim_evidence(session, ["E2E-NOGO"]),
+        now=datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc))
+    assert out["recommendation"] == "no_go"
+    checks = {r["check"]: r["status"] for r in out["reasoning"]}
+    assert checks["pass_rate"] == "fail"
+    assert checks["grounding_integrity"] == "fail"
+    assert out["risk"]["level"] == "critical"

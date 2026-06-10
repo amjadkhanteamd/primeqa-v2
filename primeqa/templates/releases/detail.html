@@ -199,6 +199,55 @@
     {# D-172 (5a): substrate evidence — the release's claims (via its requirements)
        grounding-drift + latest verdict. Signal the human weighs next to the v1
        recommendation above; the substrate does NOT produce the verdict. #}
+    {# D-198 (slice 4): the substrate RECOMMENDATION card — the new engine's own
+       GO/NO-GO over its evidence (live-computed; the persisted snapshot rides
+       latest_decision.reasoning.substrate). advisory: signal beside the v1
+       recommendation; gating: it can degrade the recorded verdict. #}
+    {% if substrate_decision and substrate_decision.available and substrate_decision.applicable %}
+    {% set sd = substrate_decision %}
+    <div class="bg-white shadow rounded-lg p-6 mt-6 border-l-4
+        {% if sd.recommendation == 'go' %}border-green-400
+        {% elif sd.recommendation == 'no_go' %}border-red-400
+        {% else %}border-amber-400{% endif %}">
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="text-lg font-medium text-gray-900">Substrate recommendation</h3>
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-sm font-semibold
+            {% if sd.recommendation == 'go' %}bg-green-100 text-green-800
+            {% elif sd.recommendation == 'no_go' %}bg-red-100 text-red-800
+            {% else %}bg-amber-100 text-amber-800{% endif %}">
+          {{ sd.recommendation | replace('_', ' ') | upper }}
+          <span class="ml-2 font-normal">({{ (sd.confidence * 100) | int }}%)</span>
+        </span>
+      </div>
+      <p class="text-xs text-gray-500 mb-3">
+        The new engine's verdict over its own evidence &mdash; risk
+        <span class="font-medium
+            {% if sd.risk.level in ('critical', 'high') %}text-red-700
+            {% elif sd.risk.level == 'medium' %}text-amber-700
+            {% else %}text-green-700{% endif %}">{{ sd.risk.score }}/100 ({{ sd.risk.level }})</span>
+        &middot; {{ sd.metrics.counted_runs }} of {{ sd.metrics.claim_count }} claims have current runs
+        &middot; pass rate {{ sd.metrics.pass_rate }}%.
+        {% set sd_mode = (release.decision_criteria or {}).get('substrate_mode', 'advisory') %}
+        {% if sd_mode == 'gating' %}
+          <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[11px] bg-indigo-100 text-indigo-800">gating &mdash; can degrade the recorded verdict</span>
+        {% else %}
+          <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[11px] bg-gray-100 text-gray-600">advisory &mdash; signal beside the v1 recommendation</span>
+        {% endif %}
+      </p>
+      <ul class="space-y-1">
+        {% for r in sd.reasoning %}
+        <li class="flex items-start gap-2 text-sm">
+          <span class="mt-0.5 flex-shrink-0
+              {% if r.status == 'pass' %}text-green-600{% elif r.status == 'fail' %}text-red-600{% else %}text-amber-600{% endif %}">
+            {% if r.status == 'pass' %}&#10003;{% elif r.status == 'fail' %}&#10007;{% else %}&#9888;{% endif %}
+          </span>
+          <span class="text-gray-700"><span class="font-medium">{{ r.check | replace('_', ' ') }}</span> &mdash; {{ r.detail }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
     <div class="bg-white shadow rounded-lg p-6 mt-6">
       <div class="flex items-center justify-between mb-1">
         <h3 class="text-lg font-medium text-gray-900">Substrate evidence</h3>

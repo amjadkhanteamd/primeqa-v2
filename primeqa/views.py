@@ -6257,24 +6257,23 @@ def releases_run(release_id):
 @role_required("admin", "tester")
 def releases_evaluate_decision(release_id):
     from flask import flash
-    from primeqa.release.decision_engine import DecisionEngine
+    # D-198: route the web button through the composer too (v1 + substrate,
+    # one decision row) — same path as the API endpoint.
+    from primeqa.release.decision_composer import evaluate_and_record
     db = next(get_db())
     try:
-        release = ReleaseRepository(db).get_release(release_id, request.user["tenant_id"])
+        repo = ReleaseRepository(db)
+        release = repo.get_release(release_id, request.user["tenant_id"])
         if not release:
             return redirect("/releases")
-        engine = DecisionEngine(db)
-        result = engine.evaluate(release)
-        ReleaseRepository(db).create_decision(
-            release_id=release_id,
-            recommendation=result["recommendation"],
-            confidence=result["confidence"],
-            reasoning=result,
-            criteria_met=result["criteria_met"],
-            recommended_by="ai",
-        )
+        result = evaluate_and_record(
+            db, release, request.user["tenant_id"], release_repo=repo)
         rec = result["recommendation"].upper().replace("_", " ")
-        flash(f"Decision: {rec} ({int(result['confidence']*100)}% confidence)", "success")
+        suffix = ""
+        if result.get("recommendation_source") == "substrate_gate":
+            suffix = " — degraded by substrate evidence"
+        flash(f"Decision: {rec} ({int(result['confidence']*100)}% confidence)"
+              + suffix, "success")
     except Exception as e:
         flash(f"Evaluation failed: {e}", "error")
     finally:
@@ -6338,17 +6337,27 @@ def releases_detail(release_id):
         # (best-effort; the v1 DecisionEngine stays the verdict authority). The
         # substrate path is via requirements only (jira_key or req-<id>).
         substrate = None
+        substrate_decision = None
         if tab == "decision":
             from primeqa.intelligence.release_substrate_console import get_release_substrate
+            from primeqa.intelligence.substrate_decision import (
+                get_release_substrate_decision,
+            )
             from primeqa.release.decision_composer import external_keys_for_requirements
             external_keys = external_keys_for_requirements(
                 release.get("requirements", []))
             substrate = get_release_substrate(tid, external_keys)
+            # D-198 (slice 4): the live substrate RECOMMENDATION card — recomputed
+            # at render like the evidence panel; the persisted snapshot lives in
+            # latest_decision.reasoning.substrate.
+            substrate_decision = get_release_substrate_decision(
+                tid, external_keys, release.get("decision_criteria") or {})
 
         return render_template("releases/detail.html", **ctx(
             active_page="releases", release=release, tab=tab,
             all_requirements=all_requirements,
             environments=envs_data, substrate=substrate,
+            substrate_decision=substrate_decision,
         ))
     finally:
         db.close()

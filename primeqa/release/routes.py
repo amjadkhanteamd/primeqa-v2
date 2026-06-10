@@ -336,6 +336,23 @@ def public_release_status(release_id):
         failed = sum(r.failed or 0 for r in runs)
         total  = sum(r.total_tests or 0 for r in runs)
 
+        # D-198 (slice 4): the substrate block for CI — PROJECTED from the latest
+        # decision's stored reasoning envelope (no substrate query on this hot
+        # path). None when the latest decision predates D-198 or carried no
+        # applicable substrate evidence.
+        substrate_block = None
+        if latest is not None and isinstance(latest.reasoning, dict):
+            sub = latest.reasoning.get("substrate")
+            if isinstance(sub, dict) and sub.get("applicable"):
+                substrate_block = {
+                    "recommendation": sub.get("recommendation"),
+                    "risk": sub.get("risk"),
+                    "metrics": sub.get("metrics"),
+                    "mode": latest.reasoning.get("mode"),
+                    "recommendation_source":
+                        latest.reasoning.get("recommendation_source"),
+                }
+
         return jsonify({
             "release_id": release_id,
             "name": release.name,
@@ -347,6 +364,7 @@ def public_release_status(release_id):
             "agent_verdict_counts": agent_counts,
             "rollup": {"passed": passed, "failed": failed, "total": total,
                        "runs_counted": len(runs)},
+            "substrate": substrate_block,
         }), 200
     finally:
         db.close()
