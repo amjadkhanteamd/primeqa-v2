@@ -46,18 +46,18 @@ class _StubS1:
                 "picklist_value_set_entity_id": f.get("picklist_value_set_entity_id"),
                 "length": f.get("length"),
             }
-        for pvs_id, values in (picklists or {}).items():
-            ents = []
-            for j, v in enumerate(values):
-                pvid = f"pv-{pvs_id}-{j}"
-                ents.append(_Ent(pvid, "PicklistValue", v["value_api_name"]))
-                self._detail[pvid] = {
-                    "value_api_name": v["value_api_name"],
-                    "is_active": v.get("is_active", True),
-                    "is_default": v.get("is_default", False),
-                    "sort_order": v.get("sort_order", j),
-                }
-            self._pv_ents[pvs_id] = ents
+        # D-204.2: picklist values are exposed via get_picklist_values (the
+        # D-119 detail-FK primitive) — the real store has NO containment edge.
+        self._picklists = {
+            pvs_id: sorted(
+                ({"value_api_name": v["value_api_name"],
+                  "is_active": v.get("is_active", True),
+                  "is_default": v.get("is_default", False),
+                  "sort_order": v.get("sort_order", j)}
+                 for j, v in enumerate(values)),
+                key=lambda d: d["sort_order"])
+            for pvs_id, values in (picklists or {}).items()
+        }
 
     def current_version_seq(self):
         return self._version
@@ -71,9 +71,10 @@ class _StubS1:
     def get_related(self, entity_id, edge_types, direction, at_seq):
         if entity_id == self._obj_id:
             return [_Rel(e) for e in self._field_ents]
-        if entity_id in self._pv_ents:
-            return [_Rel(e) for e in self._pv_ents[entity_id]]
         return []
+
+    def get_picklist_values(self, pvs_id, at_seq):
+        return list(self._picklists.get(pvs_id, []))
 
     def get_entity_details(self, entity_id, at_seq):
         return self._detail.get(entity_id)

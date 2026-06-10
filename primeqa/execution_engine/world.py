@@ -255,30 +255,31 @@ def _picklist_value(details: dict, s1, at_seq: int):
     """The default (or first active, by sort order) value of a simple
     (value-set-backed) picklist, or ``_UNFILLABLE`` when the value set / an active
     value is not readable (an inline picklist whose set S1 did not capture —
-    deferred)."""
+    deferred).
+
+    Values are enumerated via ``s1.get_picklist_values`` (the D-119 primitive):
+    a PicklistValueSet's values hang off the
+    ``picklist_value_details.picklist_value_set_entity_id`` FK — there is NO
+    containment edge (the D-019 taxonomy is locked at 14 types), so the prior
+    BELONGS_TO ``get_related`` walk here could never return values against the
+    real store (only its test stubs satisfied it; surfaced live by the D-203
+    proof when StageName padding found a linked-but-"empty" set). D-204.2.
+    """
     pvs_id = details.get("picklist_value_set_entity_id")
     if not pvs_id:
         return _UNFILLABLE
-    values = s1.get_related(
-        pvs_id, edge_types=[_BELONGS_TO], direction="inbound", at_seq=at_seq)
-    active: list[tuple[int, str]] = []
-    default: Optional[str] = None
-    for r in values:
-        pv = r.entity
-        if pv.entity_type != "PicklistValue":
-            continue
-        d = s1.get_entity_details(pv.id, at_seq=at_seq) or {}
+    rows = s1.get_picklist_values(pvs_id, at_seq=at_seq)
+    first_active: Optional[str] = None
+    for d in rows:                          # already ordered by sort_order
         if not d.get("is_active", True):
             continue
         name = d.get("value_api_name")
         if not name:
             continue
-        if d.get("is_default", False) and default is None:
-            default = name
-        active.append((d.get("sort_order", 0), name))
-    if default is not None:
-        return default
-    if active:
-        active.sort(key=lambda t: t[0])
-        return active[0][1]
+        if d.get("is_default", False):
+            return name                     # an explicit default wins
+        if first_active is None:
+            first_active = name
+    if first_active is not None:
+        return first_active
     return _UNFILLABLE
