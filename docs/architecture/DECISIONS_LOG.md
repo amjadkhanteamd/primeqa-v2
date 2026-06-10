@@ -11490,4 +11490,29 @@ consumer; (3) non-string ref values (refs inside lists/nested dicts) — strings
 
 ---
 
+### D-205.1 — 5b-2 CLOSED: the 2-create chain live-proven through the production loop
+
+2026-06-10, env 59, S4 job 10, run `db93ac3a-9910-48fc-a359-61e570b5eaae` (8.1 s): the approved
+value-claim `dd75ef7a` (Contact.Email, req-282) executed the **2-create chain** live — **create
+Account** `001Ip00000JQhQtIAL` (`{Name: "PQA D205 Chain"}`) → **create Contact**
+`003Ip00000MlY3PIAV` with the **live-resolved cross-step reference**
+(`AccountId: "$create-account.id"` posted as the real Account id) + padding (`LastName`) →
+read-back resolved `$create-contact.id`, returned the asserted email → assert held → **passed** →
+**both records torn down reverse-order**, each CleanupRecord attributed to its own create's
+evidence by record id → S6 verdict **`value_persisted`**. Recipe history shows the journey: v1
+(the S3-emitted single-create triple) → v2 (the chain, via the Coordinator's re-version path);
+claim history v1 → v2 records the LLM's `"<email>"` placeholder corrected to the requirement's
+literal (a generation-quality finding: the verbatim-value instruction lost to a placeholder —
+logged, not blocking).
+
+**5b-2 exit gate met.** Residuals carried: S3 multi-step emission stays gated on multi-object
+grounding (D-205); S6's positive attribution PROSE names the FIRST create's sobject — for a chain
+the asserted record is the read/assert subject (wording only; verdict + grading correct);
+read-between-creates / multi-assert shapes deferred until a consumer. Next per D-202: **5b-3**
+(corpus breadth — generate + approve claims across the real requirement set; the substrate decision
+card GO/NO-GOs a real release on substrate evidence alone), with the data-path async bracketing
+(D-129) due before 5b-3's volume.
+
+---
+
 ---

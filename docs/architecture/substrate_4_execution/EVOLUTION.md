@@ -225,3 +225,11 @@ required parents invisibly) — engine capability ships now, mirroring 5b-1's de
 latent fix: the D-115.2 rejected-create disambiguation compared Salesforce's BARE rejection fields
 against QUALIFIED semantic keys — never matched for S3-emitted recipes; the grading call now
 bare-ifies. 12 new tests; S4 suites green. DECISIONS_LOG D-205.
+
+## D-205.1 — 5b-2 closed: the first live N-create chain
+
+2026-06-10, env 59, job 10, run `db93ac3a-…` (8.1 s): Account created → Contact created with the
+live-resolved `$create-account.id` reference + padding → read-back → assert held → **passed**;
+both records torn down reverse-order with per-record cleanup attribution; S6 `value_persisted`.
+Residual: the positive attribution prose names the first create's sobject (wording only).
+DECISIONS_LOG D-205.1.
