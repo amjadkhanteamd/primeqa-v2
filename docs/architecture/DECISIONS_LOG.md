@@ -11051,4 +11051,69 @@ a real org") complete.
 
 ---
 
+### D-198 — Close the decision loop on the substrate: run results → risk rollup → GO/NO-GO (design)
+
+**Why (product theme #3).** The substrate runs recipes and records evidence (S4 outcomes, S6 verdicts, S8
+grounding-validity) — but nothing turns that into a release recommendation. The v1 `DecisionEngine` consumes
+only v1 `pipeline_runs`; substrate evidence dead-ends at the D-172 evidence-only panel. The decision system IS
+the product category (release intelligence) — this wires the missing half of the loop.
+
+**Shape (the central fork, resolved): a substrate-native decision module + a thin composer; the v1
+`DecisionEngine` stays zero-diff.** New `primeqa/intelligence/substrate_decision.py` computes the substrate's
+own risk rollup + recommendation from S4/S6/S8 reads; new `primeqa/release/decision_composer.py` runs BOTH
+engines and records ONE `ReleaseDecision` row whose `reasoning` JSON carries `{v1, substrate, mode, combined}`
+— **no migration** (`create_decision(reasoning=...)` already persists an arbitrary dict into the JSON column,
+verified `release/routes.py` + `models.py`). Rationale: the v1 engine's internals are v1-table-shaped (5b
+retires them); the composer isolation makes v1's later retirement "drop one input," not engine surgery.
+Follows the established best-effort console pattern (`release_substrate_console.py` — one tenant connection,
+never raises).
+
+**The evidence chain (every hop verified in code):** `releases → release_requirements → requirements` →
+external_key (`jira_key OR 'req-'||id` — the convention shared by the S3 persister + `views.py`) →
+`coordinator.list_tests_by_requirement(external_system='jira', external_key, link_kind='generated_from')` →
+deduped claim `test_id`s → `coordinator.get_current_approved_claim` (the version a release ships) → per claim:
+- **latest COUNTED run**: extend `_CLAIM_RUNS_SQL` (S4 base LEFT JOIN `s6_interpretations` for the verdict)
+  with the version filter `(r.claim_version_seq IS NULL OR r.claim_version_seq = :approved_seq)` —
+  recency-correct AND version-correct;
+- **grounding**: `read_grounding_validity(session, test_id, approved_seq)`, fallback latest row when
+  unapproved (the D-172 idiom); **stale** = `evaluated_at_version_seq < SemanticOrgModel.current_version_seq()`.
+
+**Correctness rules:** a non-NULL `claim_version_seq` ≠ approved seq is **superseded evidence** — excluded
+(the claim counts `never_run` unless a current-version run exists, with a `superseded_newer_run` flag). NULL
+`claim_version_seq` **counts** but carries `version_unknown=true` (it is legitimately Optional through the
+plan chain; strict exclusion would zero out real evidence). Grounding `broken` = **blocker** (a passing run of
+an ungrounded claim is vacuous); `drifted` / stale-`intact` = warnings; newest counted run older than
+`substrate_max_run_age_hours` (default 168 — runs are sparse until theme-4 auto-triggers) = warning.
+
+**Decision policy:** per-release `decision_criteria.substrate_mode ∈ {off, advisory, gating}`, default
+**advisory** (v1's recommendation stands; the substrate block rides along for the human + CI). **gating** is
+degrade-only: combined = min-severity(v1, substrate) over `no_go < conditional_go < go` — the substrate can
+veto, never upgrade; scores are never blended. Risk rollup is **substrate-native** (pass-rate +
+grounding-integrity + coverage + freshness → 0–100 + critical/high/medium/low — vocabulary-compatible with
+`risk_engine.py`, internals not reused: its inputs (`referenced_entities`, `CRITICAL_ENTITIES`,
+`RunTestResult`) have no substrate counterpart). Environment axis: aggregate across envs now; a
+`substrate_environment_id` criteria key is the later refinement.
+
+**Slices (each design→HOLD→impl; v2-runtime work → main):**
+1. **Evidence assembly** — `_assemble_claim_evidence(session, external_keys)` (the chain above; per-claim
+   `{test_id, approved_seq, grounding{overall, stale}, latest_run{outcome, verdict, version_unknown},
+   superseded_newer_run, never_run}`).
+2. **Decision compute** — pure `compute_substrate_decision(claim_evidence, criteria)` mirroring the v1 output
+   shape (`{recommendation, confidence, reasoning[], criteria_met, metrics, risk{score, level}}`) + the
+   best-effort `get_release_substrate_decision(tenant_id, external_keys, criteria)` wrapper.
+3. **Composer + ledger** — `decision_composer.evaluate_and_record`: v1 evaluate (untouched) + substrate
+   (best-effort) + mode combine → one `create_decision` row; the external-key builder extracted to a shared
+   helper so the two call sites can't drift. Regression guard: a release with no substrate claims behaves
+   byte-identically on `{recommendation, confidence, criteria_met}`.
+4. **Surfaces** — the Decision-tab panel upgrades to a recommendation card (advisory/gating banner; the
+   stored snapshot renders in Decision Details); `/api/releases/:id/status` adds a `substrate` block projected
+   from the latest decision's stored reasoning (no substrate query on the CI hot path). Seeded E2E both
+   directions (passing evidence → go; broken grounding / failed runs → degraded).
+
+**Open (recorded, non-blocking):** the 168 h freshness default revisits when theme-4 auto-triggers ship;
+gating-by-default is a product call for that same moment; the decision-ledger home after 5b retires v1 tables
+is deliberately left open by the composer isolation.
+
+---
+
 ---
