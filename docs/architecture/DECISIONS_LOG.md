@@ -11187,4 +11187,32 @@ plentiful).
 
 ---
 
+### D-200 — Everyday surfaces (product theme #5, design + realization note)
+
+**Gap analysis against the theme's four items:** (1) *run-time test-data injection* — already realized
+on the substrate by F6 (`construct_world` operational padding + parent provisioning, D-196); (2) *UI to
+browse tests + drill into failures* — already realized by the UI Phase (claims library `/claims`, claim
+detail, `/runs/substrate`, run detail with evidence steps + S6 verdict/cause). The two REAL gaps:
+
+**(a) Flake quarantine — storage-free, decision-time (no migration).** The slice-1 evidence assembly now
+reads the recent **counted** runs (window 5, same version-correct SQL) and flags
+`flaky = transitions ≥ 2` over the outcome sequence — the chronically-flipping signature. A single
+pass→fail edge is a REAL regression and is never quarantined. In `compute_substrate_decision`, a flaky
+claim whose latest run is not-passed is **quarantined**: excluded from the pass-rate denominator
+(one jittery test cannot block a good release) and surfaced as a `flaky_quarantine` warning +
+`metrics.quarantined` — visible, never silent. A flaky-but-currently-passing claim counts normally.
+Opt-out per release: `decision_criteria.substrate_quarantine_flaky = false`. Storage-free by design:
+recomputed from S4 truth each evaluation, no flag to go stale; a persisted quarantine ledger is the
+later refinement if operators need manual pin/unpin.
+
+**(b) Real notifications.** `shared/notifications.send_email` gains two REAL providers behind the
+existing stable seam: `smtp` (stdlib smtplib; SMTP_HOST/PORT/USERNAME/PASSWORD/FROM/STARTTLS) and
+`sendgrid` (the v3 mail API via requests; SENDGRID_API_KEY). `log` stays the safe default; provider
+selection is unchanged (`NOTIFICATIONS_PROVIDER`). New `notify_release_decision`: after the composer
+records a decision, tenant admins get a heads-up email when the verdict is NOT a clean go (no_go /
+conditional_go / substrate-gate degrade) — best-effort, never blocks the decision; a clean go sends
+nothing (no noise).
+
+---
+
 ---
