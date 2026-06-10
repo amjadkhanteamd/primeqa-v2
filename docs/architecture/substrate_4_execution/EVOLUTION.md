@@ -209,3 +209,19 @@ Salesforce-confirmed; audit row persisted; S6 `prohibition_enforced` on the upda
 latent pre-existing defects fixed en route (D-203.1 / D-204 / D-204.1 / D-204.2 — formula-reader
 shape blindness, the attributes contract, isActive-null, edge-walking picklist enumeration).
 DECISIONS_LOG D-203.2.
+
+## D-205 — 5b-2: N-create chains with cross-step references (multi-step positives)
+
+The positive vertical lifts from the exact triple to ``CreateStep × N → ReadStep → AssertStep``.
+New ``refs.resolve_field_value_refs``: ``$<step_id>.<attr>`` tokens in a create's field VALUES
+resolve against the chain's accumulated state (string values only; the SOQL resolver's grammar +
+fail-loud discipline) — resolution sits after the padding merge, before bare-ification.
+``_run_positive`` is now a loop (per create: construct-world → resolve refs → create → track →
+thread state), read-back while records are alive, teardown-always BEFORE grading, then ground.
+Cleanup attribution maps teardown records onto each create's evidence **by record id** (provisioned
+parents interleave with chain creates). Per D-205's charter correction, S3 multi-step emission is
+**gated on multi-object grounding** (no claim kind's grounding names two objects; F6.2 already pads
+required parents invisibly) — engine capability ships now, mirroring 5b-1's delete leg. En-route
+latent fix: the D-115.2 rejected-create disambiguation compared Salesforce's BARE rejection fields
+against QUALIFIED semantic keys — never matched for S3-emitted recipes; the grading call now
+bare-ifies. 12 new tests; S4 suites green. DECISIONS_LOG D-205.
