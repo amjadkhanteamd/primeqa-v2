@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Optional
 
 from primeqa.interpretation.attribution import VrMeta
+from primeqa.semantic.entity_attributes import vr_error_message, vr_formula_text
 from primeqa.semantic.query import SemanticOrgModel
 
 _APPLIES_TO = "APPLIES_TO"
@@ -56,10 +57,12 @@ class S1ValidationRuleReader:
                 continue
             details = self._model.get_entity_details(vr.id, at_seq=seq) or {}
             attrs = vr.attributes or {}
+            # Shape-tolerant (D-203.1): rows from both sync generations coexist
+            # (designed formula_text vs raw Metadata.errorConditionFormula).
             out.append(VrMeta(
                 name=vr.sf_api_name or vr.display_name or str(vr.id),
                 is_active=bool(details.get("is_active", True)),
-                formula_text=attrs.get("formula_text"),
-                error_message=attrs.get("error_message"),
+                formula_text=vr_formula_text(attrs),
+                error_message=vr_error_message(attrs),
             ))
         return tuple(out)

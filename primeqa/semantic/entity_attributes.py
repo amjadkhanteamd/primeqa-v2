@@ -437,3 +437,35 @@ def validate_entity_attributes(entity_type: str, attributes: dict) -> dict:
     instance = meta.attributes_schema(**attributes)
     # mode='json' produces a JSON-serializable dict (ready for JSONB).
     return instance.model_dump(mode="json")
+
+
+def vr_formula_text(attributes: Optional[dict]) -> Optional[str]:
+    """The raw error-condition formula from a ValidationRule entity's
+    ``entities.attributes`` JSONB — tolerant of BOTH stored shapes:
+
+      - the designed :class:`ValidationRuleAttributes` projection
+        (``formula_text`` — seeds + pre-cutover sync rows);
+      - the post-cutover sync's normalized raw Tooling record
+        (``Metadata.errorConditionFormula`` — see
+        ``sync/presentation.py``, which maps the formula into
+        semantic_text but stores the raw record as attributes).
+
+    Readers (S3's verified-vs-caveated gate, S6's cause attribution) must
+    accept both — rows of both generations coexist in the store. D-203.1.
+    """
+    attrs = attributes or {}
+    text = attrs.get("formula_text")
+    if text:
+        return text
+    metadata = attrs.get("Metadata")
+    if isinstance(metadata, dict):
+        return metadata.get("errorConditionFormula")
+    return None
+
+
+def vr_error_message(attributes: Optional[dict]) -> Optional[str]:
+    """The VR's user-facing error message — same two-shape tolerance as
+    :func:`vr_formula_text` (``error_message`` designed / ``ErrorMessage``
+    raw Tooling). D-203.1."""
+    attrs = attributes or {}
+    return attrs.get("error_message") or attrs.get("ErrorMessage")

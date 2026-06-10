@@ -59,6 +59,7 @@ from primeqa.generation.protocol import (
     RefusalEntry,
 )
 from primeqa.semantic.edges import TIER_1_EDGES
+from primeqa.semantic.entity_attributes import vr_formula_text
 from primeqa.semantic.query import Entity, SemanticOrgModel
 
 
@@ -154,7 +155,11 @@ def _grounding_vr_formulas(claim_kind: str, neighborhood: list) -> tuple[str, ..
     formulas: list[str] = []
     for r in neighborhood:
         if r.edge_type == edge_type and r.entity.entity_type == far_type:
-            text = r.entity.attributes.get("formula_text")
+            # Shape-tolerant (D-203.1): pre-cutover rows carry the designed
+            # `formula_text`; post-cutover sync rows carry the raw Tooling
+            # record (Metadata.errorConditionFormula). Reading only the
+            # former silently demoted every negative to caveated.
+            text = vr_formula_text(r.entity.attributes)
             if text:
                 formulas.append(text)
     return tuple(formulas)
