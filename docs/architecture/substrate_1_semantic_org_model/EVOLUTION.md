@@ -129,3 +129,22 @@ The branch holds D-118 + D-119 + D-120 (9 commits). **Merge exit-gate:** the liv
 Three additive read primitives on `SemanticOrgModel` — `get_entity_details_bulk(entity_type, at_seq)`, `get_related_bulk(edge_types, direction, at_seq)`, `get_picklist_values_bulk(at_seq)` — each the **bulk form** of an already-shipped per-entity read (`get_entity_details` D-111.1, `get_related`, `get_picklist_values` D-119), returning a whole-org-at-a-version result in **one** round-trip. Same contract every prior primitive followed (validated `at_seq`, the `_as_of` window join to `entities`, trusted-registry table names, no caller SQL); `get_related_bulk` is `_related_select` with the near-id predicate dropped and `e.<near> AS near_id` added for grouping, keeping **both** `_as_of('e')` and `_as_of('t')` so a superseded far entity can't leak. Additive under D-024's "matters not covered" carve-out — the exact path `get_entity_details`/`get_picklist_values` took; SPEC §12's "Bulk operations: deferred" line is annotated (read-form realized), not contradicted (a general bulk-query DSL + write bulk stay deferred).
 
 **Why now (cutover):** `metadata/s1_reader.py:hydrate_metadata_s1_reader` built the whole-org reader via per-entity round-trips (per object, per field, per VR, per picklist field) — tens of thousands of sequential queries on a real org. That killed the Step-4a parity runner (`scripts/parity_check.py`) mid-hydration and is a latent blocker for the live `cutover_read_s1` read-path (`test_management/service.py:128`). The rewrite issues ~6 bulk reads and is a **byte-for-byte drop-in** (same dataclasses, sorts, parent-prefix field-name strip, `list[str]` picklist shape, defaults), pinned by a golden-equivalence test (`_legacy_hydrate` vs the new path on a richer seeded org). This is the metadata reader only — S6/S8 per-object readers (bounded N+1) are unchanged; the per-entity primitives stay (consumers + the equivalence reference). On `main` (cutover slice; fixes a production read-path Railway deploys). See D-189.
+
+## 2026-06-10 — D-204: the entities.attributes storage contract, ratified after the D-203.1 incident
+
+The 5b-1 live proof surfaced that the post-cutover sync stores the **raw normalized Tooling
+record** in `entities.attributes` while the documented per-type schemas (D-025,
+`entity_attributes.py`) promise the designed sparse projection — silently breaking both formula
+readers (S3's verified-vs-caveated gate, S6's cause attribution: every negative since the
+2026-06-04 cutover demoted to caveated). D-203.1 fixed the readers with shape-tolerant extractors
+(`vr_formula_text` / `vr_error_message` — designed key preferred, raw fallback). D-204 ratifies the
+durable contract: **raw-as-stored, extractors as the only sanctioned per-type read API**. The
+decisive constraint is SCD + content-hash change detection: rows keep their birth shape forever
+(history + unchanged entities never rewrite), so ANY write-side projection still yields a two-shape
+store — tolerance is mandatory regardless, and a forced reshape would re-version every entity
+(meaningless churn through S8 grounding-validity / staleness and every S1-version pin). The
+`_EntityAttributes` schemas remain as the designed-key vocabulary + detail-table registry;
+`validate_entity_attributes` stays as the (test-exercised, production-unwired) conformance checker.
+Full reader audit recorded in D-204; the one genuine data gap found — Flow `entry_condition_text`
+is not synced at all post-cutover (attributes = `{Id}`) — is the Tier-2 parse deferral, not a shape
+issue. DECISIONS_LOG D-203.1 / D-204.

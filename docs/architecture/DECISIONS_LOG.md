@@ -11347,4 +11347,69 @@ org round-trip.
 
 ---
 
+### D-203.1 — The silent caveated demotion: shape-tolerant VR formula readers
+
+**The incident (surfaced by the 5b-1 live proof).** The proof's first generation attempt emitted a
+caveated inspection for a requirement whose grounding VR (`Opportunity.Amount`, `Amount > 10000`) is
+plainly two-way derivable. Root cause: S1's documented JSONB contract
+(`semantic/entity_attributes.py` — `ValidationRuleAttributes` with `formula_text` /
+`error_message`, per D-025) is **not what the post-cutover sync stores**. The greenfield sync
+(D-150+) writes the raw normalized Tooling record into `entities.attributes`
+(`materialize.py` — `json.dumps(e.normalized)`); its per-type designed mappers
+(`sync/presentation.py`, e.g. `formula_text ← Metadata.errorConditionFormula`) feed **only**
+`semantic_text`. Both production readers of the formula — `governance_core._grounding_vr_formulas`
+(the S3 verified-vs-caveated gate, D-107) and `interpretation/s1_reader.vrs_for_object` (S6 cause
+attribution, D-111.1) — read only the designed `formula_text` key, so **every negative generated
+since the 2026-06-04 cutover silently demoted to caveated and every cause attribution lost its
+formula**. Pre-cutover proofs (D-110.3) worked because the old writer honored the designed shape.
+
+**The fix.** S1-owned shape-tolerant extractors `vr_formula_text` / `vr_error_message`
+(`semantic/entity_attributes.py`): prefer the designed key, fall back to the raw Tooling shape.
+Both readers re-pointed. Unit-pinned against both shapes
+(`tests/unit/semantic/test_vr_attribute_extractors.py`). Committed directly to `main` mid-proof
+(surgical fix; the proof depends on it).
+
+---
+
+### D-204 — entities.attributes storage contract RATIFIED: raw-as-stored, extractors as the read API
+
+**The fork D-203.1 left open:** (a) project attributes through the per-type registry schemas at
+materialize time (restore the designed sparse shape), or (b) ratify the raw normalized record as the
+storage contract. **Ratified: (b).**
+
+**Why (a) loses, decisively.** SCD Type 2 + content-hash change detection
+(`hash_normalized` over the normalized record; a new entity row is written ONLY when the hash
+moves) means rows keep their **birth shape forever**: history rows and unchanged entities never
+rewrite. A write-side projection therefore still yields a permanently two-shape store — readers
+must stay tolerant regardless, so the projection adds duplication without removing tolerance.
+Forcing a one-time reshape (changing the hash input) would re-version **every** entity — a
+meaningless "everything changed" event that churns S8 grounding-validity / staleness and the
+S1-version pinning everywhere. The raw record also preserves provenance the projection discards.
+
+**The ratified contract.**
+- `entities.attributes` stores the sync's **normalized raw Tooling record** (plus designed-shape
+  rows from seeds / the pre-cutover writer, which persist in history) — never assume one shape.
+- Per-type keys are read **only** through S1-owned extractors (`vr_formula_text` /
+  `vr_error_message`; the family grows per need) — designed key preferred, raw fallback. Ad-hoc
+  `attributes->>'<designed key>'` SQL is NOT contract.
+- The `_EntityAttributes` schemas + `TIER_1_ENTITIES` registry remain as (i) the documented
+  **designed-key vocabulary** the extractors prefer and (ii) the registry for detail-table lookup
+  (real callers: `detail_mappers`, `query`, `derivation`). `validate_entity_attributes` has no
+  production writer — retained as the schema-conformance checker its unit suite exercises.
+- The sync's own `attributes->>'Id'` reads (`sync/phases.py`) read the raw shape it writes — within
+  contract.
+
+**Reader inventory at ratification (full audit).** VR formula/message — fixed (D-203.1); Flow
+`entry_condition_text` (`semantic/derivation.py` TRIGGERS_ON edge property) — the designed key is
+absent on post-cutover rows AND the raw record carries no equivalent (post-cutover Flow attributes
+are `{Id}` only): this is a **sync-completeness gap** (the Tier-2 "parse into
+flow_details.parsed_logic" deferral), not a reader-shape gap — the edge still derives; the optional
+`condition_text` property is dropped. No UI/template reads attributes JSONB; Object/Field readers
+use detail-table hot columns.
+
+**Residuals.** (1) Flow entry-condition capture (Tier-2 sync); (2) extractor-family growth as new
+per-type keys gain readers.
+
+---
+
 ---
