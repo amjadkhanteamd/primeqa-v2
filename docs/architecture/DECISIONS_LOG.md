@@ -11513,6 +11513,50 @@ read-between-creates / multi-assert shapes deferred until a consumer. Next per D
 card GO/NO-GOs a real release on substrate evidence alone), with the data-path async bracketing
 (D-129) due before 5b-3's volume.
 
+### D-206 — Triage-first test pages: read-time presentation over the substrate surfaces
+
+**Context.** AK chose **manual approval** for the 5b-3 corpus arc: every S3-generated draft is
+approved by a human in the UI (approval auto-queues first runs per D-199). The existing claim pages
+speak substrate vocabulary (`prohibition-claim`, `vr_formula_indeterminate`, raw asserted-truth
+JSON) — fine for engineers, unusable as an approval/triage surface. Before 5b-3 floods the system
+with drafts, the pages must say in plain words **what each test does**, **how honestly it tests it**,
+and **what each run found**. Persona ratified: AK + testers (triage-optimized), not BA-stakeholder
+prose (that layer stays deferred).
+
+**Decisions.**
+1. **Presentation is computed at READ time, never stored.** New pure module
+   `primeqa/intelligence/claim_presentation.py`: `claim_title(claim_kind, asserted_truth)` (per-kind
+   sentence templates — prohibition → "Rejects <operation words> on <target>", value-claim →
+   '<field> saves as "<value>"', existence/property/capability/layout/metadata-relationship;
+   humanized-kind fallback; never raises), `claim_depth(recipe_kinds)` (**behavioral** if any
+   data-recipe else **configuration-check** — the honesty badge), `verdict_plain(verdict, outcome)`
+   (full S6 vocabulary → plain sentences, raw verdict preserved as tooltip). Storing prose on SCD
+   rows was rejected: stored presentation goes stale the moment templates improve (the S1-attributes
+   staleness lesson, D-204).
+2. **List enrichment via lateral joins, not N+1.** `_list_claims` gains `asserted_truth`, current
+   recipe kinds (LEFT JOIN LATERAL array_agg over `test_recipes` valid_to IS NULL), and the
+   requirement key (LATERAL over `test_requirement_links` link_kind='generated_from', newest first)
+   + a `status` filter param. Rows carry `title` / `depth` / `requirement_key`.
+3. **Approval inbox at `/claims/inbox`** (drafts only, per-row Approve with explainer that approval
+   queues first runs automatically). `/claims` shows an "N awaiting approval" chip. Approve accepts
+   a `next` redirect constrained to a `/claims` prefix (open-redirect-safe).
+4. **Detail page leads with the sentence title + depth badge**; run history lines render
+   `verdict_plain` (raw S6 verdict as tooltip); asserted truth / semantic conditions / recipes fold
+   behind a `<details>` "Technical details" toggle — one click away, never deleted.
+5. **Dedup transparency on the requirement page.** New console read
+   `read_latest_generation_note(tenant_id, requirement_key)` surfaces
+   `generation_outcomes.equivalent_existing` as a banner — "the last generation matched an existing
+   test, no new test was created" — so a deduped regenerate (the SQ-211 confusion) no longer looks
+   like a silent no-op. Test-plan rows on the requirement page get titles + depth badges too.
+
+**Sequencing.** Phase A of the ratified 4-phase plan: D-206 (this) → D-207 multi-claim generation →
+D-208 5b-3 corpus breadth (AK-gated approvals) → D-209 5b-4 dual-run window. v2 runtime work →
+direct to main.
+
+**Residuals.** (1) BA/stakeholder prose layer (story-style) — deferred until the persona shows up;
+(2) title templates cover the 7 emitted kinds + fallback — new kinds land with the fallback until
+templated; (3) inbox bulk-approve — deferred until single-approve friction is observed.
+
 ---
 
 ---
