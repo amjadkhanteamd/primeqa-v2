@@ -192,8 +192,9 @@ def test_complete_value_claim_proceeds_and_stashes(seeded):
             ctx=ctx, state=state,
         )
     assert res.next_action == NextAction.PROCEED_TO_EMIT
-    gp = state.grounded_positive
-    assert gp is not None
+    # D-207: groundings is the ordered stash list (one entry per grounded intent)
+    assert len(state.groundings) == 1
+    gp = state.groundings[0]
     assert gp.target_object.external_id == "Invoice"
     assert gp.field.external_id == "Invoice.Amount"
     assert gp.value == "100"

@@ -31,6 +31,7 @@ from uuid import uuid4
 
 from primeqa.generation.enums import AdmissibilityLayer, OutcomeKind, RefusalKind
 from primeqa.generation.explanation_hash import compute_explanation_hash
+from primeqa.generation.tools import normalize_propose_input
 from primeqa.generation.emission import (
     GroundedCapability,
     GroundedEmission,
@@ -385,11 +386,27 @@ class GovernanceCore:
 
     # -- Layer A operational ref-existence (D-095.1) --------------------
     def check_refs_exist(self, *, intent_input: dict, ctx: ConversationContext) -> RefCheck:
-        desc = intent_input.get("intent_descriptor") or {}
-        hint = desc.get("target_subject_hint") or {}
         at = ctx.semantic_context.s1_version_seq
         if at is None:
             return RefCheck(ok=False, feedback="no s1_version_seq pinned in semantic_context")
+        # D-207: one propose call may carry N intents; every intent's refs must
+        # resolve (any miss is one operational correction — the model fixes the
+        # offending descriptor and retries the whole call).
+        per_intent = normalize_propose_input(intent_input)
+        if len(per_intent) == 1:
+            return self._check_refs_one(per_intent[0], at)
+        failures = [(i, rc) for i, rc in
+                    ((i, self._check_refs_one(pi, at)) for i, pi in enumerate(per_intent))
+                    if not rc.ok]
+        if not failures:
+            return RefCheck(ok=True)
+        missing = [m for _, rc in failures for m in rc.missing_refs]
+        feedback = "; ".join(f"intent[{i}]: {rc.feedback}" for i, rc in failures)
+        return RefCheck(ok=False, missing_refs=missing, feedback=feedback)
+
+    def _check_refs_one(self, intent_input: dict, at: int) -> RefCheck:
+        desc = intent_input.get("intent_descriptor") or {}
+        hint = desc.get("target_subject_hint") or {}
 
         # configuration metadata-relationship: target_subject_hint carries the
         # relationship {edge_type, source, target}; both endpoints must resolve.
@@ -453,6 +470,48 @@ class GovernanceCore:
 
     # -- semantic reasoning ---------------------------------------------
     def resolve_intent(self, *, intent_input: dict, ctx: ConversationContext, state: Any) -> IntentResolution:
+        """Resolve one propose call. D-207: the call may carry N intents
+        (``intent_descriptors``); each resolves independently through the
+        per-archetype machinery, then the results aggregate — path ids are
+        re-indexed per intent (``c0..c{n-1}``), grounded candidates from every
+        intent are presented together, failed intents stay recorded as
+        dismissals in the merged delta, and the call refuses only when ZERO
+        intents ground (the first refusal directive routes). The legacy
+        singular form resolves exactly as before."""
+        per_intent = normalize_propose_input(intent_input)
+        if len(per_intent) == 1:
+            return self._resolve_one(per_intent[0], ctx, state)
+
+        merged: dict = {"candidate_paths": [], "dismissed_alternatives_by_reason": {},
+                        "scoped_neighborhood": []}
+        grounded_all: list[PresentedCandidate] = []
+        first_refusal: Optional[RefusalDirective] = None
+        for i, pi in enumerate(per_intent):
+            res = self._resolve_one(pi, ctx, state)
+            # Decomposition returns <=1 grounded candidate per intent (D-207
+            # decision 7) — intent-scoped selection is deliberately unbuilt.
+            assert len(res.grounded_candidates) <= 1, \
+                "multi-intent propose met >1 grounded candidate for one intent"
+            _reindex_paths(res, i)
+            d = res.interpretation_delta or {}
+            merged["candidate_paths"].extend(d.get("candidate_paths") or [])
+            for reason, ids in (d.get("dismissed_alternatives_by_reason") or {}).items():
+                merged["dismissed_alternatives_by_reason"].setdefault(reason, []).extend(ids)
+            merged["scoped_neighborhood"].extend(d.get("scoped_neighborhood") or [])
+            grounded_all.extend(res.grounded_candidates)
+            if res.refusal is not None and first_refusal is None:
+                first_refusal = res.refusal
+
+        if not grounded_all:
+            return IntentResolution(grounded_candidates=[], next_action=NextAction.REFUSE,
+                                    interpretation_delta=merged,
+                                    refusal=first_refusal or self._router.underspecified(
+                                        "no intent grounded"))
+        return IntentResolution(grounded_candidates=grounded_all,
+                                next_action=NextAction.PROCEED_TO_EMIT,
+                                interpretation_delta=merged)
+
+    def _resolve_one(self, intent_input: dict, ctx: ConversationContext, state: Any) -> IntentResolution:
         desc = intent_input.get("intent_descriptor") or {}
         excerpt = intent_input.get("requirement_excerpt", "")
         archetype = desc.get("archetype_hint")
@@ -533,7 +592,7 @@ class GovernanceCore:
         # prohibition-claim emits in Phase 2 step 1; other data_behavior kinds
         # remain finalize-stubbed (the D-100 carve-out).
         if state is not None and claim_kind == "prohibition-claim":
-            state.grounded_negative = GroundedNegative(
+            _stash_grounding(state, GroundedNegative(
                 archetype=archetype, claim_kind=claim_kind,
                 operation_hint=hint.get("operation"), version_seq=at,
                 subject=_Endpoint(
@@ -543,7 +602,7 @@ class GovernanceCore:
                 # Carry the grounding VRs' formulas so authoring can run the
                 # D-107 verified-vs-caveated gate (re-found from the same
                 # in-scope neighborhood Layer-1 grounding matched).
-                vr_formulas=_grounding_vr_formulas(claim_kind, neighborhood))
+                vr_formulas=_grounding_vr_formulas(claim_kind, neighborhood)))
 
         # Stash grounding for the positive value-claim (D-115.3). Grounding has
         # already verified the NAMED field exists, so re-resolve it from the same
@@ -561,7 +620,7 @@ class GovernanceCore:
                     grounded_candidates=[], next_action=NextAction.REFUSE,
                     interpretation_delta=delta,
                     refusal=self._router.emission_deferred(archetype, claim_kind))
-            state.grounded_positive = GroundedPositive(
+            _stash_grounding(state, GroundedPositive(
                 archetype=archetype, claim_kind=claim_kind, version_seq=at,
                 target_object=_Endpoint(
                     entity_id=subject.id, entity_type=subject.entity_type,
@@ -569,7 +628,7 @@ class GovernanceCore:
                 field=_Endpoint(
                     entity_id=field_ent.id, entity_type=field_ent.entity_type,
                     external_id=field_ent.sf_api_name or str(field_ent.id)),
-                value=expected_value, requirement_excerpt=excerpt)
+                value=expected_value, requirement_excerpt=excerpt))
 
         # grounded -> emit deferred (draft vertical). resolve_intent stays whole.
         presented = [PresentedCandidate(path_id=c.path_id,
@@ -645,7 +704,7 @@ class GovernanceCore:
             # authors the claim + recipe bodies from these S1-resolved endpoints,
             # never from LLM-supplied data.
             if state is not None:
-                state.grounded_emission = GroundedEmission(
+                _stash_grounding(state, GroundedEmission(
                     archetype="configuration", claim_kind=claim_kind,
                     edge_type=edge_type, version_seq=at,
                     source=_Endpoint(
@@ -654,7 +713,7 @@ class GovernanceCore:
                     target=_Endpoint(
                         entity_id=target.id, entity_type=target.entity_type,
                         external_id=target.sf_api_name or str(target.id)),
-                    requirement_excerpt=excerpt)
+                    requirement_excerpt=excerpt))
             presented = [PresentedCandidate(
                 path_id="c0", admissibility_layer=AdmissibilityLayer.LAYER_1,
                 summary={"edge_type": edge_type, "source": subject_refs[0], "target": subject_refs[1]})]
@@ -689,11 +748,11 @@ class GovernanceCore:
         e = matches[0]
         cand.status, cand.admissibility_layer = "admissibly_grounded", AdmissibilityLayer.LAYER_1.value
         if state is not None:
-            state.grounded_emission = GroundedExistence(
+            _stash_grounding(state, GroundedExistence(
                 archetype="configuration", claim_kind="existence-claim", version_seq=at,
                 subject=_Endpoint(entity_id=e.id, entity_type=e.entity_type,
                                   external_id=e.sf_api_name or str(e.id)),
-                requirement_excerpt=excerpt)
+                requirement_excerpt=excerpt))
         presented = [PresentedCandidate(path_id="c0", admissibility_layer=AdmissibilityLayer.LAYER_1,
                      summary={"entity_type": e.entity_type, "sf_api_name": e.sf_api_name})]
         return IntentResolution(presented, NextAction.PROCEED_TO_EMIT, self._delta([], [cand]))
@@ -735,11 +794,11 @@ class GovernanceCore:
                                         "property": property_name}))
         cand.status, cand.admissibility_layer = "admissibly_grounded", AdmissibilityLayer.LAYER_1.value
         if state is not None:
-            state.grounded_emission = GroundedProperty(
+            _stash_grounding(state, GroundedProperty(
                 archetype="configuration", claim_kind="property-claim", version_seq=at,
                 subject=_Endpoint(entity_id=e.id, entity_type=e.entity_type,
                                   external_id=e.sf_api_name or str(e.id)),
-                property_name=property_name, expected_value=s1_value, requirement_excerpt=excerpt)
+                property_name=property_name, expected_value=s1_value, requirement_excerpt=excerpt))
         presented = [PresentedCandidate(path_id="c0", admissibility_layer=AdmissibilityLayer.LAYER_1,
                      summary={"entity_type": e.entity_type, "sf_api_name": e.sf_api_name,
                               "property": property_name, "value": s1_value})]
@@ -815,7 +874,7 @@ class GovernanceCore:
             # Stash the S1-resolved grounding for emission (D-097.5): finalize
             # authors the claim + recipe from these endpoints, never from the LLM.
             if state is not None:
-                state.grounded_emission = GroundedCapability(
+                _stash_grounding(state, GroundedCapability(
                     archetype="permission", claim_kind="capability-claim", version_seq=at,
                     granting_subject=_Endpoint(
                         entity_id=grantee.id, entity_type=grantee.entity_type,
@@ -824,7 +883,7 @@ class GovernanceCore:
                         entity_id=target.id, entity_type=target.entity_type,
                         external_id=target.sf_api_name or str(target.id)),
                     granted_capability=capability, grant_type=grant_type,
-                    requirement_excerpt=excerpt)
+                    requirement_excerpt=excerpt))
             presented = [PresentedCandidate(
                 path_id="c0", admissibility_layer=AdmissibilityLayer.LAYER_1,
                 summary={"grantee": subject_refs[0], "target": subject_refs[1],
@@ -885,7 +944,7 @@ class GovernanceCore:
             # Stash the S1-resolved grounding for emission (D-097.5): finalize
             # authors the claim + recipe from these endpoints, never from the LLM.
             if state is not None:
-                state.grounded_emission = GroundedLayout(
+                _stash_grounding(state, GroundedLayout(
                     archetype="ui", claim_kind="layout-claim", version_seq=at,
                     layout=_Endpoint(
                         entity_id=layout.id, entity_type=layout.entity_type,
@@ -893,7 +952,7 @@ class GovernanceCore:
                     field=_Endpoint(
                         entity_id=field.id, entity_type=field.entity_type,
                         external_id=field.sf_api_name or str(field.id)),
-                    requirement_excerpt=excerpt)
+                    requirement_excerpt=excerpt))
             presented = [PresentedCandidate(
                 path_id="c0", admissibility_layer=AdmissibilityLayer.LAYER_1,
                 summary={"layout": subject_refs[0], "field": subject_refs[1]})]
@@ -951,15 +1010,18 @@ class GovernanceCore:
         persister writes claim + recipe + ledger atomically (D-097.4 / D-099);
         the LLM's ``outcome_input`` owns only linguistic realization, never
         truth or entities."""
-        # Config metadata-relationship (D-098), prohibition negative (D-101), or
-        # positive value-claim (D-115); all author from S1 grounding stashed
-        # during resolve_intent. (grounded_positive is dormant until the value-
-        # claim grounding stash lands — D-115 slice 1 side A holds it; the read is
-        # ready so the backstop stays correct when it does.)
-        grounded = (getattr(state, "grounded_emission", None)
-                    or getattr(state, "grounded_negative", None)
-                    or getattr(state, "grounded_positive", None))
-        if grounded is None:
+        # All groundings stashed during resolve_intent (D-207: an ordered list,
+        # one per admissibly-grounded intent). Legacy fallback: a caller (or
+        # test) that still sets the pre-D-207 singular attributes gets them
+        # honored as a one-element list.
+        groundings = list(getattr(state, "groundings", None) or [])
+        if not groundings:
+            legacy = (getattr(state, "grounded_emission", None)
+                      or getattr(state, "grounded_negative", None)
+                      or getattr(state, "grounded_positive", None))
+            if legacy is not None:
+                groundings = [legacy]
+        if not groundings:
             # Backstop (D-105.4): the emittability gate in resolve_intent should
             # have already refused a grounded-but-unbuilt kind. If we still reach
             # here (a gating gap), refuse gracefully — fail-loud, NOT batch-
@@ -969,32 +1031,53 @@ class GovernanceCore:
             p = paths[0]
             return OutcomeVerdict(override=self._router.emission_deferred(
                 p.get("archetype", "(unknown)"), p.get("claim_kind", "(unknown)")))
-        bundle = author_emission(grounded)
+        bundles = [author_emission(g) for g in groundings]
 
-        # Mark the canonical path selected in the reasoning artifact.
+        # Mark the canonical path(s) selected in the reasoning artifact. Single
+        # intent keeps the pre-D-207 shape (selected_path_id="c0"); a multi-
+        # intent draft has no single canonical path — it records the grounded
+        # path ids under selected_path_ids instead (AttemptedInterpretation is
+        # extra='allow').
         ai = dict(state.attempted_interpretation)
-        ai["selected_path_id"] = "c0"
+        if len(bundles) == 1:
+            ai["selected_path_id"] = (state.presented_candidates[0].path_id
+                                      if getattr(state, "presented_candidates", None)
+                                      else "c0")
+            delta = {"selected_path_id": ai["selected_path_id"]}
+        else:
+            ai["selected_path_id"] = None
+            ai["selected_path_ids"] = [c.path_id for c in
+                                       (getattr(state, "presented_candidates", None) or [])]
+            delta = {"selected_path_ids": ai["selected_path_ids"]}
+
+        # The outcome-level marker aggregates CONSERVATIVELY across bundles
+        # (D-207 decision 5): LAYER_2 only when every bundle verified; a caveat
+        # on any bundle makes the outcome caveated. Per-bundle truth stays on
+        # each bundle/claim (the recipes tell it per-claim).
+        all_l2 = all(b.admissibility_layer == AdmissibilityLayer.LAYER_2 for b in bundles)
+        caveat_required = any(b.caveat_required for b in bundles)
+        caveat_kind = next((b.caveat_kind for b in bundles if b.caveat_required), None)
         outcome = GenerationOutcome(
             outcome_id=uuid4(), request_id=ctx.request_id,
             requirement_ref=ctx.requirement_ref,
             outcome_kind=OutcomeKind.DRAFT,
             # The marker (D-083 e / D-107): how deep grounding actually went,
-            # read from the bundle (authoring is the one site that knows). LAYER_1
-            # for the Layer-1-complete config claim and for a caveated negative
-            # (formula unparsed/underivable); LAYER_2 when the negative's VR
-            # formula parsed and a violating value derived with certainty. The
-            # caveat posture (D-101.3) is the registry verdict the bundle carries
-            # and moves with the marker: LAYER_2 <=> caveat dropped.
+            # read from the bundle(s) (authoring is the one site that knows).
+            # LAYER_1 for a Layer-1-complete config claim and for a caveated
+            # negative (formula unparsed/underivable); LAYER_2 when the
+            # negative's VR formula parsed and a violating value derived with
+            # certainty. The caveat posture (D-101.3) moves with the marker.
             # claims_written / recipes_written are assigned post-write (D-099).
-            admissibility_layer=bundle.admissibility_layer,
-            caveat_required=bundle.caveat_required,
-            caveat_kind=bundle.caveat_kind,
+            admissibility_layer=(AdmissibilityLayer.LAYER_2 if all_l2
+                                 else AdmissibilityLayer.LAYER_1),
+            caveat_required=caveat_required,
+            caveat_kind=caveat_kind,
             attempted_interpretation=AttemptedInterpretation(**ai),
             explanation_hash=compute_explanation_hash(ai),
             dismissal_taxonomy_version=ctx.governance_context.dismissal_taxonomy_version,
         )
-        return OutcomeVerdict(outcome=outcome, emission=bundle,
-                              interpretation_delta={"selected_path_id": "c0"})
+        return OutcomeVerdict(outcome=outcome, emission=bundles[0], emissions=bundles,
+                              interpretation_delta=delta)
 
     # -- interpretation_delta assembly ----------------------------------
     @staticmethod
@@ -1011,6 +1094,36 @@ class GovernanceCore:
                 for r in neighborhood
             ],
         }
+
+
+def _stash_grounding(state: Any, grounding: Any) -> None:
+    """Append one intent's grounding to the state's ordered ``groundings`` list
+    (D-207). ``finalize_outcome`` authors one bundle per entry, in propose
+    order. Replaces the pre-D-207 singular ``grounded_emission`` /
+    ``grounded_negative`` / ``grounded_positive`` stashes (which could carry
+    only one grounding per requirement and silently overwrote on N)."""
+    if state is None:
+        return
+    if not hasattr(state, "groundings") or state.groundings is None:
+        state.groundings = []
+    state.groundings.append(grounding)
+
+
+def _reindex_paths(res: IntentResolution, i: int) -> None:
+    """Re-key one intent's path ids from the per-intent machinery's fixed
+    ``c0`` to the intent's slot ``c{i}`` so a merged multi-intent delta stays
+    collision-free (D-207). Mutates the resolution in place."""
+    new_id = f"c{i}"
+    d = res.interpretation_delta or {}
+    for p in d.get("candidate_paths") or []:
+        if p.get("path_id") == "c0":
+            p["path_id"] = new_id
+    dismissed = d.get("dismissed_alternatives_by_reason") or {}
+    for reason, ids in dismissed.items():
+        dismissed[reason] = [new_id if x == "c0" else x for x in ids]
+    for c in res.grounded_candidates:
+        if c.path_id == "c0":
+            c.path_id = new_id
 
 
 def _dismissed_stub(archetype, claim_kind, et, api, excerpt, reason) -> _Candidate:
