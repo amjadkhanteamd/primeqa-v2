@@ -143,3 +143,20 @@ class TestPartialDictPreservesDefaults:
         result = validate_entity_attributes("Flow", {"description": "My Flow"})
         assert result["description"] == "My Flow"
         assert result.get("process_type") is None
+
+
+# ---------------------------------------------------------------------------
+# HAS_PERMISSION_SET date coercion (the sync-job-15 live failure)
+# ---------------------------------------------------------------------------
+
+def test_has_permission_set_accepts_sf_datetimes():
+    from datetime import date
+    from primeqa.semantic.edges import HasPermissionSetProperties
+    # the exact live shape that failed sync job 15
+    p = HasPermissionSetProperties(assigned_at="2026-06-11T04:50:31.000+0000")
+    assert p.assigned_at == date(2026, 6, 11)
+    # plain dates and None still pass through
+    assert HasPermissionSetProperties(assigned_at="2026-06-11").assigned_at == date(2026, 6, 11)
+    assert HasPermissionSetProperties().assigned_at is None
+    assert HasPermissionSetProperties(
+        expiration_date="2027-01-01T00:00:00.000+0000").expiration_date == date(2027, 1, 1)
