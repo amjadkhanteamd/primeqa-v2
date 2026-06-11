@@ -1004,25 +1004,21 @@ def register_template_context(app) -> None:
 
 
 def _count_pending_reviews_for(user: dict) -> int:
-    """Return the BA's pending-review count across the tenant.
+    """The My Reviews nav badge: draft claims awaiting approval.
 
-    Counts reviews with status='pending' and deleted_at IS NULL. Scoped
-    by tenant; does NOT filter by assigned_to since BAs often pick up
-    each other's queue. The queue page itself has the "assigned to me"
-    filter for per-user scoping.
+    D-221 R2: the nav points at /claims/inbox (D-218), so the badge counts
+    substrate DRAFT claims — the v1 ba_reviews count it replaced served a
+    queue that no longer fills. Tenant-scoped (the inbox is tenant-wide).
     """
     try:
-        from primeqa.db import SessionLocal
-        from primeqa.test_management.models import BAReview
-        db = SessionLocal()
-        try:
-            return (db.query(BAReview)
-                    .filter(BAReview.tenant_id == user["tenant_id"],
-                            BAReview.status == "pending",
-                            BAReview.deleted_at.is_(None))
-                    .count())
-        finally:
-            db.close()
+        from sqlalchemy import text
+
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(user["tenant_id"]) as conn:
+            return conn.execute(text(
+                "SELECT COUNT(*) FROM test_claims "
+                "WHERE status = 'draft' AND valid_to IS NULL"
+            )).scalar() or 0
     except Exception:
         # Never let a badge query break the entire render.
         return 0
