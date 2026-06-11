@@ -12032,6 +12032,27 @@ redacted (legacy parity, unchanged scope). (c) Phase-6 per-tenant custom pattern
 indexing when added. (d) The broken approved claim `138aea92` is repaired live post-deploy
 via proposal 103 at a fresh S1 seq.
 
+### D-217.1 — close: round-trip live-proven on req-282 (env 59)
+
+**Live evidence (deploy cc32c0e, sync seq 57, generation job 26).** The regeneration of
+req-282 under D-217 emitted a value-claim whose identity matched the pre-existing approved
+claim `dd75ef7a` **byte-for-byte** — per-bundle dedup reported `equivalent_existing` and
+wrote nothing new. That identity match is the fidelity proof: `dd75ef7a` asserts the real
+`pqa.d205@example.com`, so the new emission must have carried it exactly (the pre-fix run
+at seq 56 emitted the divergent broken claim `138aea92` with the literal `<email>`).
+Exchange-level confirmation: the model's `propose_semantic_intent` tool input reached the
+runtime containing the real address and no token (`llm_calls.raw_parameters`). The wire
+itself is deliberately unpersisted; its canonical proof is the unit-level spy assertion
+(outbound tokenized) plus the pre-fix behavioral evidence that the model never sees raw
+values. Coverage state: `dd75ef7a` approved + green (`value_persisted`, run `db93ac3a`);
+`138aea92` v1 **deprecated** by AK's recorded authority (provenance `claim_deprecated`,
+reason cites the pre-D-217 defect + the equivalent coverage).
+
+**Also verified en-route:** repair proposal 103's Approve & apply (clicked before the
+fresh sync landed) executed the D-215.1 already-current no-op exactly as designed —
+`payload.note = "already generated at the current org version"` — the apply path's
+idempotency guard observed live.
+
 ---
 
 ---
