@@ -53,7 +53,15 @@ def evaluate_and_record(db, release, tenant_id, *, release_repo) -> dict:
     v1 = DecisionEngine(db).evaluate(release)
 
     criteria = release.decision_criteria or {}
-    mode = criteria.get("substrate_mode", "advisory")
+    # D-213.1: the tenant-wide DEFAULT mode is a config switch
+    # (SUBSTRATE_DECISION_MODE_DEFAULT) so the retirement order's step 1 —
+    # advisory -> gating once the parity windows clear — is a Railway env
+    # change, not a deploy. A release's explicit decision_criteria still wins.
+    import os
+    default_mode = os.environ.get("SUBSTRATE_DECISION_MODE_DEFAULT", "advisory")
+    if default_mode not in ("off", "advisory", "gating"):
+        default_mode = "advisory"
+    mode = criteria.get("substrate_mode", default_mode)
 
     substrate = None
     if mode != "off":
