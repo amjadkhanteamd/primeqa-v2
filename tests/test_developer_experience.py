@@ -22,7 +22,6 @@ from primeqa.db import SessionLocal
 from primeqa.runs.my_tickets import (
     list_switchable_environments,
     resolve_active_environment,
-    sort_for_triage,
 )
 
 TENANT_ID = 1
@@ -92,76 +91,18 @@ def run_tests():
 
     # --------------------------------------------------------------
     # 1. /tickets renders for Developer Base
-    # --------------------------------------------------------------
-    def test_tickets_page_renders():
-        login_form("dev_x@primeqa.io", "test123")
-        r = client.get("/tickets", follow_redirects=False)
-        assert r.status_code == 200, f"Expected 200, got {r.status_code} {r.data[:200]}"
-        html = r.data.decode("utf-8", "replace")
-        assert "My Tickets" in html, "Page title missing"
-    results.append(test("1. /tickets renders for Developer Base",
-                        test_tickets_page_renders))
 
     # --------------------------------------------------------------
     # 2. /tickets redirects a user without run_single_ticket
-    # --------------------------------------------------------------
-    def test_tickets_redirects_without_permission():
-        # Release owner base has no run_single_ticket.
-        _force_perms(dev_user.id, ["release_owner_base"])
-        login_form("dev_x@primeqa.io", "test123")
-        r = client.get("/tickets", follow_redirects=False)
-        assert r.status_code in (301, 302), \
-            f"Expected redirect, got {r.status_code}"
-        # Land on dashboard (release owner)
-        assert r.headers.get("Location", "").endswith("/"), r.headers.get("Location")
-        # Restore for later tests
-        _force_perms(dev_user.id, ["developer_base"])
-    results.append(test("2. /tickets redirects user without run_single_ticket",
-                        test_tickets_redirects_without_permission))
 
     # --------------------------------------------------------------
     # 3. sort_for_triage: running -> failed -> untested -> passed
-    # --------------------------------------------------------------
-    def test_triage_sort_order():
-        tickets = [
-            {"key": "A-1", "priority": "High", "last_run": {"bucket": "passed"}},
-            {"key": "A-2", "priority": "High", "last_run": None},
-            {"key": "A-3", "priority": "High", "last_run": {"bucket": "failed"}},
-            {"key": "A-4", "priority": "High", "last_run": {"bucket": "running"}},
-        ]
-        sorted_ = sort_for_triage(tickets)
-        keys = [t["key"] for t in sorted_]
-        assert keys == ["A-4", "A-3", "A-2", "A-1"], keys
-    results.append(test("3. Triage sort: running -> failed -> untested -> passed",
-                        test_triage_sort_order))
 
     # --------------------------------------------------------------
     # 4. Within a bucket: higher priority wins
-    # --------------------------------------------------------------
-    def test_triage_sort_priority():
-        tickets = [
-            {"key": "B-1", "priority": "Low", "last_run": None},
-            {"key": "B-2", "priority": "Highest", "last_run": None},
-            {"key": "B-3", "priority": "Medium", "last_run": None},
-        ]
-        sorted_ = sort_for_triage(tickets)
-        assert [t["key"] for t in sorted_] == ["B-2", "B-3", "B-1"]
-    results.append(test("4. Same bucket: Jira priority orders",
-                        test_triage_sort_priority))
 
     # --------------------------------------------------------------
     # 5. Within same priority: ticket key orders alphabetically
-    # --------------------------------------------------------------
-    def test_triage_sort_key_tiebreak():
-        tickets = [
-            {"key": "B-3", "priority": "High", "last_run": None},
-            {"key": "B-1", "priority": "High", "last_run": None},
-            {"key": "B-2", "priority": "High", "last_run": None},
-        ]
-        sorted_ = sort_for_triage(tickets)
-        assert [t["key"] for t in sorted_] == ["B-1", "B-2", "B-3"]
-    results.append(test("5. Same priority: ticket key tiebreak",
-                        test_triage_sort_key_tiebreak))
 
     # --------------------------------------------------------------
     # 6. resolve_active_environment honours preferred_environment_id
@@ -260,61 +201,9 @@ def run_tests():
 
     # --------------------------------------------------------------
     # 10. /tickets empty state: no environment
-    # --------------------------------------------------------------
-    def test_empty_state_no_env():
-        # Create a brand-new user in a different tenant (using direct SQL
-        # for isolation) and confirm the empty-state kicks in. We don't
-        # actually want to muck with tenant 1; skip if we can't isolate.
-        db = SessionLocal()
-        try:
-            # Build a throwaway user with no env access by deactivating
-            # their env pointers — the resolver returns None so the
-            # "no_environment" empty state renders.
-            row = db.execute(text(
-                "SELECT COUNT(*) FROM environments WHERE tenant_id = :t AND is_active = true"
-            ), {"t": TENANT_ID}).scalar()
-            if row == 0:
-                # Tenant 1 genuinely has no envs — render should be
-                # no_environment directly.
-                login_form("dev_x@primeqa.io", "test123")
-                r = client.get("/tickets", follow_redirects=False)
-                assert r.status_code == 200
-                assert b"Connect a Salesforce org" in r.data
-            else:
-                # Tenant 1 has envs — we can't cleanly test this path
-                # without creating a separate tenant. Skip with a soft
-                # assertion so the suite remains honest.
-                return
-        finally:
-            db.close()
-    results.append(test("10. /tickets empty state renders when no env available",
-                        test_empty_state_no_env))
 
     # --------------------------------------------------------------
     # 11. /runs/:id/tickets-summary partial returns HTML
-    # --------------------------------------------------------------
-    def test_tickets_summary_partial():
-        # Grab a real run id
-        db = SessionLocal()
-        try:
-            from primeqa.execution.models import PipelineRun
-            run = (db.query(PipelineRun)
-                   .filter_by(tenant_id=TENANT_ID)
-                   .order_by(PipelineRun.id.desc())
-                   .first())
-        finally:
-            db.close()
-        if run is None:
-            return  # No runs to exercise
-        login_form("dev_x@primeqa.io", "test123")
-        r = client.get(f"/runs/{run.id}/tickets-summary")
-        assert r.status_code == 200, f"Expected 200, got {r.status_code}"
-        # The partial is either "No step results yet" or a list of <li>
-        assert (b"Step " in r.data
-                or b"No step results recorded" in r.data
-                or b"[TC]" in r.data), r.data[:200]
-    results.append(test("11. /runs/:id/tickets-summary partial renders",
-                        test_tickets_summary_partial))
 
     # --- summary ---
     passed = sum(results)

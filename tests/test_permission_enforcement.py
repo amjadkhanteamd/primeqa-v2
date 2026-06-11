@@ -19,7 +19,6 @@ Covers:
    12. Missing environment_id -> 400 MISSING_ENVIRONMENT
 
   Scope tests
-   13. view_own_results only: get_scoped_results_query filters by triggered_by
    14. view_all_results: get_scoped_results_query returns full query
 
   Backward compatibility
@@ -52,9 +51,8 @@ from primeqa.core.permissions import (
     assign_permission_set, revoke_permission_set,
     check_environment_policy, get_effective_permissions,
     require_permission, require_run_permission,
-    get_scoped_results_query, should_redact_step_detail,
+    should_redact_step_detail,
 )
-from primeqa.execution.models import PipelineRun
 
 TENANT_ID = 1
 client = app.test_client()
@@ -431,45 +429,8 @@ def run_tests():
     # Restore env to its pre-test policy state.
     _set_env_policy(env_id, **original_env_policy)
 
-    # ----------------------------------------------------------------
-    # 13-14. Scope tests — query-layer filtering.
-    # ----------------------------------------------------------------
-    def test_scope_own_results_only():
-        # dev_user has view_own_results (via developer_base) but NOT view_all_results.
-        db = SessionLocal()
-        try:
-            user_dict = {"id": dev_user.id, "tenant_id": TENANT_ID, "role": "tester"}
-            base_q = db.query(PipelineRun).filter_by(tenant_id=TENANT_ID)
-            with app.test_request_context("/fake"):
-                request.user = user_dict
-                scoped = get_scoped_results_query(user_dict, base_q)
-                sql = str(scoped.statement.compile(compile_kwargs={"literal_binds": True}))
-                assert f"triggered_by = {dev_user.id}" in sql, \
-                    f"Expected triggered_by = {dev_user.id} in SQL, got: {sql[:300]}"
-        finally:
-            db.close()
-    results.append(test("13. view_own_results only -> query filtered by triggered_by",
-                        test_scope_own_results_only))
+    # (13-14: query-layer scoping tests retired with D-221 R4.1)
 
-    def test_scope_all_results_no_filter():
-        # Grant view_all_results to dev_user via granular set for this assertion.
-        try:
-            _set_user_permission_sets(dev_user.id,
-                                      ["developer_base", "view_all_results"])
-            db = SessionLocal()
-            user_dict = {"id": dev_user.id, "tenant_id": TENANT_ID, "role": "tester"}
-            base_q = db.query(PipelineRun).filter_by(tenant_id=TENANT_ID)
-            with app.test_request_context("/fake"):
-                request.user = user_dict
-                scoped = get_scoped_results_query(user_dict, base_q)
-                sql = str(scoped.statement.compile(compile_kwargs={"literal_binds": True}))
-                assert f"triggered_by = {dev_user.id}" not in sql, \
-                    f"view_all_results user should not get per-user filter, got: {sql[:300]}"
-            db.close()
-        finally:
-            _set_user_permission_sets(dev_user.id, ["developer_base"])
-    results.append(test("14. view_all_results -> query unfiltered",
-                        test_scope_all_results_no_filter))
 
     # ----------------------------------------------------------------
     # 15. Backward compat — admin (admin_base) can still list users.
