@@ -170,11 +170,16 @@ def llm_call(
 
     # Phase 5: Redact obvious PII from outbound prompts before the
     # provider sees them. Safe + fast \u2014 regex-only, preserves structure.
+    # D-217: indexed tokens + a per-call ephemeral map so the response can
+    # be rehydrated \u2014 the provider never sees the raw values, but callers
+    # (prompt parse, S3 emission) get them back. One map across system +
+    # messages (value-deterministic tokens make the split calls coherent).
     from primeqa.intelligence.llm import redact
-    safe_messages = redact.redact_messages(spec.messages)
+    redaction_map: Dict[str, str] = {}
+    safe_messages = redact.redact_messages_indexed(spec.messages, redaction_map)
     safe_system = (
-        redact.redact_messages(
-            [{"role": "system", "content": spec.system}]
+        redact.redact_messages_indexed(
+            [{"role": "system", "content": spec.system}], redaction_map,
         )[0]["content"] if spec.system else None
     )
 
@@ -214,6 +219,18 @@ def llm_call(
             continue
 
         provider_resp = inv.response
+
+        # D-217: rehydrate the response before parsing — every prompt
+        # module's parse() reads only raw_text / tool_input. The usage log
+        # row was already written from the redacted exchange (transit record).
+        if redaction_map:
+            from dataclasses import replace as _dc_replace
+            provider_resp = _dc_replace(
+                provider_resp,
+                raw_text=redact.rehydrate_text(provider_resp.raw_text, redaction_map),
+                tool_input=redact.rehydrate_value(provider_resp.tool_input, redaction_map),
+                content=redact.rehydrate_content_blocks(provider_resp.content, redaction_map),
+            )
 
         # Parse the response content
         parsed = spec.parse(provider_resp) if spec.parse else provider_resp.raw_text
@@ -410,10 +427,18 @@ def tool_turn(
             raise LLMError("content_error", f"no model available for task={task}")
         model = chain[0]  # one turn — no escalation chain
 
+    # D-217: indexed redaction + per-call map (see llm_call). The S3 runtime
+    # re-sends the full history each turn, so value-deterministic tokens keep
+    # turn-N redaction identical to turn-1 — including history that contains
+    # a prior turn's REHYDRATED tool_use (the real value re-redacts to the
+    # same token).
     from primeqa.intelligence.llm import redact
-    safe_messages = redact.redact_messages(messages)
+    redaction_map: Dict[str, str] = {}
+    safe_messages = redact.redact_messages_indexed(messages, redaction_map)
     safe_system = (
-        redact.redact_messages([{"role": "system", "content": system}])[0]["content"]
+        redact.redact_messages_indexed(
+            [{"role": "system", "content": system}], redaction_map,
+        )[0]["content"]
         if system else None
     )
 
@@ -430,7 +455,10 @@ def tool_turn(
 
     r = inv.response
     return ToolTurnResult(
-        content_blocks=list(r.content or []), stop_reason=r.stop_reason, model=r.model,
+        # D-217: rehydrated to plain dicts (runtime duck-types both shapes).
+        content_blocks=redact.rehydrate_content_blocks(
+            list(r.content or []), redaction_map),
+        stop_reason=r.stop_reason, model=r.model,
         input_tokens=r.input_tokens, output_tokens=r.output_tokens,
         cached_input_tokens=r.cached_input_tokens, cache_write_tokens=r.cache_write_tokens,
         cost_usd=inv.cost_usd, latency_ms=r.latency_ms, request_id=r.request_id,
