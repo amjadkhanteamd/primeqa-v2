@@ -5305,13 +5305,81 @@ def claims_approve(test_id):
 def s4_runs_list():
     """D-168 (UI Area 3 slice 3b): the global S4 runs index — all execution runs,
     newest-first. A focused new surface (the dense v1 /runs page is re-pointed at
-    cutover Step 5). Best-effort read via the s4_execution_console bridge."""
+    cutover Step 5). Best-effort read via the s4_execution_console bridge.
+    D-214 adds the schedules panel (admin+): one cadence per env, sandbox-only."""
     from primeqa.intelligence.s4_execution_console import list_runs
     page = request.args.get("page", 1, type=int) or 1
     per_page = request.args.get("per_page", 20, type=int) or 20
-    data = list_runs(request.user["tenant_id"], page=page, per_page=per_page)
+    tid = request.user["tenant_id"]
+    data = list_runs(tid, page=page, per_page=per_page)
+
+    schedules, sched_envs = None, []
+    if request.user["role"] in ("admin", "superadmin"):
+        try:
+            from primeqa.execution_engine.schedules import RunScheduleStore
+            db = next(get_db())
+            try:
+                envs = EnvironmentRepository(db).list_environments(
+                    tid, request.user["id"], request.user["role"])
+                env_names = {e.id: e.name for e in envs}
+                sched_envs = [{"id": e.id, "name": e.name}
+                              for e in envs if not e.is_production]
+            finally:
+                db.close()
+            schedules = [{
+                "id": s.id, "environment_id": s.environment_id,
+                "environment": env_names.get(s.environment_id,
+                                             f"env {s.environment_id}"),
+                "cron_expr": s.cron_expr, "enabled": s.enabled,
+                "last_fired_at": (s.last_fired_at.isoformat()
+                                  if s.last_fired_at else None),
+            } for s in RunScheduleStore(tid).list()]
+        except Exception:
+            schedules = None                    # panel degrades, page renders
     return render_template("runs/s4_list.html", **ctx(
-        active_page="test_library", data=data))
+        active_page="test_library", data=data,
+        schedules=schedules, sched_envs=sched_envs))
+
+
+@views_bp.route("/runs/substrate/schedules", methods=["POST"])
+@role_required("admin", "superadmin")
+def s4_schedule_create():
+    """D-214: create (or re-enable) one scheduled substrate regression. The
+    cron comes from a preset <select> — no free-form cron in v1."""
+    from primeqa.execution_engine.schedules import RunScheduleStore
+    presets = {"hourly": "0 * * * *", "daily": "0 6 * * *",
+               "weekly": "0 6 * * 1"}
+    cron = presets.get(request.form.get("cadence") or "")
+    env_id = request.form.get("environment_id", type=int)
+    if cron and env_id:
+        # sandbox-only (D-214 §4): reject production envs server-side too
+        db = next(get_db())
+        try:
+            envs = EnvironmentRepository(db).list_environments(
+                request.user["tenant_id"], request.user["id"],
+                request.user["role"])
+            ok = any(e.id == env_id and not e.is_production for e in envs)
+        finally:
+            db.close()
+        if ok:
+            RunScheduleStore(request.user["tenant_id"]).create(
+                environment_id=env_id, cron_expr=cron,
+                created_by=request.user["id"])
+    return redirect("/runs/substrate")
+
+
+@views_bp.route("/runs/substrate/schedules/<int:schedule_id>", methods=["POST"])
+@role_required("admin", "superadmin")
+def s4_schedule_update(schedule_id):
+    """D-214: toggle or delete one schedule (form `action` field)."""
+    from primeqa.execution_engine.schedules import RunScheduleStore
+    store = RunScheduleStore(request.user["tenant_id"])
+    action = request.form.get("action")
+    if action == "delete":
+        store.delete(schedule_id)
+    elif action in ("enable", "disable"):
+        store.set_enabled(schedule_id, action == "enable")
+    return redirect("/runs/substrate")
 
 
 @views_bp.route("/runs/<uuid:run_id>")

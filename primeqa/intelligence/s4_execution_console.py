@@ -381,3 +381,36 @@ def enqueue_claims_for_keys(tenant_id: int, external_keys, environment_id: int,
         log.warning("enqueue_claims_for_keys failed for tenant %s: %s",
                     tenant_id, exc)
         return {"enqueued": [], "claim_count": 0}
+
+
+# --- D-214 trigger: enqueue EVERY approved claim (the scheduled regression) ---
+
+def enqueue_all_approved_claims(tenant_id: int, environment_id: int,
+                                *, created_by=None) -> dict:
+    """Enqueue every currently-APPROVED claim for execution on
+    ``environment_id`` — the scheduled-regression trigger's body (D-214).
+    Deduped by the job store's active-set semantics; best-effort per claim.
+    Never raises."""
+    try:
+        from primeqa.execution_engine.intake import enqueue_s4_execution
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            test_ids = [r[0] for r in conn.execute(text(
+                "SELECT test_id FROM test_claims "
+                "WHERE status = 'approved' AND valid_to IS NULL "
+                "ORDER BY test_id")).fetchall()]
+        jobs = []
+        for tid in test_ids:
+            try:
+                job = enqueue_s4_execution(
+                    tenant_id=tenant_id, test_id=tid,
+                    environment_id=environment_id, created_by=created_by)
+                jobs.append(job.id)
+            except Exception as exc:
+                log.warning("scheduled enqueue failed tenant %s test %s: %s",
+                            tenant_id, tid, exc)
+        return {"enqueued": jobs, "claim_count": len(test_ids)}
+    except Exception as exc:
+        log.warning("enqueue_all_approved_claims failed for tenant %s: %s",
+                    tenant_id, exc)
+        return {"enqueued": [], "claim_count": 0}
