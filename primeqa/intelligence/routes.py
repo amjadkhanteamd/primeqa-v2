@@ -38,21 +38,6 @@ def _get_service():
     ), db
 
 
-def _own_run_test_result_or_404(db, run_test_result_id, tenant_id):
-    """Return the RunTestResult iff it exists AND its parent run belongs
-    to `tenant_id`. Otherwise return None. Used by endpoints that take a
-    raw rtr id so they can't cross-tenant-read.
-    """
-    from primeqa.execution.models import RunTestResult, PipelineRun
-    row = db.query(RunTestResult).join(
-        PipelineRun, RunTestResult.run_id == PipelineRun.id,
-    ).filter(
-        RunTestResult.id == run_test_result_id,
-        PipelineRun.tenant_id == tenant_id,
-    ).first()
-    return row
-
-
 def _own_environment_or_404(db, environment_id, tenant_id):
     from primeqa.core.models import Environment
     return db.query(Environment).filter(
@@ -98,31 +83,6 @@ def get_dependency_graph(environment_id, object_name):
 
 
 # --- Explanations ---
-
-@intelligence_bp.route("/api/explanations/<int:run_test_result_id>", methods=["GET"])
-@require_auth
-def get_explanations(run_test_result_id):
-    svc, db = _get_service()
-    try:
-        # Tenant check first — if the rtr doesn't belong to this tenant,
-        # return 404 so we don't leak its existence via a different error.
-        rtr = _own_run_test_result_or_404(
-            db, run_test_result_id, request.user["tenant_id"],
-        )
-        if not rtr:
-            return json_error("NOT_FOUND", "Run test result not found", http=404)
-        explanations = svc.explanation_repo.list_explanations(run_test_result_id)
-        return jsonify([{
-            "id": e.id, "explanation_type": e.explanation_type,
-            "parsed_explanation": e.parsed_explanation,
-            "model_used": e.model_used,
-            "requested_at": e.requested_at.isoformat() if e.requested_at else None,
-        } for e in explanations]), 200
-    finally:
-        db.close()
-
-
-# --- Patterns ---
 
 @intelligence_bp.route("/api/patterns", methods=["GET"])
 @require_auth
@@ -170,24 +130,6 @@ def resolve_pattern(pattern_id):
 
 
 # --- Causal Links ---
-
-@intelligence_bp.route("/api/runs/<int:run_id>/results/<int:test_result_id>/causal-links", methods=["GET"])
-@require_auth
-def get_causal_links(run_id, test_result_id):
-    svc, db = _get_service()
-    try:
-        rtr = _own_run_test_result_or_404(
-            db, test_result_id, request.user["tenant_id"],
-        )
-        if not rtr or rtr.run_id != run_id:
-            return json_error("NOT_FOUND", "Test result not found", http=404)
-        links = svc.get_causal_links(test_result_id)
-        return jsonify(links), 200
-    finally:
-        db.close()
-
-
-# --- Facts ---
 
 @intelligence_bp.route("/api/facts/<int:environment_id>", methods=["GET"])
 @require_auth

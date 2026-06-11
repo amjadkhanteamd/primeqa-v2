@@ -23,8 +23,6 @@ from sqlalchemy.orm import Session
 
 from primeqa.core.models import Connection, Environment, User
 from primeqa.core.crypto import decrypt
-from primeqa.execution.models import PipelineRun, RunTestResult
-from primeqa.test_management.models import Requirement, TestCase
 
 
 # --------------------------------------------------------------------------

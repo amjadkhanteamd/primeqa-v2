@@ -815,52 +815,6 @@ def require_run_permission(action: str):
 # that mirror what require_permission lets through at the route layer.
 # --------------------------------------------------------------------------
 
-def get_scoped_results_query(user: dict, base_query, *, triggered_by_col=None):
-    """Apply caller-appropriate scoping to a run-results query.
-
-    - `view_all_results` in the user's effective perms → no filter
-      (full visibility across the tenant's runs).
-    - else `view_own_results` → filter by triggered_by_user_id = user.id.
-    - else → no rows.
-
-    `triggered_by_col` is the SQLAlchemy column to filter on (defaults to
-    PipelineRun.triggered_by). Pass a different column if scoping a
-    derived table (e.g. RunTestResult via a join).
-
-    This is the query-layer enforcement that matches the route-layer
-    check `@require_permission('view_own_results', 'view_all_results',
-    require_all=False)`. Call this after the route check — a user with
-    only `view_own_results` passes the route gate but their query must
-    still be scoped to their own rows.
-
-    Returns a filtered SQLAlchemy query.
-    """
-    if triggered_by_col is None:
-        from primeqa.execution.models import PipelineRun
-        triggered_by_col = PipelineRun.triggered_by
-
-    # Superadmin / user with the view_all scope — no filter.
-    if user.get("role") == "superadmin":
-        return base_query
-
-    perms = _resolve_effective_permissions() if getattr(__import__("flask").request, "user", None) else set()
-    if not perms and user.get("id"):
-        # Outside request context (e.g. worker): resolve directly.
-        from primeqa.db import SessionLocal
-        db = SessionLocal()
-        try:
-            perms = get_effective_permissions(int(user["id"]), db)
-        finally:
-            db.close()
-
-    if "view_all_results" in perms:
-        return base_query
-    if "view_own_results" in perms:
-        return base_query.filter(triggered_by_col == int(user["id"]))
-    # No visibility at all.
-    return base_query.filter(False)
-
-
 def should_redact_step_detail(user: dict) -> bool:
     """True when the user gets a summary-only view (no step-level detail).
 
@@ -1044,7 +998,6 @@ __all__ = [
     "require_page_permission",
     "check_environment_policy",
     "require_run_permission",
-    "get_scoped_results_query",
     "should_redact_step_detail",
     "register_template_context",
 ]

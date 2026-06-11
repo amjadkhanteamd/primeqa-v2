@@ -9,10 +9,7 @@ from primeqa.core.auth import require_auth, require_role
 from primeqa.core.permissions import require_run_permission
 from primeqa.db import get_db
 from primeqa.execution.repository import (
-    PipelineRunRepository, PipelineStageRepository,
     ExecutionSlotRepository, WorkerHeartbeatRepository,
-    RunTestResultRepository, RunStepResultRepository,
-    RunCreatedEntityRepository,
 )
 from primeqa.execution.data_engine import DataEngineService, DataTemplate, DataFactory
 from primeqa.shared.api import json_error

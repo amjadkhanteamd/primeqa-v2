@@ -612,31 +612,11 @@ python -m primeqa.app                    # Flask dev server on :5000
 # Full test suite (integration tests against Railway)
 python tests/test_auth.py                # 15
 python tests/test_environments.py        # 14
-python tests/test_metadata.py            # 10
-python tests/test_management.py          # 23
-python tests/test_hardening.py           # 17 (A1–A3 test-mgmt hardening)
-python tests/test_pipeline.py            # 12
-python tests/test_executor.py            # 15
-python tests/test_cleanup.py             # 9
-python tests/test_intelligence.py        # 11
-python tests/test_run_experience.py      # 14 (R1)
-python tests/test_r2_superadmin.py       # 7  (R2)
-python tests/test_r3_metadata.py         # 6  (R3)
-python tests/test_r4_schedule.py         # 7  (R4)
-python tests/test_r5_agent.py            # 7  (R5)
-python tests/test_r6_polish.py           # 5  (R6)
-python tests/test_r7_jira_picker.py      # 10 (R7 Jira chip picker)
 python tests/test_system_validation.py   # 4 runner + 13 canonical suite outcomes
 python tests/test_llm_architecture.py    # 25 (Phases 1-7 — gateway / tiers / limits / dashboards / feedback loop)
 python tests/test_eval_harness.py        # 15 (offline prompt regression harness)
-python tests/test_release_dashboard.py   # 27 (Prompt 10/Part 8 — dashboard + share links)
-python tests/test_generation_jobs.py     # 21 (Prompt 11 — async generation queue)
-python tests/test_generation_quality_gate.py # 23 (Prompt 13 — linter + knowledge rules)
-python tests/test_reliability_fixes.py   # 10 (Prompt 15 — tx wrap / neg counts / verify capture)
 python tests/test_run_tests_page.py      # 15 (substrate /run page + legacy /api/bulk-runs)
-python tests/test_story_view.py          # 7  (Migration 048 — story-view enrichment + macro render + fallback)
-python tests/test_domain_packs.py        # 14 (Migration 049 — domain-pack library + selector + integration + flag gate)
-# ~301 total
+# (v1 suites retired with the engine, D-221 — substrate suites + tests/unit are the corpus)
 
 # Deploy
 git push origin main                     # Railway auto-deploys 3 services

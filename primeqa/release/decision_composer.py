@@ -48,51 +48,41 @@ def evaluate_and_record(db, release, tenant_id, *, release_repo) -> dict:
     byte-identical to v1's — the envelope only gains ``{mode,
     recommendation_source, v1, substrate}``.
     """
-    from primeqa.release.decision_engine import DecisionEngine
-
-    v1 = DecisionEngine(db).evaluate(release)
-
+    # D-221 R4: the v1 DecisionEngine retired with its engine (D-220 verified
+    # its corpus was empty — every v1 verdict was vacuous). The substrate
+    # decision IS the recommendation now; the envelope keeps the {mode,
+    # recommendation_source, v1, substrate} keys so the ledger / CI / template
+    # render uniformly across old and new rows (v1 is None on new rows).
     criteria = release.decision_criteria or {}
-    # D-213.1: the tenant-wide DEFAULT mode is a config switch
-    # (SUBSTRATE_DECISION_MODE_DEFAULT) so the retirement order's step 1 —
-    # advisory -> gating once the parity windows clear — is a Railway env
-    # change, not a deploy. A release's explicit decision_criteria still wins.
-    import os
-    default_mode = os.environ.get("SUBSTRATE_DECISION_MODE_DEFAULT", "advisory")
-    if default_mode not in ("off", "advisory", "gating"):
-        default_mode = "advisory"
-    mode = criteria.get("substrate_mode", default_mode)
+    from primeqa.intelligence.substrate_decision import (
+        get_release_substrate_decision,
+    )
+    keys = external_keys_for_requirements(
+        release_repo.list_requirements(release.id))
+    substrate = get_release_substrate_decision(tenant_id, keys, criteria)
 
-    substrate = None
-    if mode != "off":
-        from primeqa.intelligence.substrate_decision import (
-            get_release_substrate_decision,
-        )
-        keys = external_keys_for_requirements(
-            release_repo.list_requirements(release.id))
-        substrate = get_release_substrate_decision(tenant_id, keys, criteria)
-
-    combined = dict(v1)                              # never mutate v1's dict
-    recommendation_source = "v1"
-    if (mode == "gating" and substrate is not None
-            and substrate.get("available") and substrate.get("applicable")
-            and _SEVERITY[substrate["recommendation"]]
-            < _SEVERITY[v1["recommendation"]]):
-        combined["recommendation"] = substrate["recommendation"]
-        combined["confidence"] = substrate["confidence"]
-        recommendation_source = "substrate_gate"
-        combined["reasoning"] = list(v1.get("reasoning") or []) + [{
-            "check": "substrate_gate", "status": "fail",
-            "detail": (f"Substrate evidence degraded the recommendation to "
-                       f"{substrate['recommendation']} "
-                       f"(v1: {v1['recommendation']})"),
-        }]
+    if substrate.get("available") and substrate.get("applicable"):
+        combined = {
+            "recommendation": substrate["recommendation"],
+            "confidence": substrate["confidence"],
+            "reasoning": substrate["reasoning"],
+            "criteria_met": substrate.get("criteria_met"),
+            "metrics": substrate.get("metrics"),
+        }
+    else:
+        combined = {
+            "recommendation": "no_go", "confidence": 0.5,
+            "reasoning": [{"check": "has_evidence", "status": "fail",
+                           "detail": "No substrate test evidence for this "
+                                     "release's requirements"}],
+            "criteria_met": {"has_evidence": False}, "metrics": None,
+        }
 
     envelope = {
         **combined,
-        "mode": mode,
-        "recommendation_source": recommendation_source,
-        "v1": v1,
+        "mode": "substrate",
+        "recommendation_source": "substrate",
+        "v1": None,
         "substrate": substrate,
     }
     release_repo.create_decision(

@@ -61,7 +61,7 @@ class ReleaseTestPlanItem(Base):
 
     id = Column(Integer, primary_key=True)
     release_id = Column(Integer, ForeignKey("releases.id", ondelete="CASCADE"), nullable=False)
-    test_case_id = Column(Integer, ForeignKey("test_cases.id", ondelete="CASCADE"), nullable=False)
+    test_case_id = Column(Integer, nullable=False)
     priority = Column(String(20), nullable=False, server_default="medium")
     position = Column(Integer, nullable=False, server_default="0")
     risk_score = Column(Integer)
@@ -81,7 +81,7 @@ class ReleaseRun(Base):
 
     id = Column(Integer, primary_key=True)
     release_id = Column(Integer, ForeignKey("releases.id", ondelete="CASCADE"), nullable=False)
-    pipeline_run_id = Column(Integer, ForeignKey("pipeline_runs.id", ondelete="CASCADE"), nullable=False)
+    pipeline_run_id = Column(Integer, nullable=False)
     triggered_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     triggered_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 

@@ -145,7 +145,6 @@ def dashboard():
     from sqlalchemy import text as sql
     db = next(get_db())
     try:
-        from primeqa.execution.models import PipelineRun
         tid = request.user["tenant_id"]
 
         # One CTE-free roll-up: every count lives in its own scalar
@@ -355,53 +354,6 @@ def ask():
     return _render()
 
 
-@views_bp.route("/api/releases/<int:run_id>/approve", methods=["POST"])
-@_require_auth_api
-def api_release_approve(run_id):
-    """Approve the given pipeline_run for release (release_status=APPROVED).
-
-    Idempotent: approving an already-approved run returns 200 with
-    already_approved=true.
-    """
-    from datetime import datetime, timezone
-    from primeqa.execution.models import PipelineRun
-    from primeqa.core.permissions import require_permission
-
-    @require_permission("approve_release")
-    def _do():
-        db = next(get_db())
-        try:
-            r = db.query(PipelineRun).filter_by(id=run_id).first()
-            if r is None or r.tenant_id != request.user["tenant_id"]:
-                return ({"error": {"code": "NOT_FOUND", "message": "Run not found"}}, 404)
-            if r.release_status == "APPROVED":
-                return ({"status": "APPROVED", "already_approved": True,
-                         "run_id": r.id}, 200)
-            r.release_status = "APPROVED"
-            r.approved_by = request.user["id"]
-            r.approved_at = datetime.now(timezone.utc)
-            r.override_reason = None
-            db.commit()
-            return ({"status": "APPROVED", "run_id": r.id,
-                     "approved_at": r.approved_at.isoformat()}, 200)
-        finally:
-            db.close()
-
-    return _do()
-
-
-# --- Share Dashboard (Prompt 10 / Part 8) ---------------------------------
-
-def _hash_share_token(raw: str) -> str:
-    """SHA-256 of the raw token, hex-encoded. Stored in
-    shared_dashboard_links.token (UNIQUE VARCHAR(64)). Lookups compute
-    the hash from the incoming URL token and match by equality — the
-    raw token never lands in the DB so a dump doesn't leak active
-    links."""
-    import hashlib
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
 @views_bp.route("/api/dashboard/share", methods=["POST"])
 @_require_auth_api
 def api_dashboard_share():
@@ -576,42 +528,6 @@ def shared_dashboard_public(token):
     finally:
         db.close()
 
-
-@views_bp.route("/api/releases/<int:run_id>/override", methods=["POST"])
-@_require_auth_api
-def api_release_override(run_id):
-    """Override a failing quality gate. Requires a non-empty reason."""
-    from datetime import datetime, timezone
-    from primeqa.execution.models import PipelineRun
-    from primeqa.core.permissions import require_permission
-
-    @require_permission("override_quality_gate")
-    def _do():
-        body = request.get_json(silent=True) or {}
-        reason = (body.get("reason") or "").strip()
-        if not reason:
-            return ({"error": {"code": "VALIDATION_ERROR",
-                               "message": "reason is required for override"}}, 400)
-        db = next(get_db())
-        try:
-            r = db.query(PipelineRun).filter_by(id=run_id).first()
-            if r is None or r.tenant_id != request.user["tenant_id"]:
-                return ({"error": {"code": "NOT_FOUND", "message": "Run not found"}}, 404)
-            r.release_status = "OVERRIDDEN"
-            r.approved_by = request.user["id"]
-            r.approved_at = datetime.now(timezone.utc)
-            r.override_reason = reason[:500]
-            db.commit()
-            return ({"status": "OVERRIDDEN", "run_id": r.id,
-                     "override_reason": r.override_reason,
-                     "approved_at": r.approved_at.isoformat()}, 200)
-        finally:
-            db.close()
-
-    return _do()
-
-
-# --- Developer /tickets page ---------------------------------------------
 
 @views_bp.route("/api/users/me/active-env", methods=["POST"])
 @login_required
@@ -2985,14 +2901,11 @@ def requirements_create_manual():
     db = next(get_db())
     try:
         from primeqa.test_management.repository import (
-            SectionRepository, RequirementRepository, TestCaseRepository,
-            TestSuiteRepository, BAReviewRepository,
+            SectionRepository, RequirementRepository,
         )
         from primeqa.test_management.service import TestManagementService
         svc = TestManagementService(
             SectionRepository(db), RequirementRepository(db),
-            TestCaseRepository(db), TestSuiteRepository(db),
-            BAReviewRepository(db),
         )
         title = (request.form.get("title") or "").strip()
         section_id = request.form.get("section_id", type=int)
@@ -3041,14 +2954,11 @@ def requirements_import_jira():
     db = next(get_db())
     try:
         from primeqa.test_management.repository import (
-            SectionRepository, RequirementRepository, TestCaseRepository,
-            TestSuiteRepository, BAReviewRepository,
+            SectionRepository, RequirementRepository,
         )
         from primeqa.test_management.service import TestManagementService
         svc = TestManagementService(
             SectionRepository(db), RequirementRepository(db),
-            TestCaseRepository(db), TestSuiteRepository(db),
-            BAReviewRepository(db),
         )
         conn_id = int(request.form["jira_connection_id"])
         conn_data = ConnectionRepository(db).get_connection_decrypted(conn_id, request.user["tenant_id"])
@@ -3320,31 +3230,18 @@ def milestones_list():
 @views_bp.route("/sections")
 @login_required
 def sections_list():
-    from primeqa.test_management.repository import (
-        SectionRepository, TestCaseRepository,
-    )
-    from primeqa.test_management.models import Section, TestCase
-    from sqlalchemy import func as sf
+    from primeqa.test_management.models import Section
 
     db = next(get_db())
     try:
         tenant_id = request.user["tenant_id"]
-        # Fetch all non-deleted sections for the tenant in one query,
-        # plus a TC count per section via a separate grouped count. At
-        # typical section counts (<200) this is fine; at scale, promote
-        # test_case_count to a materialized column.
         rows = db.query(Section).filter(
             Section.tenant_id == tenant_id,
             Section.deleted_at.is_(None),
         ).order_by(Section.parent_id.nullsfirst(), Section.position).all()
 
-        tc_counts = dict(db.query(
-            TestCase.section_id, sf.count(TestCase.id),
-        ).filter(
-            TestCase.tenant_id == tenant_id,
-            TestCase.deleted_at.is_(None),
-            TestCase.section_id.isnot(None),
-        ).group_by(TestCase.section_id).all())
+        # D-221 R4: per-section v1 TC counts retired with test_cases.
+        tc_counts = {}
 
         # Build a flat ordered list with depth so the template can just
         # indent rather than recursively nest divs.
@@ -3532,26 +3429,6 @@ def releases_evaluate_decision(release_id):
     return redirect(f"/releases/{release_id}?tab=decision")
 
 
-@views_bp.route("/releases/<int:release_id>/score-risks", methods=["POST"])
-@role_required("admin", "tester")
-def releases_score_risks(release_id):
-    from flask import flash
-    from primeqa.intelligence.risk_engine import RiskEngine
-    db = next(get_db())
-    try:
-        release = ReleaseRepository(db).get_release(release_id, request.user["tenant_id"])
-        if not release:
-            return redirect("/releases")
-        engine = RiskEngine(db)
-        plan_count = engine.rank_release_test_plan(release_id)
-        flash(f"Ranked {plan_count} test plan items", "success")
-    except Exception as e:
-        flash(f"Risk scoring failed: {e}", "error")
-    finally:
-        db.close()
-    return redirect(f"/releases/{release_id}")
-
-
 @views_bp.route("/releases/<int:release_id>")
 @login_required
 def releases_detail(release_id):
@@ -3604,12 +3481,9 @@ def releases_detail(release_id):
             substrate_decision = get_release_substrate_decision(
                 tid, external_keys, release.get("decision_criteria") or {})
 
-        # D-212 (5b-4): the dual-run parity view — per-requirement v1 vs
-        # substrate latest results, classified for retirement triage.
+        # D-221 R4: the D-212 parity view retired with D-220 (zero v1 corpus —
+        # nothing to compare). The tab renders nothing.
         parity = None
-        if tab == "parity":
-            from primeqa.intelligence.dual_run_console import get_release_parity
-            parity = get_release_parity(tid, db, release)
 
         return render_template("releases/detail.html", **ctx(
             active_page="releases", release=release, tab=tab,

@@ -39,8 +39,8 @@ class ExplanationRequest(Base):
     __tablename__ = "explanation_requests"
 
     id = Column(Integer, primary_key=True)
-    run_test_result_id = Column(Integer, ForeignKey("run_test_results.id", ondelete="CASCADE"), nullable=False)
-    run_step_result_id = Column(Integer, ForeignKey("run_step_results.id", ondelete="CASCADE"))
+    run_test_result_id = Column(Integer, nullable=False)
+    run_step_result_id = Column(Integer)
     explanation_type = Column(String(30), nullable=False)
     structured_input = Column(JSON, nullable=False)
     llm_response = Column(JSON)
@@ -68,14 +68,12 @@ class AgentFixAttempt(Base):
     __tablename__ = "agent_fix_attempts"
 
     id = Column(Integer, primary_key=True)
-    run_id = Column(Integer, ForeignKey("pipeline_runs.id", ondelete="CASCADE"),
+    run_id = Column(Integer,
                     nullable=False)
-    test_case_id = Column(Integer, ForeignKey("test_cases.id", ondelete="CASCADE"),
+    test_case_id = Column(Integer,
                           nullable=False)
-    run_test_result_id = Column(Integer, ForeignKey("run_test_results.id",
-                                                    ondelete="SET NULL"))
-    run_step_result_id = Column(Integer, ForeignKey("run_step_results.id",
-                                                    ondelete="SET NULL"))
+    run_test_result_id = Column(Integer)
+    run_step_result_id = Column(Integer)
     failure_class = Column(String(40))
     pattern_id = Column(Integer, ForeignKey("failure_patterns.id",
                                             ondelete="SET NULL"))
@@ -86,8 +84,7 @@ class AgentFixAttempt(Base):
     before_state = Column(JSON)
     after_state = Column(JSON)
     auto_applied = Column(Boolean, nullable=False, server_default="false")
-    rerun_run_id = Column(Integer, ForeignKey("pipeline_runs.id",
-                                              ondelete="SET NULL"))
+    rerun_run_id = Column(Integer)
     rerun_outcome = Column(String(20))
     user_decision = Column(String(20))
     decided_at = Column(DateTime(timezone=True))
@@ -155,9 +152,9 @@ class StepCausalLink(Base):
     __tablename__ = "step_causal_links"
 
     id = Column(Integer, primary_key=True)
-    run_test_result_id = Column(Integer, ForeignKey("run_test_results.id", ondelete="CASCADE"), nullable=False)
-    from_step_result_id = Column(Integer, ForeignKey("run_step_results.id", ondelete="CASCADE"), nullable=False)
-    to_step_result_id = Column(Integer, ForeignKey("run_step_results.id", ondelete="CASCADE"), nullable=False)
+    run_test_result_id = Column(Integer, nullable=False)
+    from_step_result_id = Column(Integer, nullable=False)
+    to_step_result_id = Column(Integer, nullable=False)
     link_type = Column(String(30), nullable=False)
     reason = Column(Text)
     confidence = Column(Float, nullable=False, server_default="1.0")
@@ -211,10 +208,10 @@ class LLMUsageLog(Base):
     escalated = Column(Boolean, nullable=False, server_default="false")
     request_id = Column(String(80))
 
-    run_id = Column(Integer, ForeignKey("pipeline_runs.id", ondelete="SET NULL"))
+    run_id = Column(Integer)
     requirement_id = Column(Integer, ForeignKey("requirements.id", ondelete="SET NULL"))
-    test_case_id = Column(Integer, ForeignKey("test_cases.id", ondelete="SET NULL"))
-    generation_batch_id = Column(BigInteger, ForeignKey("generation_batches.id", ondelete="SET NULL"))
+    test_case_id = Column(Integer)
+    generation_batch_id = Column(BigInteger)
 
     context = Column(JSONB, nullable=False, server_default="{}")
 
@@ -228,9 +225,9 @@ class GenerationQualitySignal(Base):
 
     id = Column(BigInteger, primary_key=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    generation_batch_id = Column(BigInteger, ForeignKey("generation_batches.id", ondelete="SET NULL"))
-    test_case_id = Column(Integer, ForeignKey("test_cases.id", ondelete="SET NULL"))
-    test_case_version_id = Column(Integer, ForeignKey("test_case_versions.id", ondelete="SET NULL"))
+    generation_batch_id = Column(BigInteger)
+    test_case_id = Column(Integer)
+    test_case_version_id = Column(Integer)
 
     signal_type = Column(String(40), nullable=False)
     severity = Column(String(10), nullable=False, server_default="medium")

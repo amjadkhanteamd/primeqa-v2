@@ -59,6 +59,7 @@ def test_worker_import_populates_fk_target_tables() -> None:
     from primeqa.db import Base
 
     tables = set(Base.metadata.tables)
-    for t in ("llm_usage_log", "requirements", "pipeline_runs",
-              "test_cases", "generation_batches", "users", "tenants"):
+    # D-221 R4: the v1 product tables left the ORM; the surviving FK
+    # targets are the shared pivot + auth tables.
+    for t in ("llm_usage_log", "requirements", "users", "tenants"):
         assert t in tables, f"{t} not registered in Base.metadata after worker import"

@@ -47,7 +47,7 @@ class GenerationJob(Base):
     progress_pct = Column(Integer, server_default="0")
     progress_msg = Column(String(200))
 
-    generation_batch_id = Column(Integer, ForeignKey("generation_batches.id"))
+    generation_batch_id = Column(Integer)
     test_case_count = Column(Integer)
 
     error_code = Column(String(50))

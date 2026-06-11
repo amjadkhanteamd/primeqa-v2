@@ -9,7 +9,6 @@ import logging
 
 import requests as http_requests
 
-from primeqa.test_management.models import TestCaseVersion, TestCase
 from primeqa.metadata.models import MetaVersion
 
 log = logging.getLogger(__name__)
@@ -1006,57 +1005,6 @@ class MetadataService:
             "validation_rules": vr_diff,
             "flows": flow_diff,
         }
-
-    def run_impact_analysis(self, environment_id, new_version_id, old_version_id):
-        from primeqa.test_management.models import MetadataImpact
-
-        diffs = self._compute_diffs(old_version_id, new_version_id)
-        db = self.metadata_repo.db
-        affected_count = 0
-
-        changed_entities = set()
-        for f in diffs["fields"]["added"] + diffs["fields"]["removed"] + diffs["fields"]["changed"]:
-            changed_entities.add(f["object"])
-        for vr in diffs["validation_rules"]["added"] + diffs["validation_rules"]["removed"] + diffs["validation_rules"]["changed"]:
-            changed_entities.add(vr["object"])
-        for fl in diffs["flows"]["added"] + diffs["flows"]["removed"] + diffs["flows"]["changed"]:
-            changed_entities.add(fl["flow"])
-
-        for entity_ref in changed_entities:
-            affected_versions = db.query(TestCaseVersion).filter(
-                TestCaseVersion.referenced_entities.op("@>")(json.dumps([entity_ref])),
-            ).all()
-
-            for tcv in affected_versions:
-                tc = db.query(TestCase).filter(TestCase.id == tcv.test_case_id).first()
-                if not tc:
-                    continue
-
-                impact_type = "field_changed"
-                if any(f["object"] == entity_ref for f in diffs["fields"]["removed"]):
-                    impact_type = "field_removed"
-                elif any(f["object"] == entity_ref for f in diffs["fields"]["added"]):
-                    impact_type = "field_added"
-                elif any(vr.get("object") == entity_ref for vr in
-                         diffs["validation_rules"]["added"] + diffs["validation_rules"]["removed"] + diffs["validation_rules"]["changed"]):
-                    impact_type = "vr_changed"
-                elif any(fl.get("flow") == entity_ref for fl in
-                         diffs["flows"]["added"] + diffs["flows"]["removed"] + diffs["flows"]["changed"]):
-                    impact_type = "flow_changed"
-
-                impact = MetadataImpact(
-                    new_meta_version_id=new_version_id,
-                    prev_meta_version_id=old_version_id,
-                    test_case_id=tc.id,
-                    impact_type=impact_type,
-                    entity_ref=entity_ref,
-                    change_details=diffs,
-                )
-                db.add(impact)
-                affected_count += 1
-
-        db.commit()
-        return affected_count
 
     def get_current_version_summary(self, environment_id):
         mv = self.metadata_repo.get_current_version(environment_id)

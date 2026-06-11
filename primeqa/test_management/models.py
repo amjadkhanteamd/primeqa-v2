@@ -39,29 +39,6 @@ class Section(Base):
     )
 
 
-class GenerationBatch(Base):
-    """Links the N test cases produced by a single "Generate" click.
-
-    Rationale (migration 028): multi-TC generation means one click
-    produces 3\u20136 TCs covering different scenario angles. This row
-    captures the AI's rationale ("why these tests?") surfaced on the
-    requirement detail page, plus token / cost for superadmin audit.
-    """
-    __tablename__ = "generation_batches"
-
-    id = Column(BigInteger, primary_key=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
-    requirement_id = Column(Integer, ForeignKey("requirements.id"), nullable=False)
-    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    llm_model = Column(String(100))
-    input_tokens = Column(Integer)
-    output_tokens = Column(Integer)
-    cost_usd = Column(Numeric(10, 4))
-    explanation = Column(Text)
-    coverage_types = Column(ARRAY(Text))
-
-
 class Requirement(Base):
     __tablename__ = "requirements"
 
@@ -88,165 +65,6 @@ class Requirement(Base):
     )
 
 
-class TestCase(Base):
-    __tablename__ = "test_cases"
-
-    id = Column(Integer, primary_key=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
-    requirement_id = Column(Integer, ForeignKey("requirements.id"))
-    section_id = Column(Integer, ForeignKey("sections.id"))
-    title = Column(String(500), nullable=False)
-    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    visibility = Column(String(20), nullable=False, server_default="private")
-    status = Column(String(20), nullable=False, server_default="draft")
-    current_version_id = Column(Integer, ForeignKey("test_case_versions.id"))
-    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
-    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    version = Column(Integer, nullable=False, server_default="1")
-    deleted_at = Column(DateTime(timezone=True))
-    deleted_by = Column(Integer, ForeignKey("users.id"))
-    # R6: flake quarantine
-    is_quarantined = Column(Boolean, nullable=False, server_default="false")
-    quarantined_at = Column(DateTime(timezone=True))
-    quarantined_reason = Column(Text)
-    # Multi-TC generation (migration 028): scenario angle the test
-    # validates, and the "Generate" click this TC came from so the
-    # whole batch can be shown together on the requirement detail.
-    coverage_type = Column(String(30))
-    generation_batch_id = Column(Integer, ForeignKey("generation_batches.id", ondelete="SET NULL"))
-
-    versions = relationship("TestCaseVersion", back_populates="test_case",
-                            foreign_keys="TestCaseVersion.test_case_id")
-
-    __table_args__ = (
-        CheckConstraint("requirement_id IS NOT NULL OR section_id IS NOT NULL",
-                        name="test_cases_anchor_check"),
-        CheckConstraint("visibility IN ('private', 'shared')"),
-        CheckConstraint("status IN ('draft', 'approved', 'active')"),
-    )
-
-
-class TestCaseVersion(Base):
-    __tablename__ = "test_case_versions"
-
-    id = Column(Integer, primary_key=True)
-    test_case_id = Column(Integer, ForeignKey("test_cases.id", ondelete="CASCADE"), nullable=False)
-    version_number = Column(Integer, nullable=False)
-    metadata_version_id = Column(Integer, ForeignKey("meta_versions.id"), nullable=False)
-    steps = Column(JSON, nullable=False, server_default="[]")
-    expected_results = Column(JSON, nullable=False, server_default="[]")
-    preconditions = Column(JSON, nullable=False, server_default="[]")
-    generation_method = Column(String(20), nullable=False)
-    confidence_score = Column(Float)
-    referenced_entities = Column(JSON, nullable=False, server_default="[]")
-    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    # Migration 029: static validation output for this version (issues
-    # list + status + summary). Recomputed whenever a new version is
-    # created or the user clicks Revalidate.
-    validation_report = Column(JSONB)
-    validated_at = Column(DateTime(timezone=True))
-    # Migration 045: GenerationLinter output for this version.
-    # lint_fixes  — count of auto-fixes the linter applied to the
-    #               generated steps before persisting (Id removed,
-    #               formula field dropped, date reformatted, etc.)
-    # lint_warnings — count of suspect values flagged but NOT
-    #               auto-corrected (e.g. picklist value not in the
-    #               synced metadata).
-    # lint_details — full summary_dict() JSON for the review panel.
-    lint_fixes = Column(Integer, nullable=False, server_default="0")
-    lint_warnings = Column(Integer, nullable=False, server_default="0")
-    lint_details = Column(JSONB)
-    validated_against_meta_version_id = Column(
-        Integer, ForeignKey("meta_versions.id", ondelete="SET NULL"),
-    )
-    # Migration 048: human-readable "story view" of this version. Populated
-    # by the StoryViewEnricher (Haiku) when the tenant flag
-    # `llm_enable_story_enrichment` is on. Shape:
-    #   {title, description, preconditions_narrative, expected_outcome,
-    #    model, prompt_version, generated_at}
-    # NULL means the enrichment never ran (flag off, or it failed — the
-    # renderer falls back to the mechanical step view in both cases).
-    story_view = Column(JSONB)
-
-    test_case = relationship("TestCase", back_populates="versions",
-                             foreign_keys=[test_case_id])
-
-    __table_args__ = (
-        UniqueConstraint("test_case_id", "version_number",
-                         name="test_case_versions_case_number_unique"),
-        CheckConstraint("generation_method IN ('ai', 'manual', 'regenerated')"),
-    )
-
-
-class TestSuite(Base):
-    __tablename__ = "test_suites"
-
-    id = Column(Integer, primary_key=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
-    name = Column(String(255), nullable=False)
-    description = Column(Text)
-    suite_type = Column(String(30), nullable=False)
-    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    version = Column(Integer, nullable=False, server_default="1")
-    deleted_at = Column(DateTime(timezone=True))
-    deleted_by = Column(Integer, ForeignKey("users.id"))
-    # Migration 039: owner_user_id is the permission-set ownership axis
-    # (see CLAUDE.md ## Permission Model). Backfilled from created_by on
-    # migration. New code should write both columns on insert.
-    owner_user_id = Column(Integer, ForeignKey("users.id"))
-    # Migration 043: 0-100 percent. Release Owner Dashboard uses this
-    # threshold for its Go/No-Go gate. NULL = no gate.
-    quality_gate_threshold = Column(Integer)
-
-    __table_args__ = (
-        CheckConstraint("suite_type IN ('regression', 'smoke', 'sprint', 'custom')"),
-    )
-
-
-class SuiteTestCase(Base):
-    __tablename__ = "suite_test_cases"
-
-    id = Column(Integer, primary_key=True)
-    suite_id = Column(Integer, ForeignKey("test_suites.id", ondelete="CASCADE"), nullable=False)
-    test_case_id = Column(Integer, ForeignKey("test_cases.id", ondelete="CASCADE"), nullable=False)
-    position = Column(Integer, nullable=False, server_default="0")
-
-    __table_args__ = (
-        UniqueConstraint("suite_id", "test_case_id", name="suite_test_cases_unique"),
-    )
-
-
-class BAReview(Base):
-    __tablename__ = "ba_reviews"
-
-    id = Column(Integer, primary_key=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
-    test_case_version_id = Column(Integer, ForeignKey("test_case_versions.id", ondelete="CASCADE"), nullable=False)
-    assigned_to = Column(Integer, ForeignKey("users.id"), nullable=False)
-    reviewed_by = Column(Integer, ForeignKey("users.id"))
-    status = Column(String(20), nullable=False, server_default="pending")
-    feedback = Column(Text)
-    step_comments = Column(JSON, nullable=False, server_default="[]")
-    reviewed_at = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    version = Column(Integer, nullable=False, server_default="1")
-    deleted_at = Column(DateTime(timezone=True))
-    deleted_by = Column(Integer, ForeignKey("users.id"))
-    # Migration 042: why the associated TC version was flagged for review
-    # (e.g. 'new_generation' | 'regenerated_after_fail' |
-    # 'regenerated_knowledge' | 'linter_modified' | 'low_confidence').
-    # Nullable — pre-042 rows fall back to 'new_generation' in the UI.
-    review_reason = Column(String(40))
-
-    __table_args__ = (
-        CheckConstraint("status IN ('pending', 'approved', 'rejected', 'needs_edit')"),
-    )
-
-
 class Tag(Base):
     __tablename__ = "tags"
     id = Column(Integer, primary_key=True)
@@ -256,14 +74,6 @@ class Tag(Base):
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     __table_args__ = (UniqueConstraint("tenant_id", "name", name="tags_tenant_name_unique"),)
-
-
-class TestCaseTag(Base):
-    __tablename__ = "test_case_tags"
-    id = Column(Integer, primary_key=True)
-    test_case_id = Column(Integer, ForeignKey("test_cases.id", ondelete="CASCADE"), nullable=False)
-    tag_id = Column(Integer, ForeignKey("tags.id", ondelete="CASCADE"), nullable=False)
-    __table_args__ = (UniqueConstraint("test_case_id", "tag_id", name="test_case_tags_unique"),)
 
 
 class Milestone(Base):
@@ -280,15 +90,6 @@ class Milestone(Base):
         UniqueConstraint("tenant_id", "name", name="milestones_tenant_name_unique"),
         CheckConstraint("status IN ('active', 'completed', 'archived')"),
     )
-
-
-class MilestoneSuite(Base):
-    __tablename__ = "milestone_suites"
-    id = Column(Integer, primary_key=True)
-    milestone_id = Column(Integer, ForeignKey("milestones.id", ondelete="CASCADE"), nullable=False)
-    suite_id = Column(Integer, ForeignKey("test_suites.id", ondelete="CASCADE"), nullable=False)
-    added_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    __table_args__ = (UniqueConstraint("milestone_id", "suite_id", name="milestone_suites_unique"),)
 
 
 class CustomField(Base):
@@ -330,13 +131,3 @@ class StepTemplate(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     __table_args__ = (UniqueConstraint("tenant_id", "name", name="step_templates_tenant_name_unique"),)
 
-
-class TestCaseParameterSet(Base):
-    __tablename__ = "test_case_parameter_sets"
-    id = Column(Integer, primary_key=True)
-    test_case_version_id = Column(Integer, ForeignKey("test_case_versions.id", ondelete="CASCADE"), nullable=False)
-    name = Column(String(100), nullable=False)
-    parameters = Column(JSON, nullable=False, server_default="{}")
-    is_default = Column(Boolean, nullable=False, server_default="false")
-    position = Column(Integer, nullable=False, server_default="0")
-    __table_args__ = (UniqueConstraint("test_case_version_id", "name", name="test_case_parameter_sets_unique"),)

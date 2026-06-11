@@ -69,7 +69,7 @@ class TestCaseDataBinding(Base):
     __tablename__ = "test_case_data_bindings"
 
     id = Column(Integer, primary_key=True)
-    test_case_version_id = Column(Integer, ForeignKey("test_case_versions.id", ondelete="CASCADE"), nullable=False)
+    test_case_version_id = Column(Integer, nullable=False)
     binding_key = Column(String(100), nullable=False)
     binding_type = Column(String(20), nullable=False)
     reference_id = Column(Integer, nullable=False)

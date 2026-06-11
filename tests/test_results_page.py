@@ -31,7 +31,6 @@ from primeqa.core.permissions import (
     BASE_PERMISSION_SETS, PermissionSet, UserPermissionSet,
 )
 from primeqa.db import SessionLocal
-from primeqa.execution.models import PipelineRun, RunStepResult, RunTestResult
 
 TENANT_ID = 1
 client = app.test_client()

@@ -41,34 +41,6 @@ def create_scheduler_context():
     }
 
 
-def reap_stuck_slots(ctx):
-    """Release slots held beyond the run's max_execution_time_sec."""
-    slot_repo = ctx["slot_repo"]
-    run_repo = ctx["run_repo"]
-    service = ctx["service"]
-
-    from primeqa.execution.models import ExecutionSlot, PipelineRun
-    from datetime import datetime, timezone, timedelta
-
-    db = ctx["db"]
-    active_slots = db.query(ExecutionSlot).filter(
-        ExecutionSlot.released_at == None,
-    ).all()
-
-    for slot in active_slots:
-        run = run_repo.get_run(slot.run_id)
-        if not run:
-            slot.released_at = datetime.now(timezone.utc)
-            continue
-        cutoff = slot.acquired_at.replace(tzinfo=timezone.utc) + timedelta(seconds=run.max_execution_time_sec)
-        if datetime.now(timezone.utc) > cutoff:
-            slot.released_at = datetime.now(timezone.utc)
-            if run.status == "running":
-                service.fail_run(run.id, error_message="Execution timeout")
-            log.warning(f"Reaped stuck slot for run {slot.run_id}")
-    db.commit()
-
-
 def reap_stale_workers(ctx):
     """Mark workers with no heartbeat for 2+ minutes as dead.
 
@@ -94,7 +66,6 @@ def scheduler_tick(ctx):
     # D-221 R3: the v1 pipeline reapers, scheduled_runs firer, v1
     # generation-job reaper, and run_events trimmer retired with the engine.
     ticks = (
-        reap_stuck_slots,
         reap_stale_workers,
         s3_reaper_tick,               # D-106.4 slice 5 (substrate-3 queue)
         s4_reaper_tick,               # D-132 (substrate-4 execution queue)
