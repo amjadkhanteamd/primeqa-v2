@@ -12091,6 +12091,68 @@ claims + S4 enqueue; a substrate suite/grouping concept; the LLM-dashboard corre
 re-base. Tests updated with the re-points: test_results_page (nav/alias expectations),
 test_run_tests_page #15 (tester landing).
 
+### D-219 — Dashboards + release decision + run page onto substrate evidence (priority item 2)
+
+**Context.** D-218 fixed nav routing; the deeper layer remains: /dashboard + / + /shared
+compute the GO/NO-GO hero, gates, grid, and trend over FROZEN pipeline_runs; the release
+Decision tab presents the v1 DecisionEngine verdict (over the same frozen corpus) as
+authoritative; /run triggers v1 runs. This arc re-bases what the human SEES on substrate
+evidence while leaving the RECORDED-decision machinery untouched — the dual-engine
+composer (D-198) and the gating flip (D-213.1, a Railway env change) stay exactly as
+sequenced behind the parity windows. Presentation authority moves now; composer authority
+moves only when the windows clear.
+
+**Slice 1 — substrate dashboard source (drop-in shape emulation).** New module
+`primeqa/intelligence/substrate_dashboard.py`:
+`get_substrate_dashboard_data(tenant_id, environment_id)` emits the SAME dict shape
+`release/dashboard.py:get_dashboard_data` emits (the D-189 drop-in-reader pattern), so
+`dashboard_release.html` + `dashboard_shared.html` keep working with minimal edits:
+- corpus = every requirement external key carrying substrate claims
+  (test_requirement_links); evidence via the existing
+  `substrate_decision._assemble_claim_evidence`; hero verdict via
+  `compute_substrate_decision` — recommendation→state map go→GO, no_go→NO-GO,
+  conditional_go→CONDITIONAL GO (new key added to the template style maps),
+  not-applicable→UNKNOWN.
+- `latest_run` becomes the "current evidence" aggregate (counts over latest-per-claim
+  runs; id=None — the template's existing guards then hide v1 approve buttons,
+  /runs/<int> links, and failure_summary_ai automatically).
+- `ticket_grid` = per-requirement rollup of claim outcomes (requirement_id, jira_key,
+  status); `trends` = daily pass-rate buckets over s4 runs (last 5 days with runs);
+  `gates` panel REPLACED in-template by the substrate decision's reasoning checks
+  (shoehorning checks into suite-gate shape would lie about thresholds).
+- `/` landing: stats/recent-runs/flaky panels re-based — approved+draft claim counts,
+  s4 runs today, latest-per-claim pass rate, recent s4 runs (uuid links resolve to the
+  substrate run detail via the D-168 converter split), flaky panel = evidence rows
+  flagged by the D-200 flake detector linking /claims/<id>.
+- `/shared/<token>` inherits the swap (same data function).
+- v1 `get_dashboard_data` is NOT deleted (pipeline_runs still exist; retirement owns
+  its removal); the route simply stops calling it.
+
+**Slice 2 — release Decision tab: presentation flip + substrate run button.**
+releases/detail.html Decision tab reorders: the substrate decision card becomes primary;
+the v1 verdict demotes to a "legacy engine (frozen corpus)" secondary card. The recorded
+ReleaseDecision row keeps composer semantics unchanged (parity evidence keeps
+accumulating). POST /releases/<id>/run re-targets from PipelineService.create_run to
+enqueueing s4_execution_jobs for every APPROVED claim of the release's requirement keys
+(new helper `enqueue_claims_for_requirements`); the v1 path is not preserved behind a
+flag — the button's promise is "run this release's tests", and those are claims now.
+
+**Slice 3 — /run page rebuilt on the substrate.** The 4-mode v1 page (sprint/tickets/
+suite/release pickers + /api/bulk-runs → pipeline_runs) is replaced by a focused
+substrate run page: environment picker + requirement list with approved-claim counts +
+multi-select + "Run selected" / "Run all approved" (the D-214 bulk primitive), POSTing
+to a new /api/substrate-bulk-runs that enqueues s4 jobs. Sprint/suite modes retire with
+v1 (suites have no substrate concept yet — the D-218 banner already says so); Jira-sprint
+selection returns when a consumer needs it (requirements are already Jira-imported).
+Production envs excluded (D-214 posture). The D-218 banner comes OFF /run.
+
+**Test surface.** test_release_dashboard.py re-targets: route-level expectations move to
+the substrate source; pure v1 get_dashboard_data tests stay (function intact).
+test_run_tests_page / test_run_page_overhaul: the /api/bulk-runs contract tests retire
+with the page; replaced by substrate-bulk-run tests (enqueue counts, production block,
+permission gates). New unit tests for the shape emulation (golden keys) + grid/trends
+mappers.
+
 ---
 
 ---
