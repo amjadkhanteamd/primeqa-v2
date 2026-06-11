@@ -11798,6 +11798,37 @@ SideEffect(excerpt) never used in v1 — unverifiable free-form effects defer in
 **Posture.** Both kinds emit caveated Layer-1 (the registry already maps them; no Flow-formula
 derivation exists — D-210 decision 4).
 
+### D-212 — 5b-4 dual-run parity: the per-requirement v1 ↔ substrate triage view (Build 4)
+
+**Context.** The 5b-4 charter (D-202): run releases through BOTH engines, triage divergences, and
+gate v1 retirement on 3 consecutive parity-or-better windows. The decision side already composes
+both engines (D-198.3: one `ReleaseDecision` row carries v1 + substrate envelopes; advisory/gating
+modes). What's missing is the TRIAGE surface: per requirement, what did each engine's latest run
+say, and where do they disagree. AK constructs the 3 releases at the joint test session; this
+build ships the machinery.
+
+**Decisions.**
+1. **Requirement is the pivot; read-time assembly; zero migrations.** New console
+   `primeqa/intelligence/dual_run_console.py`: the v1 spine (release's `ReleaseRun` pipeline runs →
+   latest `RunTestResult` per test case → grouped by `TestCase.requirement_id`) and the substrate
+   spine (requirement keys → `generated_from` claims → latest S4 run + S6 verdict) pair per
+   requirement key. Pure assembly + classification functions; thin DB readers (the D-198 pattern).
+2. **Parity classes** (per requirement, worst-of-latest on each side):
+   `parity_pass` (both pass) · `parity_fail` (both catch the failure) ·
+   `divergent_substrate_stricter` (v1 passes, substrate fails — investigate, usually a substrate
+   win) · `divergent_v1_stricter` (v1 fails, substrate passes — **retirement blocker**: the new
+   engine would miss a defect v1 catches) · `substrate_gap` (v1 has results, substrate has no
+   claims/runs — **coverage blocker**) · `v1_gap` (substrate-only — fine) · `untested`.
+3. **The window verdict is computed, not stored**: `retirement_ready = (divergent_v1_stricter == 0
+   AND substrate_gap == 0)` per release snapshot. The 3-consecutive-windows close is an operational
+   judgment recorded in the DECISIONS_LOG at 5b-4 close (D-194's discipline) — no new table.
+4. **Surface**: a `Parity` tab on `/releases/:id` — summary chips + the per-requirement
+   side-by-side table (v1 status / substrate verdict in plain words / parity badge). v2 runtime →
+   main.
+
+**Out of scope.** Per-TC↔claim pairing below the requirement grain (different identity systems;
+the requirement is the shared truth); v1 flakiness enrichment; automated window recording.
+
 ---
 
 ---
