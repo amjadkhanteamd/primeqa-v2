@@ -11929,6 +11929,50 @@ LLM-proposal layer stays volume-gated (inventing taxonomy against zero failures 
    agent's gate posture carries over conceptually; the substrate spine has no confidence axis
    yet, so no auto path exists to misfire).
 
+### D-210.4 — Build 3 close: the automation-effect live gate observed (env 59)
+
+**The gate (from the D-210 merge note: "live gate awaits a record-triggered Flow") is met.**
+AK built + verified the SQ-205 escalation fixture in the env-59 sandbox (his Case 00001070
+got its `Case_SLA__c` auto-created); the engine then closed the loop end-to-end through the
+production path with zero manual assistance:
+
+1. **S1 sync** run seq 56 (job 26, `success`, last phase Flow): both fixture objects + all
+   fields current, and the org model's first two `TRIGGERS_ON` edges —
+   `SQ205_Create_Case_SLA → Case`, `SQ205_Escalation_Effects → Escalation__c`.
+2. **S3 generation** job 17 (SQ-205 / requirement 284, pinned at seq 56, prompt
+   generation@v6) → outcome `draft`, 3 claims: an **automation-effect-claim** pinned to the
+   Flow entity (trigger: create Case; expected effect: auto-created `Case_SLA__c` row with
+   `Status__c = 'Active'` via verified lookup `Case_SLA__c.Case__c`) + 2 existence-claims
+   (`Case_SLA__c`, `Account.Last_Escalation_Date__c`). Honest non-claims, exactly per design:
+   the SLA-threshold path **dismissed** `insufficient_grounding` (the fixture deliberately
+   has no time-based automation), and the two cross-object effect paths (Case status via
+   Escalation create; Account stamp via Escalation create) grounded but did not emit — the
+   two cross-object emission residuals logged in D-210.
+3. **S4/S6 live** (AK approved all 3 → D-199 auto-enqueue, deployed worker): all 3 runs
+   `passed`. The gate run `0d4439d1` (3114 ms): Case `500Ip000001EsjZIAS` created (201, no
+   asserted-field contamination — observe-the-org) → read-effect SOQL found the Flow-created
+   row `a0iIp0000002K9UIAU` with `Status__c='Active'` on **attempt 1** (`_read_with_retry`
+   armed, unneeded) → assert `equals` held → S6 verdict **`automation_triggered`** (first
+   live use of the D-210.3 vocabulary). The automation-created row was tracker-registered
+   (D-210.2) at seq 1; in-run reverse teardown verified in the org (`IsDeleted=true` on both
+   rows; `cleaned=false` is the documented future-reaper flag, not a defect). The 2
+   existence runs: `asserted_metadata_present`.
+
+**En-route findings (both already fixed live this arc).** The fixture's first PSA exposed
+D-216 (raw `SystemModstamp` into a date-typed edge field); metadata-deployed custom objects
+default `IsSearchable=false` and the S1 `_is_syncable_object` searchable filter hid them —
+fixture-patched with `<enableSearch>true</enableSearch>` (92aac66), engine-side relaxation
+stays a logged residual. Sync job 25's `stale_timeout` was operator sequencing (sync
+triggered mid-deploy; the worker container was replaced ~30 s in), not a code defect — and
+it gave the D-152 resume carry-forward its first live exercise: job 26 seeded from the
+interrupted `sync_run` and resumed from `last_completed_phase='Object'` instead of
+re-syncing from scratch.
+
+**Status.** Build 3 (5b-5) is CLOSED: offline-complete (D-210/.1/.2/.3) + live-proven.
+Remaining in-arc residuals (unchanged, logged in D-210): cross-object state-transition and
+cross-object automation-effect emission; trigger-state staging (entry-condition Flows); S1
+Flow entry-condition capture (Tier-2).
+
 ---
 
 ---
