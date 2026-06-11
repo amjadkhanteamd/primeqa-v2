@@ -14,21 +14,10 @@ from primeqa.execution.repository import (
     RunTestResultRepository, RunStepResultRepository,
     RunCreatedEntityRepository,
 )
-from primeqa.execution.service import PipelineService
-from primeqa.execution.cleanup import CleanupEngine, CleanupAttemptRepository
 from primeqa.execution.data_engine import DataEngineService, DataTemplate, DataFactory
 from primeqa.shared.api import json_error
 
 execution_bp = Blueprint("execution", __name__)
-
-
-def _get_service():
-    db = next(get_db())
-    run_repo = PipelineRunRepository(db)
-    stage_repo = PipelineStageRepository(db)
-    slot_repo = ExecutionSlotRepository(db)
-    hb_repo = WorkerHeartbeatRepository(db)
-    return PipelineService(run_repo, stage_repo, slot_repo, hb_repo), db
 
 
 @execution_bp.route("/api/jira/search", methods=["GET"])
@@ -118,48 +107,6 @@ def get_slots(env_id):
 
 
 # --- Results ---
-
-@execution_bp.route("/api/environments/<int:env_id>/orphaned-records", methods=["GET"])
-@require_auth
-def get_orphaned_records(env_id):
-    db = next(get_db())
-    try:
-        entity_repo = RunCreatedEntityRepository(db)
-        cleanup_repo = CleanupAttemptRepository(db)
-        engine = CleanupEngine(entity_repo, cleanup_repo)
-        orphaned = engine.get_orphaned_records(env_id)
-        return jsonify(orphaned), 200
-    finally:
-        db.close()
-
-
-@execution_bp.route("/api/environments/<int:env_id>/emergency-cleanup", methods=["POST"])
-@require_role("admin")
-def emergency_cleanup(env_id):
-    db = next(get_db())
-    try:
-        from primeqa.core.models import Environment
-        from primeqa.core.repository import EnvironmentRepository
-        env_repo = EnvironmentRepository(db)
-        env = env_repo.get_environment(env_id)
-        if not env:
-            return json_error("NOT_FOUND", "Environment not found", http=404)
-        creds = env_repo.get_credentials_decrypted(env_id)
-        if not creds or not creds.get("access_token"):
-            return json_error("VALIDATION_ERROR", "No credentials for this environment", http=400)
-        from primeqa.execution.executor import SalesforceExecutionClient
-        sf = SalesforceExecutionClient(env.sf_instance_url, env.sf_api_version, creds["access_token"])
-        entity_repo = RunCreatedEntityRepository(db)
-        cleanup_repo = CleanupAttemptRepository(db)
-        engine = CleanupEngine(entity_repo, cleanup_repo, sf)
-        data = request.get_json(silent=True) or {}
-        result = engine.emergency_cleanup(env, data.get("sobject_types"))
-        return jsonify(result), 200
-    finally:
-        db.close()
-
-
-# --- Test Data Engine ---
 
 @execution_bp.route("/api/data/templates", methods=["GET"])
 @require_auth

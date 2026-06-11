@@ -10,7 +10,6 @@ import pytest
 import primeqa.db as db_mod
 import primeqa.execution_engine.intake as intake
 import primeqa.intelligence.s4_execution_console as console
-from primeqa.runs.schedule import fire_substrate_schedule
 
 pytestmark = pytest.mark.unit
 
@@ -69,17 +68,9 @@ def test_auto_enqueue_never_raises(monkeypatch):
 
 # --- trigger 2: scheduled re-verification ------------------------------------
 
-def test_fire_substrate_schedule_enqueues_on_the_schedule_env(recorded):
-    sched = types.SimpleNamespace(
-        id=42, tenant_id=1, substrate_test_id=uuid4(),
-        environment_id=59, created_by=3)
-    res = fire_substrate_schedule(sched)
-    assert res.status == "fired_substrate" and res.schedule_id == 42
-    assert recorded == [{"tenant_id": 1, "test_id": sched.substrate_test_id,
-                         "environment_id": 59}]
+# (fire_substrate_schedule retired with the v1 scheduled_runs store, D-221 R3 —
+#  per-claim scheduling returns as an s4_run_schedules extension when needed.)
 
-
-# --- trigger 3: the CI-gate bulk enqueue --------------------------------------
 
 def test_enqueue_claims_for_keys_empty_keys_short_circuits(recorded):
     out = console.enqueue_claims_for_keys(1, [], 59)

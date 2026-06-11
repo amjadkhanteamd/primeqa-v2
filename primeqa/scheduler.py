@@ -29,37 +29,16 @@ def create_scheduler_context():
         database_url = database_url.replace("postgres://", "postgresql://", 1)
     dbmod.init_db(database_url)
     db = dbmod.SessionLocal()
+    # D-221 R3: v1 pipeline repos/service retired; the scheduler context is
+    # db + slot/heartbeat liveness repos only.
     from primeqa.execution.repository import (
-        PipelineRunRepository, PipelineStageRepository,
         ExecutionSlotRepository, WorkerHeartbeatRepository,
     )
-    from primeqa.execution.service import PipelineService
     return {
         "db": db,
-        "run_repo": PipelineRunRepository(db),
-        "stage_repo": PipelineStageRepository(db),
         "slot_repo": ExecutionSlotRepository(db),
         "heartbeat_repo": WorkerHeartbeatRepository(db),
-        "service": PipelineService(
-            PipelineRunRepository(db), PipelineStageRepository(db),
-            ExecutionSlotRepository(db), WorkerHeartbeatRepository(db),
-        ),
     }
-
-
-def reap_stuck_stages(ctx):
-    """Find stages running for > 5 minutes with no active worker and mark them failed."""
-    stage_repo = ctx["stage_repo"]
-    heartbeat_repo = ctx["heartbeat_repo"]
-    service = ctx["service"]
-
-    stuck = stage_repo.find_stuck_stages(timeout_seconds=300)
-    for stage in stuck:
-        worker = heartbeat_repo.get_worker_for_run(stage.run_id)
-        if not worker:
-            stage_repo.update_stage(stage.id, "failed", last_error="Worker timeout")
-            service.fail_run(stage.run_id, error_message="Worker timeout — stage stuck")
-            log.warning(f"Reaped stuck stage {stage.id} (run {stage.run_id})")
 
 
 def reap_stuck_slots(ctx):
@@ -106,190 +85,17 @@ def reap_stale_workers(ctx):
                     wh.worker_id, wh.current_run_id, wh.current_stage)
 
 
-def reap_stuck_runs(ctx):
-    """Run-level reaper (audit F2, 2026-04-19).
-
-    `reap_stuck_stages` handles the common case — a stage stuck in
-    running. But when a worker dies between stages (post-stage-finished,
-    pre-next-stage-started) the RUN itself sits in `running` even though
-    no stage is `running`. That's how we got 27 orphan runs (46.6% of
-    the run table) before this reaper existed.
-
-    Rule: if pipeline_runs.status='running' AND started_at < now-1h
-    AND no stage on this run is currently 'running', mark the run failed.
-    Conservative threshold — legitimate long-running tests are rare
-    (max_execution_time_sec caps most at 30 min) and the stage reaper
-    catches faster failures at 5 minutes.
-    """
-    from datetime import datetime, timezone, timedelta
-    from primeqa.execution.models import PipelineRun, PipelineStage
-
-    db = ctx["db"]
-    service = ctx["service"]
-
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
-    stuck = db.query(PipelineRun).filter(
-        PipelineRun.status == "running",
-        PipelineRun.started_at < cutoff,
-    ).all()
-
-    for run in stuck:
-        active_stages = db.query(PipelineStage).filter(
-            PipelineStage.run_id == run.id,
-            PipelineStage.status == "running",
-        ).count()
-        if active_stages > 0:
-            # Stage reaper will pick this up on its own.
-            continue
-        service.fail_run(
-            run.id,
-            error_message="Auto-reaped: run stuck in 'running' with no active stage",
-        )
-        log.warning("Reaped stuck run %s (started %s)",
-                    run.id, run.started_at)
-
-
-def reap_orphan_rtrs(ctx):
-    """Self-healing for ghost run_test_results (audit 2026-04-19).
-
-    When a worker dies mid-TC (after executor writes step_results but
-    before worker.py calls update_result), the rtr stays in its initial
-    `passed` state even though step_results contain failed/error rows.
-    This lies to dashboards AND blocks the feedback loop because the
-    execution_failed signal never fires.
-
-    This task finds such rtrs in the last 6 hours and reconciles:
-      - rtr.status = worst child step status (failed > error > passed)
-      - failure_summary = first failed step's error
-      - failure_type = 'step_error' (post-hoc inference)
-      - fires the missed EXECUTION_FAILED feedback signal
-
-    6-hour window balances "catch runs before they fall off the
-    dashboard" vs "don't rewrite ancient data". Runs older than 6h
-    are assumed settled — manual intervention if needed.
-    """
-    from datetime import datetime, timezone, timedelta
-    from sqlalchemy import text as sql
-    # Eager-import every model so ORM FK resolution works when we call
-    # feedback.capture (which cross-references tenants, test_cases,
-    # test_case_versions, generation_batches). Scheduler boot is
-    # lighter than web app; unless we register mappers here, feedback
-    # writes silently fail with "could not find table X".
-    import primeqa.core.models              # noqa: F401
-    import primeqa.metadata.models          # noqa: F401
-    import primeqa.test_management.models   # noqa: F401
-    import primeqa.execution.models         # noqa: F401
-    import primeqa.intelligence.models      # noqa: F401
-    import primeqa.release.models           # noqa: F401
-    from primeqa.intelligence.llm import feedback as _fb
-
-    db = ctx["db"]
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
-
-    # Find rtrs that claim 'passed' but have a failed/error child step.
-    rows = db.execute(sql("""
-        SELECT r.id, r.run_id, r.test_case_id, r.test_case_version_id,
-               p.tenant_id, tc.generation_batch_id,
-               (SELECT error_message FROM run_step_results
-                 WHERE run_test_result_id = r.id
-                   AND status IN ('failed', 'error')
-                 ORDER BY step_order LIMIT 1) AS first_err
-        FROM run_test_results r
-        JOIN pipeline_runs p ON p.id = r.run_id
-        LEFT JOIN test_cases tc ON tc.id = r.test_case_id
-        WHERE r.status = 'passed'
-          AND r.executed_at >= :cutoff
-          AND EXISTS (
-            SELECT 1 FROM run_step_results s
-            WHERE s.run_test_result_id = r.id
-              AND s.status IN ('failed', 'error')
-          )
-        LIMIT 100
-    """), {"cutoff": cutoff}).all()
-
-    for row in rows:
-        rtr_id = row._mapping["id"]
-        err = (row._mapping["first_err"] or "Ghost rtr: worker crashed mid-TC")[:500]
-        try:
-            db.execute(sql("""
-                UPDATE run_test_results
-                   SET status = 'failed',
-                       failure_summary = :err,
-                       failure_type = 'step_error'
-                 WHERE id = :id
-            """), {"id": rtr_id, "err": err})
-            db.commit()
-        except Exception as e:
-            log.exception("orphan-rtr heal failed for %s: %s", rtr_id, e)
-            db.rollback()
-            continue
-
-        # Fire the missed feedback signal so the loop isn't blind.
-        try:
-            _fb.capture(
-                tenant_id=row._mapping["tenant_id"],
-                signal_type=_fb.SIGNAL_EXECUTION_FAILED,
-                severity="high",
-                detail={
-                    "error": err[:300],
-                    "failure_type": "step_error",
-                    "source": "orphan_rtr_healer",
-                },
-                generation_batch_id=row._mapping["generation_batch_id"],
-                test_case_id=row._mapping["test_case_id"],
-                test_case_version_id=row._mapping["test_case_version_id"],
-                ttl_days=14,
-            )
-        except Exception:
-            pass
-        log.warning("Healed orphan rtr %s on run %s (TC %s): %s",
-                    rtr_id, row._mapping["run_id"], row._mapping["test_case_id"],
-                    err[:80])
-
-
-def fire_scheduled_runs(ctx):
-    """R4: poll scheduled_runs, create pipeline_runs for due schedules."""
-    try:
-        from primeqa.runs.schedule import fire_due_schedules
-        results = fire_due_schedules(ctx["db"])
-        for r in results:
-            if r.status == "fired":
-                log.info("scheduler fired schedule=%s run=%s", r.schedule_id, r.run_id)
-            elif r.status == "error":
-                log.warning("schedule %s fire error: %s", r.schedule_id, r.error)
-    except Exception as e:
-        log.exception("fire_scheduled_runs failed: %s", e)
-
-
-def dead_mans_switch_check(ctx):
-    """R4: log any silent schedules; persistent alerting wires up in R6."""
-    try:
-        from primeqa.runs.schedule import ScheduledRunRepository
-        from primeqa.core.models import Tenant
-        for tenant in ctx["db"].query(Tenant).all():
-            silent = ScheduledRunRepository(ctx["db"]).find_silent(tenant.id)
-            for s in silent:
-                log.warning("DMS: schedule %s (tenant %s) silent > %dh",
-                            s.id, tenant.id, s.max_silence_hours)
-    except Exception as e:
-        log.exception("dead_mans_switch_check failed: %s", e)
-
-
 def scheduler_tick(ctx):
     """Single reaper iteration. Each tick is isolated (D-178): one tick raising never
     skips the ticks after it — the s1 sync enqueuer/reaper run LAST (after 12 others),
     so an unguarded earlier tick used to starve them. Defense in depth on top of
     ``run_scheduler``'s per-iteration guard. The tick list is built here (not at module
     scope) so every tick function name is already defined when it's referenced."""
+    # D-221 R3: the v1 pipeline reapers, scheduled_runs firer, v1
+    # generation-job reaper, and run_events trimmer retired with the engine.
     ticks = (
-        reap_stuck_stages,
         reap_stuck_slots,
-        reap_stuck_runs,              # audit F2 (2026-04-19)
-        reap_orphan_rtrs,             # worker-death recovery (2026-04-19)
         reap_stale_workers,
-        fire_scheduled_runs,
-        dead_mans_switch_check,
-        reap_stale_generation_jobs,   # migration 044 / Prompt 11
         s3_reaper_tick,               # D-106.4 slice 5 (substrate-3 queue)
         s4_reaper_tick,               # D-132 (substrate-4 execution queue)
         s4_schedule_tick,             # D-214 (scheduled substrate regression runs)
@@ -297,7 +103,6 @@ def scheduler_tick(ctx):
         s8_grounding_tick,            # D-143 (substrate-8 grounding recompute)
         s1_sync_enqueuer_tick,        # D-153 (substrate-1 sync cadence)
         s1_sync_reaper_tick,          # D-153 (substrate-1 sync queue)
-        trim_run_events,
     )
     for tick in ticks:
         try:
@@ -305,25 +110,6 @@ def scheduler_tick(ctx):
         except Exception:
             log.exception("scheduler tick %s failed; continuing",
                           getattr(tick, "__name__", tick))
-
-
-def reap_stale_generation_jobs(ctx):
-    """Mark stuck generation_jobs as failed=worker_timeout.
-
-    A worker processing a GenerationJob bumps heartbeat_at every ~10s.
-    If a job has been in 'claimed' or 'running' state for 2+ minutes
-    without a heartbeat, the worker has likely died mid-run (OOM,
-    Railway SIGTERM during deploy, exception we didn't catch). Mark
-    the job failed so the user can retry — and so the row doesn't
-    sit in the active-dedup index forever.
-    """
-    try:
-        from primeqa.intelligence.generation_jobs import reap_stale_jobs
-        n = reap_stale_jobs(ctx["db"])
-        if n:
-            log.warning("reaped %d stale generation job(s)", n)
-    except Exception as e:
-        log.warning("reap_stale_generation_jobs failed: %s", e)
 
 
 def s3_reaper_tick(ctx):
@@ -486,40 +272,6 @@ def s1_sync_reaper_tick(ctx):
 
 
 _last_trim = {"at": 0}
-
-def trim_run_events(ctx):
-    """Keep at most 1000 events per run (oldest trimmed). Runs at most
-    once every ~10 min so the reaper is cheap. The hard cap protects
-    against runaway event volume from a misbehaving worker; normal
-    runs stay well under this.
-    """
-    import time
-    now = time.time()
-    if now - _last_trim["at"] < 600:  # 10 min
-        return
-    _last_trim["at"] = now
-    try:
-        from sqlalchemy import text
-        ctx["db"].execute(text("""
-            DELETE FROM run_events
-            WHERE id IN (
-                SELECT e.id
-                FROM (
-                    SELECT id, row_number() OVER (PARTITION BY run_id ORDER BY id DESC) AS rn
-                    FROM run_events
-                ) e
-                WHERE e.rn > 1000
-            )
-        """))
-        ctx["db"].commit()
-    except Exception as e:
-        log.warning("trim_run_events failed: %s", e)
-
-
-# reap_stalled_metadata_jobs — RETIRED (D-193). The v1 metadata sync writer is
-# gone (reads are on S1); there are no v1 meta_* sync jobs to reap. The S1 sync
-# has its own reaper (s1_sync_reaper_tick).
-
 
 def run_scheduler():
     """Main scheduler loop."""
