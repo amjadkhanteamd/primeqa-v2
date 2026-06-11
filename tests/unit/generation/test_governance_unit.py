@@ -125,6 +125,48 @@ def test_every_emittable_pair_is_authorable():
 
 
 # ---------------------------------------------------------------------------
+# D-222 — staged state-transition authoring (the trigger pair)
+# ---------------------------------------------------------------------------
+
+def _staged_state_transition(**overrides):
+    kwargs = dict(
+        archetype="data_behavior", claim_kind="state-transition-claim",
+        version_seq=1, subject=_ep("Object", "Opportunity"),
+        field=_ep("Field", "Opportunity.ForecastCategory"),
+        to_value="Closed", requirement_excerpt="x",
+        trigger_field=_ep("Field", "Opportunity.StageName"),
+        trigger_value="Closed Won")
+    kwargs.update(overrides)
+    return GroundedStateTransition(**kwargs)
+
+
+def test_staged_state_transition_authors_paired_shape():
+    # The trigger pair rides from_state AND the create step sets it — the
+    # asserted to-state field stays org-produced (absent from the create).
+    bundle = author_emission(_staged_state_transition())
+    body = bundle.asserted_truth
+    assert body.from_state.field_values["Opportunity.StageName"].value == "Closed Won"
+    assert body.to_state.field_values["Opportunity.ForecastCategory"].value == "Closed"
+    assert {f.external_id for f in body.subject_fields} == {
+        "Opportunity.ForecastCategory", "Opportunity.StageName"}
+    create = bundle.observation_realization.steps[0]
+    assert create.field_values == {"Opportunity.StageName": "Closed Won"}
+    assert "Opportunity.ForecastCategory" not in create.field_values
+
+
+def test_unstaged_state_transition_unchanged():
+    # No trigger pair -> the D-210.1 shape exactly: empty from_state,
+    # padding-only create, to-state field as the only subject_field.
+    bundle = author_emission(_staged_state_transition(
+        trigger_field=None, trigger_value=None))
+    body = bundle.asserted_truth
+    assert body.from_state.field_values == {}
+    assert [f.external_id for f in body.subject_fields] == [
+        "Opportunity.ForecastCategory"]
+    assert bundle.observation_realization.steps[0].field_values == {}
+
+
+# ---------------------------------------------------------------------------
 # D-107 formula capture at grounding — _grounding_vr_formulas
 # ---------------------------------------------------------------------------
 

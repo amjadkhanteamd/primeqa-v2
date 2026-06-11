@@ -81,6 +81,48 @@ def test_state_transition_emits_observe_the_org_recipe(seeded):
     assert steps[0].field_values == {}
 
 
+def test_state_transition_staged_trigger_emits_paired_shape(seeded):
+    # D-222: a verified trigger pair stages the pre-state — the create SETS
+    # the trigger field (so the org's automation actually fires) while the
+    # asserted to-state field stays org-produced.
+    r = _run(seeded, _intent("state-transition-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             trigger_field="Order__c.Stage__c", trigger_value="Submitted"))
+    o = r.outcome
+    assert o.outcome_kind == OutcomeKind.DRAFT
+    body = r.emission.asserted_truth
+    assert body.from_state.field_values["Order__c.Stage__c"].value == "Submitted"
+    assert body.to_state.field_values["Order__c.Status__c"].value == "Activated"
+    assert {f.external_id for f in body.subject_fields} == {
+        "Order__c.Status__c", "Order__c.Stage__c"}
+    steps = r.emission.observation_realization.steps
+    assert steps[0].field_values == {"Order__c.Stage__c": "Submitted"}
+    assert "Order__c.Status__c" not in steps[0].field_values
+
+
+def test_state_transition_unverified_trigger_falls_back_unstaged(seeded):
+    # D-222: an unverifiable LLM-proposed trigger is DROPPED, never guessed —
+    # and never regresses the claim to a refusal (the unstaged shape emits).
+    r = _run(seeded, _intent("state-transition-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             trigger_field="Order__c.Nope__c", trigger_value="X"))
+    o = r.outcome
+    assert o.outcome_kind == OutcomeKind.DRAFT
+    body = r.emission.asserted_truth
+    assert body.from_state.field_values == {}
+    assert r.emission.observation_realization.steps[0].field_values == {}
+
+
+def test_state_transition_trigger_without_value_falls_back_unstaged(seeded):
+    # D-222: a half-pair (field named, no value) is ignored — unstaged shape.
+    r = _run(seeded, _intent("state-transition-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             trigger_field="Order__c.Stage__c"))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    assert r.emission.asserted_truth.from_state.field_values == {}
+    assert r.emission.observation_realization.steps[0].field_values == {}
+
+
 def test_state_transition_cross_object_trigger_defers(seeded):
     r = _run(seeded, _intent("state-transition-claim", "positive", "Order__c",
                              field_name="Order__c.Status__c", expected_value="Activated",

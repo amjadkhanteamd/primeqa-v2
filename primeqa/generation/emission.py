@@ -242,6 +242,11 @@ class GroundedStateTransition:
     field: _Endpoint            # the to-state Field (verified BELONGS_TO subject)
     to_value: Any               # the requirement-sourced to-state value (verbatim)
     requirement_excerpt: str
+    # D-222: the OPTIONAL staged trigger — the field/value the create must
+    # SET to provoke the transition (verified BELONGS_TO subject at the
+    # stash gate; both None when the hints omit it or it doesn't verify).
+    trigger_field: Optional[_Endpoint] = None
+    trigger_value: Optional[Any] = None
 
 
 @dataclass(frozen=True)
@@ -927,10 +932,24 @@ def _author_state_transition(g: GroundedStateTransition) -> EmissionBundle:
     field_ref = IdentityBearingRef(
         entity_type=g.field.entity_type, entity_id=g.field.entity_id,
         version_seq=g.version_seq, external_id=field_api)
+    # D-222: the staged trigger pair (when grounded) rides from_state — the
+    # D-210.1 "unknown pre-state" reservation now holds the STAGED pre-state
+    # — and the create sets it so the org's automation actually fires.
+    subject_fields = [field_ref]
+    from_values = {}
+    create_fields = {}
+    if g.trigger_field is not None:
+        trigger_api = g.trigger_field.external_id
+        subject_fields.append(IdentityBearingRef(
+            entity_type=g.trigger_field.entity_type,
+            entity_id=g.trigger_field.entity_id,
+            version_seq=g.version_seq, external_id=trigger_api))
+        from_values[trigger_api] = LiteralValue(value=g.trigger_value)
+        create_fields[trigger_api] = g.trigger_value
     claim = StateTransitionClaimBody(
         subject=subject_ref,
-        subject_fields=[field_ref],
-        from_state=StateDescriptor(field_values={}),
+        subject_fields=subject_fields,
+        from_state=StateDescriptor(field_values=from_values),
         to_state=StateDescriptor(field_values={field_api: LiteralValue(value=g.to_value)}),
         triggering_event=EventDescriptor(
             trigger_kind="data-mutation-trigger",
@@ -945,7 +964,8 @@ def _author_state_transition(g: GroundedStateTransition) -> EmissionBundle:
     recipe = DataRecipeBody(
         api_choice="rest", identity_context="system",
         execution_mechanism="direct_api",
-        steps=_observe_steps(object_api, field_api, g.to_value))
+        steps=_observe_steps(object_api, field_api, g.to_value,
+                             create_fields=create_fields))
     env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
         auth_kind="data_api_user",
         details=(f"create a {object_api} record (padding only), read it back, "

@@ -197,6 +197,10 @@ def seeded(db_setup) -> dict:
         order = _entity(conn, "Object", "Order__c", v1)
         order_status = _entity(conn, "Field", "Order__c.Status__c", v1)
         _edge(conn, order_status, order, "BELONGS_TO", "STRUCTURAL", v1)
+        # D-222: a second Order field — the STAGED trigger of the
+        # state-transition pair (set at create; the org's automation reacts).
+        order_stage = _entity(conn, "Field", "Order__c.Stage__c", v1)
+        _edge(conn, order_stage, order, "BELONGS_TO", "STRUCTURAL", v1)
         order_flow = _entity(conn, "Flow", "Stamp_Order_Status", v1)
         _edge(conn, order_flow, order, "TRIGGERS_ON", "BEHAVIOR", v1)
         order_log = _entity(conn, "Object", "Order_Log__c", v1)

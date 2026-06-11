@@ -30,8 +30,14 @@ Data-behavior claims concern how records and fields behave at runtime.
   `state-transition-claim` with positive polarity. The subject is the Object
   whose state changes; in `target_subject_hint` set `field_name` (the
   fully-qualified API name) and `expected_value` (the to-state value,
-  verbatim). If a DIFFERENT object's event drives the change ("when an
-  Escalation__c is created, the parent Case's Status changes"), also set
+  verbatim). When the transition only happens under a specific CONDITION the
+  test must stage — e.g. "when an Opportunity is CLOSED, ForecastCategory
+  becomes Closed" requires the Stage to actually be set to a closed value —
+  also set `trigger_field` (the field the create must set, fully-qualified
+  API name) and `trigger_value` (the provoking value, e.g. "Closed Won").
+  Omit the pair when creation alone triggers the transition. If a DIFFERENT
+  object's event drives the change ("when an Escalation__c is created, the
+  parent Case's Status changes"), also set
   `trigger_object` to that object's API name — the substrate defers those
   honestly today rather than authoring a wrong test. Distinct from
   value-claim: value-claim is a value the USER sets and expects to persist;
