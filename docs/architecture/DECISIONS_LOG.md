@@ -11694,6 +11694,30 @@ already-claimed rules dedups; only the derivability verdict improves). Fail-loud
 the D-107 gate as verified Layer-2 (behavioral) instead of caveated, wherever a violating value
 derives. No migration; no API change.
 
+### D-211 — Typed-tolerant assert equality: the '5000' != 5000.0 false failure
+
+**Context (live defect).** The first AK-approved value test (claim `95a3b823`, `Opportunity.Amount
+saves as "5000"`, run `7b251f04`) FAILED with `value_not_persisted` — falsely. Evidence: create
+posted `Amount: "5000"` (the requirement's literal, carried VERBATIM per D-115 §2 — so a string),
+Salesforce persisted it and returned the typed JSON read-back `5000.0` (Currency → float), and
+`_run_ground`'s raw comparison (`observed == pred.value`, data_executor.py:582) evaluated
+`5000.0 == "5000"` → False → failed → S6 `value_not_persisted`. The org behaved correctly; the
+comparator is type-naive. Every numeric/boolean value test fails this way — and Build 3's
+automation-effect/state-transition verticals reuse exactly this read→assert machinery, so the fix
+lands first.
+
+**Decision.** `_values_equal(observed, asserted)` replaces raw equality in the data-path assert:
+exact equality first; bools compare against 'true'/'false' strings case-insensitively (and are
+EXCLUDED from numeric coercion — Python's `True == 1` must not leak); otherwise numeric comparison
+when BOTH sides parse as floats; strings stay strict (no case folding — never weaken text
+asserts). The asserted side stays verbatim in the claim body (no store-side normalization — the
+claim records what the requirement said; tolerance lives at the comparison seam where the typed
+observation arrives).
+
+**Out of scope.** The metadata-inspection comparator (property-claim equals over S1 values) is a
+different seam fed by S1-typed values, not SF JSON — left unchanged; noted for review if a false
+failure ever appears there.
+
 ---
 
 ---
