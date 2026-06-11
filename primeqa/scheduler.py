@@ -292,6 +292,7 @@ def scheduler_tick(ctx):
         reap_stale_generation_jobs,   # migration 044 / Prompt 11
         s3_reaper_tick,               # D-106.4 slice 5 (substrate-3 queue)
         s4_reaper_tick,               # D-132 (substrate-4 execution queue)
+        s4_schedule_tick,             # D-214 (scheduled substrate regression runs)
         s8_grounding_tick,            # D-143 (substrate-8 grounding recompute)
         s1_sync_enqueuer_tick,        # D-153 (substrate-1 sync cadence)
         s1_sync_reaper_tick,          # D-153 (substrate-1 sync queue)
@@ -346,6 +347,32 @@ def s3_reaper_tick(ctx):
             log.warning("reaped %d stale s3 generation job(s)", total)
     except Exception as e:
         log.warning("s3_reaper_tick failed: %s", e)
+
+
+def s4_schedule_tick(ctx):
+    """Fire due substrate run schedules (D-214 — the scheduled regression
+    trigger). Per-tenant isolation (one tenant's failure never starves the
+    rest); production environments are excluded inside ``fire_due_schedules``
+    (sandbox-only, D-214 §4). The per-tenant prod-env set comes from the v1
+    ``environments`` table on the scheduler's own session."""
+    try:
+        from primeqa.core.models import Environment, Tenant
+        from primeqa.execution_engine.schedules import fire_due_schedules
+        db = ctx["db"]
+        for tenant in db.query(Tenant).all():
+            try:
+                prod_ids = {e.id for e in db.query(Environment).filter(
+                    Environment.tenant_id == tenant.id,
+                    Environment.is_production.is_(True)).all()}
+                out = fire_due_schedules(tenant.id, production_env_ids=prod_ids)
+                if out["fired"]:
+                    log.info("s4 schedules fired for tenant %s: %s (%d jobs)",
+                             tenant.id, out["fired"], out["enqueued"])
+            except Exception:
+                log.exception("s4_schedule_tick failed for tenant %s; continuing",
+                              tenant.id)
+    except Exception as e:
+        log.warning("s4_schedule_tick failed: %s", e)
 
 
 def s8_grounding_tick(ctx):

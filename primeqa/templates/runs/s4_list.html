@@ -56,5 +56,68 @@
     {{ empty_state(title='No runs yet',
         description='Approve + run a claim to create execution runs.') }}
   {% endif %}
+
+  {# D-214: scheduled substrate regressions (admin+). One cadence per
+     sandbox environment; the scheduler enqueues every approved test when
+     the window passes. Production environments never fire. #}
+  {% if schedules is not none %}
+  <div class="bg-white shadow rounded-lg">
+    <div class="px-4 py-3 border-b flex items-center justify-between">
+      <h3 class="text-sm font-semibold text-gray-700">Scheduled runs</h3>
+      <span class="text-xs text-gray-400">Runs every approved test on a sandbox, on a cadence.</span>
+    </div>
+    {% if schedules %}
+    <table class="min-w-full divide-y divide-gray-200 text-sm">
+      <tbody class="divide-y divide-gray-100">
+        {% for s in schedules %}
+        <tr>
+          <td class="px-4 py-2 font-medium text-gray-900">{{ s.environment }}</td>
+          <td class="px-4 py-2 text-gray-600 font-mono text-xs">{{ s.cron_expr }}</td>
+          <td class="px-4 py-2">
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+              {% if s.enabled %}bg-green-100 text-green-800{% else %}bg-gray-100 text-gray-600{% endif %}">
+              {{ 'enabled' if s.enabled else 'paused' }}</span>
+          </td>
+          <td class="px-4 py-2 text-xs text-gray-500">
+            {% if s.last_fired_at %}last fired {{ s.last_fired_at[:16] }}{% else %}never fired{% endif %}
+          </td>
+          <td class="px-4 py-2 text-right whitespace-nowrap">
+            <form method="POST" action="/runs/substrate/schedules/{{ s.id }}" class="inline">
+              {{ csrf_input | safe }}
+              <input type="hidden" name="action" value="{{ 'disable' if s.enabled else 'enable' }}">
+              <button type="submit" class="text-xs text-indigo-600 hover:underline">
+                {{ 'Pause' if s.enabled else 'Resume' }}</button>
+            </form>
+            <form method="POST" action="/runs/substrate/schedules/{{ s.id }}" class="inline ml-2">
+              {{ csrf_input | safe }}
+              <input type="hidden" name="action" value="delete">
+              <button type="submit" class="text-xs text-red-600 hover:underline">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="px-6 py-4 text-sm text-gray-500">No schedules yet.</p>
+    {% endif %}
+    {% if sched_envs %}
+    <form method="POST" action="/runs/substrate/schedules"
+          class="px-4 py-3 border-t flex items-center gap-2 flex-wrap">
+      {{ csrf_input | safe }}
+      <select name="environment_id" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+        {% for e in sched_envs %}<option value="{{ e.id }}">{{ e.name }}</option>{% endfor %}
+      </select>
+      <select name="cadence" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+        <option value="daily">Daily (06:00 UTC)</option>
+        <option value="hourly">Hourly</option>
+        <option value="weekly">Weekly (Mon 06:00 UTC)</option>
+      </select>
+      <button type="submit" class="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500">
+        Add schedule</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
 </div>
 {% endblock %}
