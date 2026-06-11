@@ -12053,6 +12053,44 @@ fresh sync landed) executed the D-215.1 already-current no-op exactly as designe
 `payload.note = "already generated at the current org version"` — the apply path's
 idempotency guard observed live.
 
+### D-218 — Nav + safety re-points: route the daily loop onto the substrate (audit-driven)
+
+**Context.** A code-verified audit (2026-06-11, 82 pages) found the default sidebar still
+routes the daily loop into the FROZEN v1 surfaces: Results → /results → /runs
+(pipeline_runs only — stopped growing when runs moved to s4_execution_runs), Run Tests →
+/run (v1 trigger + frozen history; also the tester post-login landing), My Reviews →
+/reviews (empty v1 queue while substrate approvals accumulate in /claims/inbox),
+Dashboard + / (GO/NO-GO over frozen runs). The live substrate surfaces /runs/substrate,
+/claims/inbox, /org-model had NO nav entries. Three pages still actively enqueue v1
+pipeline_runs (/run, /suites, /tickets) and the v1 run detail's rerun buttons do too.
+
+**Decisions (smallest correct change; AK GO on priority item 1).**
+1. **Results** nav + the /results alias now point at **/runs/substrate** (the live runs
+   index). The v1 /runs page stays URL-reachable as an archive; /results/<int:id> keeps
+   redirecting to the v1 detail (int ids are v1's). A "Legacy v1 run history" link on
+   /runs/substrate preserves the path back.
+2. **My Reviews** nav → **/claims/inbox** (the substrate review act IS draft-claim
+   approval, D-206). The inbox + approve routes widen from (admin, tester, superadmin)
+   to **include 'ba'** — a deliberate, noted widening: in v1 the BA review accept didn't
+   trigger runs, while claim approval auto-enqueues (D-199); accepted because approval
+   IS the BA-shaped review act on the new engine and env run-policies still gate
+   execution surfaces. /reviews stays URL-reachable for v1 review history.
+3. **Org Model** gets a nav entry (admin section, gate manage_environments) — it was
+   reachable only via environment detail.
+4. **Tester post-login landing** moves /run → **/requirements** (landing testers on a
+   legacy-bannered trigger page is wrong; requirements is the substrate-native start).
+5. **Legacy banners** (shared component `_legacy_banner.html`) on the v1 surfaces that
+   either present frozen data as current or still trigger v1 runs: /runs list, /runs/<int>
+   detail, /run, /runs/new wizard, /suites list+detail, /tickets. The banner names the
+   replacement surface; v1 actions stay functional (reversible posture — nothing breaks
+   mid-transition; hard disablement belongs to retirement Step 5b).
+
+**Non-goals (deliberate, next arcs):** re-pointing /dashboard + the release Decision tab
+onto substrate verdicts (theme-3 completion); rebuilding /run's 4-mode pickers over
+claims + S4 enqueue; a substrate suite/grouping concept; the LLM-dashboard correction-rate
+re-base. Tests updated with the re-points: test_results_page (nav/alias expectations),
+test_run_tests_page #15 (tester landing).
+
 ---
 
 ---
