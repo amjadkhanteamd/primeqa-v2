@@ -140,3 +140,50 @@ def test_negative_prohibition_passed_unchanged():
 def test_negative_prohibition_failed_unchanged():
     ev = _run("failed", [_create(success=True, matched=None, http_status=201)])
     assert interpret_run(ev).verdict == "prohibition_not_enforced"
+
+
+# ---------------------------------------------------------------------------
+# D-210 — claim_kind selects the positive vocabulary (same evidence shape)
+# ---------------------------------------------------------------------------
+
+def test_state_transition_passed_vocabulary():
+    ev = _run("passed", [_create(success=True), _data_read(),
+                         _assert(predicate="equals", held=True)])
+    out = interpret_run(ev, claim_kind="state-transition-claim")
+    assert out.verdict == "state_transitioned"
+    assert "transition" in out.attribution.lower()
+
+
+def test_state_transition_failed_vocabulary():
+    ev = _run("failed", [_create(success=True), _data_read(),
+                         _assert(predicate="equals", held=False)])
+    out = interpret_run(ev, claim_kind="state-transition-claim")
+    assert out.verdict == "state_not_transitioned"
+
+
+def test_automation_effect_passed_vocabulary():
+    ev = _run("passed", [_create(success=True), _data_read(),
+                         _assert(predicate="exists", held=True)])
+    out = interpret_run(ev, claim_kind="automation-effect-claim")
+    assert out.verdict == "automation_triggered"
+    assert "automation" in out.attribution.lower()
+
+
+def test_automation_effect_failed_vocabulary():
+    ev = _run("failed", [_create(success=True), _data_read(row_count=0),
+                         _assert(predicate="exists", held=False)])
+    out = interpret_run(ev, claim_kind="automation-effect-claim")
+    assert out.verdict == "automation_not_triggered"
+
+
+def test_unknown_or_none_claim_kind_keeps_value_vocabulary():
+    ev = _run("passed", [_create(success=True), _data_read(),
+                         _assert(predicate="equals", held=True)])
+    assert interpret_run(ev).verdict == "value_persisted"
+    assert interpret_run(ev, claim_kind="something-new").verdict == "value_persisted"
+
+
+def test_claim_kind_does_not_touch_negatives():
+    ev = _run("passed", [_create(success=False, matched=True)])
+    out = interpret_run(ev, claim_kind="automation-effect-claim")
+    assert out.verdict == "prohibition_enforced"

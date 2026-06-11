@@ -117,6 +117,14 @@ _VERDICT_PLAIN = {
         "Created the record — the value saved exactly as required",
     "value_not_persisted":
         "Created the record — but the value did not persist as required",
+    "state_transitioned":
+        "Created the record — Salesforce moved it to the expected state",
+    "state_not_transitioned":
+        "Created the record — but Salesforce did NOT move it to the expected state",
+    "automation_triggered":
+        "Triggered the automation — it produced the expected result",
+    "automation_not_triggered":
+        "Triggered the automation — but the expected result never appeared",
     "asserted_metadata_present":
         "The configuration exists in the org (existence only — enforcement "
         "not exercised)",

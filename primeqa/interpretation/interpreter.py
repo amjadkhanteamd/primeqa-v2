@@ -25,10 +25,18 @@ from primeqa.execution_engine.evidence import (
 from primeqa.interpretation.model import EvidenceRef, Interpretation
 
 
-def interpret_run(evidence: RunEvidence) -> Interpretation:
+def interpret_run(evidence: RunEvidence,
+                  claim_kind: str | None = None) -> Interpretation:
     """Interpret one S4 run deterministically. ``evidence`` is the real
     `RunEvidence` S4 produced; the returned `Interpretation` carries the
-    outcome verbatim + a semantic verdict + an evidence-derived attribution."""
+    outcome verbatim + a semantic verdict + an evidence-derived attribution.
+
+    ``claim_kind`` selects the positive vertical's verdict VOCABULARY (D-210):
+    the create→read→assert evidence shape is shared by value-claim (the user's
+    value persisting), state-transition (the ORG setting the to-state), and
+    automation-effect (the automation producing its effect) — evidence alone
+    cannot tell them apart. ``None`` keeps the value-claim vocabulary (every
+    pre-D-210 caller)."""
     mutation = _mutation_step(evidence)
     create = _create_step(evidence)
     assertion = _assert_step(evidence)
@@ -41,7 +49,8 @@ def interpret_run(evidence: RunEvidence) -> Interpretation:
         # positive create-and-verify (D-136): create-expect-success → read-back →
         # value assert. The 1-step negative emits a *single* create step (no
         # assert), so the presence of an assert alongside is the discriminator.
-        verdict, attribution, refs = _interpret_positive(evidence, create, assertion)
+        verdict, attribution, refs = _interpret_positive(
+            evidence, create, assertion, claim_kind=claim_kind)
     elif create is not None:
         # 1-step behavioral negative: a single create the org should reject.
         verdict, attribution, refs = _interpret_behavioral(evidence, create)
@@ -109,14 +118,43 @@ def _interpret_behavioral(evidence: RunEvidence, step):
 # Positive value-claim (data-recipe, create-and-verify) — D-136
 # ---------------------------------------------------------------------------
 
-def _interpret_positive(evidence: RunEvidence, create: CreateAttemptEvidence, assertion):
-    """The positive create-and-verify (D-115): a record is created, read back, and
-    its value asserted. ``passed`` → the value persisted; ``failed`` → created but
-    the read-back value differs; ``errored`` → the create failed or the read-back
-    couldn't be evaluated."""
+# D-210: the positive vertical's verdict vocabulary + attribution wording,
+# keyed by claim_kind. The evidence shape is identical across the three; only
+# WHO was supposed to produce the observed value differs (the user's create,
+# the org's state machinery, the org's automation).
+_POSITIVE_VOCAB = {
+    "value-claim": (
+        "value_persisted", "value_not_persisted",
+        "the read-back confirmed the asserted value", "The value persists.",
+        "the read-back value did not match the assertion",
+        "The value did not persist as asserted."),
+    "state-transition-claim": (
+        "state_transitioned", "state_not_transitioned",
+        "the read-back confirmed the org set the asserted to-state",
+        "The state transition happened.",
+        "the read-back did not show the asserted to-state",
+        "The org did not produce the asserted transition."),
+    "automation-effect-claim": (
+        "automation_triggered", "automation_not_triggered",
+        "the read-back confirmed the automation's asserted effect",
+        "The automation fired.",
+        "the asserted effect was not observed",
+        "The automation did not produce its asserted effect."),
+}
+
+
+def _interpret_positive(evidence: RunEvidence, create: CreateAttemptEvidence,
+                        assertion, claim_kind: str | None = None):
+    """The positive create-and-verify family (D-115 / D-210): a record is
+    created, a read-back observed, an assert evaluated. ``passed`` → the
+    asserted state was observed; ``failed`` → it was not; ``errored`` → the
+    create failed or the read-back couldn't be evaluated. ``claim_kind``
+    selects the vocabulary (value-claim is the default)."""
     if evidence.outcome == "errored":
         return _not_evaluated(evidence, create.step_id)
 
+    pass_v, fail_v, pass_why, pass_tail, fail_why, fail_tail = _POSITIVE_VOCAB.get(
+        claim_kind or "value-claim", _POSITIVE_VOCAB["value-claim"])
     refs = (
         EvidenceRef(create.step_id, f"create succeeded (http {create.http_status})"),
         EvidenceRef(assertion.step_id,
@@ -124,16 +162,15 @@ def _interpret_positive(evidence: RunEvidence, create: CreateAttemptEvidence, as
     )
     if evidence.outcome == "passed":
         return (
-            "value_persisted",
-            (f"A record was created on {create.sobject} and the read-back confirmed the "
-             f"asserted value (assert {assertion.predicate} held). The value persists."),
+            pass_v,
+            (f"A record was created on {create.sobject} and {pass_why} "
+             f"(assert {assertion.predicate} held). {pass_tail}"),
             refs,
         )
     return (
-        "value_not_persisted",
-        (f"A record was created on {create.sobject}, but the read-back value did not "
-         f"match the assertion (assert {assertion.predicate} held=False). The value did "
-         f"not persist as asserted."),
+        fail_v,
+        (f"A record was created on {create.sobject}, but {fail_why} "
+         f"(assert {assertion.predicate} held=False). {fail_tail}"),
         refs,
     )
 

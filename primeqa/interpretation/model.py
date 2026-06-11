@@ -25,6 +25,12 @@ Verdict = Literal[
     # positive value-claim (data-recipe, positive create-and-verify — D-136)
     "value_persisted",               # passed: the create succeeded + the read-back value matched the assertion
     "value_not_persisted",           # failed: created, but the read-back value did not match the assertion
+    # positive state-transition (data-recipe, observe-the-org — D-210)
+    "state_transitioned",            # passed: the org moved the record to the asserted to-state
+    "state_not_transitioned",        # failed: the org did NOT produce the asserted to-state
+    # positive automation-effect (data-recipe, observe-the-org — D-210)
+    "automation_triggered",          # passed: the automation produced the asserted effect
+    "automation_not_triggered",      # failed: the asserted effect never materialized
     # inspection — presence (metadata-recipe, `exists` assert: existence + metadata-relationship)
     "asserted_metadata_present",     # passed: the asserted relationship/metadata is there
     "asserted_metadata_absent",      # failed: it is not
