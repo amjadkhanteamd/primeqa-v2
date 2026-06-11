@@ -11829,6 +11829,51 @@ build ships the machinery.
 **Out of scope.** Per-TC↔claim pairing below the requirement grain (different identity systems;
 the requirement is the shared truth); v1 flakiness enrichment; automated window recording.
 
+### D-213 — Build 5 charter: v1 product-table retirement (design-only until the windows)
+
+**Scope.** The v1 execution-engine product surface: `test_cases` / `test_case_versions` /
+`generation_batches` / `pipeline_runs` / `run_test_results` / `run_step_results` / `run_events` /
+`suites` / `scheduled_runs` + their routes/UI. Unlike the 5a meta_* drop, this surface SERVES
+PRODUCTION today — v1 remains the verdict authority until the dual-run gate clears (D-212:
+3 consecutive releases with `retirement_ready`, zero `divergent_v1_stricter`, zero
+`substrate_gap`).
+
+**Order (when the gate clears).** (1) Flip the decision composer's default `substrate_mode` to
+`gating`, observe one more window. (2) Retire v1 WRITERS (run triggers point at the substrate
+queue; generation buttons already point at S3). (3) Retire v1 readers/UI (runs pages → substrate
+runs; library → /claims). (4) Census-then-drop the tables — the D-194/D-195 discipline: read-only
+census of every reader at THAT time (the surface keeps moving until then; a census now would be
+stale), pre-drop checklist, irreversible migration behind a hard HOLD + AK's explicit GO.
+
+**Why design-only now.** Any code written today against a moving production surface is rework;
+the only durable artifact is this order + the gate definition. Build 5 implementation begins the
+day window 3 closes.
+
+---
+
+### D-214 — Build 6: scheduled substrate runs (the CI gate already exists)
+
+**Context.** Theme 4 wanted three automated triggers on the new engine: on-approval (built —
+D-199 auto-enqueue), CI release gate (built — verified at source: `/api/webhooks/ci-trigger`
+already enqueues the release's claims via `enqueue_claims_for_keys` and the D-198.3 composer's
+`gating` mode can veto; `/api/releases/:id/status` surfaces both engines to CI), and **on a
+schedule — the one genuinely missing piece**.
+
+**Decisions.**
+1. **One tenant table** `s4_run_schedules` (id, environment_id, cron_expr, enabled,
+   last_fired_at, created_by, created_at) — alembic tenant migration, the s4_execution_jobs
+   precedent. No v1 coupling (`scheduled_runs` is on the D-213 retirement list).
+2. **Scheduler tick** `s4_schedule_tick` (the crash-isolated tick list, D-178): per tenant, each
+   enabled schedule whose croniter window has passed since `last_fired_at` enqueues **every
+   currently-approved claim** on the schedule's environment via a new console helper
+   `enqueue_all_approved_claims(tenant_id, environment_id)` (the D-199 enqueue path, idempotent
+   per the job store's dedup); then stamps `last_fired_at`. Misses tolerate lateness (fire when
+   due-or-overdue, never backfill multiple intervals).
+3. **Minimal admin UI**: a schedules section on `/runs/substrate` (admin+), create/toggle one
+   schedule per env — cron presets (hourly/daily/weekly), no free-form cron editor in v1.
+4. **Safety**: production environments are excluded at the tick (the same env-policy posture as
+   D-199 auto-verify; scheduled runs are a sandbox regression instrument).
+
 ---
 
 ---
