@@ -11765,6 +11765,39 @@ edges) — automation-effect cannot ground against today's org. The live proof r
 record-triggered Flow in the sandbox; the SQ-205 escalation feature is the natural fixture (it
 also closes SQ-205's generation gap end-to-end). State-transition's negative dimension can ground
 on existing VRs meanwhile.
+### D-210.1 — 5b5-1 contracts: hint shapes, grounding extension, v1 recipe scope
+
+**Hint contracts (prompt v6 teaches these; every name VERIFIED against S1 — the value-claim
+verify-at-grounding pattern, never trusted).**
+- *state-transition*: subject = the Object whose state changes; `field_name` (qualified) +
+  `expected_value` = the to-state; optional `trigger_object`. v1 emission covers the
+  **create-scoped transition** (trigger_object absent or == subject): the org sets the field ON
+  CREATE of the subject. Cross-object triggers (SQ-205's real shape: Escalation__c create moves
+  Case.Status) ground but **defer emission** with detail — S1 has no lookup modeling to correlate.
+- *automation-effect*: subject = the TRIGGER object (what the Flow fires on). Two effect shapes:
+  **same-record** (`field_name` + `expected_value` — the Flow stamps a field on the trigger record)
+  and **cross-object** (`effect_object` + `effect_lookup_field` [+ `effect_field` +
+  `effect_value`] — the Flow creates a correlated record). The lookup field is LLM-named but
+  substrate-verified (BELONGS_TO the effect object in S1); unverifiable names → grounded-then-
+  deferred, never guessed.
+
+**Grounding extension.** Positive automation-effect replaces the any-field proxy with the real
+dimension: a Flow `TRIGGERS_ON` the subject must exist (the same edge the negative dim binds); the
+matched Flow entity becomes the claim's `automation` ref (`automation_primitive="flow"`).
+Positive state-transition keeps Layer-1 admission on the object but emission requires the named
+to-state field to resolve (the D-115.3 stash-gate pattern).
+
+**Recipes (v1).** Same-record (both kinds): `CreateStep(subject, {} — padding only; the asserted
+field is NOT set — the AUTOMATION must set it) → ReadStep(field WHERE Id='$create-record.id') →
+Assert equals`. Cross-object automation-effect: `CreateStep(subject) → ReadStep(SELECT Id[,
+effect_field] FROM effect_object WHERE effect_lookup_field='$create-record.id') → Assert exists |
+equals`. Claim bodies per the S2 v1 models: StateTransition(from_state empty in v1 — unknown
+pre-state; to_state={field: LiteralValue}); AutomationEffect(FieldChangeEffect for field shapes,
+SideEffect(excerpt) never used in v1 — unverifiable free-form effects defer instead).
+
+**Posture.** Both kinds emit caveated Layer-1 (the registry already maps them; no Flow-formula
+derivation exists — D-210 decision 4).
+
 ---
 
 ---
