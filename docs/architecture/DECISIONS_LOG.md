@@ -12153,6 +12153,42 @@ with the page; replaced by substrate-bulk-run tests (enqueue counts, production 
 permission gates). New unit tests for the shape emulation (golden keys) + grid/trends
 mappers.
 
+### D-220 — Retirement gate redefined substrate-only (the parity windows dissolve; AK GO)
+
+**Premise break (verified 2026-06-11).** The D-209/D-212/D-213 retirement gate — "3 clean
+dual-run parity windows" — presumed a live v1 corpus to compare against. AK reported "there
+are no old test cases"; verified: tenant 1 has **zero rows in every v1 product table**
+(`test_cases`, `test_case_versions`, `generation_batches`, `pipeline_runs`,
+`run_test_results`, `run_step_results`, `run_events`, `test_suites`, `suite_test_cases`,
+`scheduled_runs` — all 0). The v1 engine was never used in anger on this tenant; every test
+that has ever run here ran on the substrate. Consequences: `divergent_v1_stricter` is
+unobservable (nothing to diverge from), the windows would pass vacuously (all `v1_gap`),
+and 5b's "backfill v1 → S3 recipes" sub-gate is equally vacuous (nothing to backfill).
+Constructed windows would be ceremony, not evidence.
+
+**Decision (AK, option 1 of 3).** The Build-5 gate is REDEFINED substrate-only:
+1. **Coverage** — every active requirement has ≥1 approved substrate claim or a conscious
+   per-requirement waiver. Today: 7 of 8 covered; **SQ-210 is the open waiver question**
+   (org lacks the feature — AK decides build-or-waive).
+2. **Stability** — a window of clean scheduled runs proves unattended operation:
+   `s4_run_schedules` **id=1** created (env 59, `0 6 * * *` daily, enabled) — the D-214
+   instrument, firing every approved claim each morning. Target: 3 consecutive clean
+   fires (infrastructure-clean; honest FINDINGS verdicts don't dirty a window).
+3. **Reference retirement** — the v1 product tables' code references retired (census
+   2026-06-11: ~98 file-references across the 10 tables, heavy overlap — views.py,
+   worker.py, scheduler.py, execution/, test_management/, runs/, release/dashboard.py,
+   intelligence/, and the v1 templates). This was always the bulk of 5b and is unchanged.
+
+**What dissolves:** D-209 (5b-4 constructed releases ×3) and 5b sub-gate D (backfill).
+**What does NOT change:** the irreversible DROP still requires the pre-drop checklist +
+hard HOLD + AK's explicit GO (D-195 discipline); the composer's gating-mode flip
+(D-213.1 env change) rides the same moment. Census script fix folded in: the v1 suites
+table is `test_suites`, not `suites` (the original census silently checked a nonexistent
+relation).
+
+**AK's remaining actions for Build 5:** (a) SQ-210 build-or-waive; (b) the final DROP GO.
+Everything else is engineering.
+
 ---
 
 ---

@@ -17,7 +17,7 @@ import sys
 V1_PRODUCT_TABLES = (
     "test_cases", "test_case_versions", "generation_batches",
     "pipeline_runs", "run_test_results", "run_step_results", "run_events",
-    "suites", "suite_test_cases", "scheduled_runs",
+    "test_suites", "suite_test_cases", "scheduled_runs",
 )
 
 
