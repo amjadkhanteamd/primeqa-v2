@@ -24,12 +24,12 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v6():
-    # D-210.1: CURRENT bumped to v6 (automation-effect + state-transition
-    # reach — the hint contracts). v1..v5 stay frozen + pinned-resolvable
+def test_current_resolves_to_v7():
+    # D-222: CURRENT bumped to v7 (state-transition staged-trigger pair).
+    # v1..v6 stay frozen + pinned-resolvable
     # (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v6"
-    assert registry.get() == registry.get("generation@v6")
+    assert registry.CURRENT == "generation@v7"
+    assert registry.get() == registry.get("generation@v7")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # the substance the schemas don't enforce (D-103.3) is present

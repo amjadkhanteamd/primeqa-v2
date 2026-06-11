@@ -687,6 +687,25 @@ class GovernanceCore:
                         detail=("state-transition needs a verifiable to-state: "
                                 "field_name (existing on the subject) + "
                                 "expected_value")))
+            # D-222: the OPTIONAL staged trigger — verified BELONGS_TO the
+            # subject like the to-state field; absent or unverifiable -> the
+            # unstaged shape (a previously-emittable claim never regresses
+            # to a refusal; an unverified LLM-proposed trigger is dropped,
+            # never guessed).
+            trig_field_ep, trig_value = None, None
+            trig_name = hint.get("trigger_field")
+            if trig_name and hint.get("trigger_value") is not None:
+                trig_ent = next(
+                    (r.entity for r in neighborhood
+                     if r.edge_type == EDGE_BELONGS
+                     and r.entity.entity_type == "Field"
+                     and r.entity.sf_api_name == trig_name), None)
+                if trig_ent is not None:
+                    trig_field_ep = _Endpoint(
+                        entity_id=trig_ent.id,
+                        entity_type=trig_ent.entity_type,
+                        external_id=trig_ent.sf_api_name or str(trig_ent.id))
+                    trig_value = hint.get("trigger_value")
             _stash_grounding(state, GroundedStateTransition(
                 archetype=archetype, claim_kind=claim_kind, version_seq=at,
                 subject=_Endpoint(
@@ -695,7 +714,8 @@ class GovernanceCore:
                 field=_Endpoint(
                     entity_id=field_ent.id, entity_type=field_ent.entity_type,
                     external_id=field_ent.sf_api_name or str(field_ent.id)),
-                to_value=to_value, requirement_excerpt=excerpt))
+                to_value=to_value, requirement_excerpt=excerpt,
+                trigger_field=trig_field_ep, trigger_value=trig_value))
 
         # Stash grounding for the automation-effect (D-210.1): the matched
         # Flow (TRIGGERS_ON — the grounding dimension _evaluate_positive
