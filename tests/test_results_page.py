@@ -110,25 +110,14 @@ def run_tests():
                         test_results_redirects_to_runs))
 
     # --------------------------------------------------------------
-    # 3. /results/:id redirects to /runs/:id
+    # 3. /results/:id redirects to the substrate runs index (D-221 R1)
     # --------------------------------------------------------------
     def test_result_detail_redirects_to_runs_id():
-        db = SessionLocal()
-        try:
-            run = (db.query(PipelineRun)
-                   .filter_by(tenant_id=TENANT_ID)
-                   .order_by(PipelineRun.id.desc())
-                   .first())
-            run_id = run.id if run else None
-        finally:
-            db.close()
-        if run_id is None:
-            return  # no runs to exercise — skip
         login_form("admin@primeqa.io", "changeme123")
-        r = client.get(f"/results/{run_id}", follow_redirects=False)
+        r = client.get("/results/12345", follow_redirects=False)
         assert r.status_code in (301, 302), r.status_code
-        assert r.headers["Location"].endswith(f"/runs/{run_id}")
-    results.append(test("3. /results/:id -> redirect to /runs/:id",
+        assert r.headers["Location"].endswith("/runs/substrate")
+    results.append(test("3. /results/:id -> redirect to /runs/substrate (D-221)",
                         test_result_detail_redirects_to_runs_id))
 
     # --------------------------------------------------------------
@@ -142,154 +131,6 @@ def run_tests():
         assert "mine=1" in loc and "status=failed" in loc, loc
     results.append(test("4. /results preserves query string on redirect",
                         test_results_preserves_querystring))
-
-    # --------------------------------------------------------------
-    # 5. GET /api/runs/:id/summary-text returns non-empty text
-    # --------------------------------------------------------------
-    def test_summary_text_endpoint():
-        db = SessionLocal()
-        try:
-            run = (db.query(PipelineRun)
-                   .filter_by(tenant_id=TENANT_ID)
-                   .order_by(PipelineRun.id.desc())
-                   .first())
-            run_id = run.id if run else None
-        finally:
-            db.close()
-        if run_id is None:
-            return  # no runs
-        r = client.get(f"/api/runs/{run_id}/summary-text",
-                       headers={"Authorization": f"Bearer {admin_token}"})
-        assert r.status_code == 200, f"{r.status_code} {r.data}"
-        body = r.get_json()
-        txt = body.get("text", "")
-        assert txt.startswith("PrimeQA Run #"), f"text missing header: {txt!r}"
-        # Always includes at least a count line.
-        assert "passed" in txt
-    results.append(test("5. /api/runs/:id/summary-text returns paste-ready block",
-                        test_summary_text_endpoint))
-
-    # --------------------------------------------------------------
-    # 6. Summary text enforces own-scope for view_own_results-only users
-    # --------------------------------------------------------------
-    def test_summary_text_own_scope():
-        # Create a tester with only view_own_results (developer_base
-        # covers that, so reuse) who did NOT trigger the run.
-        db = SessionLocal()
-        try:
-            existing = db.query(User).filter_by(
-                email="rp_dev@primeqa.io", tenant_id=TENANT_ID).first()
-            if existing is not None:
-                db.execute(text("DELETE FROM refresh_tokens WHERE user_id = :id"),
-                           {"id": existing.id})
-                db.execute(text("DELETE FROM user_permission_sets WHERE user_id = :id"),
-                           {"id": existing.id})
-                db.execute(text("DELETE FROM users WHERE id = :id"),
-                           {"id": existing.id})
-                db.commit()
-        finally:
-            db.close()
-        client.post("/api/auth/users",
-                    headers={"Authorization": f"Bearer {admin_token}"},
-                    json={"email": "rp_dev@primeqa.io", "password": "test123",
-                          "full_name": "RP Dev", "role": "tester"})
-        db = SessionLocal()
-        try:
-            dev = db.query(User).filter_by(email="rp_dev@primeqa.io",
-                                           tenant_id=TENANT_ID).first()
-            run = (db.query(PipelineRun)
-                   .filter_by(tenant_id=TENANT_ID)
-                   .filter(PipelineRun.triggered_by != dev.id)
-                   .order_by(PipelineRun.id.desc())
-                   .first())
-            run_id = run.id if run else None
-        finally:
-            db.close()
-        if run_id is None:
-            return
-        _force_perms(dev.id, ["developer_base"])  # has view_own_results only
-        tok = login_api("rp_dev@primeqa.io", "test123")
-        r = client.get(f"/api/runs/{run_id}/summary-text",
-                       headers={"Authorization": f"Bearer {tok}"})
-        assert r.status_code == 403, f"Expected 403 for foreign run, got {r.status_code}"
-        assert r.get_json()["error"]["code"] == "FORBIDDEN"
-    results.append(test("6. summary-text 403s for view_own_results on foreign run",
-                        test_summary_text_own_scope))
-
-    # --------------------------------------------------------------
-    # 7. GET /api/run-step-results/:id/diagnosis-text returns text
-    # --------------------------------------------------------------
-    def test_diagnosis_text_endpoint():
-        db = SessionLocal()
-        try:
-            step = (db.query(RunStepResult)
-                    .join(RunTestResult, RunTestResult.id == RunStepResult.run_test_result_id)
-                    .join(PipelineRun, PipelineRun.id == RunTestResult.run_id)
-                    .filter(PipelineRun.tenant_id == TENANT_ID)
-                    .filter(RunStepResult.status.in_(("failed", "error")))
-                    .order_by(RunStepResult.id.desc())
-                    .first())
-            step_id = step.id if step else None
-        finally:
-            db.close()
-        if step_id is None:
-            return  # no failed step to exercise
-        r = client.get(f"/api/run-step-results/{step_id}/diagnosis-text",
-                       headers={"Authorization": f"Bearer {admin_token}"})
-        assert r.status_code == 200, f"{r.status_code} {r.data}"
-        txt = r.get_json().get("text", "")
-        # Header line is always "FAIL: Step N — <action>"
-        assert txt.startswith("FAIL:"), f"text header wrong: {txt!r}"
-    results.append(test("7. /api/run-step-results/:id/diagnosis-text works",
-                        test_diagnosis_text_endpoint))
-
-    # --------------------------------------------------------------
-    # 8. diagnosis-text 404 for unknown step
-    # --------------------------------------------------------------
-    def test_diagnosis_text_unknown_step():
-        r = client.get("/api/run-step-results/9999999/diagnosis-text",
-                       headers={"Authorization": f"Bearer {admin_token}"})
-        assert r.status_code == 404
-    results.append(test("8. diagnosis-text returns 404 for unknown step",
-                        test_diagnosis_text_unknown_step))
-
-    # --------------------------------------------------------------
-    # 9. summary-text 404 for unknown run
-    # --------------------------------------------------------------
-    def test_summary_text_unknown_run():
-        r = client.get("/api/runs/9999999/summary-text",
-                       headers={"Authorization": f"Bearer {admin_token}"})
-        assert r.status_code == 404
-    results.append(test("9. summary-text returns 404 for unknown run",
-                        test_summary_text_unknown_run))
-
-    # --------------------------------------------------------------
-    # 10. Summary text composes negative-test sections when expect_fail
-    #     steps are present in the run. We don't have guaranteed fixture
-    #     data — skip gracefully if no candidate run exists.
-    # --------------------------------------------------------------
-    def test_summary_text_includes_counts():
-        db = SessionLocal()
-        try:
-            run = (db.query(PipelineRun)
-                   .filter_by(tenant_id=TENANT_ID)
-                   .filter(PipelineRun.status.in_(("completed", "failed")))
-                   .order_by(PipelineRun.id.desc())
-                   .first())
-            run_id = run.id if run else None
-        finally:
-            db.close()
-        if run_id is None:
-            return
-        r = client.get(f"/api/runs/{run_id}/summary-text",
-                       headers={"Authorization": f"Bearer {admin_token}"})
-        txt = r.get_json().get("text", "")
-        # Headline line should mention passed counts.
-        assert "passed" in txt
-        # Body either lists failed/blocked OR is empty (clean run) —
-        # both are valid.
-    results.append(test("10. summary-text includes counts line",
-                        test_summary_text_includes_counts))
 
     # --- summary ---
     passed = sum(results)

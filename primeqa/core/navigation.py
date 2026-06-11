@@ -111,14 +111,6 @@ SIDEBAR_ITEMS: list[dict] = [
         "permission": "view_test_library",
         "section": "testing",
     },
-    {
-        "id": "test_suites",
-        "label": "Test Suites",
-        "icon": "folder",
-        "url": "/suites",
-        "permission_any": ["manage_test_suites", "view_suite_quality_gates"],
-        "section": "testing",
-    },
     # Releases — the release gate / test plan. Restored here so Release
     # Owners (view_dashboard) and Admins (approve_release) can navigate
     # back into their existing surface without typing the URL manually.
