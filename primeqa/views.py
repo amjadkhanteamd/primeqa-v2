@@ -5336,9 +5336,28 @@ def s4_runs_list():
             } for s in RunScheduleStore(tid).list()]
         except Exception:
             schedules = None                    # panel degrades, page renders
+
+    # D-215.1: open repair proposals (admin+) — proposal-only spine; the
+    # decision (approve = apply immediately / reject) happens here.
+    repairs = None
+    if request.user["role"] in ("admin", "superadmin"):
+        from primeqa.intelligence.repair_agent import list_proposals
+        repairs = list_proposals(tid)
     return render_template("runs/s4_list.html", **ctx(
         active_page="test_library", data=data,
-        schedules=schedules, sched_envs=sched_envs))
+        schedules=schedules, sched_envs=sched_envs, repairs=repairs))
+
+
+@views_bp.route("/runs/substrate/repairs/<int:proposal_id>", methods=["POST"])
+@role_required("admin", "superadmin")
+def s4_repair_decide(proposal_id):
+    """D-215.1: approve (apply immediately) or reject one repair proposal."""
+    from primeqa.intelligence.repair_agent import decide_proposal
+    decide_proposal(
+        request.user["tenant_id"], proposal_id,
+        approve=request.form.get("action") == "approve",
+        decided_by=request.user["id"])
+    return redirect("/runs/substrate")
 
 
 @views_bp.route("/runs/substrate/schedules", methods=["POST"])

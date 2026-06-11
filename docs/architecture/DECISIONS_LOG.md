@@ -11900,6 +11900,35 @@ material than v1's regex triage.
    volume (the charter's own premise — building repair shapes against zero observed failures
    invents taxonomy). Deliberately last of the seven (the 2026-06-11 ratified order).
 
+### D-215.1 — Build 7 spine: deterministic proposal-only repair agent (AK: proceed without GO)
+
+**Scope correction.** AK lifted the wait-for-volume gate (2026-06-11: "line up 5,6,7… don't wait
+for my go"). The SPINE ships now with the repairs already PROVEN manually this arc; only the
+LLM-proposal layer stays volume-gated (inventing taxonomy against zero failures remains wrong).
+
+**Decisions.**
+1. **Deterministic triage, S6-only, no LLM** (D-215 §1): a failed/errored interpretation maps to a
+   proposal by verdict/cause —
+   `vr_formula_drift` / `no_active_vr` / `vr_formula_indeterminate` / `rejected_unasserted_reason`
+   → **regenerate_from_current_org** (the claim predates the org's current truth; the repair is
+   the D-205.1 re-version path via a fresh S3 generation);
+   `not_evaluated` / outcome `errored` → **rerun** (infrastructure, not semantics).
+   **Findings never get proposals**: `enforcement_gap`, `prohibition_not_enforced`,
+   `value_not_persisted`, `state_not_transitioned`, `automation_not_triggered` are the product's
+   OUTPUT (D-215 §1) — the agent records nothing for them.
+2. **One tenant table** `repair_proposals` (run_id, claim_test_id, cause_kind, proposal_kind,
+   payload, status proposed→approved→applied | rejected, decided_by/at) — the review ledger
+   (D-215 §3). Dedup: one ACTIVE proposal per (claim, kind).
+3. **Proposal-only by default**: a scheduler tick (`repair_triage_tick`) triages new failed
+   interpretations into proposals; NOTHING auto-applies in the spine. A human approves on the
+   `/runs/substrate` Repairs panel → apply executes immediately: rerun = `enqueue_s4_execution`
+   on the run's environment; regenerate = `enqueue_s3_generation` for the claim's
+   `generated_from` requirement (idempotency at an unchanged S1 seq reports already-current
+   rather than failing).
+4. **Auto-apply stays OFF** until the volume-gated phase adds the confidence model (the v1
+   agent's gate posture carries over conceptually; the substrate spine has no confidence axis
+   yet, so no auto path exists to misfire).
+
 ---
 
 ---
