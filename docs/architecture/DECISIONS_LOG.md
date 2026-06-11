@@ -11973,6 +11973,65 @@ Remaining in-arc residuals (unchanged, logged in D-210): cross-object state-tran
 cross-object automation-effect emission; trigger-state staging (entry-condition Flows); S1
 Flow entry-condition capture (Tier-2).
 
+### D-216 — HAS_PERMISSION_SET date coercion (backfill; fix shipped as c785415/c913028)
+
+**Recorded after the fact** — the fix went out mid-firefight (sync job 15 died live) with the
+rationale in the commit message only; this entry restores log completeness. SF timestamp fields
+(`SystemModstamp`, used by `phases.py` as the `assigned_at` source) are full datetimes;
+`HasPermissionSetProperties.assigned_at`/`expiration_date` are date-grain, and pydantic rejects
+non-midnight datetimes (`date_from_datetime_inexact`). The org's FIRST real
+PermissionSetAssignment (the SQ-205 fixture permset) killed the User phase. Fix: a
+`mode="before"` validator truncating `YYYY-MM-DDT...` to the date part. Branch
+`phase-32-substrate-1-psa-date-fix`, merged c913028.
+
+### D-217 — Redaction round-trip: indexed PII tokens rehydrated after the model responds
+
+**Context (the live failure that forced the fork).** req-282 instructs testing
+`Contact.Email` with the synthetic fixture value `"pqa.d205@example.com"`. The gateway's
+Phase-5 PII redaction replaced it with the flat token `<email>` in the outbound prompt; the
+model — told to persist "that exact value" — faithfully echoed `<email>` as the literal; the
+emitted recipe carried it; Salesforce rejected the create (`INVALID_EMAIL_ADDRESS`); S6
+graded `rejected_unasserted_reason`/`platform_constraint`; the D-215.1 agent filed
+regenerate proposal 103 — which would LOOP, because regeneration re-hits the same redaction.
+Two correct features (transit privacy; value-faithful generation) collide on synthetic test
+values the regex cannot distinguish from real PII.
+
+**Decision (AK, 2026-06-11: option 3 over the narrower fixes).** Round-trip the redaction:
+replace each PII match with an **indexed token**, keep a per-call in-memory map, and
+**rehydrate the model's response** before anything downstream sees it. The provider never
+sees the raw value (the transit-privacy invariant holds verbatim); every consumer — prompt
+`parse()`, the S3 runtime, emission — sees real values. Rejected alternatives: (1)
+RFC-2606 example-domain allowlist (fixes only emails at reserved domains; phones/SSNs in
+future requirements re-break); (2) emission-side token guard alone (honest refusal, but the
+requirement stays untestable). Both are subsumed.
+
+**Mechanics.**
+- **Token = `<kind:sha8>`** (e.g. `<email:1f8a02bc>`): first 8 hex of sha256(value),
+  deterministic BY VALUE — no counter state. Forced by two facts: `system` is redacted in a
+  separate call from `messages` (per-call counters would collide), and the S3 runtime is
+  multi-turn (it re-redacts the full history each turn; turn-N tokens must equal turn-1
+  tokens, including when a prior turn's REHYDRATED tool_use is appended to history — the
+  real value re-redacts to the same token). 32-bit collision odds are negligible at
+  prompt scale; second-pass stability holds (no pattern matches a token).
+- **Map is per-call and ephemeral** — built during redaction inside the two gateway entry
+  points, used for rehydration, never persisted. `llm_usage_log` keeps redacted content
+  (transit record); caller-visible `LLMResponse`/`ToolTurnResult` carry real values —
+  the same exposure class as the `requirements` table that already holds the original text.
+- **Rehydration points** (the complete consumer surface, verified): `llm_call` rehydrates
+  `ProviderResponse.raw_text` + `.tool_input` + `.content` before `spec.parse` (every
+  prompt module parses only raw_text/tool_input); `tool_turn` rehydrates content blocks
+  into plain dicts (the S3 runtime duck-types dicts/SDK objects, `runtime.py:_battr`).
+  Legacy `redact_messages` (flat tokens) is preserved unchanged; both gateway sites switch
+  to the indexed API. Empty map → identity (zero-risk no-op for PII-free calls).
+
+**Residuals.** (a) Model-mangled tokens (e.g. `<EMAIL:1f8a02bc>`) skip rehydration and flow
+through — graceful degradation is exactly today's observed path (live rejection →
+`rejected_unasserted_reason` → repair proposal); an emission-side token-pattern guard
+(refuse-with-reason) stays available as a follow-up. (b) `tool_result` blocks were never
+redacted (legacy parity, unchanged scope). (c) Phase-6 per-tenant custom patterns inherit
+indexing when added. (d) The broken approved claim `138aea92` is repaired live post-deploy
+via proposal 103 at a fresh S1 seq.
+
 ---
 
 ---
