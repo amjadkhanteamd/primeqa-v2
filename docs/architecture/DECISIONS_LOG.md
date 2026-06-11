@@ -12253,6 +12253,28 @@ STAGE the trigger condition; this was the D-210-logged residual, now with live e
 live run reaches `state_transitioned` (ForecastCategory="Closed" observed after a
 Closed-Won create).
 
+### D-222.1 — Trigger-state staging CLOSED (live-proven)
+
+**Exit gate met 2026-06-11.** Sequence: impl commit `b1f7241` merged `--no-ff` to main
+(`6886e53`, generation@v7) → deployed → SQ-207 regenerated on the deployed worker at the
+existing-but-unconsumed seq 57 (s3 job 27; a fresh sync was unnecessary — idempotency was
+the only reason for one, and no SQ-207 job existed at 57). The LLM proposed the trigger
+pair from the ticket text and the stash gate verified both fields BELONGS_TO Opportunity:
+staged draft `0bb8465e` landed with `from_state.StageName="Closed Won"`, both fields in
+`subject_fields`, and the create step setting the trigger. **AK approved** → auto-enqueued
+run `029f6f5c` **passed**: create succeeded (`006Ip000003KdznIAC`), read observed
+`ForecastCategory="Closed"` (org-produced), cleanup succeeded, S6 verdict
+**`state_transitioned`**. The old unstaged claim `85adf311` deprecated (reason in
+provenance: superseded by the staged shape; its assert could never hold at padding's
+Prospecting create — the honest red `b189e764`).
+
+**Observed en route**: env 59's `Contract_Value_Required_On_Closed_Won` VR
+(`AND(ISPICKVAL(StageName,'Closed Won'), Amount <= 0)`) did NOT fire on the blank-Amount
+staged create — the org formula treats blank-as-blank. Flagged pre-run as the live risk;
+resolved by observation, not assumption. Residual unchanged: staged creates that DO need
+supporting field values (e.g. an org where that VR fires on blank) are the test-data
+provisioning port's territory.
+
 ---
 
 ---
