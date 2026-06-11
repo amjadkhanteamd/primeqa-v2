@@ -12189,6 +12189,40 @@ relation).
 **AK's remaining actions for Build 5:** (a) SQ-210 build-or-waive; (b) the final DROP GO.
 Everything else is engineering.
 
+### D-221 — 5b reference retirement: the program charted (5 slices)
+
+**Scope.** D-220 leg 3: retire every code reference to the 10 empty v1 product tables.
+Full inventory (2026-06-11 audit): ~38 v1 page routes + ~8 v1 API routes in views.py /
+execution/routes.py, 12 v1-only templates, 9 v1-only modules (runs/wizard|bulk|preflight|
+streams|my_tickets|cost|schedule, execution/analytics|data_engine|flake), v1 branches in
+worker.py + scheduler.py (pipeline processing, v1 reapers, scheduled_runs firer,
+trim_run_events), ~18 ORM classes, ~10 v1-only test files + ~8 mixed.
+
+**Slices (each lands app-green + suites-green, committed separately):**
+- **5b-R1 — leaf UI layer**: the v1 page routes + their templates (/runs v1 list+detail+
+  wizard+scheduled, /test-cases*, /reviews*, /suites*, /tickets) replaced by thin
+  redirects to substrate equivalents (/runs→/runs/substrate, /test-cases→/claims,
+  /reviews→/claims/inbox, /tickets→/requirements, /suites→/claims); nav + landing-map
+  cleanup; v1-only page test files retire.
+- **5b-R2 — trigger + API layer**: /api/bulk-runs family, v1 run APIs + SSE in
+  execution/routes.py, rerun/label/summarise endpoints, the runs/ v1 modules; verify the
+  Jira chip-picker endpoints' surviving consumer (requirements import) before touching.
+- **5b-R3 — engine layer**: worker/scheduler v1 branches; execution/ pipeline engine
+  (service, executor, cleanup, data_engine, analytics, flake); intelligence v1
+  (TestCaseGenerator path, validator, linter, v1 agent, story-view enricher). Story view +
+  domain packs were v1-generation features — they retire with it; their substrate
+  successor is the parked BA-story-layer item (acknowledged loss, zero data served).
+- **5b-R4 — model layer**: v1 ORM classes + repos/services, release dashboard/
+  decision_engine v1 internals, composer drops its v1 input (the D-198 seam pays off),
+  FK cleanup (release_runs.pipeline_run_id, test-plan items).
+- **5b-R5 — the DROP**: pre-drop checklist + census re-run + irreversible migration —
+  hard HOLD, AK's explicit GO (D-220).
+
+**Posture.** Redirects-not-410s for the page URLs (bookmarks land somewhere useful);
+410s acceptable for v1 JSON APIs. Every slice re-verifies the agent's "shared" claims
+against the code before deleting (the audit flagged e.g. picker endpoints as shared —
+the rebuilt /run page does NOT use them; the requirements Jira-import chip picker may).
+
 ---
 
 ---
