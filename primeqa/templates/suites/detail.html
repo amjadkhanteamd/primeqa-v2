@@ -1,7 +1,10 @@
 {% extends "base.html" %}
+{% from 'components/_legacy_banner.html' import legacy_banner %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% block title %}{{ suite.name }} - PrimeQA{% endblock %}
 {% block content %}
+
+<div class="mb-4">{{ legacy_banner("This suite runs old-engine test cases; results will not appear in current runs.", "/claims", "View the Test Library") }}</div>
 
 {{ breadcrumbs([('Suites', '/suites'), (suite.name, None)]) }}
 

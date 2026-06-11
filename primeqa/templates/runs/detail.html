@@ -1,7 +1,10 @@
 {% extends "base.html" %}
+{% from 'components/_legacy_banner.html' import legacy_banner %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% block title %}Run #{{ run.id }} - PrimeQA{% endblock %}
 {% block content %}
+
+<div class="mb-4">{{ legacy_banner("This is an old-engine run; its rerun buttons queue runs into the old engine.", "/runs/substrate", "View current runs") }}</div>
 
 {# Fonts the redesigned Run Detail page uses. Light load; requested only
    once, browser cache takes over. Loaded via block so other pages stay

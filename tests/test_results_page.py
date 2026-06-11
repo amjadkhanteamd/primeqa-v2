@@ -90,8 +90,9 @@ def run_tests():
         items = build_sidebar(perms, "/results")
         results_item = next((i for i in items if i["id"] == "results"), None)
         assert results_item is not None, "Results nav item missing"
-        assert results_item["url"] == "/results", results_item
-        # On /results the item should be active (exact match).
+        # D-218: Results points at the substrate runs index.
+        assert results_item["url"] == "/runs/substrate", results_item
+        # On /results (active_also_for) the item should still be active.
         assert results_item["active"] is True
     results.append(test("1. Sidebar Results entry -> /results + active",
                         test_sidebar_points_at_results))
@@ -103,8 +104,9 @@ def run_tests():
         login_form("admin@primeqa.io", "changeme123")
         r = client.get("/results", follow_redirects=False)
         assert r.status_code in (301, 302), f"Expected redirect, got {r.status_code}"
-        assert r.headers["Location"].endswith("/runs") or "/runs?" in r.headers["Location"]
-    results.append(test("2. /results -> redirect to /runs",
+        assert (r.headers["Location"].endswith("/runs/substrate")
+                or "/runs/substrate?" in r.headers["Location"])
+    results.append(test("2. /results -> redirect to /runs/substrate (D-218)",
                         test_results_redirects_to_runs))
 
     # --------------------------------------------------------------

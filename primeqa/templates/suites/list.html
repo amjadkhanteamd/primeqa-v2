@@ -1,9 +1,12 @@
 {% extends "base.html" %}
+{% from 'components/_legacy_banner.html' import legacy_banner %}
 {% from 'components/pagination.html' import render_meta_pagination, per_page_selector %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% from 'components/_empty_state.html' import empty_state %}
 {% block title %}Suites - PrimeQA{% endblock %}
 {% block content %}
+
+<div class="mb-4">{{ legacy_banner("Suites group old-engine test cases; the Run button uses the old engine.", "/claims", "View the Test Library") }}</div>
 
 {{ breadcrumbs([('Suites', None)]) }}
 

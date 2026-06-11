@@ -1,6 +1,9 @@
 {% extends "base.html" %}
+{% from 'components/_legacy_banner.html' import legacy_banner %}
 {% block title %}My Tickets - PrimeQA{% endblock %}
 {% block content %}
+
+<div class="mb-4">{{ legacy_banner("The run status and Run buttons here use the old engine. Use My Tickets for the current flow.", "/requirements", "Go to My Tickets") }}</div>
 
 {# -------------------------------------------------------------------
    Developer /tickets page — the Developer Base persona's ENTIRE UI.

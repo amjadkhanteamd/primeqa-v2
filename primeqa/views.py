@@ -763,13 +763,12 @@ def set_active_environment():
 @views_bp.route("/results")
 @login_required
 def results_list_alias():
-    """Tester-facing Results URL. Delegates to the existing runs list
-    template so we keep a single source of truth for scoping, the My
-    Runs/All Runs toggle, and the run-history rendering. The sidebar
-    entry points here (per Prompt 8 navigation)."""
+    """Tester-facing Results URL. D-218: results live on the substrate runs
+    index now — the v1 /runs list froze when execution moved to
+    s4_execution_runs. The v1 archive stays reachable at /runs directly."""
     # Preserve any filter query-string the caller passed.
     qs = request.query_string.decode() if request.query_string else ""
-    return redirect("/runs" + (f"?{qs}" if qs else ""))
+    return redirect("/runs/substrate" + (f"?{qs}" if qs else ""))
 
 
 @views_bp.route("/results/<int:run_id>")
@@ -5188,7 +5187,7 @@ def claims_list():
 
 
 @views_bp.route("/claims/inbox")
-@role_required("admin", "tester", "superadmin")
+@role_required("admin", "ba", "tester", "superadmin")
 def claims_inbox():
     """D-206: the approval inbox — every draft claim awaiting a human decision,
     with the plain-English title + the behavioral/configuration-check depth
@@ -5280,7 +5279,7 @@ def claims_run(test_id):
 
 
 @views_bp.route("/claims/<uuid:test_id>/approve", methods=["POST"])
-@role_required("admin", "tester", "superadmin")
+@role_required("admin", "ba", "tester", "superadmin")
 def claims_approve(test_id):
     """D-168 (UI Area 3 slice 3a): approve a draft claim + its recipes so it
     becomes runnable (the generate→approve→run loop). Approval is humans-only at

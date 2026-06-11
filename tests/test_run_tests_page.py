@@ -404,8 +404,8 @@ def run_tests():
     def test_tester_lands_on_run_page():
         # Tester base lands on /run (not /runs/new) per the spec.
         perms = set(next(s for s in BASE_PERMISSION_SETS if s["api_name"] == "tester_base")["permissions"])
-        assert get_landing_page(perms) == "/run"
-    results.append(test("15. Tester base landing page is /run",
+        assert get_landing_page(perms) == "/requirements"
+    results.append(test("15. Tester base landing page is /requirements (D-218)",
                         test_tester_lands_on_run_page))
 
     # --- summary ---

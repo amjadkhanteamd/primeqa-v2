@@ -1,7 +1,10 @@
 {% extends "base.html" %}
+{% from 'components/_legacy_banner.html' import legacy_banner %}
 {% from 'components/_modal.html' import modal_shell %}
 {% block title %}Run Tests - PrimeQA{% endblock %}
 {% block content %}
+
+<div class="mb-4">{{ legacy_banner("Runs started here use the old engine and will not appear in current results. Trigger tests from a requirement or the Test Library instead.", "/requirements", "Go to My Tickets") }}</div>
 
 {#
   Prompt 16: four-mode /run page — Sprint / Tickets / Suite / Release.

@@ -67,10 +67,12 @@ SIDEBAR_ITEMS: list[dict] = [
         "id": "results",
         "label": "Results",
         "icon": "chart",
-        "url": "/results",
-        # Keep the Results tab highlighted when the user follows a
-        # link or redirect into /runs/* (the aliased canonical path).
-        "active_also_for": ("/runs",),
+        # D-218: results now live on the substrate runs index — the v1
+        # /runs list froze when execution moved to s4_execution_runs.
+        # /runs stays in active_also_for so the legacy archive (and v1
+        # run-detail pages) still highlight this tab.
+        "url": "/runs/substrate",
+        "active_also_for": ("/runs", "/results"),
         "permission_any": ["view_own_results", "view_all_results"],
         "section": "primary",
     },
@@ -78,7 +80,10 @@ SIDEBAR_ITEMS: list[dict] = [
         "id": "my_reviews",
         "label": "My Reviews",
         "icon": "check-circle",
-        "url": "/reviews",
+        # D-218: the substrate review act is draft-claim approval — the
+        # v1 /reviews queue stopped filling when generation moved to S3.
+        "url": "/claims/inbox",
+        "active_also_for": ("/reviews",),
         "permission": "review_test_cases",
         "section": "primary",
     },
@@ -163,6 +168,16 @@ SIDEBAR_ITEMS: list[dict] = [
     },
 
     # Admin — tenant-wide config
+    {
+        # D-218: the S1 semantic org-model browser was reachable only via
+        # an environment detail link despite being a core substrate surface.
+        "id": "org_model",
+        "label": "Org Model",
+        "icon": "map",
+        "url": "/org-model",
+        "permission": "manage_environments",
+        "section": "admin",
+    },
     {
         "id": "knowledge",
         "label": "Knowledge",
@@ -292,8 +307,10 @@ _LANDING_PAGE_PERMISSION: dict[str, Iterable[str]] = {
     "/run":           ("run_sprint", "run_suite"),
     "/runs/new":      ("run_sprint", "run_suite"),  # legacy — wizard
     "/runs":          ("view_own_results", "view_all_results"),
+    "/runs/substrate": ("view_own_results", "view_all_results"),
     "/results":       ("view_own_results", "view_all_results"),
     "/reviews":       ("review_test_cases",),
+    "/claims/inbox":  ("review_test_cases",),
     "/test-cases":    ("view_test_library",),
     "/suites":        ("manage_test_suites", "view_suite_quality_gates"),
     "/settings":      (),  # special: any manage_* permission
@@ -348,9 +365,10 @@ def get_landing_page(user_permissions: set,
     if has_single and not has_bulk:
         return "/requirements"
 
-    # 3. Tester / Release Owner with bulk capability.
+    # 3. Tester / Release Owner with bulk capability. D-218: land on the
+    # substrate-native requirements surface, not the legacy /run trigger page.
     if has_bulk:
-        return "/run"
+        return "/requirements"
 
     # 4. Release Owner read-only view — new dashboard at /dashboard.
     if has_dashboard and not has_any_run:

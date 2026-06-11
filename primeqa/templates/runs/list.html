@@ -1,8 +1,11 @@
 {% extends "base.html" %}
+{% from 'components/_legacy_banner.html' import legacy_banner %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% from 'components/pagination.html' import render_meta_pagination, per_page_selector %}
 {% block title %}Runs - PrimeQA{% endblock %}
 {% block content %}
+
+<div class="mb-4">{{ legacy_banner("This run history stopped receiving new runs when execution moved to the new engine.", "/runs/substrate", "View current runs") }}</div>
 
 {{ breadcrumbs([('Runs', None)]) }}
 

@@ -7,9 +7,13 @@
 {# D-168 (UI Area 3 slice 3b): the global S4 runs index — a focused new surface
    (the dense v1 /runs page is re-pointed at cutover Step 5). #}
 <div class="max-w-5xl space-y-5">
-  <div>
-    <h1 class="text-xl font-semibold text-gray-900">Runs <span class="text-gray-400 text-base">(Substrate S4)</span></h1>
-    <p class="mt-1 text-sm text-gray-500">Every execution run, newest first &mdash; outcome + the S6 verdict. Click a run for its evidence.</p>
+  <div class="flex items-start justify-between">
+    <div>
+      <h1 class="text-xl font-semibold text-gray-900">Runs <span class="text-gray-400 text-base">(Substrate S4)</span></h1>
+      <p class="mt-1 text-sm text-gray-500">Every execution run, newest first &mdash; outcome + the S6 verdict. Click a run for its evidence.</p>
+    </div>
+    {# D-218: the v1 archive stays reachable after Results re-pointed here. #}
+    <a href="/runs" class="text-xs text-gray-400 hover:text-gray-600 hover:underline whitespace-nowrap mt-1">Legacy v1 run history &rarr;</a>
   </div>
 
   {% if not data or not data.available %}
