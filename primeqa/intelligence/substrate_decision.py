@@ -113,6 +113,12 @@ def _assemble_claim_evidence(session, external_keys) -> list[dict]:
     current_seq = _current_s1_seq(session)
     out = []
     for tid in test_ids:
+        # D-219: a deprecated claim is RETIRED from the corpus — its stale
+        # run evidence must not grade the release (D-ε-1 deprecation is the
+        # human's "this test no longer applies" signal).
+        latest = coord.get_latest_claim(session, tid)
+        if latest is not None and latest.status == "deprecated":
+            continue
         approved = coord.get_current_approved_claim(session, tid)
         approved_seq = approved.version_seq if approved is not None else None
 

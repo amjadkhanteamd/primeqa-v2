@@ -148,17 +148,16 @@
         </div>
         {% endif %}
 
-        {% if flaky_tests %}
+        {% if flaky_claims %}
         <div class="bg-white shadow rounded-lg">
-            <div class="px-4 py-5 sm:px-6 border-b"><h3 class="text-lg font-medium">Flaky Tests (30d)</h3></div>
-            <div class="divide-y divide-gray-200">
-                {% for t in flaky_tests %}
-                <a href="/test-cases/{{ t.test_case_id }}" class="block px-6 py-3 hover:bg-gray-50">
-                    <div class="flex justify-between items-center">
-                        <span class="text-sm font-medium text-indigo-600">{{ t.title }}</span>
-                        <span class="text-sm font-semibold text-orange-600">{{ (t.flaky_score * 100)|int }}%</span>
+            <div class="px-6 py-4 border-b"><h3 class="text-sm font-semibold text-gray-700">Flaky tests (chronically flipping)</h3></div>
+            <div class="divide-y divide-gray-100">
+                {% for c in flaky_claims %}
+                <a href="/claims/{{ c.test_id }}" class="block px-6 py-3 hover:bg-gray-50">
+                    <div class="flex items-center justify-between">
+                        <span class="text-sm font-mono text-gray-900">{{ c.test_id[:8] }}</span>
+                        <span class="text-xs text-gray-500">{{ c.recent_outcomes[:6]|join(' &middot; ') }}</span>
                     </div>
-                    <p class="text-xs text-gray-500">{{ t.passed }} passed · {{ t.failed }} failed · {{ t.total }} runs</p>
                 </a>
                 {% endfor %}
             </div>

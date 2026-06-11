@@ -276,24 +276,6 @@
         {% endif %}
     </div>
     {% elif tab == 'decision' %}
-    <div class="bg-white shadow rounded-lg p-6">
-        {% if release.latest_decision %}
-        <h3 class="text-lg font-medium text-gray-900 mb-4">Decision Details</h3>
-        <dl class="grid grid-cols-2 gap-4 mb-6">
-            <div><dt class="text-xs text-gray-500 uppercase">Recommendation</dt><dd class="text-sm font-medium text-gray-900">{{ release.latest_decision.recommendation|replace('_', ' ')|upper }}</dd></div>
-            <div><dt class="text-xs text-gray-500 uppercase">Confidence</dt><dd class="text-sm font-medium text-gray-900">{% if release.latest_decision.confidence %}{{ (release.latest_decision.confidence * 100)|int }}%{% else %}—{% endif %}</dd></div>
-            <div><dt class="text-xs text-gray-500 uppercase">Final Decision</dt><dd class="text-sm font-medium text-gray-900">{{ release.latest_decision.final_decision|replace('_', ' ')|upper if release.latest_decision.final_decision else 'Pending' }}</dd></div>
-            <div><dt class="text-xs text-gray-500 uppercase">Decided At</dt><dd class="text-sm text-gray-900">{{ release.latest_decision.decided_at[:19] if release.latest_decision.decided_at else '—' }}</dd></div>
-        </dl>
-        {% if release.latest_decision.reasoning %}
-        <h4 class="text-sm font-medium text-gray-700 mb-2">Reasoning</h4>
-        <pre class="text-xs bg-gray-50 p-3 rounded overflow-auto">{{ release.latest_decision.reasoning|tojson(indent=2) }}</pre>
-        {% endif %}
-        {% else %}
-        <p class="text-sm text-gray-500 text-center py-8">No decision yet. Complete test execution to generate a recommendation.</p>
-        {% endif %}
-    </div>
-
     {# D-172 (5a): substrate evidence — the release's claims (via its requirements)
        grounding-drift + latest verdict. Signal the human weighs next to the v1
        recommendation above; the substrate does NOT produce the verdict. #}
@@ -303,12 +285,12 @@
        recommendation; gating: it can degrade the recorded verdict. #}
     {% if substrate_decision and substrate_decision.available and substrate_decision.applicable %}
     {% set sd = substrate_decision %}
-    <div class="bg-white shadow rounded-lg p-6 mt-6 border-l-4
+    <div class="bg-white shadow rounded-lg p-6 border-l-4
         {% if sd.recommendation == 'go' %}border-green-400
         {% elif sd.recommendation == 'no_go' %}border-red-400
         {% else %}border-amber-400{% endif %}">
       <div class="flex items-center justify-between mb-1">
-        <h3 class="text-lg font-medium text-gray-900">Substrate recommendation</h3>
+        <h3 class="text-lg font-medium text-gray-900">Release recommendation <span class="text-xs font-normal text-gray-400">(substrate evidence)</span></h3>
         <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-sm font-semibold
             {% if sd.recommendation == 'go' %}bg-green-100 text-green-800
             {% elif sd.recommendation == 'no_go' %}bg-red-100 text-red-800
@@ -345,6 +327,30 @@
       </ul>
     </div>
     {% endif %}
+
+    {# D-219 slice 2: the substrate recommendation is the PRIMARY decision
+       presentation — the v1 verdict (computed over the frozen pipeline_runs
+       corpus) demotes to a legacy card below. The RECORDED decision keeps
+       composer semantics (D-198/D-213.1) unchanged. #}
+    <div class="bg-white shadow rounded-lg p-6 mt-6">
+        {% if release.latest_decision %}
+        <h3 class="text-lg font-medium text-gray-900 mb-1">Legacy engine verdict</h3>
+        <p class="text-xs text-amber-700 mb-4">Computed by the v1 engine over the frozen pre-replatform run corpus &mdash; kept for the parity window; the substrate recommendation above is the current read.</p>
+        <dl class="grid grid-cols-2 gap-4 mb-6">
+            <div><dt class="text-xs text-gray-500 uppercase">Recommendation</dt><dd class="text-sm font-medium text-gray-900">{{ release.latest_decision.recommendation|replace('_', ' ')|upper }}</dd></div>
+            <div><dt class="text-xs text-gray-500 uppercase">Confidence</dt><dd class="text-sm font-medium text-gray-900">{% if release.latest_decision.confidence %}{{ (release.latest_decision.confidence * 100)|int }}%{% else %}—{% endif %}</dd></div>
+            <div><dt class="text-xs text-gray-500 uppercase">Final Decision</dt><dd class="text-sm font-medium text-gray-900">{{ release.latest_decision.final_decision|replace('_', ' ')|upper if release.latest_decision.final_decision else 'Pending' }}</dd></div>
+            <div><dt class="text-xs text-gray-500 uppercase">Decided At</dt><dd class="text-sm text-gray-900">{{ release.latest_decision.decided_at[:19] if release.latest_decision.decided_at else '—' }}</dd></div>
+        </dl>
+        {% if release.latest_decision.reasoning %}
+        <h4 class="text-sm font-medium text-gray-700 mb-2">Reasoning</h4>
+        <pre class="text-xs bg-gray-50 p-3 rounded overflow-auto">{{ release.latest_decision.reasoning|tojson(indent=2) }}</pre>
+        {% endif %}
+        {% else %}
+        <p class="text-sm text-gray-500 text-center py-8">No decision yet. Complete test execution to generate a recommendation.</p>
+        {% endif %}
+    </div>
+
 
     <div class="bg-white shadow rounded-lg p-6 mt-6">
       <div class="flex items-center justify-between mb-1">

@@ -158,9 +158,11 @@ def run_tests():
         assert r.status_code == 200, f"Expected 200, got {r.status_code}"
         html = r.data.decode("utf-8", "replace")
         assert "Run Tests" in html, "Page title missing"
-        # Sprint tab visible for tester
-        assert 'data-mode="sprint"' in html, "Sprint tab should be visible"
-    results.append(test("1. /run renders for tester (run_sprint holder)",
+        # D-219: the substrate page — requirement picker, not the v1 tabs.
+        assert ("requirement_keys" in html or "Nothing approved" in html), \
+            "Substrate requirement picker (or its empty state) missing"
+        assert 'data-mode="sprint"' not in html, "v1 mode tabs should be gone"
+    results.append(test("1. /run renders the substrate run page",
                         test_run_renders_for_tester))
 
     def test_run_redirects_for_developer():
@@ -172,18 +174,25 @@ def run_tests():
     results.append(test("2. /run redirects developer (no bulk perms)",
                         test_run_redirects_for_developer))
 
-    def test_run_hides_suite_tab_without_perm():
-        # Give tester_rt only run_sprint (no run_suite). Sprint tab should
-        # still render; Suite tab should be absent.
-        _force_perms(tester_user.id, ["developer_base", "run_sprint"])
+    def test_run_excludes_production_envs():
+        # D-219: the env picker offers sandboxes only.
+        _force_perms(tester_user.id, ["tester_base"])
         login_form("tester_rt@primeqa.io", "test123")
         r = client.get("/run")
         html = r.data.decode("utf-8", "replace")
-        assert 'data-mode="sprint"' in html
-        assert 'data-mode="suite"' not in html, "Suite tab should be hidden"
-        _force_perms(tester_user.id, ["tester_base"])  # restore
-    results.append(test("3. /run hides tabs the user doesn't have perm for",
-                        test_run_hides_suite_tab_without_perm))
+        from primeqa.core.models import Environment
+        db = SessionLocal()
+        try:
+            prods = (db.query(Environment)
+                     .filter_by(tenant_id=TENANT_ID, is_production=True)
+                     .all())
+        finally:
+            db.close()
+        for p_env in prods:
+            assert f'<option value="{p_env.id}"' not in html, \
+                f"production env {p_env.id} offered on /run"
+    results.append(test("3. /run excludes production environments",
+                        test_run_excludes_production_envs))
 
     # --- API validation ---
     tester_token = login_api("tester_rt@primeqa.io", "test123")

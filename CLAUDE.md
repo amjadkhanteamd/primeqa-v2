@@ -633,8 +633,7 @@ python tests/test_release_dashboard.py   # 27 (Prompt 10/Part 8 — dashboard + 
 python tests/test_generation_jobs.py     # 21 (Prompt 11 — async generation queue)
 python tests/test_generation_quality_gate.py # 23 (Prompt 13 — linter + knowledge rules)
 python tests/test_reliability_fixes.py   # 10 (Prompt 15 — tx wrap / neg counts / verify capture)
-python tests/test_run_tests_page.py      # 15 (/run + /api/bulk-runs)
-python tests/test_run_page_overhaul.py   # 25 (Prompt 16 — 4-mode pickers + dynamic prod banner)
+python tests/test_run_tests_page.py      # 15 (substrate /run page + legacy /api/bulk-runs)
 python tests/test_story_view.py          # 7  (Migration 048 — story-view enrichment + macro render + fallback)
 python tests/test_domain_packs.py        # 14 (Migration 049 — domain-pack library + selector + integration + flag gate)
 # ~301 total

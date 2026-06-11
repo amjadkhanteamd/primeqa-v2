@@ -153,13 +153,6 @@ def dashboard():
         # round-trip; the total is ~1 RTT instead of 7.
         row = db.execute(sql("""
             SELECT
-              (SELECT COUNT(*) FROM test_cases
-                 WHERE tenant_id = :tid AND deleted_at IS NULL)        AS tc_count,
-              (SELECT COUNT(*) FROM pipeline_runs
-                 WHERE tenant_id = :tid)                               AS runs_today,
-              (SELECT COUNT(*) FROM ba_reviews
-                 WHERE tenant_id = :tid AND status = 'pending'
-                   AND deleted_at IS NULL)                             AS pending,
               (SELECT COUNT(*) FROM users
                  WHERE tenant_id = :tid AND is_active = true
                    AND role <> 'superadmin')                           AS user_count,
@@ -174,37 +167,28 @@ def dashboard():
         setup_complete = (row["conn_count"] > 0 and row["env_count"] > 0
                           and row["group_count"] > 0)
 
-        recent_runs = db.query(PipelineRun).filter(
-            PipelineRun.tenant_id == tid,
-        ).order_by(PipelineRun.queued_at.desc()).limit(10).all()
-
-        runs_data = [{
-            "id": r.id, "status": r.status, "run_type": r.run_type,
-            "priority": r.priority, "queued_at": r.queued_at.isoformat() if r.queued_at else "",
-        } for r in recent_runs]
-
-        # Analytics: share the session. Each method is still a separate
-        # query but runs on one connection; further consolidation into
-        # AnalyticsService is a future pass.
-        from primeqa.execution.analytics import AnalyticsService
-        analytics = AnalyticsService(db)
-        overall = analytics.overall_stats(tid)
-        env_pass_rates = analytics.pass_rate_by_environment(tid)
-        flaky = analytics.flaky_tests(tid, limit=5)
-        releases_health = analytics.release_health(tid)
+        # D-219: the landing metrics read substrate evidence — claims,
+        # s4 runs, latest-per-claim pass rate, flake-flagged claims. The
+        # v1 product-table counts froze when the engine moved.
+        from primeqa.intelligence.substrate_dashboard import (
+            get_landing_substrate_stats,
+        )
+        sub = get_landing_substrate_stats(tid)
 
         stats = {
-            "total_test_cases": row["tc_count"],
-            "runs_today": row["runs_today"],
-            "pass_rate": overall["pass_rate_30d"],
-            "pending_reviews": row["pending"],
+            "total_test_cases": sub["approved_claims"],
+            "runs_today": sub["runs_today"],
+            "pass_rate": sub["pass_rate"],
+            "pending_reviews": sub["draft_claims"],
             "user_count": row["user_count"],
             "env_count": row["env_count"],
         }
         return render_template("dashboard.html", **ctx(
-            active_page="dashboard", stats=stats, recent_runs=runs_data,
+            active_page="dashboard", stats=stats,
+            recent_runs=sub["recent_runs"],
             setup_complete=setup_complete,
-            env_pass_rates=env_pass_rates, flaky_tests=flaky, releases_health=releases_health,
+            env_pass_rates=[], flaky_tests=[],
+            flaky_claims=sub["flaky_claims"], releases_health=[],
         ))
     finally:
         db.close()
@@ -225,7 +209,10 @@ def release_dashboard():
     trend, intelligence summary."""
     from primeqa.core.models import User
     from primeqa.core.permissions import require_page_permission
-    from primeqa.release.dashboard import get_dashboard_data
+    # D-219: the dashboard reads substrate evidence (v1-shaped drop-in).
+    from primeqa.intelligence.substrate_dashboard import (
+        get_substrate_dashboard_data as get_dashboard_data,
+    )
     from primeqa.runs.my_tickets import (
         resolve_active_environment, list_switchable_environments,
     )
@@ -558,7 +545,10 @@ def shared_dashboard_public(token):
     share, cancel) are stripped in the read-only template."""
     from datetime import datetime, timezone
     from primeqa.core.permissions import SharedDashboardLink
-    from primeqa.release.dashboard import get_dashboard_data
+    # D-219: shared links render the same substrate-sourced data.
+    from primeqa.intelligence.substrate_dashboard import (
+        get_substrate_dashboard_data as get_dashboard_data,
+    )
 
     db = next(get_db())
     try:
@@ -851,104 +841,117 @@ def runs_list():
         db.close()
 
 
-# --- /run — Tester's focused run page (Prompt 7) --------------------------
+# --- /run — the substrate run page (D-219 slice 3) -------------------------
 
 @views_bp.route("/run")
 @login_required
 def run_page():
-    """Tester's primary workflow page: pick Sprint / Tickets / Suite /
-    Release, configure, and kick off a pipeline run.
-
-    Simpler than /runs/new (the Run Wizard) — one click to run one
-    source type. The underlying executor + pipeline_run row are
-    shared; `/runs/:id` continues to be the live progress surface.
-
-    Prompt 16: four modes (Sprint / Tickets / Suite / Release) with
-    queryable pickers driven by dedicated API endpoints. The prod
-    banner + confirmation checkbox are now JS-gated on the selected
-    env's `is_production` flag — switching to a non-prod env hides
-    both and clears the checkbox.
-    """
-    from primeqa.core.models import Environment, User
+    """Run approved substrate tests in bulk: pick an environment + the
+    requirements to cover (or run everything approved). Replaces the v1
+    4-mode page (Prompt 16) whose pickers and POST /api/bulk-runs fed the
+    retired pipeline engine. Production environments are excluded — the
+    D-214 sandbox-only execution posture."""
+    from primeqa.core.models import Environment
     from primeqa.core.permissions import require_page_permission
-    from primeqa.execution.models import PipelineRun
-    from primeqa.runs.my_tickets import resolve_active_environment
-    from primeqa.test_management.models import TestSuite
+    from primeqa.intelligence.s4_execution_console import (
+        list_runnable_requirements,
+    )
+    from primeqa.test_management.models import Requirement
 
     @require_page_permission("run_sprint", "run_suite", require_all=False)
     def _render():
         db = next(get_db())
         try:
-            user_row = db.query(User).filter_by(id=request.user["id"]).first()
-            env = resolve_active_environment(user_row, db)
-            # List all envs in the tenant for the env selector (the Tester
-            # may run against any team env; personal envs are allowed too).
+            tid = request.user["tenant_id"]
             envs = (db.query(Environment)
-                    .filter_by(tenant_id=request.user["tenant_id"], is_active=True)
-                    .order_by(Environment.name.asc())
-                    .all())
-            # Suite picker: inline TC counts + gate threshold so the
-            # dropdown shows "(20 TCs · gate 90%)" without a follow-up
-            # /api/suites/:id/overview call on first render.
-            from sqlalchemy import func as _sf
-            from primeqa.test_management.models import SuiteTestCase, TestCase
-            suite_rows = (db.query(TestSuite)
-                          .filter_by(tenant_id=request.user["tenant_id"])
-                          .filter(TestSuite.deleted_at.is_(None))
-                          .order_by(TestSuite.name.asc())
-                          .all())
-            counts: dict = {}
-            if suite_rows:
-                sids = [s.id for s in suite_rows]
-                rows = (db.query(SuiteTestCase.suite_id, _sf.count().label("n"))
-                        .join(TestCase,
-                              TestCase.id == SuiteTestCase.test_case_id)
-                        .filter(SuiteTestCase.suite_id.in_(sids),
-                                TestCase.deleted_at.is_(None))
-                        .group_by(SuiteTestCase.suite_id).all())
-                counts = {sid: n for sid, n in rows}
-            suites = [{
-                "id": s.id, "name": s.name,
-                "suite_type": s.suite_type,
-                "quality_gate_threshold": s.quality_gate_threshold,
-                "test_case_count": int(counts.get(s.id, 0)),
-            } for s in suite_rows]
-            # Run history for this env (last 5) — shown below the form.
-            history = []
-            if env is not None:
-                rows = (db.query(PipelineRun)
-                        .filter_by(tenant_id=request.user["tenant_id"],
-                                   environment_id=env.id)
-                        .order_by(PipelineRun.queued_at.desc())
-                        .limit(5)
-                        .all())
-                history = [{
-                    "id": r.id, "status": r.status, "run_type": r.run_type,
-                    "source_type": r.source_type,
-                    "total_tests": r.total_tests or 0,
-                    "passed": r.passed or 0, "failed": r.failed or 0,
-                    "queued_at": r.queued_at.isoformat() if r.queued_at else "",
-                    "completed_at": r.completed_at.isoformat() if r.completed_at else None,
-                    "label": r.label,
-                } for r in rows]
-            # Envs data enriched with is_production so the JS prod-gate
-            # can flip on dropdown change without a round-trip.
-            envs_data = [{
-                "id": e.id, "name": e.name,
-                "is_production": bool(e.is_production),
-                "has_jira": bool(e.jira_connection_id),
-            } for e in envs]
+                    .filter_by(tenant_id=tid, is_active=True)
+                    .filter(Environment.is_production.is_(False))
+                    .order_by(Environment.name.asc()).all())
+            runnable = list_runnable_requirements(tid)
+            keys = [r["key"] for r in runnable["rows"]]
+            summaries = {}
+            jira_keys = [k for k in keys if not k.startswith("req-")]
+            req_ids = [int(k[4:]) for k in keys if k.startswith("req-")
+                       and k[4:].isdigit()]
+            if jira_keys:
+                for r in (db.query(Requirement)
+                          .filter(Requirement.tenant_id == tid,
+                                  Requirement.jira_key.in_(jira_keys)).all()):
+                    summaries[r.jira_key] = r.jira_summary
+            if req_ids:
+                for r in (db.query(Requirement)
+                          .filter(Requirement.tenant_id == tid,
+                                  Requirement.id.in_(req_ids)).all()):
+                    summaries[f"req-{r.id}"] = r.jira_summary
+            rows = [{**r, "summary": summaries.get(r["key"])}
+                    for r in runnable["rows"]]
             return render_template("run/index.html", **ctx(
-                active_page="run_tests",
-                env=env, envs=envs, envs_data=envs_data,
-                suites=suites, history=history,
-                is_production=(env.is_production if env else False),
-                active_env_id=(env.id if env else None),
+                active_page="run_tests", environments=[
+                    {"id": e.id, "name": e.name} for e in envs],
+                requirements=rows, available=runnable["available"],
             ))
         finally:
             db.close()
 
     return _render()
+
+
+@views_bp.route("/run", methods=["POST"])
+@login_required
+def run_page_submit():
+    """Enqueue one s4 execution job per approved claim of the selected
+    requirements (all of them when run_all is set)."""
+    from flask import flash
+    from primeqa.core.models import Environment
+    from primeqa.core.permissions import require_page_permission
+
+    @require_page_permission("run_sprint", "run_suite", require_all=False)
+    def _submit():
+        tid = request.user["tenant_id"]
+        env_id = request.form.get("environment_id", type=int)
+        run_all = request.form.get("run_all") == "1"
+        keys = request.form.getlist("requirement_keys")
+        db = next(get_db())
+        try:
+            env = (db.query(Environment)
+                   .filter_by(id=env_id, tenant_id=tid).first()
+                   if env_id else None)
+            if env is None:
+                flash("Pick an environment to run against.", "error")
+                return redirect("/run")
+            if env.is_production:
+                flash("Substrate runs are sandbox-only — production "
+                      "environments cannot be targeted here.", "error")
+                return redirect("/run")
+        finally:
+            db.close()
+
+        if run_all:
+            from primeqa.intelligence.s4_execution_console import (
+                enqueue_all_approved_claims,
+            )
+            result = enqueue_all_approved_claims(
+                tid, env_id, created_by=request.user["id"])
+            count = len(result["enqueued"])
+        else:
+            if not keys:
+                flash("Select at least one requirement.", "error")
+                return redirect("/run")
+            from primeqa.execution_engine.intake import (
+                enqueue_claims_for_requirements,
+            )
+            result = enqueue_claims_for_requirements(
+                tenant_id=tid, external_keys=keys, environment_id=env_id,
+                created_by=request.user["id"])
+            count = result["enqueued"]
+        if count == 0:
+            flash("No approved claims matched the selection.", "error")
+            return redirect("/run")
+        flash(f"{count} substrate run{'s' if count != 1 else ''} queued",
+              "success")
+        return redirect("/runs/substrate")
+
+    return _submit()
 
 
 @views_bp.route("/api/bulk-runs", methods=["POST"])
@@ -6319,55 +6322,56 @@ def releases_create():
 @views_bp.route("/releases/<int:release_id>/run", methods=["POST"])
 @role_required("admin", "tester")
 def releases_run(release_id):
-    """Queue a run of every test_plan item for this release."""
+    """D-219 slice 2: run the release's tests on the SUBSTRATE — one s4
+    execution job per approved claim of the release's requirements. The
+    button's promise is "run this release's tests", and those are claims
+    now; the v1 pipeline path retired with this re-target."""
     from flask import flash
     db = next(get_db())
     try:
+        from primeqa.core.repository import EnvironmentRepository
         from primeqa.release.repository import ReleaseRepository
         from primeqa.release.service import ReleaseService
-        from primeqa.execution.repository import (
-            PipelineRunRepository, PipelineStageRepository,
-            ExecutionSlotRepository, WorkerHeartbeatRepository,
+        from primeqa.release.decision_composer import (
+            external_keys_for_requirements,
         )
-        from primeqa.execution.service import PipelineService
         tid = request.user["tenant_id"]
         env_id = request.form.get("environment_id", type=int)
-        priority = request.form.get("priority", "normal")
         if not env_id:
             flash("Pick an environment to run against.", "error")
+            return redirect(f"/releases/{release_id}")
+        env = EnvironmentRepository(db).get_environment(env_id, tid)
+        if env is None:
+            flash("Environment not found.", "error")
             return redirect(f"/releases/{release_id}")
         rel_svc = ReleaseService(ReleaseRepository(db))
         release = rel_svc.get_release_detail(release_id, tid)
         if not release:
             flash("Release not found.", "error")
             return redirect("/releases")
-        tc_ids = [item["test_case_id"] for item in release.get("test_plan", [])
-                  if not item.get("deleted")]
-        if not tc_ids:
-            flash("Release test plan is empty.", "error")
-            return redirect(f"/releases/{release_id}?tab=test_plan")
-
-        svc = PipelineService(
-            PipelineRunRepository(db), PipelineStageRepository(db),
-            ExecutionSlotRepository(db), WorkerHeartbeatRepository(db),
-        )
-        result = svc.create_run(
-            tenant_id=tid, environment_id=env_id,
-            triggered_by=request.user["id"],
-            run_type="execute_only",
-            source_type="release",
-            source_ids=[release_id],
-            priority=priority,
-            source_refs={"release_id": release_id, "test_case_ids": tc_ids},
-        )
-        flash(f"Run #{result['id']} queued ({len(tc_ids)} test case"
-              f"{'s' if len(tc_ids) != 1 else ''})", "success")
-        return redirect(f"/runs/{result['id']}")
-    except Exception as e:
-        flash(f"Could not queue run: {e}", "error")
-        return redirect(f"/releases/{release_id}?tab=test_plan")
+        keys = external_keys_for_requirements(release.get("requirements", []))
+        if not keys:
+            flash("Release has no requirements to run.", "error")
+            return redirect(f"/releases/{release_id}?tab=requirements")
     finally:
         db.close()
+
+    from primeqa.execution_engine.intake import enqueue_claims_for_requirements
+    try:
+        result = enqueue_claims_for_requirements(
+            tenant_id=tid, external_keys=keys, environment_id=env_id,
+            created_by=request.user["id"])
+    except Exception as e:
+        flash(f"Could not queue substrate runs: {e}", "error")
+        return redirect(f"/releases/{release_id}?tab=decision")
+    if result["enqueued"] == 0:
+        flash("No approved claims found for this release's requirements — "
+              "approve drafts in the claims inbox first.", "error")
+        return redirect(f"/releases/{release_id}?tab=decision")
+    flash(f"{result['enqueued']} substrate run"
+          f"{'s' if result['enqueued'] != 1 else ''} queued across "
+          f"{result['requirements']} requirement(s)", "success")
+    return redirect("/runs/substrate")
 
 
 @views_bp.route("/releases/<int:release_id>/evaluate-decision", methods=["POST"])

@@ -414,3 +414,28 @@ def enqueue_all_approved_claims(tenant_id: int, environment_id: int,
         log.warning("enqueue_all_approved_claims failed for tenant %s: %s",
                     tenant_id, exc)
         return {"enqueued": [], "claim_count": 0}
+
+# --- D-219 slice 3: the substrate run page's requirement list --------------
+
+def list_runnable_requirements(tenant_id: int) -> dict:
+    """Best-effort: every requirement external key with >=1 APPROVED claim,
+    with the approved-claim count (the /run page's picker rows). Never
+    raises. Returns ``{available, rows: [{key, approved_claims}]}``."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            rows = conn.execute(text(
+                "SELECT l.external_key AS key, "
+                "       COUNT(DISTINCT l.test_id) AS approved_claims "
+                "FROM test_requirement_links l "
+                "JOIN test_claims c ON c.test_id = l.test_id "
+                "  AND c.valid_to IS NULL AND c.status = 'approved' "
+                "WHERE l.link_kind = 'generated_from' "
+                "GROUP BY l.external_key ORDER BY l.external_key"
+            )).mappings().all()
+            return {"available": True,
+                    "rows": [dict(r) for r in rows]}
+    except Exception as exc:
+        log.warning("list_runnable_requirements unavailable for tenant %s: %s",
+                    tenant_id, exc)
+        return {"available": False, "rows": []}
