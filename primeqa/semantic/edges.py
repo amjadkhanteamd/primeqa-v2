@@ -173,6 +173,19 @@ class HasPermissionSetProperties(_EdgeProperties):
     assigned_by_user_entity_id: Optional[UUID] = None
     expiration_date: Optional[date] = None
 
+    @field_validator("assigned_at", "expiration_date", mode="before")
+    @classmethod
+    def _date_from_sf_datetime(cls, v):
+        """Salesforce timestamp fields (SystemModstamp/CreatedDate) are full
+        datetimes ('2026-06-11T04:50:31.000+0000'); these properties keep the
+        DATE design grain. Pydantic v2 rejects non-midnight datetime strings
+        for date fields (date_from_datetime_inexact) — surfaced live by the
+        org's first real PermissionSetAssignment (sync job 15). Truncate the
+        date part here so EVERY feeder is covered, not just one mapping site."""
+        if isinstance(v, str) and len(v) > 10 and v[10:11] in ("T", " "):
+            return v[:10]
+        return v
+
 
 # ----------------------------------------------------------------------
 # BEHAVIOR.TRIGGERS_ON — Flow -> Object
