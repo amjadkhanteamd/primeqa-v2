@@ -6384,11 +6384,18 @@ def releases_detail(release_id):
             substrate_decision = get_release_substrate_decision(
                 tid, external_keys, release.get("decision_criteria") or {})
 
+        # D-212 (5b-4): the dual-run parity view — per-requirement v1 vs
+        # substrate latest results, classified for retirement triage.
+        parity = None
+        if tab == "parity":
+            from primeqa.intelligence.dual_run_console import get_release_parity
+            parity = get_release_parity(tid, db, release)
+
         return render_template("releases/detail.html", **ctx(
             active_page="releases", release=release, tab=tab,
             all_requirements=all_requirements,
             environments=envs_data, substrate=substrate,
-            substrate_decision=substrate_decision,
+            substrate_decision=substrate_decision, parity=parity,
         ))
     finally:
         db.close()
