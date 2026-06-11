@@ -373,3 +373,25 @@ relationship + verified Lead prohibition in ONE propose → 2 claims, 1 outcome,
 no caveat) with a live envelope (`draft` + `claims_count >= 2`). SELECT stays dormant (decomposition
 still yields ≤1 grounded candidate per intent). Jobs/queue/consumer untouched (already
 multiplicity-agnostic). S3 suites green (232 + representation 1503 cross-gate). DECISIONS_LOG D-207.
+
+## 2026-06-11 — 5b-5 build: automation-effect + state-transition authoring & execution (D-210)
+
+The two deferred Tier-2 data-behavior kinds are now emittable end-to-end (offline). **S3**:
+`GroundedStateTransition` + `GroundedAutomationEffect`; the observe-the-org recipe family (create
+WITHOUT the asserted field — the AUTOMATION must set it — → read → assert) and the cross-object
+shape (create the trigger → query the effect object via the VERIFIED lookup → assert exists/equals);
+positive automation-effect grounds on its REAL dimension (Flow `TRIGGERS_ON`, not the any-field
+proxy); every LLM-named field/object/lookup is S1-verified at the stash gate (defer with a specific
+detail, never guess); negative polarity for both kinds defers to the prohibition vertical; prompt
+frozen as **generation@v6** (the hint contracts: `field_name`/`expected_value` to-state;
+`trigger_object` for cross-object transitions — deferred in v1; `effect_object`/`effect_lookup_field`
+[/`effect_field`/`effect_value`] for Flow-created records). **S4** (D-210.2): `exists` predicate
+(0 rows = the honest FAILED finding), bounded read retry (3 × 2s) while the org's automation lands,
+automation-created rows registered for reverse-order teardown; the D-115/D-205 bridge projection
+needed NO change. **S6** (D-210.3): 4 new verdicts (`state_transitioned` / `automation_triggered`
+± not), vocabulary selected by `claim_kind` threaded into `interpret_run` (the evidence shape is
+shared with value-claim); plain-words run lines on the triage pages. Both kinds emit **caveated
+Layer-1** (no Flow-formula derivation exists — D-210 §4). En route, **D-211** fixed the live
+'"5000" != 5000.0' false failure (typed-tolerant assert equality) — the comparator this family
+reuses. Live gate pending: env 59 has no record-triggered Flow; AK's SQ-205 escalation feature is
+the fixture. Suites: 2465 unit + 460 integration green. DECISIONS_LOG D-210/.1/.2/.3.

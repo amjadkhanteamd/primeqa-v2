@@ -215,7 +215,8 @@ def _interpret_and_persist(session, evidence: RunEvidence) -> Optional[Interpret
 
     try:
         with session.begin_nested():
-            interpretation = interpret_run(evidence)
+            interpretation = interpret_run(
+                evidence, claim_kind=_claim_kind_of(session, evidence.claim_test_id))
             s1_reader = S1ValidationRuleReader(
                 SemanticOrgModel(session.connection()))
             interpretation = attribute_run(interpretation, evidence, s1=s1_reader)
@@ -225,6 +226,20 @@ def _interpret_and_persist(session, evidence: RunEvidence) -> Optional[Interpret
         _log.exception(
             "S6 interpretation failed for run %s; run truth preserved, "
             "interpretation=None (D-111.2 best-effort)", evidence.run_id)
+        return None
+
+
+def _claim_kind_of(session, claim_test_id) -> Optional[str]:
+    """The claim's current kind — the interpreter's verdict-vocabulary selector
+    (D-210). Best-effort: any read failure returns None (the value-claim
+    default vocabulary), never blocks interpretation."""
+    from sqlalchemy import text as _text
+    try:
+        return session.execute(_text(
+            "SELECT claim_kind FROM test_claims "
+            "WHERE test_id = :tid AND valid_to IS NULL"
+        ), {"tid": str(claim_test_id)}).scalar()
+    except Exception:
         return None
 
 

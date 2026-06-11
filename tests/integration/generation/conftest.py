@@ -190,6 +190,20 @@ def seeded(db_setup) -> dict:
         lead_vr = _entity(conn, "ValidationRule", "Lead.RequireReason", v1,
                           attrs={"formula_text": "ISBLANK(Reason__c)"})
         _edge(conn, lead_vr, lead, "APPLIES_TO", "BEHAVIOR", v1)
+        # Object WITH a record-triggered Flow (D-210): the automation-effect /
+        # state-transition vertical's grounding fixture — Flow TRIGGERS_ON Order;
+        # Order.Status__c is the to-state/effect field; Order_Log__c is the
+        # cross-object effect target with its lookup back to Order.
+        order = _entity(conn, "Object", "Order__c", v1)
+        order_status = _entity(conn, "Field", "Order__c.Status__c", v1)
+        _edge(conn, order_status, order, "BELONGS_TO", "STRUCTURAL", v1)
+        order_flow = _entity(conn, "Flow", "Stamp_Order_Status", v1)
+        _edge(conn, order_flow, order, "TRIGGERS_ON", "BEHAVIOR", v1)
+        order_log = _entity(conn, "Object", "Order_Log__c", v1)
+        log_lookup = _entity(conn, "Field", "Order_Log__c.Order__c", v1)
+        _edge(conn, log_lookup, order_log, "BELONGS_TO", "STRUCTURAL", v1)
+        log_level = _entity(conn, "Field", "Order_Log__c.Level__c", v1)
+        _edge(conn, log_level, order_log, "BELONGS_TO", "STRUCTURAL", v1)
 
     return {"v1": int(v1), "account": account, "case": case, "invoice": invoice}
 

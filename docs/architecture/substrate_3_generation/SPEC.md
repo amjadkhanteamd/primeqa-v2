@@ -980,3 +980,4 @@ Decisions + per-slice refinements: `DECISIONS_LOG.md` D-106.4 (+ slice 1–5 ame
 **Phase 3 increment (verified negatives) complete** — D-107; realized state in §10; build arc in `EVOLUTION.md` (2026-05-25).
 **Phase 3 increment (production integration) complete** — D-106.4; realized state in §11; build arc in `EVOLUTION.md` (2026-05-25).
 **Phase 4 increment (multi-claim generation) complete** — D-207; one requirement → N intents → N claims under one outcome; prompt generation@v5; build arc in `EVOLUTION.md` (2026-06-11).
+**Phase 4 increment (automation-effect + state-transition) built, live-gate pending** — D-210; observe-the-org + cross-object effect verticals, prompt generation@v6; live proof awaits a record-triggered Flow on env 59; build arc in `EVOLUTION.md` (2026-06-11).

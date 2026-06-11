@@ -12,6 +12,7 @@ from primeqa.generation import governance_core as gc
 from primeqa.generation.enums import AdmissibilityLayer, CaveatKind
 from primeqa.generation.emission import (
     EMITTABLE,
+    GroundedAutomationEffect,
     GroundedCapability,
     GroundedEmission,
     GroundedExistence,
@@ -19,6 +20,7 @@ from primeqa.generation.emission import (
     GroundedNegative,
     GroundedPositive,
     GroundedProperty,
+    GroundedStateTransition,
     _Endpoint,
     author_emission,
 )
@@ -93,6 +95,16 @@ _EMITTABLE_SHAPES = {
         archetype="data_behavior", claim_kind="value-claim", version_seq=1,
         target_object=_ep("Object", "Invoice"), field=_ep("Field", "Invoice.Amount"),
         value="100", requirement_excerpt="x"),
+    ("data_behavior", "state-transition-claim"): lambda: GroundedStateTransition(
+        archetype="data_behavior", claim_kind="state-transition-claim",
+        version_seq=1, subject=_ep("Object", "Case"),
+        field=_ep("Field", "Case.Status"), to_value="In Escalation",
+        requirement_excerpt="x"),
+    ("data_behavior", "automation-effect-claim"): lambda: GroundedAutomationEffect(
+        archetype="data_behavior", claim_kind="automation-effect-claim",
+        version_seq=1, subject=_ep("Object", "Case"),
+        automation=_ep("Flow", "Escalate_Case"), requirement_excerpt="x",
+        effect_field=_ep("Field", "Case.Status"), effect_value="In Escalation"),
 }
 
 

@@ -33,6 +33,7 @@ from primeqa.generation.enums import AdmissibilityLayer, OutcomeKind, RefusalKin
 from primeqa.generation.explanation_hash import compute_explanation_hash
 from primeqa.generation.tools import normalize_propose_input
 from primeqa.generation.emission import (
+    GroundedAutomationEffect,
     GroundedCapability,
     GroundedEmission,
     GroundedExistence,
@@ -40,6 +41,7 @@ from primeqa.generation.emission import (
     GroundedNegative,
     GroundedPositive,
     GroundedProperty,
+    GroundedStateTransition,
     _Endpoint,
     author_emission,
     is_emittable,
@@ -280,13 +282,19 @@ class AdmissibilityEngine:
         # subject Object). A **value-claim** asserts ``field == V``, so it grounds
         # only when the *named* field exists (verify-at-grounding, D-115.3): an
         # unknown named field (or none named) is ``insufficient_grounding``, never
-        # an any-field pass. Other positive claim_kinds keep the object-level
-        # any-field proxy (the refusal-vertical floor).
+        # an any-field pass. A positive **automation-effect** grounds on its REAL
+        # dimension — a Flow ``TRIGGERS_ON`` the subject (D-210.1; the same edge
+        # the negative dim binds) — never the any-field proxy. Other positive
+        # claim_kinds keep the object-level any-field proxy (the refusal-vertical
+        # floor).
         fields = [r for r in neighborhood
                   if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"]
         if claim_kind == "value-claim":
             grounds = bool(field_hint) and any(
                 r.entity.sf_api_name == field_hint for r in fields)
+        elif claim_kind == "automation-effect-claim":
+            grounds = any(r.edge_type == EDGE_FLOW and r.entity.entity_type == "Flow"
+                          for r in neighborhood)
         else:
             grounds = bool(fields)
         if grounds:
@@ -330,14 +338,18 @@ class RefusalRouter:
     def no_relevant_context(self, detail: str) -> RefusalDirective:
         return RefusalDirective(RefusalKind.NO_RELEVANT_CONTEXT, {"detail": detail})
 
-    def emission_deferred(self, archetype: str, claim_kind: str) -> RefusalDirective:
+    def emission_deferred(self, archetype: str, claim_kind: str,
+                          detail: Optional[str] = None) -> RefusalDirective:
         """A groundable claim whose emission for this claim_kind isn't built yet
         (D-105). Operational/substrate-runtime: the requirement is admissible,
         but the emission machinery is deferred (D-097.6) — an honest capability
-        boundary that lifts as kinds land, NOT an input-quality invalidity."""
+        boundary that lifts as kinds land, NOT an input-quality invalidity.
+        ``detail`` overrides the generic message when a SPECIFIC sub-shape
+        defers (D-210.1 — e.g. cross-object transitions)."""
         return RefusalDirective(RefusalKind.EMISSION_DEFERRED, {
-            "detail": (f"{archetype}/{claim_kind} is groundable, but emission for "
-                       f"this claim_kind is not yet built"),
+            "detail": detail or (
+                f"{archetype}/{claim_kind} is groundable, but emission for "
+                f"this claim_kind is not yet built"),
             "archetype": archetype,
             "claim_kind": claim_kind,
         })
@@ -630,6 +642,130 @@ class GovernanceCore:
                     external_id=field_ent.sf_api_name or str(field_ent.id)),
                 value=expected_value, requirement_excerpt=excerpt))
 
+        # D-210.1 covers the POSITIVE shapes only; a NEGATIVE state-transition /
+        # automation-effect (grounded via its VR/Flow dim) has no authored
+        # negative emission — defer it rather than mis-author the positive
+        # recipe (prohibition-claim is the built rejection vertical).
+        if (claim_kind in ("state-transition-claim", "automation-effect-claim")
+                and self._admit.is_negative(claim_kind, polarity)):
+            return IntentResolution(
+                grounded_candidates=[], next_action=NextAction.REFUSE,
+                interpretation_delta=delta,
+                refusal=self._router.emission_deferred(
+                    archetype, claim_kind,
+                    detail=(f"negative {claim_kind} emission is not built — "
+                            f"rejection tests are the prohibition-claim "
+                            f"vertical")))
+
+        # Stash grounding for the create-scoped state-transition (D-210.1):
+        # the NAMED to-state field must verify (the D-115.3 pattern) and the
+        # trigger must be the subject's own creation — cross-object triggers
+        # ground but defer emission (S1 has no lookup modeling to correlate).
+        if state is not None and claim_kind == "state-transition-claim":
+            field_ent = next(
+                (r.entity for r in neighborhood
+                 if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"
+                 and r.entity.sf_api_name == hint.get("field_name")), None)
+            to_value = hint.get("expected_value")
+            trigger_object = hint.get("trigger_object")
+            if trigger_object and trigger_object != subject.sf_api_name:
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail=(f"cross-object transitions defer in v1: the "
+                                f"trigger ({trigger_object}) is not the subject "
+                                f"({subject.sf_api_name}) — needs S1 lookup "
+                                f"modeling to correlate")))
+            if field_ent is None or to_value is None:
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail=("state-transition needs a verifiable to-state: "
+                                "field_name (existing on the subject) + "
+                                "expected_value")))
+            _stash_grounding(state, GroundedStateTransition(
+                archetype=archetype, claim_kind=claim_kind, version_seq=at,
+                subject=_Endpoint(
+                    entity_id=subject.id, entity_type=subject.entity_type,
+                    external_id=subject.sf_api_name or str(subject.id)),
+                field=_Endpoint(
+                    entity_id=field_ent.id, entity_type=field_ent.entity_type,
+                    external_id=field_ent.sf_api_name or str(field_ent.id)),
+                to_value=to_value, requirement_excerpt=excerpt))
+
+        # Stash grounding for the automation-effect (D-210.1): the matched
+        # Flow (TRIGGERS_ON — the grounding dimension _evaluate_positive
+        # admitted on) becomes the claim's automation ref; the effect shape
+        # must verify — same-record (field on the subject) or cross-object
+        # (effect object + its lookup field back to the subject). Every name
+        # is LLM-proposed but S1-verified; unverifiable -> defer, never guess.
+        if state is not None and claim_kind == "automation-effect-claim":
+            flow_ent = next(
+                (r.entity for r in neighborhood
+                 if r.edge_type == EDGE_FLOW and r.entity.entity_type == "Flow"),
+                None)
+            if flow_ent is None:
+                # defensive: positives admit on this edge; negatives may reach
+                # here without one
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.emission_deferred(
+                        archetype, claim_kind,
+                        detail="no record-triggered Flow on the subject"))
+            subj_ep = _Endpoint(
+                entity_id=subject.id, entity_type=subject.entity_type,
+                external_id=subject.sf_api_name or str(subject.id))
+            flow_ep = _Endpoint(
+                entity_id=flow_ent.id, entity_type=flow_ent.entity_type,
+                external_id=flow_ent.sf_api_name or str(flow_ent.id))
+            effect_object_api = hint.get("effect_object")
+            if effect_object_api:
+                grounded_eff = self._ground_cross_object_effect(
+                    hint, effect_object_api, at)
+                if isinstance(grounded_eff, str):       # the deferral detail
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind, detail=grounded_eff))
+                eff_ep, lookup_ep, eff_field_ep = grounded_eff
+                _stash_grounding(state, GroundedAutomationEffect(
+                    archetype=archetype, claim_kind=claim_kind, version_seq=at,
+                    subject=subj_ep, automation=flow_ep,
+                    requirement_excerpt=excerpt,
+                    effect_field=eff_field_ep,
+                    effect_value=hint.get("effect_value"),
+                    effect_object=eff_ep, effect_lookup_field=lookup_ep))
+            else:
+                field_ent = next(
+                    (r.entity for r in neighborhood
+                     if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"
+                     and r.entity.sf_api_name == hint.get("field_name")), None)
+                effect_value = hint.get("expected_value")
+                if field_ent is None or effect_value is None:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=("automation-effect needs a verifiable "
+                                    "effect: field_name + expected_value on "
+                                    "the subject, or effect_object + "
+                                    "effect_lookup_field")))
+                _stash_grounding(state, GroundedAutomationEffect(
+                    archetype=archetype, claim_kind=claim_kind, version_seq=at,
+                    subject=subj_ep, automation=flow_ep,
+                    requirement_excerpt=excerpt,
+                    effect_field=_Endpoint(
+                        entity_id=field_ent.id, entity_type=field_ent.entity_type,
+                        external_id=field_ent.sf_api_name or str(field_ent.id)),
+                    effect_value=effect_value))
+
         # grounded -> emit deferred (draft vertical). resolve_intent stays whole.
         presented = [PresentedCandidate(path_id=c.path_id,
                                         admissibility_layer=AdmissibilityLayer(c.admissibility_layer),
@@ -638,6 +774,46 @@ class GovernanceCore:
         nxt = NextAction.AWAIT_SELECTION if len(grounded) >= 2 else NextAction.PROCEED_TO_EMIT
         return IntentResolution(grounded_candidates=presented, next_action=nxt,
                                 interpretation_delta=delta)
+
+    def _ground_cross_object_effect(self, hint: dict, effect_object_api: str,
+                                    at: int):
+        """Verify the cross-object effect names against S1 (D-210.1): the
+        effect Object must resolve uniquely; the lookup field (and the optional
+        asserted effect field) must BELONG_TO it. Returns
+        ``(effect_ep, lookup_ep, effect_field_ep_or_None)`` on success, or the
+        deferral-detail STRING on any unverifiable name — the caller routes it
+        to emission-deferred (never guesses)."""
+        matches = self._admit.resolve_subject("Object", effect_object_api, at)
+        if len(matches) != 1:
+            return (f"effect object {effect_object_api!r} did not resolve "
+                    f"uniquely in the org model ({len(matches)} matches)")
+        eff = matches[0]
+        eff_neigh = self._admit.scoped_neighborhood(eff, at)
+        eff_fields = {r.entity.sf_api_name: r.entity for r in eff_neigh
+                      if r.edge_type == EDGE_BELONGS
+                      and r.entity.entity_type == "Field"}
+        lookup_name = hint.get("effect_lookup_field")
+        lookup_ent = eff_fields.get(lookup_name) if lookup_name else None
+        if lookup_ent is None:
+            return (f"effect lookup field {lookup_name!r} does not exist on "
+                    f"{effect_object_api} — cannot correlate the effect record "
+                    f"to the trigger record")
+        eff_field_name = hint.get("effect_field")
+        eff_field_ep = None
+        if eff_field_name is not None:
+            eff_field_ent = eff_fields.get(eff_field_name)
+            if eff_field_ent is None:
+                return (f"effect field {eff_field_name!r} does not exist on "
+                        f"{effect_object_api}")
+            eff_field_ep = _Endpoint(
+                entity_id=eff_field_ent.id, entity_type=eff_field_ent.entity_type,
+                external_id=eff_field_ent.sf_api_name or str(eff_field_ent.id))
+        eff_ep = _Endpoint(entity_id=eff.id, entity_type=eff.entity_type,
+                           external_id=eff.sf_api_name or str(eff.id))
+        lookup_ep = _Endpoint(
+            entity_id=lookup_ent.id, entity_type=lookup_ent.entity_type,
+            external_id=lookup_ent.sf_api_name or str(lookup_ent.id))
+        return eff_ep, lookup_ep, eff_field_ep
 
     # -- configuration metadata-relationship admissibility (D-098.1) ----
     def _resolve_configuration(self, intent_input: dict, ctx: ConversationContext, state: Any) -> IntentResolution:
