@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <description>SQ-205 fixture: the SLA clock record auto-created when a Case is created (via the SQ205_Create_Case_SLA flow).</description>
+    <label>Case SLA</label>
+    <nameField>
+        <displayFormat>SLA-{0000}</displayFormat>
+        <label>Case SLA Number</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <pluralLabel>Case SLAs</pluralLabel>
+    <sharingModel>ControlledByParent</sharingModel>
+</CustomObject>

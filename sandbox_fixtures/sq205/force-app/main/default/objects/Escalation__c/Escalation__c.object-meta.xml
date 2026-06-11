@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <description>SQ-205 fixture: an escalation record; creating one moves the parent Case to Escalated and stamps the Account (via the SQ205_Escalation_Effects flow).</description>
+    <label>Escalation</label>
+    <nameField>
+        <displayFormat>ESC-{0000}</displayFormat>
+        <label>Escalation Number</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <pluralLabel>Escalations</pluralLabel>
+    <sharingModel>ControlledByParent</sharingModel>
+</CustomObject>

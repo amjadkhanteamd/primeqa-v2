@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
+    <description>SQ-205 fixture: full access to the escalation objects/fields for the PrimeQA integration user (deployed custom fields are FLS-hidden by default). Master-detail fields need no FLS entry.</description>
+    <hasActivationRequired>false</hasActivationRequired>
+    <label>SQ205 Fixture Access</label>
+    <objectPermissions>
+        <allowCreate>true</allowCreate><allowDelete>true</allowDelete>
+        <allowEdit>true</allowEdit><allowRead>true</allowRead>
+        <modifyAllRecords>false</modifyAllRecords><viewAllRecords>true</viewAllRecords>
+        <object>Case</object>
+    </objectPermissions>
+    <objectPermissions>
+        <allowCreate>true</allowCreate><allowDelete>true</allowDelete>
+        <allowEdit>true</allowEdit><allowRead>true</allowRead>
+        <modifyAllRecords>true</modifyAllRecords><viewAllRecords>true</viewAllRecords>
+        <object>Case_SLA__c</object>
+    </objectPermissions>
+    <objectPermissions>
+        <allowCreate>true</allowCreate><allowDelete>true</allowDelete>
+        <allowEdit>true</allowEdit><allowRead>true</allowRead>
+        <modifyAllRecords>true</modifyAllRecords><viewAllRecords>true</viewAllRecords>
+        <object>Escalation__c</object>
+    </objectPermissions>
+    <fieldPermissions>
+        <editable>true</editable><field>Case_SLA__c.SLA_Start__c</field><readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
+        <editable>true</editable><field>Case_SLA__c.Status__c</field><readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
+        <editable>true</editable><field>Escalation__c.Account__c</field><readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
+        <editable>true</editable><field>Escalation__c.Status__c</field><readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
+        <editable>true</editable><field>Escalation__c.Priority__c</field><readable>true</readable>
+    </fieldPermissions>
+    <fieldPermissions>
+        <editable>true</editable><field>Account.Last_Escalation_Date__c</field><readable>true</readable>
+    </fieldPermissions>
+</PermissionSet>

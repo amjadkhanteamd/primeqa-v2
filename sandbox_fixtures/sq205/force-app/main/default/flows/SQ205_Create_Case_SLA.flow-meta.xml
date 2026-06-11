@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>59.0</apiVersion>
+    <description>SQ-205 AC1: when a Case is created, auto-create its Case_SLA__c clock record (SLA_Start__c = now, Status = Active). Fixture note: fires on EVERY Case create — the Priority=High entry condition from the requirement is deliberately omitted so the test engine (which creates trigger records with padding only) can exercise the flow; tighten once trigger-state staging exists.</description>
+    <interviewLabel>SQ205 Create Case SLA {!$Flow.CurrentDateTime}</interviewLabel>
+    <label>SQ205 Create Case SLA</label>
+    <processMetadataValues>
+        <name>BuilderType</name>
+        <value><stringValue>LightningFlowBuilder</stringValue></value>
+    </processMetadataValues>
+    <processMetadataValues>
+        <name>CanvasMode</name>
+        <value><stringValue>AUTO_LAYOUT_CANVAS</stringValue></value>
+    </processMetadataValues>
+    <processType>AutoLaunchedFlow</processType>
+    <recordCreates>
+        <name>Create_Case_SLA</name>
+        <label>Create Case SLA</label>
+        <locationX>176</locationX>
+        <locationY>287</locationY>
+        <inputAssignments>
+            <field>Case__c</field>
+            <value><elementReference>$Record.Id</elementReference></value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>SLA_Start__c</field>
+            <value><elementReference>$Flow.CurrentDateTime</elementReference></value>
+        </inputAssignments>
+        <inputAssignments>
+            <field>Status__c</field>
+            <value><stringValue>Active</stringValue></value>
+        </inputAssignments>
+        <object>Case_SLA__c</object>
+        <storeOutputAutomatically>false</storeOutputAutomatically>
+    </recordCreates>
+    <start>
+        <locationX>50</locationX>
+        <locationY>0</locationY>
+        <connector><targetReference>Create_Case_SLA</targetReference></connector>
+        <object>Case</object>
+        <recordTriggerType>Create</recordTriggerType>
+        <triggerType>RecordAfterSave</triggerType>
+    </start>
+    <status>Active</status>
+</Flow>
