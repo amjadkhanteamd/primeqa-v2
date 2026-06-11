@@ -293,6 +293,7 @@ def scheduler_tick(ctx):
         s3_reaper_tick,               # D-106.4 slice 5 (substrate-3 queue)
         s4_reaper_tick,               # D-132 (substrate-4 execution queue)
         s4_schedule_tick,             # D-214 (scheduled substrate regression runs)
+        repair_triage_tick,           # D-215.1 (repair-agent spine — proposal-only)
         s8_grounding_tick,            # D-143 (substrate-8 grounding recompute)
         s1_sync_enqueuer_tick,        # D-153 (substrate-1 sync cadence)
         s1_sync_reaper_tick,          # D-153 (substrate-1 sync queue)
@@ -373,6 +374,22 @@ def s4_schedule_tick(ctx):
                               tenant.id)
     except Exception as e:
         log.warning("s4_schedule_tick failed: %s", e)
+
+
+def repair_triage_tick(ctx):
+    """Triage new failed/errored S6 interpretations into repair PROPOSALS
+    (D-215.1 — proposal-only; nothing auto-applies; a human decides on the
+    Repairs panel). Per-tenant isolation."""
+    try:
+        from primeqa.core.models import Tenant
+        from primeqa.intelligence.repair_agent import triage_new_failures
+        for tenant in ctx["db"].query(Tenant).all():
+            out = triage_new_failures(tenant.id)
+            if out["proposed"]:
+                log.info("repair triage proposed %d repair(s) for tenant %s",
+                         out["proposed"], tenant.id)
+    except Exception as e:
+        log.warning("repair_triage_tick failed: %s", e)
 
 
 def s8_grounding_tick(ctx):
