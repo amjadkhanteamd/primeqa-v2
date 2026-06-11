@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v5"
+CURRENT = "generation@v6"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -37,6 +37,7 @@ _FILES = {
     "generation@v3": _VERSIONS_DIR / "generation_v3.md",
     "generation@v4": _VERSIONS_DIR / "generation_v4.md",
     "generation@v5": _VERSIONS_DIR / "generation_v5.md",
+    "generation@v6": _VERSIONS_DIR / "generation_v6.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -53,6 +54,11 @@ RECORDED_HASHES = {
     # intent as the intent_descriptors array (positive + one negative per
     # prohibition/condition + config checks), each on its own verbatim excerpt.
     "generation@v5": "b2b6c8f7519947c4c1af446d719430fb5c78408a6d659a69d7a0aceca9ae8117",
+    # v6 (D-210.1): automation-effect + state-transition reach — the hint
+    # contracts (field_name/expected_value to-state; trigger_object for
+    # cross-object transitions; effect_object/effect_lookup_field for
+    # Flow-created records).
+    "generation@v6": "19835bff29e78b2467a3321c9a0c963171cb0644e6131f9d6cdf877b3ef3b76e",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).

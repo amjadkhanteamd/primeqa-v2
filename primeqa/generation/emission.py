@@ -64,6 +64,12 @@ from primeqa.test_representation.models.claims.ui import (
 from primeqa.test_representation.models.claims.data_behavior.prohibition_claim import (
     ProhibitionClaimBody,
 )
+from primeqa.test_representation.models.claims.data_behavior.automation_effect_claim import (
+    AutomationEffectClaimBody,
+)
+from primeqa.test_representation.models.claims.data_behavior.state_transition_claim import (
+    StateTransitionClaimBody,
+)
 from primeqa.test_representation.models.claims.data_behavior.value_claim import (
     ValueClaimBody,
 )
@@ -75,10 +81,13 @@ from primeqa.test_representation.models.environment import (
 )
 from primeqa.test_representation.models.primitives import (
     AssertionPredicate,
+    EventDescriptor,
+    FieldChangeEffect,
     LiteralValue,
     NullValue,
     RejectionExpectation,
     RejectionSignal,
+    StateDescriptor,
 )
 from primeqa.test_representation.models.recipes.data_recipe import (
     AssertStep as DataAssertStep,
@@ -137,6 +146,8 @@ EMITTABLE: frozenset = frozenset({
     ("ui", "layout-claim"),                              # D-124 (GroundedLayout)
     ("data_behavior", "prohibition-claim"),              # D-101 (GroundedNegative)
     ("data_behavior", "value-claim"),                    # D-115 (GroundedPositive)
+    ("data_behavior", "state-transition-claim"),         # D-210 (GroundedStateTransition)
+    ("data_behavior", "automation-effect-claim"),        # D-210 (GroundedAutomationEffect)
 })
 
 
@@ -213,6 +224,53 @@ class GroundedPositive:
     field: _Endpoint            # the Field whose value is asserted
     value: Any                  # the requirement-sourced expected value (verbatim)
     requirement_excerpt: str
+
+
+@dataclass(frozen=True)
+class GroundedStateTransition:
+    """data_behavior state-transition positive grounding (D-210.1): the subject
+    Object + the NAMED to-state field (verified to exist via S1 ``BELONGS_TO``
+    at grounding) + the requirement-sourced to-value (verbatim, like
+    :class:`GroundedPositive`). v1 covers the CREATE-SCOPED transition only —
+    the org sets the field when the subject is created; cross-object triggers
+    defer at the stash gate. ``from_state`` is unknown in v1 (empty)."""
+
+    archetype: str              # "data_behavior"
+    claim_kind: str             # "state-transition-claim"
+    version_seq: int
+    subject: _Endpoint          # the Object whose state transitions
+    field: _Endpoint            # the to-state Field (verified BELONGS_TO subject)
+    to_value: Any               # the requirement-sourced to-state value (verbatim)
+    requirement_excerpt: str
+
+
+@dataclass(frozen=True)
+class GroundedAutomationEffect:
+    """data_behavior automation-effect positive grounding (D-210.1): the
+    TRIGGER object + the Flow that ``TRIGGERS_ON`` it (the real grounding
+    dimension — the matched Flow IS the claim's automation ref) + the verified
+    effect shape. Exactly one of two shapes (the stash gate enforces it):
+
+      - **same-record**: ``effect_field`` on the SUBJECT (verified) +
+        ``effect_value`` — the Flow stamps a field on the trigger record;
+        ``effect_object``/``effect_lookup_field`` are None.
+      - **cross-object**: ``effect_object`` (verified Object) +
+        ``effect_lookup_field`` (verified BELONGS_TO the effect object) — the
+        Flow creates a correlated record; ``effect_field``/``effect_value``
+        optionally assert one of its fields, else existence is the assert.
+    """
+
+    archetype: str              # "data_behavior"
+    claim_kind: str             # "automation-effect-claim"
+    version_seq: int
+    subject: _Endpoint          # the TRIGGER object (the Flow fires on it)
+    automation: _Endpoint       # the Flow (matched via TRIGGERS_ON)
+    requirement_excerpt: str
+    effect_field: Optional[_Endpoint] = None     # same-record: on subject;
+                                                 # cross-object: on effect_object
+    effect_value: Any = None
+    effect_object: Optional[_Endpoint] = None    # cross-object only
+    effect_lookup_field: Optional[_Endpoint] = None  # cross-object correlate
 
 
 @dataclass(frozen=True)
@@ -821,6 +879,191 @@ def _author_positive(g: GroundedPositive) -> EmissionBundle:
     )
 
 
+def _observe_steps(object_api: str, field_api: str, expected: Any,
+                   *, create_fields: Optional[dict] = None) -> list:
+    """The shared observe-the-org shape (D-210.1): create the subject WITHOUT
+    the asserted field (the AUTOMATION must set it — contrast _author_positive,
+    which sets the field directly), read it back, assert the org-produced
+    value."""
+    target = LogicalRef(entity_type="Object", external_id=object_api)
+    return [
+        CreateStep(
+            step_id="create-record",
+            target_object=target,
+            # padding-only create (k16): the asserted field is deliberately
+            # ABSENT — the org's automation is what must produce it.
+            field_values=dict(create_fields or {}),
+        ),
+        ReadStep(
+            step_id="read-created",
+            target=target,
+            soql=(f"SELECT {field_api} FROM {object_api} "
+                  f"WHERE Id = '$create-record.id'"),
+            fields_to_capture=[field_api],
+        ),
+        DataAssertStep(
+            step_id="assert-value",
+            predicate=AssertionPredicate(
+                subject_ref=f"read-created.{field_api}",
+                predicate="equals", value=expected,
+            ),
+        ),
+    ]
+
+
+def _author_state_transition(g: GroundedStateTransition) -> EmissionBundle:
+    """Author the create-scoped state-transition bundle (D-210.1): the claim
+    asserts the subject reaches ``to_state`` when created; the recipe creates
+    the subject WITHOUT the to-state field, reads it back, and asserts the org
+    set it. ``from_state`` is empty in v1 (unknown pre-state — the create IS
+    the event). Caveated Layer-1: no Flow-formula derivation exists, so the
+    engine cannot pre-verify the org will produce the transition (D-210 §4)."""
+    field_api = g.field.external_id
+    object_api = g.subject.external_id
+
+    subject_ref = IdentityBearingRef(
+        entity_type=g.subject.entity_type, entity_id=g.subject.entity_id,
+        version_seq=g.version_seq, external_id=object_api)
+    field_ref = IdentityBearingRef(
+        entity_type=g.field.entity_type, entity_id=g.field.entity_id,
+        version_seq=g.version_seq, external_id=field_api)
+    claim = StateTransitionClaimBody(
+        subject=subject_ref,
+        subject_fields=[field_ref],
+        from_state=StateDescriptor(field_values={}),
+        to_state=StateDescriptor(field_values={field_api: LiteralValue(value=g.to_value)}),
+        triggering_event=EventDescriptor(
+            trigger_kind="data-mutation-trigger",
+            description=g.requirement_excerpt),
+    )
+    conditions = SemanticConditionsBody(conditions=[])
+
+    target = LogicalRef(entity_type="Object", external_id=object_api)
+    trigger = DataMutationTriggerBody(
+        operation="create", target=target,
+        identity_context="system", volume="single")
+    recipe = DataRecipeBody(
+        api_choice="rest", identity_context="system",
+        execution_mechanism="direct_api",
+        steps=_observe_steps(object_api, field_api, g.to_value))
+    env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
+        auth_kind="data_api_user",
+        details=(f"create a {object_api} record (padding only), read it back, "
+                 f"assert the org set {field_api}={g.to_value!r}"))])
+
+    return EmissionBundle(
+        archetype=g.archetype, claim_kind=g.claim_kind,
+        asserted_truth=claim, semantic_conditions=conditions,
+        trigger_kind="data-mutation-trigger", recipe_kind="data-recipe",
+        causal_initiation=trigger, observation_realization=recipe,
+        execution_environment=env,
+        admissibility_layer=AdmissibilityLayer.LAYER_1,
+        caveat_required=requires_caveat(g.claim_kind),
+        caveat_kind=caveat_kind(g.claim_kind),
+    )
+
+
+def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
+    """Author the automation-effect bundle (D-210.1). Same-record: the Flow
+    stamps a field on the trigger record — observe-the-org shape on the
+    subject. Cross-object: the Flow creates a correlated record — create the
+    trigger, query the effect object via the VERIFIED lookup field, assert
+    existence (or the asserted field). Caveated Layer-1 (D-210 §4)."""
+    object_api = g.subject.external_id
+    automation_ref = IdentityBearingRef(
+        entity_type=g.automation.entity_type, entity_id=g.automation.entity_id,
+        version_seq=g.version_seq, external_id=g.automation.external_id)
+    event = EventDescriptor(trigger_kind="data-mutation-trigger",
+                            description=g.requirement_excerpt)
+    target = LogicalRef(entity_type="Object", external_id=object_api)
+
+    if g.effect_object is None:
+        # same-record: the Flow sets effect_field on the subject itself
+        field_api = g.effect_field.external_id
+        field_ref = IdentityBearingRef(
+            entity_type=g.effect_field.entity_type, entity_id=g.effect_field.entity_id,
+            version_seq=g.version_seq, external_id=field_api)
+        claim = AutomationEffectClaimBody(
+            automation=automation_ref, automation_primitive="flow",
+            triggering_action=event,
+            expected_effect=FieldChangeEffect(changes=StateDescriptor(
+                field_values={field_api: LiteralValue(value=g.effect_value)})),
+            affected_fields=[field_ref],
+        )
+        steps = _observe_steps(object_api, field_api, g.effect_value)
+        details = (f"create a {object_api} record, read it back, assert the "
+                   f"Flow set {field_api}={g.effect_value!r}")
+    else:
+        # cross-object: the Flow creates a correlated effect record
+        effect_api = g.effect_object.external_id
+        lookup_api = g.effect_lookup_field.external_id
+        # the lookup is bare-keyed in SOQL on the effect object
+        lookup_bare = lookup_api.split(".", 1)[-1]
+        if g.effect_field is not None:
+            field_api = g.effect_field.external_id
+            field_bare = field_api.split(".", 1)[-1]
+            field_ref = IdentityBearingRef(
+                entity_type=g.effect_field.entity_type,
+                entity_id=g.effect_field.entity_id,
+                version_seq=g.version_seq, external_id=field_api)
+            effect = FieldChangeEffect(changes=StateDescriptor(
+                field_values={field_api: LiteralValue(value=g.effect_value)}))
+            affected = [field_ref]
+            select = f"SELECT Id, {field_bare} FROM {effect_api}"
+            assert_pred = AssertionPredicate(
+                subject_ref=f"read-effect.{field_bare}",
+                predicate="equals", value=g.effect_value)
+            details = (f"create a {object_api} record, query {effect_api} via "
+                       f"{lookup_bare}, assert the Flow-created record carries "
+                       f"{field_bare}={g.effect_value!r}")
+        else:
+            effect = FieldChangeEffect(changes=StateDescriptor(field_values={}))
+            affected = []
+            select = f"SELECT Id FROM {effect_api}"
+            assert_pred = AssertionPredicate(
+                subject_ref="read-effect.Id", predicate="exists", value=None)
+            details = (f"create a {object_api} record, query {effect_api} via "
+                       f"{lookup_bare}, assert the Flow created a correlated record")
+        claim = AutomationEffectClaimBody(
+            automation=automation_ref, automation_primitive="flow",
+            triggering_action=event, expected_effect=effect,
+            affected_fields=affected,
+        )
+        steps = [
+            CreateStep(step_id="create-record", target_object=target,
+                       field_values={}),
+            ReadStep(
+                step_id="read-effect",
+                target=LogicalRef(entity_type="Object", external_id=effect_api),
+                soql=f"{select} WHERE {lookup_bare} = '$create-record.id'",
+                fields_to_capture=(["Id"] if g.effect_field is None
+                                   else ["Id", field_bare]),
+            ),
+            DataAssertStep(step_id="assert-effect", predicate=assert_pred),
+        ]
+
+    conditions = SemanticConditionsBody(conditions=[])
+    trigger = DataMutationTriggerBody(
+        operation="create", target=target,
+        identity_context="system", volume="single")
+    recipe = DataRecipeBody(
+        api_choice="rest", identity_context="system",
+        execution_mechanism="direct_api", steps=steps)
+    env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
+        auth_kind="data_api_user", details=details)])
+
+    return EmissionBundle(
+        archetype=g.archetype, claim_kind=g.claim_kind,
+        asserted_truth=claim, semantic_conditions=conditions,
+        trigger_kind="data-mutation-trigger", recipe_kind="data-recipe",
+        causal_initiation=trigger, observation_realization=recipe,
+        execution_environment=env,
+        admissibility_layer=AdmissibilityLayer.LAYER_1,
+        caveat_required=requires_caveat(g.claim_kind),
+        caveat_kind=caveat_kind(g.claim_kind),
+    )
+
+
 def author_emission(grounded: object) -> EmissionBundle:
     """Author the claim + recipe bodies for a grounded candidate. The single
     site that constructs S2 body models for generation (D-097.5); dispatches on
@@ -839,4 +1082,8 @@ def author_emission(grounded: object) -> EmissionBundle:
         return _author_negative(grounded)
     if isinstance(grounded, GroundedPositive):
         return _author_positive(grounded)
+    if isinstance(grounded, GroundedStateTransition):
+        return _author_state_transition(grounded)
+    if isinstance(grounded, GroundedAutomationEffect):
+        return _author_automation_effect(grounded)
     raise TypeError(f"author_emission: unsupported grounding {type(grounded).__name__}")

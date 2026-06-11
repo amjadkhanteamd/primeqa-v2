@@ -24,13 +24,12 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v5():
-    # D-207: CURRENT bumped to v5 (multi-intent coverage — every distinct
-    # testable intent proposed as the intent_descriptors array).
-    # v1..v4 stay frozen + pinned-resolvable
+def test_current_resolves_to_v6():
+    # D-210.1: CURRENT bumped to v6 (automation-effect + state-transition
+    # reach — the hint contracts). v1..v5 stay frozen + pinned-resolvable
     # (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v5"
-    assert registry.get() == registry.get("generation@v5")
+    assert registry.CURRENT == "generation@v6"
+    assert registry.get() == registry.get("generation@v6")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # the substance the schemas don't enforce (D-103.3) is present
@@ -49,6 +48,9 @@ def test_current_resolves_to_v5():
     assert "intent_descriptors" in sys
     assert "Decompose for full coverage" in sys
     assert "one negative per prohibition" in sys
+    # v6's automation-effect + state-transition hint contracts (D-210.1)
+    assert "state-transition-claim" in sys and "trigger_object" in sys
+    assert "effect_object" in sys and "effect_lookup_field" in sys
 
 
 def test_unknown_version_raises():
