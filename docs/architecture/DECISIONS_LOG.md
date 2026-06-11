@@ -11874,6 +11874,32 @@ schedule — the one genuinely missing piece**.
 4. **Safety**: production environments are excluded at the tick (the same env-policy posture as
    D-199 auto-verify; scheduled runs are a sandbox regression instrument).
 
+### D-215 — Build 7 charter: the auto-fix agent on the new engine (opened, gated on volume)
+
+**Context.** v1's `AgentOrchestrator` (triage taxonomy + LLM fix proposal + confidence/env gate +
+audit ledger + rerun lineage) repairs v1 test cases. The new engine deliberately records failure
+EVIDENCE without attempting repair (evidence-first, D-202 theme 6). With S6 verdicts + cause
+attribution (`enforcement_gap`, `vr_formula_drift`, `other_vr_fired`, …), cross-run clustering
+(D-116), and the Coordinator's claim/recipe re-version paths (the D-205.1 correction precedent),
+the substrate now has everything a DISCIPLINED repair agent needs — and strictly better raw
+material than v1's regex triage.
+
+**Charter (slices when the arc opens for implementation).**
+1. **Triage is S6, not regex**: the agent consumes `s6_interpretations` (verdict + cause_kind +
+   detail) and D-116 clusters — it never re-parses error strings. A repair is proposed only for
+   causes with a deterministic repair SHAPE (e.g. `rejected_unasserted_reason` → re-derive the
+   violating payload against the CURRENT formula; `vr_formula_drift` → regenerate the negative
+   from the current S1; `value_not_persisted` with a comparator-shaped mismatch → recipe value
+   correction). `enforcement_gap` (the real-defect verdict) is NEVER "repaired" — it's the
+   finding.
+2. **A repair is a new claim/recipe VERSION via the Coordinator** (v1→v2 history, the D-205.1
+   path) — never an in-place edit; identity rules decide claim-vs-recipe re-version.
+3. **Gates**: sandbox-only auto-apply (the D-199 env posture), human review row for every
+   proposal (approve/revert mirrors v1's Accept/Revert), full audit on the outcome ledger.
+4. **Sequencing**: implementation starts AFTER the joint test session produces real failure
+   volume (the charter's own premise — building repair shapes against zero observed failures
+   invents taxonomy). Deliberately last of the seven (the 2026-06-11 ratified order).
+
 ---
 
 ---
