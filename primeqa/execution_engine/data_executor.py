@@ -558,12 +558,40 @@ def _run_read_back(read, sobject, state, client, *, ordinal):
     return ev, None
 
 
+def _values_equal(observed, asserted) -> bool:
+    """Typed-tolerant equality for read-back asserts (D-211). The asserted
+    value is carried VERBATIM from the requirement (D-115 §2) — usually a
+    string — while Salesforce returns typed JSON (Currency/Number → float,
+    Checkbox → bool), so raw equality produces false failures
+    (``"5000" != 5000.0``). Bools compare against 'true'/'false' strings and
+    are excluded from numeric coercion (Python's ``True == 1`` must not
+    leak); numbers compare numerically when both sides parse; strings stay
+    strict — text asserts are never case-folded."""
+    # Bool guard FIRST: Python's `True == 1.0` would otherwise leak through
+    # the exact-equality check below.
+    if isinstance(observed, bool) or isinstance(asserted, bool):
+        if isinstance(observed, bool) and isinstance(asserted, bool):
+            return observed is asserted
+        if isinstance(observed, bool) and isinstance(asserted, str):
+            return asserted.strip().lower() == str(observed).lower()
+        if isinstance(asserted, bool) and isinstance(observed, str):
+            return observed.strip().lower() == str(asserted).lower()
+        return False
+    if observed == asserted:
+        return True
+    try:
+        return float(observed) == float(asserted)
+    except (TypeError, ValueError):
+        return False
+
+
 def _run_ground(assertion, read_ev, *, ordinal) -> AssertEvidence:
     """Ground ``field == V``: resolve the predicate's ``subject_ref``
     (``<read_step>.<field>``) to the observed value in the read's single row and
-    compare it to the carried ``value`` verbatim. Fail-loud (raise) on a
-    non-equals predicate or a ``subject_ref`` that does not reference this read —
-    a recipe defect (teardown has already run, so no record leaks)."""
+    compare it to the carried ``value`` (typed-tolerant, D-211). Fail-loud
+    (raise) on a non-equals predicate or a ``subject_ref`` that does not
+    reference this read — a recipe defect (teardown has already run, so no
+    record leaks)."""
     pred = assertion.predicate
     if pred.predicate not in _SUPPORTED_DATA_PREDICATES:
         raise UnsupportedPredicateError(
@@ -579,7 +607,7 @@ def _run_ground(assertion, read_ev, *, ordinal) -> AssertEvidence:
     field = _sf_field(field, read_ev.sobject)
     start = _now()
     observed = read_ev.rows[0].get(field)
-    held = observed == pred.value
+    held = _values_equal(observed, pred.value)
     end = _now()
     return AssertEvidence(
         step_id=assertion.step_id, ordinal=ordinal, predicate=pred.predicate,

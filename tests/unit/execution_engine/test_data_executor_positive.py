@@ -733,3 +733,39 @@ def test_chain_evidence_persists_jsonb_safe():
     json.dumps(row.evidence)
     assert [s["kind"] for s in row.evidence["steps"]] == [
         "create", "create", "read", "assert"]
+
+
+# ---------------------------------------------------------------------------
+# Typed-tolerant assert equality (D-211)
+# ---------------------------------------------------------------------------
+
+def test_values_equal_numeric_string_vs_float():
+    # the live false-failure: requirement literal "5000" vs SF Currency 5000.0
+    from primeqa.execution_engine.data_executor import _values_equal
+    assert _values_equal(5000.0, "5000")
+    assert _values_equal("5000", 5000.0)
+    assert _values_equal(5000, "5000.0")
+    assert not _values_equal(5000.0, "5001")
+
+
+def test_values_equal_bools_not_numbers():
+    from primeqa.execution_engine.data_executor import _values_equal
+    assert _values_equal(True, "true")
+    assert _values_equal(True, "TRUE")
+    assert _values_equal(False, "false")
+    assert not _values_equal(True, "1")     # bools never coerce numerically
+    assert not _values_equal(True, 1.0)
+    assert not _values_equal(False, "")
+
+
+def test_values_equal_strings_stay_strict():
+    from primeqa.execution_engine.data_executor import _values_equal
+    assert _values_equal("Active", "Active")
+    assert not _values_equal("Active", "active")   # no case folding on text
+    assert not _values_equal("5,000", 5000.0)      # thousands separator is not a number
+
+
+def test_values_equal_none_observed():
+    from primeqa.execution_engine.data_executor import _values_equal
+    assert not _values_equal(None, "5000")
+    assert _values_equal(None, None)
