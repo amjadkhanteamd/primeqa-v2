@@ -12223,6 +12223,36 @@ trim_run_events), ~18 ORM classes, ~10 v1-only test files + ~8 mixed.
 against the code before deleting (the audit flagged e.g. picker endpoints as shared —
 the rebuilt /run page does NOT use them; the requirements Jira-import chip picker may).
 
+### D-222 — Trigger-state staging for state-transition claims (the SQ-207 red)
+
+**Context.** The first live state-transition run (D-219 batch, run `b189e764`) failed
+honestly: the recipe created an Opportunity with padding's `StageName="Prospecting"`, so
+the org correctly set `ForecastCategory="Pipeline"` — but the claim asserts `"Closed"`,
+which only happens when the Stage is set to a closed value. The recipe had no way to
+STAGE the trigger condition; this was the D-210-logged residual, now with live evidence.
+
+**Decision.** The state-transition hint contract gains an OPTIONAL staged-trigger pair:
+- **Hints**: `trigger_field` + `trigger_value` — the field/value the create must SET to
+  provoke the transition (SQ-207: `StageName` / `"Closed Won"`). Prompt fragment
+  documents it; **generation@v7** frozen per the registry ritual.
+- **Grounding (stash gate)**: when both are present, `trigger_field` must verify
+  BELONGS_TO the subject via S1 (the D-115.3 verify-at-grounding pattern). Verified →
+  staged grounding; absent or unverifiable → **fall back to today's unstaged shape**
+  (conservative: a previously-emittable claim never becomes a refusal; an unverifiable
+  LLM-proposed trigger is dropped, never guessed).
+- **Emission**: `_observe_steps(create_fields={trigger: value})` — the seam already
+  existed; the claim's `from_state.field_values` carries the staged pair (the D-210.1
+  "unknown pre-state, empty in v1" reservation now holds the STAGED pre-state), and
+  `subject_fields` gains the trigger field ref. New identity → a regenerated SQ-207
+  claim supersedes via the normal draft path; the old unstaged claim is deprecated on
+  approval of its replacement.
+- **S4/S6: zero changes** — create-with-field_values and the read/assert/verdict paths
+  are already general.
+
+**Exit gate**: regenerate SQ-207 at a fresh S1 seq → AK approves the staged draft →
+live run reaches `state_transitioned` (ForecastCategory="Closed" observed after a
+Closed-Won create).
+
 ---
 
 ---
