@@ -769,3 +769,87 @@ def test_values_equal_none_observed():
     from primeqa.execution_engine.data_executor import _values_equal
     assert not _values_equal(None, "5000")
     assert _values_equal(None, None)
+
+
+# ---------------------------------------------------------------------------
+# D-210 — cross-object effect reads: exists predicate, bounded retry,
+# automation-created-record teardown
+# ---------------------------------------------------------------------------
+
+def _effect_plan(*, predicate="exists", effect_field="Level__c", effect_value=None):
+    """create Order__c -> read Order_Log__c (the Flow-created effect) -> assert."""
+    trigger = LogicalRef(entity_type="Object", external_id="Account")
+    effect = LogicalRef(entity_type="Object", external_id="Order_Log__c")
+    pred = (AssertionPredicate(subject_ref="read-effect.Id",
+                               predicate="exists", value=None)
+            if predicate == "exists" else
+            AssertionPredicate(subject_ref=f"read-effect.{effect_field}",
+                               predicate="equals", value=effect_value))
+    return DataRecipePlan(
+        recipe_id=uuid4(), recipe_version_seq=1, claim_test_id=uuid4(),
+        claim_version_seq=None, api_choice="rest",
+        steps=(
+            PlannedCreate(step_id="create-record", target_object=trigger,
+                          field_values={}, expect_rejection=None),
+            PlannedDataRead(
+                step_id="read-effect", target=effect,
+                soql="SELECT Id FROM Order_Log__c WHERE Order__c = '$create-record.id'",
+                fields_to_capture=("Id",)),
+            PlannedAssertion(step_id="assert-effect", predicate=pred),
+        ))
+
+
+def test_exists_passes_and_effect_record_torn_down(monkeypatch):
+    client = _StubClient(create_result=_success("001TRIG"),
+                         query_result=[{"Id": "a0X001", "attributes": {}}])
+    ev = execute_data_recipe(_effect_plan(), client=client,
+                             environment_id=_ENV_ID, s1=_s1())
+    assert ev.outcome == "passed"
+    # the Flow-created effect record was registered + deleted at teardown
+    assert ("Order_Log__c", "a0X001") in client.deletes
+    # ... and torn down BEFORE the subject (reverse order: effect is newest)
+    assert client.deletes.index(("Order_Log__c", "a0X001")) < \
+        client.deletes.index(("Account", "001TRIG"))
+
+
+def test_exists_zero_rows_is_failed_after_bounded_retry(monkeypatch):
+    import primeqa.execution_engine.data_executor as dx
+    sleeps = []
+    monkeypatch.setattr(dx.time, "sleep", lambda s: sleeps.append(s))
+    client = _StubClient(create_result=_success("001TRIG"), query_result=[])
+    ev = execute_data_recipe(_effect_plan(), client=client,
+                             environment_id=_ENV_ID, s1=_s1())
+    # the automation never produced the record: a FAILED evaluation (the
+    # finding), never an errored crash
+    assert ev.outcome == "failed"
+    assert ev.error is None
+    read_ev = [s for s in ev.steps if s.kind == "read"][0]
+    assert read_ev.attempts == 3                 # bounded retry exhausted
+    assert len(sleeps) == 2                      # pauses BETWEEN attempts only
+    assert len(client.queries) == 3
+
+
+def test_nonempty_first_read_does_not_retry(monkeypatch):
+    import primeqa.execution_engine.data_executor as dx
+    monkeypatch.setattr(dx.time, "sleep",
+                        lambda s: (_ for _ in ()).throw(AssertionError("slept")))
+    client = _StubClient(create_result=_success("001TRIG"),
+                         query_result=[{"Id": "a0X001", "attributes": {}}])
+    ev = execute_data_recipe(_effect_plan(), client=client,
+                             environment_id=_ENV_ID, s1=_s1())
+    read_ev = [s for s in ev.steps if s.kind == "read"][0]
+    assert read_ev.attempts == 1
+    assert len(client.queries) == 1
+
+
+def test_equals_zero_rows_still_errors_after_retry(monkeypatch):
+    import primeqa.execution_engine.data_executor as dx
+    monkeypatch.setattr(dx.time, "sleep", lambda s: None)
+    client = _StubClient(create_result=_success("001TRIG"), query_result=[])
+    ev = execute_data_recipe(
+        _effect_plan(predicate="equals", effect_value="INFO"),
+        client=client, environment_id=_ENV_ID, s1=_s1())
+    # equals needs an observed row: 0 rows stays the honest errored
+    assert ev.outcome == "errored"
+    assert ev.error.error_type == "RecordNotObserved"
+    assert len(client.queries) == 3              # the retry still ran first

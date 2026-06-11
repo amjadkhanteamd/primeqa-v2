@@ -38,6 +38,7 @@ setup failure is ``errored`` (the prohibition was never exercised), never
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Optional
@@ -311,8 +312,16 @@ def _mutation_evidence(mutation, sobject, record_id, changes, start, end, *,
 
 
 # Predicates the positive ground step can faithfully evaluate. Side A emits
-# `equals`; others are deferred (fail-loud until built).
-_SUPPORTED_DATA_PREDICATES = frozenset({"equals"})
+# `equals` (field == V) and `exists` (the read found a row — the cross-object
+# automation-effect assert, D-210); others are deferred (fail-loud until built).
+_SUPPORTED_DATA_PREDICATES = frozenset({"equals", "exists"})
+
+# D-210: a side-effect read may observe a record the org's automation creates
+# moments AFTER the trigger create commits (async Flow paths). An empty read
+# retries this many times total, with this pause between attempts, before the
+# 0-row result stands. Same-record reads pass on attempt 1.
+_READ_RETRY_ATTEMPTS = 3
+_READ_RETRY_DELAY_S = 2.0
 
 
 def _sf_field(name: str, sobject: str) -> str:
@@ -458,23 +467,38 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
             field_values=field_values, ordinal=ordinal))
         record_ids.append(record_id)
 
-    # 5. Observe the record back (records still alive; state carries every
-    #    create's id for the SOQL's $refs).
+    # 5. Observe back (records still alive; state carries every create's id
+    #    for the SOQL's $refs). D-210: an empty read retries a bounded number
+    #    of times — a side-effect record may land moments after the trigger.
     read_sobject = read.target.external_id
-    read_ev, read_err = _run_read_back(
+    read_ev, read_err = _read_with_retry(
         read, read_sobject, state, client, ordinal=len(creates))
+
+    # 5b. D-210: rows the read observed that S4 did NOT create are the org's
+    #     automation-created side-effect records — register them so teardown
+    #     removes them too (the test caused them; leaving them dirties the org
+    #     run over run). Already-tracked ids (the same-record read) skip.
+    if read_err is None and read_ev.row_count:
+        known = {r.record_id for r in tracker.records}
+        for row in read_ev.rows:
+            rid = row.get("Id")
+            if rid and rid not in known:
+                tracker.record(read_sobject, rid)
 
     # 6. Teardown (k14) — every created record, reverse-order, BEFORE grading,
     #    so a later fail-loud ground never leaks them.
     create_steps = _torn_down()
 
-    # 7. Ground field == V (or errored when the record could not be observed).
+    # 7. Ground (or errored when the record could not be observed). A 0-row
+    #    read is `errored` for an equals assert (the record under test was not
+    #    observable) but a legitimate evaluation for `exists` (the automation
+    #    did not produce the record — that IS the finding, D-210).
     if read_err is not None:
         return _result(
             plan, run_id, started, environment_id,
             create_steps + (read_ev,), "errored", read_err,
             created_records=tracker.records)
-    if read_ev.row_count == 0:
+    if read_ev.row_count == 0 and assertion.predicate.predicate != "exists":
         err = ErrorSurface(
             phase="read", error_type="RecordNotObserved",
             message=("read-back returned 0 rows; cannot evaluate field == V "
@@ -526,6 +550,23 @@ def _offending_fields(rejection_body) -> set:
             for f in (e.get("fields") or []):
                 out.add(f)
     return out
+
+
+def _read_with_retry(read, sobject, state, client, *, ordinal):
+    """D-210: issue the read, retrying an EMPTY result up to
+    ``_READ_RETRY_ATTEMPTS`` times (``_READ_RETRY_DELAY_S`` apart) — the org's
+    automation may commit its side effect moments after the trigger create.
+    Transport errors and non-empty reads return immediately; the returned
+    evidence records how many attempts were issued."""
+    attempt = 0
+    while True:
+        attempt += 1
+        ev, err = _run_read_back(read, sobject, state, client, ordinal=ordinal)
+        if err is not None or ev.row_count > 0 or attempt >= _READ_RETRY_ATTEMPTS:
+            if err is None and attempt > 1:
+                ev = replace(ev, attempts=attempt)
+            return ev, err
+        time.sleep(_READ_RETRY_DELAY_S)
 
 
 def _run_read_back(read, sobject, state, client, *, ordinal):
@@ -603,11 +644,17 @@ def _run_ground(assertion, read_ev, *, ordinal) -> AssertEvidence:
         raise AssertionResolutionError(
             f"assertion {assertion.step_id!r} subject_ref {pred.subject_ref!r} "
             f"must be '{read_ev.step_id}.<field>' (the read-back's captured field)")
-    # The captured field is keyed bare in the SF response (see _run_read_back).
-    field = _sf_field(field, read_ev.sobject)
     start = _now()
-    observed = read_ev.rows[0].get(field)
-    held = _values_equal(observed, pred.value)
+    if pred.predicate == "exists":
+        # D-210: the cross-object automation-effect assert — did the read find
+        # the side-effect record at all? No row indexing (0 rows is the honest
+        # FAILED evaluation, not an error).
+        held = read_ev.row_count > 0
+    else:
+        # The captured field is keyed bare in the SF response (see _run_read_back).
+        field = _sf_field(field, read_ev.sobject)
+        observed = read_ev.rows[0].get(field)
+        held = _values_equal(observed, pred.value)
     end = _now()
     return AssertEvidence(
         step_id=assertion.step_id, ordinal=ordinal, predicate=pred.predicate,

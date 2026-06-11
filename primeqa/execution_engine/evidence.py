@@ -145,6 +145,9 @@ class DataReadEvidence:
     duration_ms: int
     kind: Literal["read"] = "read"
     error: Optional[ErrorSurface] = None
+    # D-210: how many read attempts were issued (a side-effect read retries a
+    # bounded number of times while the org's automation lands; 1 = first try).
+    attempts: int = 1
     # mutation N/As, reserved (a read mutates nothing):
     before_state: None = None
     after_state: None = None
