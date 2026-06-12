@@ -184,6 +184,33 @@ def test_platform_constraint():
     assert "REQUIRED_FIELD_MISSING" in interp.cause.detail
 
 
+def test_access_denied_is_attributed_deliberately():
+    # D-225: an FLS/access code keeps cause_kind=platform_constraint but the
+    # detail names the code AND the blocked field(s) — the CF-1 dogfood shape.
+    ev = _run(outcome="failed", create=_create(
+        success=False, matched=False, http_status=400,
+        body=[{"errorCode": "INSUFFICIENT_ACCESS_OR_READONLY",
+               "message": "insufficient access rights",
+               "fields": ["Last_Escalation_Date__c"]}]))
+    interp = _interp(ev, _StubS1([]))
+    assert interp.cause.cause_kind == "platform_constraint"
+    assert "access denied" in interp.cause.detail
+    assert "INSUFFICIENT_ACCESS_OR_READONLY" in interp.cause.detail
+    assert "Last_Escalation_Date__c" in interp.cause.detail
+
+
+def test_access_denied_without_fields_still_names_the_code():
+    ev = _run(outcome="failed", create=_create(
+        success=False, matched=False, http_status=400,
+        body=[{"errorCode": "INSUFFICIENT_ACCESS_ON_CROSS_REFERENCE_ENTITY",
+               "message": "no access to the referenced record"}]))
+    interp = _interp(ev, _StubS1([]))
+    assert interp.cause.cause_kind == "platform_constraint"
+    assert "access denied" in interp.cause.detail
+    assert "INSUFFICIENT_ACCESS_ON_CROSS_REFERENCE_ENTITY" in interp.cause.detail
+    assert "field(s)" not in interp.cause.detail
+
+
 # ---------------------------------------------------------------------------
 # Pass-through + discipline
 # ---------------------------------------------------------------------------

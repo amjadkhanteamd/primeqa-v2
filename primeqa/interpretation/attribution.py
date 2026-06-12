@@ -165,6 +165,18 @@ def _attribute_not_enforced(step, vrs, evidence) -> Optional[Cause]:
 # rejected_unasserted_reason — other VR fired / platform constraint
 # ---------------------------------------------------------------------------
 
+# D-225: the SF access/FLS rejection codes — attributed DELIBERATELY (the
+# cause detail names the codes + blocked fields) instead of the generic
+# platform-constraint wording. cause_kind stays platform_constraint (no
+# vocabulary change; clustering unaffected).
+_ACCESS_ERROR_CODES = frozenset({
+    "INSUFFICIENT_FIELD_ACCESS",
+    "INSUFFICIENT_ACCESS_OR_READONLY",
+    "INSUFFICIENT_ACCESS_ON_CROSS_REFERENCE_ENTITY",
+    "INVALID_FIELD_FOR_INSERT_UPDATE",
+})
+
+
 def _attribute_unasserted(step, vrs) -> Cause:
     op = step.kind
     errors = [e for e in step.rejection_body if isinstance(e, dict)]
@@ -174,6 +186,18 @@ def _attribute_unasserted(step, vrs) -> Cause:
         return Cause("other_vr_fired", vr_name=(matched.name if matched else None),
                      detail=f"a different validation rule rejected the {op}: {vr_msgs}")
     codes = [e.get("errorCode") for e in errors]
+    access = [c for c in codes if c in _ACCESS_ERROR_CODES]
+    if access:
+        fields: list = []
+        for e in errors:
+            for f in (e.get("fields") or ()):
+                if f and f not in fields:
+                    fields.append(f)
+        on = f" on field(s) {', '.join(fields)}" if fields else ""
+        return Cause("platform_constraint",
+                     detail=f"access denied ({', '.join(access)}){on} — the "
+                            f"integration user lacks the permission the {op} "
+                            f"needs (FLS / object access), not a validation rule")
     return Cause("platform_constraint",
                  detail=f"a platform constraint (not a validation rule) rejected "
                         f"the {op}: {codes}")

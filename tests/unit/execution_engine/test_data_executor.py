@@ -252,3 +252,30 @@ def test_client_create_raises_on_transport_failure():
     c._session.post = _boom
     with pytest.raises(SFRequestError):
         c.create("Lead", {"Company": "x"})
+
+
+# ---------------------------------------------------------------------------
+# D-225 — error_fields extraction (FLS/access denials name the blocked fields)
+# ---------------------------------------------------------------------------
+
+def test_error_fields_extracted_from_rejection_body():
+    body = [
+        {"errorCode": "INSUFFICIENT_ACCESS_OR_READONLY",
+         "message": "no access", "fields": ["Last_Escalation_Date__c"]},
+        {"errorCode": "INVALID_FIELD_FOR_INSERT_UPDATE",
+         "message": "not writable",
+         "fields": ["Last_Escalation_Date__c", "Status__c"]},
+    ]
+    client = _StubClient(create_result={
+        "api_response": {"status_code": 400, "body": body},
+        "http_status": 400, "success": False, "record_id": None})
+    ev = execute_data_recipe(_plan(), client=client, environment_id=_ENV_ID)
+    step = ev.steps[0]
+    # deduped, order-preserving
+    assert step.error_fields == ("Last_Escalation_Date__c", "Status__c")
+
+
+def test_error_fields_empty_when_body_names_none():
+    client = _StubClient(create_result=_rejected(_VR_CODE))
+    ev = execute_data_recipe(_plan(), client=client, environment_id=_ENV_ID)
+    assert ev.steps[0].error_fields == ()
