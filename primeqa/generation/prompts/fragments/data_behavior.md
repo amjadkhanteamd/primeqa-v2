@@ -37,9 +37,13 @@ Data-behavior claims concern how records and fields behave at runtime.
   API name) and `trigger_value` (the provoking value, e.g. "Closed Won").
   Omit the pair when creation alone triggers the transition. If a DIFFERENT
   object's event drives the change ("when an Escalation__c is created, the
-  parent Case's Status changes"), also set
-  `trigger_object` to that object's API name — the substrate defers those
-  honestly today rather than authoring a wrong test. Distinct from
+  parent Case's Status changes"), set `trigger_object` to that object's API
+  name AND `trigger_lookup_field` to the qualified field ON THE TRIGGER
+  OBJECT that looks up to the subject (e.g. `"Escalation__c.Case__c"`) —
+  the test creates the subject, creates the trigger record linked to it,
+  and verifies the subject's new state. Both names are verified against
+  the org model; without a verifiable lookup the claim is deferred rather
+  than authored wrong. Distinct from
   value-claim: value-claim is a value the USER sets and expects to persist;
   state-transition is a value the ORG's automation sets.
 - **Automation effects (automation-effect-claim).** When the requirement
@@ -52,6 +56,14 @@ Data-behavior claims concern how records and fields behave at runtime.
   `effect_lookup_field` (the qualified field on the effect object that looks
   up back to the trigger record, e.g. `"Order_Log__c.Order__c"`), plus
   optionally `effect_field` + `effect_value` to assert one of its fields.
+  When the automation instead STAMPS a record the trigger record points to
+  ("creating an Escalation stamps the linked Account's
+  Last_Escalation_Date__c"), set `effect_object` (the stamped object) and
+  `effect_via_lookup_field` (the qualified lookup ON THE TRIGGER OBJECT
+  pointing at it, e.g. `"Escalation__c.Account__c"`) and `effect_field` (the
+  stamped field, REQUIRED); set `effect_value` only when the requirement
+  names a stable literal — omit it for stamps like "today"/"now" (the test
+  then asserts the field was set at all).
   The substrate verifies every name against the org model and grounds the
   claim on a record-triggered Flow existing on the trigger object.
 - Choose the Object the behavior acts on as the subject — not a field — unless

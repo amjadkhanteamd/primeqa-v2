@@ -315,7 +315,7 @@ def _mutation_evidence(mutation, sobject, record_id, changes, start, end, *,
 # Predicates the positive ground step can faithfully evaluate. Side A emits
 # `equals` (field == V) and `exists` (the read found a row — the cross-object
 # automation-effect assert, D-210); others are deferred (fail-loud until built).
-_SUPPORTED_DATA_PREDICATES = frozenset({"equals", "exists"})
+_SUPPORTED_DATA_PREDICATES = frozenset({"equals", "exists", "not_null"})
 
 # D-210: a side-effect read may observe a record the org's automation creates
 # moments AFTER the trigger create commits (async Flow paths). An empty read
@@ -651,6 +651,13 @@ def _run_ground(assertion, read_ev, *, ordinal) -> AssertEvidence:
         # the side-effect record at all? No row indexing (0 rows is the honest
         # FAILED evaluation, not an error).
         held = read_ev.row_count > 0
+    elif pred.predicate == "not_null":
+        # D-227: the stamp assert — the automation wrote SOME value (e.g.
+        # $Flow.CurrentDate has no stable literal to equals against). 0 rows
+        # = couldn't observe → the honest FAILED evaluation.
+        field = _sf_field(field, read_ev.sobject)
+        held = (read_ev.row_count > 0
+                and read_ev.rows[0].get(field) is not None)
     else:
         # The captured field is keyed bare in the SF response (see _run_read_back).
         field = _sf_field(field, read_ev.sobject)

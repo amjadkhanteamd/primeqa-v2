@@ -12445,6 +12445,77 @@ defer — the grantee must be the directly-granting Profile/PS in v1; layout
 ASSIGNED_TO_PROFILE_RECORDTYPE (which profile sees the layout) stays S1-synced
 but unverified.
 
+### D-227 — Cross-object emission: trigger-record transitions + parent-stamp effects (Tier 2.1)
+
+**Context.** The two grounded-but-not-emitted SQ-205 paths (the D-210 residuals,
+now with a live fixture: `SQ205_Escalation_Effects`, Escalation__c AFTER CREATE →
+parent Case.Status='Escalated' + Account.Last_Escalation_Date__c=today):
+(A) a state transition on the SUBJECT provoked by creating a RELATED record
+(`trigger_object != subject` currently defers: "needs S1 lookup modeling");
+(B) an automation effect landing on a record the TRIGGER record points to via its
+OWN lookup (the reverse direction of the built child-of-trigger shape, which reads
+`WHERE <lookup-on-effect-object> = '$create-record.id'`).
+
+**Premise discovery (verified).** S4 needs ~nothing: D-205 N-create chains already
+run `CreateStep × N → Read → Assert` with per-create world construction (F6.2
+parents on the shared tracker), `resolve_field_value_refs` for `$<step>.id` refs in
+later creates, state threading for the read's refs, reverse teardown by record id,
+and the D-210 empty-read retry. Both paths are pure S3 shapes over that machinery —
+plus ONE predicate gap: the stamp value is `$Flow.CurrentDate` (no stable literal),
+so the assert must be **`not_null`**, which neither the S2 closed taxonomy
+(`equals/not_equals/exists/is_null/matches_pattern`) nor the data executor
+(`equals/exists`) carries.
+
+**Decision.**
+- **S2**: add `not_null` to the AssertionPredicate closed taxonomy (value-FREE
+  set). Predicates live in recipes (operational layer) — zero claim-identity
+  churn. Data executor adds `not_null` evaluation: held iff the read observed a
+  row AND the captured field is non-null (0 rows = couldn't observe → held False,
+  honest). Metadata executor untouched.
+- **Path A (cross-object trigger state-transition)**: the stash gate's defer
+  branch becomes verification — hints `trigger_object` + NEW `trigger_lookup_field`
+  resolve via a generalized far-object resolver (the `_ground_cross_object_effect`
+  pattern: object resolves uniquely; the lookup field BELONGS_TO it). Verified →
+  `GroundedStateTransition` gains `trigger_object`/`trigger_lookup_field`
+  endpoints; emission authors `[create-subject (padding ± the D-222 staged pair),
+  create-trigger {lookup: "$create-subject.id"}, read-subject WHERE
+  Id='$create-subject.id', assert equals to-state]`. Unverifiable names → the
+  same-object/unstaged fallbacks unchanged (never regress to refusal when the
+  same-object shape stands; cross-object claims REFUSE emission-deferred only when
+  the trigger pieces don't verify — a wrong-shape recipe is worse than none).
+- **Path B (parent-stamp automation-effect)**: NEW hint `effect_via_lookup_field`
+  — a Field that BELONGS_TO the SUBJECT (verifiable in the subject's own
+  neighborhood) pointing at `effect_object`. Distinct key = unambiguous dispatch
+  vs the child-of-trigger contract (`effect_lookup_field`, lookup on the effect
+  object), fully backward compatible. Emission authors `[create-parent
+  (effect_object, padding), create-record (subject, {via_lookup:
+  "$create-parent.id"}), read-effect FROM effect_object WHERE
+  Id='$create-parent.id', assert equals effect_value | not_null when value-less]`.
+  Creating the parent FIRST means the engine knows the effect record's id —
+  no relationship-traversal reads, no new ref machinery.
+- **Trust level**: lookup TARGETS stay LLM-proposed + existence-verified (the
+  field exists on the named object) — the same level the built child-of-trigger
+  shape accepted for `effect_lookup_field`; S1 referenceTo modeling remains a
+  refinement, not a blocker. EventDescriptor stays prose (`precise_trigger`
+  reserved, B-γ).
+- **Prompt**: fragment documents both new hint shapes; freeze **generation@v8**
+  per the registry ritual.
+- **S6**: zero changes — `_interpret_positive` keys on claim_kind and the first
+  create + assert; N-create chains already grade correctly.
+
+**Slices**: 1 = S2 `not_null` + data-executor evaluation; 2 = Path A
+(governance + emission); 3 = Path B (governance + emission); 4 = prompt v8 +
+registry + eval probes; 5 = seeded-fixture integration tests (conftest gains a
+Flow on Order_Log__c for Path B; Order_Log__c.Order__c serves both directions);
+6 = merge + live exit gate: regenerate SQ-205 at a fresh seq → AK approves the
+two cross-object drafts → runs reach `state_transitioned` (Case via Escalation
+create) + `automation_triggered` (Account stamp).
+
+**Residuals**: async/scheduled-path effects (the read retry covers empty reads,
+not stale values — same-transaction flows are immediately visible; AC2's
+time-based path stays out of fixture scope); structured trigger entity on the
+claim body (`precise_trigger`); S1 referenceTo target modeling.
+
 ---
 
 ---

@@ -247,6 +247,12 @@ class GroundedStateTransition:
     # stash gate; both None when the hints omit it or it doesn't verify).
     trigger_field: Optional[_Endpoint] = None
     trigger_value: Optional[Any] = None
+    # D-227: the OPTIONAL cross-object trigger — the transition is provoked
+    # by creating a RELATED record (trigger_object) carrying a lookup back
+    # to the subject (trigger_lookup_field, verified BELONGS_TO the trigger
+    # object at the stash gate). Both set together or both None.
+    trigger_object: Optional[_Endpoint] = None
+    trigger_lookup_field: Optional[_Endpoint] = None
 
 
 @dataclass(frozen=True)
@@ -254,15 +260,21 @@ class GroundedAutomationEffect:
     """data_behavior automation-effect positive grounding (D-210.1): the
     TRIGGER object + the Flow that ``TRIGGERS_ON`` it (the real grounding
     dimension — the matched Flow IS the claim's automation ref) + the verified
-    effect shape. Exactly one of two shapes (the stash gate enforces it):
+    effect shape. Exactly one of three shapes (the stash gate enforces it):
 
       - **same-record**: ``effect_field`` on the SUBJECT (verified) +
         ``effect_value`` — the Flow stamps a field on the trigger record;
         ``effect_object``/``effect_lookup_field`` are None.
-      - **cross-object**: ``effect_object`` (verified Object) +
-        ``effect_lookup_field`` (verified BELONGS_TO the effect object) — the
-        Flow creates a correlated record; ``effect_field``/``effect_value``
-        optionally assert one of its fields, else existence is the assert.
+      - **cross-object (child-of-trigger)**: ``effect_object`` (verified
+        Object) + ``effect_lookup_field`` (verified BELONGS_TO the effect
+        object) — the Flow creates a correlated record;
+        ``effect_field``/``effect_value`` optionally assert one of its
+        fields, else existence is the assert.
+      - **parent-stamp (D-227)**: ``effect_object`` + ``effect_via_lookup_field``
+        (verified BELONGS_TO the SUBJECT — the trigger record's own lookup to
+        the effect parent) + ``effect_field`` (REQUIRED, on the effect object);
+        ``effect_value`` optional — value-less stamps assert ``not_null``
+        (e.g. a $Flow.CurrentDate stamp has no stable literal).
     """
 
     archetype: str              # "data_behavior"
@@ -276,6 +288,8 @@ class GroundedAutomationEffect:
     effect_value: Any = None
     effect_object: Optional[_Endpoint] = None    # cross-object only
     effect_lookup_field: Optional[_Endpoint] = None  # cross-object correlate
+    # D-227 parent-stamp: the SUBJECT's own lookup to the effect parent.
+    effect_via_lookup_field: Optional[_Endpoint] = None
 
 
 @dataclass(frozen=True)
@@ -962,6 +976,14 @@ def _author_state_transition(g: GroundedStateTransition) -> EmissionBundle:
             version_seq=g.version_seq, external_id=trigger_api))
         from_values[trigger_api] = LiteralValue(value=g.trigger_value)
         create_fields[trigger_api] = g.trigger_value
+    # D-227: the cross-object trigger — the transition is provoked by creating
+    # a RELATED record, not the subject itself. The event description names
+    # the trigger object (EventDescriptor stays prose; precise_trigger is
+    # reserved, B-γ).
+    event_desc = g.requirement_excerpt
+    if g.trigger_object is not None:
+        event_desc = (f"creating a {g.trigger_object.external_id} linked to "
+                      f"the subject — {g.requirement_excerpt}")
     claim = StateTransitionClaimBody(
         subject=subject_ref,
         subject_fields=subject_fields,
@@ -969,23 +991,58 @@ def _author_state_transition(g: GroundedStateTransition) -> EmissionBundle:
         to_state=StateDescriptor(field_values={field_api: LiteralValue(value=g.to_value)}),
         triggering_event=EventDescriptor(
             trigger_kind="data-mutation-trigger",
-            description=g.requirement_excerpt),
+            description=event_desc),
     )
     conditions = SemanticConditionsBody(conditions=[])
 
     target = LogicalRef(entity_type="Object", external_id=object_api)
+    if g.trigger_object is not None:
+        # D-227 cross-object shape: create the subject (padding ± the D-222
+        # staged pair), create the TRIGGER record with its verified lookup
+        # back to the subject, read the SUBJECT back, assert the to-state.
+        # Runs on the D-205 N-create chain — the executor resolves
+        # '$create-subject.id' in the trigger's field_values and the read.
+        trigger_api = g.trigger_object.external_id
+        lookup_api = g.trigger_lookup_field.external_id
+        steps = [
+            CreateStep(step_id="create-subject", target_object=target,
+                       field_values=dict(create_fields)),
+            CreateStep(
+                step_id="create-trigger",
+                target_object=LogicalRef(entity_type="Object",
+                                         external_id=trigger_api),
+                field_values={lookup_api: "$create-subject.id"}),
+            ReadStep(
+                step_id="read-subject", target=target,
+                soql=(f"SELECT {field_api} FROM {object_api} "
+                      f"WHERE Id = '$create-subject.id'"),
+                fields_to_capture=[field_api]),
+            DataAssertStep(
+                step_id="assert-value",
+                predicate=AssertionPredicate(
+                    subject_ref=f"read-subject.{field_api}",
+                    predicate="equals", value=g.to_value)),
+        ]
+        trigger_op_target = LogicalRef(entity_type="Object",
+                                       external_id=trigger_api)
+        details = (f"create a {object_api} record, create a {trigger_api} "
+                   f"linked to it, read the {object_api} back, assert the "
+                   f"org set {field_api}={g.to_value!r}")
+    else:
+        steps = _observe_steps(object_api, field_api, g.to_value,
+                               create_fields=create_fields)
+        trigger_op_target = target
+        details = (f"create a {object_api} record (padding only), read it "
+                   f"back, assert the org set {field_api}={g.to_value!r}")
     trigger = DataMutationTriggerBody(
-        operation="create", target=target,
+        operation="create", target=trigger_op_target,
         identity_context="system", volume="single")
     recipe = DataRecipeBody(
         api_choice="rest", identity_context="system",
         execution_mechanism="direct_api",
-        steps=_observe_steps(object_api, field_api, g.to_value,
-                             create_fields=create_fields))
+        steps=steps)
     env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
-        auth_kind="data_api_user",
-        details=(f"create a {object_api} record (padding only), read it back, "
-                 f"assert the org set {field_api}={g.to_value!r}"))])
+        auth_kind="data_api_user", details=details)])
 
     return EmissionBundle(
         archetype=g.archetype, claim_kind=g.claim_kind,
@@ -1029,6 +1086,57 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
         steps = _observe_steps(object_api, field_api, g.effect_value)
         details = (f"create a {object_api} record, read it back, assert the "
                    f"Flow set {field_api}={g.effect_value!r}")
+    elif g.effect_via_lookup_field is not None:
+        # D-227 parent-stamp: the Flow stamps a record the TRIGGER record
+        # points to via its own lookup. Create the parent FIRST (so its id is
+        # known — no relationship-traversal read), create the trigger with the
+        # lookup set, read the PARENT back. Value-less stamps assert not_null
+        # (e.g. $Flow.CurrentDate has no stable literal). Runs on the D-205
+        # N-create chain.
+        effect_api = g.effect_object.external_id
+        via_api = g.effect_via_lookup_field.external_id
+        field_api = g.effect_field.external_id
+        field_bare = field_api.split(".", 1)[-1]
+        field_ref = IdentityBearingRef(
+            entity_type=g.effect_field.entity_type,
+            entity_id=g.effect_field.entity_id,
+            version_seq=g.version_seq, external_id=field_api)
+        if g.effect_value is not None:
+            effect = FieldChangeEffect(changes=StateDescriptor(
+                field_values={field_api: LiteralValue(value=g.effect_value)}))
+            assert_pred = AssertionPredicate(
+                subject_ref=f"read-effect.{field_bare}",
+                predicate="equals", value=g.effect_value)
+            stamp_desc = f"{field_bare}={g.effect_value!r}"
+        else:
+            effect = FieldChangeEffect(changes=StateDescriptor(field_values={}))
+            assert_pred = AssertionPredicate(
+                subject_ref=f"read-effect.{field_bare}",
+                predicate="not_null")
+            stamp_desc = f"{field_bare} (some value — the stamp has no stable literal)"
+        claim = AutomationEffectClaimBody(
+            automation=automation_ref, automation_primitive="flow",
+            triggering_action=event, expected_effect=effect,
+            affected_fields=[field_ref],
+        )
+        steps = [
+            CreateStep(step_id="create-parent",
+                       target_object=LogicalRef(entity_type="Object",
+                                                external_id=effect_api),
+                       field_values={}),
+            CreateStep(step_id="create-record", target_object=target,
+                       field_values={via_api: "$create-parent.id"}),
+            ReadStep(
+                step_id="read-effect",
+                target=LogicalRef(entity_type="Object", external_id=effect_api),
+                soql=(f"SELECT {field_bare} FROM {effect_api} "
+                      f"WHERE Id = '$create-parent.id'"),
+                fields_to_capture=[field_bare]),
+            DataAssertStep(step_id="assert-effect", predicate=assert_pred),
+        ]
+        details = (f"create a {effect_api} parent, create a {object_api} "
+                   f"linked to it, read the parent back, assert the Flow "
+                   f"stamped {stamp_desc}")
     else:
         # cross-object: the Flow creates a correlated effect record
         effect_api = g.effect_object.external_id

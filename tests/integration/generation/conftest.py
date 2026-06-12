@@ -208,6 +208,11 @@ def seeded(db_setup) -> dict:
         _edge(conn, log_lookup, order_log, "BELONGS_TO", "STRUCTURAL", v1)
         log_level = _entity(conn, "Field", "Order_Log__c.Level__c", v1)
         _edge(conn, log_level, order_log, "BELONGS_TO", "STRUCTURAL", v1)
+        # D-227: a Flow TRIGGERS_ON Order_Log__c — the parent-stamp vertical's
+        # grounding (the trigger record's own lookup Order__c points at the
+        # effect parent Order__c).
+        log_flow = _entity(conn, "Flow", "Log_Effects", v1)
+        _edge(conn, log_flow, order_log, "TRIGGERS_ON", "BEHAVIOR", v1)
 
     return {"v1": int(v1), "account": account, "case": case, "invoice": invoice}
 
