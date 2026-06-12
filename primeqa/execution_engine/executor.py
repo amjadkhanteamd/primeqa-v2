@@ -34,7 +34,11 @@ from primeqa.execution_engine.plan import (
     PlannedAssertion,
     PlannedRead,
 )
-from primeqa.execution_engine.translator import translate_read
+from primeqa.execution_engine.translator import (
+    LayoutMembershipProbe,
+    _soql_literal,
+    translate_read,
+)
 from primeqa.integrations.exceptions import SFClientError
 
 # Predicates the executor can faithfully evaluate. `exists` (row presence) grounds
@@ -105,10 +109,17 @@ def _run_read(
     call); a transport failure is captured + returned as an error (→ errored
     outcome). On success, records the read's value column (``capture_column``,
     None for an existence/edge read) so a downstream value-predicate can read it."""
-    query = translate_read(step)        # Unsupported{Edge,Property}Error → fail-loud
+    realization = translate_read(step)  # Unsupported{Edge,Property}Error → fail-loud
+    if isinstance(realization, LayoutMembershipProbe):
+        return _run_layout_probe(realization, step, ordinal, client,
+                                 captures, capture_columns)
+    query = realization
     start = _now()
     try:
-        rows = client.query(query.soql)
+        # D-224: ObjectPermissions/FieldPermissions live on the Data-API
+        # query endpoint; everything else stays Tooling.
+        rows = (client.query_data(query.soql) if query.api == "data"
+                else client.query(query.soql))
     except SFClientError as e:
         end = _now()
         err = ErrorSurface(
@@ -133,6 +144,82 @@ def _run_read(
         row_count=len(rows), rows=tuple(rows), started_at=start,
         finished_at=end, duration_ms=_ms(start, end))
     return ev, None
+
+
+def _walk_layout_items(metadata: dict) -> list[str]:
+    """Every field api name placed on a layout Metadata blob —
+    layoutSections→layoutRows→layoutItems→layoutComponents, components of
+    type 'Field' (the same structure S1's sync walks)."""
+    fields: list[str] = []
+    for section in (metadata.get("layoutSections") or ()):
+        if not isinstance(section, dict):
+            continue
+        for row in (section.get("layoutRows") or ()):
+            if not isinstance(row, dict):
+                continue
+            for item in (row.get("layoutItems") or ()):
+                if not isinstance(item, dict):
+                    continue
+                for comp in (item.get("layoutComponents") or ()):
+                    if (isinstance(comp, dict)
+                            and comp.get("type") == "Field"
+                            and comp.get("value")):
+                        fields.append(comp["value"])
+    return fields
+
+
+def _run_layout_probe(
+    probe: LayoutMembershipProbe, step: PlannedRead, ordinal: int,
+    client, captures: dict, capture_columns: dict,
+) -> tuple[ReadEvidence, Optional[ErrorSurface]]:
+    """Run the INCLUDES_FIELD membership probe (D-224): layout name → Id
+    (Tooling SOQL), Id → Metadata blob (single-row Tooling read), walk the
+    items for the field. Synthesizes ``[{"field": …}]``/``[]`` so the recipe's
+    ``exists`` assert evaluates unchanged. 0 layout matches is an honest
+    absent-subject read (0 rows), not an error."""
+    id_soql = (
+        "SELECT Id, EntityDefinitionId FROM Layout "
+        f"WHERE Name = '{_soql_literal(probe.layout_name)}'"
+    )
+    start = _now()
+
+    def _evidence(rows, *, query: str, error=None):
+        return ReadEvidence(
+            step_id=step.step_id, ordinal=ordinal, query=query,
+            sobject=probe.sobject, edge=probe.edge,
+            subject_entity_type=probe.subject_entity_type,
+            subject_external_id=probe.layout_external_id,
+            row_count=len(rows), rows=tuple(rows), started_at=start,
+            finished_at=_now(), duration_ms=_ms(start, _now()), error=error)
+
+    try:
+        candidates = client.query(id_soql)
+        # Prefer the layout owned by the probe's object (standard objects
+        # carry the api name in EntityDefinitionId); fall back to a unique
+        # name match.
+        matched = [r for r in candidates
+                   if r.get("EntityDefinitionId") == probe.object_api]
+        if not matched and len(candidates) == 1:
+            matched = candidates
+        if not matched:
+            captures[step.step_id] = []
+            capture_columns[step.step_id] = None
+            return _evidence([], query=id_soql), None
+
+        meta_soql = (f"SELECT Metadata FROM Layout "
+                     f"WHERE Id = '{matched[0]['Id']}'")
+        meta_rows = client.query(meta_soql)
+        placed = _walk_layout_items(
+            (meta_rows[0].get("Metadata") or {}) if meta_rows else {})
+        rows = ([{"field": probe.field_api}]
+                if probe.field_api in placed else [])
+        captures[step.step_id] = rows
+        capture_columns[step.step_id] = None
+        return _evidence(rows, query=f"{id_soql}; {meta_soql}"), None
+    except SFClientError as e:
+        err = ErrorSurface(
+            phase="read", error_type=type(e).__name__, message=str(e))
+        return _evidence([], query=id_soql, error=err), err
 
 
 def _run_assert(

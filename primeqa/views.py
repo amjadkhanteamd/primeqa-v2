@@ -685,7 +685,10 @@ def run_page_submit():
         if count == 0:
             flash("No approved claims matched the selection.", "error")
             return redirect("/run")
-        flash(f"{count} substrate run{'s' if count != 1 else ''} queued",
+        skipped = result.get("skipped_unexecutable") or 0
+        flash(f"{count} substrate run{'s' if count != 1 else ''} queued"
+              + (f" — {skipped} claim{'s' if skipped != 1 else ''} skipped "
+                 f"(not yet executable)" if skipped else ""),
               "success")
         return redirect("/runs/substrate")
 
@@ -2727,7 +2730,18 @@ def claims_approve(test_id):
     from primeqa.intelligence.s4_execution_console import approve_claim
     res = approve_claim(request.user["tenant_id"], str(test_id))
     if res.get("ok"):
-        flash("Claim approved — it's now runnable.", "success")
+        # D-226 (the 0.4-audit F2 fix): say what actually got queued — the old
+        # flash claimed runnability even when zero runs were enqueued.
+        queued = res.get("auto_enqueued") or 0
+        if res.get("unexecutable"):
+            flash(f"Claim approved, but no run was queued: {res['unexecutable']}",
+                  "warning")
+        elif queued:
+            flash(f"Claim approved — {queued} verification run"
+                  f"{'s' if queued != 1 else ''} queued.", "success")
+        else:
+            flash("Claim approved. No run was queued (no auto-verify sandbox "
+                  "environment is connected).", "warning")
     else:
         flash(f"Could not approve: {res.get('error', 'unknown error')}", "error")
     # D-206: the inbox approves in place — return there when asked. Same-page
@@ -3395,9 +3409,12 @@ def releases_run(release_id):
         flash("No approved claims found for this release's requirements — "
               "approve drafts in the claims inbox first.", "error")
         return redirect(f"/releases/{release_id}?tab=decision")
+    skipped = result.get("skipped_unexecutable") or 0
     flash(f"{result['enqueued']} substrate run"
           f"{'s' if result['enqueued'] != 1 else ''} queued across "
-          f"{result['requirements']} requirement(s)", "success")
+          f"{result['requirements']} requirement(s)"
+          + (f" — {skipped} claim{'s' if skipped != 1 else ''} skipped "
+             f"(not yet executable)" if skipped else ""), "success")
     return redirect("/runs/substrate")
 
 

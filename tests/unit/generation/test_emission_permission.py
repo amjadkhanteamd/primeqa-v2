@@ -43,8 +43,12 @@ def test_capability_authors_grant_edge_inspection():
     # The recipe reads the GRANTEE's metadata (it is the entity that holds grants).
     assert read.step_id == "read-subject"
     assert read.fields_to_capture == ["GRANTS_FIELD_ACCESS"]
-    # Layer-1: existence of the captured grant IS the verification.
-    assert assertion.predicate.predicate == "exists" and assertion.predicate.value is None
+    # D-224: the read carries the FULL scope — far endpoint + capability —
+    # and asserts equals-true over the mapped permission flag (a permissions
+    # row exists even when every flag is false, so exists verifies nothing).
+    assert read.edge_target.external_id == "Account.AnnualRevenue"
+    assert read.edge_qualifier == "edit"
+    assert assertion.predicate.predicate == "equals" and assertion.predicate.value is True
 
 
 def test_capability_object_grant_captures_object_edge():

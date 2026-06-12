@@ -10,10 +10,14 @@ gate) and closes its db *before* calling this; this opens its own tenant connect
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 from uuid import UUID
 
+from primeqa.execution_engine.errors import UnexecutableClaimError
 from primeqa.execution_engine.jobs import ExecutionJob, ExecutionJobStore
+
+log = logging.getLogger(__name__)
 
 
 def enqueue_s4_execution(
@@ -23,9 +27,27 @@ def enqueue_s4_execution(
     """Get-or-create the **active** execution job for ``(test_id, environment_id)``
     — idempotent while active, re-runnable once terminal (D-130.A). ``test_id`` is
     the S2 claim/test id; ``environment_id`` is a route-validated v1 environment.
+
+    Raises :class:`~primeqa.execution_engine.errors.UnexecutableClaimError`
+    when every status-eligible recipe fails S4's shape dry-run (the D-223
+    pre-enqueue gate) — the job would only die at run time, so the refusal
+    happens here where the caller can surface it.
+
     Returns the queued :class:`ExecutionJob` (the worker runs it on the next tick)."""
+    from sqlalchemy.orm import Session
+
+    from primeqa.execution_engine.executability import gate_enqueue
+    from primeqa.semantic.connection import get_tenant_connection
+
+    tid = UUID(str(test_id))
+    with get_tenant_connection(tenant_id) as conn:
+        session = Session(bind=conn)
+        try:
+            gate_enqueue(session, tid)
+        finally:
+            session.close()
     return ExecutionJobStore(tenant_id).create_or_get_job(
-        test_id=UUID(str(test_id)),
+        test_id=tid,
         environment_id=int(environment_id),
         created_by=created_by,
     )
@@ -66,11 +88,18 @@ def enqueue_claims_for_requirements(
         finally:
             session.close()
 
-    enqueued = 0
+    enqueued, skipped_unexecutable = 0, 0
     for tid in test_ids:
-        enqueue_s4_execution(tenant_id=tenant_id, test_id=tid,
-                             environment_id=environment_id,
-                             created_by=created_by)
-        enqueued += 1
+        try:
+            enqueue_s4_execution(tenant_id=tenant_id, test_id=tid,
+                                 environment_id=environment_id,
+                                 created_by=created_by)
+            enqueued += 1
+        except UnexecutableClaimError as exc:
+            # D-223: the gate refused the shape — skip, never abort the batch.
+            log.info("enqueue skipped (unexecutable) tenant %s test %s: %s",
+                     tenant_id, tid, exc)
+            skipped_unexecutable += 1
     return {"enqueued": enqueued, "claims": len(test_ids),
-            "requirements": len(keys)}
+            "requirements": len(keys),
+            "skipped_unexecutable": skipped_unexecutable}

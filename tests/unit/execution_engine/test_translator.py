@@ -154,3 +154,84 @@ def test_unmapped_property_field_type_fails_loud():
     # a naive equals would mismatch, so refuse rather than guess.
     with pytest.raises(UnsupportedPropertyError, match="field_type"):
         translate_read(_read("Account.Name", edge="field_type", entity_type="Field"))
+
+
+# ---------------------------------------------------------------------------
+# D-224 — GRANTS_*_ACCESS (data-API SOQL) + INCLUDES_FIELD (membership probe)
+# ---------------------------------------------------------------------------
+
+def _grant_read(*, granter=("Profile", "Admin"), capture="GRANTS_FIELD_ACCESS",
+                target=("Field", "Account.AnnualRevenue"), qualifier="edit"):
+    return PlannedRead(
+        step_id="read-subject",
+        target_entity=LogicalRef(entity_type=granter[0], external_id=granter[1]),
+        fields_to_capture=(capture,),
+        edge_target=LogicalRef(entity_type=target[0], external_id=target[1]),
+        edge_qualifier=qualifier)
+
+
+def test_grants_field_access_translates_to_scoped_data_soql():
+    q = translate_read(_grant_read())
+    assert q.api == "data"
+    assert q.sobject == "FieldPermissions"
+    assert q.capture_column == "PermissionsEdit"
+    assert "Parent.IsOwnedByProfile = true" in q.soql
+    assert "Parent.Profile.Name = 'Admin'" in q.soql
+    assert "SobjectType = 'Account'" in q.soql
+    assert "Field = 'Account.AnnualRevenue'" in q.soql
+
+
+def test_grants_object_access_permission_set_scope():
+    q = translate_read(_grant_read(
+        granter=("PermissionSet", "Sales_Ops"),
+        capture="GRANTS_OBJECT_ACCESS", target=("Object", "Case"),
+        qualifier="read"))
+    assert q.api == "data"
+    assert q.sobject == "ObjectPermissions"
+    assert q.capture_column == "PermissionsRead"
+    assert "Parent.IsOwnedByProfile = false" in q.soql
+    assert "Parent.Name = 'Sales_Ops'" in q.soql
+    assert "SobjectType = 'Case'" in q.soql
+
+
+def test_grants_read_without_scope_is_pre_d224_and_fails_loud():
+    read = PlannedRead(
+        step_id="read-subject",
+        target_entity=LogicalRef(entity_type="Profile", external_id="Admin"),
+        fields_to_capture=("GRANTS_FIELD_ACCESS",))
+    with pytest.raises(UnsupportedEdgeError) as ei:
+        translate_read(read)
+    assert "pre-D-224" in str(ei.value)
+
+
+def test_grants_unknown_capability_fails_loud():
+    with pytest.raises(UnsupportedEdgeError) as ei:
+        translate_read(_grant_read(qualifier="delete"))   # FieldPermissions: read/edit only
+    assert "read" in str(ei.value) and "edit" in str(ei.value)
+
+
+def test_includes_field_translates_to_membership_probe():
+    from primeqa.execution_engine.translator import LayoutMembershipProbe
+    read = PlannedRead(
+        step_id="read-subject",
+        target_entity=LogicalRef(entity_type="Layout",
+                                 external_id="Account-Account Layout"),
+        fields_to_capture=("INCLUDES_FIELD",),
+        edge_target=LogicalRef(entity_type="Field",
+                               external_id="Account.AnnualRevenue"))
+    probe = translate_read(read)
+    assert isinstance(probe, LayoutMembershipProbe)
+    assert probe.object_api == "Account"
+    assert probe.layout_name == "Account Layout"
+    assert probe.field_api == "AnnualRevenue"
+    assert probe.edge == "INCLUDES_FIELD"
+
+
+def test_includes_field_bad_layout_name_fails_loud():
+    read = PlannedRead(
+        step_id="read-subject",
+        target_entity=LogicalRef(entity_type="Layout", external_id="NoDash"),
+        fields_to_capture=("INCLUDES_FIELD",),
+        edge_target=LogicalRef(entity_type="Field", external_id="A.B"))
+    with pytest.raises(UnsupportedEdgeError):
+        translate_read(read)

@@ -199,3 +199,38 @@ def test_list_runs_orders_and_paginates(session):
 
 def test_list_runs_best_effort_bad_tenant():
     assert list_runs(-1)["available"] is False
+
+
+# --- D-226: lifecycle guards (the 0.4-audit F1 fix) ---------------------------
+
+def test_approve_claim_refuses_deprecated(session):
+    # Deprecation is a reasoned human decision — the generic approve path must
+    # never silently undo it (and auto-enqueue runs of a superseded recipe).
+    coord = SemanticTransactionCoordinator()
+    test_id = _seed_draft_claim_with_recipe(session, coord)
+    claim = coord.get_latest_claim(session, test_id)
+    coord.deprecate_claim(session, actor="human", test_id=test_id,
+                          version_seq=claim.version_seq,
+                          reason="superseded by a corrected claim")
+    out = _approve_claim(session, test_id)
+    assert out["ok"] is False
+    assert "deprecated" in out["error"]
+    # still deprecated — nothing was promoted
+    assert coord.get_latest_claim(session, test_id).status == "deprecated"
+    assert coord.get_current_approved_claim(session, test_id) is None
+
+
+def test_approve_claim_never_resurrects_deprecated_recipe(session):
+    # A deprecated recipe under a draft claim stays deprecated through approve.
+    coord = SemanticTransactionCoordinator()
+    test_id = _seed_draft_claim_with_recipe(session, coord)
+    recipe = coord.list_active_recipes(session, test_id)[0]
+    coord.deprecate_recipe(session, actor="human", recipe_id=recipe.recipe_id,
+                           version_seq=recipe.version_seq,
+                           reason="recipe shape superseded")
+    out = _approve_claim(session, test_id)
+    assert out["ok"] is True
+    assert out["recipes_approved"] == 0          # nothing promoted
+    statuses = {r.recipe_id: r.status
+                for r in coord.list_active_recipes(session, test_id)}
+    assert statuses[recipe.recipe_id] == "deprecated"

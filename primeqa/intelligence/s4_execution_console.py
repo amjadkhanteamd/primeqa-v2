@@ -24,6 +24,8 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from primeqa.execution_engine.errors import UnexecutableClaimError
+
 log = logging.getLogger(__name__)
 
 
@@ -240,17 +242,32 @@ def list_runs(tenant_id: int, *, page: int = 1, per_page: int = 20) -> dict:
 def _approve_claim(session, test_id) -> dict:
     """Pure: promote the current claim version to ``approved`` and its
     unapproved current recipes to ``approved`` on an open session (humans-only
-    per D-ε-1). Idempotent — an already-approved claim/recipe is a no-op."""
+    per D-ε-1). Idempotent — an already-approved claim/recipe is a no-op.
+
+    D-226: a DEPRECATED claim is refused — deprecation required an explicit
+    human reason (D-ε-5); the generic Approve button must not silently undo it
+    (and auto-enqueue runs of a superseded recipe). Reinstatement stays a
+    deliberate coordinator capability (``promote_claim_to_approved`` keeps the
+    documented deprecated→approved transition for explicit callers). The
+    recipe loop likewise never resurrects a deprecated recipe."""
     from primeqa.test_representation import SemanticTransactionCoordinator
     coord = SemanticTransactionCoordinator()
     tid = UUID(str(test_id))
     claim = coord.get_latest_claim(session, tid)
     if claim is None:
         return {"ok": False, "error": "No current claim for this id."}
+    if claim.status == "deprecated":
+        return {"ok": False,
+                "error": ("This claim is deprecated (a recorded human "
+                          "decision). It cannot be re-approved from here — "
+                          "regenerate the requirement for a fresh claim, or "
+                          "reinstate it deliberately via the coordinator.")}
     coord.promote_claim_to_approved(
         session, actor="human", test_id=tid, version_seq=claim.version_seq)
     promoted = 0
     for r in coord.list_active_recipes(session, tid):
+        if r.status == "deprecated":
+            continue                    # D-226: never silently un-deprecate
         if r.status not in ("active", "approved"):
             coord.promote_recipe_to_approved(
                 session, actor="human", recipe_id=r.recipe_id, version_seq=r.version_seq)
@@ -316,16 +333,27 @@ def auto_enqueue_on_approval(tenant_id: int, test_id, *, created_by=None) -> dic
         finally:
             db.close()
         jobs = []
+        unexecutable = None
         for eid in env_ids:
             try:
                 job = enqueue_s4_execution(
                     tenant_id=tenant_id, test_id=test_id,
                     environment_id=eid, created_by=created_by)
                 jobs.append(job.id)
+            except UnexecutableClaimError as exc:
+                # D-223: a shape refusal is env-independent — record once,
+                # stop trying (the caller surfaces it; approval stands).
+                log.info("auto-enqueue gated (unexecutable) tenant %s test %s: %s",
+                         tenant_id, test_id, exc)
+                unexecutable = str(exc)
+                break
             except Exception as exc:                       # one env never blocks the rest
                 log.warning("auto-enqueue failed for tenant %s test %s env %s: %s",
                             tenant_id, test_id, eid, exc)
-        return {"enqueued": jobs, "environments": env_ids}
+        out = {"enqueued": jobs, "environments": env_ids}
+        if unexecutable is not None:
+            out["unexecutable"] = unexecutable
+        return out
     except Exception as exc:
         log.warning("auto-enqueue skipped for tenant %s test %s: %s",
                     tenant_id, test_id, exc)
@@ -367,16 +395,23 @@ def enqueue_claims_for_keys(tenant_id: int, external_keys, environment_id: int,
             finally:
                 session.close()
         jobs = []
+        skipped_unexecutable = 0
         for tid in test_ids:
             try:
                 job = enqueue_s4_execution(
                     tenant_id=tenant_id, test_id=tid,
                     environment_id=environment_id, created_by=created_by)
                 jobs.append(job.id)
+            except UnexecutableClaimError as exc:
+                # D-223: shape refusal — skip this claim, never the batch.
+                log.info("release-claim enqueue gated tenant %s test %s: %s",
+                         tenant_id, tid, exc)
+                skipped_unexecutable += 1
             except Exception as exc:
                 log.warning("release-claim enqueue failed tenant %s test %s: %s",
                             tenant_id, tid, exc)
-        return {"enqueued": jobs, "claim_count": len(test_ids)}
+        return {"enqueued": jobs, "claim_count": len(test_ids),
+                "skipped_unexecutable": skipped_unexecutable}
     except Exception as exc:
         log.warning("enqueue_claims_for_keys failed for tenant %s: %s",
                     tenant_id, exc)
@@ -400,16 +435,23 @@ def enqueue_all_approved_claims(tenant_id: int, environment_id: int,
                 "WHERE status = 'approved' AND valid_to IS NULL "
                 "ORDER BY test_id")).fetchall()]
         jobs = []
+        skipped_unexecutable = 0
         for tid in test_ids:
             try:
                 job = enqueue_s4_execution(
                     tenant_id=tenant_id, test_id=tid,
                     environment_id=environment_id, created_by=created_by)
                 jobs.append(job.id)
+            except UnexecutableClaimError as exc:
+                # D-223: shape refusal — skip this claim, never the batch.
+                log.info("scheduled enqueue gated tenant %s test %s: %s",
+                         tenant_id, tid, exc)
+                skipped_unexecutable += 1
             except Exception as exc:
                 log.warning("scheduled enqueue failed tenant %s test %s: %s",
                             tenant_id, tid, exc)
-        return {"enqueued": jobs, "claim_count": len(test_ids)}
+        return {"enqueued": jobs, "claim_count": len(test_ids),
+                "skipped_unexecutable": skipped_unexecutable}
     except Exception as exc:
         log.warning("enqueue_all_approved_claims failed for tenant %s: %s",
                     tenant_id, exc)

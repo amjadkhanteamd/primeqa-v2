@@ -184,10 +184,20 @@ def _plan_step(step: object, *, recipe_id) -> PlanStep:
                 f"(D-099.3); got a {type(step.target_entity).__name__}",
                 recipe_id=recipe_id,
             )
+        # D-224: the edge's far endpoint follows the same D-099.3 discipline.
+        if step.edge_target is not None and not isinstance(step.edge_target,
+                                                           LogicalRef):
+            raise PlanTranslationError(
+                f"metadata-inspection read {step.step_id!r} edge_target must "
+                f"be a LogicalRef; got a {type(step.edge_target).__name__}",
+                recipe_id=recipe_id,
+            )
         return PlannedRead(
             step_id=step.step_id,
             target_entity=step.target_entity,
             fields_to_capture=tuple(step.fields_to_capture),
+            edge_target=step.edge_target,
+            edge_qualifier=step.edge_qualifier,
         )
 
     if isinstance(step, AssertStep):

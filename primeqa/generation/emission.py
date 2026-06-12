@@ -380,12 +380,15 @@ def _inspection_recipe(
     *, read_entity_type: str, read_external_id: str,
     capture_field: str, env_detail: str,
     assert_predicate: str = "exists", assert_value: Any = None,
+    edge_target: Optional[LogicalRef] = None,
+    edge_qualifier: Optional[str] = None,
 ) -> tuple[InspectionTriggerBody, MetadataRecipeBody, ExecutionEnvironmentBody]:
     """Build the (trigger, recipe, env) triple for a verification by inspection.
     Reads ``read_entity_type``/``read_external_id``'s metadata and asserts the
     grounding edge surfaces. Operational refs are logical (resolve-by-name) so
     S4 re-inspects current state (D-099.3); never identity-bearing (write_recipe
-    step 5)."""
+    step 5). D-224: ``edge_target``/``edge_qualifier`` carry the captured edge's
+    far endpoint + capability so the realization is self-contained."""
     trigger = InspectionTriggerBody()
     recipe = MetadataRecipeBody(
         mode="metadata_read",
@@ -397,6 +400,8 @@ def _inspection_recipe(
                     entity_type=read_entity_type, external_id=read_external_id,
                 ),
                 fields_to_capture=[capture_field],
+                edge_target=edge_target,
+                edge_qualifier=edge_qualifier,
             ),
             AssertStep(
                 step_id="assert-edge",
@@ -538,12 +543,19 @@ def _author_capability(g: GroundedCapability) -> EmissionBundle:
     )
     conditions = SemanticConditionsBody(conditions=[])
     edge_type = "GRANTS_OBJECT_ACCESS" if g.grant_type == "object" else "GRANTS_FIELD_ACCESS"
+    # D-224: the read carries the FULL scope (grantee + target + capability) and
+    # asserts equals-true over the mapped permission flag — NOT exists: a
+    # permissions row exists even when every flag is false.
     trigger, recipe, env = _inspection_recipe(
         read_entity_type=g.granting_subject.entity_type,
         read_external_id=g.granting_subject.external_id,
         capture_field=edge_type,
         env_detail=(f"read {g.granting_subject.external_id} grants to verify "
                     f"{g.granted_capability} on {g.target.external_id}"),
+        assert_predicate="equals", assert_value=True,
+        edge_target=LogicalRef(entity_type=g.target.entity_type,
+                               external_id=g.target.external_id),
+        edge_qualifier=g.granted_capability,
     )
     return EmissionBundle(
         archetype=g.archetype, claim_kind=g.claim_kind,
@@ -574,12 +586,16 @@ def _author_layout(g: GroundedLayout) -> EmissionBundle:
     )
     claim = LayoutClaimBody(layout=layout_ref, field=field_ref)
     conditions = SemanticConditionsBody(conditions=[])
+    # D-224: the read carries the placed Field as edge_target (membership is
+    # presence — the exists assert is faithful here, unlike capability flags).
     trigger, recipe, env = _inspection_recipe(
         read_entity_type=g.layout.entity_type,
         read_external_id=g.layout.external_id,
         capture_field="INCLUDES_FIELD",
         env_detail=(f"read {g.layout.external_id} layout to verify "
                     f"{g.field.external_id} is placed on it"),
+        edge_target=LogicalRef(entity_type=g.field.entity_type,
+                               external_id=g.field.external_id),
     )
     return EmissionBundle(
         archetype=g.archetype, claim_kind=g.claim_kind,

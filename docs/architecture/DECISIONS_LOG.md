@@ -12275,6 +12275,176 @@ resolved by observation, not assumption. Residual unchanged: staged creates that
 supporting field values (e.g. an org where that VR fires on blank) are the test-data
 provisioning port's territory.
 
+### D-223 — Pre-enqueue executability gate (Tier-1 1.3; G-1)
+
+**Context.** S3's `EMITTABLE` declares what can be *authored*; only S4's runtime
+fail-louds (`PlanTranslationError`, `UnsupportedEdgeError`, `UnsupportedPropertyError`)
+know what can be *executed*. Between them an approved-but-unexecutable claim (the
+author-only kinds: capability-claim, layout-claim — their captures
+`GRANTS_OBJECT_ACCESS` / `GRANTS_FIELD_ACCESS` / `INCLUDES_FIELD` have no translator
+entry) enqueues cleanly and dies later as dogfood noise. G-1 from the matrix audit.
+
+**Decision.**
+- **No shadow registry.** Fork considered: (a) a static `EXECUTABLE_RECIPE_SHAPES`
+  registry both sides import vs (b) the gate **dry-runs S4's own pure machinery**.
+  Chose (b): `bridge.build_metadata_inspection_plan` / `build_data_recipe_plan` are
+  documented pure (bridge.py module docstring), and `translate_read` is pure — so
+  `check_recipe_executability(recipe)` = bridge projection + per-read translator
+  dry-run. The single source of truth is the code that will execute the recipe;
+  drift is impossible by construction.
+- **New module** `primeqa/execution_engine/executability.py`; new typed error
+  `UnexecutableClaimError(ExecutionEngineError)` in `errors.py` carrying
+  `test_id` + per-recipe reasons.
+- **Gate semantics at `enqueue_s4_execution` (intake.py)**: load the test's current
+  (`valid_to IS NULL`) recipes in the selection-eligible statuses
+  (`active`/`approved`, the select_recipe_for_execution commitment). ≥1 passes the
+  shape check → enqueue. ≥1 eligible exists and ALL fail → raise
+  `UnexecutableClaimError` (the G-1 stop). ZERO status-eligible recipes → enqueue
+  unchanged (status outcomes stay runtime-owned: out of G-1's shape scope; the run
+  path's `no-eligible-recipe` result is already first-class).
+- **Callers** (all funnel through `enqueue_s4_execution`): the manual run routes
+  flash the reason; `auto_enqueue_on_approval` counts unexecutable skips separately
+  (feeds the D-226 flash work); `enqueue_claims_for_requirements` /
+  `enqueue_claims_for_keys` / `enqueue_all_approved_claims` return a skipped count;
+  the schedules tick and repair agent log-and-continue. Runtime fail-louds stay
+  (defence in depth).
+- **Drift-guard test** (the D-105.1 discipline, test-only imports — no production
+  S3↔S4 cross-import): for every `EMITTABLE` pair, author its `_EMITTABLE_SHAPES`
+  bundle, write the recipe body, run `check_recipe_executability`, and assert the
+  result equals a static `EXPECTED_EXECUTABILITY` map in the test. Adding an
+  emittable kind without deciding executability trips the map; D-224's translator
+  flips capability/layout to executable VISIBLY in that map.
+
+**Expected executability at this entry** (the map's initial state):
+metadata-relationship / existence / property(length·precision·scale) / prohibition /
+value / state-transition / automation-effect → executable; capability + layout →
+unexecutable (no `GRANTS_*_ACCESS` / `INCLUDES_FIELD` translators until D-224).
+
+### D-225 — FLS/access-structured error surfacing (Tier-1 1.4; the CF-1 shape)
+
+**Context.** Salesforce access denials (`INSUFFICIENT_FIELD_ACCESS`,
+`INSUFFICIENT_ACCESS_OR_READONLY`, `INSUFFICIENT_ACCESS_ON_CROSS_REFERENCE_ENTITY`,
+`INVALID_FIELD_FOR_INSERT_UPDATE`) already land in `rejection_body` and already
+attribute to `cause_kind=platform_constraint` — but generically: the cause detail
+listed raw codes, the blocked FIELD names stayed buried in the unparsed body, and
+the run-detail UI showed a JSON wall. The May-24 triage recommendation, re-targeted
+at the substrate engine.
+
+**Decision.**
+- **Evidence** (`execution_engine/evidence.py` + `data_executor.py`):
+  Create/Update/Delete attempt evidence gains `error_fields: tuple = ()` — every
+  field named across the body's error entries (`_named_fields`: deduped,
+  order-preserving). Additive with a default; `dataclasses.asdict` persistence is
+  kind-agnostic, old JSONB rows simply lack the key. No migration.
+- **Attribution** (`interpretation/attribution.py`): an explicit
+  `_ACCESS_ERROR_CODES` frozenset; when a rejection's codes intersect it,
+  `_attribute_unasserted` emits `platform_constraint` with a DELIBERATE detail —
+  "access denied (CODES) on field(s) F — the integration user lacks the
+  permission…". **`cause_kind` vocabulary unchanged** (no migration, D-116
+  clustering unaffected); finer-grained access cause_kinds stay a logged
+  refinement for when a consumer needs to query them apart.
+- **Scope boundary**: mutation-path only. The read-path FLS shape (an FLS-hidden
+  field surfacing as a SOQL "No such column" transport error) stays a residual —
+  classifying it means regexing SF message prose; revisit if the CF-1 dogfood run
+  shows it bites in practice.
+
+**Exit**: the CF-1 repro (Tier 0.3's FLS-restricted user, AK-side) should now
+produce a clean verdict whose cause names the code + `Last_Escalation_Date__c`
+instead of a generic platform line.
+
+### D-226 — Claim-lifecycle guards (Tier-1 1.5; the 0.4-audit F1+F2 fixes)
+
+**Context.** The Tier-0.4 stickiness audit cleared the v1-style silent-no-op class
+(approve is server-versioned, transactional, provenance-writing; deprecated claims
+structurally cannot run) but surfaced two adjacent defects:
+**F1** — the claim detail page offered Approve on ANY non-approved status, and both
+the coordinator (documented `deprecated→approved` un-deprecation) and
+`_approve_claim` (no status check; recipe loop promoted `deprecated` recipes too)
+would honor it: one click silently resurrects a reasoned deprecation AND
+auto-enqueues runs of the superseded recipe. **F2** — `claims_approve` flashed
+"approved — now runnable" while discarding `auto_enqueued`; zero-enqueue outcomes
+(no auto-verify env; D-223 unexecutable) were invisible.
+
+**Decision.**
+- **F1**: `_approve_claim` refuses a deprecated claim with a clear error (the flash
+  surfaces it); the recipe promote loop skips `deprecated` recipes. The
+  coordinator's `deprecated→approved` transition is intentionally KEPT — reinstate
+  stays a deliberate, explicit-caller capability, just not reachable from the
+  generic Approve button. The detail template renders an explanation instead of the
+  button for deprecated claims.
+- **F2**: the approve flash now reports what actually happened — N runs queued
+  (success), zero-queued with the reason (warning: no auto-verify env, or the
+  D-223 unexecutable detail).
+- **F3 logged, not fixed here**: approving a regenerated replacement does not
+  retire its predecessor, and deprecation has no UI affordance (today's
+  deprecations went through direct coordinator calls). The supersession-governance
+  design (auto-deprecate vs prompt, a deprecate affordance) belongs to the 2.2
+  multi-recipe/supersession arc.
+
+### D-224 — capability + layout claims go runnable (Tier-1 1.1/1.2; matrix rows 9–10)
+
+**Premise correction (verified against code + S1 sync).** The dev-list anchor
+("follow the APPLIES_TO pattern; emission already produces the captures") was wrong
+on three counts:
+1. The emitted read carries ONLY the granting subject + the edge capture
+   (`_inspection_recipe`); the far endpoint (target Object/Field; the layout's
+   Field) and the capability qualifier live only in the CLAIM body — a translator
+   keyed on `PlannedRead` cannot scope the query, and single-endpoint
+   `exists` would be semantically wrong (any grant/placement would satisfy it).
+2. `ObjectPermissions` / `FieldPermissions` are **Data-API** sObjects (S1's
+   `fetch_permission_sets` queries them there; Tooling does not expose them) — the
+   Tooling-only translator/client can't reach them.
+3. Layout field placement is not a Tooling SOQL row — but `SELECT Metadata FROM
+   Layout WHERE Id = …` (single-row Tooling read) returns the layout JSON whose
+   `layoutSections→layoutRows→layoutItems→layoutComponents` carry field names, so
+   layout membership CAN stay inside the Tooling client (2 queries + a JSON walk).
+
+**Decision — the operational realization must be self-contained (recipes carry
+their full scope; S4 never re-derives semantics from the claim at run time):**
+- **S2**: `ReadMetadataStep` gains optional `edge_target: LogicalRef` +
+  `edge_qualifier: str` (additive, defaulted — old JSONB recipes rehydrate
+  unchanged; claim identity untouched, recipes are operational).
+- **S3**: `_author_capability` emits the pair (target + capability) and asserts
+  **`equals true` over the mapped permission flag** (capture-column semantics, the
+  D-128 pattern) — NOT `exists`: a permissions row exists even when every flag is
+  false. `_author_layout` emits `edge_target=field`, assert stays `exists`
+  (membership is presence). Capability→column map: object grants
+  read/edit/create/delete/view_all/modify_all → `Permissions{Read,Edit,Create,
+  Delete,ViewAllRecords,ModifyAllRecords}`; field grants read/edit →
+  `Permissions{Read,Edit}` (FieldPermissions has only those two).
+- **S4 plan/bridge**: `PlannedRead` gains the same two optional fields; the bridge
+  threads them verbatim.
+- **S4 translator**: `ToolingQuery` gains `api: Literal["tooling","data"]`
+  (default `"tooling"`). `GRANTS_OBJECT_ACCESS`/`GRANTS_FIELD_ACCESS` translate to
+  Data-API SOQL over ObjectPermissions/FieldPermissions: grantee scope by
+  `Parent.IsOwnedByProfile=true AND Parent.Profile.Name=…` (Profile) or
+  `Parent.IsOwnedByProfile=false AND Parent.Name=…` (PermissionSet), target scope
+  by `SobjectType`/`Field`, `capture_column` = the mapped flag. A read missing
+  `edge_target`/`edge_qualifier` (an OLD pre-D-224 recipe) raises
+  `UnsupportedEdgeError` — the D-223 gate keeps such claims at the door.
+  `INCLUDES_FIELD` translates to a new `LayoutMembershipProbe` realization
+  (union sibling of `ToolingQuery`): layout name → Id (Tooling SOQL) → `SELECT
+  Metadata` → walk layoutItems for the field → rows `[{field}]`/`[]`, so the
+  recipe's `exists` assert works unchanged.
+- **S4 client/executor**: `ToolingReadClient.query_data(soql)` (same instance/token,
+  `/services/data/vXX/query`); the metadata executor dispatches reads on the
+  realization type + `api` field. 0 rows under an `equals` assert grades as a
+  failed assert (capability absent = row absent for FieldPermissions), never a
+  crash.
+- **D-223 lockstep**: each S4 slice flips its kind in `EXPECTED_EXECUTABILITY`
+  (capability → True in slice B, layout → True in slice C) — the drift-guard test
+  makes the unlock visible and deliberate.
+
+**Slices**: A = S2+S3 (step fields + emission scope/assert) → B = S4 capability
+(data-SOQL path) → C = S4 layout (membership probe). Per-slice tests; matrix
+rows 9–10 runnable at C. Live proof joins the dogfood matrix run (the Tier 0/1
+exit), not a per-slice gate.
+
+**Residuals**: PermissionSetGroup grantees (INHERITS_PERMISSION_SET expansion)
+defer — the grantee must be the directly-granting Profile/PS in v1; layout
+ASSIGNED_TO_PROFILE_RECORDTYPE (which profile sees the layout) stays S1-synced
+but unverified.
+
 ---
 
 ---

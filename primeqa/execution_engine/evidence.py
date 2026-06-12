@@ -116,6 +116,10 @@ class CreateAttemptEvidence:
     duration_ms: int
     kind: Literal["create"] = "create"
     error: Optional[ErrorSurface] = None
+    # D-225: every field named across the body's error entries — FLS/access
+    # denials name the blocked fields; structured here so S6 + the UI never
+    # re-parse rejection_body. () when the body names none.
+    error_fields: tuple = ()
     # N/As, reserved (a rejected create produces no state; a success is deleted):
     before_state: None = None
     after_state: None = None
@@ -181,6 +185,8 @@ class UpdateAttemptEvidence:
     duration_ms: int
     kind: Literal["update"] = "update"
     error: Optional[ErrorSurface] = None
+    # D-225: fields named by the error entries (FLS/access denials name them).
+    error_fields: tuple = ()
     # N/As, reserved (before-state capture is a D-203 residual):
     before_state: None = None
     after_state: None = None
@@ -207,6 +213,8 @@ class DeleteAttemptEvidence:
     duration_ms: int
     kind: Literal["delete"] = "delete"
     error: Optional[ErrorSurface] = None
+    # D-225: fields named by the error entries (FLS/access denials name them).
+    error_fields: tuple = ()
     before_state: None = None
     after_state: None = None
     field_diff: None = None

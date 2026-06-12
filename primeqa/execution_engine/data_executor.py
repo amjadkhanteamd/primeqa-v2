@@ -304,6 +304,7 @@ def _mutation_evidence(mutation, sobject, record_id, changes, start, end, *,
         error_code=(first.get("errorCode") if isinstance(first, dict) else None),
         message=(first.get("message") if isinstance(first, dict) else None),
         rejection_body=rejection_body, matched=matched,
+        error_fields=_named_fields(rejection_body),
         started_at=start, finished_at=end, duration_ms=_ms(start, end),
         error=error)
     if isinstance(mutation, PlannedUpdate):
@@ -752,6 +753,7 @@ def _evidence(create, sobject, start, end, *, http_status, success,
         error_code=(first.get("errorCode") if isinstance(first, dict) else None),
         message=(first.get("message") if isinstance(first, dict) else None),
         rejection_body=rejection_body, matched=matched, cleanup=cleanup,
+        error_fields=_named_fields(rejection_body),
         started_at=start, finished_at=end, duration_ms=_ms(start, end), error=error)
 
 
@@ -793,6 +795,20 @@ def _as_error_tuple(body) -> tuple:
     if isinstance(body, dict):
         return (body,)
     return ()
+
+
+def _named_fields(rejection_body) -> tuple:
+    """D-225: every field named across the body's error entries — FLS/access
+    denials name the blocked fields. Deduped, order-preserving."""
+    out, seen = [], set()
+    for e in rejection_body:
+        if not isinstance(e, dict):
+            continue
+        for f in (e.get("fields") or ()):
+            if f and f not in seen:
+                seen.add(f)
+                out.append(f)
+    return tuple(out)
 
 
 def _now() -> datetime:

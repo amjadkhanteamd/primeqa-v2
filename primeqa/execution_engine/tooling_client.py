@@ -49,7 +49,17 @@ class ToolingReadClient:
         completion. Returns the aggregated records. Raises a typed
         :class:`~primeqa.integrations.exceptions.SFClientError` subclass on any
         non-2xx response."""
-        data = self._get(f"{self._base}/tooling/query/", params={"q": soql})
+        return self._query_endpoint(f"{self._base}/tooling/query/", soql)
+
+    def query_data(self, soql: str) -> list[dict]:
+        """D-224: run a **Data-API** SOQL read (``/query``) — same org, same
+        token, different endpoint. Needed for setup sObjects the Tooling API
+        does not expose (ObjectPermissions / FieldPermissions). Still pure
+        transport — no semantics."""
+        return self._query_endpoint(f"{self._base}/query/", soql)
+
+    def _query_endpoint(self, url: str, soql: str) -> list[dict]:
+        data = self._get(url, params={"q": soql})
         records = list(data.get("records", []))
         while data.get("nextRecordsUrl"):
             # nextRecordsUrl is server-root-relative ("/services/data/...").

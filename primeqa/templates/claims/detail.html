@@ -68,8 +68,14 @@
       <p class="mt-1 text-xs text-gray-400">{{ c.claim_kind.replace('-', ' ') }} &middot; <span class="font-mono break-all" title="{{ c.test_id }}">{{ c.test_id[:8] }}</span></p>
     </div>
 
-    <!-- Approve (a draft claim is not runnable until approved) -->
-    {% if c.status != 'approved' and user.role in ['admin', 'tester', 'superadmin'] %}
+    <!-- Approve (a draft claim is not runnable until approved). D-226: a
+         deprecated claim gets an explanation, never an Approve button — one
+         click must not silently undo a reasoned deprecation. -->
+    {% if c.status == 'deprecated' %}
+    <div class="rounded-md bg-slate-50 border border-slate-200 p-3">
+      <p class="text-sm text-slate-700">This claim is <strong>deprecated</strong> — a recorded human decision (the reason lives in its provenance). It cannot run and cannot be re-approved from here; regenerate the requirement to get a fresh claim.</p>
+    </div>
+    {% elif c.status != 'approved' and user.role in ['admin', 'tester', 'superadmin'] %}
     <div class="rounded-md bg-amber-50 border border-amber-100 p-3 flex items-center justify-between gap-3">
       <p class="text-sm text-amber-800">This claim is a <strong>{{ c.status }}</strong> — approve it to make the claim + its recipes runnable.</p>
       <form method="POST" action="/claims/{{ c.test_id }}/approve">
