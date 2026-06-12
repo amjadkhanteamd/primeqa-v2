@@ -303,6 +303,49 @@ def approve_claim(tenant_id: int, test_id) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _deprecate_claim(session, test_id, reason: str) -> dict:
+    """Pure: deprecate the current claim version with a REQUIRED human reason
+    (D-228 / F3 — supersession is a human judgment, never auto-derived). The
+    reason lands in provenance per D-ε-5. Claim-only: deprecating the claim
+    makes every recipe unselectable (selection requires a current APPROVED
+    claim), so the recipes keep their own status untouched. Idempotent — an
+    already-deprecated claim is a no-op."""
+    from primeqa.test_representation import SemanticTransactionCoordinator
+    if not isinstance(reason, str) or not reason.strip():
+        return {"ok": False, "error": "A reason is required to deprecate."}
+    coord = SemanticTransactionCoordinator()
+    tid = UUID(str(test_id))
+    claim = coord.get_latest_claim(session, tid)
+    if claim is None:
+        return {"ok": False, "error": "No current claim for this id."}
+    if claim.status == "deprecated":
+        return {"ok": True, "status": "deprecated", "already": True}
+    coord.deprecate_claim(session, actor="human", test_id=tid,
+                          version_seq=claim.version_seq, reason=reason.strip())
+    return {"ok": True, "status": "deprecated", "already": False}
+
+
+def deprecate_claim(tenant_id: int, test_id, reason: str) -> dict:
+    """Best-effort: deprecate the claim (with reason) so it stops grading
+    releases and stops being selectable for runs. Never raises;
+    ``get_tenant_connection`` commits on clean exit."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        from sqlalchemy.orm import Session
+        with get_tenant_connection(tenant_id) as conn:
+            session = Session(bind=conn)
+            try:
+                out = _deprecate_claim(session, test_id, reason)
+                session.flush()
+            finally:
+                session.close()
+        return out
+    except Exception as exc:
+        log.warning("deprecate_claim failed for tenant %s test %s: %s",
+                    tenant_id, test_id, exc)
+        return {"ok": False, "error": str(exc)}
+
+
 # --- D-199 trigger 1: auto-enqueue on approval --------------------------------
 
 def auto_verify_environment_ids(db, tenant_id: int) -> list:

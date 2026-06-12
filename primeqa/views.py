@@ -2653,10 +2653,12 @@ def claims_detail(test_id):
     via the s3_generation_console bridge; renders an empty state when the claim is
     gone or the substrate is unavailable."""
     from primeqa.intelligence.claim_presentation import verdict_plain
-    from primeqa.intelligence.s3_generation_console import read_claim_detail
+    from primeqa.intelligence.s3_generation_console import (
+        read_claim_detail, read_claim_siblings)
     from primeqa.intelligence.s4_execution_console import read_claim_runs
     tid = request.user["tenant_id"]
     detail = read_claim_detail(tid, test_id)
+    siblings = read_claim_siblings(tid, test_id)      # D-228 (F3): supersession context
     runs = read_claim_runs(tid, test_id)              # D-168 (3a): recent runs (S6)
     for r in runs.get("runs") or []:                  # D-206: plain-words line
         r["plain"] = verdict_plain(r.get("verdict"), r.get("outcome"))
@@ -2673,7 +2675,8 @@ def claims_detail(test_id):
     finally:
         db.close()
     return render_template("claims/detail.html", **ctx(
-        active_page="test_library", detail=detail, runs=runs, environments=envs_data))
+        active_page="test_library", detail=detail, siblings=siblings,
+        runs=runs, environments=envs_data))
 
 
 @views_bp.route("/claims/<uuid:test_id>/run", methods=["POST"])
@@ -2749,6 +2752,31 @@ def claims_approve(test_id):
     nxt = request.form.get("next") or ""
     if nxt.startswith("/claims"):
         return redirect(nxt)
+    return redirect(f"/claims/{test_id}")
+
+
+@views_bp.route("/claims/<uuid:test_id>/deprecate", methods=["POST"])
+@role_required("admin", "tester", "superadmin")
+def claims_deprecate(test_id):
+    """D-228 (F3): deprecate a claim with a REQUIRED reason — the supersession
+    affordance. Deprecation is a human judgment (the D-226 fork closed against
+    auto-deprecate); the reason lands in provenance (D-ε-5). A deprecated claim
+    stops grading releases (D-219) and stops being selectable for runs."""
+    from flask import flash
+    from primeqa.intelligence.s4_execution_console import deprecate_claim
+    reason = (request.form.get("reason") or "").strip()
+    if not reason:
+        flash("A reason is required to deprecate a claim.", "error")
+        return redirect(f"/claims/{test_id}")
+    res = deprecate_claim(request.user["tenant_id"], str(test_id), reason)
+    if res.get("ok"):
+        if res.get("already"):
+            flash("Claim was already deprecated.", "warning")
+        else:
+            flash("Claim deprecated — it no longer grades releases or runs. "
+                  "The reason is recorded in its provenance.", "success")
+    else:
+        flash(f"Could not deprecate: {res.get('error', 'unknown error')}", "error")
     return redirect(f"/claims/{test_id}")
 
 

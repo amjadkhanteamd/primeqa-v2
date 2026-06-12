@@ -227,6 +227,64 @@ def read_claim_detail(tenant_id: int, test_id) -> dict:
         return {"available": False, "found": False, "claim": None}
 
 
+# --- read: sibling claims (D-228 / F3 — the supersession context) -------------
+# "Siblings" = other CURRENT claims sharing a requirement link AND the same
+# claim_kind — the set where a predecessor would live. Supersession is a human
+# judgment (the D-226 fork closed against auto-deprecate: same requirement +
+# same kind legitimately coexist, e.g. SQ-205's two automation-effect claims);
+# this read gives the human that context at the moment of approval/deprecation.
+
+def _read_claim_siblings(session, test_id) -> list[dict]:
+    """Pure: current claims linked to any of this claim's requirements with the
+    same claim_kind, excluding the claim itself. Status chips + titles for the
+    panel; newest first."""
+    from sqlalchemy import text as _text
+    rows = session.execute(_text(
+        "SELECT DISTINCT c.test_id, c.claim_kind, c.archetype, c.status, "
+        "       c.asserted_truth, c.updated_at, l2.external_key "
+        "FROM test_requirement_links l1 "
+        "JOIN test_requirement_links l2 "
+        "  ON l2.external_system = l1.external_system "
+        " AND l2.external_key = l1.external_key "
+        "JOIN test_claims c "
+        "  ON c.test_id = l2.test_id AND c.valid_to IS NULL "
+        "WHERE l1.test_id = CAST(:tid AS uuid) "
+        "  AND l2.test_id <> CAST(:tid AS uuid) "
+        "  AND c.claim_kind = (SELECT claim_kind FROM test_claims "
+        "                      WHERE test_id = CAST(:tid AS uuid) "
+        "                        AND valid_to IS NULL) "
+        "ORDER BY c.updated_at DESC"
+    ), {"tid": str(test_id)}).mappings().all()
+    return [{
+        "test_id": str(r["test_id"]),
+        "claim_kind": r["claim_kind"],
+        "archetype": r["archetype"],
+        "status": r["status"],
+        "title": claim_title(r["claim_kind"], r["asserted_truth"]),
+        "requirement_key": r["external_key"],
+        "updated_at": _iso(r["updated_at"]),
+    } for r in rows]
+
+
+def read_claim_siblings(tenant_id: int, test_id) -> dict:
+    """Best-effort read of the claim's same-requirement same-kind siblings.
+    Never raises. Returns ``{available, siblings}``."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        from sqlalchemy.orm import Session
+        with get_tenant_connection(tenant_id) as conn:
+            session = Session(bind=conn)
+            try:
+                return {"available": True,
+                        "siblings": _read_claim_siblings(session, test_id)}
+            finally:
+                session.close()
+    except Exception as exc:
+        log.warning("read_claim_siblings unavailable for tenant %s test %s: %s",
+                    tenant_id, test_id, exc)
+        return {"available": False, "siblings": []}
+
+
 # --- read: the claims library (all current claims, paginated + search) (2c) --
 # No coordinator method lists claims cross-requirement, so the library reads
 # test_claims directly (the s1_sync_console pattern: a tenant-scoped raw read).

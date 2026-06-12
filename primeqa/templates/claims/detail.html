@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% from 'components/breadcrumbs.html' import breadcrumbs %}
 {% from 'components/_empty_state.html' import empty_state %}
+{% from 'components/_modal.html' import modal_shell %}
+{% from 'components/_buttons.html' import btn_danger_link %}
 {% block title %}Claim - PrimeQA{% endblock %}
 {% block content %}
 
@@ -63,6 +65,14 @@
           {% elif c.status == 'draft' %}bg-gray-100 text-gray-700
           {% else %}bg-amber-100 text-amber-800{% endif %}">{{ c.status }}</span>
         <span class="text-xs text-gray-400">v{{ c.version_seq }}</span>
+        {# D-228 (F3): the supersession affordance — deprecation is a human
+           judgment with a required, provenance-recorded reason. #}
+        {% if c.status != 'deprecated' and user.role in ['admin', 'tester', 'superadmin'] %}
+        <span class="ml-auto">
+          {{ btn_danger_link('Deprecate&hellip;' | safe,
+              onclick="window.PrimeQA.openModal('deprecate-claim-modal')") }}
+        </span>
+        {% endif %}
       </div>
       <h1 class="mt-2 text-2xl font-bold text-gray-900">{{ c.title or c.claim_kind.replace('-', ' ') }}</h1>
       <p class="mt-1 text-xs text-gray-400">{{ c.claim_kind.replace('-', ' ') }} &middot; <span class="font-mono break-all" title="{{ c.test_id }}">{{ c.test_id[:8] }}</span></p>
@@ -82,6 +92,36 @@
         {{ csrf_input | safe }}
         <button type="submit" class="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500 whitespace-nowrap">Approve claim</button>
       </form>
+    </div>
+    {% endif %}
+
+    {# D-228 (F3): the supersession context — other CURRENT claims of the same
+       kind on the same requirement. Whether one supersedes another is the
+       human's judgment; this panel makes it at the moment of
+       approval/deprecation instead of after a stale claim grades a release. #}
+    {% if siblings and siblings.siblings %}
+    <div class="bg-white shadow rounded-lg">
+      <div class="px-4 py-3 border-b">
+        <h3 class="text-sm font-semibold text-gray-700">Related claims on this requirement
+          <span class="text-gray-500 font-normal">({{ siblings.siblings | length }})</span>
+        </h3>
+        <p class="text-xs text-gray-400 mt-0.5">Same requirement, same claim kind. If this claim replaces one of these, deprecate the predecessor so it stops grading releases.</p>
+      </div>
+      <ul class="divide-y divide-gray-200">
+        {% for s in siblings.siblings %}
+        <li class="px-6 py-3 flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <a href="/claims/{{ s.test_id }}" class="text-sm text-indigo-600 hover:underline">{{ s.title or s.claim_kind.replace('-', ' ') }}</a>
+            <p class="text-xs text-gray-400 mt-0.5">{{ s.requirement_key }} &middot; <span class="font-mono" title="{{ s.test_id }}">{{ s.test_id[:8] }}</span></p>
+          </div>
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0
+            {% if s.status == 'approved' %}bg-blue-100 text-blue-800
+            {% elif s.status == 'draft' %}bg-gray-100 text-gray-700
+            {% elif s.status == 'deprecated' %}bg-slate-100 text-slate-500
+            {% else %}bg-amber-100 text-amber-800{% endif %}">{{ s.status }}</span>
+        </li>
+        {% endfor %}
+      </ul>
     </div>
     {% endif %}
 
@@ -231,6 +271,27 @@
     </div>
   {% endif %}
 </div>
+
+{# D-228 (F3): the deprecate modal — the reason is REQUIRED (D-ε-5) and lands
+   in the claim's provenance, never as a column. #}
+{% if c and c.status != 'deprecated' and user.role in ['admin', 'tester', 'superadmin'] %}
+{% call modal_shell(id='deprecate-claim-modal', title='Deprecate this claim', size='md') %}
+  <form method="POST" action="/claims/{{ c.test_id }}/deprecate">
+    {{ csrf_input | safe }}
+    <p class="text-sm text-gray-600 mb-3">A deprecated claim stops grading releases and stops being runnable. This is a recorded decision &mdash; say why, so the next person reading the provenance understands it.</p>
+    <label for="deprecate-reason" class="block text-xs font-medium text-gray-500 mb-1">Reason <span class="text-red-600">*</span></label>
+    <textarea id="deprecate-reason" name="reason" required rows="3"
+      class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+      placeholder="e.g. Superseded by the staged-trigger claim 0bb8465e &mdash; this unstaged shape can no longer transition."></textarea>
+    <div class="flex justify-end space-x-2 mt-4">
+      <button type="button" data-modal-close
+        class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700">Cancel</button>
+      <button type="submit"
+        class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">Deprecate claim</button>
+    </div>
+  </form>
+{% endcall %}
+{% endif %}
 
 <script>
 (function(){

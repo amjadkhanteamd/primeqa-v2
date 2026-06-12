@@ -166,3 +166,61 @@ def test_dedup_reemit_keeps_the_two_recipe_set(seeded):
     rows = _recipe_rows()
     assert len(rows) == 2                   # nothing re-minted
     assert [r["priority"] for r in rows] == [0, -10]
+
+
+# --- D-228 (F3): the siblings read — supersession context ---------------------
+
+def _emit_two_prohibitions_one_requirement(seeded):
+    """ONE requirement (key R0), TWO prohibition intents (Lead verified + Case
+    caveated) via the D-207 multi-intent propose — both claims share the
+    requirement link AND the claim_kind, so each is the other's sibling."""
+    from primeqa.semantic.connection import get_tenant_connection
+    from primeqa.semantic.query import SemanticOrgModel
+    from primeqa.generation.governance_core import GovernanceCore
+    from primeqa.generation.runtime import GenerationRuntime
+
+    def _flat(legacy):
+        item = dict(legacy["intent_descriptor"])
+        item["requirement_excerpt"] = legacy["requirement_excerpt"]
+        return item
+
+    multi = {"intent_descriptors": [
+        _flat(intent(claim_kind="prohibition-claim", polarity="negative",
+                     sf_api_name="Lead")),
+        _flat(intent(claim_kind="prohibition-claim", polarity="negative",
+                     sf_api_name="Case")),
+    ]}
+    req = make_request(s1_version_seq=seeded["v1"])
+    turns = [propose_turn(multi), _emit_draft_turn()]
+    with get_tenant_connection(TEST_TENANT_ID) as conn:
+        gov = GovernanceCore(SemanticOrgModel(conn))
+        result = GenerationRuntime().run(
+            request=req, seam=gov, tool_turn_fn=FakeToolTurn(turns),
+            persister=LedgerPersister(TEST_TENANT_ID))
+    refs = result.results[0].outcome.claims_written
+    return [UUID(str(r.test_id)) for r in refs]
+
+
+def test_siblings_surface_same_requirement_same_kind(seeded):
+    from primeqa.intelligence.s3_generation_console import read_claim_siblings
+    lead_id, case_id = _emit_two_prohibitions_one_requirement(seeded)
+
+    out = read_claim_siblings(TEST_TENANT_ID, lead_id)
+    assert out["available"] is True
+    assert [s["test_id"] for s in out["siblings"]] == [str(case_id)]
+    sib = out["siblings"][0]
+    assert sib["claim_kind"] == "prohibition-claim"
+    assert sib["status"] == "draft"
+    assert sib["requirement_key"] == "R0"
+    assert sib["title"]                       # the panel renders a sentence
+
+    # symmetric: the Case claim sees the Lead claim
+    back = read_claim_siblings(TEST_TENANT_ID, case_id)
+    assert [s["test_id"] for s in back["siblings"]] == [str(lead_id)]
+
+
+def test_no_siblings_for_a_lone_claim(seeded):
+    test_id = _emit_verified_negative(seeded)
+    from primeqa.intelligence.s3_generation_console import read_claim_siblings
+    out = read_claim_siblings(TEST_TENANT_ID, test_id)
+    assert out == {"available": True, "siblings": []}
