@@ -12381,6 +12381,70 @@ auto-enqueues runs of the superseded recipe. **F2** — `claims_approve` flashed
   design (auto-deprecate vs prompt, a deprecate affordance) belongs to the 2.2
   multi-recipe/supersession arc.
 
+### D-224 — capability + layout claims go runnable (Tier-1 1.1/1.2; matrix rows 9–10)
+
+**Premise correction (verified against code + S1 sync).** The dev-list anchor
+("follow the APPLIES_TO pattern; emission already produces the captures") was wrong
+on three counts:
+1. The emitted read carries ONLY the granting subject + the edge capture
+   (`_inspection_recipe`); the far endpoint (target Object/Field; the layout's
+   Field) and the capability qualifier live only in the CLAIM body — a translator
+   keyed on `PlannedRead` cannot scope the query, and single-endpoint
+   `exists` would be semantically wrong (any grant/placement would satisfy it).
+2. `ObjectPermissions` / `FieldPermissions` are **Data-API** sObjects (S1's
+   `fetch_permission_sets` queries them there; Tooling does not expose them) — the
+   Tooling-only translator/client can't reach them.
+3. Layout field placement is not a Tooling SOQL row — but `SELECT Metadata FROM
+   Layout WHERE Id = …` (single-row Tooling read) returns the layout JSON whose
+   `layoutSections→layoutRows→layoutItems→layoutComponents` carry field names, so
+   layout membership CAN stay inside the Tooling client (2 queries + a JSON walk).
+
+**Decision — the operational realization must be self-contained (recipes carry
+their full scope; S4 never re-derives semantics from the claim at run time):**
+- **S2**: `ReadMetadataStep` gains optional `edge_target: LogicalRef` +
+  `edge_qualifier: str` (additive, defaulted — old JSONB recipes rehydrate
+  unchanged; claim identity untouched, recipes are operational).
+- **S3**: `_author_capability` emits the pair (target + capability) and asserts
+  **`equals true` over the mapped permission flag** (capture-column semantics, the
+  D-128 pattern) — NOT `exists`: a permissions row exists even when every flag is
+  false. `_author_layout` emits `edge_target=field`, assert stays `exists`
+  (membership is presence). Capability→column map: object grants
+  read/edit/create/delete/view_all/modify_all → `Permissions{Read,Edit,Create,
+  Delete,ViewAllRecords,ModifyAllRecords}`; field grants read/edit →
+  `Permissions{Read,Edit}` (FieldPermissions has only those two).
+- **S4 plan/bridge**: `PlannedRead` gains the same two optional fields; the bridge
+  threads them verbatim.
+- **S4 translator**: `ToolingQuery` gains `api: Literal["tooling","data"]`
+  (default `"tooling"`). `GRANTS_OBJECT_ACCESS`/`GRANTS_FIELD_ACCESS` translate to
+  Data-API SOQL over ObjectPermissions/FieldPermissions: grantee scope by
+  `Parent.IsOwnedByProfile=true AND Parent.Profile.Name=…` (Profile) or
+  `Parent.IsOwnedByProfile=false AND Parent.Name=…` (PermissionSet), target scope
+  by `SobjectType`/`Field`, `capture_column` = the mapped flag. A read missing
+  `edge_target`/`edge_qualifier` (an OLD pre-D-224 recipe) raises
+  `UnsupportedEdgeError` — the D-223 gate keeps such claims at the door.
+  `INCLUDES_FIELD` translates to a new `LayoutMembershipProbe` realization
+  (union sibling of `ToolingQuery`): layout name → Id (Tooling SOQL) → `SELECT
+  Metadata` → walk layoutItems for the field → rows `[{field}]`/`[]`, so the
+  recipe's `exists` assert works unchanged.
+- **S4 client/executor**: `ToolingReadClient.query_data(soql)` (same instance/token,
+  `/services/data/vXX/query`); the metadata executor dispatches reads on the
+  realization type + `api` field. 0 rows under an `equals` assert grades as a
+  failed assert (capability absent = row absent for FieldPermissions), never a
+  crash.
+- **D-223 lockstep**: each S4 slice flips its kind in `EXPECTED_EXECUTABILITY`
+  (capability → True in slice B, layout → True in slice C) — the drift-guard test
+  makes the unlock visible and deliberate.
+
+**Slices**: A = S2+S3 (step fields + emission scope/assert) → B = S4 capability
+(data-SOQL path) → C = S4 layout (membership probe). Per-slice tests; matrix
+rows 9–10 runnable at C. Live proof joins the dogfood matrix run (the Tier 0/1
+exit), not a per-slice gate.
+
+**Residuals**: PermissionSetGroup grantees (INHERITS_PERMISSION_SET expansion)
+defer — the grantee must be the directly-granting Profile/PS in v1; layout
+ASSIGNED_TO_PROFILE_RECORDTYPE (which profile sees the layout) stays S1-synced
+but unverified.
+
 ---
 
 ---
