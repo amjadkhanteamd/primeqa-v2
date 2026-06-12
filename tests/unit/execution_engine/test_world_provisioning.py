@@ -236,3 +236,27 @@ class TestConstructWorld:
         with pytest.raises(SFClientError):
             construct_world("X", set(), s1=s1, client=client, tracker=tracker, at_seq=7)
         assert tracker.records == (CreatedRecord("A", "id-A-1", 0),)   # built before boom
+
+
+# ---------------------------------------------------------------------------
+# D-227.5 — provisioned-parent creates must speak BARE field names
+# ---------------------------------------------------------------------------
+
+class TestParentCreateBareification:
+    def test_parent_create_uses_bare_field_names(self):
+        # Production S1 field api names are object-QUALIFIED
+        # ("Case.IsEscalated"); the live REST API speaks bare names. The
+        # provisioned-parent create must bare-ify like the top-level path —
+        # qualified keys get rejected by Salesforce and mis-read as an
+        # unfillable world (the be56416d live error). The older tests above
+        # use bare fixture names, which is why this stayed invisible.
+        graph = {
+            "Escalation__c": [_ref("Escalation__c.Case__c", "Case")],
+            "Case": [{"api": "Case.IsEscalated", "field_type": "boolean",
+                      "is_nillable": False}],
+        }
+        (scalar, parents, unfillable), client, _ = _construct(
+            graph, "Escalation__c", semantic=("Escalation__c.Account__c",))
+        assert unfillable == ()
+        assert client.creates == [("Case", {"IsEscalated": False})]
+        assert parents == {"Escalation__c.Case__c": "id-Case-1"}

@@ -67,7 +67,11 @@ from primeqa.execution_engine.plan import (
 )
 from primeqa.execution_engine.provisioning import CreatedRecordTracker
 from primeqa.execution_engine.refs import resolve_field_value_refs, resolve_step_refs
-from primeqa.execution_engine.world import construct_world
+from primeqa.execution_engine.world import (
+    _sf_field,
+    _sf_fields,
+    construct_world,
+)
 from primeqa.integrations.exceptions import SFClientError
 
 # A Salesforce **business** rejection (validation rule, required-field,
@@ -325,19 +329,6 @@ _READ_RETRY_ATTEMPTS = 3
 _READ_RETRY_DELAY_S = 2.0
 
 
-def _sf_field(name: str, sobject: str) -> str:
-    """An S1 *qualified* field name (``{Object}.{field}``) → its bare Salesforce
-    API name (``{field}``). S1 names fields object-qualified for graph uniqueness
-    (``sync.phases`` field phase); the live REST / SOQL API speaks **bare** names.
-    A name without the ``{sobject}.`` self-prefix — already bare, or a relationship
-    path like ``Owner.Name`` — passes through unchanged."""
-    return name.removeprefix(f"{sobject}.")
-
-
-def _sf_fields(field_values: dict, sobject: str) -> dict:
-    """Bare-ify the keys of a create payload (recipe field(s) + operational
-    padding) for the live create."""
-    return {_sf_field(k, sobject): v for k, v in field_values.items()}
 
 
 def _sf_soql(soql: str, sobject: str) -> str:

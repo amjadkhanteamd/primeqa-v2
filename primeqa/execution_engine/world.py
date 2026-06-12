@@ -154,6 +154,24 @@ def resolve_operational_padding(
         required_refs=tuple(sorted(required_refs, key=lambda t: t[0])))
 
 
+def _sf_field(name: str, sobject: str) -> str:
+    """An S1 *qualified* field name (``{Object}.{field}``) → its bare Salesforce
+    API name (``{field}``). S1 names fields object-qualified for graph uniqueness
+    (``sync.phases`` field phase); the live REST / SOQL API speaks **bare** names.
+    A name without the ``{sobject}.`` self-prefix — already bare, or a relationship
+    path like ``Owner.Name`` — passes through unchanged."""
+    return name.removeprefix(f"{sobject}.")
+
+
+def _sf_fields(field_values: dict, sobject: str) -> dict:
+    """Bare-ify the keys of a create payload (recipe field(s) + operational
+    padding) for the live create. Lives here (not data_executor) so the
+    provisioned-parent create below can use it without an import cycle —
+    D-227.5: the parent create used to POST qualified keys, which Salesforce
+    rejects, mis-reading as an unfillable world."""
+    return {_sf_field(k, sobject): v for k, v in field_values.items()}
+
+
 def construct_world(
     object_api: str, semantic_fields: set[str], *, s1, client, tracker, at_seq: int,
     _visited=frozenset(), _depth: int = 0,
@@ -209,7 +227,11 @@ def construct_world(
         if p_unfillable:
             unfillable.append(child_field_api)        # parent unbuildable — propagate
             continue
-        env = client.create(parent_api, {**p_scalar, **p_parent})
+        # D-227.5: bare-ify like the top-level create path — the live API
+        # speaks bare names; qualified keys get rejected and mis-read as an
+        # unfillable world (the be56416d live error).
+        env = client.create(parent_api,
+                            _sf_fields({**p_scalar, **p_parent}, parent_api))
         if not env.get("success"):
             unfillable.append(child_field_api)        # org rejected the parent create
             continue
