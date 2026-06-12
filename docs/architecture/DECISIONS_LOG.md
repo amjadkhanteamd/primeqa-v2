@@ -12549,6 +12549,64 @@ Matrix rows: the cross-object residuals from D-210 are closed; the D-208 corpus
 gains both shapes. Remaining D-227 residuals unchanged (async/scheduled effects,
 `precise_trigger`, S1 referenceTo modeling).
 
+### D-228 — Multi-recipe authoring (G-2) + supersession governance (the F3 fold-in)
+
+**Context.** The architecture's central replaceability invariant — one semantic
+claim, N swappable operational realizations — has no real instance: emission picks
+ONE recipe (`_author_negative`: "Replace, not augment (single-recipe; D-110.3)").
+Meanwhile the read side is ALREADY multi-recipe-ready (verified):
+`select_recipe_for_execution` filters by per-recipe env-capability satisfiability
+and orders priority DESC / version_seq DESC / recipe_id ASC; the D-223 gate passes
+on any-eligible-executable; the console approve loop promotes ALL unapproved
+recipes; `change_recipe_priority` + the `recipe_priority_changed` provenance event
+exist. The gap is purely the WRITE side. F3 (from the Tier-0.4 audit, deferred by
+D-226): no deprecate affordance exists, and approving a replacement leaves the
+predecessor grading releases.
+
+**Decision — Part A (multi-recipe write).**
+- `EmissionBundle` gains `secondary_recipes: tuple[SecondaryRecipe, ...] = ()` —
+  a small frozen spec (trigger_kind, recipe_kind, causal_initiation,
+  observation_realization, execution_environment, priority). The bundle's
+  existing fields stay the PRIMARY recipe (priority 0, the column default — all
+  existing rows keep their standing).
+- First instance (start narrow, per the ratified list): a VERIFIED
+  prohibition-claim emits the behavioral recipe (primary, priority 0) AND the
+  caveated APPLIES_TO inspection re-verify as a **fallback secondary, priority
+  −10** — depth diversity per environment: an env advertising only
+  `metadata_api_user` selects the inspection; a full env selects the behavioral.
+  The CLAIM stays Layer-2/uncaveated — the claim's admissibility reflects the
+  STRONGEST emitted realization; the secondary is a weaker realization of the
+  same truth, not a weaker truth.
+- Persister: writes `[primary] + secondaries` under the one claim (same atomic
+  tx); `write_recipe` gains `priority: int = 0` (additive). The same-hash no-op
+  path still mints nothing — existing claims do NOT get backfilled secondaries
+  (logged residual; new corpus claims carry pairs).
+- MR-1 (the excluded matrix row) = the merge gate, offline: 2 recipes persisted
+  under one claim, identity_hash unchanged vs single-recipe, selection picks
+  behavioral on a full env / inspection on a metadata-only env, the D-223 gate
+  passes, approve promotes both.
+
+**Decision — Part B (F3, resolved: explicit affordance, NOT auto-deprecate).**
+The D-226 open fork (auto vs prompt) closes against auto: a "predecessor" is not
+structurally derivable — same requirement + same claim_kind legitimately
+coexist (SQ-205 carries TWO automation-effect claims: the Case_SLA creation and
+the Account stamp), and same-semantics claims dedup to the same test_id anyway
+(identity_hash), so any structural auto-match either misses or mis-fires.
+Supersession is a human judgment; the build gives the human the affordance +
+the context:
+- **Deprecate** on the claim detail page: a modal (the `_modal.html` kit) with a
+  REQUIRED reason textarea → `POST /claims/<id>/deprecate` → console bridge →
+  `coordinator.deprecate_claim(actor="human", reason=…)` (D-ε-1/D-ε-5 satisfied:
+  the reason lands in provenance). Admin/tester/superadmin.
+- **Siblings panel** on claim detail: other current claims sharing a
+  requirement link + claim_kind, with status chips — the predecessor-vs-sibling
+  judgment made visible at the moment of approval/deprecation.
+
+**Slices**: 1 = bundle secondaries + write_recipe priority + persister loop +
+`_author_negative` inspection secondary (+ unit/drift tests); 2 = MR-1
+integration; 3 = F3 deprecate route/modal + siblings panel; 4 = suites + merge.
+Live reach rides the next corpus regeneration (no per-slice org gate).
+
 ---
 
 ---
