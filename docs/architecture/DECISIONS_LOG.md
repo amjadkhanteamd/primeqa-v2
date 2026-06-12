@@ -12607,6 +12607,68 @@ the context:
 integration; 3 = F3 deprecate route/modal + siblings panel; 4 = suites + merge.
 Live reach rides the next corpus regeneration (no per-slice org gate).
 
+### D-228.1 — Multi-recipe authoring closed (G-2 + F3) — offline; live reach rides the next corpus regeneration
+
+**What shipped (branch `phase-36-substrate-3-multi-recipe`, 5 commits).**
+- **Slice 1 (b305874)** — the write side: `SecondaryRecipe` + `EmissionBundle.secondary_recipes`;
+  a VERIFIED prohibition negative now mints the caveated APPLIES_TO inspection
+  re-verify as a fallback secondary (priority −10, `metadata_api_user` auth only)
+  alongside the behavioral primary; `write_recipe` gained `priority` (default 0);
+  the persister writes `[primary] + secondaries` under the ONE claim in the same
+  atomic tx. Identity untouched (Option-C pinned by test). Caveated negatives stay
+  single-recipe (their primary IS the inspection). Same-hash no-op mints nothing.
+- **Slice 2 (c1b0c32)** — MR-1 proven offline: approve promotes claim + BOTH
+  recipes; selection returns the behavioral primary on a full env and the
+  inspection secondary on a metadata-only env (the replaceability invariant's
+  first real instance); the D-223 gate passes; dedup keeps the 2-recipe set.
+- **Slice 3 (2460152)** — F3 supersession governance: `deprecate_claim` console
+  bridge (REQUIRED reason → provenance per D-ε-5; claim-only — selection requires
+  an approved claim, so recipes keep their status), `POST /claims/<id>/deprecate`
+  (admin/tester/superadmin) + reason modal, and the siblings panel
+  (same-requirement same-kind current claims with status chips) via
+  `read_claim_siblings`.
+
+**Gate findings (the merge sweep surfaced v1-retirement residue, fixed as
+D-221.4.2):**
+- **11b2ea2** — `primeqa/runs/bulk.py` imported `SuiteTestCase`, deleted at R4
+  (7fd518f): the module was unimportable, 500ing `POST /claims/<id>/run` and the
+  substrate enqueue API (both lazily import `environment_can_bulk_run`).
+  Scheduler/console enqueue paths were unaffected — why live runs kept working.
+  Dead import dropped; `tests/test_run_tests_page.py` re-targeted (4/4 green vs
+  Railway).
+- **059f796** — `test_metadata_s1_validator_parity.py` (5) + one reader test
+  imported `primeqa.intelligence.validator`/`.generation` (deleted at R3);
+  retired — both sides of the parity they proved no longer exist.
+
+**Suites at close**: unit 2524; integration/generation 105 (+1 skip, live eval);
+test_representation unit+integration 1275+377 net; semantic 86;
+execution_engine+interpretation 290; /run page 4/4 (Railway).
+
+**FINDING (pending AK decision) — live sync tests contaminated prod tenant-1.**
+Running the full `tests/integration` tree locally executed the live-marked sync
+suites (`.env` SF creds reach `os.environ` via load_dotenv on import — the skip
+guard never fires) — they ran REAL user-phase syncs against the env-59 org into
+the PROD tenant-1 schema: logical_versions 60–62 minted (junk `sync_run` rows),
+AK's own User entity (`005F900000ATd9AIAT`) re-versioned twice with the CURRENT
+row attributed to a test connected_org, 4 test edges, 4 leaked test
+connected_orgs (incl. one from 2026-05-12 — this leak predates today), and the
+S8 store re-stamped 18 verdicts `evaluated_at_version_seq=62`. Root cause: those
+suites match cleanup by test-name prefix, but the user-phase sync re-versions
+REAL entities (matched globally by sf_id) that no prefix matches — a
+test-isolation bug, not a D-228 artifact. **Restoration plan (needs explicit
+GO — prod row surgery)**: delete the 4 test edges + 2 test User rows; reopen the
+baseline User row (valid_to 60→NULL); delete the 4 leaked orgs' sync_runs +
+change_log/logical_versions 60–62 + org rows; then
+`recompute_tenant_grounding(1)` re-stamps S8 at 59. Until then: max version is
+62 (a junk version) — harmless to runs (claims pin their generation-time
+version; runs read the live org) but new generation would pin 62.
+
+**Residuals**: existing claims do NOT get backfilled secondaries (new corpus
+claims carry pairs at the next regeneration); secondary emission is
+negative-vertical-only (positives/cross-object pairs when a second realization
+exists); the live-suite isolation bug above (quarantine the live tests behind an
+explicit env gate so `pytest tests/integration` can never reach prod).
+
 ---
 
 ---
