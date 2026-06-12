@@ -482,15 +482,20 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
     create_steps = _torn_down()
 
     # 7. Ground (or errored when the record could not be observed). A 0-row
-    #    read is `errored` for an equals assert (the record under test was not
-    #    observable) but a legitimate evaluation for `exists` (the automation
-    #    did not produce the record — that IS the finding, D-210).
+    #    read is `errored` only for a SELF-observation (the record the run
+    #    created, read by Id — 0 rows is infrastructure); a SIDE-EFFECT read
+    #    (queried by lookup — the AUTOMATION's product) keeps 0 rows as an
+    #    evaluable finding for ANY predicate: the automation did not produce
+    #    the record/value (D-227.7, surfaced by the first P1 perturbation —
+    #    a Flow-off run must grade automation_not_triggered, not errored).
     if read_err is not None:
         return _result(
             plan, run_id, started, environment_id,
             create_steps + (read_ev,), "errored", read_err,
             created_records=tracker.records)
-    if read_ev.row_count == 0 and assertion.predicate.predicate != "exists":
+    if (read_ev.row_count == 0
+            and assertion.predicate.predicate != "exists"
+            and _is_self_observation(read.soql)):
         err = ErrorSurface(
             phase="read", error_type="RecordNotObserved",
             message=("read-back returned 0 rows; cannot evaluate field == V "
@@ -650,10 +655,13 @@ def _run_ground(assertion, read_ev, *, ordinal) -> AssertEvidence:
         held = (read_ev.row_count > 0
                 and read_ev.rows[0].get(field) is not None)
     else:
-        # The captured field is keyed bare in the SF response (see _run_read_back).
+        # The captured field is keyed bare in the SF response (see
+        # _run_read_back). 0 rows reaches here only on a SIDE-EFFECT read
+        # (D-227.7) — the automation produced nothing, so equality cannot
+        # hold (the honest FAILED evaluation, mirroring exists/not_null).
         field = _sf_field(field, read_ev.sobject)
-        observed = read_ev.rows[0].get(field)
-        held = _values_equal(observed, pred.value)
+        held = (read_ev.row_count > 0
+                and _values_equal(read_ev.rows[0].get(field), pred.value))
     end = _now()
     return AssertEvidence(
         step_id=assertion.step_id, ordinal=ordinal, predicate=pred.predicate,
@@ -783,6 +791,19 @@ def _best_effort_delete(client, sobject, record_id) -> CleanupRecord:
         # Best-effort: a failed delete (transport OR anything else) is recorded,
         # never raised — teardown must not be able to flip the outcome or escape.
         return CleanupRecord(attempted=True, succeeded=False, record_id=record_id)
+
+
+# A read that observes a record the RUN itself created: ``WHERE Id = '$…'``
+# (the authored self/parent-observation shape). Side-effect reads query by a
+# lookup column instead — their 0-row result is a finding, not infrastructure.
+_SELF_OBSERVATION_WHERE = re.compile(r"WHERE\s+Id\s*=\s*'\$", re.IGNORECASE)
+
+
+def _is_self_observation(soql: str) -> bool:
+    """D-227.7: True when the read's authored SOQL targets a record this run
+    created by Id — 0 rows is then RecordNotObserved (errored); False for a
+    side-effect read (0 rows grades as the failed finding)."""
+    return bool(_SELF_OBSERVATION_WHERE.search(soql or ""))
 
 
 def _as_error_tuple(body) -> tuple:

@@ -842,16 +842,19 @@ def test_nonempty_first_read_does_not_retry(monkeypatch):
     assert len(client.queries) == 1
 
 
-def test_equals_zero_rows_still_errors_after_retry(monkeypatch):
+def test_equals_zero_rows_on_side_effect_grades_failed_after_retry(monkeypatch):
+    # D-227.7 (supersedes the D-210 pin): a SIDE-EFFECT read's 0 rows is the
+    # finding — the automation produced nothing, equality cannot hold. The
+    # bounded retry still runs first (the automation may land late).
     import primeqa.execution_engine.data_executor as dx
     monkeypatch.setattr(dx.time, "sleep", lambda s: None)
     client = _StubClient(create_result=_success("001TRIG"), query_result=[])
     ev = execute_data_recipe(
         _effect_plan(predicate="equals", effect_value="INFO"),
         client=client, environment_id=_ENV_ID, s1=_s1())
-    # equals needs an observed row: 0 rows stays the honest errored
-    assert ev.outcome == "errored"
-    assert ev.error.error_type == "RecordNotObserved"
+    assert ev.outcome == "failed"
+    assert ev.steps[-1].held is False
+    assert ev.error is None
     assert len(client.queries) == 3              # the retry still ran first
 
 
@@ -901,5 +904,55 @@ def test_not_null_zero_rows_is_record_not_observed():
     # finding — same RecordNotObserved semantics as equals.
     client = _StubClient(create_result=_success("001Z"), query_result=[])
     ev = _run(_not_null_plan(), client, _s1())
+    assert ev.outcome == "errored"
+    assert ev.error.error_type == "RecordNotObserved"
+
+
+# ---------------------------------------------------------------------------
+# D-227.7 — 0-row SIDE-EFFECT reads grade as the finding (P1 perturbation)
+# ---------------------------------------------------------------------------
+
+def _side_effect_plan():
+    """The child-of-trigger automation shape: read the effect object by
+    LOOKUP (not by a created id) and assert one of its fields."""
+    return DataRecipePlan(
+        recipe_id=uuid4(), recipe_version_seq=2, claim_test_id=uuid4(),
+        claim_version_seq=None, api_choice="rest",
+        steps=(
+            PlannedCreate(step_id="create-record",
+                          target_object=LogicalRef(entity_type="Object",
+                                                   external_id="Case"),
+                          field_values={}, expect_rejection=None),
+            PlannedDataRead(
+                step_id="read-effect",
+                target=LogicalRef(entity_type="Object",
+                                  external_id="Case_SLA__c"),
+                soql=("SELECT Id, Status__c FROM Case_SLA__c "
+                      "WHERE Case__c = '$create-record.id'"),
+                fields_to_capture=("Id", "Status__c")),
+            PlannedAssertion(
+                step_id="assert-effect",
+                predicate=AssertionPredicate(
+                    subject_ref="read-effect.Status__c",
+                    predicate="equals", value="Active")),
+        ))
+
+
+def test_side_effect_zero_rows_grades_failed_not_errored():
+    # The automation produced nothing (e.g. the Flow is off) — that IS the
+    # finding: failed, so S6 grades automation_not_triggered (not errored).
+    client = _StubClient(create_result=_success("500Z"), query_result=[])
+    s1 = _StubS1("Case", fields=[])
+    ev = _run(_side_effect_plan(), client, s1)
+    assert ev.outcome == "failed"
+    assert ev.steps[-1].held is False
+    assert ev.error is None
+
+
+def test_self_observation_zero_rows_stays_record_not_observed():
+    # The read targets the record the run CREATED by Id — 0 rows is
+    # infrastructure, unchanged semantics.
+    client = _StubClient(create_result=_success("001Z"), query_result=[])
+    ev = _run(_plan(), client, _s1())
     assert ev.outcome == "errored"
     assert ev.error.error_type == "RecordNotObserved"
