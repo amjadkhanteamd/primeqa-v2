@@ -123,7 +123,27 @@ def test_state_transition_trigger_without_value_falls_back_unstaged(seeded):
     assert r.emission.observation_realization.steps[0].field_values == {}
 
 
-def test_state_transition_cross_object_trigger_defers(seeded):
+def test_state_transition_cross_object_trigger_emits_two_create_chain(seeded):
+    # D-227: a verified trigger object + its lookup back to the subject emit
+    # the 2-create chain (create subject, create trigger linked to it, read
+    # the subject, assert the to-state).
+    r = _run(seeded, _intent("state-transition-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             trigger_object="Order_Log__c",
+                             trigger_lookup_field="Order_Log__c.Order__c"))
+    o = r.outcome
+    assert o.outcome_kind == OutcomeKind.DRAFT
+    steps = r.emission.observation_realization.steps
+    assert [s.step_id for s in steps] == [
+        "create-subject", "create-trigger", "read-subject", "assert-value"]
+    assert steps[1].target_object.external_id == "Order_Log__c"
+    assert steps[1].field_values == {"Order_Log__c.Order__c": "$create-subject.id"}
+    assert r.emission.causal_initiation.target.external_id == "Order_Log__c"
+
+
+def test_state_transition_cross_object_without_lookup_defers(seeded):
+    # The trigger object alone is not enough — without a verified lookup back
+    # to the subject the recipe cannot link the records; defer, never guess.
     r = _run(seeded, _intent("state-transition-claim", "positive", "Order__c",
                              field_name="Order__c.Status__c", expected_value="Activated",
                              trigger_object="Order_Log__c"),
@@ -131,7 +151,17 @@ def test_state_transition_cross_object_trigger_defers(seeded):
     o = r.outcome
     assert o.outcome_kind == OutcomeKind.REFUSAL
     assert o.refusal_kind == RefusalKind.EMISSION_DEFERRED
-    assert "cross-object" in o.refusals[0].payload["detail"]
+    assert "trigger lookup field" in o.refusals[0].payload["detail"]
+
+
+def test_state_transition_cross_object_bad_lookup_defers(seeded):
+    r = _run(seeded, _intent("state-transition-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             trigger_object="Order_Log__c",
+                             trigger_lookup_field="Order_Log__c.Nope__c"),
+             expect_emit=False)
+    assert r.outcome.refusal_kind == RefusalKind.EMISSION_DEFERRED
+    assert "trigger lookup field" in r.outcome.refusals[0].payload["detail"]
 
 
 def test_state_transition_unverifiable_field_defers(seeded):
@@ -202,6 +232,48 @@ def test_automation_effect_bad_lookup_defers(seeded):
              expect_emit=False)
     assert r.outcome.refusal_kind == RefusalKind.EMISSION_DEFERRED
     assert "cannot correlate" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_parent_stamp_emits_parent_first_chain_with_not_null(seeded):
+    # D-227: the Flow on Order_Log__c stamps the parent Order__c (via the
+    # trigger record's own lookup). Value-less stamp -> not_null assert.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order_Log__c",
+                             effect_object="Order__c",
+                             effect_via_lookup_field="Order_Log__c.Order__c",
+                             effect_field="Order__c.Status__c"))
+    o = r.outcome
+    assert o.outcome_kind == OutcomeKind.DRAFT
+    body = r.emission.asserted_truth
+    assert body.automation.external_id == "Log_Effects"
+    steps = r.emission.observation_realization.steps
+    assert [s.step_id for s in steps] == [
+        "create-parent", "create-record", "read-effect", "assert-effect"]
+    assert steps[0].target_object.external_id == "Order__c"
+    assert steps[1].target_object.external_id == "Order_Log__c"
+    assert steps[1].field_values == {"Order_Log__c.Order__c": "$create-parent.id"}
+    assert "WHERE Id = '$create-parent.id'" in steps[2].soql
+    assert steps[3].predicate.predicate == "not_null"
+
+
+def test_parent_stamp_bad_via_lookup_defers(seeded):
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order_Log__c",
+                             effect_object="Order__c",
+                             effect_via_lookup_field="Order_Log__c.Nope__c",
+                             effect_field="Order__c.Status__c"),
+             expect_emit=False)
+    assert r.outcome.refusal_kind == RefusalKind.EMISSION_DEFERRED
+    assert "effect_via_lookup_field" in r.outcome.refusals[0].payload["detail"]
+
+
+def test_parent_stamp_without_effect_field_defers(seeded):
+    # A stamp without a named field is unobservable (the parent row trivially
+    # exists) — defer with the specific detail.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order_Log__c",
+                             effect_object="Order__c",
+                             effect_via_lookup_field="Order_Log__c.Order__c"),
+             expect_emit=False)
+    assert r.outcome.refusal_kind == RefusalKind.EMISSION_DEFERRED
+    assert "effect_field" in r.outcome.refusals[0].payload["detail"]
 
 
 def test_automation_effect_without_flow_is_ungrounded(seeded):

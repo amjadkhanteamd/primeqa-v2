@@ -167,6 +167,89 @@ def test_unstaged_state_transition_unchanged():
 
 
 # ---------------------------------------------------------------------------
+# D-227 — cross-object trigger state-transition + parent-stamp automation
+# ---------------------------------------------------------------------------
+
+def test_cross_object_trigger_authors_two_create_chain():
+    # The transition is provoked by creating a RELATED record: subject create
+    # (padding), trigger create with the verified lookup ref, subject read,
+    # to-state assert — the D-205 N-create chain shape.
+    bundle = author_emission(GroundedStateTransition(
+        archetype="data_behavior", claim_kind="state-transition-claim",
+        version_seq=1, subject=_ep("Object", "Case"),
+        field=_ep("Field", "Case.Status"), to_value="Escalated",
+        requirement_excerpt="escalating a case",
+        trigger_object=_ep("Object", "Escalation__c"),
+        trigger_lookup_field=_ep("Field", "Escalation__c.Case__c")))
+    steps = bundle.observation_realization.steps
+    assert [s.step_id for s in steps] == [
+        "create-subject", "create-trigger", "read-subject", "assert-value"]
+    assert steps[0].target_object.external_id == "Case"
+    assert steps[1].target_object.external_id == "Escalation__c"
+    assert steps[1].field_values == {"Escalation__c.Case__c": "$create-subject.id"}
+    assert "WHERE Id = '$create-subject.id'" in steps[2].soql
+    assert steps[3].predicate.value == "Escalated"
+    # the causal mutation is the TRIGGER create
+    assert bundle.causal_initiation.target.external_id == "Escalation__c"
+    assert "Escalation__c" in bundle.asserted_truth.triggering_event.description
+
+
+def test_cross_object_trigger_composes_with_staged_pair():
+    # D-222's staged pair rides the SUBJECT create even in the cross-object shape.
+    bundle = author_emission(GroundedStateTransition(
+        archetype="data_behavior", claim_kind="state-transition-claim",
+        version_seq=1, subject=_ep("Object", "Case"),
+        field=_ep("Field", "Case.Status"), to_value="Escalated",
+        requirement_excerpt="x",
+        trigger_field=_ep("Field", "Case.Priority"), trigger_value="High",
+        trigger_object=_ep("Object", "Escalation__c"),
+        trigger_lookup_field=_ep("Field", "Escalation__c.Case__c")))
+    steps = bundle.observation_realization.steps
+    assert steps[0].field_values == {"Case.Priority": "High"}
+    assert bundle.asserted_truth.from_state.field_values[
+        "Case.Priority"].value == "High"
+
+
+def test_parent_stamp_authors_parent_first_chain_with_not_null():
+    # The Flow stamps a record the trigger points to; value-less -> not_null.
+    bundle = author_emission(GroundedAutomationEffect(
+        archetype="data_behavior", claim_kind="automation-effect-claim",
+        version_seq=1, subject=_ep("Object", "Escalation__c"),
+        automation=_ep("Flow", "SQ205_Escalation_Effects"),
+        requirement_excerpt="stamp the account",
+        effect_object=_ep("Object", "Account"),
+        effect_via_lookup_field=_ep("Field", "Escalation__c.Account__c"),
+        effect_field=_ep("Field", "Account.Last_Escalation_Date__c"),
+        effect_value=None))
+    steps = bundle.observation_realization.steps
+    assert [s.step_id for s in steps] == [
+        "create-parent", "create-record", "read-effect", "assert-effect"]
+    assert steps[0].target_object.external_id == "Account"
+    assert steps[1].field_values == {
+        "Escalation__c.Account__c": "$create-parent.id"}
+    assert "WHERE Id = '$create-parent.id'" in steps[2].soql
+    assert steps[3].predicate.predicate == "not_null"
+    assert steps[3].predicate.value is None
+    assert bundle.asserted_truth.affected_fields[0].external_id == \
+        "Account.Last_Escalation_Date__c"
+
+
+def test_parent_stamp_with_value_asserts_equals():
+    bundle = author_emission(GroundedAutomationEffect(
+        archetype="data_behavior", claim_kind="automation-effect-claim",
+        version_seq=1, subject=_ep("Object", "Escalation__c"),
+        automation=_ep("Flow", "SQ205_Escalation_Effects"),
+        requirement_excerpt="x",
+        effect_object=_ep("Object", "Account"),
+        effect_via_lookup_field=_ep("Field", "Escalation__c.Account__c"),
+        effect_field=_ep("Field", "Account.Rating"),
+        effect_value="Hot"))
+    assertion = bundle.observation_realization.steps[3]
+    assert assertion.predicate.predicate == "equals"
+    assert assertion.predicate.value == "Hot"
+
+
+# ---------------------------------------------------------------------------
 # D-107 formula capture at grounding — _grounding_vr_formulas
 # ---------------------------------------------------------------------------
 

@@ -667,17 +667,23 @@ class GovernanceCore:
                  if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"
                  and r.entity.sf_api_name == hint.get("field_name")), None)
             to_value = hint.get("expected_value")
+            # D-227: a cross-object trigger (the transition is provoked by
+            # creating a RELATED record) VERIFIES instead of deferring — the
+            # trigger object must resolve uniquely and its lookup back to the
+            # subject must BELONG_TO it. Unverifiable names refuse
+            # emission-deferred (a wrong-shape recipe is worse than none;
+            # there is no same-object fallback for a cross-object intent).
+            trig_obj_ep, trig_lookup_ep = None, None
             trigger_object = hint.get("trigger_object")
             if trigger_object and trigger_object != subject.sf_api_name:
-                return IntentResolution(
-                    grounded_candidates=[], next_action=NextAction.REFUSE,
-                    interpretation_delta=delta,
-                    refusal=self._router.emission_deferred(
-                        archetype, claim_kind,
-                        detail=(f"cross-object transitions defer in v1: the "
-                                f"trigger ({trigger_object}) is not the subject "
-                                f"({subject.sf_api_name}) — needs S1 lookup "
-                                f"modeling to correlate")))
+                got = self._ground_cross_object_trigger(hint, trigger_object, at)
+                if isinstance(got, str):
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind, detail=got))
+                trig_obj_ep, trig_lookup_ep = got
             if field_ent is None or to_value is None:
                 return IntentResolution(
                     grounded_candidates=[], next_action=NextAction.REFUSE,
@@ -715,7 +721,9 @@ class GovernanceCore:
                     entity_id=field_ent.id, entity_type=field_ent.entity_type,
                     external_id=field_ent.sf_api_name or str(field_ent.id)),
                 to_value=to_value, requirement_excerpt=excerpt,
-                trigger_field=trig_field_ep, trigger_value=trig_value))
+                trigger_field=trig_field_ep, trigger_value=trig_value,
+                trigger_object=trig_obj_ep,
+                trigger_lookup_field=trig_lookup_ep))
 
         # Stash grounding for the automation-effect (D-210.1): the matched
         # Flow (TRIGGERS_ON — the grounding dimension _evaluate_positive
@@ -744,7 +752,59 @@ class GovernanceCore:
                 entity_id=flow_ent.id, entity_type=flow_ent.entity_type,
                 external_id=flow_ent.sf_api_name or str(flow_ent.id))
             effect_object_api = hint.get("effect_object")
-            if effect_object_api:
+            if effect_object_api and hint.get("effect_via_lookup_field"):
+                # D-227 parent-stamp: the effect lands on a record the TRIGGER
+                # record points to via its OWN lookup (effect_via_lookup_field,
+                # verified BELONGS_TO the subject — the gate's own
+                # neighborhood). effect_field is REQUIRED (a stamp without a
+                # named field is unobservable — the parent row trivially
+                # exists); effect_value optional (value-less stamps assert
+                # not_null).
+                via_name = hint.get("effect_via_lookup_field")
+                via_ent = next(
+                    (r.entity for r in neighborhood
+                     if r.edge_type == EDGE_BELONGS
+                     and r.entity.entity_type == "Field"
+                     and r.entity.sf_api_name == via_name), None)
+                if via_ent is None:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=(f"effect_via_lookup_field {via_name!r} "
+                                    f"does not exist on the subject — cannot "
+                                    f"link the trigger record to the effect "
+                                    f"parent")))
+                grounded_eff = self._ground_cross_object_effect(
+                    hint, effect_object_api, at, lookup_required=False)
+                if isinstance(grounded_eff, str):
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind, detail=grounded_eff))
+                eff_ep, _, eff_field_ep = grounded_eff
+                if eff_field_ep is None:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=("a parent-stamp effect needs effect_field "
+                                    "(the stamped field on the effect object) "
+                                    "— without it the stamp is unobservable")))
+                _stash_grounding(state, GroundedAutomationEffect(
+                    archetype=archetype, claim_kind=claim_kind, version_seq=at,
+                    subject=subj_ep, automation=flow_ep,
+                    requirement_excerpt=excerpt,
+                    effect_field=eff_field_ep,
+                    effect_value=hint.get("effect_value"),
+                    effect_object=eff_ep,
+                    effect_via_lookup_field=_Endpoint(
+                        entity_id=via_ent.id, entity_type=via_ent.entity_type,
+                        external_id=via_ent.sf_api_name or str(via_ent.id))))
+            elif effect_object_api:
                 grounded_eff = self._ground_cross_object_effect(
                     hint, effect_object_api, at)
                 if isinstance(grounded_eff, str):       # the deferral detail
@@ -795,14 +855,48 @@ class GovernanceCore:
         return IntentResolution(grounded_candidates=presented, next_action=nxt,
                                 interpretation_delta=delta)
 
+    def _ground_cross_object_trigger(self, hint: dict, trigger_object_api: str,
+                                     at: int):
+        """Verify the cross-object trigger names against S1 (D-227): the
+        trigger Object must resolve uniquely; ``trigger_lookup_field`` (its
+        lookup back to the subject) must BELONG_TO it. Returns
+        ``(trigger_ep, lookup_ep)`` on success, or the deferral-detail STRING
+        on any unverifiable name — the caller routes it to emission-deferred
+        (never guesses). The lookup's TARGET stays LLM-proposed +
+        existence-verified, the same trust level as ``effect_lookup_field``
+        (S1 referenceTo modeling is a logged refinement)."""
+        matches = self._admit.resolve_subject("Object", trigger_object_api, at)
+        if len(matches) != 1:
+            return (f"trigger object {trigger_object_api!r} did not resolve "
+                    f"uniquely in the org model ({len(matches)} matches)")
+        trig = matches[0]
+        trig_neigh = self._admit.scoped_neighborhood(trig, at)
+        trig_fields = {r.entity.sf_api_name: r.entity for r in trig_neigh
+                       if r.edge_type == EDGE_BELONGS
+                       and r.entity.entity_type == "Field"}
+        lookup_name = hint.get("trigger_lookup_field")
+        lookup_ent = trig_fields.get(lookup_name) if lookup_name else None
+        if lookup_ent is None:
+            return (f"trigger lookup field {lookup_name!r} does not exist on "
+                    f"{trigger_object_api} — cannot link the trigger record "
+                    f"to the subject")
+        trig_ep = _Endpoint(entity_id=trig.id, entity_type=trig.entity_type,
+                            external_id=trig.sf_api_name or str(trig.id))
+        lookup_ep = _Endpoint(
+            entity_id=lookup_ent.id, entity_type=lookup_ent.entity_type,
+            external_id=lookup_ent.sf_api_name or str(lookup_ent.id))
+        return trig_ep, lookup_ep
+
     def _ground_cross_object_effect(self, hint: dict, effect_object_api: str,
-                                    at: int):
+                                    at: int, *, lookup_required: bool = True):
         """Verify the cross-object effect names against S1 (D-210.1): the
         effect Object must resolve uniquely; the lookup field (and the optional
         asserted effect field) must BELONG_TO it. Returns
-        ``(effect_ep, lookup_ep, effect_field_ep_or_None)`` on success, or the
-        deferral-detail STRING on any unverifiable name — the caller routes it
-        to emission-deferred (never guesses)."""
+        ``(effect_ep, lookup_ep_or_None, effect_field_ep_or_None)`` on success,
+        or the deferral-detail STRING on any unverifiable name — the caller
+        routes it to emission-deferred (never guesses). ``lookup_required=False``
+        is the D-227 parent-stamp path (the correlate is the SUBJECT's own
+        ``effect_via_lookup_field``, verified by the caller)."""
         matches = self._admit.resolve_subject("Object", effect_object_api, at)
         if len(matches) != 1:
             return (f"effect object {effect_object_api!r} did not resolve "
@@ -814,7 +908,7 @@ class GovernanceCore:
                       and r.entity.entity_type == "Field"}
         lookup_name = hint.get("effect_lookup_field")
         lookup_ent = eff_fields.get(lookup_name) if lookup_name else None
-        if lookup_ent is None:
+        if lookup_ent is None and lookup_required:
             return (f"effect lookup field {lookup_name!r} does not exist on "
                     f"{effect_object_api} — cannot correlate the effect record "
                     f"to the trigger record")
@@ -830,7 +924,7 @@ class GovernanceCore:
                 external_id=eff_field_ent.sf_api_name or str(eff_field_ent.id))
         eff_ep = _Endpoint(entity_id=eff.id, entity_type=eff.entity_type,
                            external_id=eff.sf_api_name or str(eff.id))
-        lookup_ep = _Endpoint(
+        lookup_ep = None if lookup_ent is None else _Endpoint(
             entity_id=lookup_ent.id, entity_type=lookup_ent.entity_type,
             external_id=lookup_ent.sf_api_name or str(lookup_ent.id))
         return eff_ep, lookup_ep, eff_field_ep
