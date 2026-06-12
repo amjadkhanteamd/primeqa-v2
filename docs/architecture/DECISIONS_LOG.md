@@ -12352,6 +12352,35 @@ at the substrate engine.
 produce a clean verdict whose cause names the code + `Last_Escalation_Date__c`
 instead of a generic platform line.
 
+### D-226 — Claim-lifecycle guards (Tier-1 1.5; the 0.4-audit F1+F2 fixes)
+
+**Context.** The Tier-0.4 stickiness audit cleared the v1-style silent-no-op class
+(approve is server-versioned, transactional, provenance-writing; deprecated claims
+structurally cannot run) but surfaced two adjacent defects:
+**F1** — the claim detail page offered Approve on ANY non-approved status, and both
+the coordinator (documented `deprecated→approved` un-deprecation) and
+`_approve_claim` (no status check; recipe loop promoted `deprecated` recipes too)
+would honor it: one click silently resurrects a reasoned deprecation AND
+auto-enqueues runs of the superseded recipe. **F2** — `claims_approve` flashed
+"approved — now runnable" while discarding `auto_enqueued`; zero-enqueue outcomes
+(no auto-verify env; D-223 unexecutable) were invisible.
+
+**Decision.**
+- **F1**: `_approve_claim` refuses a deprecated claim with a clear error (the flash
+  surfaces it); the recipe promote loop skips `deprecated` recipes. The
+  coordinator's `deprecated→approved` transition is intentionally KEPT — reinstate
+  stays a deliberate, explicit-caller capability, just not reachable from the
+  generic Approve button. The detail template renders an explanation instead of the
+  button for deprecated claims.
+- **F2**: the approve flash now reports what actually happened — N runs queued
+  (success), zero-queued with the reason (warning: no auto-verify env, or the
+  D-223 unexecutable detail).
+- **F3 logged, not fixed here**: approving a regenerated replacement does not
+  retire its predecessor, and deprecation has no UI affordance (today's
+  deprecations went through direct coordinator calls). The supersession-governance
+  design (auto-deprecate vs prompt, a deprecate affordance) belongs to the 2.2
+  multi-recipe/supersession arc.
+
 ---
 
 ---
