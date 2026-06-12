@@ -24,6 +24,8 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from primeqa.execution_engine.errors import UnexecutableClaimError
+
 log = logging.getLogger(__name__)
 
 
@@ -316,16 +318,27 @@ def auto_enqueue_on_approval(tenant_id: int, test_id, *, created_by=None) -> dic
         finally:
             db.close()
         jobs = []
+        unexecutable = None
         for eid in env_ids:
             try:
                 job = enqueue_s4_execution(
                     tenant_id=tenant_id, test_id=test_id,
                     environment_id=eid, created_by=created_by)
                 jobs.append(job.id)
+            except UnexecutableClaimError as exc:
+                # D-223: a shape refusal is env-independent — record once,
+                # stop trying (the caller surfaces it; approval stands).
+                log.info("auto-enqueue gated (unexecutable) tenant %s test %s: %s",
+                         tenant_id, test_id, exc)
+                unexecutable = str(exc)
+                break
             except Exception as exc:                       # one env never blocks the rest
                 log.warning("auto-enqueue failed for tenant %s test %s env %s: %s",
                             tenant_id, test_id, eid, exc)
-        return {"enqueued": jobs, "environments": env_ids}
+        out = {"enqueued": jobs, "environments": env_ids}
+        if unexecutable is not None:
+            out["unexecutable"] = unexecutable
+        return out
     except Exception as exc:
         log.warning("auto-enqueue skipped for tenant %s test %s: %s",
                     tenant_id, test_id, exc)
@@ -367,16 +380,23 @@ def enqueue_claims_for_keys(tenant_id: int, external_keys, environment_id: int,
             finally:
                 session.close()
         jobs = []
+        skipped_unexecutable = 0
         for tid in test_ids:
             try:
                 job = enqueue_s4_execution(
                     tenant_id=tenant_id, test_id=tid,
                     environment_id=environment_id, created_by=created_by)
                 jobs.append(job.id)
+            except UnexecutableClaimError as exc:
+                # D-223: shape refusal — skip this claim, never the batch.
+                log.info("release-claim enqueue gated tenant %s test %s: %s",
+                         tenant_id, tid, exc)
+                skipped_unexecutable += 1
             except Exception as exc:
                 log.warning("release-claim enqueue failed tenant %s test %s: %s",
                             tenant_id, tid, exc)
-        return {"enqueued": jobs, "claim_count": len(test_ids)}
+        return {"enqueued": jobs, "claim_count": len(test_ids),
+                "skipped_unexecutable": skipped_unexecutable}
     except Exception as exc:
         log.warning("enqueue_claims_for_keys failed for tenant %s: %s",
                     tenant_id, exc)
@@ -400,16 +420,23 @@ def enqueue_all_approved_claims(tenant_id: int, environment_id: int,
                 "WHERE status = 'approved' AND valid_to IS NULL "
                 "ORDER BY test_id")).fetchall()]
         jobs = []
+        skipped_unexecutable = 0
         for tid in test_ids:
             try:
                 job = enqueue_s4_execution(
                     tenant_id=tenant_id, test_id=tid,
                     environment_id=environment_id, created_by=created_by)
                 jobs.append(job.id)
+            except UnexecutableClaimError as exc:
+                # D-223: shape refusal — skip this claim, never the batch.
+                log.info("scheduled enqueue gated tenant %s test %s: %s",
+                         tenant_id, tid, exc)
+                skipped_unexecutable += 1
             except Exception as exc:
                 log.warning("scheduled enqueue failed tenant %s test %s: %s",
                             tenant_id, tid, exc)
-        return {"enqueued": jobs, "claim_count": len(test_ids)}
+        return {"enqueued": jobs, "claim_count": len(test_ids),
+                "skipped_unexecutable": skipped_unexecutable}
     except Exception as exc:
         log.warning("enqueue_all_approved_claims failed for tenant %s: %s",
                     tenant_id, exc)

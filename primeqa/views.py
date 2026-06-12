@@ -685,7 +685,10 @@ def run_page_submit():
         if count == 0:
             flash("No approved claims matched the selection.", "error")
             return redirect("/run")
-        flash(f"{count} substrate run{'s' if count != 1 else ''} queued",
+        skipped = result.get("skipped_unexecutable") or 0
+        flash(f"{count} substrate run{'s' if count != 1 else ''} queued"
+              + (f" — {skipped} claim{'s' if skipped != 1 else ''} skipped "
+                 f"(not yet executable)" if skipped else ""),
               "success")
         return redirect("/runs/substrate")
 
@@ -3395,9 +3398,12 @@ def releases_run(release_id):
         flash("No approved claims found for this release's requirements — "
               "approve drafts in the claims inbox first.", "error")
         return redirect(f"/releases/{release_id}?tab=decision")
+    skipped = result.get("skipped_unexecutable") or 0
     flash(f"{result['enqueued']} substrate run"
           f"{'s' if result['enqueued'] != 1 else ''} queued across "
-          f"{result['requirements']} requirement(s)", "success")
+          f"{result['requirements']} requirement(s)"
+          + (f" — {skipped} claim{'s' if skipped != 1 else ''} skipped "
+             f"(not yet executable)" if skipped else ""), "success")
     return redirect("/runs/substrate")
 
 

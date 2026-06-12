@@ -96,3 +96,22 @@ class StepRefResolutionError(ExecutionEngineError):
     ``state["create-record"]["id"]`` after a successful create, so an unresolved
     ref is an authoring defect, surfaced — never a silently ungrounded read.
     """
+
+
+class UnexecutableClaimError(ExecutionEngineError):
+    """Every status-eligible current recipe of a claim fails S4's shape check —
+    the D-223 pre-enqueue gate. Enqueueing such a claim could only produce a
+    dead job (the runtime fail-louds would reject every candidate recipe), so
+    the refusal moves to the enqueue door where a human or caller can see it.
+
+    ``reasons`` carries one ``"<recipe_id>: <shape error>"`` line per eligible
+    recipe — the exact runtime errors the dry-run reproduced.
+    """
+
+    def __init__(self, *, test_id, reasons) -> None:
+        self.test_id = test_id
+        self.reasons = tuple(reasons)
+        detail = "; ".join(self.reasons) or "no reasons recorded"
+        super().__init__(
+            f"claim {test_id} has no S4-executable recipe: {detail}"
+        )
