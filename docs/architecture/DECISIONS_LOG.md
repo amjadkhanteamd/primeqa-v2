@@ -12275,6 +12275,51 @@ resolved by observation, not assumption. Residual unchanged: staged creates that
 supporting field values (e.g. an org where that VR fires on blank) are the test-data
 provisioning port's territory.
 
+### D-223 — Pre-enqueue executability gate (Tier-1 1.3; G-1)
+
+**Context.** S3's `EMITTABLE` declares what can be *authored*; only S4's runtime
+fail-louds (`PlanTranslationError`, `UnsupportedEdgeError`, `UnsupportedPropertyError`)
+know what can be *executed*. Between them an approved-but-unexecutable claim (the
+author-only kinds: capability-claim, layout-claim — their captures
+`GRANTS_OBJECT_ACCESS` / `GRANTS_FIELD_ACCESS` / `INCLUDES_FIELD` have no translator
+entry) enqueues cleanly and dies later as dogfood noise. G-1 from the matrix audit.
+
+**Decision.**
+- **No shadow registry.** Fork considered: (a) a static `EXECUTABLE_RECIPE_SHAPES`
+  registry both sides import vs (b) the gate **dry-runs S4's own pure machinery**.
+  Chose (b): `bridge.build_metadata_inspection_plan` / `build_data_recipe_plan` are
+  documented pure (bridge.py module docstring), and `translate_read` is pure — so
+  `check_recipe_executability(recipe)` = bridge projection + per-read translator
+  dry-run. The single source of truth is the code that will execute the recipe;
+  drift is impossible by construction.
+- **New module** `primeqa/execution_engine/executability.py`; new typed error
+  `UnexecutableClaimError(ExecutionEngineError)` in `errors.py` carrying
+  `test_id` + per-recipe reasons.
+- **Gate semantics at `enqueue_s4_execution` (intake.py)**: load the test's current
+  (`valid_to IS NULL`) recipes in the selection-eligible statuses
+  (`active`/`approved`, the select_recipe_for_execution commitment). ≥1 passes the
+  shape check → enqueue. ≥1 eligible exists and ALL fail → raise
+  `UnexecutableClaimError` (the G-1 stop). ZERO status-eligible recipes → enqueue
+  unchanged (status outcomes stay runtime-owned: out of G-1's shape scope; the run
+  path's `no-eligible-recipe` result is already first-class).
+- **Callers** (all funnel through `enqueue_s4_execution`): the manual run routes
+  flash the reason; `auto_enqueue_on_approval` counts unexecutable skips separately
+  (feeds the D-226 flash work); `enqueue_claims_for_requirements` /
+  `enqueue_claims_for_keys` / `enqueue_all_approved_claims` return a skipped count;
+  the schedules tick and repair agent log-and-continue. Runtime fail-louds stay
+  (defence in depth).
+- **Drift-guard test** (the D-105.1 discipline, test-only imports — no production
+  S3↔S4 cross-import): for every `EMITTABLE` pair, author its `_EMITTABLE_SHAPES`
+  bundle, write the recipe body, run `check_recipe_executability`, and assert the
+  result equals a static `EXPECTED_EXECUTABILITY` map in the test. Adding an
+  emittable kind without deciding executability trips the map; D-224's translator
+  flips capability/layout to executable VISIBLY in that map.
+
+**Expected executability at this entry** (the map's initial state):
+metadata-relationship / existence / property(length·precision·scale) / prohibition /
+value / state-transition / automation-effect → executable; capability + layout →
+unexecutable (no `GRANTS_*_ACCESS` / `INCLUDES_FIELD` translators until D-224).
+
 ---
 
 ---
