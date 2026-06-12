@@ -404,7 +404,7 @@ class TestAssertionPredicate:
         assert ap.subject_ref == "step_1.Id"
         assert ap.value == "001x000000abcde"
 
-    @pytest.mark.parametrize("predicate", ["exists", "is_null"])
+    @pytest.mark.parametrize("predicate", ["exists", "is_null", "not_null"])
     def test_value_free_predicates_accept_no_value(
         self, predicate: str,
     ) -> None:
@@ -428,7 +428,7 @@ class TestAssertionPredicate:
             )
         assert "requires" in str(exc_info.value).lower()
 
-    @pytest.mark.parametrize("predicate", ["exists", "is_null"])
+    @pytest.mark.parametrize("predicate", ["exists", "is_null", "not_null"])
     def test_value_free_predicates_reject_provided_value(
         self, predicate: str,
     ) -> None:

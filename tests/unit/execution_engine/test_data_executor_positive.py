@@ -853,3 +853,53 @@ def test_equals_zero_rows_still_errors_after_retry(monkeypatch):
     assert ev.outcome == "errored"
     assert ev.error.error_type == "RecordNotObserved"
     assert len(client.queries) == 3              # the retry still ran first
+
+
+# ---------------------------------------------------------------------------
+# D-227 — the not_null stamp assert (no stable literal to equals against)
+# ---------------------------------------------------------------------------
+
+def _not_null_plan(*, field="Last_Escalation_Date__c", object_api="Account"):
+    target = LogicalRef(entity_type="Object", external_id=object_api)
+    return DataRecipePlan(
+        recipe_id=uuid4(), recipe_version_seq=2, claim_test_id=uuid4(),
+        claim_version_seq=None, api_choice="rest",
+        steps=(
+            PlannedCreate(step_id="create-record", target_object=target,
+                          field_values={}, expect_rejection=None),
+            PlannedDataRead(
+                step_id="read-effect", target=target,
+                soql=f"SELECT {field} FROM {object_api} WHERE Id = '$create-record.id'",
+                fields_to_capture=(field,)),
+            PlannedAssertion(
+                step_id="assert-stamp",
+                predicate=AssertionPredicate(
+                    subject_ref=f"read-effect.{field}", predicate="not_null")),
+        ))
+
+
+def test_not_null_passes_when_stamp_observed():
+    client = _StubClient(create_result=_success("001Z"),
+                         query_result=[{"Id": "001Z",
+                                        "Last_Escalation_Date__c": "2026-06-12"}])
+    ev = _run(_not_null_plan(), client, _s1())
+    assert ev.outcome == "passed"
+    assert ev.steps[-1].held is True
+
+
+def test_not_null_fails_when_stamp_absent():
+    client = _StubClient(create_result=_success("001Z"),
+                         query_result=[{"Id": "001Z",
+                                        "Last_Escalation_Date__c": None}])
+    ev = _run(_not_null_plan(), client, _s1())
+    assert ev.outcome == "failed"
+    assert ev.steps[-1].held is False
+
+
+def test_not_null_zero_rows_is_record_not_observed():
+    # The read is by a known-created Id; 0 rows is infrastructure, not a
+    # finding — same RecordNotObserved semantics as equals.
+    client = _StubClient(create_result=_success("001Z"), query_result=[])
+    ev = _run(_not_null_plan(), client, _s1())
+    assert ev.outcome == "errored"
+    assert ev.error.error_type == "RecordNotObserved"
