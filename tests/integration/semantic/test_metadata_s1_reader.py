@@ -92,21 +92,9 @@ def test_hydrate_validation_rules(conn, seed):
     assert vrs[0].meta_object.api_name == "Account"
 
 
-def test_reader_drives_build_metadata_context(conn, seed):
-    # The reader produces exactly what generation's _build_metadata_context needs
-    # — the deterministic descriptive text (the substance of meta_*-parity).
-    v1, obj = _seed_org(seed, conn)
-    reader = hydrate_metadata_s1_reader(SemanticOrgModel(conn), v1)
-    from primeqa.intelligence.generation import TestCaseGenerator
-    gen = TestCaseGenerator.__new__(TestCaseGenerator)   # bypass __init__
-    gen.metadata_repo = reader
-    ctx = gen._build_metadata_context(None)
-    assert ctx["objects"] == [
-        "Account [required: Name] [custom: Industry__c]"]
-    # VR naming stays object-qualified (D-161.1: no validator rule reads VR names;
-    # generation-context VR-list text only).
-    assert ctx["validation_rules"] == [
-        "Account.Account.RequireName: Name required"]
+# (test_reader_drives_build_metadata_context retired with the v1 engine —
+#  TestCaseGenerator was deleted at D-221 R3; the meta_*-parity it proved
+#  closed at D-190/D-192 and the meta_* side no longer exists.)
 
 
 def test_build_reader_best_effort_on_bad_tenant():

@@ -84,7 +84,8 @@ def _query():
             "SELECT test_id, identity_hash, archetype, claim_kind FROM test_claims"
         )).mappings().all()
         recipes = conn.execute(text(
-            "SELECT recipe_id, trigger_kind, recipe_kind FROM test_recipes"
+            "SELECT recipe_id, trigger_kind, recipe_kind, priority, "
+            "claim_test_id FROM test_recipes ORDER BY priority DESC"
         )).mappings().all()
         outcomes = conn.execute(text(
             "SELECT outcome_id, outcome_kind, admissibility_layer, claims_written, "
@@ -306,21 +307,31 @@ def test_verified_negative_emitted_end_to_end(seeded):
     assert o.caveat_required is False
     assert o.caveat_kind is None
     assert o.claims_written and o.recipes_written
+    # D-228: the verified negative writes TWO recipe refs — the behavioral
+    # primary plus the inspection fallback secondary.
+    assert len(o.recipes_written) == 2
 
     rows = _query()
-    assert len(rows["claims"]) == 1 and len(rows["recipes"]) == 1
+    assert len(rows["claims"]) == 1 and len(rows["recipes"]) == 2
     # still the data_behavior prohibition negative — the claim body is identical
     # to a caveated one (Option C: only the marker + caveat posture differ; the
     # violating payload lives in the recipe, never the claim).
     claim = rows["claims"][0]
     assert claim["archetype"] == "data_behavior"
     assert claim["claim_kind"] == "prohibition-claim"
-    # D-110.3: a VERIFIED negative now emits the BEHAVIORAL recipe (the violating
-    # create + expect_rejection), replacing the inspection re-verify — the parser
-    # derived the violation, so we construct + observe it.
-    recipe = rows["recipes"][0]
-    assert recipe["trigger_kind"] == "data-mutation-trigger"
-    assert recipe["recipe_kind"] == "data-recipe"
+    # D-110.3: a VERIFIED negative emits the BEHAVIORAL recipe (the violating
+    # create + expect_rejection) as the PRIMARY. D-228: it ALSO writes the
+    # inspection re-verify as a fallback secondary at priority -10, both under
+    # the one claim (_query orders priority DESC, so primary is first).
+    primary, secondary = rows["recipes"]
+    assert primary["trigger_kind"] == "data-mutation-trigger"
+    assert primary["recipe_kind"] == "data-recipe"
+    assert primary["priority"] == 0
+    assert secondary["trigger_kind"] == "inspection-trigger"
+    assert secondary["recipe_kind"] == "metadata-recipe"
+    assert secondary["priority"] == -10
+    assert primary["claim_test_id"] == secondary["claim_test_id"] \
+        == claim["test_id"]
     # the ledger row is SELF-DESCRIBING (D-101.3): verified posture is stored
     out = rows["outcomes"][0]
     assert out["admissibility_layer"] == "layer_2"

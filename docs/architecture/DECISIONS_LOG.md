@@ -12549,6 +12549,126 @@ Matrix rows: the cross-object residuals from D-210 are closed; the D-208 corpus
 gains both shapes. Remaining D-227 residuals unchanged (async/scheduled effects,
 `precise_trigger`, S1 referenceTo modeling).
 
+### D-228 — Multi-recipe authoring (G-2) + supersession governance (the F3 fold-in)
+
+**Context.** The architecture's central replaceability invariant — one semantic
+claim, N swappable operational realizations — has no real instance: emission picks
+ONE recipe (`_author_negative`: "Replace, not augment (single-recipe; D-110.3)").
+Meanwhile the read side is ALREADY multi-recipe-ready (verified):
+`select_recipe_for_execution` filters by per-recipe env-capability satisfiability
+and orders priority DESC / version_seq DESC / recipe_id ASC; the D-223 gate passes
+on any-eligible-executable; the console approve loop promotes ALL unapproved
+recipes; `change_recipe_priority` + the `recipe_priority_changed` provenance event
+exist. The gap is purely the WRITE side. F3 (from the Tier-0.4 audit, deferred by
+D-226): no deprecate affordance exists, and approving a replacement leaves the
+predecessor grading releases.
+
+**Decision — Part A (multi-recipe write).**
+- `EmissionBundle` gains `secondary_recipes: tuple[SecondaryRecipe, ...] = ()` —
+  a small frozen spec (trigger_kind, recipe_kind, causal_initiation,
+  observation_realization, execution_environment, priority). The bundle's
+  existing fields stay the PRIMARY recipe (priority 0, the column default — all
+  existing rows keep their standing).
+- First instance (start narrow, per the ratified list): a VERIFIED
+  prohibition-claim emits the behavioral recipe (primary, priority 0) AND the
+  caveated APPLIES_TO inspection re-verify as a **fallback secondary, priority
+  −10** — depth diversity per environment: an env advertising only
+  `metadata_api_user` selects the inspection; a full env selects the behavioral.
+  The CLAIM stays Layer-2/uncaveated — the claim's admissibility reflects the
+  STRONGEST emitted realization; the secondary is a weaker realization of the
+  same truth, not a weaker truth.
+- Persister: writes `[primary] + secondaries` under the one claim (same atomic
+  tx); `write_recipe` gains `priority: int = 0` (additive). The same-hash no-op
+  path still mints nothing — existing claims do NOT get backfilled secondaries
+  (logged residual; new corpus claims carry pairs).
+- MR-1 (the excluded matrix row) = the merge gate, offline: 2 recipes persisted
+  under one claim, identity_hash unchanged vs single-recipe, selection picks
+  behavioral on a full env / inspection on a metadata-only env, the D-223 gate
+  passes, approve promotes both.
+
+**Decision — Part B (F3, resolved: explicit affordance, NOT auto-deprecate).**
+The D-226 open fork (auto vs prompt) closes against auto: a "predecessor" is not
+structurally derivable — same requirement + same claim_kind legitimately
+coexist (SQ-205 carries TWO automation-effect claims: the Case_SLA creation and
+the Account stamp), and same-semantics claims dedup to the same test_id anyway
+(identity_hash), so any structural auto-match either misses or mis-fires.
+Supersession is a human judgment; the build gives the human the affordance +
+the context:
+- **Deprecate** on the claim detail page: a modal (the `_modal.html` kit) with a
+  REQUIRED reason textarea → `POST /claims/<id>/deprecate` → console bridge →
+  `coordinator.deprecate_claim(actor="human", reason=…)` (D-ε-1/D-ε-5 satisfied:
+  the reason lands in provenance). Admin/tester/superadmin.
+- **Siblings panel** on claim detail: other current claims sharing a
+  requirement link + claim_kind, with status chips — the predecessor-vs-sibling
+  judgment made visible at the moment of approval/deprecation.
+
+**Slices**: 1 = bundle secondaries + write_recipe priority + persister loop +
+`_author_negative` inspection secondary (+ unit/drift tests); 2 = MR-1
+integration; 3 = F3 deprecate route/modal + siblings panel; 4 = suites + merge.
+Live reach rides the next corpus regeneration (no per-slice org gate).
+
+### D-228.1 — Multi-recipe authoring closed (G-2 + F3) — offline; live reach rides the next corpus regeneration
+
+**What shipped (branch `phase-36-substrate-3-multi-recipe`, 5 commits).**
+- **Slice 1 (b305874)** — the write side: `SecondaryRecipe` + `EmissionBundle.secondary_recipes`;
+  a VERIFIED prohibition negative now mints the caveated APPLIES_TO inspection
+  re-verify as a fallback secondary (priority −10, `metadata_api_user` auth only)
+  alongside the behavioral primary; `write_recipe` gained `priority` (default 0);
+  the persister writes `[primary] + secondaries` under the ONE claim in the same
+  atomic tx. Identity untouched (Option-C pinned by test). Caveated negatives stay
+  single-recipe (their primary IS the inspection). Same-hash no-op mints nothing.
+- **Slice 2 (c1b0c32)** — MR-1 proven offline: approve promotes claim + BOTH
+  recipes; selection returns the behavioral primary on a full env and the
+  inspection secondary on a metadata-only env (the replaceability invariant's
+  first real instance); the D-223 gate passes; dedup keeps the 2-recipe set.
+- **Slice 3 (2460152)** — F3 supersession governance: `deprecate_claim` console
+  bridge (REQUIRED reason → provenance per D-ε-5; claim-only — selection requires
+  an approved claim, so recipes keep their status), `POST /claims/<id>/deprecate`
+  (admin/tester/superadmin) + reason modal, and the siblings panel
+  (same-requirement same-kind current claims with status chips) via
+  `read_claim_siblings`.
+
+**Gate findings (the merge sweep surfaced v1-retirement residue, fixed as
+D-221.4.2):**
+- **11b2ea2** — `primeqa/runs/bulk.py` imported `SuiteTestCase`, deleted at R4
+  (7fd518f): the module was unimportable, 500ing `POST /claims/<id>/run` and the
+  substrate enqueue API (both lazily import `environment_can_bulk_run`).
+  Scheduler/console enqueue paths were unaffected — why live runs kept working.
+  Dead import dropped; `tests/test_run_tests_page.py` re-targeted (4/4 green vs
+  Railway).
+- **059f796** — `test_metadata_s1_validator_parity.py` (5) + one reader test
+  imported `primeqa.intelligence.validator`/`.generation` (deleted at R3);
+  retired — both sides of the parity they proved no longer exist.
+
+**Suites at close**: unit 2524; integration/generation 105 (+1 skip, live eval);
+test_representation unit+integration 1275+377 net; semantic 86;
+execution_engine+interpretation 290; /run page 4/4 (Railway).
+
+**FINDING (pending AK decision) — live sync tests contaminated prod tenant-1.**
+Running the full `tests/integration` tree locally executed the live-marked sync
+suites (`.env` SF creds reach `os.environ` via load_dotenv on import — the skip
+guard never fires) — they ran REAL user-phase syncs against the env-59 org into
+the PROD tenant-1 schema: logical_versions 60–62 minted (junk `sync_run` rows),
+AK's own User entity (`005F900000ATd9AIAT`) re-versioned twice with the CURRENT
+row attributed to a test connected_org, 4 test edges, 4 leaked test
+connected_orgs (incl. one from 2026-05-12 — this leak predates today), and the
+S8 store re-stamped 18 verdicts `evaluated_at_version_seq=62`. Root cause: those
+suites match cleanup by test-name prefix, but the user-phase sync re-versions
+REAL entities (matched globally by sf_id) that no prefix matches — a
+test-isolation bug, not a D-228 artifact. **Restoration plan (needs explicit
+GO — prod row surgery)**: delete the 4 test edges + 2 test User rows; reopen the
+baseline User row (valid_to 60→NULL); delete the 4 leaked orgs' sync_runs +
+change_log/logical_versions 60–62 + org rows; then
+`recompute_tenant_grounding(1)` re-stamps S8 at 59. Until then: max version is
+62 (a junk version) — harmless to runs (claims pin their generation-time
+version; runs read the live org) but new generation would pin 62.
+
+**Residuals**: existing claims do NOT get backfilled secondaries (new corpus
+claims carry pairs at the next regeneration); secondary emission is
+negative-vertical-only (positives/cross-object pairs when a second realization
+exists); the live-suite isolation bug above (quarantine the live tests behind an
+explicit env gate so `pytest tests/integration` can never reach prod).
+
 ---
 
 ---

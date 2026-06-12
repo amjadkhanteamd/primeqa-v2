@@ -1,32 +1,15 @@
-"""Tester-oriented /run page: resolve sprint / suite / ticket selections
-into a pipeline_run the existing executor can consume.
+"""Run-policy gate shared by the run-triggering routes.
 
-The Run Wizard at /runs/new already handles the messy mixed-source
-case. This module is the lean, single-purpose path:
-
-    selection (sprint / suite / ticket keys)
-        -> resolve to list[test_case_id]
-        -> PipelineService.create_run(source_type='test_cases', source_ids=[…])
-        -> pipeline_run row
-        -> redirect to /runs/:id
-
-No new `bulk_runs` table — the existing pipeline_run row IS the bulk run.
-One row wraps N test-case results via RunTestResult, and the Run
-Detail page already has live SSE progress + cancel semantics. We
-reuse it rather than duplicating.
+The v1 selection-resolution pipeline that used to live here (sprint /
+suite / ticket keys -> pipeline_run) was retired with the v1 engine
+(D-221 R2/R4). What remains is the environment run-policy gate
+(`environment_can_bulk_run`) used by POST /claims/<id>/run and the
+substrate enqueue API, plus the four-state readiness constants.
 """
 
 from __future__ import annotations
 
-from typing import Iterable, Optional
-
-from sqlalchemy import text
-from sqlalchemy.orm import Session
-
 from primeqa.core.models import Environment
-from primeqa.test_management.models import (
-    Requirement, SuiteTestCase, TestCase, TestSuite,
-)
 
 
 # ---- Readiness model (four-state) ------------------------------------------
@@ -75,10 +58,6 @@ def environment_can_bulk_run(env: Environment, confirm_production: bool
 
 
 __all__ = [
-    "ticket_keys_to_test_case_ids",
-    "release_to_test_case_ids",
-    "suite_to_test_case_ids",
-    "get_batch_readiness",
     "READY_APPROVED", "READY_DRAFT",
     "READY_GENERATING", "READY_NEEDS_GEN",
     "RUNNABLE_STATES",

@@ -117,7 +117,9 @@ def test_two_intents_two_claims_one_outcome(seeded):
     o = r.outcome
     assert o.outcome_kind == OutcomeKind.DRAFT
     assert len(o.claims_written) == 2
-    assert len(o.recipes_written) == 2
+    # 3 recipes: the config inspection + the verified Lead prohibition's
+    # behavioral primary AND its D-228 inspection fallback secondary.
+    assert len(o.recipes_written) == 3
     assert o.equivalent_existing is None
     # conservative aggregate: config bundle is LAYER_1 -> outcome LAYER_1;
     # neither bundle caveats -> no caveat
@@ -131,7 +133,7 @@ def test_two_intents_two_claims_one_outcome(seeded):
     assert len(rows["claims"]) == 2
     assert {c["claim_kind"] for c in rows["claims"]} == {
         "metadata-relationship-claim", "prohibition-claim"}
-    assert len(rows["recipes"]) == 2
+    assert len(rows["recipes"]) == 3        # D-228: + the prohibition's secondary
     assert len(rows["outcomes"]) == 1
     # the generated_from link landed per claim
     assert len(rows["links"]) == 2
@@ -203,5 +205,5 @@ def test_rerun_dedups_both_claims(seeded):
     assert o2.recipes_written is None
     rows = _query()
     assert len(rows["claims"]) == 2     # still just the originals
-    assert len(rows["recipes"]) == 2
+    assert len(rows["recipes"]) == 3    # D-228 set intact — dedup mints nothing
     assert len(rows["outcomes"]) == 2   # both outcomes on the ledger

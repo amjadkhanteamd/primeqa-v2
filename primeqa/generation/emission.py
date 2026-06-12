@@ -358,12 +358,30 @@ class GroundedLayout:
 # Authored bodies (couriered to the persister)
 # ---------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class SecondaryRecipe:
+    """One ADDITIONAL operational realization of the same claim (D-228) — a
+    weaker/alternative verification the selection layer can fall back to
+    (priority DESC; the primary keeps the column default 0, so a fallback
+    carries a NEGATIVE priority). Same write_recipe discriminator strings +
+    bodies as the bundle's primary."""
+
+    trigger_kind: str
+    recipe_kind: str
+    causal_initiation: object
+    observation_realization: object
+    execution_environment: ExecutionEnvironmentBody
+    priority: int
+
+
 @dataclass
 class EmissionBundle:
     """The substrate-authored S2 bodies for one draft, the discriminator strings
     ``write_claim`` / ``write_recipe`` need, and the registry caveat verdict
     (D-097.3 / D-101.3). Refs do not exist yet — the persister assigns them
-    post-write (D-099)."""
+    post-write (D-099). D-228: ``secondary_recipes`` carries N additional
+    realizations of the SAME claim (the replaceability invariant's write side);
+    the claim's admissibility reflects the STRONGEST realization."""
 
     archetype: str
     claim_kind: str
@@ -384,6 +402,8 @@ class EmissionBundle:
     # Paired with the marker — LAYER_2 <=> caveat dropped (the D-107 invariant).
     caveat_required: bool
     caveat_kind: Optional[CaveatKind]
+    # D-228: additional realizations (fallback depths / alternative shapes).
+    secondary_recipes: tuple = ()
 
 
 # ---------------------------------------------------------------------------
@@ -820,6 +840,26 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
         )
         trigger_kind, recipe_kind = "inspection-trigger", "metadata-recipe"
 
+    # D-228: a VERIFIED negative ALSO carries the caveated inspection
+    # re-verify as a fallback SECONDARY (priority -10) — depth diversity per
+    # environment: an env without data-API capability still verifies
+    # plausibility. The claim's Layer-2 marker reflects the STRONGEST
+    # realization; the secondary is a weaker realization of the same truth.
+    secondaries = ()
+    if verified:
+        s_trigger, s_recipe, s_env = _inspection_recipe(
+            read_entity_type=g.subject.entity_type,
+            read_external_id=g.subject.external_id,
+            capture_field="APPLIES_TO",
+            env_detail=(f"fallback: read {g.subject.external_id} metadata to "
+                        f"verify a validation rule applies (rejection "
+                        f"plausibility — the behavioral recipe is primary)"),
+        )
+        secondaries = (SecondaryRecipe(
+            trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
+            causal_initiation=s_trigger, observation_realization=s_recipe,
+            execution_environment=s_env, priority=-10),)
+
     return EmissionBundle(
         archetype=g.archetype, claim_kind=g.claim_kind,
         asserted_truth=claim, semantic_conditions=conditions,
@@ -832,6 +872,7 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
                              else AdmissibilityLayer.LAYER_1),
         caveat_required=requires_caveat(g.claim_kind, verified=verified),
         caveat_kind=caveat_kind(g.claim_kind, verified=verified),
+        secondary_recipes=secondaries,
     )
 
 

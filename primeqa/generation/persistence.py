@@ -170,6 +170,25 @@ class LedgerPersister:
         outcome.recipes_written = (outcome.recipes_written or []) + [
             RecipeRef(recipe_id=rr.recipe_id, version_seq=rr.version_seq)]
 
+        # D-228: secondary realizations of the SAME claim — each its own recipe
+        # row (fresh recipe_id) under the one claim_test_id, in the SAME atomic
+        # transaction. Identity is untouched (Option-C: recipes are outside the
+        # hash). Only minted on the new-claim path — the same-hash no-op above
+        # returns before reaching here, so an equivalent claim's existing recipe
+        # set is never duplicated.
+        for sec in getattr(emission, "secondary_recipes", ()) or ():
+            sr = self._coordinator.write_recipe(
+                session, actor="s3", recipe_id=None, claim_test_id=cr.test_id,
+                trigger_kind=sec.trigger_kind, recipe_kind=sec.recipe_kind,
+                causal_initiation=sec.causal_initiation,
+                observation_realization=sec.observation_realization,
+                execution_environment=sec.execution_environment,
+                claim_version_seq=cr.version_seq,
+                priority=sec.priority,
+            )
+            outcome.recipes_written = (outcome.recipes_written or []) + [
+                RecipeRef(recipe_id=sr.recipe_id, version_seq=sr.version_seq)]
+
     # -- ledger rows (same Session / same transaction) ----------------------
     def _insert_outcome(self, session: Session, outcome: GenerationOutcome) -> None:
         o = outcome.model_dump(mode="json")

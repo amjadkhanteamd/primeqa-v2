@@ -1,26 +1,13 @@
-"""Tester's /run page + /api/bulk-runs API tests.
+"""Tester's /run page tests (substrate requirement-picker, D-219).
 
-The /run page is a simplified wrapper over the existing pipeline-run
-infrastructure — one click produces one pipeline_run row. The Run
-Wizard at /runs/new is the richer mixed-source path; these tests
-cover the new focused page + API only.
+The v1 four-mode /run page + /api/bulk-runs API these tests originally
+covered were retired with the v1 engine (D-221 R2); the /run page was
+rebuilt as the substrate requirement-picker (D-219). What remains:
 
-Covers:
   1. /run renders for tester (has run_sprint)
   2. /run redirects for developer (no bulk perms)
-  3. /run hides tabs the user doesn't have perm for
-  4. POST /api/bulk-runs rejects unknown run_type
-  5. POST /api/bulk-runs rejects missing environment_id
-  6. POST /api/bulk-runs 404 on unknown environment
-  7. POST /api/bulk-runs requires bulk_run perm for sprint
-  8. POST /api/bulk-runs blocks when env.allow_bulk_run=false
-  9. POST /api/bulk-runs blocks production without confirm
- 10. POST /api/bulk-runs fails with NO_TESTS on unknown ticket keys
- 11. POST /api/bulk-runs (sprint) creates a pipeline_run on valid input
- 12. GET  /api/bulk-runs/:id/status returns per-ticket payload
- 13. POST /api/bulk-runs/:id/cancel sets status = cancelled
- 14. POST /api/bulk-runs/:id/cancel rejects non-owner non-admin
- 15. Navigation + landing page updated to /run (tester lands there)
+  3. /run excludes production envs (sandbox-only picker)
+  4. Navigation + landing page updated to /run (tester lands there)
 """
 
 import os
@@ -40,11 +27,6 @@ from primeqa.core.permissions import (
     BASE_PERMISSION_SETS, PermissionSet, UserPermissionSet,
 )
 from primeqa.db import SessionLocal
-from primeqa.runs.bulk import (
-    environment_can_bulk_run,
-    ticket_keys_to_test_case_ids,
-    suite_to_test_case_ids,
-)
 
 TENANT_ID = 1
 client = app.test_client()

@@ -661,6 +661,7 @@ class SemanticTransactionCoordinator:
         observation_realization: BodyBase,
         execution_environment: BodyBase,
         claim_version_seq: Optional[int] = None,
+        priority: int = 0,
     ) -> WriteRecipeResult:
         """Write a new recipe version per SPEC §4.7.6.
 
@@ -949,6 +950,7 @@ class SemanticTransactionCoordinator:
                 execution_environment.model_dump(mode="json")
             ),
             status=new_status,
+            priority=priority,
         )
         session.add(new_recipe)
         session.flush()

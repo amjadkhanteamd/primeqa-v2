@@ -234,3 +234,57 @@ def test_approve_claim_never_resurrects_deprecated_recipe(session):
     statuses = {r.recipe_id: r.status
                 for r in coord.list_active_recipes(session, test_id)}
     assert statuses[recipe.recipe_id] == "deprecated"
+
+
+# --- D-228 (F3): the deprecate bridge — explicit supersession governance ------
+
+def test_deprecate_claim_records_reason_and_blocks_selection(session):
+    from sqlalchemy import text
+    from primeqa.intelligence.s4_execution_console import _deprecate_claim
+    coord = SemanticTransactionCoordinator()
+    test_id = _seed_draft_claim_with_recipe(session, coord)
+    _approve_claim(session, test_id)
+    assert coord.select_recipe_for_execution(
+        session, test_id, available_environment=_MIN_AVAILABLE_ENV) is not None
+
+    out = _deprecate_claim(session, test_id,
+                           "superseded by the corrected staged-trigger claim")
+    assert out == {"ok": True, "status": "deprecated", "already": False}
+
+    # the claim no longer grades or runs (selection requires an approved claim)
+    assert coord.get_latest_claim(session, test_id).status == "deprecated"
+    assert coord.select_recipe_for_execution(
+        session, test_id, available_environment=_MIN_AVAILABLE_ENV) is None
+    # the recipes keep their own status — claim-only deprecation
+    assert {r.status for r in coord.list_active_recipes(session, test_id)} \
+        == {"approved"}
+    # the reason landed in provenance (D-ε-5), not on the claim row
+    reason = session.execute(text(
+        "SELECT event_data->>'reason' FROM test_provenance "
+        "WHERE claim_test_id = CAST(:t AS uuid) "
+        "AND event_kind = 'claim_deprecated'"), {"t": str(test_id)}).scalar()
+    assert reason == "superseded by the corrected staged-trigger claim"
+
+
+def test_deprecate_claim_requires_reason(session):
+    from primeqa.intelligence.s4_execution_console import _deprecate_claim
+    coord = SemanticTransactionCoordinator()
+    test_id = _seed_draft_claim_with_recipe(session, coord)
+    for bad in ("", "   ", None):
+        out = _deprecate_claim(session, test_id, bad)
+        assert out["ok"] is False and "reason" in out["error"].lower()
+    assert coord.get_latest_claim(session, test_id).status == "draft"
+
+
+def test_deprecate_claim_idempotent(session):
+    from primeqa.intelligence.s4_execution_console import _deprecate_claim
+    coord = SemanticTransactionCoordinator()
+    test_id = _seed_draft_claim_with_recipe(session, coord)
+    assert _deprecate_claim(session, test_id, "first reason")["already"] is False
+    out = _deprecate_claim(session, test_id, "second reason")
+    assert out == {"ok": True, "status": "deprecated", "already": True}
+
+
+def test_deprecate_claim_best_effort_bad_tenant():
+    from primeqa.intelligence.s4_execution_console import deprecate_claim
+    assert deprecate_claim(-1, str(uuid4()), "a reason")["ok"] is False
