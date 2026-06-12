@@ -12516,6 +12516,39 @@ not stale values — same-transaction flows are immediately visible; AC2's
 time-based path stays out of fixture scope); structured trigger entity on the
 claim body (`precise_trigger`); S1 referenceTo target modeling.
 
+### D-227.6 — Cross-object emission CLOSED (live-proven) + the D-227.5 provisioning fix
+
+**Exit gate met 2026-06-12.** SQ-205 regenerated at seq 57 under generation@v8
+(s3 job 28); the LLM proposed both new hint shapes correctly; AK approved the four
+drafts; the auto-enqueued runs:
+- `3f6466bd` (child-of-trigger automation-effect, Case→Case_SLA__c) — **passed,
+  `automation_triggered`** (the second fixture Flow's first live exercise).
+- `be56416d` (parent-stamp, Escalation→Account.Last_Escalation_Date__c, not_null)
+  — first run ERRORED honestly (`UnfillableWorld: Escalation__c.Case__c`), exposing
+  a latent F6.2 bug: `construct_world`'s provisioned-parent create POSTed
+  S1-QUALIFIED keys (`Case.IsEscalated`) which Salesforce rejects — mis-read as
+  unfillable. Latent since F6.2 (every prior live parent needed zero scalar
+  padding; the unit fixtures used bare names so it stayed invisible).
+  **D-227.5 fix** (commit 2dc8f16, direct-to-main): `_sf_field`/`_sf_fields` move
+  to `world.py`, the parent create bare-ifies like the top-level path; regression
+  test uses production-shaped qualified names. Re-run `1878a105` — **passed,
+  `automation_triggered`** (Account created → Escalation created with the
+  provisioned Case parent → Flow stamped the date → not_null held).
+- `e87c2666` (cross-object trigger state-transition, Escalation→Case.Status) —
+  **failed, `state_not_transitioned`: the PREDICTED honest red.** The mechanism is
+  fully live-proven: the 2-create chain ran, the Flow fired, the read observed
+  `Status="Escalated"` — the claim asserts the requirement's literal
+  "In Escalation", which the fixture deliberately mapped onto the org's standard
+  "Escalated" (fixture README deviation 2). The engine surfaced the
+  requirement-vs-org mismatch exactly as designed. **AK's decision**: amend
+  SQ-205's text to "Escalated" + regenerate, or keep the red as the recorded
+  finding.
+- `db2714b0` (existence) — passed.
+
+Matrix rows: the cross-object residuals from D-210 are closed; the D-208 corpus
+gains both shapes. Remaining D-227 residuals unchanged (async/scheduled effects,
+`precise_trigger`, S1 referenceTo modeling).
+
 ---
 
 ---
