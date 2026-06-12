@@ -57,6 +57,11 @@ class PlannedRead:
     target_entity: LogicalRef
     fields_to_capture: tuple[str, ...]
     kind: Literal["read"] = "read"
+    # D-224: the captured edge's FAR endpoint + capability qualifier, when the
+    # realization needs them to scope (GRANTS_*_ACCESS / INCLUDES_FIELD).
+    # None on every pre-D-224 shape (single-endpoint edge-reads + self-reads).
+    edge_target: Optional[LogicalRef] = None
+    edge_qualifier: Optional[str] = None
 
 
 @dataclass(frozen=True)

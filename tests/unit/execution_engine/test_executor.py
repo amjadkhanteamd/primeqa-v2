@@ -322,3 +322,115 @@ def test_unresolvable_subject_ref_fails_loud():
     with pytest.raises(AssertionResolutionError, match="ghost"):
         execute_metadata_inspection(plan, client=_StubClient(rows=[{"Id": "1"}]),
                                     environment_id=_ENV_ID)
+
+
+# ---------------------------------------------------------------------------
+# D-224 — data-API dispatch + the INCLUDES_FIELD membership probe
+# ---------------------------------------------------------------------------
+
+from primeqa.generation.emission import GroundedCapability, GroundedLayout
+
+
+class _DualStubClient(_StubClient):
+    """Adds the D-224 query_data endpoint + per-call scripted tooling rows."""
+
+    def __init__(self, *, data_rows=None, tooling_script=None):
+        super().__init__(rows=[])
+        self._data_rows = list(data_rows or [])
+        self._tooling_script = list(tooling_script or [])
+        self.data_queries: list[str] = []
+
+    def query(self, soql: str) -> list[dict]:
+        self.queries.append(soql)
+        if self._tooling_script:
+            return self._tooling_script.pop(0)
+        return []
+
+    def query_data(self, soql: str) -> list[dict]:
+        self.data_queries.append(soql)
+        return list(self._data_rows)
+
+
+def _plan_from(bundle):
+    recipe = RecipeRead(
+        recipe_id=uuid4(), version_seq=4, valid_from=_NOW, valid_to=None,
+        claim_test_id=uuid4(), claim_version_seq=None,
+        trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
+        causal_initiation=bundle.causal_initiation,
+        observation_realization=bundle.observation_realization,
+        execution_environment=bundle.execution_environment,
+        priority=0, status="generated_unapproved",
+        created_at=_NOW, updated_at=_NOW)
+    return build_metadata_inspection_plan(recipe)
+
+
+def _capability_plan():
+    return _plan_from(author_emission(GroundedCapability(
+        archetype="permission", claim_kind="capability-claim", version_seq=7,
+        granting_subject=_Endpoint(entity_id=uuid4(), entity_type="Profile",
+                                   external_id="Admin"),
+        target=_Endpoint(entity_id=uuid4(), entity_type="Field",
+                         external_id="Account.AnnualRevenue"),
+        granted_capability="edit", grant_type="field",
+        requirement_excerpt="Admin can edit AnnualRevenue")))
+
+
+def _layout_plan():
+    return _plan_from(author_emission(GroundedLayout(
+        archetype="ui", claim_kind="layout-claim", version_seq=7,
+        layout=_Endpoint(entity_id=uuid4(), entity_type="Layout",
+                         external_id="Account-Account Layout"),
+        field=_Endpoint(entity_id=uuid4(), entity_type="Field",
+                        external_id="Account.AnnualRevenue"),
+        requirement_excerpt="AnnualRevenue is on the Account layout")))
+
+
+def test_capability_run_passes_when_flag_true():
+    client = _DualStubClient(data_rows=[{"PermissionsEdit": True}])
+    ev = execute_metadata_inspection(_capability_plan(), client=client,
+                                     environment_id=_ENV_ID)
+    assert ev.outcome == "passed"
+    assert client.data_queries and "FieldPermissions" in client.data_queries[0]
+    assert client.queries == []          # nothing hit the tooling endpoint
+
+
+def test_capability_run_fails_when_flag_false_or_row_absent():
+    for rows in ([{"PermissionsEdit": False}], []):
+        client = _DualStubClient(data_rows=rows)
+        ev = execute_metadata_inspection(_capability_plan(), client=client,
+                                         environment_id=_ENV_ID)
+        assert ev.outcome == "failed"
+
+
+def test_layout_probe_passes_when_field_placed():
+    meta = {"layoutSections": [{"layoutRows": [{"layoutItems": [
+        {"layoutComponents": [{"type": "Field", "value": "AnnualRevenue"}]}]}]}]}
+    client = _DualStubClient(tooling_script=[
+        [{"Id": "00h1", "EntityDefinitionId": "Account"}],
+        [{"Metadata": meta}],
+    ])
+    ev = execute_metadata_inspection(_layout_plan(), client=client,
+                                     environment_id=_ENV_ID)
+    assert ev.outcome == "passed"
+    assert len(client.queries) == 2
+    assert "SELECT Metadata FROM Layout" in client.queries[1]
+
+
+def test_layout_probe_fails_when_field_absent():
+    meta = {"layoutSections": [{"layoutRows": [{"layoutItems": [
+        {"layoutComponents": [{"type": "Field", "value": "Industry"}]}]}]}]}
+    client = _DualStubClient(tooling_script=[
+        [{"Id": "00h1", "EntityDefinitionId": "Account"}],
+        [{"Metadata": meta}],
+    ])
+    ev = execute_metadata_inspection(_layout_plan(), client=client,
+                                     environment_id=_ENV_ID)
+    assert ev.outcome == "failed"
+
+
+def test_layout_probe_no_matching_layout_is_honest_failed():
+    client = _DualStubClient(tooling_script=[[]])
+    ev = execute_metadata_inspection(_layout_plan(), client=client,
+                                     environment_id=_ENV_ID)
+    assert ev.outcome == "failed"
+    assert len(client.queries) == 1      # never fetched Metadata

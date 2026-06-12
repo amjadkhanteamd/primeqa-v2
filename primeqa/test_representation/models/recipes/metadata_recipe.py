@@ -13,7 +13,7 @@ recipes that try to deploy fail validation.
 """
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -37,11 +37,22 @@ class _StepBase(BaseModel):
 
 class ReadMetadataStep(_StepBase):
     """Fetch one or more fields from the live metadata of an
-    entity."""
+    entity.
+
+    D-224: when the capture is an S1 edge whose realization needs the
+    edge's FAR endpoint to scope correctly (``GRANTS_*_ACCESS``,
+    ``INCLUDES_FIELD``), the step carries it as ``edge_target`` plus an
+    optional ``edge_qualifier`` (the granted capability, e.g. ``"edit"``).
+    The operational realization is self-contained — S4 never re-derives
+    scope from the claim body at run time. Both default to ``None`` so
+    pre-D-224 persisted recipes rehydrate unchanged.
+    """
 
     kind: Literal["read_metadata"] = "read_metadata"
     target_entity: OperationalRef
     fields_to_capture: list[str] = []
+    edge_target: Optional[OperationalRef] = None
+    edge_qualifier: Optional[str] = None
 
 
 class DeployStep(_StepBase):

@@ -36,7 +36,7 @@ from primeqa.execution_engine.plan import PlannedRead
 
 @dataclass(frozen=True)
 class ToolingQuery:
-    """A translated Tooling read: the SOQL string **plus the structured filter
+    """A translated SOQL read: the SOQL string **plus the structured filter
     it encodes**, so evidence records *what was asked* (object + edge), not just
     an opaque string — the basis for S6 to later tell an absent subject from a
     present-but-unconstrained one."""
@@ -50,6 +50,29 @@ class ToolingQuery:
     capture_column: Optional[str] = None  # the SELECTed column whose value a
                                 # value-predicate (equals/is_null) reads; None for
                                 # existence/edge reads (exists ignores it). D-128.
+    api: str = "tooling"        # D-224: which query endpoint runs it —
+                                # "tooling" (/tooling/query) or "data"
+                                # (/query; ObjectPermissions/FieldPermissions
+                                # are Data-API sObjects, not Tooling).
+
+
+@dataclass(frozen=True)
+class LayoutMembershipProbe:
+    """The INCLUDES_FIELD realization (D-224) — NOT a single SOQL: resolve the
+    layout's Id (Tooling SOQL over ``Layout``), fetch its ``Metadata`` blob
+    (single-row Tooling read), and walk ``layoutSections→layoutRows→
+    layoutItems→layoutComponents`` for the field. The executor runs it; the
+    recipe's ``exists`` assert evaluates over the synthesized row set
+    (``[{"field": …}]`` when placed, ``[]`` when not)."""
+
+    layout_external_id: str     # the S1 Layout name, "Object-Layout Name"
+    object_api: str             # parsed prefix ("Account")
+    layout_name: str            # parsed remainder ("Account Layout")
+    field_api: str              # the BARE field name to find ("AnnualRevenue")
+    edge: str = "INCLUDES_FIELD"
+    sobject: str = "Layout"
+    subject_entity_type: str = "Layout"
+    capture_column: Optional[str] = None
 
 
 def _applies_to_validation_rule(read: PlannedRead) -> ToolingQuery:
@@ -74,9 +97,132 @@ def _applies_to_validation_rule(read: PlannedRead) -> ToolingQuery:
     )
 
 
+# D-224: capability → permission-flag column maps. The recipe asserts
+# equals-true over the flag (capture-column semantics, the D-128 pattern) —
+# a permissions row EXISTS even when every flag is false, so presence alone
+# verifies nothing. FieldPermissions carries only read/edit.
+_OBJECT_GRANT_COLUMNS = {
+    "create": "PermissionsCreate",
+    "read": "PermissionsRead",
+    "edit": "PermissionsEdit",
+    "delete": "PermissionsDelete",
+    "view_all": "PermissionsViewAllRecords",
+    "modify_all": "PermissionsModifyAllRecords",
+}
+_FIELD_GRANT_COLUMNS = {
+    "read": "PermissionsRead",
+    "edit": "PermissionsEdit",
+}
+
+
+def _grantee_scope(read: PlannedRead) -> str:
+    """The WHERE fragment scoping ObjectPermissions/FieldPermissions to the
+    granting subject. Profiles surface through their owning PermissionSet row
+    (``Parent.IsOwnedByProfile`` + ``Parent.Profile.Name``); PermissionSets
+    scope by their own API name."""
+    granter = read.target_entity
+    name = _soql_literal(granter.external_id)
+    if granter.entity_type == "Profile":
+        return ("Parent.IsOwnedByProfile = true "
+                f"AND Parent.Profile.Name = '{name}'")
+    return f"Parent.IsOwnedByProfile = false AND Parent.Name = '{name}'"
+
+
+def _require_edge_scope(read: PlannedRead, edge: str, *, qualifier: bool):
+    """D-224 reads need the far endpoint (+ qualifier for grants); a read
+    missing them is a pre-D-224 recipe — fail loud (the D-223 gate keeps such
+    claims at the enqueue door; regenerating the claim re-authors the scope)."""
+    if read.edge_target is None or (qualifier and read.edge_qualifier is None):
+        raise UnsupportedEdgeError(
+            f"{edge} read {read.step_id!r} carries no edge scope "
+            f"(edge_target{'/edge_qualifier' if qualifier else ''}) — a "
+            f"pre-D-224 recipe; regenerate the claim to re-author it"
+        )
+
+
+def _grants_object_access(read: PlannedRead) -> ToolingQuery:
+    """``GRANTS_OBJECT_ACCESS`` (Profile/PermissionSet → Object): read the
+    grantee's ObjectPermissions row for the target object and capture the
+    capability flag. Data-API SOQL (Tooling does not expose the table)."""
+    _require_edge_scope(read, "GRANTS_OBJECT_ACCESS", qualifier=True)
+    column = _OBJECT_GRANT_COLUMNS.get(read.edge_qualifier)
+    if column is None:
+        raise UnsupportedEdgeError(
+            f"GRANTS_OBJECT_ACCESS has no permission column for capability "
+            f"{read.edge_qualifier!r} (mapped: {sorted(_OBJECT_GRANT_COLUMNS)})"
+        )
+    obj = read.edge_target.external_id
+    soql = (
+        f"SELECT {column} FROM ObjectPermissions "
+        f"WHERE {_grantee_scope(read)} "
+        f"AND SobjectType = '{_soql_literal(obj)}'"
+    )
+    return ToolingQuery(
+        soql=soql, sobject="ObjectPermissions", edge="GRANTS_OBJECT_ACCESS",
+        subject_entity_type=read.target_entity.entity_type,
+        subject_external_id=read.target_entity.external_id,
+        capture_column=column, api="data",
+    )
+
+
+def _grants_field_access(read: PlannedRead) -> ToolingQuery:
+    """``GRANTS_FIELD_ACCESS`` (Profile/PermissionSet → Field): same shape over
+    FieldPermissions; ``Field`` is the qualified ``Object.Field`` name."""
+    _require_edge_scope(read, "GRANTS_FIELD_ACCESS", qualifier=True)
+    column = _FIELD_GRANT_COLUMNS.get(read.edge_qualifier)
+    if column is None:
+        raise UnsupportedEdgeError(
+            f"GRANTS_FIELD_ACCESS has no permission column for capability "
+            f"{read.edge_qualifier!r} (mapped: {sorted(_FIELD_GRANT_COLUMNS)}; "
+            f"FieldPermissions carries only read/edit)"
+        )
+    field = read.edge_target.external_id
+    if "." not in field:
+        raise UnsupportedEdgeError(
+            f"GRANTS_FIELD_ACCESS needs a qualified 'Object.Field' "
+            f"edge_target; got {field!r}"
+        )
+    obj = field.partition(".")[0]
+    soql = (
+        f"SELECT {column} FROM FieldPermissions "
+        f"WHERE {_grantee_scope(read)} "
+        f"AND SobjectType = '{_soql_literal(obj)}' "
+        f"AND Field = '{_soql_literal(field)}'"
+    )
+    return ToolingQuery(
+        soql=soql, sobject="FieldPermissions", edge="GRANTS_FIELD_ACCESS",
+        subject_entity_type=read.target_entity.entity_type,
+        subject_external_id=read.target_entity.external_id,
+        capture_column=column, api="data",
+    )
+
+
+def _includes_field(read: PlannedRead) -> LayoutMembershipProbe:
+    """``INCLUDES_FIELD`` (Layout → Field): a membership probe, not a SOQL —
+    the executor resolves the layout Id, fetches its Metadata blob, and walks
+    the layout items for the field (see :class:`LayoutMembershipProbe`)."""
+    _require_edge_scope(read, "INCLUDES_FIELD", qualifier=False)
+    layout_ext = read.target_entity.external_id
+    obj, sep, layout_name = layout_ext.partition("-")
+    if not sep or not obj or not layout_name:
+        raise UnsupportedEdgeError(
+            f"INCLUDES_FIELD needs the S1 'Object-Layout Name' layout "
+            f"external_id; got {layout_ext!r}"
+        )
+    field_ext = read.edge_target.external_id
+    field_api = field_ext.partition(".")[2] or field_ext
+    return LayoutMembershipProbe(
+        layout_external_id=layout_ext, object_api=obj,
+        layout_name=layout_name, field_api=field_api,
+    )
+
+
 # Finite, edge-keyed registry. One entry per TIER_1 edge this vertical realizes.
 _EDGE_TRANSLATORS = {
     "APPLIES_TO": _applies_to_validation_rule,
+    "GRANTS_OBJECT_ACCESS": _grants_object_access,
+    "GRANTS_FIELD_ACCESS": _grants_field_access,
+    "INCLUDES_FIELD": _includes_field,
 }
 
 # The capture that denotes an existence-claim self-read: the subject's own
@@ -169,8 +315,10 @@ _SELF_READ_BUILDERS = {
 }
 
 
-def translate_read(read: PlannedRead) -> ToolingQuery:
-    """Translate one :class:`PlannedRead` into a scoped Tooling query.
+def translate_read(read: PlannedRead) -> "ToolingQuery | LayoutMembershipProbe":
+    """Translate one :class:`PlannedRead` into a scoped read realization —
+    a :class:`ToolingQuery` (tooling or data SOQL) or, for ``INCLUDES_FIELD``,
+    a :class:`LayoutMembershipProbe` (D-224).
 
     The read's ``fields_to_capture`` names the single S1 surface to verify; the
     translator dispatches on its **read shape** (D-127.A):

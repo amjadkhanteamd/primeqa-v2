@@ -100,14 +100,15 @@ _SHAPES = {
         effect_value="In Escalation"),
 }
 
-# The decided verdict per pair — the D-223 contract. capability + layout stay
-# False until D-224 lands their translators.
+# The decided verdict per pair — the D-223 contract. capability + layout
+# flipped True by D-224 (the GRANTS_*_ACCESS data-SOQL translators + the
+# INCLUDES_FIELD membership probe).
 EXPECTED_EXECUTABILITY = {
     ("configuration", "metadata-relationship-claim"): True,
     ("configuration", "existence-claim"): True,
     ("configuration", "property-claim"): True,
-    ("permission", "capability-claim"): False,
-    ("ui", "layout-claim"): False,
+    ("permission", "capability-claim"): True,
+    ("ui", "layout-claim"): True,
     ("data_behavior", "prohibition-claim"): True,
     ("data_behavior", "value-claim"): True,
     ("data_behavior", "state-transition-claim"): True,
@@ -159,11 +160,18 @@ def test_every_emittable_pair_has_the_decided_executability():
 # check_recipe_executability specifics
 # ---------------------------------------------------------------------------
 
-def test_capability_recipe_fails_on_the_grants_capture():
+def test_pre_d224_capability_recipe_without_scope_is_gated():
+    # A PERSISTED pre-D-224 capability recipe carries no edge scope — the
+    # translator refuses it (regenerate the claim) and the gate keeps it at
+    # the door rather than letting it die at run time.
     bundle = author_emission(_SHAPES[("permission", "capability-claim")]())
+    read = bundle.observation_realization.steps[0]
+    stripped = read.model_copy(update={"edge_target": None,
+                                       "edge_qualifier": None})
+    bundle.observation_realization.steps[0] = stripped
     with pytest.raises(ExecutionEngineError) as ei:
         check_recipe_executability(_recipe_read(bundle))
-    assert "GRANTS_FIELD_ACCESS" in str(ei.value)
+    assert "pre-D-224" in str(ei.value)
 
 
 def test_is_required_property_recipe_is_gated():
@@ -202,8 +210,14 @@ def _executable_recipe(status="approved"):
 
 
 def _unexecutable_recipe(status="approved"):
-    bundle = author_emission(_SHAPES[("ui", "layout-claim")]())
-    return _recipe_read(bundle, status=status)
+    # The is_required property recipe — D-128 refused a faithful Tooling
+    # column, so it authors but can never translate (the standing
+    # unexecutable specimen now that D-224 made capability/layout runnable).
+    g = GroundedProperty(
+        archetype="configuration", claim_kind="property-claim", version_seq=1,
+        subject=_ep("Field", "Account.Industry"), property_name="is_required",
+        expected_value=True, requirement_excerpt="x")
+    return _recipe_read(author_emission(g), status=status)
 
 
 def test_gate_passes_when_one_eligible_recipe_is_executable(monkeypatch):
@@ -218,7 +232,7 @@ def test_gate_refuses_when_all_eligible_recipes_fail(monkeypatch):
         gate_enqueue(None, tid)
     assert ei.value.test_id == tid
     assert len(ei.value.reasons) == 2
-    assert "INCLUDES_FIELD" in str(ei.value)
+    assert "is_required" in str(ei.value)
 
 
 def test_gate_ignores_status_ineligible_recipes(monkeypatch):
