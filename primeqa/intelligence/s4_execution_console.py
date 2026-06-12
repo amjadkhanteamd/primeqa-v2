@@ -242,17 +242,32 @@ def list_runs(tenant_id: int, *, page: int = 1, per_page: int = 20) -> dict:
 def _approve_claim(session, test_id) -> dict:
     """Pure: promote the current claim version to ``approved`` and its
     unapproved current recipes to ``approved`` on an open session (humans-only
-    per D-ε-1). Idempotent — an already-approved claim/recipe is a no-op."""
+    per D-ε-1). Idempotent — an already-approved claim/recipe is a no-op.
+
+    D-226: a DEPRECATED claim is refused — deprecation required an explicit
+    human reason (D-ε-5); the generic Approve button must not silently undo it
+    (and auto-enqueue runs of a superseded recipe). Reinstatement stays a
+    deliberate coordinator capability (``promote_claim_to_approved`` keeps the
+    documented deprecated→approved transition for explicit callers). The
+    recipe loop likewise never resurrects a deprecated recipe."""
     from primeqa.test_representation import SemanticTransactionCoordinator
     coord = SemanticTransactionCoordinator()
     tid = UUID(str(test_id))
     claim = coord.get_latest_claim(session, tid)
     if claim is None:
         return {"ok": False, "error": "No current claim for this id."}
+    if claim.status == "deprecated":
+        return {"ok": False,
+                "error": ("This claim is deprecated (a recorded human "
+                          "decision). It cannot be re-approved from here — "
+                          "regenerate the requirement for a fresh claim, or "
+                          "reinstate it deliberately via the coordinator.")}
     coord.promote_claim_to_approved(
         session, actor="human", test_id=tid, version_seq=claim.version_seq)
     promoted = 0
     for r in coord.list_active_recipes(session, tid):
+        if r.status == "deprecated":
+            continue                    # D-226: never silently un-deprecate
         if r.status not in ("active", "approved"):
             coord.promote_recipe_to_approved(
                 session, actor="human", recipe_id=r.recipe_id, version_seq=r.version_seq)
