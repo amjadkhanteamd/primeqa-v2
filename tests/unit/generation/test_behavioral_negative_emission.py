@@ -262,3 +262,74 @@ def test_update_recipe_round_trips_through_registry():
         dumped["kind"], dumped["body_schema_version"]).model_validate(dumped)
     assert restored.steps[1].kind == "update"
     assert restored.steps[1].expect_rejection.error_code == _VR_CODE
+
+
+# ---------------------------------------------------------------------------
+# D-228 — multi-recipe authoring: a verified negative ALSO carries the
+# caveated inspection re-verify as a fallback secondary (priority -10)
+# ---------------------------------------------------------------------------
+
+def test_verified_create_rejected_carries_inspection_secondary():
+    bundle = author_emission(_grounded(formulas=_DERIVABLE))
+    assert bundle.recipe_kind == "data-recipe"          # primary is behavioral
+    assert len(bundle.secondary_recipes) == 1
+    sec = bundle.secondary_recipes[0]
+    assert sec.trigger_kind == "inspection-trigger"
+    assert sec.recipe_kind == "metadata-recipe"
+    assert sec.priority == -10
+    assert isinstance(sec.causal_initiation, InspectionTriggerBody)
+    assert isinstance(sec.observation_realization, MetadataRecipeBody)
+    # the fallback assumes metadata-API auth only — that's what makes it
+    # selectable on an env where the behavioral primary cannot run.
+    assert [a.auth_kind for a in sec.execution_environment.auth_assumptions] \
+        == ["metadata_api_user"]
+
+
+def test_verified_update_rejected_carries_inspection_secondary():
+    bundle = author_emission(_grounded_op("modify_record", _DERIVABLE_CMP))
+    assert bundle.causal_initiation.operation == "update"
+    assert len(bundle.secondary_recipes) == 1
+    assert bundle.secondary_recipes[0].recipe_kind == "metadata-recipe"
+
+
+def test_caveated_negative_has_no_secondaries():
+    # The caveated primary IS the inspection — a secondary would duplicate it.
+    bundle = author_emission(_grounded(formulas=_NOT_DERIVABLE))
+    assert bundle.recipe_kind == "metadata-recipe"
+    assert bundle.secondary_recipes == ()
+
+
+def test_secondary_round_trips_through_registry():
+    from primeqa.test_representation.models.registry import get_body_model
+    bundle = author_emission(_grounded(formulas=_DERIVABLE))
+    sec = bundle.secondary_recipes[0]
+    dumped = sec.observation_realization.model_dump(mode="json")
+    restored = get_body_model(
+        dumped["kind"], dumped["body_schema_version"]).model_validate(dumped)
+    assert restored.steps[0].fields_to_capture == ["APPLIES_TO"]
+
+
+def test_secondary_does_not_perturb_claim_identity():
+    # Option-C invariant extended to D-228: secondaries are operational layers;
+    # the claim body + identity_hash are byte-identical with or without them.
+    eid = uuid4()
+
+    def _g(formulas):
+        return GroundedNegative(
+            archetype="data_behavior", claim_kind="prohibition-claim",
+            operation_hint="modify_record", version_seq=7,
+            subject=_Endpoint(entity_id=eid, entity_type="Object",
+                              external_id="Lead"),
+            requirement_excerpt="x", vr_formulas=formulas)
+
+    b_with = author_emission(_g(_DERIVABLE))         # 1 secondary
+    b_without = author_emission(_g(_NOT_DERIVABLE))  # 0 secondaries
+    assert len(b_with.secondary_recipes) == 1
+    assert b_without.secondary_recipes == ()
+    h_with = compute_identity_hash(
+        b_with.archetype, b_with.claim_kind,
+        b_with.asserted_truth, b_with.semantic_conditions)
+    h_without = compute_identity_hash(
+        b_without.archetype, b_without.claim_kind,
+        b_without.asserted_truth, b_without.semantic_conditions)
+    assert h_with == h_without

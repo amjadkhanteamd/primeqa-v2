@@ -159,9 +159,11 @@ class TestCoordinatorSignatures:
     def test_write_recipe_parameter_names(self) -> None:
         """The D-β.1 skeleton pinned the parameter list; D-β.3
         added one optional kwarg (``claim_version_seq``) per SPEC
-        §6.4 for the recipe-to-claim version-pinning case. The
-        prior-pinned parameters MUST remain in the same positions
-        — only the new optional kwarg appends to the end."""
+        §6.4 for the recipe-to-claim version-pinning case; D-228
+        added ``priority`` so S3 can mint fallback secondaries
+        below the primary. The prior-pinned parameters MUST remain
+        in the same positions — new optional kwargs append to the
+        end."""
         sig = inspect.signature(
             SemanticTransactionCoordinator.write_recipe,
         )
@@ -174,6 +176,7 @@ class TestCoordinatorSignatures:
             "causal_initiation", "observation_realization",
             "execution_environment",
             "claim_version_seq",  # added in D-β.3
+            "priority",           # added in D-228
         ]
 
     def test_write_recipe_keyword_only_after_session(self) -> None:
