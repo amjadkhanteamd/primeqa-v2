@@ -12320,6 +12320,38 @@ metadata-relationship / existence / property(length·precision·scale) / prohibi
 value / state-transition / automation-effect → executable; capability + layout →
 unexecutable (no `GRANTS_*_ACCESS` / `INCLUDES_FIELD` translators until D-224).
 
+### D-225 — FLS/access-structured error surfacing (Tier-1 1.4; the CF-1 shape)
+
+**Context.** Salesforce access denials (`INSUFFICIENT_FIELD_ACCESS`,
+`INSUFFICIENT_ACCESS_OR_READONLY`, `INSUFFICIENT_ACCESS_ON_CROSS_REFERENCE_ENTITY`,
+`INVALID_FIELD_FOR_INSERT_UPDATE`) already land in `rejection_body` and already
+attribute to `cause_kind=platform_constraint` — but generically: the cause detail
+listed raw codes, the blocked FIELD names stayed buried in the unparsed body, and
+the run-detail UI showed a JSON wall. The May-24 triage recommendation, re-targeted
+at the substrate engine.
+
+**Decision.**
+- **Evidence** (`execution_engine/evidence.py` + `data_executor.py`):
+  Create/Update/Delete attempt evidence gains `error_fields: tuple = ()` — every
+  field named across the body's error entries (`_named_fields`: deduped,
+  order-preserving). Additive with a default; `dataclasses.asdict` persistence is
+  kind-agnostic, old JSONB rows simply lack the key. No migration.
+- **Attribution** (`interpretation/attribution.py`): an explicit
+  `_ACCESS_ERROR_CODES` frozenset; when a rejection's codes intersect it,
+  `_attribute_unasserted` emits `platform_constraint` with a DELIBERATE detail —
+  "access denied (CODES) on field(s) F — the integration user lacks the
+  permission…". **`cause_kind` vocabulary unchanged** (no migration, D-116
+  clustering unaffected); finer-grained access cause_kinds stay a logged
+  refinement for when a consumer needs to query them apart.
+- **Scope boundary**: mutation-path only. The read-path FLS shape (an FLS-hidden
+  field surfacing as a SOQL "No such column" transport error) stays a residual —
+  classifying it means regexing SF message prose; revisit if the CF-1 dogfood run
+  shows it bites in practice.
+
+**Exit**: the CF-1 repro (Tier 0.3's FLS-restricted user, AK-side) should now
+produce a clean verdict whose cause names the code + `Last_Escalation_Date__c`
+instead of a generic platform line.
+
 ---
 
 ---
