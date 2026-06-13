@@ -12872,4 +12872,98 @@ large.
 
 ---
 
+### D-230.2 — 2.4 Part B: async data-path bracketing — WorldPlan plan/build split + consumer flip (design)
+
+**Context.** Part A (durable cleanup reaper) merged `e0c2d6d` (D-230.1a/1b/1c). Part B
+is the deferred async data-path half (D-129/D-197/D-202/D-203 residual): lift the
+`run_recipe_execution_async` data-path deferral (run.py:369-375) so the data path runs
+under the same no-connection-across-SF-I/O bracket as metadata. Verified against the
+code: the ONLY mid-execute S1 read is `construct_world` (world.py — requiredness/type
+padding + the recursive parent-provisioning chain), and **no S1 read depends on a
+Salesforce response** — the only live value re-entering is `client.create`'s returned
+record id, threaded into `parent_filler` + the tracker, never back into a read. So the
+read side is cleanly pre-resolvable; the blocker is purely that the current
+`construct_world` *interleaves* the reads with the parent creates.
+
+**Decision — split `construct_world` into a pure read-walk + a pure build (drift-proof).**
+- `plan_world(object_api, semantic_fields, *, s1, at_seq, _visited, _depth) -> WorldPlan`
+  — walks the SAME recursion read-only (reuses the pure `resolve_operational_padding`
+  leaf), producing a detached frozen `WorldPlan{object_api, scalar_filler, unfillable,
+  parent_plans=((child_field_api, parent_api, child WorldPlan), …)}`. The defaulted-ref
+  omission (User/Group) and the plan-time unfillable (too-deep / cycle / parent-not-in-S1
+  / unsynthesizable scalar / unbuildable parent subtree) are decided here. No creates.
+- `build_world(world_plan, *, client, tracker) -> (scalar_filler, parent_filler,
+  unfillable)` — walks the plan bottom-up, `client.create`s each parent, threads the id
+  into `parent_filler`, records on the tracker; adds build-time unfillable (org-rejected
+  parent create). Takes the plan, NOT the reader, so it is provably free of S1 reads.
+- `construct_world` becomes the thin wrapper `build_world(plan_world(...))` — SAME
+  signature + behavior, so the sync path (`run_recipe_execution`, ~138 live-proven tests)
+  is byte-for-byte behavior-identical and the split is internal.
+
+**Decision — executor indirection (minimal call-site change).** A `_world_for(create, *,
+s1, client, tracker, at_seq, world_plans)` helper returns the 3-tuple: when `world_plans`
+is supplied (async) it returns `build_world(world_plans[create.step_id], …)`; else (sync)
+it calls `construct_world(s1=…, …)` exactly as today. `_run_positive` and
+`_run_negative_with_setup` swap their `construct_world` call for `_world_for`; `at_seq` is
+read only when `s1` is present. `execute_data_recipe` gains `world_plans=None`; the
+"needs a world but no s1" guard becomes "needs s1 OR world_plans". A new
+`plan_data_recipe_world(plan, s1) -> {step_id: WorldPlan}` (in data_executor, using the
+injected `s1` port — no DB import) reads `at_seq` once and builds one `WorldPlan` per
+ordinary create step (`PlannedCreate` with `expect_rejection is None`); it covers the
+positive chain's creates AND the 2-step negative's setup create.
+
+**Decision — async data branch in run.py.** Remove the data-path deferral raise.
+`run_recipe_execution_async`:
+- Bracket 1 (select + snapshot, read TX): select the recipe; for a data-recipe with an
+  ordinary create, build `s1 = SemanticOrgModel(session.connection())` and
+  `world_plans = plan_data_recipe_world(plan, s1)` (detached); also resolve the
+  data/tooling client kind-aware HERE when `client` is None (bracket 1 holds a connection,
+  which a resolver needs — this is NOT the execute bracket, so the invariant holds). Make
+  `client` OPTIONAL (was required); injected client still honored (the existing tests).
+- Bracket 2 (execute, NO connection): `_execute_for_kind(recipe, None, environment_id,
+  client, record_sink=sink, world_plans=world_plans)`. `_execute_for_kind` gains
+  `world_plans=None`; its data branch passes them through and skips the live-`s1` build
+  when present.
+- Build the `StrandedRecordSink(tenant_id, environment_id)` in the async path too (Part A
+  durability holds on the async path; the sink's own-tx writes are async-bracket-safe).
+
+**Decision — consumer flip (the production benefit).** The default `run_fn` flips from the
+synchronous `run_recipe_execution_for_tenant` to `run_recipe_execution_async`. Because the
+async path now self-resolves the client kind-aware in bracket 1, the consumer simply calls
+it with `client=None` — no held connection per in-flight job. The sync path stays as a
+tested, live-proven fallback (additive, never removed). This realizes the D-197
+"metadata→async / data→sync dispatcher" intent as the simpler "everything→async" (data is
+now async-capable).
+
+**Behavior note (verify in tests).** The split detects a doomed parent branch at PLAN time,
+so `build_world` never creates the *buildable* part of an unfillable subtree — whereas
+today's `construct_world` creates-then-tears-down those. Strictly fewer wasted SF creates;
+identical outcome (same `unfillable` + fillers). If a test asserts the wasteful intermediate
+creates, the test is updated (the new behavior is the improvement), not the split.
+
+**Invariants respected.** No-connection-across-SF-I/O (snapshot + client resolution in
+bracket 1; execute DB-free); three-bracket structure preserved (snapshot extends bracket 1);
+client resolved before the execute bracket; snapshot transitively complete (`plan_world`
+walks the full bounded recursion); Part A sink writes stay own-tx; recipe identity untouched
+(execution-orchestration only); errored runs still finalize; zero migration.
+
+**Slices.** 0 = this design. 1 = world.py split (`WorldPlan`/`plan_world`/`build_world`,
+`construct_world` wrapper) + `plan_data_recipe_world` + executor `_world_for` + run.py async
+data branch + in-bracket-1 client resolution + sink (unit: plan/build split, the
+no-connection-during-execute invariant for the data path via a fake scope, sync regression).
+2 = consumer flip to the async run_fn + tests (a data job drained through async holds no
+connection during execute). 3 = D-230 close covering BOTH Part A (already merged, no close
+written yet) + Part B + EVOLUTION/SPEC/DEFERRED currency + merge `--no-ff`. Adversarial
+review before merge (the D-229/Part-A discipline).
+
+**Merge gate.** Offline suites green (unit + execution_engine integration incl. the data-path
+no-connection invariant); author AK, zero Co-Authored-By; merge on explicit GO. The live
+durability proof (Part A's env-59 kill-mid-create) stays DEFERRED per AK (2026-06-13).
+
+**Residuals.** (1) The live durability proof — deferred. (2) The doomed-branch fewer-creates
+behavior note. (3) `_MIN_AVAILABLE_ENV` still advertises both capabilities (capability
+discovery F5-deferred) — unchanged.
+
+---
+
 ---
