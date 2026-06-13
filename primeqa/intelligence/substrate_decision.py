@@ -55,6 +55,18 @@ def _is_flaky(outcomes) -> bool:
     transitions = sum(1 for a, b in zip(outcomes, outcomes[1:]) if a != b)
     return transitions >= 2
 
+
+def _claim_quarantined(c) -> bool:
+    """D-232: is a claim quarantined for the release decision? A MANUAL pin WINS
+    (always quarantined); a MANUAL lift wins the other way (never); absent a manual
+    entry, the live flake signal governs — flaky AND its latest run not-passed."""
+    mq = c.get("manual_quarantine")          # 'pinned' | 'lifted' | None
+    if mq == "pinned":
+        return True
+    if mq == "lifted":
+        return False
+    return bool(c.get("flaky") and c["latest_run"]["outcome"] != "passed")
+
 # Is there a NEWER run of a DIFFERENT (non-NULL) version than the approved one?
 # (Superseded evidence newer than what we counted — the decision warns on it.)
 _NEWER_SUPERSEDED_SQL = (
@@ -85,15 +97,20 @@ def _claim_grounding(session, coord, test_id, approved_seq):
     return rows[-1] if rows else None
 
 
-def _assemble_claim_evidence(session, external_keys) -> list[dict]:
-    """Pure: the release's requirement keys → one decision-grade evidence row per
-    distinct claim. Each row::
+def _assemble_claim_evidence(session, external_keys, *, tenant_id=None) -> list[dict]:
+    """The release's requirement keys → one decision-grade evidence row per distinct
+    claim. Each row::
 
         {test_id, approved_seq,
          grounding: {overall, stale, evaluated_at_version_seq} | None,
          latest_run: {run_id, outcome, verdict, finished_at,
                       version_unknown} | None,
-         superseded_newer_run, never_run}
+         superseded_newer_run, never_run, flaky, recent_outcomes,
+         manual_quarantine: 'pinned' | 'lifted' | None}
+
+    ``manual_quarantine`` (D-232) carries the operator's persisted pin/unpin (read
+    via ``tenant_id`` when given) so the pure decision honors it — a MANUAL pin/lift
+    WINS over the live ``flaky`` signal.
     """
     from primeqa.test_representation.coordinator import (
         SemanticTransactionCoordinator,
@@ -111,6 +128,10 @@ def _assemble_claim_evidence(session, external_keys) -> list[dict]:
                 test_ids.append(m.test_id)
 
     current_seq = _current_s1_seq(session)
+    # D-232: the persisted MANUAL quarantine overrides (own connection — never
+    # poisons this session; empty without a tenant_id or before the migration).
+    from primeqa.intelligence import quarantine as _q
+    manual_q = _q.manual_states(tenant_id) if tenant_id is not None else {}
     out = []
     for tid in test_ids:
         # D-219: a deprecated claim is RETIRED from the corpus — its stale
@@ -163,6 +184,7 @@ def _assemble_claim_evidence(session, external_keys) -> list[dict]:
             "never_run": latest_run is None,
             "flaky": flaky,
             "recent_outcomes": recent_outcomes,
+            "manual_quarantine": manual_q.get(str(tid)),   # D-232: pinned|lifted|None
         })
     return out
 
@@ -224,12 +246,12 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
     # D-200 flake quarantine: a chronically-flipping claim whose latest run is
     # not-passed is QUARANTINED — excluded from the pass-rate (it must not block
     # a good release) and surfaced as its own warning. A flaky claim that
-    # currently PASSES counts normally. Opt out via
-    # criteria['substrate_quarantine_flaky'] = False.
+    # currently PASSES counts normally. D-232: a persisted MANUAL pin/lift WINS
+    # over the live signal (see _claim_quarantined). Opt out of the whole check
+    # via criteria['substrate_quarantine_flaky'] = False.
     quarantine_on = criteria.get("substrate_quarantine_flaky", True)
     quarantined = [c for c in counted
-                   if quarantine_on and c.get("flaky")
-                   and c["latest_run"]["outcome"] != "passed"]
+                   if quarantine_on and _claim_quarantined(c)]
     scored = [c for c in counted if c not in quarantined]
 
     passed = sum(1 for c in scored if c["latest_run"]["outcome"] == "passed")
@@ -376,7 +398,7 @@ def get_release_substrate_decision(tenant_id: int, external_keys,
         with get_tenant_connection(tenant_id) as conn:
             session = Session(bind=conn)
             try:
-                evidence = _assemble_claim_evidence(session, keys)
+                evidence = _assemble_claim_evidence(session, keys, tenant_id=tenant_id)
                 out = compute_substrate_decision(evidence, criteria)
                 out["available"] = True
                 return out

@@ -134,7 +134,7 @@ def get_substrate_dashboard_data(environment_id: int, tenant_id: int,
         session = Session(bind=conn)
         try:
             keys = _corpus_keys(session)
-            evidence = _assemble_claim_evidence(session, keys)
+            evidence = _assemble_claim_evidence(session, keys, tenant_id=tenant_id)
             by_key = _keys_to_test_ids(session, keys)
             trends = _trends(session, environment_id)
         finally:
@@ -246,7 +246,7 @@ def get_landing_substrate_stats(tenant_id: int) -> dict:
                     "ORDER BY r.finished_at DESC LIMIT 10"
                 )).mappings().all()
                 evidence = _assemble_claim_evidence(
-                    session, _corpus_keys(session))
+                    session, _corpus_keys(session), tenant_id=tenant_id)
             finally:
                 session.close()
 
