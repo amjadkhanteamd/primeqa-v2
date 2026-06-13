@@ -170,6 +170,35 @@ def test_passed_when_observed_equals_value():
     assert posted["Status__c"] == "Active" and posted["Name"] == "PQA"
 
 
+def test_async_world_plans_path_equals_sync_s1_path():
+    # D-230.2 coverage: the ASYNC data execute path drives the SAME positive recipe
+    # through pre-resolved world_plans + s1=None (NO live S1 read during execute) and
+    # must produce an IDENTICAL outcome to the sync s1 path. This is the load-bearing
+    # world-building case (k16 scalar padding resolved by plan_data_recipe_world ->
+    # build_world) that the 1-step-create-rejected async test does not exercise. That
+    # the run returns "passed" with s1=None is itself proof no S1 read escaped to execute.
+    from primeqa.execution_engine.data_executor import plan_data_recipe_world
+
+    plan, s1 = _plan(), _s1()
+
+    sync_client = _StubClient(create_result=_success("001S"),
+                              query_result=[{"Status__c": "Active"}])
+    sync_ev = execute_data_recipe(plan, client=sync_client, environment_id=_ENV_ID, s1=s1)
+
+    world_plans = plan_data_recipe_world(plan, s1)        # bracket-1 pre-resolution
+    async_client = _StubClient(create_result=_success("001S"),
+                               query_result=[{"Status__c": "Active"}])
+    async_ev = execute_data_recipe(plan, client=async_client, environment_id=_ENV_ID,
+                                   s1=None, world_plans=world_plans)
+
+    assert async_ev.outcome == sync_ev.outcome == "passed"
+    assert async_client.creates == sync_client.creates    # same payload, padding incl.
+    assert async_client.creates[0][1]["Name"] == "PQA"    # k16 padding from the snapshot
+    assert async_client.deletes == sync_client.deletes    # k14 teardown identical
+    assert [s.kind for s in async_ev.steps] == [s.kind for s in sync_ev.steps]
+    assert async_ev.steps[2].held is True
+
+
 def test_failed_when_observed_differs():
     client = _StubClient(create_result=_success(), query_result=[{"Status__c": "Inactive"}])
     ev = _run(_plan(), client, _s1())
