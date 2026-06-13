@@ -131,6 +131,65 @@ def run_tests():
     results.append(test("4. /results preserves query string on redirect",
                         test_results_preserves_querystring))
 
+    # --------------------------------------------------------------
+    # 5-9. D-231 — the failures front door (triage filters + repair drill)
+    # --------------------------------------------------------------
+    def test_runs_substrate_has_filter_chips():
+        login_form("admin@primeqa.io", "changeme123")
+        r = client.get("/runs/substrate")
+        assert r.status_code == 200, r.status_code
+        html = r.get_data(as_text=True)
+        assert "Today" in html and "failures" in html, "no Today's-failures chip"
+        assert 'border-indigo-600">All' in html, "All chip not active by default"
+    results.append(test("5. /runs/substrate renders the triage filter chips (D-231)",
+                        test_runs_substrate_has_filter_chips))
+
+    def test_runs_outcome_filter_active():
+        login_form("admin@primeqa.io", "changeme123")
+        html = client.get("/runs/substrate?outcome=failed").get_data(as_text=True)
+        assert 'border-indigo-600">Failed' in html, "Failed chip not active for ?outcome=failed"
+        assert ">clear<" in html, "no clear link when filtered"
+    results.append(test("6. ?outcome=failed drives the active Failed chip (D-231)",
+                        test_runs_outcome_filter_active))
+
+    def test_runs_status_alias_lands():
+        # the /results redirect forwards ?status=failed — s4_runs_list must consume it
+        login_form("admin@primeqa.io", "changeme123")
+        html = client.get("/runs/substrate?status=failed").get_data(as_text=True)
+        assert 'border-indigo-600">Failed' in html, "the forwarded ?status=failed did not land"
+    results.append(test("7. the /results ?status=failed alias now lands (D-231)",
+                        test_runs_status_alias_lands))
+
+    def test_runs_bad_outcome_ignored():
+        login_form("admin@primeqa.io", "changeme123")
+        r = client.get("/runs/substrate?outcome=garbage")
+        assert r.status_code == 200, r.status_code
+        assert 'border-indigo-600">All' in r.get_data(as_text=True), "bad outcome not ignored"
+    results.append(test("8. a bad ?outcome is ignored, not an error (D-231)",
+                        test_runs_bad_outcome_ignored))
+
+    def test_run_detail_surfaces_repair_action():
+        from unittest.mock import patch
+        login_form("admin@primeqa.io", "changeme123")
+        fake = {"available": True, "found": True, "run": {
+            "run_id": "11111111-1111-1111-1111-111111111111",
+            "claim_test_id": "22222222-2222-2222-2222-222222222222",
+            "outcome": "failed", "finished_at": "2026-06-13T10:00:00+00:00",
+            "duration_ms": 1200, "environment_id": 59, "steps": [], "error": None,
+            "interpretation": {"verdict": "prohibition_not_enforced",
+                               "attribution": None, "cause": None, "phrasing": None,
+                               "repair_suggestions": []}}}
+        with patch("primeqa.intelligence.s4_execution_console.read_run_detail",
+                   return_value=fake), \
+             patch("primeqa.intelligence.repair_agent.open_proposal_for_run",
+                   return_value={"id": 7, "proposal_kind": "rerun"}):
+            html = client.get(
+                "/runs/11111111-1111-1111-1111-111111111111").get_data(as_text=True)
+        assert "A fix is ready for this run" in html, "no inline repair card"
+        assert "/runs/substrate/repairs/7" in html, "repair action not wired to decide POST"
+    results.append(test("9. run detail surfaces the inline repair action (D-231)",
+                        test_run_detail_surfaces_repair_action))
+
     # --- summary ---
     passed = sum(results)
     total = len(results)
