@@ -14,7 +14,6 @@ from uuid import uuid4
 
 import pytest
 
-from primeqa.execution_engine.errors import PlanTranslationError
 from primeqa.execution_engine.run import run_recipe_execution_async
 from primeqa.generation.emission import (
     GroundedExistence,
@@ -66,18 +65,29 @@ class _ScopeTracker:
 
 
 class _AssertingClient:
-    """The live read must run with NO DB connection held — the query asserts the
-    scope tracker's open depth is 0 when it fires."""
+    """The live read/mutation must run with NO DB connection held — every call
+    asserts the scope tracker's open depth is 0 when it fires."""
 
     def __init__(self, tracker, rows):
         self._tracker = tracker
         self._rows = rows
         self.queries = []
+        self.creates = []
 
     def query(self, soql):
         assert self._tracker.open_depth == 0, "DB connection held during live read!"
         self.queries.append(soql)
         return list(self._rows)
+
+    def create(self, sobject, field_values):
+        # D-230.2: the async DATA path must create with NO connection held either.
+        assert self._tracker.open_depth == 0, "DB connection held during live create!"
+        self.creates.append((sobject, dict(field_values)))
+        # A 400 business rejection matching the recipe's expect_rejection → passed.
+        return {"success": False, "http_status": 400, "record_id": None,
+                "api_response": {"body": [
+                    {"errorCode": "FIELD_CUSTOM_VALIDATION_EXCEPTION",
+                     "message": "blocked by validation rule"}]}}
 
 
 class _SpyCoordinator:
@@ -176,16 +186,23 @@ def test_select_and_persist_are_distinct_transactions():
     assert depths == [1, 1]   # each bracket saw depth 1 — never nested
 
 
-def test_data_recipe_async_is_deferred():
+def test_data_recipe_async_runs_with_no_connection_held():
+    # D-230.2: the async path now brackets the DATA path too — the D-129 deferral is
+    # lifted. A 1-step create-rejected negative runs through execute holding NO DB
+    # connection (the create asserts open_depth==0); two brackets open (select+prep,
+    # then persist), and the live create fires between them.
     tracker = _ScopeTracker()
     coord = _SpyCoordinator(_data_recipe())
-    with pytest.raises(PlanTranslationError, match="deferred"):
-        run_recipe_execution_async(
-            tenant_id=1, test_id=uuid4(), environment_id=7,
-            client=_AssertingClient(tracker, rows=[]),
-            coordinator=coord, session_scope=tracker.scope)
-    # only the select bracket opened; nothing executed or persisted.
-    assert tracker.opens == 1
+    client = _AssertingClient(tracker, rows=[])
+    result = run_recipe_execution_async(
+        tenant_id=1, test_id=uuid4(), environment_id=7, client=client,
+        coordinator=coord, session_scope=tracker.scope)
+
+    assert result.ran is True
+    assert result.evidence.outcome == "passed"          # the 400 matched the expectation
+    assert client.creates == [("Lead", {"Company": "Acme"})]   # fired with no scope open
+    assert tracker.opens == 2                            # select+prep TX, then persist TX
+    assert tracker.open_depth == 0
 
 
 def test_no_eligible_recipe_returns_ran_false():

@@ -70,7 +70,9 @@ from primeqa.execution_engine.refs import resolve_field_value_refs, resolve_step
 from primeqa.execution_engine.world import (
     _sf_field,
     _sf_fields,
+    build_world,
     construct_world,
+    plan_world,
 )
 from primeqa.integrations.exceptions import SFClientError
 
@@ -83,19 +85,22 @@ _BUSINESS_REJECTION_STATUS = 400
 
 def execute_data_recipe(
     plan: DataRecipePlan, *, client, environment_id: int, s1=None,
-    record_sink=None,
+    world_plans=None, record_sink=None,
 ) -> RunEvidence:
     """Execute a data-recipe plan against ``client``; dispatch on the first
     step's ``expect_rejection``.
 
     ``client`` is anything with ``create`` / ``update`` / ``delete`` (+
     ``query`` for the positive read-back) returning the normalized envelope
-    (injected; unit tests drive a stub). ``s1`` is a
-    ``SemanticOrgModel``-shaped requiredness reader, required by every path
-    that constructs a world (the positive vertical AND the 2-step negative —
-    both begin with an ordinary setup create; the run path injects it whenever
-    ``steps[0].expect_rejection is None``). Returns a :class:`RunEvidence`
-    carrying the grounded outcome + per-step evidence."""
+    (injected; unit tests drive a stub). Every path that constructs a world (the
+    positive vertical AND the 2-step negative — both begin with an ordinary setup
+    create) needs the operational-world reads resolved, supplied as EITHER a live
+    ``s1`` (``SemanticOrgModel``-shaped requiredness reader; the sync path reads it
+    mid-execute) OR a pre-resolved ``world_plans`` map (``{step_id: WorldPlan}``,
+    D-230.2 — the async path pre-resolves it under the select bracket so execute
+    holds no DB connection). The run path injects whichever applies when
+    ``steps[0].expect_rejection is None``. Returns a :class:`RunEvidence` carrying the
+    grounded outcome + per-step evidence."""
     flagged = next(
         (s for s in plan.steps
          if getattr(s, "expect_rejection", None) is not None), None)
@@ -103,19 +108,57 @@ def execute_data_recipe(
         # 1-step create-rejected (D-110.2) — no world to construct.
         return _execute_negative(
             plan, client=client, environment_id=environment_id)
-    if s1 is None:
+    if s1 is None and world_plans is None:
         raise PlanTranslationError(
-            "a data-recipe with an ordinary (setup) create needs an S1 "
-            "requiredness reader (s1=); none was injected",
+            "a data-recipe with an ordinary (setup) create needs its operational "
+            "world resolved — a live S1 requiredness reader (s1=) or a pre-resolved "
+            "world_plans map (D-230.2); neither was injected",
             recipe_id=plan.recipe_id)
     if flagged is not None:
         # 2-step setup create -> rejected update/delete (D-203).
         return _run_negative_with_setup(
             plan, client=client, environment_id=environment_id, s1=s1,
-            record_sink=record_sink)
+            world_plans=world_plans, record_sink=record_sink)
     return _run_positive(
         plan, client=client, environment_id=environment_id, s1=s1,
-        record_sink=record_sink)
+        world_plans=world_plans, record_sink=record_sink)
+
+
+def _world_for(create, *, s1, client, tracker, at_seq, world_plans, recipe_id=None):
+    """Resolve one create's operational world → ``(scalar_filler, parent_filler,
+    unfillable)`` (D-230.2). With a pre-resolved ``world_plans`` map (async) it
+    BUILDS from the detached ``WorldPlan`` (no S1 read); otherwise (sync) it reads
+    S1 live via :func:`construct_world` exactly as before. A missing plan for a
+    create that needs one is a planning defect — fail loud."""
+    if world_plans is not None:
+        wp = world_plans.get(create.step_id)
+        if wp is None:
+            raise PlanTranslationError(
+                f"async data path: no pre-resolved WorldPlan for create step "
+                f"{create.step_id!r} (plan_data_recipe_world must cover every "
+                f"ordinary create)", recipe_id=recipe_id)
+        return build_world(wp, client=client, tracker=tracker)
+    return construct_world(
+        create.target_object.external_id, set(create.field_values),
+        s1=s1, client=client, tracker=tracker, at_seq=at_seq)
+
+
+def plan_data_recipe_world(plan: DataRecipePlan, s1) -> dict:
+    """Pre-resolve every ordinary create's operational world (D-230.2) into a
+    detached ``{step_id: WorldPlan}`` map, reading S1 once (``at_seq`` pinned) under
+    the caller's connection — the async SELECT bracket — so the execute bracket holds
+    none. Covers the positive chain's creates AND the 2-step negative's setup create
+    (a :class:`PlannedCreate` with no ``expect_rejection``); the 1-step
+    create-rejected negative constructs no world (empty map)."""
+    at_seq = s1.current_version_seq()
+    plans: dict = {}
+    for step in plan.steps:
+        if (isinstance(step, PlannedCreate)
+                and getattr(step, "expect_rejection", None) is None):
+            plans[step.step_id] = plan_world(
+                step.target_object.external_id, set(step.field_values),
+                s1=s1, at_seq=at_seq)
+    return plans
 
 
 def _execute_negative(
@@ -148,7 +191,8 @@ def _execute_negative(
 
 
 def _run_negative_with_setup(
-    plan: DataRecipePlan, *, client, environment_id: int, s1, record_sink=None,
+    plan: DataRecipePlan, *, client, environment_id: int, s1=None,
+    world_plans=None, record_sink=None,
 ) -> RunEvidence:
     """The 2-step behavioral negative (D-203): construct-world → setup
     create-expect-success → attempt the prohibited update/delete → grade the
@@ -168,12 +212,13 @@ def _run_negative_with_setup(
 
     # 1. Construct the operational world for the setup create — the same
     #    machinery as the positive vertical (padding + parents + tracker, F6).
-    at_seq = s1.current_version_seq()
+    #    D-230.2: live S1 read (sync) or a pre-resolved WorldPlan (async).
+    at_seq = s1.current_version_seq() if s1 is not None else None
     tracker = CreatedRecordTracker(run_id=run_id, sink=record_sink)
     try:
-        scalar_filler, parent_filler, unfillable = construct_world(
-            sobject, semantic_fields, s1=s1, client=client, tracker=tracker,
-            at_seq=at_seq)
+        scalar_filler, parent_filler, unfillable = _world_for(
+            setup, s1=s1, client=client, tracker=tracker, at_seq=at_seq,
+            world_plans=world_plans, recipe_id=plan.recipe_id)
     except Exception as e:
         tracker.teardown(client, _best_effort_delete)
         err = ErrorSurface("construct", type(e).__name__, str(e))
@@ -341,8 +386,8 @@ def _sf_soql(soql: str, sobject: str) -> str:
     return soql.replace(f"{sobject}.", "")
 
 
-def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1,
-                  record_sink=None) -> RunEvidence:
+def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
+                  world_plans=None, record_sink=None) -> RunEvidence:
     """The positive create-and-verify path (D-115; N-create chains D-205):
     per create — construct-world → resolve cross-step refs → create-expect-
     success → thread state — then observe the read-back → teardown (k14,
@@ -356,7 +401,8 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1,
     started = _now()
     *creates, read, assertion = plan.steps
 
-    at_seq = s1.current_version_seq()
+    # D-230.2: live S1 read (sync) or pre-resolved WorldPlans (async, world_plans).
+    at_seq = s1.current_version_seq() if s1 is not None else None
     tracker = CreatedRecordTracker(run_id=run_id, sink=record_sink)
     state: dict[str, dict] = {}
     create_evs: list = []
@@ -381,9 +427,9 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1,
         #    scalars + recursively build required lookup/master-detail PARENTS
         #    (F6.2). Parents land on the shared tracker in creation order.
         try:
-            scalar_filler, parent_filler, unfillable = construct_world(
-                sobject, semantic_fields, s1=s1, client=client, tracker=tracker,
-                at_seq=at_seq)
+            scalar_filler, parent_filler, unfillable = _world_for(
+                create, s1=s1, client=client, tracker=tracker, at_seq=at_seq,
+                world_plans=world_plans, recipe_id=plan.recipe_id)
         except Exception as e:
             # ANY failure mid-construct (transport OR an S1 read raise) tears
             # down everything already built — including earlier chain creates.

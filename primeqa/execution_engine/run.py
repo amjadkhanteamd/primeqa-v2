@@ -40,7 +40,10 @@ from primeqa.execution_engine.credentials import (
     resolve_data_mutation_client,
     resolve_tooling_client,
 )
-from primeqa.execution_engine.data_executor import execute_data_recipe
+from primeqa.execution_engine.data_executor import (
+    execute_data_recipe,
+    plan_data_recipe_world,
+)
 from primeqa.execution_engine.errors import PlanTranslationError
 from primeqa.execution_engine.evidence import RunEvidence
 from primeqa.execution_engine.executor import execute_metadata_inspection
@@ -147,16 +150,19 @@ def run_recipe_execution(
 
 
 def _execute_for_kind(recipe, session, environment_id: int, client,
-                      record_sink=None):
+                      record_sink=None, world_plans=None):
     """Dispatch on ``recipe.recipe_kind`` → the matching bridge + executor.
 
     The inspection path (``metadata-recipe``) is unchanged from D-108.4; the
     behavioral-negative path (``data-recipe``, D-110.2) is the parallel build.
     An injected ``client`` overrides the kind's resolver (the seam the live
     tests use). ``record_sink`` (D-230) is the write-ahead durability sink for
-    the data path — the metadata path creates nothing, so it ignores it. An
-    unknown kind fails loud — the run path has no executor for it (deferred
-    recipe kinds)."""
+    the data path — the metadata path creates nothing, so it ignores it.
+    ``world_plans`` (D-230.2) is the pre-resolved ``{step_id: WorldPlan}`` map for
+    the async data path: when supplied, the data branch reads no live S1 (so
+    ``session`` may be ``None``); when ``None``, the sync path builds the live S1
+    reader from ``session`` as before. An unknown kind fails loud — the run path
+    has no executor for it (deferred recipe kinds)."""
     if recipe.recipe_kind == _METADATA_RECIPE_KIND:
         plan = build_metadata_inspection_plan(recipe)
         tooling = client or resolve_tooling_client(session, environment_id)
@@ -167,19 +173,19 @@ def _execute_for_kind(recipe, session, environment_id: int, client,
         plan = build_data_recipe_plan(recipe)
         data_client = client or resolve_data_mutation_client(session, environment_id)
         # Any plan that begins with an ORDINARY create constructs a world and
-        # so reads S1 requiredness (k16 padding): the positive vertical (D-115)
+        # so needs S1 requiredness (k16 padding): the positive vertical (D-115)
         # and the 2-step negative's setup create (D-203). Only the 1-step
-        # create-rejected negative (steps[0] flagged) skips it. Build the
-        # read-through port from the run-path's own connection — the same idiom
-        # as the S6 interpret stage — so the padding reflects the org the run
-        # executes against.
+        # create-rejected negative (steps[0] flagged) needs no world. SYNC: build
+        # the read-through port from the run-path's own connection (the S6
+        # interpret idiom). ASYNC (D-230.2): ``world_plans`` is pre-resolved under
+        # the select bracket, so no S1 read happens here (session is None).
         s1 = None
-        if plan.steps[0].expect_rejection is None:
+        if world_plans is None and plan.steps[0].expect_rejection is None:
             from primeqa.semantic.query import SemanticOrgModel
             s1 = SemanticOrgModel(session.connection())
         return execute_data_recipe(
             plan, client=data_client, environment_id=environment_id, s1=s1,
-            record_sink=record_sink)
+            world_plans=world_plans, record_sink=record_sink)
 
     raise PlanTranslationError(
         f"run path has no executor for recipe_kind={recipe.recipe_kind!r} "
@@ -326,33 +332,43 @@ def run_recipe_execution_async(
     test_id: UUID,
     *,
     environment_id: int,
-    client,
+    client=None,
     available_environment: Optional[ExecutionEnvironmentBody] = None,
     coordinator=None,
     session_scope=None,
 ) -> RunPathResult:
     """Async-safe execution: bracket the live read with **brief transactions** so
-    no DB connection is held across Salesforce I/O (D-129). Three brackets:
+    no DB connection is held across Salesforce I/O (D-129; data path D-230.2). Three
+    brackets:
 
-      1. **select** (read-only TX) → the ``RecipeRead`` detaches as plain data;
-      2. **execute** holding NO DB connection (the metadata path needs only the
-         injected ``client``) — the load-bearing invariant;
+      1. **select + snapshot** (read-only TX) → the ``RecipeRead`` detaches as plain
+         data; the client is resolved kind-aware; and — for a data recipe with an
+         ordinary create — the operational world is pre-resolved into a detached
+         ``{step_id: WorldPlan}`` map, all under THIS connection;
+      2. **execute** holding NO DB connection (metadata needs only the client; data
+         builds from the pre-resolved world plans, and the write-ahead sink writes in
+         its own per-call transactions — not the run connection) — the load-bearing
+         invariant;
       3. **persist + posture + interpret** (TX) → committed.
 
-    ``client`` is **required** (the consumer resolves it up front; there is no
-    in-bracket resolver, by design — a resolver would need a held connection).
-    ``session_scope`` defaults to :func:`_default_session_scope`; a test injects
-    a fake scope to assert the no-connection-during-read invariant.
+    ``client`` is **optional**: when ``None`` it is resolved kind-aware INSIDE bracket
+    1 (which holds the connection a resolver needs — never the execute bracket); an
+    injected client (the tests) is honored as-is. ``session_scope`` defaults to
+    :func:`_default_session_scope`; a test injects a fake scope to assert the
+    no-connection-during-read invariant.
 
-    **Metadata-path only** — a non-metadata recipe (the positive data vertical
-    reads S1 mid-execute) raises a clear deferral rather than silently holding a
-    connection across the live mutation; that bracketing is its own work, and the
-    sync :func:`run_recipe_execution` runs those today.
+    Both recipe kinds are bracketed now — the prior data-path deferral (D-129) is
+    lifted by D-230.2's WorldPlan pre-resolution (`construct_world`'s reads are walked
+    read-only up front, so execute holds no connection).
     """
+    from primeqa.execution_engine.stranded_cleanup import StrandedRecordSink
+
     coord = coordinator or SemanticTransactionCoordinator()
     scope = session_scope or _default_session_scope
 
-    # 1. select — brief, read-only; the recipe detaches as plain data.
+    # 1. select + snapshot — brief, read-only. The recipe detaches as plain data;
+    #    the client + (for a data recipe) the WorldPlan map are resolved HERE, under
+    #    the open connection, so the execute bracket holds none.
     with scope(tenant_id) as session:
         recipe = coord.select_recipe_for_execution(
             session,
@@ -360,22 +376,19 @@ def run_recipe_execution_async(
             available_environment=available_environment or _MIN_AVAILABLE_ENV,
             replay_mode="live",
         )
+        prep = (_prepare_async_execute(recipe, session, environment_id, client)
+                if recipe is not None else None)
     if recipe is None:
         return RunPathResult(ran=False, reason="no_eligible_recipe")
+    resolved_client, world_plans = prep
 
-    # The async wrapper brackets the metadata path (DB-free execute). The data
-    # vertical reads S1 mid-execute → deferred (raise, never hold a connection
-    # across the live mutation).
-    if recipe.recipe_kind != _METADATA_RECIPE_KIND:
-        raise PlanTranslationError(
-            f"async execution for recipe_kind={recipe.recipe_kind!r} is deferred "
-            f"(it reads S1 mid-execute; the sync path runs it). B0 brackets the "
-            f"metadata path only",
-            recipe_id=recipe.recipe_id,
-        )
-
-    # 2. execute — NO DB connection held across the live read (the invariant).
-    evidence = _execute_for_kind(recipe, None, environment_id, client)
+    # 2. execute — NO DB connection held across the live read (the invariant). The
+    #    write-ahead durability sink (D-230) writes in its own per-call transactions,
+    #    so it never holds the run connection across SF I/O.
+    sink = StrandedRecordSink(tenant_id, environment_id)
+    evidence = _execute_for_kind(
+        recipe, None, environment_id, resolved_client,
+        record_sink=sink, world_plans=world_plans)
 
     # 3. persist + posture + interpret — a fresh brief transaction.
     with scope(tenant_id) as session:
@@ -388,4 +401,32 @@ def run_recipe_execution_async(
         evidence=evidence,
         runtime_state=state,
         interpretation=interpretation,
+    )
+
+
+def _prepare_async_execute(recipe, session, environment_id: int, client):
+    """Bracket-1 prep for the async execute (D-230.2): resolve the client kind-aware
+    and, for a data recipe with an ordinary create, pre-resolve the operational world
+    into a detached ``{step_id: WorldPlan}`` map — all under the (open) select-bracket
+    connection, so the execute bracket needs none. Returns ``(client, world_plans)``:
+    ``world_plans`` is ``None`` for a metadata recipe, ``{}`` for a 1-step
+    create-rejected data recipe (no world to build), else the pre-resolved map. An
+    injected ``client`` is honored; a missing one is resolved by kind. An unknown kind
+    fails loud (same surface as the sync :func:`_execute_for_kind`)."""
+    if recipe.recipe_kind == _METADATA_RECIPE_KIND:
+        return (client or resolve_tooling_client(session, environment_id), None)
+    if recipe.recipe_kind == _DATA_RECIPE_KIND:
+        data_client = client or resolve_data_mutation_client(session, environment_id)
+        plan = build_data_recipe_plan(recipe)
+        if plan.steps[0].expect_rejection is None:
+            from primeqa.semantic.query import SemanticOrgModel
+            world_plans = plan_data_recipe_world(
+                plan, SemanticOrgModel(session.connection()))
+        else:
+            world_plans = {}    # 1-step create-rejected — no world, but async-prepared
+        return (data_client, world_plans)
+    raise PlanTranslationError(
+        f"run path has no executor for recipe_kind={recipe.recipe_kind!r} "
+        f"(only metadata-recipe + data-recipe are wired)",
+        recipe_id=recipe.recipe_id,
     )

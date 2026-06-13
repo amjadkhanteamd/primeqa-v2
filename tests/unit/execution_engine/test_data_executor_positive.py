@@ -170,6 +170,35 @@ def test_passed_when_observed_equals_value():
     assert posted["Status__c"] == "Active" and posted["Name"] == "PQA"
 
 
+def test_async_world_plans_path_equals_sync_s1_path():
+    # D-230.2 coverage: the ASYNC data execute path drives the SAME positive recipe
+    # through pre-resolved world_plans + s1=None (NO live S1 read during execute) and
+    # must produce an IDENTICAL outcome to the sync s1 path. This is the load-bearing
+    # world-building case (k16 scalar padding resolved by plan_data_recipe_world ->
+    # build_world) that the 1-step-create-rejected async test does not exercise. That
+    # the run returns "passed" with s1=None is itself proof no S1 read escaped to execute.
+    from primeqa.execution_engine.data_executor import plan_data_recipe_world
+
+    plan, s1 = _plan(), _s1()
+
+    sync_client = _StubClient(create_result=_success("001S"),
+                              query_result=[{"Status__c": "Active"}])
+    sync_ev = execute_data_recipe(plan, client=sync_client, environment_id=_ENV_ID, s1=s1)
+
+    world_plans = plan_data_recipe_world(plan, s1)        # bracket-1 pre-resolution
+    async_client = _StubClient(create_result=_success("001S"),
+                               query_result=[{"Status__c": "Active"}])
+    async_ev = execute_data_recipe(plan, client=async_client, environment_id=_ENV_ID,
+                                   s1=None, world_plans=world_plans)
+
+    assert async_ev.outcome == sync_ev.outcome == "passed"
+    assert async_client.creates == sync_client.creates    # same payload, padding incl.
+    assert async_client.creates[0][1]["Name"] == "PQA"    # k16 padding from the snapshot
+    assert async_client.deletes == sync_client.deletes    # k14 teardown identical
+    assert [s.kind for s in async_ev.steps] == [s.kind for s in sync_ev.steps]
+    assert async_ev.steps[2].held is True
+
+
 def test_failed_when_observed_differs():
     client = _StubClient(create_result=_success(), query_result=[{"Status__c": "Inactive"}])
     ev = _run(_plan(), client, _s1())
@@ -517,10 +546,13 @@ def _thing_plan():
         ))
 
 
-def test_s1_read_error_mid_construct_is_errored_and_first_parent_torn_down():
-    # An S1 read error (ValueError — NOT SFClientError) while fetching the SECOND
-    # required parent must tear down the FIRST (already-built) parent and surface an
-    # errored run. Catching only SFClientError would leak the first parent.
+def test_s1_read_error_mid_construct_is_errored_no_org_write():
+    # An S1 read error (ValueError — NOT SFClientError) while resolving the SECOND
+    # required parent surfaces an errored run. D-230.2: plan_world resolves ALL S1
+    # reads (the whole parent recursion) BEFORE build_world creates anything, so a
+    # read error during planning means NO org write happened — strictly safer than
+    # the old interleaved create-then-teardown (which built the first parent before
+    # the second parent's read blew up).
     s1 = _GraphS1ById({
         "Thing": [
             {"api": "AccountId", "field_type": "reference", "is_nillable": False,
@@ -535,9 +567,9 @@ def test_s1_read_error_mid_construct_is_errored_and_first_parent_torn_down():
 
     assert ev.outcome == "errored"
     assert ev.error.phase == "construct" and ev.error.error_type == "ValueError"
-    # the first parent (Account) was built, then torn down — no leak, no target create.
-    assert client.deletes == [("Account", "id-Account-1")]
-    assert all(c[0] != "Thing" for c in client.creates)     # target never attempted
+    # The read error preceded any build — nothing created, nothing to tear down.
+    assert client.creates == []
+    assert client.deletes == []
 
 
 def _qualified_plan(obj="Opportunity", field="StageName", value="Prospecting"):
