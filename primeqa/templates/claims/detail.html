@@ -83,6 +83,18 @@
       </div>
       <h1 class="mt-2 text-2xl font-bold text-gray-900">{{ c.title or c.claim_kind.replace('-', ' ') }}</h1>
       <p class="mt-1 text-xs text-gray-400">{{ c.claim_kind.replace('-', ' ') }} &middot; <span class="font-mono break-all" title="{{ c.test_id }}">{{ c.test_id[:8] }}</span></p>
+      {# D-233: the back-link to the requirement this claim was generated from.
+         Links when the key resolves to a viewable requirement; shows the key as
+         plain text otherwise (manual req-<id> that's gone, or unresolvable). #}
+      {% if requirement and requirement.key %}
+      <p class="mt-1 text-xs">
+        {% if requirement.url %}
+        <a href="{{ requirement.url }}" class="text-indigo-600 hover:underline">&larr; From requirement {{ requirement.key }}</a>
+        {% else %}
+        <span class="text-gray-400">From requirement {{ requirement.key }}</span>
+        {% endif %}
+      </p>
+      {% endif %}
     </div>
 
     <!-- Approve (a draft claim is not runnable until approved). D-226: a

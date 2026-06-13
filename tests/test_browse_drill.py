@@ -132,6 +132,62 @@ def run_tests():
     results.append(test("B2. a claim with no runs shows 'never run'",
                         test_never_run))
 
+    # ---- C — claim → requirement back-link --------------------------------
+
+    def _detail():
+        return {"available": True, "found": True, "claim": {
+            "test_id": CLAIM_ID, "title": "Amount cap",
+            "claim_kind": "prohibition-claim", "archetype": "prohibited_state",
+            "depth": "behavioral", "status": "approved", "version_seq": 1,
+            "asserted_truth": None, "semantic_conditions": None, "recipes": []}}
+
+    def _detail_html_with_requirement(req_key):
+        # claims_detail resolves the key→id via _requirement_rows on the v1 db;
+        # patch the bridge (the key) and the resolver (the id) so the render is
+        # deterministic and prod-write-free.
+        with patch("primeqa.intelligence.s3_generation_console.read_claim_detail",
+                   return_value=_detail()), \
+             patch("primeqa.intelligence.s3_generation_console.read_claim_siblings",
+                   return_value={"available": True, "siblings": []}), \
+             patch("primeqa.intelligence.s4_execution_console.read_claim_runs",
+                   return_value={"available": True, "runs": []}), \
+             patch("primeqa.intelligence.s3_generation_console.read_claim_requirement",
+                   return_value={"available": True, "requirement_key": req_key}), \
+             patch("primeqa.intelligence.substrate_dashboard._requirement_rows",
+                   return_value=({req_key: 42} if req_key else {})), \
+             patch("primeqa.intelligence.quarantine.manual_states", return_value={}), \
+             patch("primeqa.intelligence.quarantine.is_quarantined",
+                   return_value=False):
+            return client.get(f"/claims/{CLAIM_ID}").get_data(as_text=True)
+
+    def test_requirement_backlink_resolved():
+        html = _detail_html_with_requirement("SQ-205")
+        assert "From requirement SQ-205" in html, "back-link text missing"
+        assert 'href="/requirements/42"' in html, "back-link does not target the req"
+    results.append(test("C1. claim detail links back to its resolved requirement",
+                        test_requirement_backlink_resolved))
+
+    def test_requirement_backlink_unresolved_is_plain_text():
+        # the key exists but resolves to no id (manual req gone) → plain text, no link
+        with patch("primeqa.intelligence.s3_generation_console.read_claim_detail",
+                   return_value=_detail()), \
+             patch("primeqa.intelligence.s3_generation_console.read_claim_siblings",
+                   return_value={"available": True, "siblings": []}), \
+             patch("primeqa.intelligence.s4_execution_console.read_claim_runs",
+                   return_value={"available": True, "runs": []}), \
+             patch("primeqa.intelligence.s3_generation_console.read_claim_requirement",
+                   return_value={"available": True, "requirement_key": "req-999"}), \
+             patch("primeqa.intelligence.substrate_dashboard._requirement_rows",
+                   return_value={}), \
+             patch("primeqa.intelligence.quarantine.manual_states", return_value={}), \
+             patch("primeqa.intelligence.quarantine.is_quarantined",
+                   return_value=False):
+            html = client.get(f"/claims/{CLAIM_ID}").get_data(as_text=True)
+        assert "From requirement req-999" in html, "unresolved key text missing"
+        assert 'href="/requirements/' not in html, "should not link when unresolved"
+    results.append(test("C2. an unresolvable requirement key shows as plain text",
+                        test_requirement_backlink_unresolved_is_plain_text))
+
     passed = sum(results)
     total = len(results)
     print(f"\n{'='*60}\n  {passed}/{total} passed\n{'='*60}\n")

@@ -285,6 +285,31 @@ def read_claim_siblings(tenant_id: int, test_id) -> dict:
         return {"available": False, "siblings": []}
 
 
+# --- read: the source requirement key (D-233 — the back-link) -----------------
+
+def read_claim_requirement(tenant_id: int, test_id) -> dict:
+    """Best-effort: the requirement external_key this claim was generated from
+    (the most recent ``generated_from`` link). Never raises. Returns
+    ``{available, requirement_key}`` — ``requirement_key`` is None when the claim
+    has no such link. Resolving the key to a viewable requirement id is the
+    caller's job (it needs the v1 session — the substrate stores only the key)."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            row = conn.execute(text(
+                "SELECT external_key FROM test_requirement_links "
+                "WHERE test_id = CAST(:tid AS uuid) "
+                "AND link_kind = 'generated_from' "
+                "ORDER BY linked_at DESC LIMIT 1"),
+                {"tid": str(test_id)}).mappings().first()
+        return {"available": True,
+                "requirement_key": row["external_key"] if row else None}
+    except Exception as exc:
+        log.warning("read_claim_requirement unavailable for tenant %s test %s: %s",
+                    tenant_id, test_id, exc)
+        return {"available": False, "requirement_key": None}
+
+
 # --- read: the claims library (all current claims, paginated + search) (2c) --
 # No coordinator method lists claims cross-requirement, so the library reads
 # test_claims directly (the s1_sync_console pattern: a tenant-scoped raw read).

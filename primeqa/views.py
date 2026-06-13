@@ -2660,7 +2660,7 @@ def claims_detail(test_id):
     gone or the substrate is unavailable."""
     from primeqa.intelligence.claim_presentation import verdict_plain
     from primeqa.intelligence.s3_generation_console import (
-        read_claim_detail, read_claim_siblings)
+        read_claim_detail, read_claim_requirement, read_claim_siblings)
     from primeqa.intelligence.s4_execution_console import read_claim_runs
     tid = request.user["tenant_id"]
     detail = read_claim_detail(tid, test_id)
@@ -2668,8 +2668,12 @@ def claims_detail(test_id):
     runs = read_claim_runs(tid, test_id)              # D-168 (3a): recent runs (S6)
     for r in runs.get("runs") or []:                  # D-206: plain-words line
         r["plain"] = verdict_plain(r.get("verdict"), r.get("outcome"))
+    # D-233: the source requirement (the back-link). The substrate stores only the
+    # external_key; the v1 db resolves it to a viewable requirement id.
+    req_key = read_claim_requirement(tid, test_id).get("requirement_key")
     # Environments for the Run picker (tester+; gated in the template). is_production
     # drives the dynamic prod-confirm gate; has_connection flags runnable envs.
+    requirement = None
     db = next(get_db())
     try:
         envs = EnvironmentRepository(db).list_environments(
@@ -2678,6 +2682,11 @@ def claims_detail(test_id):
                       "is_production": bool(getattr(e, "is_production", False)),
                       "has_connection": bool(getattr(e, "connection_id", None))}
                      for e in envs]
+        if req_key:
+            from primeqa.intelligence.substrate_dashboard import _requirement_rows
+            req_id = _requirement_rows(db, tid, [req_key]).get(req_key)
+            requirement = {"key": req_key, "id": req_id,
+                           "url": f"/requirements/{req_id}" if req_id else None}
     finally:
         db.close()
     # D-232: the persisted quarantine state for the badge + pin/lift control.
@@ -2696,7 +2705,8 @@ def claims_detail(test_id):
     }
     return render_template("claims/detail.html", **ctx(
         active_page="test_library", detail=detail, siblings=siblings,
-        runs=runs, environments=envs_data, quarantine=quarantine_state))
+        runs=runs, environments=envs_data, quarantine=quarantine_state,
+        requirement=requirement))
 
 
 @views_bp.route("/claims/<uuid:test_id>/run", methods=["POST"])
