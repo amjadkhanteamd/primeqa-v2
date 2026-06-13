@@ -192,20 +192,58 @@ def read_run_detail(tenant_id: int, run_id) -> dict:
 
 # --- list all runs (the global runs index) (3b) ------------------------------
 
-_LIST_RUNS_SQL = (
-    "SELECT CAST(r.run_id AS text) AS run_id, CAST(r.claim_test_id AS text) AS claim_test_id, "
-    "r.outcome::text AS outcome, r.finished_at, r.duration_ms, r.environment_id, "
-    "i.verdict::text AS verdict "
-    "FROM s4_execution_runs r LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
-    "ORDER BY r.finished_at DESC LIMIT :limit OFFSET :offset")
+# D-231: the runs index is filterable (the failures front door). The page query
+# and the COUNT share ONE FROM + WHERE so pagination totals match the filtered set.
+# The LEFT JOIN to s6_interpretations is 1:0-or-1 (one S6 reading per run), so the
+# COUNT cardinality is unaffected whether or not a verdict filter is applied.
+_RUNS_FROM = ("FROM s4_execution_runs r "
+              "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id")
+
+# The run_outcome enum surface — the caller validates against this before passing
+# an outcome filter (a bad value would just match nothing, but validating keeps the
+# chips honest).
+_RUN_OUTCOMES = frozenset({"passed", "failed", "errored", "skipped"})
 
 
-def _list_runs(conn, *, limit: int, offset: int):
-    """Pure: (total, page-rows) of all runs newest-first on an open tenant conn —
-    S4 outcome/timing LEFT JOINed to the S6 verdict (verdict NULL when absent)."""
-    total = conn.execute(text("SELECT COUNT(*) FROM s4_execution_runs")).scalar() or 0
+def _runs_where(outcome, verdict, environment_id, since):
+    """Build the shared WHERE fragment + bind params from the non-None filters
+    (D-231). Only a supplied filter contributes a clause; an empty filter set
+    yields no WHERE (the original newest-first-all behavior)."""
+    clauses, params = [], {}
+    if outcome:
+        clauses.append("r.outcome::text = :outcome")
+        params["outcome"] = outcome
+    if verdict:
+        clauses.append("i.verdict::text = :verdict")
+        params["verdict"] = verdict
+    if environment_id is not None:
+        clauses.append("r.environment_id = :env")
+        params["env"] = environment_id
+    if since is not None:
+        clauses.append("r.finished_at >= :since")
+        params["since"] = since
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
+def _list_runs(conn, *, limit: int, offset: int, outcome=None, verdict=None,
+               environment_id=None, since=None):
+    """Pure: (total, page-rows) of runs newest-first on an open tenant conn — S4
+    outcome/timing LEFT JOINed to the S6 verdict (verdict NULL when absent),
+    filtered by the optional (outcome / verdict / environment_id / since) facets
+    (D-231). The COUNT uses the SAME FROM+WHERE so the total reflects the filter."""
+    where, params = _runs_where(outcome, verdict, environment_id, since)
+    total = conn.execute(
+        text(f"SELECT COUNT(*) {_RUNS_FROM}{where}"), params).scalar() or 0
+    sql = (
+        "SELECT CAST(r.run_id AS text) AS run_id, "
+        "CAST(r.claim_test_id AS text) AS claim_test_id, "
+        "r.outcome::text AS outcome, r.finished_at, r.duration_ms, r.environment_id, "
+        "i.verdict::text AS verdict "
+        f"{_RUNS_FROM}{where} "
+        "ORDER BY r.finished_at DESC LIMIT :limit OFFSET :offset")
     rows = conn.execute(
-        text(_LIST_RUNS_SQL), {"limit": limit, "offset": offset}).mappings().all()
+        text(sql), {**params, "limit": limit, "offset": offset}).mappings().all()
     runs = [{"run_id": r["run_id"], "claim_test_id": r["claim_test_id"],
              "outcome": r["outcome"], "verdict": r["verdict"],
              "finished_at": _iso(r["finished_at"]), "duration_ms": r["duration_ms"],
@@ -213,23 +251,33 @@ def _list_runs(conn, *, limit: int, offset: int):
     return total, runs
 
 
-def list_runs(tenant_id: int, *, page: int = 1, per_page: int = 20) -> dict:
-    """Best-effort paginated read of the tenant's S4 runs (newest-first). Never
-    raises. ``per_page`` capped at 50. Returns
-    ``{available, runs, total, page, per_page, total_pages}``."""
+def list_runs(tenant_id: int, *, page: int = 1, per_page: int = 20,
+              outcome=None, verdict=None, environment_id=None, since=None) -> dict:
+    """Best-effort paginated read of the tenant's S4 runs (newest-first), with
+    optional triage filters (D-231: outcome / verdict / environment_id / since —
+    the failures front door). Never raises. ``per_page`` capped at 50. Returns
+    ``{available, runs, total, page, per_page, total_pages, filters}`` (``filters``
+    echoes the applied facets so the surface can render active state)."""
     page = max(1, page)
     per_page = max(1, min(per_page, 50))
+    filters = {"outcome": outcome, "verdict": verdict,
+               "environment_id": environment_id, "since": since}
     try:
         from primeqa.semantic.connection import get_tenant_connection
         with get_tenant_connection(tenant_id) as conn:
-            total, runs = _list_runs(conn, limit=per_page, offset=(page - 1) * per_page)
+            total, runs = _list_runs(
+                conn, limit=per_page, offset=(page - 1) * per_page,
+                outcome=outcome, verdict=verdict,
+                environment_id=environment_id, since=since)
         total_pages = max(1, (total + per_page - 1) // per_page)
         return {"available": True, "runs": runs, "total": total,
-                "page": page, "per_page": per_page, "total_pages": total_pages}
+                "page": page, "per_page": per_page, "total_pages": total_pages,
+                "filters": filters}
     except Exception as exc:
         log.warning("list_runs unavailable for tenant %s: %s", tenant_id, exc)
         return {"available": False, "runs": [], "total": 0,
-                "page": page, "per_page": per_page, "total_pages": 1}
+                "page": page, "per_page": per_page, "total_pages": 1,
+                "filters": filters}
 
 
 # --- approve a claim (the run-enabler) ---------------------------------------

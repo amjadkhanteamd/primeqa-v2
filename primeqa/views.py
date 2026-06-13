@@ -2780,6 +2780,23 @@ def claims_deprecate(test_id):
     return redirect(f"/claims/{test_id}")
 
 
+def _parse_runs_since(raw):
+    """D-231: parse the Results `since` filter — 'today' → start of today (UTC), or
+    an ISO date (YYYY-MM-DD) → that day's start. Returns a tz-aware datetime, or
+    None for empty/unrecognized input (a bad filter is ignored, never an error)."""
+    if not raw:
+        return None
+    from datetime import date, datetime, timezone
+    if raw == "today":
+        return datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+    try:
+        d = date.fromisoformat(raw)
+    except ValueError:
+        return None
+    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+
+
 @views_bp.route("/runs/substrate")
 @login_required
 def s4_runs_list():
@@ -2787,11 +2804,26 @@ def s4_runs_list():
     newest-first. A focused new surface (the dense v1 /runs page is re-pointed at
     cutover Step 5). Best-effort read via the s4_execution_console bridge.
     D-214 adds the schedules panel (admin+): one cadence per env, sandbox-only."""
-    from primeqa.intelligence.s4_execution_console import list_runs
+    from primeqa.intelligence.s4_execution_console import _RUN_OUTCOMES, list_runs
     page = request.args.get("page", 1, type=int) or 1
     per_page = request.args.get("per_page", 20, type=int) or 20
+    # D-231 triage filters (the failures front door). `status` is the v1-alias arg
+    # the /results redirect forwards (e.g. ?status=failed); `outcome` is the
+    # canonical name — accept either, validated against the run_outcome enum.
+    raw_outcome = (request.args.get("outcome")
+                   or request.args.get("status") or "").strip().lower()
+    outcome = raw_outcome if raw_outcome in _RUN_OUTCOMES else None
+    verdict = (request.args.get("verdict") or "").strip() or None
+    env = request.args.get("env", type=int)
+    since_raw = (request.args.get("since") or "").strip().lower() or None
+    since = _parse_runs_since(since_raw)
     tid = request.user["tenant_id"]
-    data = list_runs(tid, page=page, per_page=per_page)
+    data = list_runs(tid, page=page, per_page=per_page, outcome=outcome,
+                     verdict=verdict, environment_id=env, since=since)
+    # Echo the active facets (raw arg forms) so the template renders active chips
+    # + carries the filter across pagination/chip links.
+    active_filters = {"outcome": outcome, "verdict": verdict, "env": env,
+                      "since": since_raw}
 
     schedules, sched_envs = None, []
     if request.user["role"] in ("admin", "superadmin"):
@@ -2824,7 +2856,7 @@ def s4_runs_list():
         from primeqa.intelligence.repair_agent import list_proposals
         repairs = list_proposals(tid)
     return render_template("runs/s4_list.html", **ctx(
-        active_page="test_library", data=data,
+        active_page="test_library", data=data, active_filters=active_filters,
         schedules=schedules, sched_envs=sched_envs, repairs=repairs))
 
 
