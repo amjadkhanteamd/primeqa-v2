@@ -65,6 +65,13 @@
           {% elif c.status == 'draft' %}bg-gray-100 text-gray-700
           {% else %}bg-amber-100 text-amber-800{% endif %}">{{ c.status }}</span>
         <span class="text-xs text-gray-400">v{{ c.version_seq }}</span>
+        {# D-232: the at-a-glance quarantine badge — a held-out claim does not
+           count toward the release pass-rate. #}
+        {% if quarantine and quarantine.active %}
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800"
+          title="{{ 'Manually quarantined — held out of the release pass-rate until lifted.' if quarantine.source == 'manual' else 'Auto-quarantined (flaky) — held out of the release pass-rate.' }}">
+          &#9888; {{ 'quarantined' if quarantine.source == 'manual' else 'auto-quarantined' }}</span>
+        {% endif %}
         {# D-228 (F3): the supersession affordance — deprecation is a human
            judgment with a required, provenance-recorded reason. #}
         {% if c.status != 'deprecated' and user.role in ['admin', 'tester', 'superadmin'] %}
@@ -92,6 +99,35 @@
         {{ csrf_input | safe }}
         <button type="submit" class="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500 whitespace-nowrap">Approve claim</button>
       </form>
+    </div>
+    {% endif %}
+
+    {# D-232: the flaky-test quarantine control. A quarantined claim is held out
+       of the release pass-rate so a known-flaky test can't sink a GO/NO-GO. A
+       manual pin wins over the automatic flake signal; lifting it is a durable
+       override. Same operator role-set as deprecate; pointless on a deprecated
+       claim (already out of grading), so gated the same way. #}
+    {% if c.status != 'deprecated' and user.role in ['admin', 'tester', 'superadmin'] %}
+    <div class="bg-white shadow rounded-lg p-5">
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="text-sm font-semibold text-gray-700">Flaky-test quarantine</h3>
+        {% if quarantine and quarantine.active %}
+        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
+          {{ 'quarantined' if quarantine.source == 'manual' else 'auto-quarantined (flaky)' }}</span>
+        {% endif %}
+      </div>
+      {% if quarantine and quarantine.active %}
+        <p class="text-xs text-gray-500 mb-3">This claim is <strong>held out of the release pass-rate</strong>{% if quarantine.source != 'manual' %} automatically, because it has been flipping between pass and fail (flaky){% endif %}. Lift the quarantine to let it count toward GO/NO-GO again.</p>
+        <form method="POST" action="/claims/{{ c.test_id }}/quarantine">
+          {{ csrf_input | safe }}
+          <input type="hidden" name="action" value="unpin">
+          <button type="submit" class="rounded-md bg-white ring-1 ring-orange-300 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-50">Lift quarantine</button>
+        </form>
+      {% else %}
+        <p class="text-xs text-gray-500 mb-3">Quarantine a known-flaky claim to hold it out of the release pass-rate so it can't sink a GO/NO-GO while you investigate. This is a recorded decision and stays in effect until lifted{% if quarantine and quarantine.manual == 'lifted' %} <span class="text-gray-400">(currently manually lifted &mdash; the automatic flake signal is suppressed)</span>{% endif %}.</p>
+        <button type="button" onclick="window.PrimeQA.openModal('quarantine-claim-modal')"
+          class="rounded-md bg-white ring-1 ring-orange-300 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-50">Quarantine this claim&hellip;</button>
+      {% endif %}
     </div>
     {% endif %}
 
@@ -271,6 +307,29 @@
     </div>
   {% endif %}
 </div>
+
+{# D-232: the quarantine modal — the reason is OPTIONAL (unlike deprecate's
+   required reason; a quarantine is reversible and often a quick triage call).
+   It rides activity_log.details, not a claim column. #}
+{% if c and c.status != 'deprecated' and user.role in ['admin', 'tester', 'superadmin'] and not (quarantine and quarantine.active) %}
+{% call modal_shell(id='quarantine-claim-modal', title='Quarantine this claim', size='md') %}
+  <form method="POST" action="/claims/{{ c.test_id }}/quarantine">
+    {{ csrf_input | safe }}
+    <input type="hidden" name="action" value="pin">
+    <p class="text-sm text-gray-600 mb-3">A quarantined claim is held out of the release pass-rate so a known-flaky test can't sink a GO/NO-GO decision. It stays quarantined until someone lifts it. Add a note so the next person knows why.</p>
+    <label for="quarantine-reason" class="block text-xs font-medium text-gray-500 mb-1">Reason <span class="text-gray-400">(optional)</span></label>
+    <textarea id="quarantine-reason" name="reason" rows="3"
+      class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
+      placeholder="e.g. Flips pass/fail on the nightly run — investigating the timing dependency."></textarea>
+    <div class="flex justify-end space-x-2 mt-4">
+      <button type="button" data-modal-close
+        class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700">Cancel</button>
+      <button type="submit"
+        class="rounded-md bg-orange-600 px-3 py-2 text-sm font-semibold text-white hover:bg-orange-500">Quarantine claim</button>
+    </div>
+  </form>
+{% endcall %}
+{% endif %}
 
 {# D-228 (F3): the deprecate modal — the reason is REQUIRED (D-ε-5) and lands
    in the claim's provenance, never as a column. #}

@@ -59,6 +59,12 @@
                 {% if c.status == 'approved' %}bg-blue-100 text-blue-800
                 {% elif c.status == 'draft' %}bg-gray-100 text-gray-700
                 {% else %}bg-amber-100 text-amber-800{% endif %}">{{ c.status }}</span>
+              {# D-232: a held-out (quarantined) claim does not count toward the
+                 release pass-rate. #}
+              {% if c.quarantined %}
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 ml-1"
+                title="Quarantined — held out of the release pass-rate until lifted.">&#9888; quarantined</span>
+              {% endif %}
             </td>
             <td class="px-4 py-2 text-gray-500 text-xs">{{ c.requirement_key or '' }}</td>
             <td class="px-4 py-2 text-gray-500">{{ c.updated_at[:10] if c.updated_at else '' }}</td>

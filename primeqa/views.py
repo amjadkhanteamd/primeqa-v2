@@ -2621,6 +2621,12 @@ def claims_list():
     per_page = request.args.get("per_page", 20, type=int) or 20
     q = (request.args.get("q") or "").strip() or None
     data = list_claims(request.user["tenant_id"], page=page, per_page=per_page, q=q)
+    # D-232: mark quarantined rows for the list badge — one best-effort batch read
+    # over the active ledger rows (a missing table degrades to no badges).
+    from primeqa.intelligence import quarantine as _quar
+    _q_ids = {r["test_id"] for r in _quar.list_quarantined(request.user["tenant_id"])}
+    for _c in data.get("claims") or []:
+        _c["quarantined"] = str(_c.get("test_id")) in _q_ids
     # The inbox chip: how many drafts are waiting for approval (D-206).
     pending = list_claims(request.user["tenant_id"], page=1, per_page=1, status="draft")
     return render_template("claims/list.html", **ctx(
@@ -2674,9 +2680,23 @@ def claims_detail(test_id):
                      for e in envs]
     finally:
         db.close()
+    # D-232: the persisted quarantine state for the badge + pin/lift control.
+    # `active` (any source) drives the badge + toggle; `manual` exposes a durable
+    # lift override so the page can say "auto-quarantine suppressed". Source is
+    # derived: an active row that is not a manual pin must be auto (a manual lift
+    # is inactive, so it can't be active). Best-effort — empties on any read error.
+    from primeqa.intelligence import quarantine as _quar
+    _q_manual = _quar.manual_states(tid).get(str(test_id))   # 'pinned'|'lifted'|None
+    _q_active = _quar.is_quarantined(tid, test_id)
+    quarantine_state = {
+        "active": _q_active,
+        "manual": _q_manual,
+        "source": ("manual" if _q_manual == "pinned" else "auto") if _q_active
+        else None,
+    }
     return render_template("claims/detail.html", **ctx(
         active_page="test_library", detail=detail, siblings=siblings,
-        runs=runs, environments=envs_data))
+        runs=runs, environments=envs_data, quarantine=quarantine_state))
 
 
 @views_bp.route("/claims/<uuid:test_id>/run", methods=["POST"])
@@ -2777,6 +2797,60 @@ def claims_deprecate(test_id):
                   "The reason is recorded in its provenance.", "success")
     else:
         flash(f"Could not deprecate: {res.get('error', 'unknown error')}", "error")
+    return redirect(f"/claims/{test_id}")
+
+
+@views_bp.route("/claims/<uuid:test_id>/quarantine", methods=["POST"])
+@role_required("admin", "tester", "superadmin")
+def claims_quarantine(test_id):
+    """D-232: the operator's manual flaky-test control — pin (quarantine) or lift a
+    claim. A MANUAL pin wins over the live flake signal (the claim is excluded from
+    the release pass-rate); a lift is a durable override that suppresses the live
+    auto-quarantine so the claim counts again (harmonization lives in the release
+    decision, D-232.2). Each action writes activity_log. Best-effort via the
+    quarantine ledger — a missing table (pre-migration) degrades to a no-op."""
+    from flask import flash
+
+    from primeqa.intelligence import quarantine
+    tid = request.user["tenant_id"]
+    action = (request.form.get("action") or "").strip()
+    if action == "pin":
+        reason = (request.form.get("reason") or "").strip() or None
+        ok = quarantine.pin(tid, str(test_id), reason=reason,
+                            actor=request.user["id"], source="manual")
+        log_action = "quarantine_pin"
+        ok_msg = ("Claim quarantined — it no longer counts toward the release "
+                  "pass-rate.")
+    elif action == "unpin":
+        reason = None
+        ok = quarantine.unpin(tid, str(test_id), actor=request.user["id"])
+        log_action = "quarantine_lift"
+        ok_msg = ("Quarantine lifted — the claim counts toward the release "
+                  "pass-rate again.")
+    else:
+        flash("Unknown quarantine action.", "error")
+        return redirect(f"/claims/{test_id}")
+
+    if not ok:
+        flash("Could not update the quarantine — the substrate is unavailable.",
+              "error")
+        return redirect(f"/claims/{test_id}")
+
+    # Audit: activity_log.entity_id is an int column (can't hold a UUID), so the
+    # test_id rides the details JSON; entity_type names the ledger.
+    db = next(get_db())
+    try:
+        from primeqa.core.models import ActivityLog
+        details = {"test_id": str(test_id)}
+        if reason:
+            details["reason"] = reason
+        db.add(ActivityLog(
+            tenant_id=tid, user_id=request.user["id"], action=log_action,
+            entity_type="claim_quarantine", entity_id=None, details=details))
+        db.commit()
+    finally:
+        db.close()
+    flash(ok_msg, "success")
     return redirect(f"/claims/{test_id}")
 
 
