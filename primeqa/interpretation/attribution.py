@@ -30,7 +30,7 @@ from primeqa.execution_engine.evidence import (
     UpdateAttemptEvidence,
 )
 from primeqa.interpretation.model import Cause, Interpretation
-from primeqa.semantic.formula import NonEvaluable, evaluate, parse
+from primeqa.semantic.formula import FieldRef, NonEvaluable, evaluate, parse, walk
 
 # The generic validation-rule rejection code (S3 / emission.py — the D-101.2
 # honest floor). A rejection carrying it is a VR firing; anything else is a
@@ -109,9 +109,19 @@ def _attribute_not_enforced(step, vrs, evidence) -> Optional[Cause]:
         # A delete leaves no field state to evaluate a formula against — and
         # VRs cannot enforce delete prohibitions anyway. No fabricated cause.
         return None
+    # Finding 2 (D-229): only VRs whose CURRENT formula references >=1 field
+    # present in the payload are *relevant* to THIS claim's failure. An
+    # unrelated rule (e.g. `CloseDate > TODAY()` on an Amount claim) is
+    # `NonEvaluable` and would otherwise land in `indeterminate` and OUTRANK
+    # the grounding VR's real drift — masking the precise cause. Filtering by
+    # field-overlap up front removes that noise from every bucket below.
+    payload_fields = set(state.keys())
+    relevant = [vr for vr in vrs
+                if vr.formula_text
+                and (_formula_fields(vr.formula_text) & payload_fields)]
     violated_active, violated_inactive, indeterminate = [], [], []
     active_not_violated = False
-    for vr in vrs:
+    for vr in relevant:
         if not vr.formula_text:
             continue
         result = evaluate(parse(vr.formula_text), state)
@@ -216,6 +226,20 @@ def _match_vr_by_message(messages, vrs) -> Optional[VrMeta]:
 # ---------------------------------------------------------------------------
 # Shared
 # ---------------------------------------------------------------------------
+
+def _formula_fields(formula_text: str) -> set:
+    """The set of BARE field names a VR formula references (Finding 2, D-229) —
+    the relevance signal that a rule concerns this claim's single-object
+    payload. Dotted refs (`Account.Industry`, cross-object) and unparseable
+    formulas contribute nothing: neither can match a bare-named payload key, so
+    the rule is treated as irrelevant rather than guessed-at."""
+    try:
+        ast = parse(formula_text)
+    except Exception:
+        return set()
+    return {n.path[0] for n in walk(ast)
+            if isinstance(n, FieldRef) and len(n.path) == 1}
+
 
 def _create_step(evidence: RunEvidence):
     for s in evidence.steps:

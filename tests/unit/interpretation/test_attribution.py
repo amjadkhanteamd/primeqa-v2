@@ -131,15 +131,55 @@ def test_vr_formula_indeterminate():
     # the active VR's current formula left the single-object evaluable subset
     # (org-state ISCHANGED) → violation can't be computed → indeterminate, NOT a
     # guessed drift (the old NotDerivable → drift collapse — D-114 fix). Carries the VR.
+    # D-229: the grounding VR references the SAME field the payload sets
+    # (ISCHANGED(Status__c) on a Status__c claim) — a coherent grounding, so the
+    # Finding-2 relevance filter keeps it.
     ev = _run(outcome="failed", create=_create(
         success=True, matched=False, http_status=201, body=[], record_id="001Z",
-        field_values={"Reason__c": None}))
+        field_values={"Status__c": "Final"}))
     s1 = _StubS1([VrMeta(name="ChangedGuard", is_active=True,
                          formula_text="ISCHANGED(Status__c)", error_message="x")])
     interp = _interp(ev, s1)
     assert interp.cause.cause_kind == "vr_formula_indeterminate"
     assert interp.cause.vr_name == "ChangedGuard"
     assert "indeterminate" in interp.attribution
+
+
+# ---------------------------------------------------------------------------
+# Finding 2 (D-229): the relevance filter — an unrelated NonEvaluable VR must
+# not mask the grounding VR's drift. (dogfood log P3)
+# ---------------------------------------------------------------------------
+
+def test_unrelated_indeterminate_vr_does_not_mask_drift():
+    # The P3 capture: the claim grounds on an Amount VR that DRIFTED (current
+    # `Amount > 999999`, payload Amount=50000 → evaluable, not violated). An
+    # UNRELATED `CloseDate > TODAY()` VR on the same object is NonEvaluable. Pre
+    # D-229 the unrelated rule landed in `indeterminate` and outranked the drift;
+    # the relevance filter (CloseDate ∉ payload) drops it, so the real drift surfaces.
+    ev = _run(outcome="failed", create=_create(
+        success=True, matched=False, http_status=201, body=[], record_id="001Z",
+        field_values={"Amount": 50000}))
+    s1 = _StubS1([
+        VrMeta(name="Discount_Guard", is_active=True,
+               formula_text="Amount > 999999", error_message="too big"),
+        VrMeta(name="Close_Date_Cannot_Be_Future", is_active=True,
+               formula_text="CloseDate > TODAY()", error_message="no future close"),
+    ])
+    interp = _interp(ev, s1)
+    assert interp.cause.cause_kind == "vr_formula_drift"
+    assert "edited since generation" in interp.attribution
+
+
+def test_only_irrelevant_vrs_falls_through_to_no_active_vr():
+    # Every VR on the object references a field the payload doesn't set → none is
+    # relevant to this claim → no fabricated indeterminate/drift; honest no_active_vr.
+    ev = _run(outcome="failed", create=_create(
+        success=True, matched=False, http_status=201, body=[], record_id="001Z",
+        field_values={"Amount": 50000}))
+    s1 = _StubS1([VrMeta(name="Close_Date_Cannot_Be_Future", is_active=True,
+                         formula_text="CloseDate > TODAY()", error_message="x")])
+    interp = _interp(ev, s1)
+    assert interp.cause.cause_kind == "no_active_vr"
 
 
 def test_no_active_vr():
@@ -313,10 +353,13 @@ def test_update_not_enforced_evaluates_the_effective_state():
 
 def test_update_not_enforced_ischanged_formula_is_indeterminate():
     # An org-state formula (ISCHANGED) is NonEvaluable on a flat payload —
-    # honest indeterminate, never a guessed drift.
+    # honest indeterminate, never a guessed drift. D-229: the update changes the
+    # SAME field the VR watches (StageName), so the Finding-2 relevance filter
+    # keeps the grounding rule.
     ev = _run2(outcome="failed", steps=[
         _setup(),
-        _mutation("update", success=True, matched=False, http_status=204, body=[])])
+        _mutation("update", success=True, matched=False, http_status=204, body=[],
+                  field_changes={"StageName": "Closed"})])
     s1 = _StubS1([VrMeta("NoStageMove", True,
                          "ISCHANGED(StageName)", "no stage moves")])
     interp = _interp(ev, s1)
