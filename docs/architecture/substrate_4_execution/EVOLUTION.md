@@ -233,3 +233,29 @@ live-resolved `$create-account.id` reference + padding → read-back → assert 
 both records torn down reverse-order with per-record cleanup attribution; S6 `value_persisted`.
 Residual: the positive attribution prose names the first create's sobject (wording only).
 DECISIONS_LOG D-205.1.
+
+## D-230 — 2.4: durable data-path cleanup + async bracketing
+
+2026-06-13. Two durability gaps in the live data path, both shipped.
+
+**Part A (durable cleanup reaper)** — merged `e0c2d6d`, deployed. The `s4_created_records` audit rows
+are now WRITE-AHEAD (`StrandedRecordSink`, own committed tx, `environment_id`-tagged, the sole writer;
+the finalize-time write removed) so a crash any time after `client.create` leaves a reapable row; in-run
+teardown flips `cleaned=true`. `reap_stranded_records` (scheduler `run_s4_cleanup_reaper_tick`) deletes the
+genuinely-stranded — gated by a **run-liveness interlock** (`NOT EXISTS` an active `s4_execution_job` for the
+env, the adversarial-review BLOCKER fix: the JOB reaper only marks the job dead, the synchronous worker keeps
+running), a 7-day give-up window, full-batch WARN. Migration `20260613_0010` (`s4_created_records.environment_id`)
+applied to prod tenant_1; pre-deploy NULL-env rows are skipped. Live kill-mid-create proof deferred per AK.
+
+**Part B (async data-path bracketing, D-230.2)** — the D-129/D-197/D-202 residual, retired. `construct_world`
+is split into `plan_world` (the S1 read-walk → a detached `WorldPlan` tree) + `build_world` (the SF creates from
+that plan, no reads); `construct_world` is the thin wrapper. `run_recipe_execution_async` gained a data branch
+that pre-resolves the operational world + resolves the kind-aware client in its select bracket, then executes
+holding **no DB connection** — verified against the parent-provisioning chain (no mid-execute read escapes). The
+consumer's default `run_fn` flipped sync→async (everything→async); the per-in-flight-job held connection is
+retired; the sync path stays the live-proven fallback (UI Run). A 5-reviewer adversarial pass found NO correctness
+defects (the no-connection invariant, snapshot completeness, consumer-flip safety, and persist/edges all hold);
+the plan/build split also makes the SYNC path create strictly fewer records on a doomed world (identical
+`(filler, unfillable)` outcome; one transport-error-on-a-doomed-branch sub-case flips the terminal ErrorSurface to
+`UnfillableWorld`, both still `errored`). Zero migrations for Part B. Suites: unit 2554, execution_engine
+integration 40. DECISIONS_LOG D-230 / D-230.2.

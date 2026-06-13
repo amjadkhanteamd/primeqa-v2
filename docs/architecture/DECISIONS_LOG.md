@@ -12966,4 +12966,70 @@ discovery F5-deferred) — unchanged.
 
 ---
 
+### D-230 — 2.4 durable data-path cleanup + async bracketing (close)
+
+Both halves of 2.4 are built, offline-green, adversarially reviewed.
+
+**Part A (durable cleanup reaper) — MERGED `e0c2d6d` + deployed (D-230.1a/1b/1c).**
+Write-ahead `s4_created_records` (own-tx, `environment_id`-tagged, the sole writer);
+mark-cleaned on in-run teardown; `reap_stranded_records` with the run-liveness interlock
+(`NOT EXISTS` active `s4_execution_job` for the env — the review BLOCKER fix), a 7-day
+give-up window, full-batch WARN; scheduler `run_s4_cleanup_reaper_tick`. Migration
+`20260613_0010` (`s4_created_records.environment_id`, nullable) applied to prod tenant_1
+(AK-verified). Pre-deploy rows carry `environment_id` NULL → the reaper skips them (no
+surprise deletions). **Live kill-mid-create proof DEFERRED per AK (2026-06-13)** — the
+offline proof (12 integ tests incl. interlock + give-up + transient-retry) + the safe
+deploy stand; captured opportunistically later.
+
+**Part B (async data-path bracketing) — D-230.2, branch
+phase-39-substrate-4-async-datapath (b823beb design / de14ef6 split+async / a5ecdca
+consumer-flip / cd18746 review-fixes).** Split `construct_world` into `plan_world` (S1
+read-walk → a detached `WorldPlan` tree) + `build_world` (SF creates from the plan, no
+reads); `construct_world` = the thin wrapper `build_world(plan_world(...))`.
+`run_recipe_execution_async` gained a data branch: `_prepare_async_execute` resolves the
+kind-aware client + the `{step_id: WorldPlan}` map in bracket 1 (open connection), execute
+(bracket 2) holds NO connection, persist is bracket 3. The consumer default `run_fn`
+flipped sync→async (everything→async; no held connection per in-flight job; the D-197
+interim retired). The sync `run_recipe_execution_for_tenant` stays the live-proven fallback
+(UI Run path).
+
+**Adversarial review (5 reviewers, refute-mode): NO correctness defects.** Confirmed: the
+no-connection-across-SF-I/O invariant holds (`build_world` has no `s1` param; `WorldPlan` is
+plain data; bracket 1 closes before bracket 2); the snapshot is transitively complete (every
+S1 read — incl. picklist + `current_version_seq` — is on the plan side); the consumer flip is
+a safe driver for all kinds (return-shape match, bad-creds raise → job failed, unknown kind →
+loud, 1-step create-rejected → `{}` world); persist/edges correct (bracket-3 S6 interpret
+reads S1 from the fresh connection; an execute raise leaks nothing + fails the job; a
+post-create raise leaves a reapable `cleaned=false` row). Two low-severity fixes landed
+(cd18746): an async world-building coverage test (sync-vs-async equivalence at
+`execute_data_recipe`) and a stale `worker.py` comment.
+
+**Behavior-note corrections (from the review — the D-230.2 design "identical outcome" claim
+was slightly overstated):**
+- The plan/build split changes the SYNC path too (not async-only): `construct_world` now
+  plans the whole parent recursion read-only before building, so a doomed/partial world is
+  detected at plan time and the buildable part is never created-then-torn-down. Strictly
+  fewer org creates; identical `(filler, unfillable)` outcome.
+- One genuine divergence beyond "fewer creates": when a wasted create on a plan-time-doomed
+  branch would hit a TRANSPORT error, old `construct_world` RAISED (SFClientError); new prunes
+  and returns `unfillable`. Both terminate the run as `errored`, but the terminal ErrorSurface
+  flips transport-error → `UnfillableWorld`. Accepted (new is arguably more correct — the org
+  is genuinely unfillable; the throwaway-record transport blip is incidental). Proven by an
+  8000-seed differential fuzz: 0 outcome-tuple divergences where neither side raises, 17
+  transport-raise-vs-prune cases.
+- The no-connection invariant is "no connection across the EXECUTE bracket's SF I/O." Client
+  resolution's one bounded OAuth round-trip happens in bracket 1 with the connection open — a
+  documented, accepted tradeoff (strictly better than the sync path, which held it across the
+  whole run).
+
+**Offline gate:** unit 2554, execution_engine integration 40. Zero migrations for Part B.
+Author AK, zero Co-Authored-By; merge on explicit GO.
+
+**Residuals.** (1) Part A's live kill-mid-create proof — deferred per AK. (2) Automation
+side-effect records during the read-retry window — pre-existing Part A residual (reaper
+read-back reconciliation), not introduced by Part B. (3) `_MIN_AVAILABLE_ENV` advertises both
+capabilities (F5 capability discovery) — unchanged.
+
+---
+
 ---
