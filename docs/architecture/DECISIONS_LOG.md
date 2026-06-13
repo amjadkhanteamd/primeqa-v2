@@ -12806,6 +12806,70 @@ recipe is the refinement if it bites); `value_not_persisted` attributes only
 field-createability (other causes — before-save automation, defaults — pass through);
 the live re-capture; the prod historical-clutter tidy.
 
+### D-230 — 2.4: durable data-path cleanup + async bracketing (design)
+
+**Context.** The substrate's live data runs create real Salesforce records (the
+target + provisioned parents, F6.2) and tear them down reverse-order in-run
+(F6.1). Two durability gaps remain, both the "5b 2.4" item:
+1. **Stranded records.** The `s4_created_records` audit rows are written at
+   FINALIZE (`persist_run_evidence`, after teardown). If a run crashes BETWEEN
+   creating a record and finalize — a worker kill, a transport hang, an
+   unhandled raise after `client.create` — the record exists in Salesforce with
+   NO DB row, so nothing can ever reap it. `s4_created_records.cleaned` exists as
+   "the future-reaper flag" but no reaper consumes it, and no row is written
+   early enough to survive a mid-run crash.
+2. **Async data-path.** `run_recipe_execution_async` (D-129/B0) brackets the
+   METADATA path so no DB connection is held across Salesforce I/O, but the DATA
+   path is explicitly deferred (run.py:354 raises) — it reads S1 mid-execute
+   (`construct_world`: field requiredness, parent lookups, createability), so the
+   sync path runs it holding a connection across the live mutation.
+
+**Decision — Part A (durable cleanup reaper). The high-value, self-contained
+half; ship first.**
+- **Write-ahead the audit row.** `s4_created_records` rows are written
+  immediately after each successful `client.create` (a brief own-transaction
+  write, async-bracket-compatible), `cleaned=false`, BEFORE the next SF call — so
+  a crash any time after a create leaves a reapable row. The finalize-time bulk
+  write is removed (superseded — no double rows).
+- **Mark cleaned on in-run teardown.** A record the in-run teardown deletes
+  successfully is flipped `cleaned=true` (brief write) — so the reaper targets
+  only genuinely-stranded rows.
+- **The reaper.** `reap_stranded_records(tenant, stale_minutes)`: select
+  `cleaned=false AND created_at < now()-stale` (the run had time to finish),
+  resolve the env's data-mutation client, DELETE each from SF (best-effort, 404
+  tolerated — already gone), flip `cleaned=true`. Per-tenant isolation (one
+  tenant's failure never starves others), scheduler-driven beside the existing
+  `run_s4_reaper_tick` (the JOB reaper) — a sibling `run_s4_cleanup_reaper_tick`.
+  Idempotent, bounded batch, `log()` what it dropped.
+- No migration — `s4_created_records` already carries `cleaned` + `created_at`.
+
+**Decision — Part B (async data-path bracketing). The harder refactor; ship
+second.**
+- Pre-resolve every S1 read `construct_world` needs into a DETACHED snapshot
+  (`WorldPlan`) inside the SELECT bracket — field requiredness/createability +
+  the parent-provisioning chain for the recipe's objects — so the EXECUTE bracket
+  holds no DB connection across the live mutation. `construct_world` +
+  `data_executor` take the pre-built snapshot instead of reading S1 mid-execute.
+- Lift the run.py:354 deferral; `run_recipe_execution_async` brackets the data
+  path with the same three-bracket invariant (select+snapshot → execute DB-free →
+  persist). The write-ahead audit writes (Part A) are their own brief brackets
+  inside execute, not a held connection — consistent with the invariant.
+- Risk: `construct_world` is recursive (parents of parents); the snapshot must be
+  transitively complete or the execute bracket would need a connection. The
+  pre-resolve walks the same recursion read-only up front.
+
+**Slices.** 1 = Part A reaper (write-ahead + mark-on-teardown + reaper + scheduler
+tick + unit/integration). 2 = Part B WorldPlan snapshot + async data bracket
+(+ the no-connection-during-execute invariant test). 3 = live durability proof on
+env 59 (kill a run mid-create, confirm the reaper deletes the stranded record) +
+close + merge. Adversarial review before merge (the live-path discipline D-229
+earned).
+
+**Merge gate.** Offline suites green; the stranded-record reaper proven to delete
+a deliberately-stranded record on env 59; author AK, zero Co-Authored-By; merge on
+explicit GO. Parts A and B may land as separate merges if Part B's refactor proves
+large.
+
 ---
 
 ---
