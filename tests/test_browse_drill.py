@@ -95,6 +95,43 @@ def run_tests():
     results.append(test("A2. an unknown step kind still renders (no 500)",
                         test_evidence_headline_degrades))
 
+    # ---- B — last-run health column on /claims ----------------------------
+
+    def _claims_list(last_run):
+        return {"available": True, "total": 1, "page": 1, "per_page": 20,
+                "total_pages": 1, "claims": [{
+                    "test_id": CLAIM_ID, "title": "Amount cap",
+                    "claim_kind": "prohibition-claim",
+                    "archetype": "prohibited_state", "status": "approved",
+                    "version_seq": 1, "depth": "behavioral",
+                    "requirement_key": "SQ-1", "updated_at": "2026-06-14",
+                    "last_run": last_run}]}
+
+    def test_last_run_badge():
+        lr = {"run_id": RUN_ID, "outcome": "failed",
+              "finished_at": "2026-06-13T06:03:01+00:00"}
+        with patch("primeqa.intelligence.s3_generation_console.list_claims",
+                   return_value=_claims_list(lr)), \
+             patch("primeqa.intelligence.quarantine.list_quarantined",
+                   return_value=[]):
+            html = client.get("/claims").get_data(as_text=True)
+        assert f"/runs/{RUN_ID}" in html, "last-run badge does not link to the run"
+        assert "Last run" in html, "Last run column header missing"
+        # the failed outcome drives the red badge text
+        assert ">failed</a>" in html, "failed outcome badge missing"
+    results.append(test("B1. /claims shows a last-run badge linking to the run",
+                        test_last_run_badge))
+
+    def test_never_run():
+        with patch("primeqa.intelligence.s3_generation_console.list_claims",
+                   return_value=_claims_list(None)), \
+             patch("primeqa.intelligence.quarantine.list_quarantined",
+                   return_value=[]):
+            html = client.get("/claims").get_data(as_text=True)
+        assert "never run" in html, "never-run state missing"
+    results.append(test("B2. a claim with no runs shows 'never run'",
+                        test_never_run))
+
     passed = sum(results)
     total = len(results)
     print(f"\n{'='*60}\n  {passed}/{total} passed\n{'='*60}\n")

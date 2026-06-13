@@ -297,8 +297,11 @@ def _list_claims(conn, *, limit: int, offset: int, q=None, status=None):
 
     Each row also carries the D-206 triage surface — ``title`` (the claim AS a
     plain-English sentence, from ``asserted_truth``), ``depth`` (behavioral vs
-    configuration-check, from the current recipes' kinds), and the most recent
-    ``generated_from`` requirement key — all batched in one statement (no N+1)."""
+    configuration-check, from the current recipes' kinds), the most recent
+    ``generated_from`` requirement key, and (D-233) ``last_run`` — the single
+    most recent s4 run for the claim ``{run_id, outcome, finished_at}`` or None —
+    all batched in one statement (no N+1). ``last_run`` is by recency (matches
+    ``read_claim_runs``), NOT the decision's version-correct flake window."""
     clause, qp = "", {}
     if q:
         clause += (" AND (c.claim_kind::text ILIKE :q OR c.archetype::text ILIKE :q "
@@ -315,7 +318,9 @@ def _list_claims(conn, *, limit: int, offset: int, q=None, status=None):
         "c.claim_kind::text AS claim_kind, c.status::text AS status, "
         "c.version_seq, c.updated_at, c.asserted_truth, "
         "COALESCE(rk.kinds, ARRAY[]::text[]) AS recipe_kinds, "
-        "req.external_key AS requirement_key "
+        "req.external_key AS requirement_key, "
+        "lastrun.run_id AS last_run_id, lastrun.outcome AS last_outcome, "
+        "lastrun.finished_at AS last_finished "
         "FROM test_claims c "
         "LEFT JOIN LATERAL ("
         "  SELECT array_agg(DISTINCT r.recipe_kind::text) AS kinds "
@@ -325,6 +330,12 @@ def _list_claims(conn, *, limit: int, offset: int, q=None, status=None):
         "  SELECT l.external_key FROM test_requirement_links l "
         "  WHERE l.test_id = c.test_id AND l.link_kind = 'generated_from' "
         "  ORDER BY l.linked_at DESC LIMIT 1) req ON true "
+        "LEFT JOIN LATERAL ("
+        "  SELECT CAST(lr.run_id AS text) AS run_id, lr.outcome::text AS outcome, "
+        "         lr.finished_at "
+        "  FROM s4_execution_runs lr "
+        "  WHERE lr.claim_test_id = c.test_id "
+        "  ORDER BY lr.finished_at DESC LIMIT 1) lastrun ON true "
         f"WHERE c.valid_to IS NULL{clause} "
         "ORDER BY c.updated_at DESC, c.test_id LIMIT :limit OFFSET :offset"),
         {**qp, "limit": limit, "offset": offset}).mappings().all()
@@ -333,7 +344,11 @@ def _list_claims(conn, *, limit: int, offset: int, q=None, status=None):
                "version_seq": r["version_seq"], "updated_at": _iso(r["updated_at"]),
                "title": claim_title(r["claim_kind"], r["asserted_truth"]),
                "depth": claim_depth(r["recipe_kinds"]),
-               "requirement_key": r["requirement_key"]}
+               "requirement_key": r["requirement_key"],
+               "last_run": ({"run_id": r["last_run_id"],
+                             "outcome": r["last_outcome"],
+                             "finished_at": _iso(r["last_finished"])}
+                            if r["last_outcome"] else None)}
               for r in rows]
     return (total or 0), claims
 

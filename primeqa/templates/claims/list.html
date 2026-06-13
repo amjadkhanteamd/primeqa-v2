@@ -35,6 +35,7 @@
             <th class="px-4 py-2">Test</th>
             <th class="px-4 py-2">Depth</th>
             <th class="px-4 py-2">Status</th>
+            <th class="px-4 py-2">Last run</th>
             <th class="px-4 py-2">From</th>
             <th class="px-4 py-2">Updated</th>
           </tr>
@@ -64,6 +65,21 @@
               {% if c.quarantined %}
               <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 ml-1"
                 title="Quarantined — held out of the release pass-rate until lifted.">&#9888; quarantined</span>
+              {% endif %}
+            </td>
+            <td class="px-4 py-2">
+              {# D-233: the most recent run's health, at a glance (recency, not
+                 version-filtered). Links straight to the run detail. #}
+              {% if c.last_run %}
+              <a href="/runs/{{ c.last_run.run_id }}"
+                class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium hover:underline
+                {% if c.last_run.outcome == 'passed' %}bg-green-100 text-green-800
+                {% elif c.last_run.outcome == 'failed' %}bg-red-100 text-red-800
+                {% elif c.last_run.outcome == 'errored' %}bg-amber-100 text-amber-800
+                {% else %}bg-gray-100 text-gray-700{% endif %}"
+                title="{{ c.last_run.finished_at[:19] if c.last_run.finished_at else '' }}">{{ c.last_run.outcome }}</a>
+              {% else %}
+              <span class="text-xs text-gray-400">never run</span>
               {% endif %}
             </td>
             <td class="px-4 py-2 text-gray-500 text-xs">{{ c.requirement_key or '' }}</td>
