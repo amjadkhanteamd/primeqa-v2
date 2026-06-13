@@ -13077,4 +13077,36 @@ integration test). Direct-to-`main` (v2 runtime presentation work, per the D-206
 
 ---
 
+### D-231 — theme #5: the failures front door (close)
+
+Shipped direct-to-`main` (design 3972576 / Slice 2 55ee0a6 / Slice 3 4140174 / Slice 4 0b6d0c4).
+
+**The front door (Slice 2).** `/runs/substrate` gained outcome triage chips (All / Failed /
+Errored / Passed) + a one-click "Today's failures" + a clear link; `list_runs` gained
+optional `outcome`/`verdict`/`environment_id`/`since` filters via a shared `_runs_where`
+fragment used by BOTH the COUNT and the page query (pagination totals stay correct), the
+best-effort never-raise posture preserved. `s4_runs_list` consumes
+`status`(alias→outcome)/`outcome`/`verdict`/`env`/`since` (outcome validated against the
+run_outcome enum; `_parse_runs_since` handles `today` + ISO dates, bad input ignored); the
+`/results?status=failed` redirect the alias forwards now LANDS. A filtered-but-empty result
+shows "No runs match these filters" with a clear CTA.
+
+**The repair drill (Slice 3).** A failed run's detail page surfaces the open ('proposed')
+repair proposal for THAT run inline (admin+) as an "A fix is ready for this run" card with an
+Approve/Reject action, reusing the existing `/runs/substrate/repairs/<id>` decide POST — the
+drill ends at an action, not read-only suggestion text. `repair_agent.open_proposal_for_run`
+is the best-effort lookup.
+
+**Tests (Slice 4).** 6 filter-logic units (`tests/unit/test_runs_filter.py`, in the suite) +
+5 results-page route tests (chips render, the `?status=failed` alias lands, bad input ignored,
+the inline repair card). 9/9 on the route script; unit suite green. No migration.
+
+**Residuals (the deliberate second increment for this piece).** (1) The requirement back-link
+on claim/run pages — needs generated-from requirement-id plumbing; the run→claim link already
+exists. (2) `mine` filter — `s4_execution_runs` has no per-user attribution. (3) Evidence-step
+humanization (the raw `render_value` X-ray on `s4_detail.html`) + a unified per-row
+last-run-health on `/claims`. The BA/story prose layer stays parked.
+
+---
+
 ---
