@@ -2922,8 +2922,15 @@ def s4_run_detail(run_id):
     v1 /runs/<int:id> detail. Best-effort read via the s4_execution_console bridge."""
     from primeqa.intelligence.s4_execution_console import read_run_detail
     detail = read_run_detail(request.user["tenant_id"], run_id)
+    # D-231: close the failure→repair drill — surface the actionable repair
+    # proposal for THIS run inline (admin+), reusing the queue's decide POST, so the
+    # drill ends at an action instead of read-only suggestion text.
+    repair_proposal = None
+    if request.user["role"] in ("admin", "superadmin"):
+        from primeqa.intelligence.repair_agent import open_proposal_for_run
+        repair_proposal = open_proposal_for_run(request.user["tenant_id"], run_id)
     return render_template("runs/s4_detail.html", **ctx(
-        active_page="test_library", detail=detail))
+        active_page="test_library", detail=detail, repair_proposal=repair_proposal))
 
 
 @views_bp.route("/requirements/<int:req_id>/edit", methods=["POST"])

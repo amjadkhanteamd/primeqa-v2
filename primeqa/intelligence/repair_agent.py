@@ -123,6 +123,27 @@ def list_proposals(tenant_id: int, *, statuses=("proposed", "approved"),
         return {"available": False, "proposals": []}
 
 
+def open_proposal_for_run(tenant_id: int, run_id) -> Optional[dict]:
+    """Best-effort: the open ('proposed') repair proposal for ONE run, or None
+    (D-231). Lets the run-detail page surface the actionable fix inline instead of
+    dead-ending at read-only suggestion text. Never raises."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            row = conn.execute(text(
+                "SELECT id, proposal_kind FROM repair_proposals "
+                "WHERE run_id = CAST(:rid AS uuid) AND status = 'proposed' "
+                "ORDER BY created_at DESC LIMIT 1"),
+                {"rid": str(run_id)}).mappings().first()
+        if row is None:
+            return None
+        return {"id": row["id"], "proposal_kind": row["proposal_kind"]}
+    except Exception as exc:
+        log.warning("open_proposal_for_run failed for tenant %s run %s: %s",
+                    tenant_id, run_id, exc)
+        return None
+
+
 def decide_proposal(tenant_id: int, proposal_id: int, *, approve: bool,
                     decided_by: Optional[int] = None) -> dict:
     """Approve (and immediately APPLY) or reject one proposal. Apply:
