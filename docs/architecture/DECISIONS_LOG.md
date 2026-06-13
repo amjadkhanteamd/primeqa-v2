@@ -13165,4 +13165,67 @@ run-exclusion at enqueue (opt-in env policy). (3) Recipe-level quarantine.
 
 ---
 
+### D-232 — persisted flaky-test quarantine: SHIPPED (close)
+
+**What shipped (Slices 1–3, all on `main` locally; pushed at close).** The operator
+pin/unpin ledger over the D-200 flake signal, end to end.
+
+- **Slice 1 — ledger + store** (commit `03a9fd1`). Migration
+  `alembic/versions/tenant/20260614_0010_claim_quarantine.py` (`revision='20260614_0010'`,
+  `down_revision='20260613_0010'`) — table `claim_quarantine(test_id UUID PK, active BOOL
+  default true, reason, source CHECK in ('manual','auto'), pinned_at/by, lifted_at/by)` +
+  partial index `idx_claim_quarantine_active WHERE active=true`. `primeqa/intelligence/quarantine.py`
+  — best-effort own-connection store: `manual_states` (the `{test_id: 'pinned'|'lifted'}`
+  override map over `source='manual'` rows — AUTO is never an override), `is_quarantined`
+  (any active row → the badge), `list_quarantined`, `pin(..., source='manual')` (upsert
+  `active=true`, ON CONFLICT), `unpin` (sets `active=false` + persists a durable manual lift
+  even when no row existed — the operator explicitly overriding the live auto-signal).
+
+- **Slice 2 — decision harmonization** (commit `0406714`). `substrate_decision._assemble_claim_evidence(...,
+  tenant_id=)` fetches `quarantine.manual_states(tenant_id)` once (own-connection — no
+  session poisoning, no tenant_id plumbing into the pure scorer) and attaches
+  `manual_quarantine ∈ {pinned, lifted, None}` onto each claim's evidence. The new pure
+  `_claim_quarantined(c)` encodes precedence — manual pin ⇒ always quarantined; manual lift
+  ⇒ overrides the live signal (counted); absent a manual entry ⇒ the live `_is_flaky AND
+  latest ≠ passed` governs. `compute_substrate_decision`'s quarantine block consults it;
+  3 read call sites thread `tenant_id` (`get_release_substrate_decision` + the two
+  `substrate_dashboard` reads). So the persisted ledger + the decision-time recompute never
+  disagree.
+
+- **Slice 3 — the UI** (commit `be9dced`). `POST /claims/<id>/quarantine`
+  (admin/tester/superadmin), `action ∈ {pin, unpin}` → `quarantine.pin/unpin` (manual) +
+  an `activity_log` row (`quarantine_pin` / `quarantine_lift`; `entity_type='claim_quarantine'`,
+  `entity_id=NULL` since it is an int column, UUID rides `details`). `claims/detail.html`
+  gains an at-a-glance header badge (manual vs auto), a "Flaky-test quarantine" panel (one-click
+  Lift when active / a pin modal with an OPTIONAL reason when inactive / a "currently manually
+  lifted" override note), and `claims/list.html` a per-row badge fed by one `list_quarantined`
+  batch read. The view derives `source` (an active row that is not a manual pin must be auto)
+  from `is_quarantined` + `manual_states`.
+
+**Deviations from the design.** (a) The pin reason is OPTIONAL (a quarantine is reversible
+triage), unlike deprecate's REQUIRED reason — design said "reason + activity_log" without
+pinning the obligation; chose optional. (b) The badge reflects the PERSISTED ledger
+(`is_quarantined`); a claim auto-quarantined by the live signal alone (flaky+not-passed, NO
+ledger row) is correctly excluded from the release pass-rate but does NOT yet show a claim-page
+badge — logged as residual (4), closed by the auto-PIN-to-ledger loop (residual 1).
+
+**Verification.** Unit harmonization `tests/unit/test_quarantine_harmonization.py` (4) + the
+D-200 `test_substrate_decision_compute.py` (20, no regression); store integration
+`tests/integration/intelligence/test_quarantine.py` (5, local test DB); UI route/render
+`tests/test_quarantine_page.py` (9 — render across the four ledger states with mocked bridges
+on prod reads; route dispatch + audit happy/best-effort paths with the ledger + audit session
+mocked so nothing mutates prod). Full unit suite **2565** green. The web surface degrades
+cleanly against prod TODAY (table absent → logged warning, page still 200).
+
+**AK-side action.** Apply tenant migration `20260614_0010_claim_quarantine` to the Railway prod
+DB (additive — the D-230 ordering: the code already deploys and degrades gracefully; pin/unpin
++ badges go live the moment the table exists). `alembic -x mode=all_tenants upgrade tenant@head`
+(or per-tenant `-x tenant_id=1`).
+
+**Residuals (carried).** (1) auto-PIN-to-ledger scheduled loop (reuse `_is_flaky`). (2) hard
+run-exclusion at enqueue (opt-in env policy). (3) recipe-level quarantine. (4) mirror the
+live-signal auto-quarantine onto the claim-page badge (subsumed by residual 1).
+
+---
+
 ---
