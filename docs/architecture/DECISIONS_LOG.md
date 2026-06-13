@@ -13109,4 +13109,60 @@ last-run-health on `/claims`. The BA/story prose layer stays parked.
 
 ---
 
+### D-232 — theme #5: persisted flaky-test quarantine (the operator pin/unpin ledger) (design)
+
+**Context.** Theme #5, piece 2. D-200 shipped the flake SIGNAL (`_is_flaky`: ≥2 outcome
+transitions over the last 5 version-correct `s4_execution_runs`) + a DECISION-TIME quarantine
+(a flaky claim whose latest run ≠ passed is excluded from the release pass-rate + surfaced) +
+the dashboard "Flaky tests" card. It is STORAGE-FREE — recomputed every release evaluation,
+with NO persisted state, NO operator control, NO run effect. D-200 explicitly deferred "a
+persisted quarantine ledger … if operators need manual pin/unpin." This piece lands that
+ledger. (v1 had `is_quarantined` columns + a `lift_quarantine` endpoint, but its auto-scorer +
+run-gate were NEVER wired and the whole thing was retired D-221.3 — we build the operator-control
+half it lacked.)
+
+**Decision — target = the claim (test_id).** The signal is per-claim; the dashboard + decision
+key on `claim_test_id`. Recipe-level quarantine is deferred (the signal isn't recipe-scoped).
+
+**Decision — storage = a per-tenant `claim_quarantine` LEDGER, not a column on `test_claims`.**
+`test_claims` is version-seq-versioned; quarantine is a claim-IDENTITY fact (test_id), so a
+column there would be wrongly per-version. The ledger: one row per claim (upsert on test_id) —
+`test_id (PK), active BOOL, reason TEXT, source ('auto'|'manual'), pinned_at, pinned_by INT
+NULL, lifted_at, lifted_by INT NULL`. `active=true` ⇒ quarantined; unpin sets `active=false`
++ `lifted_at/by` (history kept). Tenant-branch migration (additive). The store is BEST-EFFORT:
+a missing table (pre-migration) reads as "no quarantine" so the decision + UI degrade gracefully
+and the code deploys BEFORE the migration is applied (the D-230 additive-ordering pattern — AK
+applies the migration to prod, then pin/unpin works).
+
+**Decision — run effect = FLAG, not exclude (the exclude-vs-flag fork, settled).** A quarantined
+claim STILL RUNS — the substrate is evidence-first (D-200/D-201): you want fresh evidence even on
+a flaky test, and a silent run-exclusion contradicts that ethos. The quarantine FLAGS the claim
+(UI badge) + excludes it from the release pass-rate (consistent with the existing auto behavior).
+A HARD run-exclusion (skip-at-enqueue) is OPT-IN per env policy and DEFERRED.
+
+**Decision — decision harmonization (the double-source-of-truth fix): MANUAL wins, AUTO is the
+live default.** `substrate_decision`'s quarantine set becomes, per counted claim: a MANUAL active
+pin ⇒ always quarantined; a MANUAL lift (`active=false`) ⇒ never quarantined (overrides the live
+signal); NO manual entry ⇒ the existing live `_is_flaky AND latest ≠ passed`. The ledger feeds a
+`manual_quarantine ∈ {pinned, lifted, None}` onto each claim's evidence; the pure decision
+consults it. So the persisted ledger + the decision-time recompute never disagree (the operator's
+explicit call always wins).
+
+**Decision — auto-PIN-to-ledger loop = DEFERRED.** The live signal already auto-detects flaky AT
+DECISION TIME (no persistence needed for the release effect). A scheduled loop that PERSISTS
+auto-detections into the ledger (the v1 `auto_quarantine` vision) is a refinement — this piece
+delivers operator-control + the durable manual ledger; the auto-pin loop is a residual.
+
+**Slices.** 0 = this design. 1 = the `claim_quarantine` migration + `QuarantineStore` (best-effort
+is_quarantined / list_states / pin / unpin). 2 = decision harmonization (`_assemble_claim_evidence`
+attaches `manual_quarantine`; the decision honors it) + tests. 3 = the manual pin/unpin route
+(`POST /claims/<id>/quarantine`, reason + `activity_log`) + the claim-detail control + a quarantine
+badge (claim detail + claims list). 4 = close + docs (AK applies the migration to prod).
+Direct-to-`main` (v2 runtime, per the D-200 precedent).
+
+**Residuals.** (1) The auto-PIN-to-ledger scheduled loop (reuse `_is_flaky`). (2) Hard
+run-exclusion at enqueue (opt-in env policy). (3) Recipe-level quarantine.
+
+---
+
 ---
