@@ -13032,4 +13032,49 @@ capabilities (F5 capability discovery) — unchanged.
 
 ---
 
+### D-231 — theme #5: the failures front door (substrate Results triage + drill-to-repair) (design)
+
+**Context.** Theme #5 ("everyday surfaces"), first piece. The substrate Results surface EXISTS
+— `/runs/substrate` (`s4_runs_list` → `s4_execution_console.list_runs`) lists all S4 runs
+newest-first with outcome + S6 verdict + claim + finished + duration, and `/results` redirects to
+it (D-218). But it is a FLAT dump with no filters/search: `list_runs(tenant_id, page, per_page)`
+has no WHERE (s4_execution_console.py:195-232). A tester cannot ask "show me today's failures" —
+the `/results?status=failed&mine=1` query string is forwarded by the alias (views.py:580) but
+`s4_runs_list` never reads it (silently dropped; tests/test_results_page.py:125 proves the
+forward-but-ignore). **Failures have no front door.** Separately, the failure→fix drill dead-ends:
+run detail (`/runs/<uuid>`) shows the S6 cause + `repair_suggestions` as read-only text, while the
+actionable repair queue lives on a DIFFERENT page (`/runs/substrate` "Repair proposals" panel,
+D-215.1) with no link between them.
+
+**Decision — Slice 2: the front door (in-place Results filters).** Add optional filters to the
+read bridge, NOT a new view. `list_runs(tenant_id, *, page, per_page, outcome=None, verdict=None,
+environment_id=None, since=None)`; `_list_runs` builds ONE shared WHERE fragment from the non-None
+filters and uses it for BOTH the COUNT and the page query (so pagination totals stay correct),
+preserving the best-effort never-raise posture. `s4_runs_list` reads `status` (alias→outcome) /
+`outcome` / `verdict` / `env` / `since` from `request.args` and threads them; the `/results`
+alias's forwarded `?status=failed` now lands. `s4_list.html` gains filter chips (Outcome: failed /
+errored / passed / all; a one-click "Today's failures"; Verdict; Env) that round-trip the active
+filter in the querystring + page links. Persona: tester-first triage, consistent with D-206's
+ratified "AK + testers, triage-optimized" decision.
+
+**Decision — Slice 3: close the failure→repair drill.** From a failed run's detail page, deep-link
+its `repair_suggestions` block to the matching repair proposal (when one exists), reusing the
+existing D-215.1 proposal queue + `decide_proposal` POST — so the drill ends at an ACTION, not
+read-only text. Add a requirement back-link on the claim + run detail pages ("what was this test
+for") so the drill climbs run → claim → requirement.
+
+**Scope / forks.** No migrations (all reads over existing `s4_execution_runs` / `s6_interpretations`
+/ repair-proposal tables). `mine` (my runs) is DEFERRED — `s4_execution_runs` has no per-user
+attribution column (runs are claim-keyed); a `triggered_by` axis is its own slice. Evidence-step
+humanization (the raw `render_value` X-ray on `s4_detail.html`) and a unified per-row
+last-run-health on `/claims` are a deliberate SECOND increment, not this piece. The BA/story prose
+layer stays parked.
+
+**Slices.** 1 = this design. 2 = the front-door filters (bridge + route + chips). 3 = the
+repair-drill link + requirement back-link. 4 = tests (bridge filter units + the filtered-landing &
+forwarded-arg route tests, extending tests/test_results_page.py + the s4_execution_console
+integration test). Direct-to-`main` (v2 runtime presentation work, per the D-206/D-218 precedent).
+
+---
+
 ---
