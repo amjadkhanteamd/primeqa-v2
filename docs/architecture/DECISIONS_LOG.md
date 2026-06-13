@@ -13280,4 +13280,68 @@ touch `views.py` + `s3_generation_console.py` (sequenced to avoid churn). Direct
 
 ---
 
+### D-233 — browse/drill 2nd increment: SHIPPED (close)
+
+**What shipped (all on `main` locally; pushed at close).** Three independent,
+additive v2-runtime sub-pieces + one review-fix.
+
+- **A — evidence headlines** (commit `a681fe5`). Pure `step_plain(step)` in
+  `claim_presentation.py` (alongside `claim_title`/`verdict_plain`/`refusal_plain`):
+  dispatches on `kind` (read/assert/create/update/delete) + outcome fields
+  (`success`/`held`/`matched`/`error`) into one sentence. A mutation with `matched`
+  set is a negative test (rejection expected); `matched` None is positive/setup.
+  Never-raises. `s4_run_detail` attaches `step['plain']`; `runs/s4_detail.html`
+  shows it as the headline + keeps the `render_value` tree collapsed beneath
+  ("Show raw step data"). 7 step_plain units + 2 render tests.
+
+- **B — last-run health on `/claims`** (commit `65f4269`). A 3rd LATERAL in
+  `_list_claims` pulls the single most-recent `s4_execution_runs` row per
+  `claim_test_id` (`ORDER BY finished_at DESC LIMIT 1`) — exposed as `last_run`
+  (or None). `claims/list.html` gains a "Last run" outcome badge (green/red/amber/
+  grey) linking to `/runs/<run_id>`. By recency (matches `read_claim_runs`), NOT
+  the version-correct flake window. 2 render tests; verified against prod (real
+  claims carry `last_run`).
+
+- **C — claim → requirement back-link** (commit `57bccf3`). New best-effort bridge
+  `read_claim_requirement` returns the `generated_from` external_key (substrate);
+  `claims_detail` resolves key→id by reusing `_requirement_rows` on the v1 db it
+  already holds, passing `requirement={key, id, url}`. `claims/detail.html` renders
+  "← From requirement &lt;key&gt;" → `/requirements/<id>`, plain text when
+  unresolvable. 2 render tests; verified end-to-end on prod (`e87c2666` → SQ-205 →
+  `/requirements/284`).
+
+- **D — review-fix index** (commit `c9c485e`). The D-233 adversarial review
+  (3 lenses → verify) confirmed exactly ONE finding, no other defects: B's
+  last-run LATERAL filters `s4_execution_runs` by `claim_test_id` and sorts by
+  `finished_at`, but the table carried only `idx_s4_execution_runs_recipe_id` —
+  so the per-claim correlated subquery (up to 50/page on `/claims` + the draft
+  inbox) was a seqscan+sort of the whole tenant run history, degrading as runs
+  accumulate. Tenant migration `20260614_0020` adds composite
+  `(claim_test_id, finished_at DESC)`, satisfying the filter + `ORDER BY … LIMIT 1`
+  from one index scan. It also backs the pre-existing same-shape reads
+  (`_CLAIM_RUNS_SQL`, the flake window `_COUNTED_RUNS_SQL`). Verified: full
+  shared+tenant chain applies clean; index def is exactly
+  `(claim_test_id, finished_at DESC)`.
+
+**Verification.** Unit **2572** (incl. 7 new step_plain units); standalone
+`tests/test_browse_drill.py` **6/6** (run-detail headlines incl. unknown-kind
+no-500, last-run badge + never-run, requirement link resolved + unresolved);
+quarantine-page regression **9/9** (the C edits touch `claims_detail`); store
+integration **5/5** through the new migration chain. The whole increment is
+ZERO-migration on the read path; the lone migration is the additive index from
+the review.
+
+**AK-side action.** Apply the two pending tenant migrations to prod —
+`20260614_0010_claim_quarantine` (D-232) + `20260614_0020_s4_runs_claim_finished_idx`
+(this) — in one shot: `alembic -x mode=all_tenants upgrade tenant@head`. Both are
+additive and the code already tolerates their absence (quarantine degrades to
+no-op; the index just makes the last-run column fast).
+
+**Residuals (carried).** (1) evidence step → per-field before/after diff once the
+reserved `before_state`/`field_diff` fields are populated. (2) last-run
+sparkline/mini-trend per claim. (3) requirement back-link on the run-detail page
+too (not just claim detail).
+
+---
+
 ---
