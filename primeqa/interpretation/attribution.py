@@ -25,6 +25,7 @@ from typing import Optional, Protocol
 
 from primeqa.execution_engine.evidence import (
     CreateAttemptEvidence,
+    DataReadEvidence,
     DeleteAttemptEvidence,
     RunEvidence,
     UpdateAttemptEvidence,
@@ -32,12 +33,31 @@ from primeqa.execution_engine.evidence import (
 from primeqa.interpretation.model import Cause, Interpretation
 from primeqa.semantic.formula import NonEvaluable, evaluate, parse
 
+import re
+
+# Lenient field extraction (D-229, review #3): a VR's relevance signal must work
+# even when the WHOLE formula does not parse (e.g. `CloseDate > TODAY()` — TODAY
+# is not a recognized function, so the AST is NotParsed and an AST walk yields no
+# fields). Strip string literals, then take identifier tokens NOT immediately
+# followed by `(` (those are function names), keeping each token's bare last
+# dotted segment so a self-object ref `Opportunity.Amount` matches payload key
+# `Amount`. Imprecise by design — over-inclusion only risks KEEPING a VR as
+# indeterminate (the safe direction), never dropping a relevant one.
+_STRLIT_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+_IDENT_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*(\()?")
+_FORMULA_KEYWORDS = frozenset({"TRUE", "FALSE", "NULL", "AND", "OR", "NOT"})
+
 # The generic validation-rule rejection code (S3 / emission.py — the D-101.2
 # honest floor). A rejection carrying it is a VR firing; anything else is a
 # platform constraint.
 _VR_CODE = "FIELD_CUSTOM_VALIDATION_EXCEPTION"
 
-_ENRICHED = ("prohibition_not_enforced", "rejected_unasserted_reason")
+# The failed BEHAVIORAL-NEGATIVE verdicts attributed from S1's VR metadata.
+_NEGATIVE_ENRICHED = ("prohibition_not_enforced", "rejected_unasserted_reason")
+# D-229: the failed POSITIVE-vertical verdicts — automation/state attributed
+# from S1 Flow metadata, value-claim from S1 field-CRUD metadata.
+_POSITIVE_ENRICHED = (
+    "automation_not_triggered", "state_not_transitioned", "value_not_persisted")
 
 
 @dataclass(frozen=True)
@@ -50,47 +70,145 @@ class VrMeta:
     error_message: Optional[str] = None
 
 
-class S1VrReader(Protocol):
-    """Read-port for S1's validation-rule metadata (D-111.1 / S6-3).
+@dataclass(frozen=True)
+class FlowMeta:
+    """The slice of a Flow's S1 metadata S6 needs for positive-vertical
+    attribution (D-229): a Flow that `TRIGGERS_ON` the subject + its active
+    state. A deactivated grounding Flow is the high-value `automation_inactive`
+    cause (the dogfood P1 capture)."""
 
-    Production delegates to S1's query interface; tests inject a stub. Returns
-    the VRs that apply to ``subject_external_id`` (the `APPLIES_TO` edge)."""
+    name: str
+    is_active: bool
+
+
+@dataclass(frozen=True)
+class FieldMeta:
+    """The slice of a Field's S1 metadata S6 needs for `value_not_persisted`
+    attribution (D-229): is the asserted field createable? SF silently drops a
+    non-createable field on insert, so the posted value cannot persist."""
+
+    name: str
+    is_createable: bool
+
+
+class S1AttributionReader(Protocol):
+    """Read-port for the S1 metadata S6 attribution needs (D-111.1 / D-229).
+
+    Production delegates to S1's query interface; tests inject a stub. The
+    negative path uses ``vrs_for_object`` only; the positive path (D-229) adds
+    ``flows_for_object`` (Flows that `TRIGGERS_ON` the subject) and
+    ``field_meta`` (a single field's CRUD slice). Structural/duck-typed — a
+    reader satisfying only the methods a given verdict needs is sufficient."""
 
     def vrs_for_object(self, subject_external_id: str) -> tuple[VrMeta, ...]:
         ...
 
+    def flows_for_object(self, subject_external_id: str) -> tuple[FlowMeta, ...]:
+        ...
+
+    def field_meta(
+        self, object_external_id: str, field_external_id: str,
+    ) -> Optional[FieldMeta]:
+        ...
+
+
+# Back-compat alias: the original narrow port name (negative path only).
+S1VrReader = S1AttributionReader
+
 
 def attribute_run(
-    interpretation: Interpretation, evidence: RunEvidence, *, s1: S1VrReader,
+    interpretation: Interpretation, evidence: RunEvidence, *,
+    s1: S1AttributionReader,
 ) -> Interpretation:
-    """Enrich a failed behavioral interpretation with a structured cause from
-    S1. Pass-through (unchanged) for any other verdict. Never mutates the
-    carried outcome."""
-    if interpretation.verdict not in _ENRICHED:
-        return interpretation
-    # The graded step: the rejection-bearing mutation of a 2-step negative
-    # (D-203) when present, else the flagged create (D-110.2).
-    step = _mutation_step(evidence) or _create_step(evidence)
-    if step is None:
-        return interpretation
-
-    vrs = s1.vrs_for_object(step.sobject)
-    if interpretation.verdict == "prohibition_not_enforced":
-        cause = _attribute_not_enforced(step, vrs, evidence)
+    """Enrich a FAILED behavioral interpretation with a structured cause from
+    S1. Negative verdicts read VR metadata; positive-vertical failures (D-229)
+    read Flow / field metadata. Pass-through (unchanged) for any other verdict.
+    Never mutates the carried outcome. The S1 read self-limits to the verdicts
+    that need it (no query for a passing or inspection verdict)."""
+    if interpretation.verdict in _NEGATIVE_ENRICHED:
+        cause = _attribute_negative(interpretation.verdict, evidence, s1)
+    elif interpretation.verdict in _POSITIVE_ENRICHED:
+        cause = _attribute_positive(interpretation.verdict, evidence, s1)
     else:
-        cause = _attribute_unasserted(step, vrs)
-    if cause is None:
-        # Delete not-enforced: VRs cannot enforce delete prohibitions, so a
-        # formula-derived cause would be fabricated — honest pass-through
-        # (D-203; repair.py handles cause-less verdicts with verdict-level
-        # defaults).
         return interpretation
-
+    if cause is None:
+        # Honest pass-through — no S1 signal yields the cause (e.g. a delete
+        # not-enforced, a value-claim with no read step, repair.py's
+        # verdict-level defaults cover cause=None).
+        return interpretation
     return replace(
         interpretation,
         cause=cause,
         attribution=f"{interpretation.attribution} {_prose(cause)}",
     )
+
+
+def _attribute_negative(verdict, evidence, s1) -> Optional[Cause]:
+    # The graded step: the rejection-bearing mutation of a 2-step negative
+    # (D-203) when present, else the flagged create (D-110.2).
+    step = _mutation_step(evidence) or _create_step(evidence)
+    if step is None:
+        return None
+    vrs = s1.vrs_for_object(step.sobject)
+    if verdict == "prohibition_not_enforced":
+        return _attribute_not_enforced(step, vrs, evidence)
+    return _attribute_unasserted(step, vrs)
+
+
+# ---------------------------------------------------------------------------
+# Positive-vertical failures (D-229) — automation/state (Flow) + value (field)
+# ---------------------------------------------------------------------------
+
+def _attribute_positive(verdict, evidence, s1) -> Optional[Cause]:
+    """The positive create-and-verify family's failures (incl. D-205 N-create
+    chains). automation/state grounds on the Flow that triggers on the TRIGGER
+    record (the LAST create — per D-205 forward-ref ordering the trigger is
+    created after the record it acts on); value-claim grounds on the
+    createability of the asserted field on the READ-BACK object."""
+    if verdict == "value_not_persisted":
+        return _attribute_value_not_persisted(evidence, s1)
+    trigger = _last_create_step(evidence)
+    if trigger is None:
+        return None
+    return _attribute_automation_absent(trigger, s1)
+
+
+def _attribute_automation_absent(trigger, s1) -> Optional[Cause]:
+    """`automation_not_triggered` / `state_not_transitioned`: discriminate on
+    whether any ACTIVE Flow triggers on the TRIGGER record's object."""
+    flows = s1.flows_for_object(trigger.sobject)
+    active = [f for f in flows if f.is_active]
+    if not active:
+        return Cause(
+            "automation_inactive",
+            detail=(f"no active Flow triggers on {trigger.sobject} — the grounding "
+                    f"automation was deactivated or removed since generation, so "
+                    f"the asserted effect could not fire"))
+    return Cause(
+        "automation_effect_absent",
+        detail=(f"an active Flow ({active[0].name}) triggers on {trigger.sobject}, "
+                f"but the asserted effect was not observed — an entry condition "
+                f"may be unmet, or the Flow's logic changed since generation"))
+
+
+def _attribute_value_not_persisted(evidence, s1) -> Optional[Cause]:
+    """`value_not_persisted`: if an asserted (read-back) field is not createable
+    in current S1, SF dropped the posted value on insert. Keyed off the READ's
+    object (where the value should have persisted) — robust to multi-create
+    chains. Else honest pass-through — a value not persisting has many causes S1
+    cannot determine (a before-save automation overwrote it, a default)."""
+    read = _data_read_step(evidence)
+    if read is None:
+        return None
+    for field in read.fields_captured:
+        meta = s1.field_meta(read.sobject, field)
+        if meta is not None and not meta.is_createable:
+            return Cause(
+                "field_not_createable",
+                detail=(f"the field {field} on {read.sobject} is not createable — "
+                        f"Salesforce silently dropped the posted value on insert, so "
+                        f"it could not persist"))
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +227,14 @@ def _attribute_not_enforced(step, vrs, evidence) -> Optional[Cause]:
         # A delete leaves no field state to evaluate a formula against — and
         # VRs cannot enforce delete prohibitions anyway. No fabricated cause.
         return None
+    # Finding 2 (D-229): bucket on the EVALUATION RESULT, and apply the
+    # relevance filter ONLY to the `indeterminate` (NonEvaluable) bucket — that
+    # is the sole place an unrelated rule can mask a real cause. A VR whose
+    # formula evaluates True (violation) or evaluable-False (drift) is relevant
+    # BY CONSTRUCTION — it touched the payload enough to be evaluated — and must
+    # never be dropped (the bare-field-overlap proxy diverges from evaluate()'s
+    # own field-presence semantics, e.g. ISBLANK fires on an ABSENT field).
+    payload_fields = set(state.keys())
     violated_active, violated_inactive, indeterminate = [], [], []
     active_not_violated = False
     for vr in vrs:
@@ -118,6 +244,16 @@ def _attribute_not_enforced(step, vrs, evidence) -> Optional[Cause]:
         if result is True:
             (violated_active if vr.is_active else violated_inactive).append(vr)
         elif isinstance(result, NonEvaluable):
+            # A NonEvaluable VR is *indeterminate for THIS claim* only if it
+            # could concern the payload. Drop it ONLY when PROVABLY irrelevant:
+            # its formula names bare fields and NONE is in the payload (the P3
+            # masking shape — `CloseDate > TODAY()` on an Amount claim). A
+            # NonEvaluable formula with no extractable bare fields (dotted /
+            # cross-object / unparseable) stays indeterminate — we cannot prove
+            # irrelevance, and dropping it would fabricate a cause from the rest.
+            fields = _formula_fields(vr.formula_text)
+            if fields and not (fields & payload_fields):
+                continue                     # provably irrelevant — drop
             indeterminate.append(vr)
         elif vr.is_active:
             active_not_violated = True   # active rule, formula evaluable + not violated
@@ -217,6 +353,28 @@ def _match_vr_by_message(messages, vrs) -> Optional[VrMeta]:
 # Shared
 # ---------------------------------------------------------------------------
 
+def _formula_fields(formula_text: str) -> set:
+    """The set of bare field names a VR formula references (Finding 2, D-229) —
+    the relevance signal that a rule concerns this claim's single-object
+    payload. Lenient + parse-independent (review #3): the masking rule
+    `CloseDate > TODAY()` is NotParsed (TODAY is unrecognized), so an AST walk
+    yields nothing and the noise would slip through. Strip string literals, take
+    identifier tokens NOT followed by `(` (function names), drop formula
+    keywords, and keep each token's bare last dotted segment so a self-object
+    ref (`Opportunity.Amount`) matches payload key `Amount`."""
+    text = _STRLIT_RE.sub(" ", formula_text)
+    out = set()
+    for m in _IDENT_RE.finditer(text):
+        ident, is_call = m.group(1), m.group(2)
+        if is_call:                          # a function call — not a field
+            continue
+        bare = ident.split(".")[-1]
+        if not bare or bare[:1].isdigit() or bare.upper() in _FORMULA_KEYWORDS:
+            continue
+        out.add(bare)
+    return out
+
+
 def _create_step(evidence: RunEvidence):
     for s in evidence.steps:
         if isinstance(s, CreateAttemptEvidence):
@@ -231,6 +389,27 @@ def _mutation_step(evidence: RunEvidence):
         if isinstance(s, (UpdateAttemptEvidence, DeleteAttemptEvidence)):
             return s
     return None
+
+
+def _data_read_step(evidence: RunEvidence):
+    """The positive vertical's data read-back (D-115/D-229) — carries the
+    asserted ``fields_captured``. Distinct from the metadata ``ReadEvidence``."""
+    for s in evidence.steps:
+        if isinstance(s, DataReadEvidence):
+            return s
+    return None
+
+
+def _last_create_step(evidence: RunEvidence):
+    """The LAST create attempt — the TRIGGER record of a positive automation /
+    state run (D-205/D-229). A 2-create chain creates the observed record first,
+    then the trigger that acts on it (forward-ref order), so the Flow's trigger
+    object is the last create's ``sobject``; a single-create run's last == first."""
+    last = None
+    for s in evidence.steps:
+        if isinstance(s, CreateAttemptEvidence):
+            last = s
+    return last
 
 
 def _effective_state(step, evidence: RunEvidence) -> Optional[dict]:

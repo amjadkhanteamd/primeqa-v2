@@ -62,6 +62,10 @@ CauseKind = Literal[
     "enforcement_gap",           # prohibition_not_enforced: VR active + current formula violated, yet the create succeeded (the defect)
     "other_vr_fired",            # rejected_unasserted_reason: a different validation rule rejected it
     "platform_constraint",       # rejected_unasserted_reason: a platform rule (not a VR) rejected it
+    # D-229: positive-vertical failure causes (automation/state + value-claim)
+    "automation_inactive",       # automation_not_triggered / state_not_transitioned: no ACTIVE Flow triggers on the object — the grounding automation was deactivated or removed
+    "automation_effect_absent",  # automation_not_triggered / state_not_transitioned: an active Flow triggers, but the asserted effect did not materialize (entry condition unmet / Flow logic changed)
+    "field_not_createable",      # value_not_persisted: the asserted field is not createable in current S1 — SF dropped the posted value on insert
 ]
 
 

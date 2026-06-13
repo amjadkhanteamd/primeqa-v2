@@ -32,13 +32,25 @@ _VR = "FIELD_CUSTOM_VALIDATION_EXCEPTION"
 # ---------------------------------------------------------------------------
 
 class _StubS1:
-    def __init__(self, vrs):
+    def __init__(self, vrs, *, flows=(), fields=None):
         self._vrs = tuple(vrs)
+        self._flows = tuple(flows)              # D-229: FlowMeta tuple
+        self._fields = dict(fields or {})       # D-229: {field_name: FieldMeta}
         self.calls = []
+        self.flow_calls = []
+        self.field_calls = []
 
     def vrs_for_object(self, subject_external_id):
         self.calls.append(subject_external_id)
         return self._vrs
+
+    def flows_for_object(self, subject_external_id):
+        self.flow_calls.append(subject_external_id)
+        return self._flows
+
+    def field_meta(self, object_external_id, field_external_id):
+        self.field_calls.append((object_external_id, field_external_id))
+        return self._fields.get(field_external_id)
 
 
 def _run(*, outcome, create):
@@ -131,15 +143,111 @@ def test_vr_formula_indeterminate():
     # the active VR's current formula left the single-object evaluable subset
     # (org-state ISCHANGED) → violation can't be computed → indeterminate, NOT a
     # guessed drift (the old NotDerivable → drift collapse — D-114 fix). Carries the VR.
+    # D-229: the grounding VR references the SAME field the payload sets
+    # (ISCHANGED(Status__c) on a Status__c claim) — a coherent grounding, so the
+    # Finding-2 relevance filter keeps it.
     ev = _run(outcome="failed", create=_create(
         success=True, matched=False, http_status=201, body=[], record_id="001Z",
-        field_values={"Reason__c": None}))
+        field_values={"Status__c": "Final"}))
     s1 = _StubS1([VrMeta(name="ChangedGuard", is_active=True,
                          formula_text="ISCHANGED(Status__c)", error_message="x")])
     interp = _interp(ev, s1)
     assert interp.cause.cause_kind == "vr_formula_indeterminate"
     assert interp.cause.vr_name == "ChangedGuard"
     assert "indeterminate" in interp.attribution
+
+
+# ---------------------------------------------------------------------------
+# Finding 2 (D-229): the relevance filter — an unrelated NonEvaluable VR must
+# not mask the grounding VR's drift. (dogfood log P3)
+# ---------------------------------------------------------------------------
+
+def test_unrelated_indeterminate_vr_does_not_mask_drift():
+    # The P3 capture: the claim grounds on an Amount VR that DRIFTED (current
+    # `Amount > 999999`, payload Amount=50000 → evaluable, not violated). An
+    # UNRELATED `CloseDate > TODAY()` VR on the same object is NonEvaluable. Pre
+    # D-229 the unrelated rule landed in `indeterminate` and outranked the drift;
+    # the relevance filter (CloseDate ∉ payload) drops it, so the real drift surfaces.
+    ev = _run(outcome="failed", create=_create(
+        success=True, matched=False, http_status=201, body=[], record_id="001Z",
+        field_values={"Amount": 50000}))
+    s1 = _StubS1([
+        VrMeta(name="Discount_Guard", is_active=True,
+               formula_text="Amount > 999999", error_message="too big"),
+        VrMeta(name="Close_Date_Cannot_Be_Future", is_active=True,
+               formula_text="CloseDate > TODAY()", error_message="no future close"),
+    ])
+    interp = _interp(ev, s1)
+    assert interp.cause.cause_kind == "vr_formula_drift"
+    assert "edited since generation" in interp.attribution
+
+
+def test_only_irrelevant_vrs_falls_through_to_no_active_vr():
+    # Every VR on the object references a field the payload doesn't set → none is
+    # relevant to this claim → no fabricated indeterminate/drift; honest no_active_vr.
+    ev = _run(outcome="failed", create=_create(
+        success=True, matched=False, http_status=201, body=[], record_id="001Z",
+        field_values={"Amount": 50000}))
+    s1 = _StubS1([VrMeta(name="Close_Date_Cannot_Be_Future", is_active=True,
+                         formula_text="CloseDate > TODAY()", error_message="x")])
+    interp = _interp(ev, s1)
+    assert interp.cause.cause_kind == "no_active_vr"
+
+
+def test_isblank_grounding_vr_with_field_omitted_is_enforcement_gap():
+    # Review finding #1: ISBLANK(Reason__c) fires True when Reason__c is OMITTED
+    # from the payload (not just None). The filter must bucket on the EVALUATION
+    # result — a confirmed violation is never dropped — so an active ISBLANK
+    # grounding rule whose field the recipe omitted still reads enforcement_gap,
+    # not the wrong no_active_vr.
+    ev = _run(outcome="failed", create=_create(
+        success=True, matched=False, http_status=201, body=[], record_id="001Z",
+        field_values={"Company": "Acme"}))             # Reason__c OMITTED
+    s1 = _StubS1([VrMeta(name="RequireReason", is_active=True,
+                         formula_text="ISBLANK(Reason__c)", error_message="x")])
+    interp = _interp(ev, s1)
+    assert interp.cause.cause_kind == "enforcement_gap"
+    assert interp.cause.vr_name == "RequireReason"
+
+
+def test_isblank_grounding_vr_omitted_field_inactive_is_vr_inactive():
+    ev = _run(outcome="failed", create=_create(
+        success=True, matched=False, http_status=201, body=[], record_id="001Z",
+        field_values={"Company": "Acme"}))
+    s1 = _StubS1([VrMeta(name="RequireReason", is_active=False,
+                         formula_text="ISBLANK(Reason__c)", error_message="x")])
+    interp = _interp(ev, s1)
+    assert interp.cause.cause_kind == "vr_inactive"
+
+
+def test_notparsed_vr_referencing_a_payload_field_stays_indeterminate():
+    # Review finding #3: a VR whose WHOLE formula does not parse (an unrecognized
+    # function) but whose lenient tokens include a PAYLOAD field is not provably
+    # irrelevant — it stays indeterminate (with the VR name), not dropped. The
+    # lenient extractor finds Amount even though parse() returns NotParsed.
+    ev = _run(outcome="failed", create=_create(
+        success=True, matched=False, http_status=201, body=[], record_id="001Z",
+        field_values={"Amount": 5}))
+    s1 = _StubS1([VrMeta(name="WeirdGuard", is_active=True,
+                         formula_text="Amount > 1000 && CUSTOMFN(Amount)",
+                         error_message="x")])
+    interp = _interp(ev, s1)
+    assert interp.cause.cause_kind == "vr_formula_indeterminate"
+    assert interp.cause.vr_name == "WeirdGuard"
+
+
+def test_cross_object_only_vr_is_dropped_as_irrelevant():
+    # A NonEvaluable VR whose only fields are cross-object (Account.Industry) has
+    # no bare overlap with a single-object Amount payload → provably irrelevant →
+    # dropped (a purely-cross-object formula can't be the grounding rule of a
+    # derivable single-object behavioral negative). Falls through to no_active_vr.
+    ev = _run(outcome="failed", create=_create(
+        success=True, matched=False, http_status=201, body=[], record_id="001Z",
+        field_values={"Amount": 5}))
+    s1 = _StubS1([VrMeta(name="CrossObjGuard", is_active=True,
+                         formula_text='Account.Industry = "Tech"', error_message="x")])
+    interp = _interp(ev, s1)
+    assert interp.cause.cause_kind == "no_active_vr"
 
 
 def test_no_active_vr():
@@ -313,10 +421,13 @@ def test_update_not_enforced_evaluates_the_effective_state():
 
 def test_update_not_enforced_ischanged_formula_is_indeterminate():
     # An org-state formula (ISCHANGED) is NonEvaluable on a flat payload —
-    # honest indeterminate, never a guessed drift.
+    # honest indeterminate, never a guessed drift. D-229: the update changes the
+    # SAME field the VR watches (StageName), so the Finding-2 relevance filter
+    # keeps the grounding rule.
     ev = _run2(outcome="failed", steps=[
         _setup(),
-        _mutation("update", success=True, matched=False, http_status=204, body=[])])
+        _mutation("update", success=True, matched=False, http_status=204, body=[],
+                  field_changes={"StageName": "Closed"})])
     s1 = _StubS1([VrMeta("NoStageMove", True,
                          "ISCHANGED(StageName)", "no stage moves")])
     interp = _interp(ev, s1)
@@ -357,3 +468,150 @@ def test_delete_unasserted_still_attributes_from_the_rejection_body():
     interp = _interp(ev, _StubS1([]))
     assert interp.cause.cause_kind == "platform_constraint"
     assert "delete" in interp.cause.detail
+
+
+# ---------------------------------------------------------------------------
+# D-229 — positive-vertical failure attribution (automation/state Flow +
+# value-claim field createability)
+# ---------------------------------------------------------------------------
+
+from primeqa.execution_engine.evidence import DataReadEvidence       # noqa: E402
+from primeqa.interpretation import FieldMeta, FlowMeta               # noqa: E402
+
+
+def _positive(*, sobject, claim_kind, captured=("Status__c",), outcome="failed"):
+    """A positive create-and-verify run: create succeeds, read-back observed,
+    the value/effect assert does NOT hold (outcome=failed)."""
+    create = CreateAttemptEvidence(
+        step_id="create", ordinal=0, sobject=sobject,
+        field_values={"Subject": "x"}, http_status=201, success=True,
+        error_code=None, message=None, rejection_body=(), matched=None,
+        cleanup=CleanupRecord(attempted=False), started_at=_T, finished_at=_T,
+        duration_ms=1)
+    read = DataReadEvidence(
+        step_id="read", ordinal=1, soql=f"SELECT {','.join(captured)} FROM {sobject}",
+        sobject=sobject, fields_captured=tuple(captured), row_count=1,
+        rows=({c: None for c in captured},), started_at=_T, finished_at=_T,
+        duration_ms=1)
+    assertion = AssertEvidence(
+        step_id="assert", ordinal=2, predicate="equals", subject_ref="read",
+        evaluated_row_count=1, held=(outcome == "passed"),
+        started_at=_T, finished_at=_T, duration_ms=0)
+    ev = RunEvidence(
+        run_id=uuid4(), recipe_id=uuid4(), recipe_version_seq=1, claim_test_id=uuid4(),
+        claim_version_seq=None, environment_id=7, api_choice="rest", outcome=outcome,
+        started_at=_T, finished_at=_T, steps=(create, read, assertion))
+    return ev, claim_kind
+
+
+def _interp_pos(ev_kind, s1):
+    ev, claim_kind = ev_kind
+    return attribute_run(interpret_run(ev, claim_kind=claim_kind), ev, s1=s1)
+
+
+def test_automation_not_triggered_inactive_flow():
+    # The dogfood P1 capture: the grounding Flow was deactivated → no active
+    # Flow triggers on the object → automation_inactive.
+    ek = _positive(sobject="Case", claim_kind="automation-effect-claim")
+    s1 = _StubS1([], flows=[FlowMeta("SQ205_Create_Case_SLA", is_active=False)])
+    interp = _interp_pos(ek, s1)
+    assert interp.verdict == "automation_not_triggered"
+    assert interp.cause.cause_kind == "automation_inactive"
+    assert "deactivated or removed" in interp.attribution
+    assert s1.flow_calls == ["Case"]
+
+
+def test_automation_not_triggered_no_flow_at_all_is_inactive():
+    # No Flow triggers on the object at all (deleted, not just disabled) — same
+    # honest signal: no active automation could fire.
+    ek = _positive(sobject="Case", claim_kind="automation-effect-claim")
+    interp = _interp_pos(ek, _StubS1([], flows=[]))
+    assert interp.cause.cause_kind == "automation_inactive"
+
+
+def test_automation_effect_absent_active_flow_present():
+    # An active Flow IS present, yet the effect wasn't observed — distinct from
+    # inactive: the automation exists but didn't produce the effect.
+    ek = _positive(sobject="Case", claim_kind="automation-effect-claim")
+    s1 = _StubS1([], flows=[FlowMeta("SQ205_Create_Case_SLA", is_active=True)])
+    interp = _interp_pos(ek, s1)
+    assert interp.cause.cause_kind == "automation_effect_absent"
+    assert "SQ205_Create_Case_SLA" in interp.cause.detail
+
+
+def test_state_not_transitioned_uses_the_same_flow_logic():
+    ek = _positive(sobject="Order__c", claim_kind="state-transition-claim")
+    interp = _interp_pos(ek, _StubS1([], flows=[FlowMeta("Stamp", is_active=False)]))
+    assert interp.verdict == "state_not_transitioned"
+    assert interp.cause.cause_kind == "automation_inactive"
+
+
+def test_value_not_persisted_field_not_createable():
+    # The asserted field is not createable → SF dropped the posted value on insert.
+    ek = _positive(sobject="Invoice__c", claim_kind="value-claim",
+                   captured=("Amount__c",))
+    s1 = _StubS1([], fields={"Amount__c": FieldMeta("Amount__c", is_createable=False)})
+    interp = _interp_pos(ek, s1)
+    assert interp.verdict == "value_not_persisted"
+    assert interp.cause.cause_kind == "field_not_createable"
+    assert "Amount__c" in interp.cause.detail
+    assert s1.field_calls == [("Invoice__c", "Amount__c")]
+
+
+def test_value_not_persisted_createable_field_passes_through():
+    # The field IS createable → many non-S1 causes (a before-save automation, a
+    # default) — no fabricated cause.
+    ek = _positive(sobject="Invoice__c", claim_kind="value-claim",
+                   captured=("Amount__c",))
+    s1 = _StubS1([], fields={"Amount__c": FieldMeta("Amount__c", is_createable=True)})
+    interp = _interp_pos(ek, s1)
+    assert interp.verdict == "value_not_persisted"
+    assert interp.cause is None
+
+
+def test_positive_passed_is_passthrough():
+    # A passing positive run is never attributed (no failure to explain).
+    ek = _positive(sobject="Case", claim_kind="automation-effect-claim",
+                   outcome="passed")
+    s1 = _StubS1([], flows=[FlowMeta("X", is_active=False)])
+    interp = _interp_pos(ek, s1)
+    assert interp.verdict == "automation_triggered"
+    assert interp.cause is None
+    assert s1.flow_calls == []                  # self-limiting: no S1 read on pass
+
+
+def test_state_transition_2create_chain_queries_the_trigger_object():
+    # Review finding #5: a 2-create state-transition chain creates the OBSERVED
+    # record first (Case) then the TRIGGER (Escalation__c, the Flow's trigger).
+    # Attribution must query the LAST create's object (Escalation__c), not the
+    # first (Case) — querying Case would find no flow and wrongly say inactive.
+    case_create = CreateAttemptEvidence(
+        step_id="create-case", ordinal=0, sobject="Case",
+        field_values={"Subject": "x"}, http_status=201, success=True,
+        error_code=None, message=None, rejection_body=(), matched=None,
+        cleanup=CleanupRecord(attempted=False), started_at=_T, finished_at=_T,
+        duration_ms=1)
+    esc_create = CreateAttemptEvidence(
+        step_id="create-escalation", ordinal=1, sobject="Escalation__c",
+        field_values={"Case__c": "$create-case.id"}, http_status=201, success=True,
+        error_code=None, message=None, rejection_body=(), matched=None,
+        cleanup=CleanupRecord(attempted=False), started_at=_T, finished_at=_T,
+        duration_ms=1)
+    read = DataReadEvidence(
+        step_id="read", ordinal=2, soql="SELECT Status FROM Case", sobject="Case",
+        fields_captured=("Status",), row_count=1, rows=({"Status": "New"},),
+        started_at=_T, finished_at=_T, duration_ms=1)
+    assertion = AssertEvidence(
+        step_id="assert", ordinal=3, predicate="equals", subject_ref="read",
+        evaluated_row_count=1, held=False, started_at=_T, finished_at=_T, duration_ms=0)
+    ev = RunEvidence(
+        run_id=uuid4(), recipe_id=uuid4(), recipe_version_seq=1, claim_test_id=uuid4(),
+        claim_version_seq=None, environment_id=7, api_choice="rest", outcome="failed",
+        started_at=_T, finished_at=_T, steps=(case_create, esc_create, read, assertion))
+    # only the Escalation__c (trigger) object has the flow; Case does not.
+    s1 = _StubS1([], flows=[FlowMeta("EscFlow", is_active=False)])
+    interp = attribute_run(
+        interpret_run(ev, claim_kind="state-transition-claim"), ev, s1=s1)
+    assert interp.verdict == "state_not_transitioned"
+    assert interp.cause.cause_kind == "automation_inactive"
+    assert s1.flow_calls == ["Escalation__c"]   # the TRIGGER object, not Case

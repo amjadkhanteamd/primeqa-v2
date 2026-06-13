@@ -12669,6 +12669,143 @@ negative-vertical-only (positives/cross-object pairs when a second realization
 exists); the live-suite isolation bug above (quarantine the live tests behind an
 explicit env gate so `pytest tests/integration` can never reach prod).
 
+### D-229 — S6 positive-vertical cause attribution (2.3) + Finding 2 relevance filter
+
+**Context.** S6's `attribute_run` deepens *only* the two failed BEHAVIORAL-NEGATIVE
+verdicts (`prohibition_not_enforced`, `rejected_unasserted_reason`) with a
+structured `Cause` from S1's VR metadata. The positive-vertical FAILURES —
+`automation_not_triggered`, `state_not_transitioned`, `value_not_persisted` — get
+a verdict + prose but NO structured cause, so the decision loop can cluster
+"prohibition not enforced" failures but not "the automation stopped firing"
+failures. The first perturbation session (dogfood log P1) captured exactly the
+high-value case with no attribution: a Flow deactivated → `automation_not_triggered`
+with cause=None. Separately, **Finding 2** (dogfood log P3): an UNRELATED VR whose
+current formula is `NonEvaluable` (e.g. `CloseDate > TODAY()`) lands in the
+`indeterminate` bucket and OUTRANKS the real `vr_formula_drift` on the grounding
+VR — masking the precise cause.
+
+**Feasibility (all verified this session, zero new plumbing):**
+- Flow `is_active` is a `flow_details` column (D-025); Flows `TRIGGERS_ON` the
+  object (BEHAVIOR edge). A Flow reader parallels `S1ValidationRuleReader`:
+  `get_related(obj, [TRIGGERS_ON], inbound)` + `get_entity_details(flow).is_active`.
+- Field createability is `field_details.is_createable` (D-160), reachable the same
+  way for the value-claim subject's asserted field.
+- `cause_kind` is a plain nullable `Text` column (no enum/CHECK); clustering is a
+  dynamic `GROUP BY cause_kind`. **New CauseKinds need NO migration** and flow into
+  clustering automatically.
+- `primeqa.semantic.formula.walk` + `FieldRef.path` already expose a formula's
+  referenced fields — the primitive the relevance filter needs.
+
+**Decision — Part A (Finding 2: relevance filter, negative vertical).** A VR is
+*relevant* to this claim's failure iff its current formula references >=1 field
+present in the effective state (the create/update payload). `_attribute_not_enforced`
+filters the violated/indeterminate/drift buckets to relevant VRs BEFORE ranking.
+The unrelated `TODAY()` VR references only `CloseDate` (not in an `Amount` payload)
+→ filtered out → the real `Amount` drift surfaces. Chosen over storing the captured
+grounding-VR name on the recipe (D-107 stashes the *formula* to derive the payload,
+not a VR id): the filter needs no S3 change, no migration, and uses evidence already
+present. Residual: a grounding VR edited to reference a DIFFERENT field than the
+payload escapes the filter (deep edit) — logged; the captured-name alternative is
+the refinement if it ever bites.
+
+**Decision — Part B (positive-vertical causes).** `attribute_run` dispatches on
+verdict family. New CauseKinds (free-text, no migration):
+- `automation_inactive` — `automation_not_triggered` / `state_not_transitioned`
+  and NO active Flow `TRIGGERS_ON` the subject (the grounding Flow was deactivated
+  — the P1 capture). The single highest-value positive cause.
+- `automation_effect_absent` — the same verdicts but an active Flow IS present:
+  the Flow exists yet the effect didn't materialize (entry condition unmet, or the
+  Flow was edited). Honest "present-but-ineffective", distinct from inactive.
+- `field_not_createable` — `value_not_persisted` and the asserted field is
+  `is_createable=false` in current S1 (SF silently drops non-createable fields on
+  insert → the record exists, the value absent). Else pass-through (a value not
+  persisting has many non-S1-determinable causes — a before-save automation
+  overwrote it, a default — not fabricated).
+- No active Flow-less / no-field case fabricates a cause: honest pass-through
+  (repair.py already handles cause=None with verdict-level defaults).
+
+**Reader.** `S1ValidationRuleReader` grows `flows_for_object` (+`FlowMeta{name,
+is_active}`) and `field_meta(object, field)` (+`FieldMeta{is_createable}`); the
+attribution port widens from `S1VrReader` to an `S1AttributionReader` superset
+(structural/duck-typed — the production reader just gains methods). `attribute_run`
+keeps its self-limiting read discipline: flows/fields are queried ONLY for the
+positive failure verdicts that need them.
+
+**Slices.** 1 = Finding 2 relevance filter (attribution.py + the `_references`
+helper over `formula.walk`; unit tests incl. the P3 masking scenario). 2 = positive
+attribution: reader methods + `FlowMeta`/`FieldMeta` + the three CauseKinds +
+`attribute_run` dispatch (unit tests with stub reader; CauseKind Literal grows in
+model.py). 3 = production reader methods + run-path wiring stays drop-in
+(`attribute_run` already called) + full S6 suite + offline integration. 4 = live
+re-capture on env 59 (the P1 Flow-off window, now yielding `automation_inactive`)
++ close + merge. No migration in the whole arc.
+
+**Merge gate.** Offline S6 (unit interpretation + integration) green; the P1
+perturbation re-run captures `automation_not_triggered` WITH `cause=automation_inactive`
+live; author AK, zero Co-Authored-By; merge on explicit GO.
+
+### D-229.1 — Positive-vertical attribution + Finding 2 closed (2.3) — offline; live re-capture deferred
+
+**What shipped (branch `phase-37-substrate-6-positive-attribution`, 6 commits).**
+- **Finding 2 (89ab636 + 9afb100)** — the relevance filter. S6 deeper attribution
+  for `prohibition_not_enforced` now buckets on the EVALUATION RESULT and gates
+  ONLY the NonEvaluable (indeterminate) bucket: a VR is dropped only when PROVABLY
+  irrelevant (its formula names bare fields, none in the payload). The dogfood P3
+  masking — an unrelated `CloseDate > TODAY()` VR (NotParsed, since TODAY is
+  unrecognized) outranking the grounding Amount VR's drift — is closed: a lenient,
+  parse-independent field extractor (`_formula_fields`) drops the noise and the real
+  `vr_formula_drift` surfaces.
+- **Positive-vertical causes (62b1b07 + b9ebc0a)** — `attribute_run` dispatches on
+  verdict family. New free-text CauseKinds (no migration — `cause_kind` is text,
+  clustering is a dynamic GROUP BY):
+  - `automation_inactive` — `automation_not_triggered` / `state_not_transitioned`
+    and no ACTIVE Flow `TRIGGERS_ON` the TRIGGER record (the P1 capture). The
+    Flow lookup uses the LAST create (the trigger; per D-205 forward-ref ordering
+    the trigger is created after the record it acts on), not the first.
+  - `automation_effect_absent` — an active Flow IS present but the effect didn't land.
+  - `field_not_createable` — `value_not_persisted` and the asserted read-back field
+    is `is_createable=false` (SF drops it on insert). Else honest pass-through.
+  - Reader: `S1ValidationRuleReader` grew `flows_for_object` + `field_meta`; the port
+    widened `S1VrReader` → `S1AttributionReader` (back-compat alias). Run-path wiring
+    is drop-in (`attribute_run` already called). The S1 read stays self-limiting.
+- **repair.py (9afb100)** — `field_not_createable` is recipe-owned (read-only field),
+  not the org "automation overwrote it" message; added the
+  `automation_inactive` (org: re-activate Flow) / `automation_effect_absent` (recipe)
+  branches + a generic fallback so the positive failures never return an empty list.
+
+**Adversarial review (the discipline that earned the .4 fix).** A 3-dimension review
+workflow found 7 confirmed blocker/major defects in the first three commits — incl.
+the BLOCKER that ISBLANK fires True on an ABSENT field (so a real `enforcement_gap`
+with the field omitted flipped to a wrong `no_active_vr`), and the cross-object
+`_create_step`-picks-the-wrong-object bug. All 7 fixed in 9afb100 with +6 regression
+tests. The review caught what the per-slice green suites did not — the relevance
+filter's first formulation was subtly wrong against the real evaluator semantics.
+
+**Suites at close**: unit 2546; integration/generation 116 (+1 live-eval skip);
+S6 unit/interpretation 120; S6 integration (interpret-persist + both readers) 13;
+repair 16. All green.
+
+**Live re-capture DEFERRED (AK call 2026-06-13: "merge offline-green now, live later").**
+The exit-gate live Flow-off re-capture on env 59 (P1 → expect `automation_inactive`)
+rides a future perturbation window — the cause is offline-proven AND integration-proven
+against real S1 (`test_s6_positive_reader.py` seeds a real inactive Flow → the live
+reader → `automation_inactive` end-to-end). No per-slice org gate; no migration.
+
+**Prod-cleanup note (the D-228.1 contamination).** The overnight daily 06:00 sync
+ran a full real env-59 re-sync (logical_version 63), so the tenant-1 HEAD is now
+100% clean (all 5902 current entities sourced from the real org 902850e3); new
+generation pins 63, not a junk version — the functional concern self-resolved. The
+specific restoration SQL approved against the old state (max=62, current User on a
+test org) is now UNSAFE (reopening the baseline User to valid_to=NULL would create a
+SECOND current row over the clean head). Versions 60–62 + 4 test connected_orgs remain
+as HARMLESS historical clutter; a safe chain-repair tidy is queued for AK's redirect.
+
+**Residuals**: a grounding VR deep-edited to reference a DIFFERENT field than the
+payload still escapes the relevance filter (the captured-grounding-VR-name on the
+recipe is the refinement if it bites); `value_not_persisted` attributes only
+field-createability (other causes — before-save automation, defaults — pass through);
+the live re-capture; the prod historical-clutter tidy.
+
 ---
 
 ---
