@@ -109,3 +109,88 @@ def test_refusal_plain_never_raises_on_garbage_payload():
     from primeqa.intelligence.claim_presentation import refusal_plain
     out = refusal_plain("ungrounded-claim", [{"payload": 42}, "junk", None])
     assert "no rule or configuration" in out
+
+
+# ---------------------------------------------------------------------------
+# Evidence-step lines (D-233)
+# ---------------------------------------------------------------------------
+
+def _import_step_plain():
+    from primeqa.intelligence.claim_presentation import step_plain
+    return step_plain
+
+
+def test_step_plain_read():
+    sp = _import_step_plain()
+    assert sp({"kind": "read", "sobject": "Account", "row_count": 3}) == \
+        "Read 3 Account rows"
+    assert sp({"kind": "read", "sobject": "Case", "row_count": 1}) == \
+        "Read 1 Case row"
+    assert sp({"kind": "read", "sobject": "Opportunity",
+               "error": {"message": "QUERY_TIMEOUT"}}) == \
+        "Couldn't read Opportunity — QUERY_TIMEOUT"
+
+
+def test_step_plain_assert():
+    sp = _import_step_plain()
+    assert sp({"kind": "assert", "held": True}) == \
+        "Checked the records — the assertion held"
+    assert sp({"kind": "assert", "held": False}) == \
+        "Checked the records — the assertion did NOT hold"
+
+
+def test_step_plain_create_positive_and_setup():
+    sp = _import_step_plain()
+    # matched is None → a positive/setup create (no rejection expected)
+    assert sp({"kind": "create", "sobject": "Opportunity",
+               "success": True, "matched": None}) == "Created a Opportunity"
+    assert sp({"kind": "create", "sobject": "Opportunity",
+               "success": False, "matched": None,
+               "error_code": "REQUIRED_FIELD_MISSING"}) == \
+        "Couldn't create the Opportunity (REQUIRED_FIELD_MISSING)"
+
+
+def test_step_plain_create_negative_paths():
+    sp = _import_step_plain()
+    # rejection expected + matched → the forbidden create was blocked
+    assert sp({"kind": "create", "sobject": "Lead", "success": False,
+               "matched": True, "error_code": "FIELD_CUSTOM_VALIDATION_EXCEPTION"}) == \
+        "Tried to create a forbidden Lead — Salesforce blocked it " \
+        "(FIELD_CUSTOM_VALIDATION_EXCEPTION)"
+    # rejection expected but the org ALLOWED it → a real defect
+    assert sp({"kind": "create", "sobject": "Lead", "success": True,
+               "matched": False}) == \
+        "Created a Lead that should have been rejected — a real defect"
+    # blocked, but by a different rule than the one under test
+    assert sp({"kind": "create", "sobject": "Lead", "success": False,
+               "matched": False, "error_code": "INSUFFICIENT_ACCESS"}) == \
+        "Creation was blocked, but by a different rule (INSUFFICIENT_ACCESS)"
+
+
+def test_step_plain_update_and_delete_negative():
+    sp = _import_step_plain()
+    assert sp({"kind": "update", "sobject": "Opportunity", "success": False,
+               "matched": True, "error_code": "FIELD_CUSTOM_VALIDATION_EXCEPTION"}) == \
+        "Tried the forbidden edit on Opportunity — Salesforce blocked it " \
+        "(FIELD_CUSTOM_VALIDATION_EXCEPTION)"
+    assert sp({"kind": "delete", "sobject": "Account", "success": True,
+               "matched": False}) == \
+        "Deleted the Account when it should have been blocked — a real defect"
+
+
+def test_step_plain_error_surface_on_mutation():
+    sp = _import_step_plain()
+    assert sp({"kind": "create", "sobject": "Case",
+               "error": {"phase": "create", "error_type": "TransportError",
+                         "message": "connection reset"}}) == \
+        "Couldn't attempt the Case create — connection reset"
+
+
+def test_step_plain_falls_back_and_never_raises():
+    sp = _import_step_plain()
+    assert sp({"kind": "mystery_kind"}) == "mystery kind"
+    assert sp({}) == "step"
+    assert sp(None) == "Step"
+    # garbage values must not raise
+    assert sp({"kind": "create", "sobject": object(), "success": "yes",
+               "matched": True})

@@ -10,7 +10,10 @@ stored truth. Three surfaces:
     (a metadata-recipe inspection: the rule/config exists, enforcement not
     exercised), from the claim's current recipe kinds;
   - :func:`verdict_plain` — an S6 verdict as one plain sentence for the runs
-    list ("Tried the forbidden change — Salesforce blocked it").
+    list ("Tried the forbidden change — Salesforce blocked it");
+  - :func:`step_plain` — one S4 evidence step as a plain sentence for the
+    run-detail trace ("Created an Opportunity", "Tried the forbidden edit —
+    Salesforce blocked it").
 
 Computed at READ time, never stored: a derived string column would go stale
 across claim/recipe versions (the D-204 SCD lesson), and the inputs are always
@@ -219,3 +222,104 @@ def refusal_plain(refusal_kind: Optional[str],
             detail = ", ".join(str(d) for d in detail)
         return f"{base} ({detail})"
     return base
+
+
+# ---------------------------------------------------------------------------
+# Plain-words evidence-step lines (D-233 — readable run detail)
+# ---------------------------------------------------------------------------
+
+# One plain sentence per S4 evidence step so the run-detail trace reads as a
+# story instead of a raw JSON dump. The raw step tree stays one click away; this
+# is the headline. Dispatches on ``kind`` (read / assert / create / update /
+# delete) + the outcome fields (success / held / matched / error). A mutation
+# with ``matched`` set is a NEGATIVE test (a rejection was expected); ``matched``
+# None is a positive/setup mutation.
+
+# Negative-test mutation phrasings (a rejection was expected), keyed by kind.
+_MUT_BLOCKED = {
+    "create": "Tried to create a forbidden {obj} — Salesforce blocked it{code}",
+    "update": "Tried the forbidden edit on {obj} — Salesforce blocked it{code}",
+    "delete": "Tried the forbidden delete of {obj} — Salesforce blocked it{code}",
+}
+_MUT_LEAKED = {     # the org ALLOWED what should have been rejected — a defect
+    "create": "Created a {obj} that should have been rejected — a real defect",
+    "update": "Edited the {obj} when it should have been blocked — a real defect",
+    "delete": "Deleted the {obj} when it should have been blocked — a real defect",
+}
+_MUT_OTHERRULE = {  # blocked, but not by the rule under test
+    "create": "Creation was blocked, but by a different rule{code}",
+    "update": "The edit was blocked, but by a different rule{code}",
+    "delete": "The delete was blocked, but by a different rule{code}",
+}
+# Positive / setup mutation phrasings (no rejection expected).
+_MUT_OK = {
+    "create": "Created a {obj}",
+    "update": "Edited the {obj}",
+    "delete": "Deleted the {obj}",
+}
+_MUT_FAIL = {
+    "create": "Couldn't create the {obj}{code}",
+    "update": "Couldn't edit the {obj}{code}",
+    "delete": "Couldn't delete the {obj}{code}",
+}
+
+
+def _err_msg(err: Any) -> str:
+    if isinstance(err, dict):
+        return err.get("message") or err.get("error_type") or "an error occurred"
+    return "an error occurred"
+
+
+def _sobj(step: dict) -> str:
+    return step.get("sobject") or "record"
+
+
+def _mutation_plain(kind: str, step: dict, err: Any) -> str:
+    obj = _sobj(step)
+    if err:
+        return f"Couldn't attempt the {obj} {kind} — {_err_msg(err)}"
+    success = bool(step.get("success"))
+    matched = step.get("matched")
+    code = step.get("error_code")
+    code_sfx = f" ({code})" if code else ""
+    if matched is not None:                # negative test — a rejection expected
+        tmpl = (_MUT_LEAKED[kind] if success
+                else _MUT_BLOCKED[kind] if matched
+                else _MUT_OTHERRULE[kind])
+    else:                                  # positive / setup mutation
+        tmpl = _MUT_OK[kind] if success else _MUT_FAIL[kind]
+    return tmpl.format(obj=obj, code=code_sfx)
+
+
+def step_plain(step: Any) -> str:
+    """One plain-English sentence for an S4 evidence step (the run-detail trace).
+    Pure + never-raises: dispatches on ``step['kind']`` and the outcome fields,
+    falling back to the kind word on any unexpected shape so the run page never
+    breaks."""
+    if not isinstance(step, dict):
+        return "Step"
+    kind = step.get("kind")
+    try:
+        err = step.get("error")
+        if kind == "read":
+            obj = _sobj(step)
+            if err:
+                return f"Couldn't read {obj} — {_err_msg(err)}"
+            n = step.get("row_count")
+            if n is None:
+                return f"Read {obj}"
+            return f"Read {n} {obj} row{'' if n == 1 else 's'}"
+        if kind == "assert":
+            if err:
+                return f"Couldn't run the check — {_err_msg(err)}"
+            held = step.get("held")
+            if held is True:
+                return "Checked the records — the assertion held"
+            if held is False:
+                return "Checked the records — the assertion did NOT hold"
+            return "Checked the records"
+        if kind in _MUT_OK:
+            return _mutation_plain(kind, step, err)
+    except Exception:
+        pass
+    return kind.replace("_", " ") if isinstance(kind, str) else "step"

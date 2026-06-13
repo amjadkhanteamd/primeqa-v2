@@ -187,7 +187,16 @@
             {% elif step.success is defined %}<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium {{ 'bg-green-100 text-green-800' if step.success else 'bg-amber-100 text-amber-800' }}">{{ 'ok' if step.success else 'rejected' }}</span>
             {% endif %}
           </div>
-          {{ render_value(step) }}
+          {# D-233: the plain-English headline; the raw step tree stays one click
+             away beneath it (never lose the trace — engineers still expand it). #}
+          {% if step.plain %}<p class="text-sm text-gray-800">{{ step.plain }}</p>{% endif %}
+          <details class="group">
+            <summary class="cursor-pointer select-none text-xs text-gray-400 hover:text-gray-600">
+              <span class="group-open:hidden">Show raw step data &darr;</span>
+              <span class="hidden group-open:inline">Hide raw step data &uarr;</span>
+            </summary>
+            <div class="mt-2">{{ render_value(step) }}</div>
+          </details>
         </div>
         {% endfor %}
       </div>

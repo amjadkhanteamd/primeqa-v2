@@ -2996,6 +2996,13 @@ def s4_run_detail(run_id):
     v1 /runs/<int:id> detail. Best-effort read via the s4_execution_console bridge."""
     from primeqa.intelligence.s4_execution_console import read_run_detail
     detail = read_run_detail(request.user["tenant_id"], run_id)
+    # D-233: a plain-English headline per evidence step (the raw step tree stays
+    # collapsed beneath it in the template). Attached here, mirroring how the
+    # claim-detail view attaches verdict_plain onto each run row.
+    from primeqa.intelligence.claim_presentation import step_plain
+    for _step in ((detail or {}).get("run") or {}).get("steps") or []:
+        if isinstance(_step, dict):
+            _step["plain"] = step_plain(_step)
     # D-231: close the failure→repair drill — surface the actionable repair
     # proposal for THIS run inline (admin+), reusing the queue's decide POST, so the
     # drill ends at an action instead of read-only suggestion text.
