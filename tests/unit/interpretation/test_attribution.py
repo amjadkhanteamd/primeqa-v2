@@ -32,13 +32,25 @@ _VR = "FIELD_CUSTOM_VALIDATION_EXCEPTION"
 # ---------------------------------------------------------------------------
 
 class _StubS1:
-    def __init__(self, vrs):
+    def __init__(self, vrs, *, flows=(), fields=None):
         self._vrs = tuple(vrs)
+        self._flows = tuple(flows)              # D-229: FlowMeta tuple
+        self._fields = dict(fields or {})       # D-229: {field_name: FieldMeta}
         self.calls = []
+        self.flow_calls = []
+        self.field_calls = []
 
     def vrs_for_object(self, subject_external_id):
         self.calls.append(subject_external_id)
         return self._vrs
+
+    def flows_for_object(self, subject_external_id):
+        self.flow_calls.append(subject_external_id)
+        return self._flows
+
+    def field_meta(self, object_external_id, field_external_id):
+        self.field_calls.append((object_external_id, field_external_id))
+        return self._fields.get(field_external_id)
 
 
 def _run(*, outcome, create):
@@ -400,3 +412,113 @@ def test_delete_unasserted_still_attributes_from_the_rejection_body():
     interp = _interp(ev, _StubS1([]))
     assert interp.cause.cause_kind == "platform_constraint"
     assert "delete" in interp.cause.detail
+
+
+# ---------------------------------------------------------------------------
+# D-229 — positive-vertical failure attribution (automation/state Flow +
+# value-claim field createability)
+# ---------------------------------------------------------------------------
+
+from primeqa.execution_engine.evidence import DataReadEvidence       # noqa: E402
+from primeqa.interpretation import FieldMeta, FlowMeta               # noqa: E402
+
+
+def _positive(*, sobject, claim_kind, captured=("Status__c",), outcome="failed"):
+    """A positive create-and-verify run: create succeeds, read-back observed,
+    the value/effect assert does NOT hold (outcome=failed)."""
+    create = CreateAttemptEvidence(
+        step_id="create", ordinal=0, sobject=sobject,
+        field_values={"Subject": "x"}, http_status=201, success=True,
+        error_code=None, message=None, rejection_body=(), matched=None,
+        cleanup=CleanupRecord(attempted=False), started_at=_T, finished_at=_T,
+        duration_ms=1)
+    read = DataReadEvidence(
+        step_id="read", ordinal=1, soql=f"SELECT {','.join(captured)} FROM {sobject}",
+        sobject=sobject, fields_captured=tuple(captured), row_count=1,
+        rows=({c: None for c in captured},), started_at=_T, finished_at=_T,
+        duration_ms=1)
+    assertion = AssertEvidence(
+        step_id="assert", ordinal=2, predicate="equals", subject_ref="read",
+        evaluated_row_count=1, held=(outcome == "passed"),
+        started_at=_T, finished_at=_T, duration_ms=0)
+    ev = RunEvidence(
+        run_id=uuid4(), recipe_id=uuid4(), recipe_version_seq=1, claim_test_id=uuid4(),
+        claim_version_seq=None, environment_id=7, api_choice="rest", outcome=outcome,
+        started_at=_T, finished_at=_T, steps=(create, read, assertion))
+    return ev, claim_kind
+
+
+def _interp_pos(ev_kind, s1):
+    ev, claim_kind = ev_kind
+    return attribute_run(interpret_run(ev, claim_kind=claim_kind), ev, s1=s1)
+
+
+def test_automation_not_triggered_inactive_flow():
+    # The dogfood P1 capture: the grounding Flow was deactivated → no active
+    # Flow triggers on the object → automation_inactive.
+    ek = _positive(sobject="Case", claim_kind="automation-effect-claim")
+    s1 = _StubS1([], flows=[FlowMeta("SQ205_Create_Case_SLA", is_active=False)])
+    interp = _interp_pos(ek, s1)
+    assert interp.verdict == "automation_not_triggered"
+    assert interp.cause.cause_kind == "automation_inactive"
+    assert "deactivated or removed" in interp.attribution
+    assert s1.flow_calls == ["Case"]
+
+
+def test_automation_not_triggered_no_flow_at_all_is_inactive():
+    # No Flow triggers on the object at all (deleted, not just disabled) — same
+    # honest signal: no active automation could fire.
+    ek = _positive(sobject="Case", claim_kind="automation-effect-claim")
+    interp = _interp_pos(ek, _StubS1([], flows=[]))
+    assert interp.cause.cause_kind == "automation_inactive"
+
+
+def test_automation_effect_absent_active_flow_present():
+    # An active Flow IS present, yet the effect wasn't observed — distinct from
+    # inactive: the automation exists but didn't produce the effect.
+    ek = _positive(sobject="Case", claim_kind="automation-effect-claim")
+    s1 = _StubS1([], flows=[FlowMeta("SQ205_Create_Case_SLA", is_active=True)])
+    interp = _interp_pos(ek, s1)
+    assert interp.cause.cause_kind == "automation_effect_absent"
+    assert "SQ205_Create_Case_SLA" in interp.cause.detail
+
+
+def test_state_not_transitioned_uses_the_same_flow_logic():
+    ek = _positive(sobject="Order__c", claim_kind="state-transition-claim")
+    interp = _interp_pos(ek, _StubS1([], flows=[FlowMeta("Stamp", is_active=False)]))
+    assert interp.verdict == "state_not_transitioned"
+    assert interp.cause.cause_kind == "automation_inactive"
+
+
+def test_value_not_persisted_field_not_createable():
+    # The asserted field is not createable → SF dropped the posted value on insert.
+    ek = _positive(sobject="Invoice__c", claim_kind="value-claim",
+                   captured=("Amount__c",))
+    s1 = _StubS1([], fields={"Amount__c": FieldMeta("Amount__c", is_createable=False)})
+    interp = _interp_pos(ek, s1)
+    assert interp.verdict == "value_not_persisted"
+    assert interp.cause.cause_kind == "field_not_createable"
+    assert "Amount__c" in interp.cause.detail
+    assert s1.field_calls == [("Invoice__c", "Amount__c")]
+
+
+def test_value_not_persisted_createable_field_passes_through():
+    # The field IS createable → many non-S1 causes (a before-save automation, a
+    # default) — no fabricated cause.
+    ek = _positive(sobject="Invoice__c", claim_kind="value-claim",
+                   captured=("Amount__c",))
+    s1 = _StubS1([], fields={"Amount__c": FieldMeta("Amount__c", is_createable=True)})
+    interp = _interp_pos(ek, s1)
+    assert interp.verdict == "value_not_persisted"
+    assert interp.cause is None
+
+
+def test_positive_passed_is_passthrough():
+    # A passing positive run is never attributed (no failure to explain).
+    ek = _positive(sobject="Case", claim_kind="automation-effect-claim",
+                   outcome="passed")
+    s1 = _StubS1([], flows=[FlowMeta("X", is_active=False)])
+    interp = _interp_pos(ek, s1)
+    assert interp.verdict == "automation_triggered"
+    assert interp.cause is None
+    assert s1.flow_calls == []                  # self-limiting: no S1 read on pass

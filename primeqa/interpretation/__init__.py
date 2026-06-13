@@ -26,6 +26,9 @@ stays in v1 (``intelligence.interpretation_phrasing``) — this package is
 deliberately LLM-free.
 """
 from primeqa.interpretation.attribution import (
+    FieldMeta,
+    FlowMeta,
+    S1AttributionReader,
     S1VrReader,
     VrMeta,
     attribute_run,
@@ -64,7 +67,10 @@ __all__ = [
     "Cause",
     "CauseKind",
     "S1VrReader",
+    "S1AttributionReader",
     "VrMeta",
+    "FlowMeta",
+    "FieldMeta",
     "S1ValidationRuleReader",
     # D-137 — the read API
     "read_interpretation",
