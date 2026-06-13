@@ -74,6 +74,11 @@ class S4CreatedRecord(Base):
     cleaned = Column(Boolean, nullable=False, server_default=text("false"))
     created_at = Column(DateTime(timezone=True), nullable=False,
                         server_default=func.now())
+    # D-230 (2.4): the environment the record was created against — written at
+    # create time (write-ahead) so the crash-recovery reaper resolves the
+    # data-mutation client without an s4_execution_runs join. NULL on pre-D-230
+    # finalize-written rows (the reaper skips those).
+    environment_id = Column(Integer, nullable=True)
 
 
 def persist_run_evidence(session, evidence: RunEvidence):
