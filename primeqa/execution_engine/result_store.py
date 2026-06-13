@@ -74,15 +74,26 @@ class S4CreatedRecord(Base):
     cleaned = Column(Boolean, nullable=False, server_default=text("false"))
     created_at = Column(DateTime(timezone=True), nullable=False,
                         server_default=func.now())
+    # D-230 (2.4): the environment the record was created against — written at
+    # create time (write-ahead) so the crash-recovery reaper resolves the
+    # data-mutation client without an s4_execution_runs join. NULL on pre-D-230
+    # finalize-written rows (the reaper skips those).
+    environment_id = Column(Integer, nullable=True)
 
 
 def persist_run_evidence(session, evidence: RunEvidence):
-    """Persist one :class:`RunEvidence` as an ``s4_execution_runs`` row, plus an
-    ``s4_created_records`` audit row per record the run created (F6.1).
+    """Persist one :class:`RunEvidence` as an ``s4_execution_runs`` row.
 
     Maps the in-memory evidence to typed columns + an ``evidence`` JSONB trace,
     adds + flushes on the caller's ``session`` (no commit — the caller owns the
     transaction, the substrate convention), and returns the run's ``run_id``.
+
+    D-230: the ``s4_created_records`` audit rows are no longer written here —
+    the :class:`~primeqa.execution_engine.stranded_cleanup.StrandedRecordSink`
+    writes each WRITE-AHEAD (its own committed transaction, the moment the record
+    is created) so a crash before this finalize cannot strand a record without a
+    reapable row. A finalize write would have been both too late (no durability)
+    and a duplicate (the sink already wrote it).
     """
     row = S4ExecutionRun(
         run_id=evidence.run_id,
@@ -98,10 +109,6 @@ def persist_run_evidence(session, evidence: RunEvidence):
         evidence=_evidence_trace(evidence),
     )
     session.add(row)
-    for cr in evidence.created_records:          # F6.1 provisioning audit
-        session.add(S4CreatedRecord(
-            run_id=evidence.run_id, sobject=cr.sobject,
-            record_id=cr.record_id, created_seq=cr.created_seq))
     session.flush()
     return evidence.run_id
 

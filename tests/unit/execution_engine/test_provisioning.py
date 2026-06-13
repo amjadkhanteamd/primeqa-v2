@@ -59,3 +59,58 @@ class TestCreatedRecordTracker:
         t.record("Account", "001A")
         cleanups = t.teardown(object(), _stub_delete([], succeed=False))
         assert cleanups[0].succeeded is False
+
+
+class _FakeSink:
+    """Records the sink contract calls (D-230) — created(run_id, ...) on record,
+    cleaned(run_id, ...) on a successful teardown delete."""
+    def __init__(self):
+        self.created_calls = []
+        self.cleaned_calls = []
+
+    def created(self, run_id, sobject, record_id, created_seq):
+        self.created_calls.append((run_id, sobject, record_id, created_seq))
+
+    def cleaned(self, run_id, record_id):
+        self.cleaned_calls.append((run_id, record_id))
+
+
+class TestTrackerSinkWriteAhead:
+    """D-230: the write-ahead durability contract through CreatedRecordTracker."""
+
+    def test_record_write_aheads_to_the_sink(self):
+        sink = _FakeSink()
+        t = CreatedRecordTracker(run_id="RUN1", sink=sink)
+        t.record("Account", "001A")
+        t.record("Contact", "003C")
+        # written the moment each is tracked (before any later SF call)
+        assert sink.created_calls == [
+            ("RUN1", "Account", "001A", 0),
+            ("RUN1", "Contact", "003C", 1),
+        ]
+
+    def test_successful_teardown_marks_cleaned(self):
+        sink = _FakeSink()
+        t = CreatedRecordTracker(run_id="RUN1", sink=sink)
+        t.record("Account", "001A")
+        t.record("Contact", "003C")
+        t.teardown(client=object(), delete_fn=_stub_delete([], succeed=True))
+        # reverse order, only successful deletes flip cleaned
+        assert sink.cleaned_calls == [("RUN1", "003C"), ("RUN1", "001A")]
+
+    def test_failed_teardown_does_not_mark_cleaned(self):
+        # A delete that did not succeed leaves the row cleaned=false so the reaper
+        # reclaims it — durability's whole point.
+        sink = _FakeSink()
+        t = CreatedRecordTracker(run_id="RUN1", sink=sink)
+        t.record("Account", "001A")
+        t.teardown(client=object(), delete_fn=_stub_delete([], succeed=False))
+        assert sink.cleaned_calls == []
+
+    def test_no_sink_is_a_silent_no_op(self):
+        # Back-compat: the sink-less path (tests / not-yet-async) behaves exactly
+        # as before — record + teardown work, nothing is written.
+        t = CreatedRecordTracker()          # no run_id, no sink
+        t.record("Account", "001A")
+        cleanups = t.teardown(client=object(), delete_fn=_stub_delete([]))
+        assert len(cleanups) == 1 and cleanups[0].succeeded

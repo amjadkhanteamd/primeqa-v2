@@ -69,6 +69,7 @@ def scheduler_tick(ctx):
         reap_stale_workers,
         s3_reaper_tick,               # D-106.4 slice 5 (substrate-3 queue)
         s4_reaper_tick,               # D-132 (substrate-4 execution queue)
+        s4_cleanup_reaper_tick,       # D-230 (substrate-4 stranded-record cleanup)
         s4_schedule_tick,             # D-214 (scheduled substrate regression runs)
         repair_triage_tick,           # D-215.1 (repair-agent spine — proposal-only)
         s8_grounding_tick,            # D-143 (substrate-8 grounding recompute)
@@ -194,6 +195,28 @@ def s4_reaper_tick(ctx):
             log.warning("reaped %d stale s4 execution job(s)", total)
     except Exception as e:
         log.warning("s4_reaper_tick failed: %s", e)
+
+
+def s4_cleanup_reaper_tick(ctx):
+    """Reap Salesforce records a crashed substrate-4 run left stranded (D-230).
+
+    s4_created_records is per-tenant, so enumerate active tenants and reap each —
+    per-tenant try/except (in run_s4_cleanup_reaper_tick) so one tenant's failure
+    never starves the others. Distinct from s4_reaper_tick (stuck JOBS) — this
+    reclaims orphaned ORG records the write-ahead sink recorded but in-run
+    teardown never deleted (a worker kill, a transport hang mid-run)."""
+    try:
+        from primeqa.execution_engine.consumer import run_s4_cleanup_reaper_tick
+        from primeqa.semantic.connection import admin_run_in_shared_schema
+        with admin_run_in_shared_schema() as conn:
+            tenant_ids = [r[0] for r in conn.execute(text(
+                "SELECT id FROM shared.tenants WHERE deleted_at IS NULL ORDER BY id"
+            )).fetchall()]
+        total = sum(run_s4_cleanup_reaper_tick(tenant_ids).values())
+        if total:
+            log.warning("reaped %d stranded s4 record(s)", total)
+    except Exception as e:
+        log.warning("s4_cleanup_reaper_tick failed: %s", e)
 
 
 def s1_sync_enqueuer_tick(ctx):

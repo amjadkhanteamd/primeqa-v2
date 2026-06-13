@@ -133,3 +133,23 @@ def run_s4_reaper_tick(tenant_ids, *, stale_minutes: int = 10) -> dict[int, int]
             log.warning("s4_reaper_tick: tenant %s failed: %s", tid, exc)
             reaped[tid] = 0
     return reaped
+
+
+def run_s4_cleanup_reaper_tick(
+    tenant_ids, *, stale_minutes: int = 15,
+) -> dict[int, int]:
+    """The crash-recovery cleanup reaper (D-230): delete Salesforce records a
+    crashed run left stranded (an ``s4_created_records`` row still ``cleaned=false``
+    past the grace window). Per-tenant isolation — one tenant's failure never
+    starves the others. Returns ``{tenant_id: reaped_count}``. Distinct from
+    :func:`run_s4_reaper_tick` (which reaps stuck JOBS, not orphaned org records)."""
+    from primeqa.execution_engine.stranded_cleanup import reap_stranded_records
+
+    reaped: dict[int, int] = {}
+    for tid in tenant_ids:
+        try:
+            reaped[tid] = reap_stranded_records(tid, stale_minutes=stale_minutes)
+        except Exception as exc:
+            log.warning("s4_cleanup_reaper_tick: tenant %s failed: %s", tid, exc)
+            reaped[tid] = 0
+    return reaped

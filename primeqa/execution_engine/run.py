@@ -105,6 +105,7 @@ def run_recipe_execution(
     available_environment: Optional[ExecutionEnvironmentBody] = None,
     client=None,
     coordinator=None,
+    record_sink=None,
 ) -> RunPathResult:
     """Execute the eligible recipe for ``test_id`` end-to-end on ``session``.
 
@@ -131,7 +132,8 @@ def run_recipe_execution(
     if recipe is None:
         return RunPathResult(ran=False, reason="no_eligible_recipe")
 
-    evidence = _execute_for_kind(recipe, session, environment_id, client)
+    evidence = _execute_for_kind(
+        recipe, session, environment_id, client, record_sink=record_sink)
     state = finalize_run(session, evidence, coordinator=coord)
     interpretation = _interpret_and_persist(session, evidence)
 
@@ -144,14 +146,17 @@ def run_recipe_execution(
     )
 
 
-def _execute_for_kind(recipe, session, environment_id: int, client):
+def _execute_for_kind(recipe, session, environment_id: int, client,
+                      record_sink=None):
     """Dispatch on ``recipe.recipe_kind`` → the matching bridge + executor.
 
     The inspection path (``metadata-recipe``) is unchanged from D-108.4; the
     behavioral-negative path (``data-recipe``, D-110.2) is the parallel build.
     An injected ``client`` overrides the kind's resolver (the seam the live
-    tests use). An unknown kind fails loud — the run path has no executor for
-    it (deferred recipe kinds)."""
+    tests use). ``record_sink`` (D-230) is the write-ahead durability sink for
+    the data path — the metadata path creates nothing, so it ignores it. An
+    unknown kind fails loud — the run path has no executor for it (deferred
+    recipe kinds)."""
     if recipe.recipe_kind == _METADATA_RECIPE_KIND:
         plan = build_metadata_inspection_plan(recipe)
         tooling = client or resolve_tooling_client(session, environment_id)
@@ -173,7 +178,8 @@ def _execute_for_kind(recipe, session, environment_id: int, client):
             from primeqa.semantic.query import SemanticOrgModel
             s1 = SemanticOrgModel(session.connection())
         return execute_data_recipe(
-            plan, client=data_client, environment_id=environment_id, s1=s1)
+            plan, client=data_client, environment_id=environment_id, s1=s1,
+            record_sink=record_sink)
 
     raise PlanTranslationError(
         f"run path has no executor for recipe_kind={recipe.recipe_kind!r} "
@@ -264,6 +270,14 @@ def run_recipe_execution_for_tenant(
 
     from primeqa.semantic.connection import get_tenant_connection
 
+    # D-230: the production entry owns tenant identity, so it builds the
+    # write-ahead durability sink (bound to tenant + env; run_id is supplied
+    # per call by the executor's tracker). The sink writes in its OWN committed
+    # transactions, so a created record is durable before the run can crash —
+    # the crash-recovery reaper then reclaims anything teardown never reached.
+    from primeqa.execution_engine.stranded_cleanup import StrandedRecordSink
+    sink = StrandedRecordSink(tenant_id, environment_id)
+
     with get_tenant_connection(tenant_id) as conn:
         session = Session(bind=conn)
         try:
@@ -274,6 +288,7 @@ def run_recipe_execution_for_tenant(
                 available_environment=available_environment,
                 client=client,
                 coordinator=coordinator,
+                record_sink=sink,
             )
         finally:
             session.close()

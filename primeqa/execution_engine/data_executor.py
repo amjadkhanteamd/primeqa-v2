@@ -83,6 +83,7 @@ _BUSINESS_REJECTION_STATUS = 400
 
 def execute_data_recipe(
     plan: DataRecipePlan, *, client, environment_id: int, s1=None,
+    record_sink=None,
 ) -> RunEvidence:
     """Execute a data-recipe plan against ``client``; dispatch on the first
     step's ``expect_rejection``.
@@ -110,9 +111,11 @@ def execute_data_recipe(
     if flagged is not None:
         # 2-step setup create -> rejected update/delete (D-203).
         return _run_negative_with_setup(
-            plan, client=client, environment_id=environment_id, s1=s1)
+            plan, client=client, environment_id=environment_id, s1=s1,
+            record_sink=record_sink)
     return _run_positive(
-        plan, client=client, environment_id=environment_id, s1=s1)
+        plan, client=client, environment_id=environment_id, s1=s1,
+        record_sink=record_sink)
 
 
 def _execute_negative(
@@ -145,7 +148,7 @@ def _execute_negative(
 
 
 def _run_negative_with_setup(
-    plan: DataRecipePlan, *, client, environment_id: int, s1,
+    plan: DataRecipePlan, *, client, environment_id: int, s1, record_sink=None,
 ) -> RunEvidence:
     """The 2-step behavioral negative (D-203): construct-world → setup
     create-expect-success → attempt the prohibited update/delete → grade the
@@ -166,7 +169,7 @@ def _run_negative_with_setup(
     # 1. Construct the operational world for the setup create — the same
     #    machinery as the positive vertical (padding + parents + tracker, F6).
     at_seq = s1.current_version_seq()
-    tracker = CreatedRecordTracker()
+    tracker = CreatedRecordTracker(run_id=run_id, sink=record_sink)
     try:
         scalar_filler, parent_filler, unfillable = construct_world(
             sobject, semantic_fields, s1=s1, client=client, tracker=tracker,
@@ -338,7 +341,8 @@ def _sf_soql(soql: str, sobject: str) -> str:
     return soql.replace(f"{sobject}.", "")
 
 
-def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> RunEvidence:
+def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1,
+                  record_sink=None) -> RunEvidence:
     """The positive create-and-verify path (D-115; N-create chains D-205):
     per create — construct-world → resolve cross-step refs → create-expect-
     success → thread state — then observe the read-back → teardown (k14,
@@ -353,7 +357,7 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1) -> R
     *creates, read, assertion = plan.steps
 
     at_seq = s1.current_version_seq()
-    tracker = CreatedRecordTracker()
+    tracker = CreatedRecordTracker(run_id=run_id, sink=record_sink)
     state: dict[str, dict] = {}
     create_evs: list = []
     record_ids: list = []           # parallel to create_evs (None = not created)
