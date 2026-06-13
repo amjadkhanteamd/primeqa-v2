@@ -160,3 +160,69 @@ def test_reaper_unresolvable_env_skips_without_raise():
     n = reap_stranded_records(TEST_TENANT_ID, stale_minutes=15, client_resolver=resolver)
     assert n == 0
     assert _rows()[0]["cleaned"] is False
+
+
+# ---------------------------------------------------------------------------
+# Review #2 (blocker): the run-liveness interlock — never reap a live run
+# ---------------------------------------------------------------------------
+
+def _seed_job(env, status):
+    # The conftest's autouse `clean_jobs` truncates s4_execution_jobs before each
+    # test, so a seeded job here is the only one the interlock sees.
+    with get_tenant_connection(TEST_TENANT_ID) as conn:
+        conn.execute(text(
+            "INSERT INTO s4_execution_jobs (test_id, environment_id, status) "
+            "VALUES (CAST(:t AS uuid), :env, :st)"
+        ), {"t": str(uuid4()), "env": env, "st": status})
+
+
+def test_reaper_skips_records_whose_env_has_an_active_job():
+    # A live run holds a 'running' (or queued/claimed) job for its env — the
+    # reaper must NOT delete that env's records mid-run (the false-15-min-safety
+    # blocker). Even an old, otherwise-reapable row is held back.
+    _seed(uuid4(), "Case", "LIVE", env=7, age_minutes=60)
+    _seed_job(env=7, status="running")
+    client = _FakeClient()
+    n = reap_stranded_records(
+        TEST_TENANT_ID, stale_minutes=15,
+        client_resolver=lambda session, env_id: client)
+    assert n == 0
+    assert client.deleted == []
+    assert _rows()[0]["cleaned"] is False
+
+
+def test_reaper_reaps_once_the_env_job_is_terminal():
+    # Same record, but the job reached a terminal status (the run is dead) → reap.
+    _seed(uuid4(), "Case", "DEAD", env=7, age_minutes=60)
+    _seed_job(env=7, status="failed")
+    client = _FakeClient()
+    n = reap_stranded_records(
+        TEST_TENANT_ID, stale_minutes=15,
+        client_resolver=lambda session, env_id: client)
+    assert n == 1
+    assert client.deleted == [("Case", "DEAD")]
+
+
+def test_reaper_active_job_on_other_env_does_not_block():
+    # An active job on env 9 must not hold back env 7's reapable records.
+    _seed(uuid4(), "Case", "E7", env=7, age_minutes=60)
+    _seed_job(env=9, status="running")
+    client = _FakeClient()
+    n = reap_stranded_records(
+        TEST_TENANT_ID, stale_minutes=15,
+        client_resolver=lambda session, env_id: client)
+    assert n == 1
+    assert client.deleted == [("Case", "E7")]
+
+
+def test_reaper_gives_up_on_rows_past_the_7day_window():
+    # Review #3/#4: a row older than the give-up window drops out of the working
+    # set (so a poison row can't be retried forever nor block newer rows).
+    _seed(uuid4(), "Case", "ANCIENT", env=7, age_minutes=8 * 24 * 60)   # 8 days
+    client = _FakeClient()
+    n = reap_stranded_records(
+        TEST_TENANT_ID, stale_minutes=15,
+        client_resolver=lambda session, env_id: client)
+    assert n == 0
+    assert client.deleted == []
+    assert _rows()[0]["cleaned"] is False               # left, but not retried

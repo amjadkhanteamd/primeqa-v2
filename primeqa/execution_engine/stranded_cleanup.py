@@ -10,12 +10,20 @@ was unreapable.
 
 This module closes that gap with two pieces:
 
-  - :class:`StrandedRecordSink` — write-ahead: the executor records each create on
-    the sink IMMEDIATELY (its own committed transaction, before the next SF call),
-    ``cleaned=false`` + the ``environment_id`` the reaper needs; and flips
-    ``cleaned=true`` when the in-run teardown deletes that record. Best-effort —
-    a sink write failure is logged, never raised (durability is opportunistic; it
-    must never break the run).
+  - :class:`StrandedRecordSink` — write-ahead: the executor records each record
+    **S4 itself creates** on the sink IMMEDIATELY (its own committed transaction,
+    before the next SF call), ``cleaned=false`` + the ``environment_id`` the
+    reaper needs; and flips ``cleaned=true`` when the in-run teardown deletes that
+    record. Best-effort — a sink write failure is logged, never raised
+    (durability is opportunistic; it must never break the run).
+
+    **Residual (review #1):** records the org's own automation (a Flow/trigger)
+    creates as a side effect are recorded only AFTER the read-back observes their
+    ids (the executor cannot write-ahead an id it has not yet read), so a crash
+    during the read-retry window strands an automation child unreapably. The S4
+    trigger record stays reapable. Closing this needs reaper read-back
+    reconciliation (reconstruct the side-effect SOQL from the durable trigger
+    id) — a future increment; the narrow window is accepted for now.
 
   - :func:`reap_stranded_records` — finds rows ``cleaned=false`` older than a
     grace window (the run had time to finish), resolves the env's data-mutation
@@ -94,13 +102,15 @@ def reap_stranded_records(
 ) -> int:
     """Delete records a crashed run left stranded in Salesforce, one tenant.
 
-    Selects ``cleaned=false`` rows with a non-NULL ``environment_id`` older than
-    ``stale_minutes`` (the run had time to finish), groups by environment,
-    resolves a data-mutation client per env (``client_resolver(session,
-    environment_id)``; defaults to the production resolver), DELETEs each record
-    (best-effort — an already-gone record is success), and flips ``cleaned=true``.
-    Returns the count of rows reaped (delete attempted). Never raises across a
-    single record — one bad record never strands the rest.
+    Selects ``cleaned=false`` rows with a non-NULL ``environment_id`` that are
+    (a) older than ``stale_minutes``, (b) younger than the 7-day give-up window,
+    and (c) whose environment has NO ACTIVE ``s4_execution_job`` (the run-liveness
+    interlock — never reap out from under a live run; see step 1). Groups by
+    environment, resolves a data-mutation client per env (``client_resolver(
+    session, environment_id)``; defaults to the production resolver), DELETEs each
+    record (best-effort — an already-gone record is success), and flips
+    ``cleaned=true``. Returns the count of rows reaped (delete attempted). Never
+    raises across a single record — one bad record never strands the rest.
 
     The DB read/marks use brief own-transaction connections; the live deletes
     hold NO DB connection (the D-129 invariant)."""
@@ -112,15 +122,38 @@ def reap_stranded_records(
         client_resolver = resolve_data_mutation_client
 
     # 1. Read the stranded rows (brief read-only TX), detach as plain tuples.
+    #
+    #    RUN-LIVENESS INTERLOCK (review #2): a record is reapable ONLY when no
+    #    ACTIVE s4_execution_job exists for its environment — never reap out from
+    #    under a live run. The s4 JOB reaper flips a crashed run's job to a
+    #    terminal status at the heartbeat timeout (the synchronous worker does NOT
+    #    stop on its own — the 'stale_minutes > heartbeat' reasoning alone is
+    #    insufficient), so the cleanup reaper effectively waits for the run to be
+    #    declared dead before reclaiming its records. The ``stale_minutes`` lower
+    #    bound still guards the no-job (synchronous console) path. The UPPER bound
+    #    (give-up window, review #3) drops chronically-unreapable rows out of the
+    #    working set so a poison row (dead env) cannot be retried forever nor
+    #    block newer rows behind it (review #4).
+    give_up_days = 7
     with get_tenant_connection(tenant_id) as conn:
         rows = conn.execute(text(
-            "SELECT id, sobject, record_id, environment_id "
-            "FROM s4_created_records "
-            "WHERE cleaned = false AND environment_id IS NOT NULL "
-            f"AND created_at < NOW() - INTERVAL '{int(stale_minutes)} minutes' "
-            "ORDER BY created_at LIMIT :lim"
+            "SELECT cr.id, cr.sobject, cr.record_id, cr.environment_id "
+            "FROM s4_created_records cr "
+            "WHERE cr.cleaned = false AND cr.environment_id IS NOT NULL "
+            f"AND cr.created_at < NOW() - INTERVAL '{int(stale_minutes)} minutes' "
+            f"AND cr.created_at > NOW() - INTERVAL '{int(give_up_days)} days' "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM s4_execution_jobs j "
+            "  WHERE j.environment_id = cr.environment_id "
+            "  AND j.status IN ('queued', 'claimed', 'running')) "
+            "ORDER BY cr.created_at LIMIT :lim"
         ), {"lim": int(batch)}).mappings().all()
         stranded = [dict(r) for r in rows]
+    if len(stranded) >= batch:
+        # The batch is full — a backlog exists; surface it so truncation is
+        # observable (review #4) rather than a silent partial sweep.
+        log.warning("reap: tenant %s stranded-record batch is FULL (%d) — a "
+                    "backlog exists; more will be swept next tick", tenant_id, batch)
     if not stranded:
         return 0
 
