@@ -31,7 +31,21 @@ from primeqa.execution_engine.evidence import (
     UpdateAttemptEvidence,
 )
 from primeqa.interpretation.model import Cause, Interpretation
-from primeqa.semantic.formula import FieldRef, NonEvaluable, evaluate, parse, walk
+from primeqa.semantic.formula import NonEvaluable, evaluate, parse
+
+import re
+
+# Lenient field extraction (D-229, review #3): a VR's relevance signal must work
+# even when the WHOLE formula does not parse (e.g. `CloseDate > TODAY()` — TODAY
+# is not a recognized function, so the AST is NotParsed and an AST walk yields no
+# fields). Strip string literals, then take identifier tokens NOT immediately
+# followed by `(` (those are function names), keeping each token's bare last
+# dotted segment so a self-object ref `Opportunity.Amount` matches payload key
+# `Amount`. Imprecise by design — over-inclusion only risks KEEPING a VR as
+# indeterminate (the safe direction), never dropping a relevant one.
+_STRLIT_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+_IDENT_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_.]*)\s*(\()?")
+_FORMULA_KEYWORDS = frozenset({"TRUE", "FALSE", "NULL", "AND", "OR", "NOT"})
 
 # The generic validation-rule rejection code (S3 / emission.py — the D-101.2
 # honest floor). A rejection carrying it is a VR firing; anything else is a
@@ -146,47 +160,52 @@ def _attribute_negative(verdict, evidence, s1) -> Optional[Cause]:
 # ---------------------------------------------------------------------------
 
 def _attribute_positive(verdict, evidence, s1) -> Optional[Cause]:
-    """The positive create-and-verify family's failures. The created record is
-    the *trigger* (its `sobject`); automation/state grounds on a Flow that
-    triggers on it, a value-claim on the createability of the asserted field."""
-    create = _create_step(evidence)
-    if create is None:
-        return None
+    """The positive create-and-verify family's failures (incl. D-205 N-create
+    chains). automation/state grounds on the Flow that triggers on the TRIGGER
+    record (the LAST create — per D-205 forward-ref ordering the trigger is
+    created after the record it acts on); value-claim grounds on the
+    createability of the asserted field on the READ-BACK object."""
     if verdict == "value_not_persisted":
-        return _attribute_value_not_persisted(create, evidence, s1)
-    return _attribute_automation_absent(create, s1)
+        return _attribute_value_not_persisted(evidence, s1)
+    trigger = _last_create_step(evidence)
+    if trigger is None:
+        return None
+    return _attribute_automation_absent(trigger, s1)
 
 
-def _attribute_automation_absent(create, s1) -> Optional[Cause]:
+def _attribute_automation_absent(trigger, s1) -> Optional[Cause]:
     """`automation_not_triggered` / `state_not_transitioned`: discriminate on
-    whether any ACTIVE Flow triggers on the created record's object."""
-    flows = s1.flows_for_object(create.sobject)
+    whether any ACTIVE Flow triggers on the TRIGGER record's object."""
+    flows = s1.flows_for_object(trigger.sobject)
     active = [f for f in flows if f.is_active]
     if not active:
         return Cause(
             "automation_inactive",
-            detail=(f"no active Flow triggers on {create.sobject} — the grounding "
+            detail=(f"no active Flow triggers on {trigger.sobject} — the grounding "
                     f"automation was deactivated or removed since generation, so "
                     f"the asserted effect could not fire"))
     return Cause(
         "automation_effect_absent",
-        detail=(f"an active Flow ({active[0].name}) triggers on {create.sobject}, "
+        detail=(f"an active Flow ({active[0].name}) triggers on {trigger.sobject}, "
                 f"but the asserted effect was not observed — an entry condition "
                 f"may be unmet, or the Flow's logic changed since generation"))
 
 
-def _attribute_value_not_persisted(create, evidence, s1) -> Optional[Cause]:
-    """`value_not_persisted`: if an asserted (read-back) field on the created
-    object is not createable in current S1, SF dropped the posted value on
-    insert. Else honest pass-through — a value not persisting has many causes
-    S1 cannot determine (a before-save automation overwrote it, a default)."""
+def _attribute_value_not_persisted(evidence, s1) -> Optional[Cause]:
+    """`value_not_persisted`: if an asserted (read-back) field is not createable
+    in current S1, SF dropped the posted value on insert. Keyed off the READ's
+    object (where the value should have persisted) — robust to multi-create
+    chains. Else honest pass-through — a value not persisting has many causes S1
+    cannot determine (a before-save automation overwrote it, a default)."""
     read = _data_read_step(evidence)
-    for field in (read.fields_captured if read is not None else ()):
-        meta = s1.field_meta(create.sobject, field)
+    if read is None:
+        return None
+    for field in read.fields_captured:
+        meta = s1.field_meta(read.sobject, field)
         if meta is not None and not meta.is_createable:
             return Cause(
                 "field_not_createable",
-                detail=(f"the field {field} on {create.sobject} is not createable — "
+                detail=(f"the field {field} on {read.sobject} is not createable — "
                         f"Salesforce silently dropped the posted value on insert, so "
                         f"it could not persist"))
     return None
@@ -208,25 +227,33 @@ def _attribute_not_enforced(step, vrs, evidence) -> Optional[Cause]:
         # A delete leaves no field state to evaluate a formula against — and
         # VRs cannot enforce delete prohibitions anyway. No fabricated cause.
         return None
-    # Finding 2 (D-229): only VRs whose CURRENT formula references >=1 field
-    # present in the payload are *relevant* to THIS claim's failure. An
-    # unrelated rule (e.g. `CloseDate > TODAY()` on an Amount claim) is
-    # `NonEvaluable` and would otherwise land in `indeterminate` and OUTRANK
-    # the grounding VR's real drift — masking the precise cause. Filtering by
-    # field-overlap up front removes that noise from every bucket below.
+    # Finding 2 (D-229): bucket on the EVALUATION RESULT, and apply the
+    # relevance filter ONLY to the `indeterminate` (NonEvaluable) bucket — that
+    # is the sole place an unrelated rule can mask a real cause. A VR whose
+    # formula evaluates True (violation) or evaluable-False (drift) is relevant
+    # BY CONSTRUCTION — it touched the payload enough to be evaluated — and must
+    # never be dropped (the bare-field-overlap proxy diverges from evaluate()'s
+    # own field-presence semantics, e.g. ISBLANK fires on an ABSENT field).
     payload_fields = set(state.keys())
-    relevant = [vr for vr in vrs
-                if vr.formula_text
-                and (_formula_fields(vr.formula_text) & payload_fields)]
     violated_active, violated_inactive, indeterminate = [], [], []
     active_not_violated = False
-    for vr in relevant:
+    for vr in vrs:
         if not vr.formula_text:
             continue
         result = evaluate(parse(vr.formula_text), state)
         if result is True:
             (violated_active if vr.is_active else violated_inactive).append(vr)
         elif isinstance(result, NonEvaluable):
+            # A NonEvaluable VR is *indeterminate for THIS claim* only if it
+            # could concern the payload. Drop it ONLY when PROVABLY irrelevant:
+            # its formula names bare fields and NONE is in the payload (the P3
+            # masking shape — `CloseDate > TODAY()` on an Amount claim). A
+            # NonEvaluable formula with no extractable bare fields (dotted /
+            # cross-object / unparseable) stays indeterminate — we cannot prove
+            # irrelevance, and dropping it would fabricate a cause from the rest.
+            fields = _formula_fields(vr.formula_text)
+            if fields and not (fields & payload_fields):
+                continue                     # provably irrelevant — drop
             indeterminate.append(vr)
         elif vr.is_active:
             active_not_violated = True   # active rule, formula evaluable + not violated
@@ -327,17 +354,25 @@ def _match_vr_by_message(messages, vrs) -> Optional[VrMeta]:
 # ---------------------------------------------------------------------------
 
 def _formula_fields(formula_text: str) -> set:
-    """The set of BARE field names a VR formula references (Finding 2, D-229) —
+    """The set of bare field names a VR formula references (Finding 2, D-229) —
     the relevance signal that a rule concerns this claim's single-object
-    payload. Dotted refs (`Account.Industry`, cross-object) and unparseable
-    formulas contribute nothing: neither can match a bare-named payload key, so
-    the rule is treated as irrelevant rather than guessed-at."""
-    try:
-        ast = parse(formula_text)
-    except Exception:
-        return set()
-    return {n.path[0] for n in walk(ast)
-            if isinstance(n, FieldRef) and len(n.path) == 1}
+    payload. Lenient + parse-independent (review #3): the masking rule
+    `CloseDate > TODAY()` is NotParsed (TODAY is unrecognized), so an AST walk
+    yields nothing and the noise would slip through. Strip string literals, take
+    identifier tokens NOT followed by `(` (function names), drop formula
+    keywords, and keep each token's bare last dotted segment so a self-object
+    ref (`Opportunity.Amount`) matches payload key `Amount`."""
+    text = _STRLIT_RE.sub(" ", formula_text)
+    out = set()
+    for m in _IDENT_RE.finditer(text):
+        ident, is_call = m.group(1), m.group(2)
+        if is_call:                          # a function call — not a field
+            continue
+        bare = ident.split(".")[-1]
+        if not bare or bare[:1].isdigit() or bare.upper() in _FORMULA_KEYWORDS:
+            continue
+        out.add(bare)
+    return out
 
 
 def _create_step(evidence: RunEvidence):
@@ -363,6 +398,18 @@ def _data_read_step(evidence: RunEvidence):
         if isinstance(s, DataReadEvidence):
             return s
     return None
+
+
+def _last_create_step(evidence: RunEvidence):
+    """The LAST create attempt — the TRIGGER record of a positive automation /
+    state run (D-205/D-229). A 2-create chain creates the observed record first,
+    then the trigger that acts on it (forward-ref order), so the Flow's trigger
+    object is the last create's ``sobject``; a single-create run's last == first."""
+    last = None
+    for s in evidence.steps:
+        if isinstance(s, CreateAttemptEvidence):
+            last = s
+    return last
 
 
 def _effective_state(step, evidence: RunEvidence) -> Optional[dict]:

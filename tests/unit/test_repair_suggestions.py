@@ -19,6 +19,12 @@ _FAILING_CAUSED = [
     ("prohibition_not_enforced", "enforcement_gap", "org"),
     ("rejected_unasserted_reason", "other_vr_fired", "claim"),
     ("rejected_unasserted_reason", "platform_constraint", "recipe"),
+    # D-229: positive-vertical failure causes
+    ("value_not_persisted", "field_not_createable", "recipe"),
+    ("automation_not_triggered", "automation_inactive", "org"),
+    ("automation_not_triggered", "automation_effect_absent", "recipe"),
+    ("state_not_transitioned", "automation_inactive", "org"),
+    ("state_not_transitioned", "automation_effect_absent", "recipe"),
 ]
 
 
@@ -51,6 +57,27 @@ def test_uncaused_failures_still_get_a_generic_suggestion():
 def test_value_not_persisted_offers_both_org_and_claim_paths():
     out = suggest_repairs("value_not_persisted")
     assert {s["owner"] for s in out} == {"org", "claim"}
+
+
+def test_value_not_persisted_field_not_createable_is_recipe_owned():
+    # D-229 (review #6): the field-not-createable cause is NOT an automation
+    # overwrite — it's a read-only field, a recipe/claim concern, not an org one.
+    out = suggest_repairs("value_not_persisted", cause_kind="field_not_createable")
+    assert out[0]["owner"] == "recipe"
+    assert "read-only" in out[0]["detail"] or "not createable" in out[0]["detail"]
+
+
+def test_automation_and_state_uncaused_still_get_a_suggestion():
+    # D-229 (review #7): the positive automation/state failures must not return
+    # an empty repair list even with no attributed cause.
+    assert suggest_repairs("automation_not_triggered")[0]["owner"] == "org"
+    assert suggest_repairs("state_not_transitioned")[0]["owner"] == "org"
+
+
+def test_automation_inactive_is_org_owned_reactivate_flow():
+    out = suggest_repairs("automation_not_triggered", cause_kind="automation_inactive")
+    assert out[0]["owner"] == "org"
+    assert "Flow" in out[0]["title"] + out[0]["detail"]
 
 
 def test_inspection_drift_and_errored_paths():
