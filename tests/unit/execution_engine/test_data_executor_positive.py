@@ -517,10 +517,13 @@ def _thing_plan():
         ))
 
 
-def test_s1_read_error_mid_construct_is_errored_and_first_parent_torn_down():
-    # An S1 read error (ValueError — NOT SFClientError) while fetching the SECOND
-    # required parent must tear down the FIRST (already-built) parent and surface an
-    # errored run. Catching only SFClientError would leak the first parent.
+def test_s1_read_error_mid_construct_is_errored_no_org_write():
+    # An S1 read error (ValueError — NOT SFClientError) while resolving the SECOND
+    # required parent surfaces an errored run. D-230.2: plan_world resolves ALL S1
+    # reads (the whole parent recursion) BEFORE build_world creates anything, so a
+    # read error during planning means NO org write happened — strictly safer than
+    # the old interleaved create-then-teardown (which built the first parent before
+    # the second parent's read blew up).
     s1 = _GraphS1ById({
         "Thing": [
             {"api": "AccountId", "field_type": "reference", "is_nillable": False,
@@ -535,9 +538,9 @@ def test_s1_read_error_mid_construct_is_errored_and_first_parent_torn_down():
 
     assert ev.outcome == "errored"
     assert ev.error.phase == "construct" and ev.error.error_type == "ValueError"
-    # the first parent (Account) was built, then torn down — no leak, no target create.
-    assert client.deletes == [("Account", "id-Account-1")]
-    assert all(c[0] != "Thing" for c in client.creates)     # target never attempted
+    # The read error preceded any build — nothing created, nothing to tear down.
+    assert client.creates == []
+    assert client.deletes == []
 
 
 def _qualified_plan(obj="Opportunity", field="StageName", value="Prospecting"):

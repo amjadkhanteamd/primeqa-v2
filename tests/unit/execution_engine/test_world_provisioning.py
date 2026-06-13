@@ -5,7 +5,13 @@ import pytest
 
 from primeqa.execution_engine.data_executor import _best_effort_delete
 from primeqa.execution_engine.provisioning import CreatedRecord, CreatedRecordTracker
-from primeqa.execution_engine.world import MAX_PARENT_DEPTH, construct_world
+from primeqa.execution_engine.world import (
+    MAX_PARENT_DEPTH,
+    WorldPlan,
+    build_world,
+    construct_world,
+    plan_world,
+)
 from primeqa.integrations.exceptions import SFClientError
 
 pytestmark = pytest.mark.unit
@@ -260,3 +266,78 @@ class TestParentCreateBareification:
         assert unfillable == ()
         assert client.creates == [("Case", {"IsEscalated": False})]
         assert parents == {"Escalation__c.Case__c": "id-Case-1"}
+
+
+# ---------------------------------------------------------------------------
+
+class TestPlanBuildSplit:
+    """D-230.2: construct_world is split into plan_world (S1 reads → detached
+    WorldPlan, NO creates) + build_world (creates from the plan, NO S1 reads). These
+    lock that contract so the async data path's snapshot stays drift-proof."""
+
+    _GRAPH = {
+        "Contact": [_scalar("LastName"), _ref("AccountId", "Account")],
+        "Account": [_scalar("Name")],
+    }
+
+    def test_plan_world_resolves_a_detached_plan_without_any_client(self):
+        # plan_world takes NO client/tracker — it cannot create. The result is plain
+        # detached data: the scalar filler + the recursive parent subtree.
+        wp = plan_world("Contact", set(), s1=_GraphS1(self._GRAPH), at_seq=7)
+        assert isinstance(wp, WorldPlan)
+        assert wp.object_api == "Contact"
+        assert wp.scalar_filler == {"LastName": "PQA"}
+        assert wp.unfillable == ()
+        assert len(wp.parent_plans) == 1
+        child_field, parent_api, parent_plan = wp.parent_plans[0]
+        assert child_field == "AccountId" and parent_api == "Account"
+        assert isinstance(parent_plan, WorldPlan)
+        assert parent_plan.scalar_filler == {"Name": "PQA"}
+        assert parent_plan.parent_plans == ()
+
+    def test_build_world_creates_from_a_plan_with_no_s1(self):
+        # build_world's signature has no s1 — it builds purely from the plan. The
+        # parent (Account) is created first, its id threaded into AccountId, and
+        # recorded on the tracker for reverse-order teardown.
+        wp = plan_world("Contact", set(), s1=_GraphS1(self._GRAPH), at_seq=7)
+        client, tracker = _StubClient(), CreatedRecordTracker()
+        scalar, parents, unfillable = build_world(wp, client=client, tracker=tracker)
+        assert unfillable == ()
+        assert scalar == {"LastName": "PQA"}
+        assert client.creates == [("Account", {"Name": "PQA"})]
+        assert parents == {"AccountId": "id-Account-1"}
+        assert tracker.records == (CreatedRecord("Account", "id-Account-1", 0),)
+
+    def test_construct_world_equals_build_of_plan(self):
+        # The wrapper is exactly build_world(plan_world(...)) — same outcome as the
+        # composed call (proven against the standalone _construct above).
+        wp = plan_world("Contact", set(), s1=_GraphS1(self._GRAPH), at_seq=7)
+        client, tracker = _StubClient(), CreatedRecordTracker()
+        via_split = build_world(wp, client=client, tracker=tracker)
+        (scalar, parents, unfillable), client2, _ = _construct(self._GRAPH, "Contact")
+        assert via_split == (scalar, parents, unfillable)
+        assert client.creates == client2.creates
+
+    def test_plan_data_recipe_world_covers_ordinary_creates_only(self):
+        # plan_data_recipe_world builds a WorldPlan per ORDINARY create (the async
+        # SELECT-bracket pre-resolution); a create flagged expect_rejection (no
+        # world) is excluded. Real PlannedCreate steps (the isinstance gate).
+        from primeqa.execution_engine.data_executor import plan_data_recipe_world
+        from primeqa.execution_engine.plan import PlannedCreate
+        from primeqa.test_representation.models.recipes.data_recipe import (
+            RejectionExpectation,
+        )
+        from primeqa.test_representation.models.references import LogicalRef
+
+        ref = LogicalRef(entity_type="Object", external_id="Account")
+        ordinary = PlannedCreate(
+            step_id="c-account", target_object=ref, field_values={})
+        rejected = PlannedCreate(
+            step_id="c-rej", target_object=ref, field_values={},
+            expect_rejection=RejectionExpectation(error_code="DUPLICATE_VALUE"))
+
+        plan = type("P", (), {"steps": [ordinary, rejected]})()
+        plans = plan_data_recipe_world(plan, _GraphS1(self._GRAPH))
+        assert set(plans) == {"c-account"}          # only the ordinary create
+        assert isinstance(plans["c-account"], WorldPlan)
+        assert plans["c-account"].object_api == "Account"

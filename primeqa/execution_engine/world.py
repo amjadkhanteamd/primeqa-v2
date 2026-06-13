@@ -90,6 +90,26 @@ class PaddingResult:
     required_refs: tuple[tuple[str, str], ...] = ()
 
 
+@dataclass(frozen=True)
+class WorldPlan:
+    """A pre-resolved, DETACHED plan for one create's operational world (D-230.2).
+
+    The read side of :func:`construct_world`, frozen up front by :func:`plan_world`
+    (pure S1 reads) so the build side (:func:`build_world`, the live Salesforce
+    creates) can run holding NO DB connection — the async data-path bracket. Plain
+    data only (dict of scalars + a recursive tuple tree), so it survives the select
+    bracket's connection close.
+
+    ``parent_plans`` is the required-parent provisioning tree: each
+    ``(child_field_api, parent_api, WorldPlan)`` is a lookup/master-detail parent
+    that :func:`build_world` will create + thread into the child's lookup."""
+
+    object_api: str
+    scalar_filler: dict[str, Any]
+    unfillable: tuple[str, ...]
+    parent_plans: tuple = ()   # ((child_field_api, parent_api, WorldPlan), ...)
+
+
 def resolve_operational_padding(
     object_api: str, semantic_fields: set[str], *, s1, at_seq: int,
 ) -> PaddingResult:
@@ -172,6 +192,96 @@ def _sf_fields(field_values: dict, sobject: str) -> dict:
     return {_sf_field(k, sobject): v for k, v in field_values.items()}
 
 
+def plan_world(
+    object_api: str, semantic_fields: set[str], *, s1, at_seq: int,
+    _visited=frozenset(), _depth: int = 0,
+) -> WorldPlan:
+    """Pre-resolve the operational world for a create on ``object_api`` into a
+    detached :class:`WorldPlan` — the READ side of :func:`construct_world` (D-230.2),
+    walked read-only up front so the build side can run holding no DB connection.
+
+    Walks the SAME bounded recursion as ``construct_world``: the pure
+    :func:`resolve_operational_padding` leaf + the required-ref parent chain. Decides
+    the plan-time ``unfillable`` (too-deep / cycle / parent-not-in-S1 / a parent
+    subtree that is itself unbuildable) and omits the Salesforce-defaulted refs
+    (User/Group). Makes ONLY S1 reads through ``s1`` — no ``client``, no creates."""
+    padding = resolve_operational_padding(
+        object_api, semantic_fields, s1=s1, at_seq=at_seq)
+    unfillable = list(padding.unfillable)
+    parent_plans: list = []
+
+    for child_field_api, ref_object_entity_id in padding.required_refs:
+        if _depth >= MAX_PARENT_DEPTH:
+            unfillable.append(child_field_api)        # chain too deep — honest stop
+            continue
+        if ref_object_entity_id in _visited:
+            unfillable.append(child_field_api)        # cycle — honest stop
+            continue
+        parent_objs = s1.get_entities(
+            "Object", at_seq=at_seq, filters={"id": ref_object_entity_id})
+        if not parent_objs:
+            unfillable.append(child_field_api)        # parent Object not in S1
+            continue
+        parent_api = parent_objs[0].sf_api_name
+        if parent_api in _DEFAULTED_REF_OBJECTS:
+            continue          # owner/queue (User/Group) — Salesforce defaults it; omit
+        # Recurse READ-ONLY for the parent's OWN required scalars + parents (no
+        # semantic field — a provisioned parent is pure operational padding).
+        parent_plan = plan_world(
+            parent_api, set(), s1=s1, at_seq=at_seq,
+            _visited=_visited | {ref_object_entity_id}, _depth=_depth + 1)
+        if parent_plan.unfillable:
+            unfillable.append(child_field_api)        # parent subtree unbuildable — propagate
+            continue
+        parent_plans.append((child_field_api, parent_api, parent_plan))
+
+    return WorldPlan(
+        object_api=object_api, scalar_filler=dict(padding.filler),
+        unfillable=tuple(sorted(set(unfillable))), parent_plans=tuple(parent_plans))
+
+
+def build_world(world_plan: WorldPlan, *, client, tracker):
+    """Build the operational world from a pre-resolved :class:`WorldPlan` and return
+    ``(scalar_filler, parent_filler, unfillable)`` — the BUILD side of
+    :func:`construct_world` (D-230.2), making NO S1 reads (it takes the plan, not the
+    reader, so it is async-bracket-safe).
+
+    Walks the plan's parent tree depth-first (a parent created only after its own
+    subtree, recurse-then-create — same order as ``construct_world``), creates each
+    required parent on the live org via ``client``, threads the new id into the
+    child's lookup, and records it on ``tracker`` in creation order (parent before
+    child, so reverse teardown deletes child first). Returns the plan-time
+    ``unfillable`` plus any build-time unfillable (the org rejected a parent create).
+    A parent whose own subtree is unfillable is skipped (never half-built); a
+    transport failure raises ``SFClientError`` (the caller tears down what was built).
+
+    Note (D-230.2): a parent branch that is unfillable at PLAN time is never reached
+    here, so — unlike the old interleaved ``construct_world`` — the buildable part of
+    a doomed subtree is not created-then-torn-down. Strictly fewer wasted creates;
+    identical ``(filler, unfillable)`` outcome."""
+    unfillable = list(world_plan.unfillable)
+    parent_filler: dict[str, Any] = {}
+
+    for child_field_api, parent_api, parent_plan in world_plan.parent_plans:
+        p_scalar, p_parent, p_unfillable = build_world(
+            parent_plan, client=client, tracker=tracker)
+        if p_unfillable:
+            unfillable.append(child_field_api)        # parent unbuildable — propagate
+            continue
+        # D-227.5: bare-ify like the top-level create path — the live API
+        # speaks bare names; qualified keys get rejected and mis-read as an
+        # unfillable world (the be56416d live error).
+        env = client.create(parent_api,
+                            _sf_fields({**p_scalar, **p_parent}, parent_api))
+        if not env.get("success"):
+            unfillable.append(child_field_api)        # org rejected the parent create
+            continue
+        tracker.record(parent_api, env["record_id"])  # creation order: parent first
+        parent_filler[child_field_api] = env["record_id"]
+
+    return world_plan.scalar_filler, parent_filler, tuple(sorted(set(unfillable)))
+
+
 def construct_world(
     object_api: str, semantic_fields: set[str], *, s1, client, tracker, at_seq: int,
     _visited=frozenset(), _depth: int = 0,
@@ -197,48 +307,16 @@ def construct_world(
     Bounded by :data:`MAX_PARENT_DEPTH`; a self-referential or N-hop cyclic required
     lookup is caught by the ``_visited`` set of referenced-Object entity ids (→
     ``unfillable``, never infinite recursion). A transport failure mid-build raises
-    ``SFClientError`` (the caller catches it + tears down what was built)."""
-    padding = resolve_operational_padding(
-        object_api, semantic_fields, s1=s1, at_seq=at_seq)
-    scalar_filler = dict(padding.filler)
-    parent_filler: dict[str, Any] = {}
-    unfillable = list(padding.unfillable)
+    ``SFClientError`` (the caller catches it + tears down what was built).
 
-    for child_field_api, ref_object_entity_id in padding.required_refs:
-        if _depth >= MAX_PARENT_DEPTH:
-            unfillable.append(child_field_api)        # chain too deep — honest stop
-            continue
-        if ref_object_entity_id in _visited:
-            unfillable.append(child_field_api)        # cycle — honest stop
-            continue
-        parent_objs = s1.get_entities(
-            "Object", at_seq=at_seq, filters={"id": ref_object_entity_id})
-        if not parent_objs:
-            unfillable.append(child_field_api)        # parent Object not in S1
-            continue
-        parent_api = parent_objs[0].sf_api_name
-        if parent_api in _DEFAULTED_REF_OBJECTS:
-            continue          # owner/queue (User/Group) — Salesforce defaults it; omit
-        # Recurse for the parent's OWN required scalars + parents (no semantic
-        # field — a provisioned parent is pure operational padding).
-        p_scalar, p_parent, p_unfillable = construct_world(
-            parent_api, set(), s1=s1, client=client, tracker=tracker, at_seq=at_seq,
-            _visited=_visited | {ref_object_entity_id}, _depth=_depth + 1)
-        if p_unfillable:
-            unfillable.append(child_field_api)        # parent unbuildable — propagate
-            continue
-        # D-227.5: bare-ify like the top-level create path — the live API
-        # speaks bare names; qualified keys get rejected and mis-read as an
-        # unfillable world (the be56416d live error).
-        env = client.create(parent_api,
-                            _sf_fields({**p_scalar, **p_parent}, parent_api))
-        if not env.get("success"):
-            unfillable.append(child_field_api)        # org rejected the parent create
-            continue
-        tracker.record(parent_api, env["record_id"])  # creation order: parent first
-        parent_filler[child_field_api] = env["record_id"]
-
-    return scalar_filler, parent_filler, tuple(sorted(set(unfillable)))
+    D-230.2: now composes the pure :func:`plan_world` (S1 read-walk → a detached
+    :class:`WorldPlan`) + :func:`build_world` (the live creates) — same signature and
+    behavior, so callers are unchanged; the split lets the async data path pre-resolve
+    the reads under the select bracket and build with no DB connection held."""
+    return build_world(
+        plan_world(object_api, semantic_fields, s1=s1, at_seq=at_seq,
+                   _visited=_visited, _depth=_depth),
+        client=client, tracker=tracker)
 
 
 def _fill_value(details: dict, s1, at_seq: int):
