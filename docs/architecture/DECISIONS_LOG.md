@@ -12744,6 +12744,68 @@ re-capture on env 59 (the P1 Flow-off window, now yielding `automation_inactive`
 perturbation re-run captures `automation_not_triggered` WITH `cause=automation_inactive`
 live; author AK, zero Co-Authored-By; merge on explicit GO.
 
+### D-229.1 — Positive-vertical attribution + Finding 2 closed (2.3) — offline; live re-capture deferred
+
+**What shipped (branch `phase-37-substrate-6-positive-attribution`, 6 commits).**
+- **Finding 2 (89ab636 + 9afb100)** — the relevance filter. S6 deeper attribution
+  for `prohibition_not_enforced` now buckets on the EVALUATION RESULT and gates
+  ONLY the NonEvaluable (indeterminate) bucket: a VR is dropped only when PROVABLY
+  irrelevant (its formula names bare fields, none in the payload). The dogfood P3
+  masking — an unrelated `CloseDate > TODAY()` VR (NotParsed, since TODAY is
+  unrecognized) outranking the grounding Amount VR's drift — is closed: a lenient,
+  parse-independent field extractor (`_formula_fields`) drops the noise and the real
+  `vr_formula_drift` surfaces.
+- **Positive-vertical causes (62b1b07 + b9ebc0a)** — `attribute_run` dispatches on
+  verdict family. New free-text CauseKinds (no migration — `cause_kind` is text,
+  clustering is a dynamic GROUP BY):
+  - `automation_inactive` — `automation_not_triggered` / `state_not_transitioned`
+    and no ACTIVE Flow `TRIGGERS_ON` the TRIGGER record (the P1 capture). The
+    Flow lookup uses the LAST create (the trigger; per D-205 forward-ref ordering
+    the trigger is created after the record it acts on), not the first.
+  - `automation_effect_absent` — an active Flow IS present but the effect didn't land.
+  - `field_not_createable` — `value_not_persisted` and the asserted read-back field
+    is `is_createable=false` (SF drops it on insert). Else honest pass-through.
+  - Reader: `S1ValidationRuleReader` grew `flows_for_object` + `field_meta`; the port
+    widened `S1VrReader` → `S1AttributionReader` (back-compat alias). Run-path wiring
+    is drop-in (`attribute_run` already called). The S1 read stays self-limiting.
+- **repair.py (9afb100)** — `field_not_createable` is recipe-owned (read-only field),
+  not the org "automation overwrote it" message; added the
+  `automation_inactive` (org: re-activate Flow) / `automation_effect_absent` (recipe)
+  branches + a generic fallback so the positive failures never return an empty list.
+
+**Adversarial review (the discipline that earned the .4 fix).** A 3-dimension review
+workflow found 7 confirmed blocker/major defects in the first three commits — incl.
+the BLOCKER that ISBLANK fires True on an ABSENT field (so a real `enforcement_gap`
+with the field omitted flipped to a wrong `no_active_vr`), and the cross-object
+`_create_step`-picks-the-wrong-object bug. All 7 fixed in 9afb100 with +6 regression
+tests. The review caught what the per-slice green suites did not — the relevance
+filter's first formulation was subtly wrong against the real evaluator semantics.
+
+**Suites at close**: unit 2546; integration/generation 116 (+1 live-eval skip);
+S6 unit/interpretation 120; S6 integration (interpret-persist + both readers) 13;
+repair 16. All green.
+
+**Live re-capture DEFERRED (AK call 2026-06-13: "merge offline-green now, live later").**
+The exit-gate live Flow-off re-capture on env 59 (P1 → expect `automation_inactive`)
+rides a future perturbation window — the cause is offline-proven AND integration-proven
+against real S1 (`test_s6_positive_reader.py` seeds a real inactive Flow → the live
+reader → `automation_inactive` end-to-end). No per-slice org gate; no migration.
+
+**Prod-cleanup note (the D-228.1 contamination).** The overnight daily 06:00 sync
+ran a full real env-59 re-sync (logical_version 63), so the tenant-1 HEAD is now
+100% clean (all 5902 current entities sourced from the real org 902850e3); new
+generation pins 63, not a junk version — the functional concern self-resolved. The
+specific restoration SQL approved against the old state (max=62, current User on a
+test org) is now UNSAFE (reopening the baseline User to valid_to=NULL would create a
+SECOND current row over the clean head). Versions 60–62 + 4 test connected_orgs remain
+as HARMLESS historical clutter; a safe chain-repair tidy is queued for AK's redirect.
+
+**Residuals**: a grounding VR deep-edited to reference a DIFFERENT field than the
+payload still escapes the relevance filter (the captured-grounding-VR-name on the
+recipe is the refinement if it bites); `value_not_persisted` attributes only
+field-createability (other causes — before-save automation, defaults — pass through);
+the live re-capture; the prod historical-clutter tidy.
+
 ---
 
 ---
