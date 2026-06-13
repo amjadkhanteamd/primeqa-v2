@@ -13228,4 +13228,56 @@ live-signal auto-quarantine onto the claim-page badge (subsumed by residual 1).
 
 ---
 
+### D-233 — theme #5: browse/drill 2nd increment (readable evidence + last-run health + req back-link) (design)
+
+**Context.** Theme #5, piece 3 (after D-231 failures front door, D-232 quarantine). The
+substrate test pages are honest but engineer-shaped: the run-detail evidence trace dumps raw
+step JSON, the `/claims` list shows no run health, and a claim doesn't link back to its source
+requirement. This piece closes the [[user-friendly-test-pages]] gaps AK parked — three
+independent, additive sub-pieces, all v2-runtime (direct-to-`main`), ZERO migrations.
+
+**A — evidence-step humanization.** `runs/s4_detail.html` renders each evidence step via the
+generic `render_value(step)` macro (a raw nested key/value tree). Add a pure
+`step_plain(step: dict) -> str` to `claim_presentation.py` (the existing humanizer home —
+`claim_title` / `verdict_plain` / `refusal_plain`, all pure + never-raising + unit-tested).
+`step_plain` dispatches on `step["kind"]` (read / assert / create / update / delete; DataRead is
+also "read") and the outcome fields (`held` / `success` / `matched` / `error` / `error_code`) to
+emit one plain sentence per step — e.g. "Created an Opportunity", "Tried the forbidden edit —
+Salesforce blocked it (FIELD_CUSTOM_VALIDATION_EXCEPTION)", "Read 3 Account rows". The
+`s4_run_detail` view attaches `step["plain"]` (mirroring how it already attaches
+`run["plain"]=verdict_plain(...)` for the runs panel); the template shows the plain line as the
+HEADLINE and keeps the existing `render_value` tree COLLAPSED beneath (lean: never lose the raw
+trace — engineers still expand it). Never-raises → on any unexpected shape, fall back to the
+kind word.
+
+**B — last-run health on `/claims`.** `_list_claims` (s3_generation_console.py) already uses two
+LATERAL joins (recipe-kinds for depth, latest requirement link). Add a THIRD LATERAL pulling the
+single latest `s4_execution_runs` row per `claim_test_id` (`ORDER BY finished_at DESC LIMIT 1`) —
+batched, no N+1. Each row gains `last_run = {run_id, outcome, finished_at}` (or None). The list
+template gains a "Last run" column: an outcome badge (passed→green / failed→red / errored→amber /
+never-run→grey) linking to `/runs/substrate/<run_id>`. Lean: "most recent run" by recency, NOT
+version-filtered — matches `read_claim_runs` (the claim-detail panel) and answers "what happened
+last", distinct from the decision's version-correct flake window (`_COUNTED_RUNS_SQL`, seq-filtered).
+
+**C — claim → requirement back-link.** The claim-detail dict carries no requirement key (only the
+`siblings` read does, and siblings can be empty). Add a best-effort bridge
+`read_claim_requirement(tenant_id, test_id) -> {available, requirement_key}` (the
+`test_requirement_links … link_kind='generated_from' ORDER BY linked_at DESC LIMIT 1` pattern,
+substrate-side). The `claims_detail` view resolves key→id by REUSING `_requirement_rows(db,
+tenant_id, [key])` (substrate_dashboard.py — jira_key for Jira reqs, `req-<id>` for manual) on the
+v1 `db` it already holds, and passes `requirement = {key, id, url}`. The detail template renders a
+"From &lt;key&gt; →" link to `/requirements/<id>`. Best-effort: omits the link (shows the key as
+text, or nothing) when the key is absent or unresolvable.
+
+**Slices.** 0 = this design. A = `step_plain` + view + template + units. B = the LATERAL +
+list column + tests. C = the bridge + view resolve + template + tests. 4 = adversarial review +
+close (AK GO to push → deploys). The three are independent; A touches no shared files, B+C both
+touch `views.py` + `s3_generation_console.py` (sequenced to avoid churn). Direct-to-`main`.
+
+**Residuals.** (1) evidence step → per-field diff humanization (before/after) once the reserved
+`before_state`/`field_diff` fields are populated. (2) last-run sparkline / mini-trend per claim.
+(3) requirement back-link on the run-detail page too (not just claim detail).
+
+---
+
 ---
