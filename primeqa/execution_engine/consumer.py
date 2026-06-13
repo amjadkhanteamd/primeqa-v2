@@ -4,14 +4,14 @@ The worker-layer loop that drives a run off the ``s4_execution_jobs`` queue.
 Per-tenant; mirrors S3's ``consumer.py`` lifecycle (claim -> run -> complete/fail)
 with per-tenant isolation.
 
-The default ``run_fn`` is the **synchronous** :func:`run_recipe_execution_for_tenant`
-— it runs **all** recipe kinds (metadata + data), holding a connection across the
-run (boundary A). This is deliberate: the enqueue source must run data recipes,
-and the async wrapper (:func:`run_recipe_execution_async`) **refuses** them (it
-reads S1 mid-execute; metadata-path-only, D-129). Holding one connection per
-in-flight job is the accepted low-volume interim; the data-path async bracketing
-is the deferred-proper path (then ``run_fn`` becomes a metadata->async /
-data->sync dispatcher).
+The default ``run_fn`` is the **async** :func:`run_recipe_execution_async` — it runs
+**all** recipe kinds (metadata + data) under the brief-transaction bracket, so NO DB
+connection is held across Salesforce I/O (D-129 metadata; D-230.2 lifted the data-path
+deferral via WorldPlan pre-resolution). The async path self-resolves the kind-aware
+client + (for data) the operational-world snapshot in its select bracket, so the
+consumer passes ``client=None`` and holds no connection per in-flight job. The
+synchronous :func:`run_recipe_execution_for_tenant` remains the live-proven fallback
+(the UI "Run" path), injectable as ``run_fn`` for callers that want boundary A.
 
 Two injected seams (D-131.A):
   - ``client_resolver``: ``(tenant_id, environment_id) -> client`` — **optional**.
@@ -29,7 +29,7 @@ from typing import Callable, Optional
 from uuid import UUID
 
 from primeqa.execution_engine.jobs import ExecutionJobStore
-from primeqa.execution_engine.run import run_recipe_execution_for_tenant
+from primeqa.execution_engine.run import run_recipe_execution_async
 
 log = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ def _classify_error(exc: Exception) -> str:
 
 def process_execution_job_for_tenant(
     tenant_id: int, *, client_resolver: Optional[ClientResolver] = None,
-    run_fn=run_recipe_execution_for_tenant,
+    run_fn=run_recipe_execution_async,
 ) -> Optional[int]:
     """Claim and run one queued execution job for ``tenant_id``. Returns the
     processed job id, or ``None`` when the tenant's queue is empty.
@@ -78,11 +78,11 @@ def process_execution_job_for_tenant(
     store.heartbeat(job.id)
     store.start_attempt(job.id)
     try:
-        # The default run_fn (sync run_recipe_execution_for_tenant) self-resolves
-        # the per-kind client (Tooling for metadata, Data for data) AFTER it selects
-        # the recipe — the consumer can't know the kind up front, so it passes
-        # client=None. A client_resolver is injected only by tests + a future
-        # async run_fn.
+        # The default run_fn (async run_recipe_execution_async) self-resolves the
+        # per-kind client (Tooling for metadata, Data for data) in its SELECT bracket
+        # AFTER it reads the recipe kind — the consumer can't know the kind up front,
+        # so it passes client=None (D-230.2). A client_resolver is injected only by
+        # tests + the sync fallback run_fn.
         client = (client_resolver(tenant_id, job.environment_id)
                   if client_resolver else None)
         result = run_fn(
@@ -102,7 +102,7 @@ def process_execution_job_for_tenant(
 
 def run_s4_execution_tick(
     tenant_ids, *, client_resolver: Optional[ClientResolver] = None,
-    run_fn=run_recipe_execution_for_tenant,
+    run_fn=run_recipe_execution_async,
 ) -> dict[int, str]:
     """One job per tenant, with per-tenant isolation: a tenant whose
     claim/processing raises is logged and skipped — it never starves the others.
