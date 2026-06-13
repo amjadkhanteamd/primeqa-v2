@@ -67,8 +67,8 @@ def _seed(run_id, sobject, record_id, *, env=7, cleaned=False, age_minutes=60):
 
 def test_sink_writes_row_uncleaned_with_environment():
     run_id = uuid4()
-    sink = StrandedRecordSink(TEST_TENANT_ID, run_id, environment_id=42)
-    sink.created("Case", "500AAA", 0)
+    sink = StrandedRecordSink(TEST_TENANT_ID, environment_id=42)
+    sink.created(run_id, "Case", "500AAA", 0)
     rows = _rows()
     assert len(rows) == 1
     r = rows[0]
@@ -78,16 +78,16 @@ def test_sink_writes_row_uncleaned_with_environment():
 
 def test_sink_marks_cleaned():
     run_id = uuid4()
-    sink = StrandedRecordSink(TEST_TENANT_ID, run_id, environment_id=42)
-    sink.created("Case", "500AAA", 0)
-    sink.cleaned("500AAA")
+    sink = StrandedRecordSink(TEST_TENANT_ID, environment_id=42)
+    sink.created(run_id, "Case", "500AAA", 0)
+    sink.cleaned(run_id, "500AAA")
     assert _rows()[0]["cleaned"] is True
 
 
 def test_sink_never_raises_on_bad_tenant():
     # Best-effort: a write failure (bad tenant) is swallowed, not raised.
-    StrandedRecordSink(-1, uuid4(), environment_id=1).created("Case", "x", 0)
-    StrandedRecordSink(-1, uuid4(), environment_id=1).cleaned("x")  # no raise
+    StrandedRecordSink(-1, environment_id=1).created(uuid4(), "Case", "x", 0)
+    StrandedRecordSink(-1, environment_id=1).cleaned(uuid4(), "x")  # no raise
 
 
 # ---------------------------------------------------------------------------

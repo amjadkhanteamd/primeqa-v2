@@ -31,7 +31,6 @@ across Salesforce I/O.
 from __future__ import annotations
 
 import logging
-from uuid import UUID
 
 from sqlalchemy import text
 
@@ -46,18 +45,19 @@ _DEFAULT_BATCH = 200
 
 
 class StrandedRecordSink:
-    """Write-ahead audit sink for one run's created records (D-230). Bound to the
-    tenant + run + environment; each method is its own committed transaction so a
-    create is durable before the next Salesforce call. Never raises — a failed
-    write is logged; the run proceeds (and a missed write only means a record
-    might not be reapable, never a broken run)."""
+    """Write-ahead audit sink for a run's created records (D-230). Bound to the
+    tenant + environment (the run_id is supplied per call, so it always matches
+    the executor's evidence run_id without hoisting run_id generation up the
+    call stack). Each method is its own committed transaction so a create is
+    durable before the next Salesforce call. Never raises — a failed write is
+    logged; the run proceeds (a missed write only means a record might not be
+    reapable, never a broken run)."""
 
-    def __init__(self, tenant_id: int, run_id: UUID, environment_id: int):
+    def __init__(self, tenant_id: int, environment_id: int):
         self._tenant_id = tenant_id
-        self._run_id = str(run_id)
         self._environment_id = environment_id
 
-    def created(self, sobject: str, record_id: str, created_seq: int) -> None:
+    def created(self, run_id, sobject: str, record_id: str, created_seq: int) -> None:
         """Persist one created record (``cleaned=false``) in its own transaction,
         BEFORE the executor issues its next Salesforce call."""
         try:
@@ -67,13 +67,13 @@ class StrandedRecordSink:
                     "INSERT INTO s4_created_records "
                     "(run_id, sobject, record_id, created_seq, cleaned, environment_id) "
                     "VALUES (CAST(:r AS uuid), :so, :rid, :seq, false, :env)"
-                ), {"r": self._run_id, "so": sobject, "rid": record_id,
+                ), {"r": str(run_id), "so": sobject, "rid": record_id,
                     "seq": created_seq, "env": self._environment_id})
         except Exception as exc:  # best-effort — durability never breaks the run
             log.warning("StrandedRecordSink.created failed (tenant %s run %s rec %s): %s",
-                        self._tenant_id, self._run_id, record_id, exc)
+                        self._tenant_id, run_id, record_id, exc)
 
-    def cleaned(self, record_id: str) -> None:
+    def cleaned(self, run_id, record_id: str) -> None:
         """Mark a record the in-run teardown deleted as ``cleaned`` so the reaper
         skips it. Own transaction; best-effort."""
         try:
@@ -82,10 +82,10 @@ class StrandedRecordSink:
                 conn.execute(text(
                     "UPDATE s4_created_records SET cleaned = true "
                     "WHERE run_id = CAST(:r AS uuid) AND record_id = :rid"
-                ), {"r": self._run_id, "rid": record_id})
+                ), {"r": str(run_id), "rid": record_id})
         except Exception as exc:
             log.warning("StrandedRecordSink.cleaned failed (tenant %s run %s rec %s): %s",
-                        self._tenant_id, self._run_id, record_id, exc)
+                        self._tenant_id, run_id, record_id, exc)
 
 
 def reap_stranded_records(
