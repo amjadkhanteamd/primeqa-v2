@@ -13723,4 +13723,64 @@ multi-step / multi-recipe edits. (4) learned pattern-memory. (5) LLM-proposal re
 
 ---
 
+## D-237 — Explainable NO-GO: name the blocking requirement + its plain-English cause on the decision hero (theme #1 flagship)
+
+**Date:** 2026-06-14
+**Substrates affected:** [S6 → decision surface] — v2 runtime (`substrate_decision` + the release-owner dashboard + the release Decision tab); zero substrate-internal change.
+**Status:** active
+
+**Context (the flagship).** Theme #1 ("prove it on a real org") is engine-complete and
+live-proven: the daily 06:00 UTC schedule runs the whole approved corpus against env-59
+("Prime QA NEW", tenant 1) and `compute_substrate_decision` rolls the live evidence into an
+honest GO/NO-GO. The 2026-06-14 morning fire produced **15 counted runs, 14 passed / 1 failed**
+(SQ-205 `state_not_transitioned` — the e87c2666 In-Escalation-vs-Escalated finding) → pass
+rate **93.3% < 95% → NO-GO**, risk medium, grounding all intact. The engine works end-to-end
+on the real org. What does NOT reach the human is **why**: the decision's `reasoning[]` is
+gate-level ("Pass rate 93.3% below threshold of 95%") and never names the blocking requirement
+or surfaces the cause — even though `s6_interpretations.detail` already carries a full English
+sentence ("an active Flow (SQ205_Escalation_Effects) triggers on Escalation__c, but the
+asserted effect was not observed — an entry condition may be unmet, or the Flow's logic changed
+since generation"). The category promise is "GO/NO-GO **with explainability**"; the
+explainability stopped at a percentage. This is the one gap between *it works* and *it shows*.
+
+**Decision.** Carry the blocking requirement + its plain-English cause from evidence → decision
+→ hero. Pure-core + render, **ZERO migration**, all read-only compute:
+
+1. **Evidence** (`_assemble_claim_evidence`): attach `external_keys` per claim (a claim can be
+   `generated_from` >1 requirement — accumulate the reverse map while resolving keys→tests) and,
+   on the counted latest run, a `cause` plain sentence. `_COUNTED_RUNS_SQL` gains `i.cause_kind`
+   + `i.detail`; a pure `_cause_phrase(detail, cause_kind, verdict, outcome)` prefers
+   `detail.cause.detail` (the S6 sentence — D-229 attribution), falls back to
+   `claim_presentation.verdict_plain`, and never raises (tolerates dict / str / None). `cause`
+   is None on a passing or never-run latest.
+
+2. **Decision** (`compute_substrate_decision`): add a `blocking` list — every **scored** claim
+   whose latest run is `failed`/`errored`, as `{test_id, external_keys, verdict, outcome,
+   cause}`, sorted by `external_key` for determinism. This is exactly the set that drives the
+   `pass_rate` blocker; quarantined claims (already excluded from the pass rate) are not listed.
+   Existing `reasoning` / `metrics` / `risk` are untouched (no test churn); `blocking` defaults
+   to `[]` and tolerates evidence rows that predate the new keys.
+
+3. **Render**: the env-level hero (`get_substrate_dashboard_data` → `dashboard_release.html`)
+   and the per-release Decision tab (`releases/detail.html`) print "Blocked by `<KEY>` —
+   `<cause>`" under the headline. `/shared/<token>` inherits it (same assembler). The D-233
+   humanized run-detail drill path underneath is unchanged.
+
+**Why this and not more.** The cause already exists; the gap was that the rollup discarded it.
+We surface, we do not re-derive. The release tables (`releases` / `requirements` /
+`release_decisions`) survive the Theme-#2 v1 DROP (053 drops execution + test-case tables only),
+so a named-release decision record is a go-forward-safe showcase artifact, not v1 debt.
+
+**Flagship deliverable (AK: "do all 3").** (a) this build; (b) the close records the real
+morning run ids; (c) a named, point-in-time release decision record + an optional public
+`/shared` link — both are **prod-row writes the harness blocks from here**, delivered as a
+single idempotent `scripts/flagship_release_seed.py` AK runs once (not a UI loop).
+
+**Residuals.** (1) grounding-broken blockers get a count, not yet a per-claim cause line (0
+broken today). (2) the named-release record + `/shared` link are the one AK-run seed. (3) the
+In-Escalation-vs-Escalated finding (e87c2666) stays a separate AK call — amend SQ-205's Jira
+text to "Escalated" + regenerate, or keep the red as the honest recorded finding.
+
+---
+
 ---
