@@ -135,17 +135,43 @@ def s4_schedule_tick(ctx):
 
 
 def repair_triage_tick(ctx):
-    """Triage new failed/errored S6 interpretations into repair PROPOSALS
-    (D-215.1 — proposal-only; nothing auto-applies; a human decides on the
-    Repairs panel). Per-tenant isolation."""
+    """Triage new failed/errored S6 interpretations into repair PROPOSALS, then
+    run the FLAG-GATED auto-apply pass. Deterministic rerun/regenerate (D-215.1)
+    + the LLM-proposed recipe_edit (D-236, when a per-env Anthropic key resolves).
+    PROPOSAL-ONLY by default — a human decides on the Repairs panel; auto-apply is
+    dormant unless a tenant enabled ``repair_auto_apply`` (sandbox + high
+    confidence only; prod always human). Per-tenant isolation."""
+    def _api_key(tenant_id, environment_id):
+        # Best-effort per-env Anthropic key; "" on anything missing (the LLM
+        # proposal is then skipped — never an error in the tick).
+        try:
+            from primeqa.core.repository import (
+                ConnectionRepository, EnvironmentRepository,
+            )
+            env = EnvironmentRepository(ctx["db"]).get_environment(
+                environment_id, tenant_id)
+            if env is None or not getattr(env, "llm_connection_id", None):
+                return ""
+            conn = ConnectionRepository(ctx["db"]).get_connection_decrypted(
+                env.llm_connection_id, tenant_id)
+            return (conn or {}).get("config", {}).get("api_key", "")
+        except Exception:
+            return ""
+
     try:
         from primeqa.core.models import Tenant
-        from primeqa.intelligence.repair_agent import triage_new_failures
+        from primeqa.intelligence.repair_agent import (
+            auto_apply_proposals, triage_new_failures,
+        )
         for tenant in ctx["db"].query(Tenant).all():
-            out = triage_new_failures(tenant.id)
+            out = triage_new_failures(tenant.id, api_key_resolver=_api_key)
             if out["proposed"]:
                 log.info("repair triage proposed %d repair(s) for tenant %s",
                          out["proposed"], tenant.id)
+            aa = auto_apply_proposals(tenant.id)
+            if aa["applied"]:
+                log.info("repair auto-applied %d recipe edit(s) for tenant %s",
+                         aa["applied"], tenant.id)
     except Exception as e:
         log.warning("repair_triage_tick failed: %s", e)
 
