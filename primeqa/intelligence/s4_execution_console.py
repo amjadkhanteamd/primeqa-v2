@@ -55,17 +55,22 @@ def _map_run_result(result) -> dict:
 
 
 def trigger_claim_run(tenant_id: int, test_id, environment_id: int, *,
-                      client=None) -> dict:
+                      client=None, field_overrides=None) -> dict:
     """Run the eligible recipe for ``test_id`` on ``environment_id`` (synchronous).
     Best-effort — returns ``{ok: False, error}`` on any failure (never raises).
     On success: ``{ok: True, ran, outcome, verdict, recipe_id}`` (``ran=False`` +
     ``reason`` when the claim has no approved/eligible recipe for the env — a
     first-class non-error result). ``client`` is injectable for tests; the route
-    passes ``None`` so the engine self-resolves the SF client per recipe-kind."""
+    passes ``None`` so the engine self-resolves the SF client per recipe-kind.
+
+    ``field_overrides`` (D-235, run-time test-data injection) is an optional
+    ``{bare_field_name: value}`` map passed straight to the engine; it applies only
+    to the positive vertical's subject create (the executor enforces this)."""
     try:
         from primeqa.execution_engine.run import run_recipe_execution_for_tenant
         result = run_recipe_execution_for_tenant(
-            tenant_id, UUID(str(test_id)), environment_id=environment_id, client=client)
+            tenant_id, UUID(str(test_id)), environment_id=environment_id,
+            client=client, field_overrides=field_overrides or None)
         return _map_run_result(result)
     except Exception as exc:                      # credential / SF / execution error
         log.warning("trigger_claim_run failed for tenant %s test %s env %s: %s",

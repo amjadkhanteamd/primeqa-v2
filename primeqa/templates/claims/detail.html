@@ -182,21 +182,36 @@
       </div>
       <p class="text-xs text-gray-500 mb-3">Runs synchronously &mdash; the page waits for the result, then shows the outcome + verdict below.</p>
       {% if environments %}
-      <form method="POST" action="/claims/{{ c.test_id }}/run" class="flex items-center gap-2 flex-wrap" id="claim-run-form">
+      <form method="POST" action="/claims/{{ c.test_id }}/run" id="claim-run-form">
         {{ csrf_input | safe }}
-        <select name="environment_id" id="claim-run-env" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
-          <option value="">Run env&hellip;</option>
-          {% for env in environments %}
-          <option value="{{ env.id }}" data-is-production="{{ 'true' if env.is_production else 'false' }}" {% if not env.has_connection %}disabled{% endif %}>
-            {{ env.name }}{% if not env.has_connection %} &mdash; no connection{% elif env.is_production %} (production){% endif %}
-          </option>
-          {% endfor %}
-        </select>
-        <button type="submit" class="rounded-md bg-green-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-green-500">&#9654; Run</button>
-        <span id="claim-run-prodgate" class="hidden inline-flex items-center gap-1.5 text-xs text-red-700">
-          <input type="checkbox" name="confirm_production" id="claim-run-confirm" class="h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500">
-          <label for="claim-run-confirm">I confirm running against <strong>production</strong>.</label>
-        </span>
+        <div class="flex items-center gap-2 flex-wrap">
+          <select name="environment_id" id="claim-run-env" required class="rounded-md border border-gray-300 px-2 py-1.5 text-sm">
+            <option value="">Run env&hellip;</option>
+            {% for env in environments %}
+            <option value="{{ env.id }}" data-is-production="{{ 'true' if env.is_production else 'false' }}" {% if not env.has_connection %}disabled{% endif %}>
+              {{ env.name }}{% if not env.has_connection %} &mdash; no connection{% elif env.is_production %} (production){% endif %}
+            </option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="rounded-md bg-green-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-green-500">&#9654; Run</button>
+          <span id="claim-run-prodgate" class="hidden inline-flex items-center gap-1.5 text-xs text-red-700">
+            <input type="checkbox" name="confirm_production" id="claim-run-confirm" class="h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500">
+            <label for="claim-run-confirm">I confirm running against <strong>production</strong>.</label>
+          </span>
+        </div>
+        {# D-235: run-time test-data injection. Behavioral claims only — a
+           config-check creates nothing, so there is no record to inject into. #}
+        {% if c.depth == 'behavioral' %}
+        <details class="mt-3 group">
+          <summary class="cursor-pointer select-none text-xs text-indigo-600 hover:text-indigo-800">+ Custom test data (optional)</summary>
+          <div class="mt-2">
+            <label for="claim-run-overrides" class="block text-xs text-gray-500 mb-1">One <code>Field=Value</code> per line &mdash; overrides the values this run's main record is created with (e.g. <code>Amount=2000000</code>). Leave empty to use the test's default data.</label>
+            <textarea id="claim-run-overrides" name="field_overrides" rows="3"
+              class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm font-mono"
+              placeholder="Amount=2000000&#10;StageName=Prospecting"></textarea>
+          </div>
+        </details>
+        {% endif %}
       </form>
       {% else %}
       <p class="text-sm text-gray-400">No environments available to run against.</p>

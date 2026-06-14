@@ -2709,6 +2709,30 @@ def claims_detail(test_id):
         requirement=requirement))
 
 
+_MAX_FIELD_OVERRIDES = 50
+
+
+def _parse_field_overrides(raw):
+    """D-235: parse the optional run-time test-data injection textarea — one
+    ``Field=Value`` per line — into a ``{bare_field_name: value}`` dict. Tolerant:
+    blank lines + lines without '=' are skipped; whitespace trimmed; capped at
+    ``_MAX_FIELD_OVERRIDES`` entries; empty input → {}. A bad entry is ignored,
+    never an error (a misspelled field surfaces later as the org's create
+    rejection — D-235 defers S1 pre-flight validation)."""
+    out = {}
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()[:100]
+        if key:
+            out[key] = value.strip()[:255]
+        if len(out) >= _MAX_FIELD_OVERRIDES:
+            break
+    return out
+
+
 @views_bp.route("/claims/<uuid:test_id>/run", methods=["POST"])
 @role_required("admin", "tester", "superadmin")
 def claims_run(test_id):
@@ -2716,10 +2740,13 @@ def claims_run(test_id):
     chosen environment (synchronous — blocks for the live Salesforce I/O, returns
     the outcome + verdict). The production-confirm gate lives HERE (the substrate
     has none and a data-recipe run mutates the org) — reuses v1's
-    environment_can_bulk_run. Best-effort run via the s4_execution_console bridge."""
+    environment_can_bulk_run. Best-effort run via the s4_execution_console bridge.
+    D-235: an optional ``field_overrides`` textarea injects per-run test data into
+    the positive vertical's subject create."""
     from flask import flash
     environment_id = request.form.get("environment_id", type=int)
     confirm_production = request.form.get("confirm_production") in ("on", "1", "true")
+    field_overrides = _parse_field_overrides(request.form.get("field_overrides"))
     if not environment_id:
         flash("Pick an environment to run against.", "error")
         return redirect(f"/claims/{test_id}")
@@ -2740,7 +2767,8 @@ def claims_run(test_id):
         return redirect(f"/claims/{test_id}")
 
     from primeqa.intelligence.s4_execution_console import trigger_claim_run
-    res = trigger_claim_run(tid, str(test_id), environment_id)
+    res = trigger_claim_run(tid, str(test_id), environment_id,
+                            field_overrides=field_overrides)
     if not res.get("ok"):
         flash(f"Run failed: {res.get('error', 'unknown error')}", "error")
     elif not res.get("ran"):
@@ -2748,8 +2776,11 @@ def claims_run(test_id):
               f"environment ({res.get('reason', 'no_eligible_recipe')}).", "error")
     else:
         v = res.get("verdict")
+        # D-235: name the injected overrides so the run is reproducible from the flash.
+        n = len(field_overrides)
+        ov = f" · {n} data override{'' if n == 1 else 's'} applied" if n else ""
         flash(f"Run complete — outcome: {res.get('outcome')}"
-              + (f" · verdict: {v}" if v else ""), "success")
+              + (f" · verdict: {v}" if v else "") + ov, "success")
     return redirect(f"/claims/{test_id}")
 
 
