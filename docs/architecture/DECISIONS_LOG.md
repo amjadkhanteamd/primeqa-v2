@@ -13410,4 +13410,47 @@ real-email cutover itself (AK's SendGrid key + verified sender).
 
 ---
 
+### D-234 — new-engine run-failure notification: SHIPPED (close)
+
+**What shipped (on `main` locally; pushed at close).**
+
+- **Impl** (commit `ce0e490`). `notify_substrate_run_failed(tenant_id, *, run_id,
+  test_id, environment_id, outcome, error_message)` in `shared/notifications.py` —
+  best-effort (never raises), quarantine-aware (D-232: `is_quarantined` → skip a
+  set-aside claim's noise; missing table → fires, safe default), opens its own
+  brief public session for `_admin_emails` then sends (no DB connection across the
+  email I/O). Hooked in `consumer.process_execution_job_for_tenant` OUTSIDE the
+  try/except (a notify can NEVER route to `store.fail` and wrongly fail a completed
+  job; `result` pre-initialized to None so the post-try block is safe when `run_fn`
+  raised), firing only on `outcome ∈ {failed, errored}` for these UNATTENDED queue
+  runs (scheduled / auto-enqueued / CI; live UI runs are watched). Module docstring
+  corrected (was "log-only stub / before R6 ships" — the providers are real since
+  D-200).
+- **Doc currency** (this close). CLAUDE.md line 192 ("log-only provider today") and
+  line 633 ("`sendgrid` / `ses` (R6 stub)") corrected to the real provider set
+  (`log`/`smtp`/`sendgrid`, no SES) + the env config a real cutover needs.
+
+**Verification.** Unit **2585** (incl. 13 new in `tests/unit/test_notifications.py`:
+`send_email` provider dispatch + never-raise; the notify's recipients/body/
+quarantine-skip/no-recipients/db-error; the hook's fire-on-failed|errored,
+skip-on-passed, **notify-cannot-fail-the-job**, no-notify-when-run-raises);
+execution_engine unit **250**; imports + app boot OK. Adversarial review (2 lenses:
+safety invariants + correctness → verify) returned **ZERO findings** — the
+never-fail-the-job placement, the no-connection-across-I/O session handling, and
+the `RunEvidence` attribute reads all checked out. ZERO migrations.
+
+**AK-side action (unchanged — the ONLY thing left for real emails).** Provision a
+SendGrid API key + a verified sender, then on Railway set
+`NOTIFICATIONS_PROVIDER=sendgrid` + `SENDGRID_API_KEY` + `SMTP_FROM` (the verified
+sender). Until then the dispatch stays on the `log` default — the notify fires and
+is logged, no email leaves. (SMTP is the alternative: `NOTIFICATIONS_PROVIDER=smtp`
++ `SMTP_HOST`/etc.)
+
+**Residuals (carried).** (1) dedup / rate-limit repeated failures of the same claim.
+(2) re-point or delete the orphaned v1 `notify_agent_fix_applied` / `notify_dms_silent`
+(the D-221 sweep). (3) per-tenant notification subscription/preference. (4) the
+real-email cutover (AK's SendGrid key).
+
+---
+
 ---

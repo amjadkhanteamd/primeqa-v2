@@ -189,7 +189,7 @@ this model. When in doubt, default to denial + log a rationale.
 - `query_builder.ListQuery` — pagination/search/sort/filter with hard 50/page cap and sort-field whitelist
 - `api.json_page` / `json_error` — uniform `{data, meta}` + `{error:{code,message}}` envelopes
 - `observability` — request timing, SQLAlchemy slow-query log at 800 ms (tunable via `PRIMEQA_SLOW_QUERY_MS`; default threshold sits above Railway's ~400–500 ms RTT floor), counters at `GET /api/_internal/health`
-- `notifications` — stable `notify_*` API; log-only provider today (NOTIFICATIONS_PROVIDER env var flips it)
+- `notifications` — stable `notify_*` API with REAL email providers (D-200): `log` (default) / `smtp` / `sendgrid` via `NOTIFICATIONS_PROVIDER`, all best-effort (never raise). Wired: `notify_release_decision` (decision_composer) + `notify_substrate_run_failed` (S4 execution consumer, unattended runs, D-234). Real email needs the provider's env config (e.g. `SENDGRID_API_KEY` + `SMTP_FROM`); unset → logs a warning + skips.
 
 ## LLM architecture (`primeqa/intelligence/llm/`)
 
@@ -630,7 +630,7 @@ psql "$DATABASE_URL" -f migrations/049_llm_enable_domain_packs.sql
 - `JWT_SECRET` — 64-char hex string for JWT signing
 - `CREDENTIAL_ENCRYPTION_KEY` — 64-char hex for Fernet encryption
 - `WEBHOOK_SECRET` — HMAC key for CI/CD webhooks (optional)
-- `NOTIFICATIONS_PROVIDER` — `log` (default) / `sendgrid` / `ses` (R6 stub)
+- `NOTIFICATIONS_PROVIDER` — `log` (default) / `smtp` / `sendgrid` (real, D-200; no SES). `smtp` needs `SMTP_HOST` (+ `SMTP_PORT`/`SMTP_USERNAME`/`SMTP_PASSWORD`/`SMTP_STARTTLS`); `sendgrid` needs `SENDGRID_API_KEY`. Both use `SMTP_FROM` as the sender.
 - `PORT` — HTTP port (Railway sets, default 5000)
 - `FLASK_ENV` — `production` on Railway
 
