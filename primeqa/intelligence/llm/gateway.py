@@ -53,10 +53,9 @@ class LLMResponse:
     status: str
     request_id: Optional[str] = None
     complexity: Optional[str] = None
-    # Row id of the llm_usage_log entry this call produced. Callers that
-    # only know their generation_batch_id / run_id AFTER the LLM call
-    # use this to back-link via usage.attach_batch(...) so the cost
-    # dashboard attributes the spend correctly.
+    # Row id of the llm_usage_log entry this call produced. (The v1
+    # usage.attach_batch back-link to generation_batches was retired in
+    # D-238 with that table; the field remains for callers that read it.)
     #
     # `usage_log_id` is the LAST (final) attempt's row id \u2014 i.e. the one
     # whose response this LLMResponse carries. On chain traversal with
@@ -163,9 +162,8 @@ def llm_call(
     escalated = False
     last_error: Optional[LLMError] = None
     # Every attempt's usage_log row id \u2014 success AND error \u2014 collected so
-    # the caller can back-attribute all billable attempts to their batch
-    # via usage.attach_batch(). Without this, a primary-that-got-escalated-
-    # past was invisible in the per-run cost panel.
+    # the caller can read all billable attempts. (The v1 usage.attach_batch
+    # back-attribution to generation_batches was retired in D-238.)
     attempt_log_ids: List[int] = []
 
     # Phase 5: Redact obvious PII from outbound prompts before the

@@ -9,9 +9,9 @@ change as the provider is switched.
 
 Wired callers: :func:`notify_release_decision` (from ``decision_composer``) and
 :func:`notify_substrate_run_failed` (from the S4 execution consumer, D-234). The
-older ``notify_run_failed`` / ``notify_agent_fix_applied`` / ``notify_dms_silent``
-are v1-shaped (read retired ``pipeline_runs``-era models) and orphaned \u2014 they
-await the D-221 retirement sweep.
+older v1-shaped ``notify_run_failed`` / ``notify_agent_fix_applied`` /
+``notify_dms_silent`` stubs were removed in D-238 (orphaned; their
+``pipeline_runs``-era models retire with migration 053).
 """
 
 from __future__ import annotations
@@ -129,35 +129,10 @@ def _send_sendgrid(notification: Notification) -> bool:
 
 # ---- Helpers that build + send common notifications ------------------------
 
-def notify_run_failed(db, run) -> None:
-    """Email tenant admins + superadmins when a run fails."""
-    recipients = _admin_emails(db, run.tenant_id)
-    send_email(Notification(
-        kind="run_failed",
-        subject=f"[PrimeQA] Run #{run.id} failed",
-        body=(f"Run #{run.id} against environment #{run.environment_id} failed. "
-              f"{run.failed}/{run.total_tests} tests failed. "
-              f"Error: {run.error_message or '(no message)'}"),
-        recipients=recipients,
-        tenant_id=run.tenant_id,
-        extras={"run_id": run.id},
-    ))
-
-
-def notify_agent_fix_applied(db, fix_attempt) -> None:
-    """Email super admins when an agent auto-applies a fix on sandbox."""
-    recipients = _superadmin_emails(db)
-    send_email(Notification(
-        kind="agent_fix_applied",
-        subject=f"[PrimeQA] Agent auto-applied a fix (TC #{fix_attempt.test_case_id})",
-        body=(f"Agent applied {fix_attempt.proposed_fix_type} at confidence "
-              f"{fix_attempt.confidence} ({fix_attempt.trust_band}). "
-              f"Rerun: {fix_attempt.rerun_run_id} "
-              f"Cause: {fix_attempt.root_cause_summary}"),
-        recipients=recipients,
-        extras={"fix_attempt_id": fix_attempt.id},
-    ))
-
+# D-238 (drop-readiness): the v1-shaped notify_run_failed / notify_agent_fix_applied
+# stubs were removed — orphaned (zero callers), and their pipeline_runs / agent
+# tables retire with migration 053. notify_substrate_run_failed below is the live
+# D-234 new-engine replacement.
 
 def notify_release_decision(db, tenant_id: int, release_name: str,
                             envelope: dict) -> None:
@@ -236,20 +211,6 @@ def notify_substrate_run_failed(tenant_id: int, *, run_id, test_id,
     except Exception as e:                           # pragma: no cover
         log.warning("notify_substrate_run_failed failed for tenant %s run %s: %s",
                     tenant_id, run_id, e)
-
-
-def notify_dms_silent(db, schedule) -> None:
-    """Email super admins when a schedule blows past its dead-man's-switch."""
-    recipients = _superadmin_emails(db)
-    send_email(Notification(
-        kind="dms_silent",
-        subject=f"[PrimeQA] Scheduled run #{schedule.id} silent",
-        body=(f"Schedule #{schedule.id} (suite #{schedule.suite_id}) was "
-              f"expected to fire within {schedule.max_silence_hours}h but "
-              f"hasn't. Check the scheduler process."),
-        recipients=recipients,
-        extras={"schedule_id": schedule.id},
-    ))
 
 
 def _admin_emails(db, tenant_id: int) -> List[str]:

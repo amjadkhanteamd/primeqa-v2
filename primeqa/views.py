@@ -2031,7 +2031,6 @@ def settings_llm_usage():
         if cost["by_tenant"]:
             from primeqa.core.models import Tenant, TenantAgentSettings
             from sqlalchemy import text as _sql
-            from datetime import datetime, timedelta, timezone
             tids = [row["key"] for row in cost["by_tenant"]]
             name_rows = db.query(Tenant.id, Tenant.name).filter(
                 Tenant.id.in_(tids),
@@ -2057,41 +2056,12 @@ def settings_llm_usage():
             except Exception:
                 db.rollback()
 
-            # Correction rate across ALL visible tenants in ONE query.
-            # Audit U3 (2026-04-19): previously called feedback_rules.
-            # correction_rate() in a loop — one query per tenant × Railway
-            # RTT. At 20 tenants = 13 seconds. Now one CTE does the lot.
-            start = datetime.now(timezone.utc) - timedelta(days=days)
-            rate_rows = db.execute(_sql("""
-                WITH tc_per_tenant AS (
-                  SELECT tenant_id, COUNT(*)::int AS denom
-                  FROM test_cases
-                  WHERE tenant_id = ANY(:tids)
-                    AND generation_batch_id IS NOT NULL
-                    AND deleted_at IS NULL
-                    AND updated_at >= :start
-                  GROUP BY tenant_id
-                ),
-                corrected_per_tenant AS (
-                  SELECT tenant_id, COUNT(DISTINCT test_case_id)::int AS corrected
-                  FROM generation_quality_signals
-                  WHERE tenant_id = ANY(:tids)
-                    AND captured_at >= :start
-                    AND test_case_id IS NOT NULL
-                    AND signal_type IN ('user_edited', 'ba_rejected', 'user_thumbs_down')
-                  GROUP BY tenant_id
-                )
-                SELECT t.id AS tenant_id,
-                       COALESCE(d.denom, 0) AS denom,
-                       COALESCE(c.corrected, 0) AS corrected
-                FROM (SELECT unnest(:tids) AS id) t
-                LEFT JOIN tc_per_tenant d ON d.tenant_id = t.id
-                LEFT JOIN corrected_per_tenant c ON c.tenant_id = t.id
-            """), {"tids": list(tids), "start": start}).all()
-            rate_by_id = {
-                r._mapping["tenant_id"]: (r._mapping["corrected"], r._mapping["denom"])
-                for r in rate_rows
-            }
+            # D-238 (drop-readiness): the per-tenant correction rate counted v1
+            # ``test_cases`` (AI-generated TCs) — that table retires with migration
+            # 053. The denom is already 0, so every tenant reads 0.0; skip the query
+            # (the loop below defaults to (0, 0)). Re-sourcing the rate from the
+            # substrate is a logged residual.
+            rate_by_id = {}
 
             for row in cost["by_tenant"]:
                 row["tenant_name"] = name_by_id.get(row["key"], f"Tenant #{row['key']}")

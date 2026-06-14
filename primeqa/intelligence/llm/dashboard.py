@@ -212,92 +212,25 @@ def quality_proxy_summary(db, *, days: int = 30) -> Dict[str, Any]:
     wasted if users immediately regenerate or if the generated TCs all
     fail at runtime.
     """
-    from sqlalchemy import text as sql
-
-    start, _end = _window(days)
-
-    # How many generation batches produced drafts that were superseded
-    # within 15 minutes by the same user?
-    regen_row = db.execute(sql("""
-        WITH gens AS (
-          SELECT id, tenant_id, requirement_id, created_by, created_at
-          FROM generation_batches
-          WHERE created_at >= :start
-        )
-        SELECT COUNT(*) FILTER (
-          WHERE EXISTS (
-            SELECT 1 FROM generation_batches g2
-            WHERE g2.tenant_id = gens.tenant_id
-              AND g2.requirement_id = gens.requirement_id
-              AND g2.created_by = gens.created_by
-              AND g2.created_at > gens.created_at
-              AND g2.created_at < gens.created_at + INTERVAL '15 minutes'
-          )
-        ) AS regenerated_within_15m,
-        COUNT(*) AS total_generations
-        FROM gens
-    """), {"start": start}).one()._mapping
-
-    regen_rate = (
-        (regen_row["regenerated_within_15m"] or 0)
-        / regen_row["total_generations"]
-    ) if regen_row["total_generations"] else 0.0
-
-    # Validation-critical rate: how often does a generation produce a TC
-    # with status=critical in its validation_report?
-    validation_row = db.execute(sql("""
-        SELECT COUNT(*) AS total,
-               SUM(CASE WHEN validation_report->>'status' = 'critical'
-                        THEN 1 ELSE 0 END) AS critical
-        FROM test_case_versions
-        WHERE created_at >= :start
-          AND generation_method IN ('ai', 'regenerated')
-          AND validation_report IS NOT NULL
-    """), {"start": start}).one()._mapping
-
-    validation_critical_rate = (
-        (validation_row["critical"] or 0) / validation_row["total"]
-    ) if validation_row["total"] else 0.0
-
-    # Post-gen failure rate: of TCs generated in window, what % failed
-    # at least once on execution?
-    # test_cases has no created_at; we use updated_at as a proxy (TCs
-    # are rarely edited post-generation, so updated_at \u2248 created_at
-    # for AI-generated TCs).
-    exec_fail_row = db.execute(sql("""
-        WITH recent_tcs AS (
-          SELECT DISTINCT tc.id AS test_case_id
-          FROM test_cases tc
-          WHERE tc.updated_at >= :start
-            AND tc.deleted_at IS NULL
-            AND tc.generation_batch_id IS NOT NULL
-        )
-        SELECT COUNT(*) FILTER (
-          WHERE EXISTS (
-            SELECT 1 FROM run_test_results r
-            WHERE r.test_case_id = recent_tcs.test_case_id
-              AND r.status IN ('failed', 'error')
-          )
-        ) AS failed_at_least_once,
-        COUNT(*) AS total
-        FROM recent_tcs
-    """), {"start": start}).one()._mapping
-
-    fail_rate = (
-        (exec_fail_row["failed_at_least_once"] or 0) / exec_fail_row["total"]
-    ) if exec_fail_row["total"] else 0.0
-
+    # D-238 (drop-readiness): all three quality-proxy inputs lived in v1 tables
+    # that retire with migration 053 \u2014 generation batches (regeneration rate),
+    # ``test_case_versions`` (validation-critical rate), and ``test_cases`` \u00d7
+    # ``run_test_results`` (post-gen failure rate). They already read 0 rows, so
+    # this returns the zero shape (no behavioral change today) and stops querying
+    # soon-to-be-dropped tables. Re-sourcing from the substrate (s3 generation
+    # jobs + s6 interpretations) is a logged residual.
+    _ = days
     return {
         "days": days,
-        "regeneration_rate": round(regen_rate, 3),
-        "regenerated_within_15m": regen_row["regenerated_within_15m"] or 0,
-        "total_generations": regen_row["total_generations"] or 0,
-        "validation_critical_rate": round(validation_critical_rate, 3),
-        "validations_critical": validation_row["critical"] or 0,
-        "validations_total": validation_row["total"] or 0,
-        "post_gen_failure_rate": round(fail_rate, 3),
-        "failed_tcs": exec_fail_row["failed_at_least_once"] or 0,
-        "total_tcs": exec_fail_row["total"] or 0,
+        "regeneration_rate": 0.0,
+        "regenerated_within_15m": 0,
+        "total_generations": 0,
+        "validation_critical_rate": 0.0,
+        "validations_critical": 0,
+        "validations_total": 0,
+        "post_gen_failure_rate": 0.0,
+        "failed_tcs": 0,
+        "total_tcs": 0,
     }
 
 

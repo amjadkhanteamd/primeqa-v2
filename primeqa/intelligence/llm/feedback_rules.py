@@ -359,63 +359,17 @@ def correction_rate(
     Returns a dict with corrected / total / rate / delta (window-over-
     window) so the dashboard can draw an arrow + trend.
     """
-    from datetime import datetime, timedelta, timezone
-    from sqlalchemy import text as sql
-
-    now = datetime.now(timezone.utc)
-    start = now - timedelta(days=days)
-    prev_start = now - timedelta(days=days * 2)
-
-    # Single round-trip: compute all four numbers (current + previous
-    # window for both denom + corrected) in one SELECT using conditional
-    # aggregation. At Railway's ~650ms RTT, 4 queries → 1 saves ~2 sec.
-    # test_cases has no created_at; we use updated_at as a proxy (AI TCs
-    # are rarely edited post-creation, so updated_at ≈ created_at).
-    row = db.execute(sql("""
-        WITH tc_in_window AS (
-          SELECT id,
-            CASE WHEN updated_at >= :start THEN 1 ELSE 0 END AS in_cur,
-            CASE WHEN updated_at >= :prev_start AND updated_at < :start THEN 1 ELSE 0 END AS in_prev
-          FROM test_cases
-          WHERE tenant_id = :tid
-            AND generation_batch_id IS NOT NULL
-            AND deleted_at IS NULL
-            AND updated_at >= :prev_start
-        ),
-        corrections AS (
-          SELECT DISTINCT test_case_id,
-            MIN(CASE WHEN captured_at >= :start THEN 1 ELSE 0 END) AS ignore_a,
-            MAX(CASE WHEN captured_at >= :start THEN 1 ELSE 0 END) AS hit_cur,
-            MAX(CASE WHEN captured_at >= :prev_start AND captured_at < :start THEN 1 ELSE 0 END) AS hit_prev
-          FROM generation_quality_signals
-          WHERE tenant_id = :tid
-            AND captured_at >= :prev_start
-            AND test_case_id IS NOT NULL
-            AND signal_type IN ('user_edited', 'ba_rejected', 'user_thumbs_down')
-          GROUP BY test_case_id
-        )
-        SELECT
-          COALESCE(SUM(tc_in_window.in_cur), 0)::int  AS denom,
-          COALESCE(SUM(tc_in_window.in_prev), 0)::int AS prev_denom,
-          (SELECT COALESCE(SUM(hit_cur), 0)::int  FROM corrections) AS corrected,
-          (SELECT COALESCE(SUM(hit_prev), 0)::int FROM corrections) AS prev_corrected
-        FROM tc_in_window
-    """), {"tid": tenant_id, "start": start, "prev_start": prev_start}).one()._mapping
-
-    denom = row["denom"] or 0
-    prev_denom = row["prev_denom"] or 0
-    corrected = row["corrected"] or 0
-    prev_corrected = row["prev_corrected"] or 0
-
-    rate = (corrected / denom) if denom else 0.0
-    prev_rate = (prev_corrected / prev_denom) if prev_denom else None
-    delta = (rate - prev_rate) if prev_rate is not None else None
-
+    # D-238 (drop-readiness): the denominator — AI-generated TCs — lived in the v1
+    # ``test_cases`` table, which retires with migration 053. Without a denom the
+    # correction rate cannot be computed, so this returns the zero shape (the same
+    # values it already produced once ``test_cases`` reached 0 rows). Re-sourcing
+    # the metric from the substrate (approved ``test_claims`` ×
+    # ``generation_quality_signals``) is a logged residual.
     return {
         "days": days,
-        "corrected": int(corrected),
-        "total": int(denom),
-        "rate": round(rate, 4),
-        "prev_rate": round(prev_rate, 4) if prev_rate is not None else None,
-        "delta": round(delta, 4) if delta is not None else None,
+        "corrected": 0,
+        "total": 0,
+        "rate": 0.0,
+        "prev_rate": None,
+        "delta": None,
     }
