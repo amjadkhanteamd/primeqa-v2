@@ -13970,4 +13970,42 @@ day-of checklist (fresh backup, queues idle) and AK's explicit GO to apply it.
 
 ---
 
+## D-221.5 — CLOSE: the v1 product tables are DROPPED — the re-platform is complete (theme #2)
+
+**Date:** 2026-06-14
+**Status:** active (closes D-221 R5 / theme #2)
+
+**AK's GO (verbatim):** "GO to apply migrations/053". AK applied it and confirmed:
+"All 20 v1 product tables dropped cleanly in one transaction. The CASCADE notices are
+the FK constraints from surviving tables (llm_usage_log, release_runs, agent_fix_attempts,
+etc.) being detached — their columns stay as plain integers, just no longer foreign-keyed.
+Exactly as designed."
+
+**Pre-flight (gate fully met, 2026-06-14):** zero-rows re-verified immediately before the
+drop (all 20 = 0); 3 consecutive infra-clean scheduled fires (06-12/13/14); coverage met
+(7 approved claims + SQ-210 waived, D-239); code-safe (D-238 — no live route queries a
+drop-set table). `migrations/053` is atomic (`BEGIN/COMMIT`).
+
+**Post-drop verification (read-only smoke, by Claude):**
+- All 20 drop-set tables **GONE** (`information_schema`: 0/20 present).
+- Surviving anchors intact: `llm_usage_log`, `release_runs`, `agent_fix_attempts`,
+  `releases`, `requirements`, `release_decisions`, tenants/users/environments.
+- Substrate untouched: tenant_1 has 15 approved claims + 79 s4 runs.
+- **No 500s** on the paths the D-238 audit flagged: `quality_proxy_summary` +
+  `correction_rate` compute (zeros, no query on dropped tables); `cost_summary` works;
+  the `/dashboard` hero still computes the live NO-GO (blocked by SQ-205).
+
+**Theme #2 ("finish the re-platform") — COMPLETE.** The v1 product tables are gone; the
+substrate (S1–S8) is the sole engine. With themes #1/#3/#4/#5/#6 already done, **all six
+2026-06 product themes are now closed.**
+
+**Residuals (post-drop hygiene, non-blocking).** The v1 execution + test-management ORM
+**model/repository modules** (`execution/models.py`, `execution/repository.py`, the v1
+`test_management` model bits, `ExecutionSlot`, the dead `execution/routes.py get_slots`)
+now map to tables that no longer exist. They remain harmless (never queried; app boots),
+but are truly dead and should be deleted in a follow-up. Other standing items are
+unchanged AK-ops (pending migrations, SendGrid key, global-notes destale).
+
+---
+
 ---
