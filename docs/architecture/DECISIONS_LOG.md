@@ -14034,3 +14034,39 @@ constants (only comment breadcrumbs remain); app boots; `WorkerHeartbeat` +
 `WorkerHeartbeatRepository` intact; unit **2627** + scheduler-resilience 4/4 green. ZERO
 migration (the tables were already dropped in 053). The v1 product layer — tables AND
 ORM — is now fully gone.
+
+---
+
+## D-227.7 — 0-row SIDE-EFFECT reads grade as the finding, not RecordNotObserved (ledger entry, closes N-1)
+
+**Date:** 2026-06-12 (fix `f40f840`); entry appended 2026-06-14 (N-1 — the missing log row).
+**Status:** active
+
+**What.** Surfaced by the first P1 perturbation (Flow off): an automation-effect run
+`errored not_evaluated` instead of grading `automation_not_triggered`. Root cause — the
+0-row short-circuit treated EVERY empty read-back as infrastructure (RecordNotObserved).
+Fix: the short-circuit now applies only to SELF-observations (`WHERE Id = '$...'` — a
+record the run created; 0 rows there IS infrastructure); SIDE-EFFECT reads (queried by
+lookup — the automation's product) fall through to grounding, where equals / not_null over
+0 rows is the honest `held=False`. Supersedes the D-210 errored pin (test retargeted;
+retry semantics unchanged). Touched `execution_engine/data_executor.py` + the
+positive-executor unit. The fix has been on `main` since `f40f840`; this entry closes
+ledger item N-1 (it had no DECISIONS_LOG row).
+
+---
+
+## D-237.1 — correction: `_cause_phrase` takes 3 params, not 4
+
+**Date:** 2026-06-14
+**Status:** active (corrects the D-237 design entry's prose)
+
+The D-237 design entry describes `_cause_phrase(detail, cause_kind, verdict, outcome)`
+(4 params). The shipped code (`primeqa/intelligence/substrate_decision.py`) is
+`_cause_phrase(detail, verdict, outcome)` — `cause_kind` was dropped during impl because
+the S6 cause sentence already stashed at `detail.cause.detail` carries the cause
+semantics, making the enum redundant. Code is ground truth; the 4-param signature in the
+D-237 prose is stale. No code change.
+
+---
+
+---
