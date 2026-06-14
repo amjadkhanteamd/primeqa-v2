@@ -109,6 +109,7 @@ def run_recipe_execution(
     client=None,
     coordinator=None,
     record_sink=None,
+    field_overrides=None,
 ) -> RunPathResult:
     """Execute the eligible recipe for ``test_id`` end-to-end on ``session``.
 
@@ -136,7 +137,8 @@ def run_recipe_execution(
         return RunPathResult(ran=False, reason="no_eligible_recipe")
 
     evidence = _execute_for_kind(
-        recipe, session, environment_id, client, record_sink=record_sink)
+        recipe, session, environment_id, client, record_sink=record_sink,
+        field_overrides=field_overrides)
     state = finalize_run(session, evidence, coordinator=coord)
     interpretation = _interpret_and_persist(session, evidence)
 
@@ -150,7 +152,7 @@ def run_recipe_execution(
 
 
 def _execute_for_kind(recipe, session, environment_id: int, client,
-                      record_sink=None, world_plans=None):
+                      record_sink=None, world_plans=None, field_overrides=None):
     """Dispatch on ``recipe.recipe_kind`` → the matching bridge + executor.
 
     The inspection path (``metadata-recipe``) is unchanged from D-108.4; the
@@ -185,7 +187,8 @@ def _execute_for_kind(recipe, session, environment_id: int, client,
             s1 = SemanticOrgModel(session.connection())
         return execute_data_recipe(
             plan, client=data_client, environment_id=environment_id, s1=s1,
-            world_plans=world_plans, record_sink=record_sink)
+            world_plans=world_plans, record_sink=record_sink,
+            field_overrides=field_overrides)
 
     raise PlanTranslationError(
         f"run path has no executor for recipe_kind={recipe.recipe_kind!r} "
@@ -263,6 +266,7 @@ def run_recipe_execution_for_tenant(
     available_environment: Optional[ExecutionEnvironmentBody] = None,
     client=None,
     coordinator=None,
+    field_overrides=None,
 ) -> RunPathResult:
     """Production entry: own the tenant connection + the single commit.
 
@@ -295,6 +299,7 @@ def run_recipe_execution_for_tenant(
                 client=client,
                 coordinator=coordinator,
                 record_sink=sink,
+                field_overrides=field_overrides,
             )
         finally:
             session.close()

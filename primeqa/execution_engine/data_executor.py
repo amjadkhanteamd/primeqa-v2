@@ -85,7 +85,7 @@ _BUSINESS_REJECTION_STATUS = 400
 
 def execute_data_recipe(
     plan: DataRecipePlan, *, client, environment_id: int, s1=None,
-    world_plans=None, record_sink=None,
+    world_plans=None, record_sink=None, field_overrides=None,
 ) -> RunEvidence:
     """Execute a data-recipe plan against ``client``; dispatch on the first
     step's ``expect_rejection``.
@@ -100,7 +100,12 @@ def execute_data_recipe(
     D-230.2 — the async path pre-resolves it under the select bracket so execute
     holds no DB connection). The run path injects whichever applies when
     ``steps[0].expect_rejection is None``. Returns a :class:`RunEvidence` carrying the
-    grounded outcome + per-step evidence."""
+    grounded outcome + per-step evidence.
+
+    ``field_overrides`` (D-235, run-time test-data injection) is an optional
+    ``{bare_field_name: value}`` map applied ONLY to the positive vertical's subject
+    create (merged last — override-wins); negative recipes never receive it (an
+    override would flip their rejection premise)."""
     flagged = next(
         (s for s in plan.steps
          if getattr(s, "expect_rejection", None) is not None), None)
@@ -121,7 +126,8 @@ def execute_data_recipe(
             world_plans=world_plans, record_sink=record_sink)
     return _run_positive(
         plan, client=client, environment_id=environment_id, s1=s1,
-        world_plans=world_plans, record_sink=record_sink)
+        world_plans=world_plans, record_sink=record_sink,
+        field_overrides=field_overrides)
 
 
 def _world_for(create, *, s1, client, tracker, at_seq, world_plans, recipe_id=None):
@@ -387,7 +393,8 @@ def _sf_soql(soql: str, sobject: str) -> str:
 
 
 def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
-                  world_plans=None, record_sink=None) -> RunEvidence:
+                  world_plans=None, record_sink=None,
+                  field_overrides=None) -> RunEvidence:
     """The positive create-and-verify path (D-115; N-create chains D-205):
     per create — construct-world → resolve cross-step refs → create-expect-
     success → thread state — then observe the read-back → teardown (k14,
@@ -456,6 +463,16 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
                            "errored", err, created_records=tracker.records)
         field_values = _sf_fields(
             {**semantic_resolved, **scalar_filler, **parent_filler}, sobject)
+
+        # D-235: run-time test-data injection. Operator field-value overrides are
+        # merged LAST (override-wins over the recipe value AND the k16 filler) on
+        # the SUBJECT create — the chain's terminal create (earlier creates are its
+        # provisioned parents). Bare-ified so a qualified override key
+        # ("Opportunity.Amount") lands on the same bare key. Positive vertical only
+        # — negative recipes never reach here with overrides (their premise must
+        # stay intact). Empty/None → today's behavior exactly.
+        if field_overrides and ordinal == len(creates) - 1:
+            field_values = {**field_values, **_sf_fields(field_overrides, sobject)}
 
         # 3. Create — expect success.
         c_start = _now()

@@ -26,7 +26,10 @@ from primeqa.execution_engine.plan import (
 )
 from primeqa.execution_engine.result_store import persist_run_evidence
 from primeqa.integrations.exceptions import SFRequestError
-from primeqa.test_representation.models.primitives import AssertionPredicate
+from primeqa.test_representation.models.primitives import (
+    AssertionPredicate,
+    RejectionExpectation,
+)
 from primeqa.test_representation.models.references import LogicalRef
 
 _ENV_ID = 7
@@ -988,3 +991,97 @@ def test_self_observation_zero_rows_stays_record_not_observed():
     ev = _run(_plan(), client, _s1())
     assert ev.outcome == "errored"
     assert ev.error.error_type == "RecordNotObserved"
+
+
+# ---------------------------------------------------------------------------
+# D-235 — run-time test-data injection (field_overrides), positive vertical only
+# ---------------------------------------------------------------------------
+
+def _run_ov(plan, client, s1, overrides):
+    return execute_data_recipe(plan, client=client, environment_id=_ENV_ID, s1=s1,
+                               field_overrides=overrides)
+
+
+def _two_create_plan():
+    """Two independent Account creates then a read+assert on the 2nd — the
+    'subject is the LAST create' fixture."""
+    target = LogicalRef(entity_type="Object", external_id="Account")
+    return DataRecipePlan(
+        recipe_id=uuid4(), recipe_version_seq=2, claim_test_id=uuid4(),
+        claim_version_seq=None, api_choice="rest",
+        steps=(
+            PlannedCreate(step_id="create-1", target_object=target,
+                          field_values={"Status__c": "First"}, expect_rejection=None),
+            PlannedCreate(step_id="create-2", target_object=target,
+                          field_values={"Status__c": "Second"}, expect_rejection=None),
+            PlannedDataRead(
+                step_id="read", target=target,
+                soql="SELECT Status__c FROM Account WHERE Id = '$create-2.id'",
+                fields_to_capture=("Status__c",)),
+            PlannedAssertion(
+                step_id="assert",
+                predicate=AssertionPredicate(
+                    subject_ref="read.Status__c", predicate="equals", value="Second")),
+        ))
+
+
+def test_override_wins_over_recipe_value():
+    client = _StubClient(create_result=_success("001Z"),
+                         query_result=[{"Status__c": "Active"}])
+    _run_ov(_plan(field="Status__c", value="Active"), client, _s1(),
+            {"Status__c": "Injected"})
+    posted = client.creates[0][1]
+    assert posted["Status__c"] == "Injected"   # override beat the recipe's "Active"
+    assert posted["Name"] == "PQA"             # k16 padding still applied
+
+
+def test_override_adds_a_field_not_in_the_recipe():
+    client = _StubClient(create_result=_success(), query_result=[{"Status__c": "Active"}])
+    _run_ov(_plan(), client, _s1(), {"Description": "scenario-7"})
+    posted = client.creates[0][1]
+    assert posted["Description"] == "scenario-7"   # added
+    assert posted["Status__c"] == "Active"         # recipe value untouched
+
+
+def test_override_qualified_key_is_bare_ified():
+    client = _StubClient(create_result=_success(), query_result=[{"Status__c": "Active"}])
+    _run_ov(_plan(), client, _s1(), {"Account.Status__c": "Q"})
+    assert client.creates[0][1]["Status__c"] == "Q"   # qualified key -> bare, wins
+
+
+def test_no_overrides_matches_today():
+    c1 = _StubClient(create_result=_success(), query_result=[{"Status__c": "Active"}])
+    _run_ov(_plan(), c1, _s1(), None)
+    c2 = _StubClient(create_result=_success(), query_result=[{"Status__c": "Active"}])
+    execute_data_recipe(_plan(), client=c2, environment_id=_ENV_ID, s1=_s1())
+    assert c1.creates == c2.creates                 # None overrides == today's behavior
+
+
+def test_override_targets_only_the_last_create_in_a_chain():
+    client = _StubClient(create_result=_success("001Z"),
+                         query_result=[{"Status__c": "Second"}])
+    _run_ov(_two_create_plan(), client, _s1(), {"Status__c": "OVERRIDE"})
+    assert client.creates[0][1]["Status__c"] == "First"      # parent create untouched
+    assert client.creates[1][1]["Status__c"] == "OVERRIDE"   # subject (last) overridden
+
+
+def test_negative_vertical_ignores_overrides():
+    # A 1-step create-rejected negative must NOT receive overrides — an override
+    # could flip whether the org rejects the create and invalidate the test.
+    target = LogicalRef(entity_type="Object", external_id="Lead")
+    neg = DataRecipePlan(
+        recipe_id=uuid4(), recipe_version_seq=2, claim_test_id=uuid4(),
+        claim_version_seq=None, api_choice="rest",
+        steps=(PlannedCreate(
+            step_id="create-violating", target_object=target,
+            field_values={"Company": "Acme"},
+            expect_rejection=RejectionExpectation(
+                error_code="FIELD_CUSTOM_VALIDATION_EXCEPTION",
+                error_message_pattern=None)),))
+    client = _StubClient(create_result=_rejected(fields=["Company"]))
+    # passing overrides must be a no-op on the negative path (no s1 needed — a
+    # 1-step create-rejected constructs no world)
+    execute_data_recipe(neg, client=client, environment_id=_ENV_ID,
+                        field_overrides={"Company": "Injected"})
+    assert client.creates[0][1]["Company"] == "Acme"   # override did NOT apply
+    assert "Injected" not in client.creates[0][1].values()
