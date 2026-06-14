@@ -210,15 +210,14 @@ class TenantAgentSettings(Base):
         Boolean, nullable=False, server_default="false",
     )
 
-    # Migration 054 (D-236): the auto-fix agent's AUTONOMOUS-apply switch. When
-    # off (default), every LLM repair proposal is human-approved on the Repairs
-    # panel. When on, a SANDBOX run's recipe_edit proposal at confidence >=
-    # trust_threshold_high auto-applies (a PRODUCTION run is never auto-applied).
-    # Separate from the v1 `agent_enabled` master switch; the gate reuses the
-    # existing trust_threshold_high / max_fix_attempts_per_run columns above.
-    repair_auto_apply = Column(
-        Boolean, nullable=False, server_default="false",
-    )
+    # Migration 054 (D-236): the auto-fix agent's AUTONOMOUS-apply switch is on
+    # this table (`repair_auto_apply BOOLEAN DEFAULT false`) but is DELIBERATELY
+    # NOT mapped here — adding an unmigrated column to the ORM would break every
+    # full-entity load of tenant_agent_settings (the gateway reads it per LLM
+    # call) until the migration is applied. It is read/written best-effort via
+    # raw SQL (repair_agent._repair_settings + the superadmin save handler), so
+    # the code deploys before the migration (the D-230 ordering); a missing
+    # column reads as False (the feature stays dormant).
 
     # (cutover_read_s1 — the per-tenant metadata read-path switch, migration 051 /
     # D-158 — was unmapped in D-195.3 when Step 5a retired the flag. S1 is the sole

@@ -161,6 +161,12 @@
                        {% if t.llm_enable_domain_packs %}checked{% endif %}>
                 Packs
               </label>
+              <label class="inline-flex items-center gap-1 text-[10px] text-gray-600" title="D-236: let the auto-fix agent AUTONOMOUSLY apply a high-confidence recipe fix on a SANDBOX run (>= trust_threshold_high). Production runs are always human-gated. Default off.">
+                <input type="checkbox" name="repair_auto_apply" value="1"
+                       class="rounded border-gray-300 text-rose-600 focus:ring-rose-500 h-3 w-3"
+                       {% if t.repair_auto_apply %}checked{% endif %}>
+                Auto-fix
+              </label>
               <button type="submit" class="text-[10px] uppercase tracking-wider text-indigo-600 hover:text-indigo-800 px-2 py-0.5 rounded border border-indigo-200">Save</button>
             </form>
           </td>

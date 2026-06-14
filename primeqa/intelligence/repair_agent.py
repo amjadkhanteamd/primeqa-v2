@@ -110,7 +110,6 @@ def _repair_settings(tenant_id: int) -> dict:
         finally:
             db.close()
         if s is not None:
-            out["auto_apply"] = bool(getattr(s, "repair_auto_apply", False))
             out["agent_enabled"] = bool(getattr(s, "agent_enabled", True))
             try:
                 out["threshold_high"] = float(s.trust_threshold_high)
@@ -120,6 +119,19 @@ def _repair_settings(tenant_id: int) -> dict:
                 out["max_attempts"] = int(s.max_fix_attempts_per_run)
             except (TypeError, ValueError):
                 pass
+        # repair_auto_apply is on the table but DELIBERATELY NOT ORM-mapped
+        # (deploy-safety, D-236) — read it best-effort; a missing column
+        # (pre-migration-054) reads as False (the feature stays dormant).
+        db2 = next(get_db())
+        try:
+            v = db2.execute(text(
+                "SELECT repair_auto_apply FROM tenant_agent_settings "
+                "WHERE tenant_id = :t"), {"t": tenant_id}).scalar()
+            out["auto_apply"] = bool(v)
+        except Exception:
+            pass
+        finally:
+            db2.close()
     except Exception as exc:                              # pragma: no cover
         log.warning("repair settings unavailable for tenant %s: %s", tenant_id, exc)
     return out
@@ -302,7 +314,8 @@ def list_proposals(tenant_id: int, *, statuses=("proposed", "approved"),
         with get_tenant_connection(tenant_id) as conn:
             rows = conn.execute(text(
                 "SELECT id, run_id, claim_test_id, environment_id, verdict, "
-                "       cause_kind, proposal_kind, status, payload, created_at "
+                "       cause_kind, proposal_kind, status, payload, confidence, "
+                "       proposed_payload, created_at "
                 "FROM repair_proposals WHERE status = ANY(:st) "
                 "ORDER BY created_at DESC LIMIT :lim"),
                 {"st": list(statuses), "lim": limit}).mappings().all()
@@ -313,6 +326,10 @@ def list_proposals(tenant_id: int, *, statuses=("proposed", "approved"),
             "verdict": r["verdict"], "cause_kind": r["cause_kind"],
             "proposal_kind": r["proposal_kind"], "status": r["status"],
             "payload": r["payload"],
+            # D-236: the LLM proposal's surface (None for the deterministic kinds)
+            "confidence": (float(r["confidence"])
+                           if r["confidence"] is not None else None),
+            "proposed_payload": r["proposed_payload"] or {},
             "created_at": r["created_at"].isoformat(),
         } for r in rows]}
     except Exception as exc:
@@ -328,13 +345,17 @@ def open_proposal_for_run(tenant_id: int, run_id) -> Optional[dict]:
         from primeqa.semantic.connection import get_tenant_connection
         with get_tenant_connection(tenant_id) as conn:
             row = conn.execute(text(
-                "SELECT id, proposal_kind FROM repair_proposals "
+                "SELECT id, proposal_kind, confidence, proposed_payload "
+                "FROM repair_proposals "
                 "WHERE run_id = CAST(:rid AS uuid) AND status = 'proposed' "
                 "ORDER BY created_at DESC LIMIT 1"),
                 {"rid": str(run_id)}).mappings().first()
         if row is None:
             return None
-        return {"id": row["id"], "proposal_kind": row["proposal_kind"]}
+        return {"id": row["id"], "proposal_kind": row["proposal_kind"],
+                "confidence": (float(row["confidence"])
+                               if row["confidence"] is not None else None),
+                "proposed_payload": row["proposed_payload"] or {}}
     except Exception as exc:
         log.warning("open_proposal_for_run failed for tenant %s run %s: %s",
                     tenant_id, run_id, exc)

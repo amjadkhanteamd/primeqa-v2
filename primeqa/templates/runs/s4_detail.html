@@ -140,8 +140,20 @@
           <h3 class="text-sm font-semibold text-indigo-900">A fix is ready for this run</h3>
           <p class="text-xs text-indigo-700 mt-0.5">
             {% if repair_proposal.proposal_kind == 'rerun' %}Re-run the test &mdash; the failure looks like infrastructure, not the org.
+            {% elif repair_proposal.proposal_kind == 'recipe_edit' %}The agent proposes editing the test recipe to fix this failure &mdash; a new version (the prior one is preserved).{% if repair_proposal.confidence is not none %} <span class="font-medium">{{ (repair_proposal.confidence * 100) | round | int }}% confidence.</span>{% endif %}
             {% else %}Regenerate the test against the org as it is today &mdash; the test predates an org change.{% endif %}
           </p>
+          {# D-236: the proposed recipe edit (rationale + concrete field changes). #}
+          {% if repair_proposal.proposal_kind == 'recipe_edit' and repair_proposal.proposed_payload %}
+          {% if repair_proposal.proposed_payload.rationale %}<p class="text-xs text-indigo-800 mt-1 italic">{{ repair_proposal.proposed_payload.rationale }}</p>{% endif %}
+          {% if repair_proposal.proposed_payload.field_changes %}
+          <div class="text-xs font-mono text-indigo-900 mt-1">
+            {% for f, v in repair_proposal.proposed_payload.field_changes.items() %}
+            <div>{% if v == '__REMOVE__' %}<span class="text-red-600">&minus; drop {{ f }}</span>{% else %}<span class="text-green-700">{{ f }} = {{ v }}</span>{% endif %}</div>
+            {% endfor %}
+          </div>
+          {% endif %}
+          {% endif %}
         </div>
         <div class="flex items-center gap-2">
           <form method="POST" action="/runs/substrate/repairs/{{ repair_proposal.id }}" class="inline">

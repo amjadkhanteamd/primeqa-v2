@@ -2046,6 +2046,16 @@ def settings_llm_usage():
             tier_by_id = {r[0]: r[1] for r in tier_rows}
             story_by_id = {r[0]: bool(r[2]) for r in tier_rows}
             packs_by_id = {r[0]: bool(r[3]) for r in tier_rows}
+            # D-236: repair_auto_apply is NOT ORM-mapped (deploy-safety) — read it
+            # best-effort via raw SQL; a missing column (pre-054) → all False.
+            repair_by_id = {}
+            try:
+                rr = db.execute(_sql(
+                    "SELECT tenant_id, repair_auto_apply FROM tenant_agent_settings "
+                    "WHERE tenant_id = ANY(:t)"), {"t": list(tids)}).all()
+                repair_by_id = {r[0]: bool(r[1]) for r in rr}
+            except Exception:
+                db.rollback()
 
             # Correction rate across ALL visible tenants in ONE query.
             # Audit U3 (2026-04-19): previously called feedback_rules.
@@ -2088,6 +2098,7 @@ def settings_llm_usage():
                 row["tier"] = tier_by_id.get(row["key"], _tiers.TIER_STARTER)
                 row["llm_enable_story_enrichment"] = story_by_id.get(row["key"], False)
                 row["llm_enable_domain_packs"] = packs_by_id.get(row["key"], False)
+                row["repair_auto_apply"] = repair_by_id.get(row["key"], False)
                 corrected, total = rate_by_id.get(row["key"], (0, 0))
                 row["correction_total"] = int(total)
                 row["correction_rate"] = (float(corrected) / float(total)) if total else 0.0
@@ -2189,6 +2200,7 @@ def settings_change_tenant_tier(tenant_id):
     # Checkbox semantics: HTML only submits the field when checked.
     new_story_flag = bool(request.form.get("llm_enable_story_enrichment"))
     new_packs_flag = bool(request.form.get("llm_enable_domain_packs"))
+    new_repair_flag = bool(request.form.get("repair_auto_apply"))  # D-236
 
     db = next(get_db())
     try:
@@ -2252,6 +2264,27 @@ def settings_change_tenant_tier(tenant_id):
                     details={"old": old_packs, "new": new_packs_flag},
                 ))
         db.commit()
+        # D-236: persist repair_auto_apply SEPARATELY + best-effort — the column
+        # (migration 054) is not ORM-mapped and may not be applied yet, so a
+        # missing column must never break the tier/story/packs save (D-230
+        # ordering). Own try/except + rollback so it can't poison the request.
+        try:
+            from sqlalchemy import text as _t
+            cur = db.execute(_t(
+                "SELECT repair_auto_apply FROM tenant_agent_settings "
+                "WHERE tenant_id = :t"), {"t": tenant_id}).scalar()
+            if bool(cur) != new_repair_flag:
+                db.execute(_t(
+                    "UPDATE tenant_agent_settings SET repair_auto_apply = :v "
+                    "WHERE tenant_id = :t"), {"v": new_repair_flag, "t": tenant_id})
+                db.add(ActivityLog(
+                    tenant_id=tenant_id, user_id=request.user["id"],
+                    action="update", entity_type="tenant_repair_auto_apply",
+                    entity_id=tenant_id,
+                    details={"old": bool(cur), "new": new_repair_flag}))
+                db.commit()
+        except Exception:
+            db.rollback()
         flash(
             f"Tenant #{tenant_id}: tier={new_tier}, "
             f"story={'on' if new_story_flag else 'off'}, "

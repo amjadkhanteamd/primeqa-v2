@@ -186,9 +186,26 @@
             {{ p.verdict.replace('_', ' ') }}{% if p.cause_kind %} &middot; {{ p.cause_kind.replace('_', ' ') }}{% endif %}
           </td>
           <td class="px-4 py-2">
+            {% if p.proposal_kind == 'recipe_edit' %}
+            {# D-236: the LLM-proposed recipe edit — confidence + rationale + the
+               concrete field changes (a drop or a set on the subject create). #}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800"
+              title="The agent proposes an edit to the test recipe to fix this failure (a new version; the prior one is preserved).">Recipe edit{% if p.confidence is not none %} &middot; {{ (p.confidence * 100) | round | int }}% conf{% endif %}</span>
+            {% if p.proposed_payload and p.proposed_payload.rationale %}
+            <p class="text-xs text-gray-500 mt-1">{{ p.proposed_payload.rationale }}</p>
+            {% endif %}
+            {% if p.proposed_payload and p.proposed_payload.field_changes %}
+            <div class="text-xs font-mono text-gray-600 mt-0.5">
+              {% for f, v in p.proposed_payload.field_changes.items() %}
+              <div>{% if v == '__REMOVE__' %}<span class="text-red-600">&minus; drop {{ f }}</span>{% else %}<span class="text-green-700">{{ f }} = {{ v }}</span>{% endif %}</div>
+              {% endfor %}
+            </div>
+            {% endif %}
+            {% else %}
             <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800"
               title="{{ 'Re-run the test (the failure was infrastructure, not the org)' if p.proposal_kind == 'rerun' else 'Regenerate the test against the org as it is TODAY (the test predates an org change)' }}">
               {{ 'Re-run' if p.proposal_kind == 'rerun' else 'Regenerate from current org' }}</span>
+            {% endif %}
           </td>
           <td class="px-4 py-2 text-right whitespace-nowrap">
             <form method="POST" action="/runs/substrate/repairs/{{ p.id }}" class="inline">
