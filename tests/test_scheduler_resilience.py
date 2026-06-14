@@ -17,12 +17,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import primeqa.scheduler as sched
 
 # The full tick sequence scheduler_tick runs, in order. The s1 ticks are LAST.
+# D-221 R3 retired the v1 pipeline reapers / scheduled_runs firer / v1
+# generation-job reaper / run_events trimmer with the engine; this mirrors the
+# current substrate tick list (kept in sync with scheduler.scheduler_tick).
 _TICK_NAMES = [
-    "reap_stuck_stages", "reap_stuck_slots", "reap_stuck_runs", "reap_orphan_rtrs",
-    "reap_stale_workers", "fire_scheduled_runs", "dead_mans_switch_check",
-    "reap_stale_generation_jobs",
-    "s3_reaper_tick", "s4_reaper_tick", "s8_grounding_tick",
-    "s1_sync_enqueuer_tick", "s1_sync_reaper_tick", "trim_run_events",
+    "reap_stale_workers", "s3_reaper_tick", "s4_reaper_tick",
+    "s4_cleanup_reaper_tick", "s4_schedule_tick", "repair_triage_tick",
+    "s8_grounding_tick", "s1_sync_enqueuer_tick", "s1_sync_reaper_tick",
 ]
 
 
