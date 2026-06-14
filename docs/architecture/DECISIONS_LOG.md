@@ -13659,4 +13659,68 @@ pattern-memory of accepted/rejected fixes (v1's FailurePattern DB) — deferred.
 
 ---
 
+### D-236 — the auto-fix agent's LLM fix-proposal + confidence gate: SHIPPED (close)
+
+**What shipped (on `main` locally; pushed at close).**
+
+- **Slice 1 — foundation** (commit after `a1916f3`). Tenant migration `20260614_0030`
+  (`repair_proposals` += confidence/proposed_payload/auto_applied); public migration
+  `054` (`tenant_agent_settings.repair_auto_apply`, default false). New `repair_proposal`
+  gateway task — Anthropic `tool_use` `submit_recipe_fix` (confidence + rationale +
+  field_changes, `__REMOVE__` sentinel) — registered + routed (Sonnet→Opus).
+- **Slice 2 — the agent** (`e32b908`). `proposal_for` gives a RECIPE-OWNER cause
+  (`field_not_createable`/`automation_effect_absent`/`platform_constraint`) precedence →
+  `recipe_edit` (a behavior change: these were `None`/regenerate before). `triage_new_failures`
+  reads the run's recipe subject-create + error evidence → `llm_call` → stores confidence
+  + the edit; `_apply_recipe_edit` writes a new recipe version via `coordinator.write_recipe`
+  (actor `s8`, `recipe_s8_rewrite` provenance, SCD-2 = reversible) + `enqueue_s4`.
+  `auto_apply_proposals` is FLAG-GATED + dormant-by-default (sandbox + confidence ≥
+  `trust_threshold_high`; prod always human; attempt-capped). The scheduler tick wires a
+  best-effort per-env api_key resolver + the auto-apply pass.
+- **Slice 3 — UI** (`011fe25`). The Repairs panel + run-detail card render a `recipe_edit`
+  proposal (confidence% + rationale + the field changes); the superadmin
+  `/settings/llm-usage` per-tenant cell gains an "Auto-fix" toggle.
+- **Review fixes** (`d97cb8e`). The adversarial review (corpus-safety + gate/deploy lenses
+  → verify) confirmed TWO findings, both fixed: (MEDIUM) `decide_proposal` mis-stamped a
+  proposal `applied` even when the apply FAILED → now stays `proposed` + surfaces the error
+  (the route flashes the outcome); (LOW) a duplicate failing run for the same claim paid for
+  an LLM call before the `(claim, kind)` dedup discarded it → a cheap EXISTS short-circuits
+  before the billed call. Corpus-mutation safety, the confidence gate, and the deploy-safe
+  raw-SQL flag handling all reviewed CLEAN.
+
+**Decision — DEPLOY SAFETY (load-bearing).** `repair_auto_apply` is on
+`tenant_agent_settings` but DELIBERATELY NOT ORM-mapped — mapping an unmigrated column would
+break every full-entity load of that hot table (the gateway reads it per LLM call) until
+054 is applied. It is read/written best-effort via raw SQL (the agent + the dashboard + the
+save handler), so the code deploys before the migration (the D-230 ordering); a missing
+column reads as False (the feature stays dormant). Verified: the settings page renders
+against prod where the column is absent.
+
+**Verification.** Unit **2611** + the review-fix units (14 repair-agent green); LLM-arch
+17; fresh-DB tenant chain through `20260614_0030`; the prompt/registry/router drift guard;
+Repairs-panel + settings render smokes; app boot OK.
+
+**Live proof.** Offline + unit-proven (the apply is exercised against the coordinator's
+write_recipe path; the LLM is mocked). A real recipe-owner failure → LLM proposal → apply →
+re-verify run on env 59 is an optional live stretch, DEFERRED (needs env-59 SF creds + an
+LLM key + a real recipe-owner failure) — like the D-229/D-230 live proofs.
+
+**AK-side action.** Apply the additive migrations to prod (the code already tolerates their
+absence): tenant `20260614_0030` (via `alembic -x mode=all_tenants upgrade tenant@head`,
+which also covers the pending `20260614_0010`/`0020`) + public `054`
+(`psql "$DATABASE_URL" -f migrations/054_repair_auto_apply.sql`). The auto-fix agent's LLM
+proposals + human-approve apply go live once the columns + an env LLM key exist; AUTONOMOUS
+apply stays off until a superadmin flips "Auto-fix" per tenant.
+
+**Theme #6 (auto-fix agent) — COMPLETE.** The new engine now records failure evidence AND
+attempts repairs (human-gated by default). With themes #3/#4/#5/#6 done, the remaining
+pending themes are AK-gated: #1 (prove-on-a-real-org — env-59 SF creds) + #2 (the v1
+product-table DROP).
+
+**Residuals (carried).** (1) auto-apply ON by default. (2) explicit revert button. (3)
+multi-step / multi-recipe edits. (4) learned pattern-memory. (5) LLM-proposal retry backoff.
+(6) the live env-59 proof.
+
+---
+
 ---
