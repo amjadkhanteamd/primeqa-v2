@@ -1,6 +1,6 @@
 """API routes for the execution domain.
 
-Endpoints: /api/runs/*, /api/environments/<id>/slots
+Endpoints: /api/runs/*, /api/data/*
 """
 
 from flask import Blueprint, jsonify, request
@@ -8,9 +8,6 @@ from flask import Blueprint, jsonify, request
 from primeqa.core.auth import require_auth, require_role
 from primeqa.core.permissions import require_run_permission
 from primeqa.db import get_db
-from primeqa.execution.repository import (
-    ExecutionSlotRepository, WorkerHeartbeatRepository,
-)
 from primeqa.execution.data_engine import DataEngineService, DataTemplate, DataFactory
 from primeqa.shared.api import json_error
 
@@ -84,21 +81,6 @@ def jira_ticket_search():
         except Exception as e:
             return _render([], error=f"Jira search failed: {e}")
         return _render(results)
-    finally:
-        db.close()
-
-
-# ---- Run preview (live count as wizard selection changes) ------------------
-
-@execution_bp.route("/api/environments/<int:env_id>/slots", methods=["GET"])
-@require_auth
-def get_slots(env_id):
-    svc, db = _get_service()
-    try:
-        status = svc.get_slot_status(env_id)
-        if not status:
-            return json_error("NOT_FOUND", "Environment not found", http=404)
-        return jsonify(status), 200
     finally:
         db.close()
 

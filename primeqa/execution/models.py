@@ -1,29 +1,14 @@
 """SQLAlchemy models for the execution domain.
 
-Tables owned: pipeline_runs, pipeline_stages, run_test_results, run_step_results,
-              run_artifacts, run_created_entities, run_cleanup_attempts,
-              execution_slots, worker_heartbeats
+Tables owned: worker_heartbeats. (The v1 pipeline_runs / run_* / pipeline_stages /
+execution_slots tables were dropped in migration 053 — D-221.5; the ExecutionSlot
+model retired in D-240.)
 """
 
-from sqlalchemy import (
-    BigInteger, Column, Integer, String, Boolean, DateTime, Text, JSON, Float,
-    ForeignKey, CheckConstraint, UniqueConstraint, Index,
-)
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, Integer, String, DateTime, CheckConstraint
 from sqlalchemy.sql import func
 
 from primeqa.db import Base
-
-
-class ExecutionSlot(Base):
-    __tablename__ = "execution_slots"
-
-    id = Column(Integer, primary_key=True)
-    environment_id = Column(Integer, ForeignKey("environments.id"), nullable=False)
-    run_id = Column(Integer, nullable=False)
-    acquired_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    released_at = Column(DateTime(timezone=True))
 
 
 class WorkerHeartbeat(Base):

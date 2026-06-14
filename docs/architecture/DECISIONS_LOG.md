@@ -14008,4 +14008,29 @@ unchanged AK-ops (pending migrations, SendGrid key, global-notes destale).
 
 ---
 
----
+## D-240 — post-drop hygiene: delete the dead v1 ORM (the D-221.5 residual)
+
+**Date:** 2026-06-14
+**Status:** active (closes the D-221.5 dead-ORM residual)
+
+**What.** After the migration-053 drop, exactly **one** ORM class still mapped to a
+dropped table: `ExecutionSlot` (`execution_slots`). The other v1 product models
+(`TestCase`, `TestCaseVersion`, `TestSuite`, …) were already retired in D-221.4 — what
+remained in `test_management/models.py` (`Section`/`Requirement`/`Tag`/`Milestone`/…)
+and in `execution/models.py` (`WorkerHeartbeat`) all map to **surviving** tables. So the
+cleanup was surgical, not a module delete:
+- `execution/models.py` — removed the `ExecutionSlot` class + slimmed imports; kept
+  `WorkerHeartbeat` (worker_heartbeats survives).
+- `execution/repository.py` — removed `ExecutionSlotRepository` + the dead
+  `STAGE_RETRY_POLICY`/`STAGE_ORDER` constants (zero references); kept
+  `WorkerHeartbeatRepository`.
+- `execution/routes.py` — removed the dead `get_slots` route (it called a nonexistent
+  `_get_service`) + its now-unused repo import.
+- `scheduler.py` — dropped the `slot_repo` context entry (instantiated every tick,
+  never invoked) + its import.
+
+**Verification.** No live code references `ExecutionSlot` / `slot_repo` / the STAGE
+constants (only comment breadcrumbs remain); app boots; `WorkerHeartbeat` +
+`WorkerHeartbeatRepository` intact; unit **2627** + scheduler-resilience 4/4 green. ZERO
+migration (the tables were already dropped in 053). The v1 product layer — tables AND
+ORM — is now fully gone.

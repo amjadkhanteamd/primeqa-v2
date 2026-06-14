@@ -1,97 +1,12 @@
 """Repository for the execution domain.
 
-DB queries scoped to: pipeline_runs, pipeline_stages, run_test_results,
-                      run_step_results, run_artifacts, run_created_entities,
-                      run_cleanup_attempts, execution_slots, worker_heartbeats
+DB queries scoped to: worker_heartbeats. (The v1 pipeline / run_* / execution_slots
+repositories retired with their tables in migration 053 — D-221.5 / D-240.)
 """
 
 from datetime import datetime, timezone, timedelta
 
-from sqlalchemy import func, case, and_, text
-
-from primeqa.execution.models import ExecutionSlot, WorkerHeartbeat
-from primeqa.core.models import Environment, User
-
-STAGE_RETRY_POLICY = {
-    "metadata_refresh": 3,
-    "jira_read": 2,
-    "generate": 3,
-    "store": 2,
-    "execute": 1,
-    "record": 3,
-}
-
-STAGE_ORDER = [
-    "metadata_refresh", "jira_read", "generate", "store", "execute", "record",
-]
-
-
-class ExecutionSlotRepository:
-    def __init__(self, db):
-        self.db = db
-
-    def acquire_slot(self, environment_id, run_id):
-        env = self.db.query(Environment).filter(Environment.id == environment_id).first()
-        if not env:
-            return False
-        held = self.count_held_slots(environment_id)
-        if held >= env.max_execution_slots:
-            return False
-        slot = ExecutionSlot(environment_id=environment_id, run_id=run_id)
-        self.db.add(slot)
-        self.db.commit()
-        return True
-
-    def release_slot(self, environment_id, run_id):
-        slot = self.db.query(ExecutionSlot).filter(
-            ExecutionSlot.environment_id == environment_id,
-            ExecutionSlot.run_id == run_id,
-            ExecutionSlot.released_at == None,
-        ).first()
-        if slot:
-            slot.released_at = datetime.now(timezone.utc)
-            self.db.commit()
-            return True
-        return False
-
-    def count_held_slots(self, environment_id):
-        return self.db.query(func.count(ExecutionSlot.id)).filter(
-            ExecutionSlot.environment_id == environment_id,
-            ExecutionSlot.released_at == None,
-        ).scalar()
-
-    def get_slot_status(self, environment_id):
-        env = self.db.query(Environment).filter(Environment.id == environment_id).first()
-        if not env:
-            return None
-        held = self.count_held_slots(environment_id)
-        active_slots = self.db.query(ExecutionSlot).filter(
-            ExecutionSlot.environment_id == environment_id,
-            ExecutionSlot.released_at == None,
-        ).all()
-        return {
-            "total": env.max_execution_slots,
-            "used": held,
-            "available": env.max_execution_slots - held,
-            "held_by": [
-                {"run_id": s.run_id, "acquired_at": s.acquired_at.isoformat()}
-                for s in active_slots
-            ],
-        }
-
-    def release_stale_slots(self, max_age_seconds=3600):
-        cutoff = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
-        stale = self.db.query(ExecutionSlot).filter(
-            ExecutionSlot.released_at == None,
-            ExecutionSlot.acquired_at < cutoff,
-        ).all()
-        released = []
-        for slot in stale:
-            slot.released_at = datetime.now(timezone.utc)
-            released.append(slot.run_id)
-        if released:
-            self.db.commit()
-        return released
+from primeqa.execution.models import WorkerHeartbeat
 
 
 class WorkerHeartbeatRepository:

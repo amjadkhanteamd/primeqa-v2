@@ -29,14 +29,11 @@ def create_scheduler_context():
         database_url = database_url.replace("postgres://", "postgresql://", 1)
     dbmod.init_db(database_url)
     db = dbmod.SessionLocal()
-    # D-221 R3: v1 pipeline repos/service retired; the scheduler context is
-    # db + slot/heartbeat liveness repos only.
-    from primeqa.execution.repository import (
-        ExecutionSlotRepository, WorkerHeartbeatRepository,
-    )
+    # D-221 R3 / D-240: v1 pipeline repos + the ExecutionSlot repo retired with
+    # their tables; the scheduler context is db + the heartbeat liveness repo only.
+    from primeqa.execution.repository import WorkerHeartbeatRepository
     return {
         "db": db,
-        "slot_repo": ExecutionSlotRepository(db),
         "heartbeat_repo": WorkerHeartbeatRepository(db),
     }
 
