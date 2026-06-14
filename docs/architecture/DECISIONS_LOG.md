@@ -13344,4 +13344,70 @@ too (not just claim detail).
 
 ---
 
+### D-234 — theme #5: new-engine run-failure notification + stale-doc fixes (design)
+
+**Context.** Theme #5, piece 4a (the unblocked half of "real notifications"). D-200
+already shipped the REAL machinery: `shared/notifications.send_email` dispatches
+`log`(default)/`smtp`/`sendgrid` (best-effort — all failures swallowed to
+`log.warning`, never raised; missing config → warn+skip), and
+`notify_release_decision` is wired E2E from `decision_composer`. THREE `notify_*`
+remain ORPHANED + v1-shaped: `notify_run_failed` (reads v1 `pipeline_runs`:
+`.failed`/`.total_tests`/`.error_message`), `notify_agent_fix_applied`,
+`notify_dms_silent`. AND the module docstring + CLAUDE.md (lines 192 "log-only
+provider today", 633 "`ses` (R6 stub)") still describe notifications as a log-only
+stub — STALE (the providers are real; there is no SES). This piece wires a
+new-engine (S4) run-failure alert + corrects the stale docs. The real-email
+config (SendGrid key + verified sender) stays AK's ops task — unchanged here.
+
+**Decision — a NEW `notify_substrate_run_failed`, not a re-point of the v1
+`notify_run_failed`.** Shapes differ: a v1 run = N test cases (`failed/total_tests`
+rollup); a substrate run = ONE claim's recipe (`s4_execution_runs`, one
+`outcome ∈ passed/failed/errored`, no rollup). The v1 function reads attributes
+that don't exist on `RunEvidence`. So a new substrate-shaped function; the three
+orphaned v1 notifies are left for the D-221 retirement sweep to delete.
+
+**Decision — hook in the EXECUTION CONSUMER, not the run path.**
+`consumer.process_execution_job_for_tenant` drains the `s4_execution_jobs` queue —
+i.e. exactly the UNATTENDED runs (scheduled D-214, auto-enqueued-on-approval D-199,
+CI gate). Live UI runs (`claims_run`, synchronous) do NOT go through the consumer
+and should NOT notify (the user is watching the result). So the consumer hook
+scopes the alert precisely to runs nobody is looking at.
+
+**Decision — placement OUTSIDE the try/except, after `store.complete`.** A notify
+must never be able to route to the `except → store.fail` branch and wrongly mark a
+COMPLETED job failed. So the call sits after the try/except, guarded by its own
+try, and the notifier itself never raises. Fires on `outcome ∈ {failed, errored}`
+(both are "did not pass").
+
+**Decision — quarantine-aware (D-232 integration).** A quarantined claim's failures
+are precisely the noise the operator set it aside to silence —
+`quarantine.is_quarantined(tenant_id, claim_test_id)` → skip the notify. Best-effort:
+a missing `claim_quarantine` table (pre-migration) reads False → the notify fires
+(safe default).
+
+**Decision — own brief session for recipients.** The consumer hook holds no ambient
+session; `notify_substrate_run_failed` opens a short public session (`get_db`) for
+`_admin_emails(tenant_id)`, closes it, THEN calls `send_email` — no DB connection
+held across the email I/O (the D-129 spirit). Recipients = active tenant
+admins/superadmins (the existing `_admin_emails`; a per-tenant subscription model is
+a residual).
+
+**Doc currency.** Fix the stale "log-only stub" framing in three places: the
+`notifications.py` module docstring, CLAUDE.md line 192, and CLAUDE.md line 633
+(drop the non-existent `ses`; providers are `log`/`smtp`/`sendgrid`).
+
+**Slices.** 0 = this design. 1 = `notify_substrate_run_failed` + the consumer hook +
+the module-docstring fix + unit tests (provider dispatch; the notify's recipients/
+body/quarantine-skip/never-raise; the hook's fire-on-failed / skip-on-passed /
+notify-can't-fail-the-job). 2 = close (CLAUDE.md fixes + DECISIONS_LOG close +
+adversarial review + push). Direct-to-`main`; ZERO migrations.
+
+**Residuals.** (1) dedup / rate-limit repeated failures of the same claim (today:
+every unattended failed/errored run emails). (2) re-point `notify_agent_fix_applied`
++ `notify_dms_silent` onto the substrate (or delete with the v1 sweep). (3) a
+per-tenant notification subscription/preference (today: all active admins). (4) the
+real-email cutover itself (AK's SendGrid key + verified sender).
+
+---
+
 ---
