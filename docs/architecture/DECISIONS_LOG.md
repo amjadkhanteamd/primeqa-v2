@@ -13899,4 +13899,46 @@ D-221.5 close (AK GO).
 
 ---
 
+## D-238 — CLOSE: the v1-table DROP is code-safe; gate is now AK-only (theme #2)
+
+**Date:** 2026-06-14
+**Status:** active (closes D-238)
+
+**Shipped.** Commits design `a1ad943` → impl (retirement) → `fix(test)` de-stale →
+this close. Author AK, zero `Co-Authored-By`, ZERO migration. The retirement removed
+**688 lines** of v1 code; net the live surface no longer touches a drop-set table.
+
+**Verification.** App boots with the `generation_jobs` registration import removed;
+`quality_proxy_summary` + `correction_rate` keep their exact return shapes (None-db
+smoke); orphaned `notify_*` + `attach_batch` gone; unit **2627** green; the
+`correction_rate` shape test + the 13 notification units green. A pre-existing red
+surfaced during verification — `test_scheduler_resilience` mocked v1 ticks retired in
+D-221 R3 (failed identically on HEAD) — fixed by syncing its tick list to the real
+substrate sequence (4/4 green). The 24-file × 20-table audit (31-agent classify→verify)
+WAS the adversarial pass: it found exactly 7 live BREAKS (all on the two LLM dashboards)
++ 6 verified-dead functions; D-238 acted on that verified output.
+
+**Drop-readiness gate — current state (read-only, 2026-06-14):**
+- ✅ **Zero rows** — all 20 drop-set tables empty.
+- ✅ **Stability** — 3 consecutive infra-clean scheduled fires (env-59 06-12/13/14 06:00
+  UTC, 0 `errored` each; the daily red is the honest SQ-205 finding).
+- ✅ **Code references** — no live query on a drop-set table; the residual references are
+  consciously accepted in `docs/architecture/5b_predrop_checklist.md` (docstrings/comments
+  + the never-queried v1 ORM model modules).
+- ⏳ **Coverage** — SQ-210 (#287) has no approved claim → **AK's build-or-waive**.
+- ⏳ **Day-of** — fresh backup + queues idle + the explicit GO (the irreversible
+  `migrations/053` + its D-221.5 close are NOT done here).
+
+**Theme #2 status.** The re-platform's last open piece — the v1-table DROP — is now
+**engineering-ready**: every code path is safe across the drop. What remains is AK's:
+the SQ-210 product call, the day-of checklist, and the explicit GO to apply `053`.
+
+**Residuals.** (1) re-source the LLM quality-proxy + correction-rate metrics from the
+substrate (s6 / generation_quality_signals / s3 jobs). (2) delete the dead v1
+execution/test-management ORM model+repository modules + `ExecutionSlot` + the dead
+`execution/routes.py` `get_slots` (import-ripple cleanup). (3) SQ-210 coverage (AK).
+(4) the irreversible drop + D-221.5 close (AK GO).
+
+---
+
 ---

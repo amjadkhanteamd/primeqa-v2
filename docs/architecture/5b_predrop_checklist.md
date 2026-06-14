@@ -22,5 +22,32 @@ DECISIONS_LOG close entry alongside the outputs of these checks.
    within the hour before applying.
 6. Apply: `psql "$DATABASE_URL" -f migrations/053_drop_v1_product_tables.sql`
 7. Post-drop smoke: app/worker/scheduler healthy; / + /dashboard + /run +
-   /runs/substrate + /claims render; one claim run end-to-end green.
+   /runs/substrate + /claims render; one claim run end-to-end green. Add a
+   superadmin /settings/llm-usage + admin /settings/my-llm-usage render check
+   (D-238 zeroed their v1-table queries; confirm they don't 500).
 8. Close entry in DECISIONS_LOG (D-221.5) with all outputs + AK GO quote.
+
+---
+
+## Pre-verified evidence (D-238, 2026-06-14 — re-confirm on the day)
+
+- **Item 1 (zero rows):** all 20 drop-set tables = 0 rows (read-only census, prod).
+- **Item 2 (stability):** schedule id=1 (env 59, `0 6 * * *`) fired 06-12/13/14 at
+  06:00 UTC; each fire window had **0 `errored`** outcomes (15p/1f, 15p/1f, 14p/1f —
+  the single daily red is the honest SQ-205 finding, not infra).
+- **Item 3 (coverage):** 7 of 8 active requirements have an approved claim; **SQ-210
+  (#287) has none** → AK's build-or-waive decision is the one open product gate.
+- **Item 4 (code references) — settled by D-238.** No live route queries a drop-set
+  table. The census still lists referencing files; every remaining reference is
+  **consciously accepted** as one of:
+  - a docstring / code comment / Jinja comment naming a table (no query),
+  - a Jinja template variable or a JS user-message string (templates never query),
+  - the v1 execution + test-management ORM **model/repository modules**
+    (`execution/models.py`, `execution/repository.py`, the v1 `test_management`
+    model bits, `ExecutionSlot` + the dead `execution/routes.py` `get_slots`):
+    these map to dropped tables but are **never queried** — harmless after the drop.
+    Deleting them is the D-238 residual (import ripple, out of scope for readiness).
+
+  The three live-query BREAKS the audit found (the LLM-usage dashboards' quality-proxy
+  + correction-rate metrics) were retired to zero-shape in D-238 — no table query
+  remains on any live path.
