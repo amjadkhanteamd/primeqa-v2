@@ -13523,4 +13523,58 @@ with 5b.
 
 ---
 
+### D-235 — run-time test-data injection: SHIPPED (close)
+
+**What shipped (on `main` locally; pushed at close).**
+
+- **Slice 1 — executor + sync threading** (commit `288e6f2`). `execute_data_recipe`
+  gains `field_overrides` ({bare_field: value}), passed ONLY to `_run_positive`; the
+  negative verticals (`_execute_negative` / `_run_negative_with_setup`) never receive
+  it. In `_run_positive` the overrides merge LAST on the SUBJECT create (the chain's
+  terminal create) onto the already-bare payload → override-wins over the recipe value
+  AND the k16 filler; keys are bare-ified so a qualified key also lands. Threaded
+  sync-only (`run_recipe_execution_for_tenant → run_recipe_execution →
+  _execute_for_kind → execute_data_recipe`); the async path passes nothing. 6 executor
+  units (override-wins / new-field / qualified-key / none==today /
+  last-create-only / negative-vertical-ignores).
+
+- **Slice 2 — bridge + route + UI** (commit `288e6f2`'s sibling). `trigger_claim_run`
+  gains `field_overrides`; `claims_run` parses an optional "Field=Value per line"
+  textarea (`_parse_field_overrides` — tolerant, capped 50/100/255), threads the dict,
+  and flashes the count. The Run panel gains a collapsible "Custom test data" control,
+  shown for BEHAVIORAL claims only. 7 parse units + 4 route/UI standalone.
+
+- **Review fix** (this close). The D-235 adversarial review (2 lenses → verify)
+  confirmed exactly ONE low finding, no data-path defects: the success flash said
+  overrides were "applied", but on a behavioral-NEGATIVE recipe the executor correctly
+  drops them (positive-only), so the flash over-claimed. Fixed "applied" → "requested"
+  (the design's own milder wording). The data path, the positive-only enforcement, the
+  sync-only threading, the k16 fence, and the permission scope all checked out.
+
+**Verification.** Unit **2598** (incl. 13 new: 6 executor override + 7 parse);
+execution_engine unit **256**; route/UI standalone **4/4**; regression quarantine
+**9/9** + browse/drill **6/6**; app boot OK; review **1 low (fixed), 0 data
+defects**. ZERO migrations.
+
+**Live proof.** Offline-proven against the stub-client executor matrix (the merge is
+deterministic). A real injected run on env 59 (override a value → observe the posted
+payload on `/runs/<id>`) is an optional live stretch, DEFERRED like the D-229/D-230
+live proofs (and blocked on env-59 SF credentials regardless).
+
+**AK-side action.** NONE new (zero migrations). The standing AK items remain: apply
+tenant migrations `20260614_0010` + `20260614_0020` (D-232/D-233); SendGrid key for
+real email (D-234).
+
+**Residuals (carried).** (1) async-queue persisted overrides. (2) per-step /
+2-step-negative setup-create overrides. (3) S1 pre-flight override validation +
+autocomplete. (4) explicit override-provenance stamp on the run. (5) reusable named
+data sets (the v1 `data_engine` concept).
+
+**Theme #5 (everyday surfaces) — actionable work COMPLETE.** Pieces: failures front
+door (D-231), flaky quarantine (D-232), browse/drill 2nd increment (D-233), run-failure
+notify (D-234), run-time data injection (D-235). Remaining is AK-blocked only: the
+real-email cutover (SendGrid key).
+
+---
+
 ---

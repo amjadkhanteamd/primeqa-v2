@@ -2776,9 +2776,12 @@ def claims_run(test_id):
               f"environment ({res.get('reason', 'no_eligible_recipe')}).", "error")
     else:
         v = res.get("verdict")
-        # D-235: name the injected overrides so the run is reproducible from the flash.
+        # D-235: name the overrides so the run is reproducible from the flash.
+        # "requested" not "applied": the executor consumes them on the POSITIVE
+        # vertical only (a behavioral-negative recipe correctly drops them), so the
+        # flash must not assert they took effect.
         n = len(field_overrides)
-        ov = f" · {n} data override{'' if n == 1 else 's'} applied" if n else ""
+        ov = f" · {n} data override{'' if n == 1 else 's'} requested" if n else ""
         flash(f"Run complete — outcome: {res.get('outcome')}"
               + (f" · verdict: {v}" if v else "") + ov, "success")
     return redirect(f"/claims/{test_id}")
