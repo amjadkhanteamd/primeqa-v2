@@ -13577,4 +13577,86 @@ real-email cutover (SendGrid key).
 
 ---
 
+### D-236 — theme #6: the auto-fix agent's LLM fix-proposal + confidence gate (design)
+
+**Context.** Theme #6 (the last theme; "the heart of the vision"). D-215.1 shipped the
+PROPOSAL-ONLY spine: `repair_agent.proposal_for(verdict, cause_kind, outcome)` →
+`regenerate_from_current_org` / `rerun` / `None`, a `repair_proposals` ledger, a
+`repair_triage_tick`, and the human-approved Repairs panel. The spine deliberately
+deferred (D-215.1, verbatim) "the LLM-proposal layer + the confidence model … auto-apply
+stays OFF until [it] adds the confidence model." This piece lands that: the agent
+proposes a CONCRETE RECIPE EDIT for the test-is-buggy failure classes, scores its
+confidence, and can apply it (flag-gated). v1's agent (`primeqa/intelligence/agent.py`,
+`AgentFixAttempt`, pipeline_runs/test_cases) is DEAD — we mirror its VALUE (LLM fix +
+trust-band gate + new-version + rerun), not its code.
+
+**Decision — the LLM proposes ONLY for the 3 RECIPE-OWNER failure classes.**
+`evolution/repair.py:suggest_repairs` already attributes each verdict×cause to an OWNER.
+The LLM attempts a fix ONLY where the owner is the RECIPE (the test itself is buggy):
+`platform_constraint` (payload hits FLS/a platform rule), `field_not_createable` (a
+read-only field in the create), `automation_effect_absent` (payload doesn't satisfy a
+Flow's entry condition). It NEVER touches: FINDINGS (`prohibition_not_enforced`,
+`enforcement_gap`, `value_not_persisted` as a real miss, etc. — product output, not
+defects — the spine's `_FINDING_VERDICTS` exclusion stands); ORG-owner causes
+(`vr_inactive`, `automation_inactive`, `no_active_vr` — wake the org team, not the test);
+CLAIM-drift (`vr_formula_drift` etc. — the existing `regenerate_from_current_org` path).
+
+**Decision — new `proposal_kind = 'recipe_edit'`.** A new gateway task
+`repair_proposal` (Anthropic `tool_use` → `submit_recipe_fix`, strict JSON schema so a
+parse failure is impossible) reads {verdict, cause, the current recipe body, the failed
+create's error_code/message/error_fields/rejection_body} and returns
+`{confidence: 0–1, rationale, recipe_edit}` — the corrected `observation_realization`
+(the create's field_values / the assertion). Sonnet→Opus chain with escalation on low
+confidence (mirrors the v1 `agent_fix` task posture).
+
+**Decision — apply = a new recipe VERSION + a re-run (reversible).** Applying a
+`recipe_edit` calls `coordinator.write_recipe` (actor `s8` — the evolution writer) to
+write a new recipe version carrying the LLM's edit (the prior version is preserved by
+SCD-2 `valid_to`, so the fix is inherently REVERSIBLE — revert = supersede again /
+regenerate), then `enqueue_s4_execution` to re-verify. Mirrors v1's new-TestCaseVersion +
+rerun-with-parent without v1's code.
+
+**Decision — confidence gate: FLAG-GATED, default OFF (AK's fork, 2026-06-14).** Every
+`recipe_edit` proposal lands `status='proposed'` for human approval on the Repairs panel
+— the confidence + rationale + the proposed edit inform the human + sort the queue. A
+per-tenant superadmin flag `repair_auto_apply` (default FALSE) enables AUTONOMOUS apply,
+and even then ONLY on a SANDBOX env at confidence ≥ HIGH (0.85); a PRODUCTION env is
+NEVER auto-applied (always human). Trust bands carry from v1 (high 0.85 / medium 0.60).
+This is the first autonomous write to the new-engine test corpus, so it ships behind a
+flag, on-brand with the substrate's evidence-first, human-gated ethos.
+
+**Decision — attempt cap (no fix-loops).** ≤ 3 applied `recipe_edit` proposals per claim
+lineage; past that the agent stops proposing for that claim (escalate to human). The
+existing partial-unique `(claim_test_id, proposal_kind)` already prevents duplicate
+ACTIVE proposals.
+
+**Decision — background api_key, best-effort.** The triage tick resolves the api_key per
+`(tenant, environment)` from the env's `llm_connection` (the worker's resolver pattern).
+No key / a gateway error → the LLM proposal is SKIPPED (the deterministic spine still
+proposes rerun/regenerate for the other classes); the tick never breaks.
+
+**Migration (tenant branch, additive).** `repair_proposals` += `confidence NUMERIC`,
+`proposed_payload JSONB`, `auto_applied BOOLEAN`. `tenant_agent_settings` +=
+`repair_auto_apply BOOLEAN DEFAULT false`. Best-effort reads so the code deploys before
+apply (the D-230 ordering).
+
+**Slices.** 0 = this design. 1 = the migration + the `repair_proposal` prompt module
+(tool_use) + registry/router wiring + prompt/drift-guard tests. 2 = the agent's
+LLM-proposal path (recipe-owner classes → llm_call → stored proposal) + the
+`recipe_edit` apply (write_recipe new version + enqueue_s4) + the flag-gated confidence
+gate + the attempt cap + the background api_key resolver + tests. 3 = the UI (Repairs
+panel + run-detail card surface confidence/rationale/the edit; the superadmin
+`repair_auto_apply` toggle) + adversarial review + close. Direct-to-`main` (the D-215.1
+spine + D-231 precedent — the agent is intelligence/runtime orchestrating the substrate,
+not substrate-core).
+
+**Residuals.** (1) auto-apply ON by default (the unchosen fork — revisit once proposals
+are trusted). (2) the org-owner + claim-drift classes via the existing
+regenerate/rerun (unchanged). (3) an explicit one-click REVERT button (today: revert =
+regenerate / re-supersede via the version history). (4) multi-recipe / multi-step edits
+(v1 = single-step; this v1 edits the single subject recipe). (5) a learned
+pattern-memory of accepted/rejected fixes (v1's FailurePattern DB) — deferred.
+
+---
+
 ---
