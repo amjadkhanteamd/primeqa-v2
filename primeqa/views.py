@@ -3014,12 +3014,27 @@ def s4_runs_list():
 @views_bp.route("/runs/substrate/repairs/<int:proposal_id>", methods=["POST"])
 @role_required("admin", "superadmin")
 def s4_repair_decide(proposal_id):
-    """D-215.1: approve (apply immediately) or reject one repair proposal."""
+    """D-215.1: approve (apply immediately) or reject one repair proposal.
+    D-236: surface the outcome — a recipe_edit apply can genuinely fail (the
+    proposal stays open), so the human must see success vs failure, not a silent
+    redirect."""
+    from flask import flash
+
     from primeqa.intelligence.repair_agent import decide_proposal
-    decide_proposal(
-        request.user["tenant_id"], proposal_id,
-        approve=request.form.get("action") == "approve",
+    approve = request.form.get("action") == "approve"
+    res = decide_proposal(
+        request.user["tenant_id"], proposal_id, approve=approve,
         decided_by=request.user["id"])
+    if not approve:
+        flash("Proposal rejected." if res.get("ok") else
+              f"Could not reject: {res.get('error', 'unknown error')}",
+              "success" if res.get("ok") else "error")
+    elif res.get("ok"):
+        flash("Fix applied — a re-verify run was queued.", "success")
+    else:
+        # the apply failed; the proposal stays open for retry.
+        flash(f"Could not apply the fix: {res.get('error', 'unknown error')}. "
+              "The proposal is still open.", "error")
     return redirect("/runs/substrate")
 
 

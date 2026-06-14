@@ -278,6 +278,18 @@ def triage_new_failures(tenant_id: int, *, limit: int = 50,
                     if _recipe_edit_attempts(conn, row["claim_test_id"]) >= \
                             settings["max_attempts"]:
                         continue
+                    # D-236 review fix: the scan is keyed on run_id but the dedup
+                    # index is keyed on (claim_test_id, kind) — a duplicate failing
+                    # run for the SAME claim would pass the scan and pay for an LLM
+                    # call only to lose the INSERT to ON CONFLICT. Short-circuit
+                    # BEFORE the (billed) call when an active proposal already exists.
+                    if conn.execute(text(
+                            "SELECT 1 FROM repair_proposals "
+                            "WHERE claim_test_id = CAST(:t AS uuid) "
+                            "  AND proposal_kind = 'recipe_edit' "
+                            "  AND status IN ('proposed', 'approved') LIMIT 1"),
+                            {"t": str(row["claim_test_id"])}).first() is not None:
+                        continue
                     api_key = (api_key_resolver(tenant_id, row["environment_id"])
                                if api_key_resolver else None)
                     edit = _propose_recipe_edit(conn, tenant_id, row, api_key)
@@ -384,6 +396,14 @@ def decide_proposal(tenant_id: int, proposal_id: int, *, approve: bool,
             return {"ok": True, "status": "rejected"}
 
         outcome = _apply(tenant_id, row)
+        # D-236 review fix: a genuine apply failure (recipe_edit with no subject
+        # create / no recipe; regenerate with no link) must NOT be mis-stamped
+        # 'applied' — that would vanish the proposal from the panel as a false
+        # success. Leave it 'proposed' for retry + surface the error (mirrors the
+        # auto-apply path's `if outcome.get('error')` guard).
+        if outcome.get("error"):
+            return {"ok": False, "status": "proposed", "error": outcome["error"],
+                    **outcome}
         _stamp(tenant_id, proposal_id, "applied", decided_by, outcome)
         return {"ok": True, "status": "applied", **outcome}
     except Exception as exc:

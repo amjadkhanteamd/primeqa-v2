@@ -74,6 +74,43 @@ def test_auto_apply_is_dormant_when_flag_off():
     gc.assert_not_called()                            # never even opened a connection
 
 
+def _decide_row():
+    return {"id": 9, "run_id": "r", "claim_test_id": "c", "environment_id": 59,
+            "proposal_kind": "recipe_edit", "status": "proposed"}
+
+
+def _conn_returning_row(row):
+    conn = mock.MagicMock()
+    conn.execute.return_value.mappings.return_value.first.return_value = row
+    cm = mock.MagicMock()
+    cm.__enter__.return_value = conn
+    return cm
+
+
+def test_decide_does_not_stamp_applied_on_apply_error():
+    # D-236 review fix: a failed apply must NOT be mis-stamped 'applied'.
+    with mock.patch("primeqa.semantic.connection.get_tenant_connection",
+                    return_value=_conn_returning_row(_decide_row())), \
+         mock.patch.object(RA, "_apply",
+                           return_value={"action": "recipe_edit",
+                                         "error": "no subject create"}), \
+         mock.patch.object(RA, "_stamp") as stamp:
+        res = RA.decide_proposal(7, 9, approve=True)
+    assert res["ok"] is False and res["status"] == "proposed"
+    stamp.assert_not_called()
+
+
+def test_decide_stamps_applied_on_apply_success():
+    with mock.patch("primeqa.semantic.connection.get_tenant_connection",
+                    return_value=_conn_returning_row(_decide_row())), \
+         mock.patch.object(RA, "_apply",
+                           return_value={"action": "recipe_edit", "s4_job_id": 3}), \
+         mock.patch.object(RA, "_stamp") as stamp:
+        res = RA.decide_proposal(7, 9, approve=True)
+    assert res["ok"] is True and res["status"] == "applied"
+    stamp.assert_called_once()
+
+
 def test_auto_apply_runs_when_flag_on():
     # flag on but no proposals → opens a connection, applies nothing
     fake_conn = mock.MagicMock()
