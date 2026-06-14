@@ -558,15 +558,57 @@ def test_value_not_persisted_field_not_createable():
     assert s1.field_calls == [("Invoice__c", "Amount__c")]
 
 
-def test_value_not_persisted_createable_field_passes_through():
-    # The field IS createable → many non-S1 causes (a before-save automation, a
-    # default) — no fabricated cause.
+def test_value_not_persisted_createable_field_no_flow_passes_through():
+    # The field IS createable AND no before-save Flow on the object → pass-through
+    # (a field default S1 can't see, or another cause) — no fabricated cause.
     ek = _positive(sobject="Invoice__c", claim_kind="value-claim",
                    captured=("Amount__c",))
     s1 = _StubS1([], fields={"Amount__c": FieldMeta("Amount__c", is_createable=True)})
     interp = _interp_pos(ek, s1)
     assert interp.verdict == "value_not_persisted"
     assert interp.cause is None
+
+
+def test_value_not_persisted_active_before_save_flow_attributes():
+    # D-241: createable field, value still didn't persist, an ACTIVE before-save
+    # Flow triggers on the object → it overwrote the posted value on insert.
+    ek = _positive(sobject="Invoice__c", claim_kind="value-claim",
+                   captured=("Amount__c",))
+    s1 = _StubS1([], fields={"Amount__c": FieldMeta("Amount__c", is_createable=True)},
+                 flows=[FlowMeta("Recalc_Amount", is_active=True,
+                                 trigger_type="BeforeSave")])
+    interp = _interp_pos(ek, s1)
+    assert interp.verdict == "value_not_persisted"
+    assert interp.cause.cause_kind == "before_save_automation_overwrote"
+    assert "Recalc_Amount" in interp.cause.detail
+
+
+def test_value_not_persisted_after_save_flow_passes_through():
+    # D-241: an AFTER-save Flow runs after insert — it cannot have overwritten the
+    # posted value on insert, so it is NOT the cause. Honest pass-through.
+    ek = _positive(sobject="Invoice__c", claim_kind="value-claim",
+                   captured=("Amount__c",))
+    s1 = _StubS1([], fields={"Amount__c": FieldMeta("Amount__c", is_createable=True)},
+                 flows=[FlowMeta("Notify", is_active=True, trigger_type="AfterSave")])
+    interp = _interp_pos(ek, s1)
+    assert interp.cause is None
+
+
+def test_value_not_persisted_inactive_before_save_passes_through():
+    # D-241: an INACTIVE before-save Flow can't fire — not the cause.
+    ek = _positive(sobject="Invoice__c", claim_kind="value-claim",
+                   captured=("Amount__c",))
+    s1 = _StubS1([], fields={"Amount__c": FieldMeta("Amount__c", is_createable=True)},
+                 flows=[FlowMeta("Recalc_Amount", is_active=False,
+                                 trigger_type="BeforeSave")])
+    interp = _interp_pos(ek, s1)
+    assert interp.cause is None
+
+
+def test_flowmeta_trigger_type_defaults_none():
+    # Back-compat: FlowMeta without trigger_type (the D-229 shape) is treated as
+    # not-before-save, so it never spuriously attributes the new cause.
+    assert FlowMeta("X", is_active=True).trigger_type is None
 
 
 def test_positive_passed_is_passthrough():

@@ -75,10 +75,13 @@ class FlowMeta:
     """The slice of a Flow's S1 metadata S6 needs for positive-vertical
     attribution (D-229): a Flow that `TRIGGERS_ON` the subject + its active
     state. A deactivated grounding Flow is the high-value `automation_inactive`
-    cause (the dogfood P1 capture)."""
+    cause (the dogfood P1 capture). ``trigger_type`` (D-241: BeforeSave /
+    AfterSave / None) distinguishes a before-save Flow that can overwrite a
+    posted value on insert from an after-save one that cannot."""
 
     name: str
     is_active: bool
+    trigger_type: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -192,11 +195,18 @@ def _attribute_automation_absent(trigger, s1) -> Optional[Cause]:
 
 
 def _attribute_value_not_persisted(evidence, s1) -> Optional[Cause]:
-    """`value_not_persisted`: if an asserted (read-back) field is not createable
-    in current S1, SF dropped the posted value on insert. Keyed off the READ's
-    object (where the value should have persisted) — robust to multi-create
-    chains. Else honest pass-through — a value not persisting has many causes S1
-    cannot determine (a before-save automation overwrote it, a default)."""
+    """`value_not_persisted`, keyed off the READ's object (where the value should
+    have persisted) — robust to multi-create chains. Two structured causes:
+
+    1. `field_not_createable` (D-229) — an asserted field is not createable in
+       current S1, so SF silently dropped the posted value on insert.
+    2. `before_save_automation_overwrote` (D-241) — every asserted field IS
+       createable, yet the value didn't persist, and an ACTIVE before-save Flow
+       triggers on the object: it runs before insert and is the canonical
+       overwrite mechanism.
+
+    Else honest pass-through (None) — a field default (S1 doesn't capture
+    defaults yet) or a cause S1 can't see."""
     read = _data_read_step(evidence)
     if read is None:
         return None
@@ -208,6 +218,16 @@ def _attribute_value_not_persisted(evidence, s1) -> Optional[Cause]:
                 detail=(f"the field {field} on {read.sobject} is not createable — "
                         f"Salesforce silently dropped the posted value on insert, so "
                         f"it could not persist"))
+    # D-241: every asserted field is createable — a before-save Flow on the
+    # object is the canonical "overwrote the posted value" mechanism.
+    before_save = [f for f in s1.flows_for_object(read.sobject)
+                   if f.is_active and (f.trigger_type or "").lower() == "beforesave"]
+    if before_save:
+        return Cause(
+            "before_save_automation_overwrote",
+            detail=(f"an active before-save Flow ({before_save[0].name}) triggers on "
+                    f"{read.sobject} — it runs before insert and likely overwrote the "
+                    f"posted value, so it did not persist as asserted"))
     return None
 
 

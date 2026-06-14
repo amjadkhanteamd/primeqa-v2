@@ -115,6 +115,21 @@ def suggest_repairs(verdict, cause_kind=None, vr_name=None) -> list:
                    "If the field is computed by the org, assert the computed "
                    "value via the inspection path instead of posting it."),
             ]
+        if cause_kind == "before_save_automation_overwrote":
+            # D-241: a before-save Flow ran on insert and rewrote the posted
+            # value. Org-owned (intended behavior or a real bug), not a recipe
+            # defect — the auto-fix agent treats it as a finding (not recipe_edit).
+            return [
+                _s("org", "A before-save Flow overwrote the value",
+                   "An active before-save Flow on the object runs before insert "
+                   "and rewrote the posted value, so it never persisted as "
+                   "asserted. If that is intended behavior, update the claim's "
+                   "expected value to the Flow's result; otherwise fix the Flow."),
+                _s("claim", "Or assert the Flow's result",
+                   "If the before-save transformation is correct business "
+                   "behavior, regenerate or edit the claim to assert the "
+                   "transformed value."),
+            ]
         return [
             _s("org", "Check automations that overwrite the field",
                "The record was created but the read-back value differs from "
