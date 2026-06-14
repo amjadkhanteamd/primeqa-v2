@@ -66,6 +66,7 @@ CauseKind = Literal[
     "automation_inactive",       # automation_not_triggered / state_not_transitioned: no ACTIVE Flow triggers on the object — the grounding automation was deactivated or removed
     "automation_effect_absent",  # automation_not_triggered / state_not_transitioned: an active Flow triggers, but the asserted effect did not materialize (entry condition unmet / Flow logic changed)
     "field_not_createable",      # value_not_persisted: the asserted field is not createable in current S1 — SF dropped the posted value on insert
+    "before_save_automation_overwrote",  # D-241: value_not_persisted with a CREATEABLE field — an active before-save Flow on the object overwrote the posted value before insert
 ]
 
 

@@ -33,3 +33,15 @@ def test_findings_never_get_proposals():
 def test_unmapped_shapes_propose_nothing():
     assert proposal_for("value_persisted", None, "passed") is None
     assert proposal_for("something_new", None, "failed") is None
+
+
+def test_before_save_overwrote_is_a_finding_not_a_recipe_edit():
+    # D-241: a before-save Flow overwriting the posted value is an ORG behavior
+    # the test correctly surfaced — NOT a recipe defect. The agent must not try to
+    # rewrite the recipe for it (contrast field_not_createable, which IS recipe_edit).
+    from primeqa.intelligence.repair_agent import _RECIPE_EDIT_CAUSES
+    assert "before_save_automation_overwrote" not in _RECIPE_EDIT_CAUSES
+    assert proposal_for("value_not_persisted",
+                        "before_save_automation_overwrote", "failed") is None
+    assert proposal_for("value_not_persisted",
+                        "field_not_createable", "failed") == "recipe_edit"

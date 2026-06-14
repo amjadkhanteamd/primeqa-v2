@@ -91,6 +91,7 @@ class S1ValidationRuleReader:
             out.append(FlowMeta(
                 name=flow.sf_api_name or flow.display_name or str(flow.id),
                 is_active=bool(details.get("is_active", True)),
+                trigger_type=details.get("trigger_type"),  # D-241: BeforeSave/AfterSave/None
             ))
         return tuple(out)
 

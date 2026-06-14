@@ -21,6 +21,7 @@ _FAILING_CAUSED = [
     ("rejected_unasserted_reason", "platform_constraint", "recipe"),
     # D-229: positive-vertical failure causes
     ("value_not_persisted", "field_not_createable", "recipe"),
+    ("value_not_persisted", "before_save_automation_overwrote", "org"),  # D-241
     ("automation_not_triggered", "automation_inactive", "org"),
     ("automation_not_triggered", "automation_effect_absent", "recipe"),
     ("state_not_transitioned", "automation_inactive", "org"),
@@ -65,6 +66,15 @@ def test_value_not_persisted_field_not_createable_is_recipe_owned():
     out = suggest_repairs("value_not_persisted", cause_kind="field_not_createable")
     assert out[0]["owner"] == "recipe"
     assert "read-only" in out[0]["detail"] or "not createable" in out[0]["detail"]
+
+
+def test_value_not_persisted_before_save_is_org_owned():
+    # D-241: a before-save Flow overwrote the posted value — an org behavior the
+    # test correctly surfaced, NOT a recipe defect. Owner = org, names the Flow.
+    out = suggest_repairs("value_not_persisted",
+                          cause_kind="before_save_automation_overwrote")
+    assert out[0]["owner"] == "org"
+    assert "before-save Flow" in (out[0]["title"] + out[0]["detail"])
 
 
 def test_automation_and_state_uncaused_still_get_a_suggestion():
