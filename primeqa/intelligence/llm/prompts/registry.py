@@ -19,6 +19,7 @@ from primeqa.intelligence.llm.prompts import (
     entity_summary_flow,
     entity_summary_validation_rule,
     grounded_answer,
+    repair_proposal,
 )
 
 
@@ -40,6 +41,9 @@ _REGISTRY: Dict[str, object] = {
     # D-163.3 — S7 grounded answering: phrase a bounded substrate-evidence block,
     # Haiku, invent-nothing. conversation/ stays LLM-free (invoked via the bridge).
     "grounded_answer_generation":      grounded_answer,
+    # D-236 (theme #6) — the auto-fix agent's LLM layer: propose a recipe_edit
+    # for the recipe-owner failure classes. tool_use, Sonnet->Opus, best-effort.
+    "repair_proposal":                 repair_proposal,
 }
 
 

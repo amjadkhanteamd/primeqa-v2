@@ -83,6 +83,12 @@ _CHAINS: Dict[str, Dict[str, List[str]]] = {
         "default": [SONNET, OPUS],
     },
 
+    # D-236 (theme #6) — the substrate auto-fix agent's recipe_edit proposal:
+    # Sonnet default, escalate once to Opus on low confidence.
+    "repair_proposal": {
+        "default": [SONNET, OPUS],
+    },
+
     # Failure root-cause analysis: Sonnet default, escalate to Opus.
     "failure_analysis": {
         "default": [SONNET, OPUS],
