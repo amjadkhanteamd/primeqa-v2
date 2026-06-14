@@ -13783,4 +13783,63 @@ text to "Escalated" + regenerate, or keep the red as the honest recorded finding
 
 ---
 
+## D-237 — CLOSE: explainable NO-GO shipped + the flagship live arc (theme #1 complete)
+
+**Date:** 2026-06-14
+**Status:** active (closes D-237)
+
+**Shipped.** The explainable NO-GO is live: the decision hero now names the blocking
+requirement(s) and surfaces the plain-English S6 cause instead of a bare percentage.
+Commits: design `8a8bdcd` → impl `cc54814` → review-fix `c516767` → this close. Author AK,
+zero `Co-Authored-By`, zero migrations (v2 runtime → direct to main).
+
+**Live proof (env-59 "Prime QA NEW", tenant 1, 2026-06-14 06:00–06:03 UTC).** The daily
+schedule (`s4_run_schedules` id=1) ran the approved corpus against the live org — **15 runs,
+14 passed, 1 failed**, full verdict surface: asserted_metadata_present, state_transitioned
+(`ef3fed27`), value_persisted (`d99e2b71`/`fb3efb3b`/`4c01603c`/`f51877cd`), automation_triggered
+(`d8ce95e7`/`6ea40b8f`/`334aa038`), prohibition_enforced (`ded5d3e0`), and the lone red
+state_not_transitioned (`761bc7b2`, SQ-205). The substrate decision computes — over this live
+evidence, no human in the loop — **NO-GO, risk medium, pass rate 93.3% (< the 95% gate),
+grounding intact**, and now renders: *"Blocked by SQ-205 — an active Flow
+(SQ205_Escalation_Effects) triggers on Escalation, but the asserted effect was not observed…"*
+Verified by running the real `get_substrate_dashboard_data(59, 1)` read-only against prod.
+
+**The honest red is a feature.** SQ-205's requirement expects status "In Escalation"; the org's
+Flow produces "Escalated" — a real requirement-vs-org mismatch the system caught and refused to
+wave through. That this flagship recommends NO-GO (not a rigged green) IS the showcase: honest
+decision-making, explained.
+
+**Review (3 adversarial lenses, 1 HIGH + 3 LOW, all addressed in `c516767`).** HIGH — `blocking`
+was decoupled from whether the pass_rate blocker fired (19/20 passing = 95% GO still listed the
+1 failure → "Blocked by" under a GREEN hero). Fixed: populate only when
+`criteria_met.pass_rate is False`, filter `outcome != 'passed'` (subsumes a future `skipped`),
+and double-guard both templates on NO-GO. LOWs folded in: broken-grounding claims are now named
+per-requirement too (closes the non-pass_rate explainability hole); the "skipped" latent
+divergence is removed by the `!= 'passed'` filter. Gate: unit **2627** green.
+
+**The flagship deliverable (AK: "do all 3").** (a) the explainable-NO-GO build — DONE; (b) the
+showcase doc — `docs/design/flagship-live-proof.md` (the loop, the 15 run ids, the decision,
+where to see it); (c) the named, point-in-time release decision + an optional `/shared` link —
+`scripts/flagship_release_seed.py` (dry-run by default; `--commit` to write). The seed previews
+the same NO-GO and resolves 7 of 8 requirements — SQ-206's managed `requirements` row is absent
+(a historical corpus/requirements drift; the env-level dashboard keeps the full-8 view, the
+release is faithful at 7/8 with the identical SQ-205 blocker).
+
+**Theme #1 ("prove it on a real org") — COMPLETE.** The engine was already live-proven nightly;
+this makes the proof legible (explainable NO-GO) and citable (showcase doc + the AK-run named
+release). The stale "blocked on env-59 Connected-App credential refresh" framing in the global
+working notes is overtaken by reality — env-59 is connected and runs live daily.
+
+**With themes #3/#4/#5/#6 and now #1 done, the one remaining pending theme is #2** — the
+re-platform's irreversible v1-table DROP (`migrations/053`), gated on clean scheduled-run
+evidence + AK's explicit GO.
+
+**Residuals.** (1) the `/shared` public link is part of the AK-run seed scope (optional). (2)
+SQ-206's missing managed requirement row — a historical-clutter item for the prod tidy. (3)
+e87c2666 In-Escalation-vs-Escalated — still AK's call (amend SQ-205 Jira → "Escalated" +
+regenerate, or keep the red). (4) the global CLAUDE.md still frames theme #1 as creds-blocked —
+flag to AK to destale, not edited unilaterally.
+
+---
+
 ---
