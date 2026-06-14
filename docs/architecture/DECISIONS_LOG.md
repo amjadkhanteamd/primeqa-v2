@@ -13941,4 +13941,33 @@ execution/test-management ORM model+repository modules + `ExecutionSlot` + the d
 
 ---
 
+## D-239 — SQ-210 coverage WAIVED (closes the drop gate's coverage leg)
+
+**Date:** 2026-06-14
+**Status:** active
+**Decision (AK, "waive"):** SQ-210 ("Contact role on Opportunity" — req #287) is
+**waived** from the pre-drop coverage requirement. It carries no approved claim and
+that is **correct, not a gap to fix**: the engine put SQ-210 through generation on
+2026-06-11 and refused it `ungrounded-claim` — verified cause: its junction object
+**`OpportunityContactRole` is not in the synced org model** (Account / Contact /
+Opportunity are in S1; the junction object is not). The engine honestly declined to
+author a test for an object it can't see, rather than fabricate an ungrounded one
+(D-206.1 refusal visibility working as designed).
+
+**Rationale.** Building coverage would mean widening the S1 metadata-sync scope to
+include `OpportunityContactRole`, re-syncing, and re-generating — a real change to the
+synced model to satisfy one coverage row before an unrelated table drop. The engine is
+already live-proven on the real org by the other 7 requirements + the flagship; SQ-210's
+4-object junction-relationship shape is breadth, not a blocker. **Revisit condition:**
+when the sync scope is widened to include `OpportunityContactRole`, re-generate SQ-210 —
+it should ground and author a positive multi-object relationship claim.
+
+**Effect on the drop gate.** The coverage leg is now MET: all 8 active requirements
+have an approved claim (7) or a recorded waiver (SQ-210, here). With D-238's code-safety
+and the verified zero-rows + stability legs, the v1-table DROP (`migrations/053`,
+D-221.5) is **fully engineering- + process-ready**; the only remaining items are the
+day-of checklist (fresh backup, queues idle) and AK's explicit GO to apply it.
+
+---
+
 ---

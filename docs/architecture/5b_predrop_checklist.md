@@ -35,8 +35,10 @@ DECISIONS_LOG close entry alongside the outputs of these checks.
 - **Item 2 (stability):** schedule id=1 (env 59, `0 6 * * *`) fired 06-12/13/14 at
   06:00 UTC; each fire window had **0 `errored`** outcomes (15p/1f, 15p/1f, 14p/1f —
   the single daily red is the honest SQ-205 finding, not infra).
-- **Item 3 (coverage):** 7 of 8 active requirements have an approved claim; **SQ-210
-  (#287) has none** → AK's build-or-waive decision is the one open product gate.
+- **Item 3 (coverage):** ✅ MET. 7 of 8 active requirements have an approved claim;
+  **SQ-210 (#287) is WAIVED (D-239, AK)** — its junction object `OpportunityContactRole`
+  isn't in the synced org model, so the engine correctly refused it `ungrounded-claim`;
+  coverage gap consciously accepted, revisit if the sync scope is widened.
 - **Item 4 (code references) — settled by D-238.** No live route queries a drop-set
   table. The census still lists referencing files; every remaining reference is
   **consciously accepted** as one of:
