@@ -77,6 +77,7 @@ def process_execution_job_for_tenant(
         return None
     store.heartbeat(job.id)
     store.start_attempt(job.id)
+    result = None
     try:
         # The default run_fn (async run_recipe_execution_async) self-resolves the
         # per-kind client (Tooling for metadata, Data for data) in its SELECT bracket
@@ -97,6 +98,23 @@ def process_execution_job_for_tenant(
         log.warning("s4 execution job %s failed: %s", job.id, exc)
         store.fail(job.id, error_code=_classify_error(exc),
                    error_message=str(exc)[:500])
+    # D-234: best-effort run-failure notification for this UNATTENDED run (the queue
+    # is the scheduled / auto-enqueued / CI path; live UI runs are watched). OUTSIDE
+    # the try/except above so a notify problem can NEVER route to store.fail and
+    # wrongly fail an already-completed job; the notifier itself never raises +
+    # skips quarantined claims (D-232). Fires only on a real did-not-pass outcome.
+    try:
+        ev = getattr(result, "evidence", None)
+        if result is not None and result.ran and ev is not None \
+                and ev.outcome in ("failed", "errored"):
+            from primeqa.shared.notifications import notify_substrate_run_failed
+            notify_substrate_run_failed(
+                tenant_id, run_id=str(ev.run_id), test_id=str(ev.claim_test_id),
+                environment_id=ev.environment_id, outcome=ev.outcome,
+                error_message=(ev.error.message if ev.error else None))
+    except Exception:                                # pragma: no cover
+        log.exception("s4 run-failure notify raised; job %s already finalized",
+                      job.id)
     return job.id
 
 

@@ -1,9 +1,17 @@
-"""Notification dispatch \u2014 email / slack / webhook.
+"""Notification dispatch \u2014 email.
 
-v1 is a log-only stub per Q4 deferral; provider (SendGrid / SES / SMTP) is
-selected before R6 ships notifications for real. The entry points here are
-stable so the wiring in callers (run failure, scheduled fire, agent apply)
-doesn't need to change when we plug a real provider in.
+REAL providers ship today (D-200): :func:`send_email` selects ``log`` (default)
+/ ``smtp`` / ``sendgrid`` via ``NOTIFICATIONS_PROVIDER``. ``log`` is the safe
+default (logs + returns True); ``smtp``/``sendgrid`` send for real once their
+env config is set, and degrade to a logged warning (never an exception) when it
+isn't. The ``notify_*`` entry points are stable, so a caller's wiring doesn't
+change as the provider is switched.
+
+Wired callers: :func:`notify_release_decision` (from ``decision_composer``) and
+:func:`notify_substrate_run_failed` (from the S4 execution consumer, D-234). The
+older ``notify_run_failed`` / ``notify_agent_fix_applied`` / ``notify_dms_silent``
+are v1-shaped (read retired ``pipeline_runs``-era models) and orphaned \u2014 they
+await the D-221 retirement sweep.
 """
 
 from __future__ import annotations
@@ -178,6 +186,56 @@ def notify_release_decision(db, tenant_id: int, release_name: str,
         tenant_id=tenant_id,
         extras={"recommendation": rec, "source": source},
     ))
+
+
+def notify_substrate_run_failed(tenant_id: int, *, run_id, test_id,
+                                environment_id, outcome: str,
+                                error_message: Optional[str] = None) -> None:
+    """D-234: email tenant admins when a SUBSTRATE (S4) execution run did not pass
+    (``outcome ∈ {failed, errored}``) — the new-engine counterpart to the v1
+    ``notify_run_failed`` (which read the retired ``pipeline_runs``).
+
+    Fired from the execution consumer for UNATTENDED runs only (scheduled /
+    auto-enqueued / CI); live UI runs are watched, so they do not come through the
+    queue. Best-effort throughout — NEVER raises (a notify must not affect the run
+    or the job). A QUARANTINED claim (D-232) is skipped: its failures are the noise
+    the operator set it aside to silence. Opens its own brief public session for
+    recipient resolution, closes it, THEN sends — no DB connection across the
+    email I/O."""
+    try:
+        from primeqa.intelligence import quarantine
+        if quarantine.is_quarantined(tenant_id, test_id):
+            return                                   # operator set this one aside
+    except Exception:                                # pragma: no cover
+        pass                                         # a quarantine-read blip ≠ block
+
+    try:
+        from primeqa.db import get_db
+        db = next(get_db())
+        try:
+            recipients = _admin_emails(db, tenant_id)
+        finally:
+            db.close()
+        if not recipients:
+            return
+        short = str(run_id)[:8]
+        body = (f"A test run on environment #{environment_id} finished "
+                f"{outcome}.\n\nRun: {run_id}\n")
+        if error_message:
+            body += f"Error: {error_message}\n"
+        body += f"\nReview it at /runs/{run_id}"
+        send_email(Notification(
+            kind="substrate_run_failed",
+            subject=f"[PrimeQA] A test run {outcome} (run {short})",
+            body=body,
+            recipients=recipients,
+            tenant_id=tenant_id,
+            extras={"run_id": str(run_id), "test_id": str(test_id),
+                    "outcome": outcome},
+        ))
+    except Exception as e:                           # pragma: no cover
+        log.warning("notify_substrate_run_failed failed for tenant %s run %s: %s",
+                    tenant_id, run_id, e)
 
 
 def notify_dms_silent(db, schedule) -> None:
