@@ -199,6 +199,8 @@ def get_substrate_dashboard_data(environment_id: int, tenant_id: int,
         "risk": decision["risk"]["level"],
         "gates": [],
         "substrate_checks": decision["reasoning"],
+        "blockers": decision.get("blocking", []),   # D-237: explainable NO-GO
+
         "ticket_grid": grid,
         "ticket_counts": {
             "total": len(grid),

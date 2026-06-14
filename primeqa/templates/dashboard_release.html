@@ -91,6 +91,22 @@
         </div>
         <p class="mt-2 text-sm opacity-80">{{ data.state_reason }}</p>
 
+        {# D-237: explainable NO-GO — name the blocking requirement(s) + the
+           plain-English S6 cause, so the headline isn't a bare percentage. #}
+        {% if data.blockers %}
+          <ul class="mt-2 space-y-1 text-sm">
+            {% for b in data.blockers %}
+              <li class="flex items-start gap-2">
+                <span class="mt-0.5 flex-shrink-0 text-red-600" aria-hidden="true">&#10007;</span>
+                <span>
+                  <span class="font-semibold">Blocked by
+                    {{ b.external_keys | join(', ') if b.external_keys else b.test_id[:8] }}</span>{% if b.cause %} &mdash; {{ b.cause }}{% endif %}
+                </span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+
         {% if s == 'APPROVED' and data.latest_run.approved_by_name %}
           <p class="mt-2 text-xs">
             Approved by <span class="font-medium">{{ data.latest_run.approved_by_name }}</span>

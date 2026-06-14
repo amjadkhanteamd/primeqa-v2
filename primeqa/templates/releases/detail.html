@@ -126,6 +126,20 @@
         </li>
         {% endfor %}
       </ul>
+      {# D-237: explainable NO-GO — the blocking requirement(s) + plain-English cause. #}
+      {% if sd.blocking %}
+      <div class="mt-3 pt-3 border-t border-gray-100">
+        <p class="text-xs font-medium text-gray-500 uppercase mb-1">What's blocking the release</p>
+        <ul class="space-y-1">
+          {% for b in sd.blocking %}
+          <li class="flex items-start gap-2 text-sm">
+            <span class="mt-0.5 flex-shrink-0 text-red-600" aria-hidden="true">&#10007;</span>
+            <span class="text-gray-700"><span class="font-semibold">{{ b.external_keys | join(', ') if b.external_keys else b.test_id[:8] }}</span>{% if b.cause %} &mdash; {{ b.cause }}{% endif %}</span>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
     </div>
     {% endif %}
 

@@ -39,13 +39,35 @@ _FLAKE_WINDOW = 5
 
 _COUNTED_RUNS_SQL = (
     "SELECT CAST(r.run_id AS text) AS run_id, r.outcome::text AS outcome, "
-    "r.finished_at, r.claim_version_seq, i.verdict::text AS verdict "
+    "r.finished_at, r.claim_version_seq, i.verdict::text AS verdict, "
+    "i.detail AS detail "
     "FROM s4_execution_runs r "
     "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
     "WHERE r.claim_test_id = CAST(:tid AS uuid) "
     "AND (CAST(:seq AS int) IS NULL "
     "     OR r.claim_version_seq IS NULL OR r.claim_version_seq = :seq) "
     f"ORDER BY r.finished_at DESC LIMIT {_FLAKE_WINDOW}")
+
+
+def _cause_phrase(detail, verdict, outcome) -> str | None:
+    """One plain sentence for WHY a not-passed run failed (D-237). Prefers the
+    S6 attribution sentence stashed at ``detail.cause.detail`` (D-229 — already
+    English), falls back to the humanized verdict, then the bare outcome. Pure,
+    tolerant of dict / json-str / None ``detail`` — never raises."""
+    if isinstance(detail, str):
+        import json
+        try:
+            detail = json.loads(detail)
+        except Exception:
+            detail = None
+    if isinstance(detail, dict):
+        cause = detail.get("cause")
+        if isinstance(cause, dict):
+            d = cause.get("detail")
+            if isinstance(d, str) and d.strip():
+                return d.strip()
+    from primeqa.intelligence.claim_presentation import verdict_plain
+    return verdict_plain(verdict, outcome)
 
 
 def _is_flaky(outcomes) -> bool:
@@ -118,11 +140,13 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None) -> list[
 
     coord = SemanticTransactionCoordinator()
     test_ids, seen = [], set()
+    keys_by_tid: dict[str, set] = {}               # D-237: claim → its requirement key(s)
     for key in external_keys:
         for m in coord.list_tests_by_requirement(
                 session, external_system="jira", external_key=key,
                 link_kind="generated_from"):
             sid = str(m.test_id)
+            keys_by_tid.setdefault(sid, set()).add(key)   # record even when shared
             if sid not in seen:                    # a claim shared by 2 reqs
                 seen.add(sid)
                 test_ids.append(m.test_id)
@@ -163,6 +187,10 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None) -> list[
                 "finished_at": (row["finished_at"].isoformat()
                                 if row["finished_at"] else None),
                 "version_unknown": row["claim_version_seq"] is None,
+                # D-237: the plain-English cause for a not-passed latest run.
+                "cause": (_cause_phrase(row["detail"], row["verdict"],
+                                        row["outcome"])
+                          if row["outcome"] != "passed" else None),
             }
         recent_outcomes = [r["outcome"] for r in rows]
         flaky = _is_flaky(recent_outcomes)
@@ -177,6 +205,7 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None) -> list[
 
         out.append({
             "test_id": str(tid),
+            "external_keys": sorted(keys_by_tid.get(str(tid), ())),  # D-237
             "approved_seq": approved_seq,
             "grounding": grounding,
             "latest_run": latest_run,
@@ -361,11 +390,26 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
     score += 25 * blockers + 10 * warnings
     score = max(0, min(100, score))
 
+    # D-237: the explainable blockers — every SCORED claim whose latest run is
+    # not-passed, carrying its requirement key(s) + the plain-English cause. This
+    # is exactly the set that drove the pass_rate blocker (quarantined claims are
+    # already excluded from `scored`). Sorted by requirement key for stable render.
+    blocking = sorted(
+        ({"test_id": c["test_id"],
+          "external_keys": c.get("external_keys", []),
+          "verdict": c["latest_run"].get("verdict"),
+          "outcome": c["latest_run"]["outcome"],
+          "cause": c["latest_run"].get("cause")}
+         for c in scored if c["latest_run"]["outcome"] in ("failed", "errored")),
+        key=lambda b: (b["external_keys"][0] if b["external_keys"] else "~",
+                       b["test_id"]))
+
     return {
         "applicable": True,
         "recommendation": recommendation,
         "confidence": confidence,
         "reasoning": reasoning,
+        "blocking": blocking,
         "criteria_met": criteria_met,
         "metrics": {
             "claim_count": len(claim_evidence),

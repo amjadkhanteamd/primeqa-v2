@@ -190,3 +190,113 @@ def test_is_flaky_detection_thresholds():
     assert _is_flaky(["failed", "passed", "passed"]) is False      # 1 = regression
     assert _is_flaky(["passed", "passed", "passed"]) is False
     assert _is_flaky(["passed"]) is False and _is_flaky([]) is False
+
+
+# ---------------------------------------------------------------------------
+# D-237 — the explainable NO-GO: the `blocking` list + the cause phrase.
+# ---------------------------------------------------------------------------
+
+from primeqa.intelligence.substrate_decision import _cause_phrase  # noqa: E402
+
+
+def _bclaim(outcome, *, keys=(), cause=None, verdict=None, flaky=False,
+            recent=None, finished_at=_FRESH):
+    """An evidence row carrying the D-237 enrichment (external_keys + cause)."""
+    return {
+        "test_id": "t-" + (keys[0] if keys else outcome),
+        "external_keys": list(keys),
+        "approved_seq": 1,
+        "grounding": {"overall": "intact", "stale": False,
+                      "evaluated_at_version_seq": 1},
+        "latest_run": {"run_id": "r", "outcome": outcome, "verdict": verdict,
+                       "finished_at": finished_at, "version_unknown": False,
+                       "cause": cause},
+        "superseded_newer_run": False,
+        "never_run": False,
+        "flaky": flaky,
+        "recent_outcomes": recent or [outcome],
+    }
+
+
+def test_blocking_names_failed_scored_claim_with_cause():
+    out = compute_substrate_decision(
+        [_bclaim("passed", keys=["SQ-207"]),
+         _bclaim("failed", keys=["SQ-205"], verdict="state_not_transitioned",
+                 cause="the escalation Flow's effect was not observed")],
+        now=_NOW)
+    assert out["recommendation"] == "no_go"
+    assert len(out["blocking"]) == 1
+    b = out["blocking"][0]
+    assert b["external_keys"] == ["SQ-205"]
+    assert b["verdict"] == "state_not_transitioned"
+    assert b["outcome"] == "failed"
+    assert b["cause"] == "the escalation Flow's effect was not observed"
+
+
+def test_blocking_includes_errored_claims():
+    out = compute_substrate_decision(
+        [_bclaim("errored", keys=["SQ-9"], cause="credentials/infrastructure")],
+        now=_NOW)
+    assert [b["outcome"] for b in out["blocking"]] == ["errored"]
+
+
+def test_blocking_excludes_passed_and_quarantined():
+    # The only failure is a chronically-flipping (quarantined) claim → excluded
+    # from `scored`, so it must NOT appear as a release blocker.
+    out = compute_substrate_decision(
+        [_bclaim("passed", keys=["A"]),
+         _bclaim("failed", keys=["B"], flaky=True,
+                 recent=["failed", "passed", "failed", "passed"])],
+        now=_NOW)
+    assert out["blocking"] == []
+
+
+def test_blocking_empty_when_all_pass():
+    out = compute_substrate_decision([_bclaim("passed", keys=["A"])], now=_NOW)
+    assert out["recommendation"] == "go"
+    assert out["blocking"] == []
+
+
+def test_blocking_sorted_by_requirement_key():
+    out = compute_substrate_decision(
+        [_bclaim("failed", keys=["SQ-30"]), _bclaim("failed", keys=["SQ-12"])],
+        now=_NOW)
+    assert [b["external_keys"][0] for b in out["blocking"]] == ["SQ-12", "SQ-30"]
+
+
+def test_blocking_tolerates_legacy_evidence_without_keys_or_cause():
+    # _claim() predates the D-237 enrichment (no external_keys / no cause) — the
+    # blocking builder must default gracefully, never KeyError.
+    out = compute_substrate_decision([_claim(), _claim("failed")], now=_NOW)
+    assert len(out["blocking"]) == 1
+    assert out["blocking"][0]["external_keys"] == []
+    assert out["blocking"][0]["cause"] is None
+
+
+# ---- _cause_phrase ---------------------------------------------------------
+
+def test_cause_phrase_prefers_s6_attribution_sentence():
+    detail = {"cause": {"detail": "an active Flow did not fire",
+                        "cause_kind": "automation_effect_absent"}}
+    assert _cause_phrase(detail, "state_not_transitioned", "failed") == \
+        "an active Flow did not fire"
+
+
+def test_cause_phrase_accepts_json_string_detail():
+    import json
+    detail = json.dumps({"cause": {"detail": "blocked by the wrong rule"}})
+    assert _cause_phrase(detail, None, "failed") == "blocked by the wrong rule"
+
+
+def test_cause_phrase_falls_back_to_verdict_plain():
+    out = _cause_phrase(None, "prohibition_not_enforced", "failed")
+    assert "ALLOWED" in out          # the humanized verdict from _VERDICT_PLAIN
+
+
+def test_cause_phrase_falls_back_to_outcome_when_no_verdict():
+    assert _cause_phrase({}, None, "errored") == "Could not run to completion"
+
+
+def test_cause_phrase_never_raises_on_garbage():
+    assert _cause_phrase(12345, None, "failed")        # non-dict/str detail
+    assert _cause_phrase("{not valid json", None, "failed")  # bad json string
