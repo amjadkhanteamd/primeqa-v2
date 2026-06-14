@@ -14118,6 +14118,12 @@ persists. Same disposition as the existing automation causes.
 `field_details` column + sync mapper). (2) the live env-59 capture — needs a before-save
 Flow in the org.
 
+**Close.** Shipped — `phase-40-substrate-6-value-causes` merged `--no-ff` to main
+(`80ef97d..cc5f1b1`), author AK, 0 co-authors, ZERO migration. Offline-proven: unit
+**2634** (+7) + the S6 positive-reader integration (live `flows_for_object`) green. The
+G-4 ledger residual moves from "field_not_createable only" to "+ before-save automation";
+the field-default cause + the live env-59 capture remain the two logged residuals.
+
 ---
 
 ---
