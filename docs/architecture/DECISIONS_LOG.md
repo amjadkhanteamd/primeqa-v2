@@ -14069,4 +14069,55 @@ D-237 prose is stale. No code change.
 
 ---
 
+## D-241 — broaden value_not_persisted attribution: before-save automation overwrote the value (G-4 residual, 3.2)
+
+**Date:** 2026-06-14
+**Substrates affected:** [S6 interpretation] — `attribution.py` + the S1-attribution read port. ZERO migration.
+**Status:** active
+**Branch:** `phase-40-substrate-6-value-causes` (off main; HOLD-and-show; merge --no-ff on GO).
+
+**Context (G-4 residual).** D-229 gave `value_not_persisted` exactly one structured
+cause — `field_not_createable` (SF silently drops a non-createable field on insert).
+Every other "created the record, value didn't read back" failure falls to honest
+pass-through (`cause=None`). The ledger's G-4 residual: broaden it. Two candidate causes —
+*a before-save automation overwrote the value* and *a field default overrode it*.
+
+**Verified scope (read the code + the live env-59 S1):**
+- **`before_save_automation_overwrote` — BUILDABLE (deterministic).** S1 captures
+  `flow_details.trigger_type` ∈ {BeforeSave, AfterSave} and the `TRIGGERS_ON` edge; a
+  before-save Flow that fires on insert is the canonical "overwrote the posted value"
+  mechanism. `FlowMeta` doesn't expose `trigger_type` yet (name + is_active only) — the
+  one missing wire.
+- **`field_default` — NOT BUILDABLE here (residual).** `field_details` has **no
+  default-value column** (verified: entity_id/field_type/length/precision/scale/
+  is_createable/is_updateable/… — no default). Attributing a default override needs an
+  S1-sync enrichment to capture field defaults; out of scope for an S6-only slice.
+- **Live proof — DEFERRED.** env-59 today has **zero BeforeSave flows** (trigger_type =
+  AfterSave×2, None×13), so this cause can't fire on the current corpus; offline-proven
+  (unit), like D-229's deferred-live causes. A live capture needs a before-save Flow added
+  to the org (an AK org change).
+
+**Decision.**
+1. `model.py` — add CauseKind `before_save_automation_overwrote` (value_not_persisted).
+2. `attribution.py` — `FlowMeta` gains `trigger_type: Optional[str]`;
+   `_attribute_value_not_persisted` keeps the field-createable check FIRST (unchanged),
+   then — when every asserted field IS createable but the value still didn't persist —
+   checks for an ACTIVE `BeforeSave` Flow on the read-back object → `Cause(
+   "before_save_automation_overwrote", …)`. Else honest pass-through (None) as today.
+3. `s1_reader.py` — `flows_for_object` populates `trigger_type` from `flow_details`.
+4. `repair.py` — the new cause is a **FINDING**, not a recipe defect: it's correctly
+   absent from `repair_agent._RECIPE_EDIT_CAUSES`, so the auto-fix agent won't try to
+   rewrite the recipe; `suggest_repairs` gains an org-owner suggestion (review the
+   before-save Flow).
+
+**Why a finding, not a recipe-edit.** A before-save Flow overwriting the posted value is
+real ORG behavior the test correctly surfaced — the recipe is fine; the org changed what
+persists. Same disposition as the existing automation causes.
+
+**Residuals.** (1) `field_default` cause — needs S1 to capture field default values (a
+`field_details` column + sync mapper). (2) the live env-59 capture — needs a before-save
+Flow in the org.
+
+---
+
 ---
