@@ -13453,4 +13453,74 @@ real-email cutover (AK's SendGrid key).
 
 ---
 
+### D-235 — theme #5: run-time test-data injection (sync, positive-only) (design)
+
+**Context.** Theme #5's last actionable piece. "Run-time test-data injection" = the
+person triggering a run supplies per-FIELD VALUE OVERRIDES for the record(s) the
+recipe creates — e.g. run the Opportunity claim with `Amount=2000000` this once —
+without editing the saved recipe. Net-new: no prior design note. v1's `data_engine`
+(templates + factories + `{{factory.email}}` interpolation) is dead code on the
+RETIRING v1 path (still imported by v1 `execution/routes.py`); it is NOT resurrected.
+Substrate provisioning (F6, D-196) is AUTOMATIC (the engine builds required parents +
+k16-pads required scalars); injection adds an OPTIONAL operator override on top.
+
+**The merge point (single, clean).** `data_executor._run_positive` builds the create
+payload `_sf_fields({**semantic_resolved, **scalar_filler, **parent_filler}, sobject)`
+(D-115). Overrides merge LAST, on the ALREADY-bare payload —
+`{**that_payload, **field_overrides}` — so override-wins is independent of the
+`_sf_fields` bare-ification internals. Keys are BARE field names (`StageName`),
+UI-friendly; they win over both the recipe's value and the k16 filler.
+
+**Decision — POSITIVE data recipes ONLY (the safety call).** On a NEGATIVE/prohibition
+recipe ("creating X with Amount>1M must be rejected"), overriding the value would flip
+whether the org rejects it and silently invalidate the test (a false
+`prohibition_not_enforced`). So `field_overrides` flows ONLY into `_run_positive`;
+`_execute_negative` / `_run_negative_with_setup` never receive it. Metadata
+(config-check) recipes create nothing, so the override is moot there. Per-step
+overrides on a 2-step negative's SETUP create are a residual.
+
+**Decision — SYNC UI path ONLY (AK's fork call, 2026-06-14).** A direct
+`field_overrides` param threaded `trigger_claim_run → run_recipe_execution_for_tenant
+→ run_recipe_execution → _execute_for_kind → execute_data_recipe → _run_positive`. The
+ASYNC/queue path (scheduled D-214 / auto-enqueued D-199 / CI) is UNCHANGED — automated
+runs use the recipe's declared data (reproducibility). `_execute_for_kind` is shared
+sync+async; it gains `field_overrides=None` and the async caller passes nothing. NO
+migration (overrides are never persisted on `s4_execution_jobs`). Persisted
+async-queue overrides = the unchosen fork → residual.
+
+**Decision — audit via the EXISTING evidence (no new column).** `CreateAttemptEvidence`
+already captures the POSTED `field_values`; D-233's run-detail headlines + raw-step
+tree surface them — so an injected `Amount=2000000` is already visible on
+`/runs/<id>`. The sync run flashes "ran with N override(s)". An explicit "this value
+was an override, not the recipe's" provenance stamp = residual.
+
+**Decision — no S1 pre-flight validation in v1.** An unknown/misspelled override field
+→ Salesforce rejects the create → an honest `errored` run carrying the SF error
+(D-225 surfaces it). Pre-flight validation of override field names against S1 (+
+field-name autocomplete) = residual.
+
+**Permission.** Overrides inherit the run's EXISTING gates — `claims_run`
+(admin/tester/superadmin) + the production-confirm gate. No new permission surface:
+overrides only set field values on records the run already creates (and reverse-order
+cleans up, F6.1). A production run with overrides is still gated by `confirm_production`.
+
+**UI.** A small OPTIONAL key=value control on the claim-detail "Run this claim" panel,
+shown for BEHAVIORAL claims only (config-checks create nothing). Empty → today's
+behavior exactly.
+
+**Slices.** 0 = this design. 1 = the executor merge + sync-path threading
+(`field_overrides` through the 4 functions, positive-only) + unit tests. 2 = the bridge
+(`trigger_claim_run`) + route (`claims_run` form-parse) + the Run-panel control + tests.
+3 = close (adversarial review + DECISIONS_LOG close + push). Direct-to-`main`; ZERO
+migrations.
+
+**Residuals.** (1) persisted overrides on the async queue (`s4_execution_jobs.config`
+JSONB — the unchosen fork: standing overrides on scheduled/auto runs). (2) per-step /
+2-step-negative setup-create overrides. (3) S1 pre-flight override validation +
+field-name autocomplete. (4) explicit override-provenance stamp on the run. (5) reusable
+named data sets (the v1 `data_engine` template/factory concept) — deferred; v1 retires
+with 5b.
+
+---
+
 ---
