@@ -390,19 +390,40 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
     score += 25 * blockers + 10 * warnings
     score = max(0, min(100, score))
 
-    # D-237: the explainable blockers — every SCORED claim whose latest run is
-    # not-passed, carrying its requirement key(s) + the plain-English cause. This
-    # is exactly the set that drove the pass_rate blocker (quarantined claims are
-    # already excluded from `scored`). Sorted by requirement key for stable render.
-    blocking = sorted(
-        ({"test_id": c["test_id"],
-          "external_keys": c.get("external_keys", []),
-          "verdict": c["latest_run"].get("verdict"),
-          "outcome": c["latest_run"]["outcome"],
-          "cause": c["latest_run"].get("cause")}
-         for c in scored if c["latest_run"]["outcome"] in ("failed", "errored")),
-        key=lambda b: (b["external_keys"][0] if b["external_keys"] else "~",
-                       b["test_id"]))
+    # D-237: the explainable blockers — name the claims that ACTUALLY drove a
+    # blocker, so the list is empty whenever the recommendation is not no_go (a
+    # failed run that stays inside the pass-rate threshold is NOT a blocker and
+    # must not render "Blocked by …" under a GO hero). Two blocker classes carry
+    # per-claim attribution: the pass_rate blocker (every scored claim whose
+    # latest run didn't pass — failed / errored / any non-passed outcome) and the
+    # grounding_integrity blocker (claims with BROKEN grounding, whose run
+    # evidence is vacuous). Deduped by test_id (a run-failure entry wins over a
+    # grounding one); sorted by requirement key for stable render.
+    _blk_seen, blocking = set(), []
+    if criteria_met.get("pass_rate") is False:
+        for c in scored:
+            if c["latest_run"]["outcome"] != "passed":
+                _blk_seen.add(c["test_id"])
+                blocking.append({
+                    "test_id": c["test_id"],
+                    "external_keys": c.get("external_keys", []),
+                    "verdict": c["latest_run"].get("verdict"),
+                    "outcome": c["latest_run"]["outcome"],
+                    "cause": c["latest_run"].get("cause")})
+    if criteria_met.get("grounding_integrity") is False:
+        for c in broken:
+            if c["test_id"] in _blk_seen:
+                continue
+            lr = c["latest_run"] or {}
+            blocking.append({
+                "test_id": c["test_id"],
+                "external_keys": c.get("external_keys", []),
+                "verdict": lr.get("verdict"),
+                "outcome": "grounding_broken",
+                "cause": "grounding broken — the org changed under this test, so "
+                         "its run evidence can't be trusted"})
+    blocking.sort(key=lambda b: (b["external_keys"][0] if b["external_keys"]
+                                 else "~", b["test_id"]))
 
     return {
         "applicable": True,

@@ -126,8 +126,9 @@
         </li>
         {% endfor %}
       </ul>
-      {# D-237: explainable NO-GO — the blocking requirement(s) + plain-English cause. #}
-      {% if sd.blocking %}
+      {# D-237: explainable NO-GO — the blocking requirement(s) + plain-English cause.
+         Gated on no_go so a sub-threshold failure never renders under a GO card. #}
+      {% if sd.recommendation == 'no_go' and sd.blocking %}
       <div class="mt-3 pt-3 border-t border-gray-100">
         <p class="text-xs font-medium text-gray-500 uppercase mb-1">What's blocking the release</p>
         <ul class="space-y-1">

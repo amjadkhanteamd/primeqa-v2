@@ -200,13 +200,13 @@ from primeqa.intelligence.substrate_decision import _cause_phrase  # noqa: E402
 
 
 def _bclaim(outcome, *, keys=(), cause=None, verdict=None, flaky=False,
-            recent=None, finished_at=_FRESH):
+            recent=None, finished_at=_FRESH, overall="intact"):
     """An evidence row carrying the D-237 enrichment (external_keys + cause)."""
     return {
         "test_id": "t-" + (keys[0] if keys else outcome),
         "external_keys": list(keys),
         "approved_seq": 1,
-        "grounding": {"overall": "intact", "stale": False,
+        "grounding": {"overall": overall, "stale": False,
                       "evaluated_at_version_seq": 1},
         "latest_run": {"run_id": "r", "outcome": outcome, "verdict": verdict,
                        "finished_at": finished_at, "version_unknown": False,
@@ -216,6 +216,42 @@ def _bclaim(outcome, *, keys=(), cause=None, verdict=None, flaky=False,
         "flaky": flaky,
         "recent_outcomes": recent or [outcome],
     }
+
+
+def test_blocking_is_empty_when_failure_stays_within_threshold():
+    # D-237 review (HIGH): a failed claim that does NOT cross the pass-rate gate
+    # is NOT a blocker — the list must be empty so the GO hero never shows
+    # "Blocked by …". 19 passed + 1 failed = exactly 95% (the default gate).
+    claims = [_bclaim("passed", keys=[f"OK-{i}"]) for i in range(19)]
+    claims.append(_bclaim("failed", keys=["FAIL-1"], cause="boom"))
+    out = compute_substrate_decision(claims, now=_NOW)
+    assert out["recommendation"] == "go"          # 95.0% meets the 95 gate
+    assert out["blocking"] == []                  # ...so nothing is "blocking"
+
+
+def test_blocking_names_broken_grounding_claims():
+    # A NO-GO driven purely by broken grounding (all runs passing) must still
+    # name the offending requirement, not go silent.
+    out = compute_substrate_decision(
+        [_bclaim("passed", keys=["SQ-9"], overall="broken")], now=_NOW)
+    assert out["recommendation"] == "no_go"
+    assert len(out["blocking"]) == 1
+    b = out["blocking"][0]
+    assert b["external_keys"] == ["SQ-9"]
+    assert b["outcome"] == "grounding_broken"
+    assert "grounding broken" in b["cause"]
+
+
+def test_blocking_dedups_failed_run_that_is_also_broken_grounding():
+    # A claim that both failed its run AND has broken grounding appears once,
+    # as the (more informative) run-failure entry.
+    out = compute_substrate_decision(
+        [_bclaim("failed", keys=["SQ-5"], cause="the run failed",
+                 overall="broken")], now=_NOW)
+    assert out["recommendation"] == "no_go"
+    assert len(out["blocking"]) == 1
+    assert out["blocking"][0]["outcome"] == "failed"
+    assert out["blocking"][0]["cause"] == "the run failed"
 
 
 def test_blocking_names_failed_scored_claim_with_cause():

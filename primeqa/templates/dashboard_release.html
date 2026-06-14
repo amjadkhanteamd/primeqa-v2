@@ -92,8 +92,9 @@
         <p class="mt-2 text-sm opacity-80">{{ data.state_reason }}</p>
 
         {# D-237: explainable NO-GO — name the blocking requirement(s) + the
-           plain-English S6 cause, so the headline isn't a bare percentage. #}
-        {% if data.blockers %}
+           plain-English S6 cause, so the headline isn't a bare percentage. Gated
+           on NO-GO so a sub-threshold failure never renders under a GO hero. #}
+        {% if data.state == 'NO-GO' and data.blockers %}
           <ul class="mt-2 space-y-1 text-sm">
             {% for b in data.blockers %}
               <li class="flex items-start gap-2">
