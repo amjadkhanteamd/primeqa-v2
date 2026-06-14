@@ -13842,4 +13842,61 @@ flag to AK to destale, not edited unilaterally.
 
 ---
 
+## D-238 — drop-readiness: retire the v1-table code references blocking migration 053 (theme #2)
+
+**Date:** 2026-06-14
+**Substrates affected:** v2 runtime (LLM-usage dashboards) + shared/intelligence v1 cleanup. No
+substrate-internal change. ZERO migration (053 is the irreversible drop, still AK-GO-gated).
+**Status:** active
+
+**Context.** Theme #2's one open piece is the IRREVERSIBLE drop of the 20 v1 product tables
+(`migrations/053`, D-221 R5). Three of the four verifiable pre-drop gates are settled read-only
+on 2026-06-14: (1) **zero rows** — all 20 tables confirmed empty in prod; (2) **stability
+window** — 3 consecutive infra-clean scheduled fires (env-59 06:00 UTC on 06-12/13/14, each 0
+`errored`; the only red per day is the honest SQ-205 finding); (3) **coverage** — 7 of 8 active
+requirements have an approved claim; **SQ-210 (#287) has none and no recorded waiver** — AK's
+build-or-waive call (the one product decision left on the gate). Gate (4), **code references**,
+was the open engineering item: a 24-file × 20-table reference audit (31-agent classify→verify
+workflow) found that almost every reference is a coincidental token (a variable, a Jinja var, a
+docstring/comment) — but **7 are real queries on live routes that would 500 after the drop**,
+plus a handful of verified-dead orphaned v1 functions.
+
+**Decision — retire the BREAKS + delete the isolated dead; accept the rest.**
+
+*BREAKS (the only true drop-blockers — all the same root cause: v1-table-backed metrics on the
+LLM-usage dashboards, which already read 0-row tables so show ~nothing today):*
+- `dashboard.quality_proxy_summary` (regeneration / validation-critical / post-gen-failure rates
+  over `generation_batches` / `test_case_versions` / `test_cases` / `run_test_results`),
+- `views.settings_llm_usage` inline per-tenant correction-rate query over `test_cases`,
+- `feedback_rules.correction_rate` over `test_cases`.
+Each is rewritten to **return its exact existing shape with zeroed values** — no behavioral
+change today (the tables are empty) and no 500 after the drop. Re-sourcing these quality metrics
+from the substrate (s6 / generation_quality_signals / s3_generation_jobs) is a logged residual,
+not drop-readiness.
+
+*DEAD (verified zero live callers — deleted to finish the retirement):* the whole orphaned v1
+`primeqa/intelligence/generation_jobs.py` module (+ its `app.py` registration import); the three
+orphaned `notify_run_failed` / `notify_agent_fix_applied` / `notify_dms_silent` stubs in
+`shared/notifications.py` (the live `notify_substrate_run_failed` is the D-234 replacement);
+`usage.attach_batch` (its only references were two gateway comments, now corrected).
+
+*Consciously accepted (drop-SAFE, deletion deferred):* the v1 execution + test-management ORM
+model/repository modules (`execution/models.py`, `execution/repository.py`, the v1
+`test_management` model bits, `ExecutionSlot`/`ExecutionSlotRepository`) map to dropped tables but
+are **never queried** — a mapped class over a missing table is harmless until queried, and the
+audit confirmed zero live query paths. Deleting whole ORM modules carries an import ripple
+(scheduler instantiates `slot_repo`; the v1 model registry) out of scope for a drop-readiness
+slice; recorded as a residual + as the pre-drop checklist's "consciously accepted references".
+
+**Result.** After D-238 the drop is code-safe: no live route queries a to-be-dropped table.
+Remaining gate items are AK's: SQ-210 build-or-waive, and the day-of checklist (fresh backup,
+queues idle) + the explicit GO. The irreversible `migrations/053` is NOT applied here.
+
+**Residuals.** (1) re-source the LLM quality-proxy + correction-rate metrics from the substrate.
+(2) delete the dead v1 ORM model/repository modules + `ExecutionSlot` + the dead
+`execution/routes.py` `get_slots`. (3) SQ-210 coverage (AK). (4) the irreversible drop + its
+D-221.5 close (AK GO).
+
+---
+
 ---
