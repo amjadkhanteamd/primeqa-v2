@@ -273,14 +273,14 @@
           {% set y = (100 - pr) * 0.4 %}
           {% set _ = pts.append(x|string ~ ',' ~ y|string) %}
         {% endfor %}
-        <polyline fill="none" stroke="#4f46e5" stroke-width="0.8"
+        <polyline fill="none" stroke="#4f8dff" stroke-width="0.8"
                   points="{{ pts|join(' ') }}" />
         {% for t in trends %}
           {% set pr = t.pass_rate if t.pass_rate is not none else 0 %}
           {% set x = 100.0 * loop.index0 / (n - 1) %}
           {% set y = (100 - pr) * 0.4 %}
           <circle cx="{{ x }}" cy="{{ y }}" r="1.2"
-                  fill="{% if pr >= 80 %}#10b981{% else %}#ef4444{% endif %}" />
+                  fill="{% if pr >= 80 %}#3fcf8e{% else %}#ff6257{% endif %}" />
         {% endfor %}
       </svg>
       <div class="mt-2 flex justify-between text-[11px] text-gray-500 font-mono">

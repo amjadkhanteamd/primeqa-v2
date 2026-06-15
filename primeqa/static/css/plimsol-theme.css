@@ -36,7 +36,7 @@
   --tw-gray-100: #15181d;   /* chips, hover wells, sunken */
   --tw-gray-200: #23272e;   /* borders, dividers */
   --tw-gray-300: #2f343c;   /* strong borders */
-  --tw-gray-400: #5a616c;   /* muted icons, disabled fg */
+  --tw-gray-400: #6a7280;   /* muted icons / tertiary (AA-large on surfaces) */
   --tw-gray-500: #8b93a1;   /* tertiary text */
   --tw-gray-600: #a7adb8;   /* secondary text */
   --tw-gray-700: #c4c9d2;   /* body text */
@@ -137,6 +137,17 @@
   --xfail:         #e2a33c;
   --skip:          #8b93a1;
   --running:       #45c2f0;
+
+  /* Solid action-button backgrounds — deeper than the verdict hues so a white
+     label clears WCAG AA (the verdict greens/ambers are too light to carry
+     white). Override only the .bg-*-600 utilities, never .text-*. */
+  --btn-pass-bg:       #157f43;   /* white label 5.06:1 */
+  --btn-pass-hover:    #0f7038;
+  --btn-pass-disabled: #1c6b42;
+  --btn-warn-bg:       #8a570e;   /* 6.09:1 */
+  --btn-warn-hover:    #74480b;
+  --btn-danger-bg:     #c0413c;   /* 5.17:1 */
+  --btn-danger-hover:  #a8332f;
 
   /* ---- Elevation ----------------------------------------------------- */
   --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
@@ -251,6 +262,14 @@
   --skip:    #6b7280;
   --hold:    #d93a36;
 
+  --btn-pass-bg:       #117045;   /* white label 6.13:1 */
+  --btn-pass-hover:    #0d5d39;
+  --btn-pass-disabled: #6fd4a6;
+  --btn-warn-bg:       #8a570e;
+  --btn-warn-hover:    #74480b;
+  --btn-danger-bg:     #c92f2c;   /* 5.35:1 */
+  --btn-danger-hover:  #a82622;
+
   --shadow-sm: 0 1px 2px rgba(16,22,30,0.06);
   --shadow-md: 0 2px 6px rgba(16,22,30,0.08), 0 1px 2px rgba(16,22,30,0.06);
   --shadow-lg: 0 10px 28px rgba(16,22,30,0.12), 0 2px 6px rgba(16,22,30,0.08);
@@ -328,10 +347,21 @@ code, kbd, samp, pre, .mono, .font-mono {
    opaque. Target full-screen overlays directly and give them a themed,
    translucent scrim instead. */
 .fixed.inset-0[class*="bg-opacity"],
-.fixed.inset-0.bg-gray-500,
-.fixed.inset-0.bg-gray-600,
-.fixed.inset-0.bg-gray-900,
-.fixed.inset-0.bg-black { background-color: var(--surface-overlay) !important; }
+.fixed.inset-0[class*="bg-black"],
+.fixed.inset-0[class*="bg-gray-5"],
+.fixed.inset-0[class*="bg-gray-6"],
+.fixed.inset-0[class*="bg-gray-9"] { background-color: var(--surface-overlay) !important; }
+
+/* Solid action buttons: re-point the .bg-*-600 backgrounds (and their hover/
+   disabled) to AA-safe deeper shades so the white label is legible. The .text-*
+   utilities are untouched, so colored TEXT stays bright on dark surfaces. */
+.bg-green-600 { background-color: var(--btn-pass-bg) !important; }
+.hover\:bg-green-500:hover { background-color: var(--btn-pass-hover) !important; }
+.disabled\:bg-green-400:disabled { background-color: var(--btn-pass-disabled) !important; }
+.bg-amber-600, .bg-orange-600 { background-color: var(--btn-warn-bg) !important; }
+.hover\:bg-amber-500:hover, .hover\:bg-orange-500:hover { background-color: var(--btn-warn-hover) !important; }
+.bg-red-600 { background-color: var(--btn-danger-bg) !important; }
+.hover\:bg-red-500:hover { background-color: var(--btn-danger-hover) !important; }
 
 /* Inputs / selects / textareas — themed fields */
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
@@ -340,7 +370,9 @@ select, textarea {
   border-color: var(--card-border);
   color: var(--text-primary);
 }
-input::placeholder, textarea::placeholder { color: var(--text-muted); }
+input::placeholder, textarea::placeholder { color: var(--text-tertiary); }
+/* Native checkbox/radio/range use the brand accent for their checked/track state */
+input[type="checkbox"], input[type="radio"], input[type="range"] { accent-color: var(--accent); }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 
 /* Focus-visible default */
@@ -379,3 +411,14 @@ a:not([class*="text-"]):not([class*="bg-"]) { color: var(--accent); }
   cursor: pointer; font-size: 13px; line-height: 1;
 }
 .theme-toggle:hover { background: var(--surface-hover); color: var(--text-primary); }
+
+/* ===========================================================================
+   PRINT — force a light page regardless of theme (a dark bg wastes ink and
+   drops low-contrast chrome on printed run/decision reports).
+   =========================================================================== */
+@media print {
+  html, body { background: #ffffff !important; color: #111111 !important; }
+  .plimsol-nav, .theme-toggle, nav { display: none !important; }
+  .bg-white, [class*="surface"] { background: #ffffff !important; }
+  * { box-shadow: none !important; }
+}

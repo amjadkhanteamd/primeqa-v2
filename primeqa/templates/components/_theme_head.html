@@ -1,0 +1,59 @@
+{# Plimsol theme bootstrap — shared by base.html and any standalone full-document
+   template (e.g. the public dashboard_shared.html) so the theme can't drift.
+   Provides: favicon, no-flash theme init, CDN Tailwind + the color-token remap,
+   and the theme stylesheet. The host <html> should carry data-theme="dark". #}
+<link rel="icon" type="image/svg+xml" href="/static/brand/favicon.svg">
+<script>
+  /* Apply the saved theme before first paint to avoid a flash. Dark is default. */
+  (function () {
+    try {
+      var t = localStorage.getItem('plimsol-theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', t);
+    } catch (e) {}
+  })();
+</script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  /* Map Tailwind's color scale onto the Plimsol theme tokens (defined in
+     plimsol-theme.css). This re-themes every existing utility class
+     (bg-gray-50, text-gray-900, indigo-600, …) with no per-element edits,
+     and flips dark<->light via the [data-theme] attribute. `white`/`black`
+     stay literal so text-white on solid buttons remains safe. */
+  (function () {
+    var steps = [50,100,200,300,400,500,600,700,800,900];
+    function ramp(name, fb) {
+      var o = {};
+      steps.forEach(function (s) { o[s] = 'var(--tw-' + name + '-' + s + ', ' + fb + ')'; });
+      return o;
+    }
+    var gray = ramp('gray', '#8b93a1');
+    var azure = ramp('indigo', '#2f6be0');
+    var green = ramp('green', '#3fcf8e');
+    var red = ramp('red', '#ff6257');
+    var amber = ramp('amber', '#e2a33c');
+    var blue = ramp('blue', '#45c2f0');
+    var purple = ramp('purple', '#b794f6');
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Geist', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
+            mono: ['Geist Mono', 'ui-monospace', 'SF Mono', 'monospace'],
+            display: ['Instrument Serif', 'Georgia', 'serif'],
+          },
+          colors: {
+            gray: gray, slate: gray, zinc: gray, neutral: gray, stone: gray,
+            indigo: azure, blue: blue, sky: blue, cyan: blue,
+            green: green, emerald: green, teal: green, lime: green,
+            red: red, rose: red,
+            amber: amber, yellow: amber, orange: amber,
+            purple: purple, violet: purple, fuchsia: purple,
+            accent: azure,
+            ship: green, hold: red,
+          },
+        },
+      },
+    };
+  })();
+</script>
+<link rel="stylesheet" href="/static/css/plimsol-theme.css">

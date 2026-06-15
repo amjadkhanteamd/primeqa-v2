@@ -1,8 +1,8 @@
 {
-  "name": "PrimeQA Core Validation",
+  "name": "Plimsol Core Validation",
   "version": "1.0",
   "tags": ["system", "e2e", "core"],
-  "description": "Canonical self-validation suite covering every major workflow a PrimeQA user touches. Uses the system-validation step grammar (docs/design/system-validation.md).",
+  "description": "Canonical self-validation suite covering every major workflow a Plimsol user touches. Uses the system-validation step grammar (docs/design/system-validation.md).",
 
   "setup": [
     {"action": "login", "email": "admin@primeqa.io", "password": "changeme123", "tenant_id": 1, "save_as": "admin_token"}
@@ -274,7 +274,7 @@
           "steps": [
             {"action": "http", "method": "GET", "url": "/", "save_as": "dash",
              "expect_status": 200},
-            {"action": "verify", "target": "$dash.text", "contains": "PrimeQA"},
+            {"action": "verify", "target": "$dash.text", "contains": "Plimsol"},
 
             {"action": "http", "method": "GET", "url": "/releases", "save_as": "rel",
              "expect_status": 200},

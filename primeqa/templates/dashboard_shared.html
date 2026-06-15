@@ -7,12 +7,12 @@
      not_found → "This dashboard link is invalid"
 #}
 <!DOCTYPE html>
-<html lang="en" class="h-full bg-gray-50">
+<html lang="en" class="h-full" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Plimsol Dashboard — Shared View</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  {% include 'components/_theme_head.html' %}
 </head>
 <body class="h-full">
 
@@ -183,14 +183,14 @@
         {% set y = (100 - pr) * 0.4 %}
         {% set _ = pts.append(x|string ~ ',' ~ y|string) %}
       {% endfor %}
-      <polyline fill="none" stroke="#4f46e5" stroke-width="0.8"
+      <polyline fill="none" stroke="#4f8dff" stroke-width="0.8"
                 points="{{ pts|join(' ') }}" />
       {% for t in trends %}
         {% set pr = t.pass_rate if t.pass_rate is not none else 0 %}
         {% set x = 100.0 * loop.index0 / (n - 1) %}
         {% set y = (100 - pr) * 0.4 %}
         <circle cx="{{ x }}" cy="{{ y }}" r="1.2"
-                fill="{% if pr >= 80 %}#10b981{% else %}#ef4444{% endif %}" />
+                fill="{% if pr >= 80 %}#3fcf8e{% else %}#ff6257{% endif %}" />
       {% endfor %}
     </svg>
     <div class="mt-2 flex justify-between text-[11px] text-gray-500 font-mono">

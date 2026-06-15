@@ -55,7 +55,7 @@
               <th class="py-2 pr-4">Finished</th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-gray-50">
+          <tbody class="divide-y divide-gray-200">
             {% for it in insights.recent_runs %}
             <tr>
               <td class="py-2 pr-4"><a href="/runs/{{ it.run_id }}" class="font-mono text-xs text-indigo-600 hover:underline">{{ it.run_id[:8] }}</a></td>
@@ -159,7 +159,7 @@
               <th class="py-2 pr-4">Evaluated @ S1 seq</th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-gray-50">
+          <tbody class="divide-y divide-gray-200">
             {% for g in insights.grounding %}
             <tr>
               <td class="py-2 pr-4"><a href="/claims/{{ g.test_id }}" class="font-mono text-xs text-indigo-600 hover:underline">{{ g.test_id[:8] }}</a></td>

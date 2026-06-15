@@ -78,7 +78,7 @@ def _send_smtp(notification: Notification) -> bool:
         log.warning("NOTIFICATIONS_PROVIDER=smtp but SMTP_HOST unset; skipping")
         return False
     port = int(os.getenv("SMTP_PORT", "587"))
-    sender = os.getenv("SMTP_FROM", "primeqa@localhost")
+    sender = os.getenv("SMTP_FROM", "plimsol@localhost")
 
     msg = EmailMessage()
     msg["Subject"] = notification.subject
@@ -106,7 +106,7 @@ def _send_sendgrid(notification: Notification) -> bool:
     if not api_key:
         log.warning("NOTIFICATIONS_PROVIDER=sendgrid but SENDGRID_API_KEY unset; skipping")
         return False
-    sender = os.getenv("SMTP_FROM", "primeqa@localhost")
+    sender = os.getenv("SMTP_FROM", "plimsol@localhost")
     resp = requests.post(
         "https://api.sendgrid.com/v3/mail/send",
         headers={"Authorization": f"Bearer {api_key}",
@@ -152,7 +152,7 @@ def notify_release_decision(db, tenant_id: int, release_name: str,
                     f"(risk {risk.get('score')}/100 {risk.get('level')}).")
     send_email(Notification(
         kind="release_decision",
-        subject=f"[PrimeQA] Release '{release_name}': "
+        subject=f"[Plimsol] Release '{release_name}': "
                 f"{str(rec).replace('_', ' ').upper()}",
         body=(f"The evaluated recommendation for release '{release_name}' is "
               f"{rec} (source: {source}).{sub_line} "
@@ -201,7 +201,7 @@ def notify_substrate_run_failed(tenant_id: int, *, run_id, test_id,
         body += f"\nReview it at /runs/{run_id}"
         send_email(Notification(
             kind="substrate_run_failed",
-            subject=f"[PrimeQA] A test run {outcome} (run {short})",
+            subject=f"[Plimsol] A test run {outcome} (run {short})",
             body=body,
             recipients=recipients,
             tenant_id=tenant_id,

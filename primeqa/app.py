@@ -80,7 +80,30 @@ def create_app():
     # HTML page, which is inconsistent with the rest of /api/* that
     # uses the {error:{code,message}} envelope. Register a 404 + 405
     # handler that produces the envelope on /api/* routes and leaves
-    # HTML routes to Flask's default.
+    # HTML routes to a minimal Plimsol-themed error page.
+    def _themed_error(title, message, code):
+        html = (
+            '<!DOCTYPE html><html lang="en" data-theme="dark"><head>'
+            '<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">'
+            '<title>Plimsol</title>'
+            '<script>(function(){try{var t=localStorage.getItem(\'plimsol-theme\')||\'dark\';'
+            'document.documentElement.setAttribute(\'data-theme\',t);}catch(e){}})();</script>'
+            '<link rel="stylesheet" href="/static/css/plimsol-theme.css">'
+            '<style>body{display:flex;min-height:100vh;align-items:center;justify-content:center;'
+            'margin:0;background:var(--surface-app,#0a0b0d);color:var(--text-primary,#f3f5f7);'
+            'font-family:var(--font-sans,system-ui,sans-serif)}.box{text-align:center;max-width:420px;padding:32px}'
+            'h1{font-size:20px;margin:0 0 8px}p{color:var(--text-secondary,#a7adb8);font-size:14px;margin:0 0 20px}'
+            'a{color:var(--accent,#4f8dff);text-decoration:none;font-size:14px}</style></head>'
+            '<body><div class="box">'
+            '<svg width="40" height="34" viewBox="0 0 110 100" fill="none" '
+            'style="color:var(--accent,#4f8dff);margin-bottom:14px"><circle cx="44" cy="50" r="29" '
+            'stroke="currentColor" stroke-width="7"/><line x1="3" y1="50" x2="76" y2="50" '
+            'stroke="currentColor" stroke-width="7" stroke-linecap="round"/></svg>'
+            f'<h1>{title}</h1><p>{message}</p><a href="/">&larr; Back to Plimsol</a>'
+            '</div></body></html>'
+        )
+        return html, code
+
     @application.errorhandler(404)
     def _handle_404(err):
         from flask import request as _req, jsonify as _jsonify
@@ -89,7 +112,8 @@ def create_app():
                 "code": "NOT_FOUND",
                 "message": "Endpoint not found.",
             }}), 404
-        return err  # let Flask render the default HTML 404
+        return _themed_error("Page not found",
+                             "That link doesn't go anywhere. Check the URL or head back.", 404)
 
     @application.errorhandler(405)
     def _handle_405(err):
@@ -124,11 +148,8 @@ def create_app():
         # HTML path — minimal, no stack. Production Flask already hides
         # stacks when FLASK_ENV != development, but this belt-and-braces
         # prevents leak even with misconfigured env.
-        return (
-            "<h1>Something went wrong</h1>"
-            "<p>We logged the error. Reload and try again.</p>",
-            500,
-        )
+        return _themed_error("Something went wrong",
+                             "We logged the error. Reload and try again.", 500)
 
     @application.route("/health")
     def health():
