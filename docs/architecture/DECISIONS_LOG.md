@@ -14220,3 +14220,32 @@ dangles. Option-A (gap-ledger 1.3) is complete; Option-B remains the open, defer
 ---
 
 ---
+
+## D-243 — Remove the orphaned Test Data (Templates + Factories) feature
+
+**Decision.** Delete the Settings → Test Data feature (Templates + Factories) as orphaned v1
+code. The page rendered and `/api/data/*` responded, but **no live consumer ever read** what it
+created: the only runtime reader would have been `DataEngineService.resolve_references()`
+(`execution/data_engine.py`) — grep of the whole repo confirms it was **never called** — and the
+substrate execution engine (`primeqa/execution_engine/`) has **zero** references to `DataTemplate`
+/ `DataFactory` / the four tables. Run-time test-data injection already shipped as a *different*
+mechanism — the **D-235 field-overrides** box, wired through `execution_engine/run.py` +
+`data_executor.py`; the template/factory concept was explicitly deferred (D-235 / D-106 F6).
+
+**Removed (code, one commit).** `views.py` test-data routes (`test_data_list` + the
+templates/factories POST handlers); the five `/api/data/*` handlers + their import in
+`execution/routes.py`; `templates/test_data/list.html`; the Test Data sidebar entry in
+`settings/base.html`; the module `primeqa/execution/data_engine.py` (incl. the unused-but-pure
+`generate_value()` factory primitive — preserved in git history should F6 provisioning ever be
+built on the substrate); the `app.py` model-registration import; the `tests/_ux_audit.py` probe
+tuple.
+
+**Dropped (migration 056, gated).** The four orphaned tables from migration 010 —
+`test_case_data_bindings`, `data_snapshots`, `data_factories`, `data_templates`. Built for v1;
+v1 product tables dropped in 053, these were left behind, and `test_case_data_bindings` still
+carried a now-dead FK to `test_case_versions`. No other table has an incoming FK to any of the
+four (only outgoing FKs to live `tenants` / `users` / `environments` / `test_case_versions`), so
+the `CASCADE` drop cannot touch live data. Applied after a zero-row check, per the 052/053
+gated-drop discipline. **No live feature is affected — D-235 field-overrides is untouched.**
+
+---

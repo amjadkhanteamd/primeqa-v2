@@ -1,6 +1,6 @@
 """API routes for the execution domain.
 
-Endpoints: /api/runs/*, /api/data/*
+Endpoints: /api/runs/*
 """
 
 from flask import Blueprint, jsonify, request
@@ -8,7 +8,6 @@ from flask import Blueprint, jsonify, request
 from primeqa.core.auth import require_auth, require_role
 from primeqa.core.permissions import require_run_permission
 from primeqa.db import get_db
-from primeqa.execution.data_engine import DataEngineService, DataTemplate, DataFactory
 from primeqa.shared.api import json_error
 
 execution_bp = Blueprint("execution", __name__)
@@ -81,94 +80,5 @@ def jira_ticket_search():
         except Exception as e:
             return _render([], error=f"Jira search failed: {e}")
         return _render(results)
-    finally:
-        db.close()
-
-
-# --- Results ---
-
-@execution_bp.route("/api/data/templates", methods=["GET"])
-@require_auth
-def list_data_templates():
-    db = next(get_db())
-    try:
-        svc = DataEngineService(db)
-        tmpls = svc.list_templates(request.user["tenant_id"], object_type=request.args.get("object_type"))
-        return jsonify([{
-            "id": t.id, "name": t.name, "description": t.description,
-            "object_type": t.object_type, "field_values": t.field_values,
-        } for t in tmpls]), 200
-    finally:
-        db.close()
-
-
-@execution_bp.route("/api/data/templates", methods=["POST"])
-@require_role("admin", "tester")
-def create_data_template():
-    data = request.get_json(silent=True) or {}
-    for f in ["name", "object_type"]:
-        if not data.get(f):
-            return json_error("VALIDATION_ERROR", f"{f} is required", http=400)
-    db = next(get_db())
-    try:
-        svc = DataEngineService(db)
-        t = svc.create_template(
-            request.user["tenant_id"], data["name"], data["object_type"],
-            data.get("field_values", {}), request.user["id"],
-            description=data.get("description"),
-        )
-        return jsonify({"id": t.id, "name": t.name}), 201
-    finally:
-        db.close()
-
-
-@execution_bp.route("/api/data/factories", methods=["GET"])
-@require_auth
-def list_data_factories():
-    db = next(get_db())
-    try:
-        svc = DataEngineService(db)
-        factories = svc.list_factories(request.user["tenant_id"])
-        return jsonify([{
-            "id": f.id, "name": f.name, "description": f.description,
-            "factory_type": f.factory_type, "config": f.config,
-        } for f in factories]), 200
-    finally:
-        db.close()
-
-
-@execution_bp.route("/api/data/factories", methods=["POST"])
-@require_role("admin", "tester")
-def create_data_factory():
-    data = request.get_json(silent=True) or {}
-    for f in ["name", "factory_type"]:
-        if not data.get(f):
-            return json_error("VALIDATION_ERROR", f"{f} is required", http=400)
-    db = next(get_db())
-    try:
-        svc = DataEngineService(db)
-        factory = svc.create_factory(
-            request.user["tenant_id"], data["name"], data["factory_type"],
-            data.get("config", {}), request.user["id"],
-            description=data.get("description"),
-        )
-        return jsonify({"id": factory.id, "name": factory.name}), 201
-    finally:
-        db.close()
-
-
-@execution_bp.route("/api/data/factories/<int:fid>/preview", methods=["POST"])
-@require_auth
-def preview_factory(fid):
-    db = next(get_db())
-    try:
-        f = db.query(DataFactory).filter(
-            DataFactory.id == fid, DataFactory.tenant_id == request.user["tenant_id"],
-        ).first()
-        if not f:
-            return json_error("NOT_FOUND", "Factory not found", http=404)
-        svc = DataEngineService(db)
-        samples = [svc.generate_value(f.factory_type, f.config) for _ in range(5)]
-        return jsonify({"samples": samples}), 200
     finally:
         db.close()

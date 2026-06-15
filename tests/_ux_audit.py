@@ -33,7 +33,6 @@ PAGES = [
     ("/settings/environments", "Settings: Environments"),
     ("/settings/groups", "Settings: Groups"),
     ("/settings/users", "Settings: Users"),
-    ("/settings/test-data", "Settings: Test Data"),
     ("/settings/agent", "Settings: Agent autonomy"),
 ]
 

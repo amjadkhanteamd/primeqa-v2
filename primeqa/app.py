@@ -25,7 +25,6 @@ import primeqa.execution.models  # noqa: F401
 import primeqa.intelligence.models  # noqa: F401
 import primeqa.vector.models  # noqa: F401
 import primeqa.release.models  # noqa: F401
-import primeqa.execution.data_engine  # noqa: F401
 
 from primeqa.core import csrf
 from primeqa.core.routes import core_bp
