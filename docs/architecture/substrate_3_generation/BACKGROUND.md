@@ -58,7 +58,7 @@ Phase 1 does not implement S3. Implementation lands in Phase 2 (Substrate 3) of 
 Phase 1 deliverables, per the substrate-2 precedent:
 
 - This `BACKGROUND.md`
-- `PRECONDITIONS.md` (already shipped; baseline at S3 design start)
+- `_archive/PRECONDITIONS.md` (baseline at S3 design start; archived 2026-06-15)
 - `SPEC.md` — fills section by section through Theme convergence
 - `GLOSSARY.md` — S3-specific terms accumulate as introduced
 - `OPEN_QUESTIONS.md` — design surfaces under deliberation

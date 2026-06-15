@@ -1,11 +1,24 @@
-# CLAUDE.md — PrimeQA v2
+# CLAUDE.md — Plimsol (PrimeQA v2)
+
+> **Naming**: the product display name is **Plimsol** (renamed 2026-06-15). The
+> Python package stays `primeqa` and the JS namespace stays `window.PrimeQA` —
+> every `primeqa/` path in this doc is current; only the product name changed.
+>
+> **Live engine**: the engine is the **S1–S8 substrate** (`primeqa/semantic`,
+> `sync`, `test_representation`, `generation`, `execution_engine`, `knowledge`,
+> `interpretation`, `conversation`, `evolution`). The original **v1 product
+> layer was retired (D-191…D-221)** and its 20 product tables dropped in
+> migration 053 (`pipeline_runs`, `test_cases`, `test_case_versions`,
+> `generation_batches`, `ba_reviews`, `run_events`, `test_suites`,
+> `scheduled_runs`, …); the four `data_*` Test-Data tables dropped in 056
+> (D-243). Sections below that still describe v1 surfaces are marked.
 
 ## Branch conventions
 
 Two patterns coexist depending on what you're working on:
 
-- **v2 runtime work** (Flask routes, HTMX templates, `meta_*` tables, v2 generation/execution): commit directly to `main`. Iteration is fast; `main` is the integration surface.
-- **Substrate work** (substrate_1_semantic_org_model and future substrates): feature branches named `phase-N-substrate-M` (e.g. `phase-2-substrate-1-sync`). Merge to `main` at phase completion. HOLD-and-show discipline before commits.
+- **v2 runtime work** (Flask routes, HTMX templates, the `core` / `release` / `runs` web layer, `meta_*` tables): commit directly to `main`. Iteration is fast; `main` is the integration surface.
+- **Substrate work** (substrate_1_semantic_org_model and the other S1–S8 substrates): feature branches named `phase-N-substrate-M` (e.g. `phase-2-substrate-1-sync`). Merge to `main` at phase completion. HOLD-and-show discipline before commits.
 
 See `docs/CONVENTIONS.md` for the full working agreement.
 
@@ -46,12 +59,12 @@ If you find yourself on a worktree pointing at a non-`main` branch, the correct 
 - A merge gate means a real green run — never merge on a red or unverified suite.
 
 ## What is this project?
-PrimeQA is a **Release Intelligence System** for Salesforce. It connects to
-Salesforce orgs, captures versioned metadata, AI-generates test cases from
-Jira requirements, executes them with reliable test data, produces ranked
-risk scores plus GO/NO-GO release recommendations with explainability, and
-ships an agent that auto-fixes failures in sandbox (always human-gated on
-production).
+Plimsol is a **Release Intelligence System** for Salesforce. It connects to
+Salesforce orgs, captures their metadata as a versioned semantic model,
+AI-generates grounded test cases from Jira requirements, executes them against
+the org and captures real evidence, interprets failures into causes, and
+produces GO/NO-GO release recommendations with explainability. A fix-proposal
+agent suggests repairs (human-gated; flag-gated auto-apply on sandbox).
 
 Not a "TestRail replacement" — TestRail parity is the substrate; the category
 is decision-making for releases.
@@ -64,7 +77,7 @@ is decision-making for releases.
   - `superadmin` is god mode per tenant: cost visibility, agent autonomy config, raw LLM prompts, pre-flight override. Implicitly passes every `require_role` check. Excluded from the 20-user cap.
 - **Encryption**: Fernet for credentials (cryptography lib)
 - **AI**: Anthropic SDK (Claude Opus 4 / Sonnet 4 / Haiku 4 / 3.7 / 3.5)
-- **Scheduling**: croniter-based cron; scheduled_runs table fires from the Railway scheduler service
+- **Scheduling**: croniter-based cron; the Railway scheduler service fires the substrate job queues (`s1_sync_jobs`, `s4_execution_jobs`) and runs reaper / dead-man's-switch ticks
 - **Deployment**: Railway (3 services: web/worker/scheduler), Dockerfile, gunicorn
 
 ## Project structure
@@ -73,42 +86,53 @@ primeqa/                       # Main package
 ├── app.py                     # Flask entrypoint, registers blueprints + observability
 ├── db.py                      # SQLAlchemy engine/session setup
 ├── views.py                   # Server-rendered web UI routes (HTMX-friendly)
-├── worker.py                  # Background job processor (python -m primeqa.worker)
-├── scheduler.py               # Reaper + dead-man's switch + scheduled-runs firer
-├── core/                      # Tenants, users, auth, envs, connections, groups,
-│                              # agent_settings repo
-├── metadata/                  # Salesforce metadata (versioned) + per-category
-│                              # SyncEngine (DAG + SSE)
-├── test_management/           # Sections, requirements, test cases, versions,
-│                              # suites, reviews, tags, milestones, step_schema
-├── execution/                 # Pipeline runs, step executor, cleanup engine,
-│                              # data_engine, analytics, flake scoring
-├── intelligence/              # Explanations, failure patterns, causal links,
-│                              # generation (AI), risk_engine, fix-and-rerun agent
+├── worker.py                  # Background job consumer (python -m primeqa.worker)
+├── scheduler.py               # Reaper + dead-man's switch + job-queue firer
+│
+│   # ── The live engine: S1–S8 substrate ──────────────────────────────
+├── semantic/                  # S1: semantic org model — entities/edges, bitemporal
+├── sync/                      # S1: live sync engine (engine/materialize/batching)
+├── test_representation/       # S2: canonical claims + recipes
+├── generation/                # S3: AI generation (run/intake/governance/persistence)
+├── execution_engine/          # S4: run recipes vs Salesforce, capture grounded evidence
+├── knowledge/                 # S5: domain packs + learned rules + system-rules channel
+├── interpretation/            # S6: deterministic-first verdicts + cause attribution
+├── conversation/              # S7: grounded-or-refuse Q&A (/ask)
+├── evolution/                 # S8: grounding-validity (intact/drifted/broken) + repair
+│
+│   # ── Cross-cutting ─────────────────────────────────────────────────
+├── core/                      # Tenants, users, auth, envs, connections, groups, agent_settings
+├── intelligence/              # substrate_decision (GO/NO-GO), substrate_insights, llm/ gateway
 │   └── llm/                   # LLM gateway — gateway.py, router.py, provider.py,
 │                              # prompts/*, pricing, usage, limits, tiers, feedback,
 │                              # feedback_rules (aggregation), redact, dashboard
-│                              # (Phases 1–7)
 ├── release/                   # Release model, decision_engine, CI webhooks
-├── runs/                      # Run Wizard, Preflight, SSE streams, cost forecast,
-│                              # scheduled runs, Jira search client + cache
-├── shared/                    # query_builder, api envelope, observability,
-│                              # notifications dispatch
+├── runs/                      # Run surfaces, Jira search client + cache, scheduling helpers
+├── integrations/              # sf_client (Salesforce REST/Metadata), sf_constants
+├── metadata_bridge/           # S1 read-bridge + parity harness (from the v1 cutover)
+├── shared/                    # query_builder, api envelope, observability, notifications
 ├── system_validation/         # JSON-driven self-validation suite runner + grammar
 │   └── suites/primeqa_core.json   # the canonical 8-category E2E suite
 ├── vector/                    # Embeddings (pgvector)
 ├── static/                    # Shared JS/CSS (toast, confirm, unsaved-changes)
 └── templates/                 # Jinja2 HTML templates
-migrations/                    # SQL migration files (001–030)
-scripts/                       # One-off operational SQL (data cleanup, etc.)
-docs/design/                   # Design docs (run-experience.md covers R1–R7)
-tests/                         # Integration test files
+│
+│   # ── Legacy modules (still present, mostly gutted post-v1-retirement) ─
+├── metadata/                  # v1 metadata module — superseded by semantic/ + sync/
+├── execution/                 # v1 execution module — routes.py survives (release-status etc.)
+└── test_management/           # v1 test-mgmt — service.py survives; product tables dropped (053)
+
+migrations/                    # Public/v2 SQL migrations (001–056), idempotent since 016
+alembic/                       # Substrate schema-per-tenant migrations (per-tenant DDL)
+scripts/                       # One-off operational SQL (data cleanup, eval harnesses)
+docs/architecture/             # Substrate SPEC/EVOLUTION + PLATFORM_VISION + DECISIONS_LOG
+tests/                         # Integration tests (run against the Railway database)
 ```
 
 ## Architecture rules
 
-- **7 domain modules** with strict boundaries: core, metadata, test_management, execution, intelligence, release, vector — plus `runs/` (cross-cutting wizard/scheduling) and `shared/` (cross-cutting utilities)
-- Each domain module has: models.py, repository.py, service.py, routes.py
+- **The live engine is the 8-substrate decomposition** (S1–S8), each a self-contained package with strict boundaries — never cross a substrate boundary to get something working (HOLD + flag instead). Cross-cutting modules: `core`, `intelligence` (decision + llm gateway), `release`, `runs`, `integrations`, `metadata_bridge`, `shared`, `system_validation`, `vector`.
+- Each module has: models.py, repository.py, service.py, routes.py (substrate packages vary — e.g. `run.py`, `intake.py`, `result_store.py`).
 - Cross-domain calls go through service layers, never direct SQL across domains
 - All resources are tenant-scoped via `tenant_id`
 - Environments scope by group membership (admin + superadmin see all)
@@ -146,7 +170,7 @@ this model. When in doubt, default to denial + log a rationale.
   `triggered_by_user_id` (who kicked off the run). Ownership is a
   separate axis from role. "Own" views always scope by the caller's
   user id.
-- **Release state on pipeline runs**: runs inherit a
+- **Release state on runs**: runs inherit a
   release-lifecycle state independent of their execution status —
   `PENDING` / `APPROVED` / `OVERRIDDEN`. Agent auto-apply + production
   deploys gate on this state; a Release Owner's approval flips
@@ -166,9 +190,10 @@ this model. When in doubt, default to denial + log a rationale.
 - **CSRF**: double-submit cookie via `primeqa/core/csrf.py`. `/api/*` with `Authorization: Bearer` skips CSRF (Bearer is cross-origin-safe). All HTML POST forms carry `{{ csrf_input | safe }}`. `static/js/csrf.js` auto-injects `X-CSRF-Token` header on same-origin `fetch()` + htmx.
 - **JWT**: `core/auth.py require_auth` tolerates missing optional claims (`email`, `role`, `full_name`) — defaults `role='viewer'` on missing. `sub` + `tenant_id` are required; missing = 401. Views.py `get_current_user` has the same tolerance so web pages don't crash on malformed tokens. **Role downgrade** → `AuthService.update_user` revokes all refresh tokens so stale access-tokens expire quickly.
 - **Webhook auth** fails closed: `/api/webhooks/ci-trigger` returns 503 `CONFIG_ERROR` when `WEBHOOK_SECRET` env is unset. HMAC signature required otherwise.
+- **Public release-status endpoint is token-gated** (migration 055): `GET /api/releases/:id/status` requires a per-release opaque poll token (`status_poll_token_hash`, sha256); no token / wrong token → 404. Mint + revoke are Release-Owner/admin, tenant-scoped.
 - **Global 500 handler**: `app.errorhandler(Exception)` returns envelope (`/api/*`) or minimal HTML (web). Never leaks stack. Server-side full stack still logged.
 - **Input validation**: `create_section` length-validates name; `feedback.capture_user_feedback` type-checks verdict; bulk endpoints coerce ids to positive ints before hitting the DB.
-- **State machine**: `PipelineRunRepository.update_run_status` enforces valid transitions (terminal → anything raises). Paired with migration 036 CHECK constraints.
+- **Tenant isolation**: cross-tenant write/read paths in the release + permission + connection layers are tenant-scoped (release decisions filter by `release_id`; `check_environment_policy` takes `tenant_id`; see `tests/test_tenant_isolation.py`).
 - **Unbounded queries**: `core/repository.py list_*` capped at 500 rows. DB-side dashboard queries use CTEs + JOINs to avoid N+1.
 
 ## UI component kit (`templates/components/`)
@@ -194,7 +219,14 @@ this model. When in doubt, default to denial + log a rationale.
 ## LLM architecture (`primeqa/intelligence/llm/`)
 
 Single chokepoint for every Anthropic call. Replaces five scattered call
-sites that drifted on retry policy, caching, and usage accounting.
+sites that drifted on retry policy, caching, and usage accounting. The
+gateway core is live cross-cutting infra (`llm_usage_log` survived the v1
+retirement). **Note**: integration points that wrote to v1 tables — the
+story-view enricher (→ `test_case_versions.story_view`), the static
+validator's machine signals, the `generation_batches` cost rows — retired
+with the v1 product layer (migration 053); the gateway itself remains the
+live entry point, now driven by S3 generation / S6 interpretation / S7
+conversation.
 
 - **`gateway.llm_call(task=..., tenant_id=..., api_key=..., context=...)`** is the ONLY allowed entry point. Internal flow: load tenant config (tier → limits, policy) → check rate limits (minute / hour / daily-spend windows) → resolve complexity from prompt module → router picks `[primary, fallback]` chain → build prompt spec → redact PII → provider.invoke with backoff → escalate once on low-confidence if the prompt declares `SUPPORTS_ESCALATION` → record `llm_usage_log` row (always, success or fail) → return `LLMResponse`.
 - **Prompts** live one-per-file in `prompts/*`. Each module exposes `VERSION`, `build(context, tenant_id, recent_misses)`, `detect_complexity(context)`, optional `should_escalate(parsed, resp)`. Registry is a flat static dict — no dynamic loading.
@@ -203,396 +235,54 @@ sites that drifted on retry policy, caching, and usage accounting.
 - **Prompt caching**: `cache_control: ephemeral` on grammar + metadata blocks. Cache key is per-tenant because metadata text is tenant-unique (correct isolation; no cross-tenant hits).
 - **Per-tenant rate limits** (migration 032 + tiers via migration 034): tier preset → override-wins on any non-NULL raw column. Blocked calls write a zero-token `status='rate_limited'` row to `llm_usage_log` and raise `LLMError("rate_limited")`. Three windows: 60 s / 3600 s / UTC-midnight spend.
 - **Product tiers** (`tiers.py`): `starter` (30/500/$5), `pro` (100/2000/$25), `enterprise` (None/None/None), `custom` (ignore preset, raw columns only). Tenant switches tier via the superadmin picker on `/settings/llm-usage` — writes to `tenant_agent_settings.llm_tier` + activity_log.
-- **Feedback loop** (migration 033, extended in Phase 7): `generation_quality_signals` table. Machine signals: `validation_critical` (validator), `regenerated_soon` (batch supersession), `execution_failed` (worker). **Human signals** (Phase 7): `user_thumbs_up` / `user_thumbs_down` via `POST /api/test-cases/:id/feedback`, `user_edited` on first AI-output edit (10-min dedup bucket), `ba_rejected` on BA review reject. Severity is reason-mapped: `wrong_object_or_field` / `invalid_steps` → high; `redundant` → low. Feedback POST is rate-limited at 5 / TC / user / day — 6th call returns 200 with `throttled:true` (no 429, no visible rejection) so spammers get no feedback signal of their own. Deduped on `(signal_type, rule, object, field, reason)`.
-- **Rules aggregation** (`feedback_rules.py`, Phase 7): signals are transformed into a prompt-ready `### Common mistakes to avoid:` block — natural-language imperatives with concrete recent examples, ranked by severity × frequency, top-5. Gateway's auto-load path now calls `feedback_rules.build_rules_block(tenant_id)` instead of passing raw signal dicts. Same aggregator powers the "Top recurring issues" list on the tenant dashboard.
-- **Correction rate** (Phase 7): the north-star quality metric. `(user_edited + ba_rejected + user_thumbs_down) / AI-generated TCs in window`. Shown as a hero number on `/settings/my-llm-usage` (with window-over-window delta) and as a column on the superadmin by-tenant table.
-- **Dashboards**:
-  - **Superadmin** `/settings/llm-usage` — cost (total / by-task / by-model / by-tenant / by-day), efficiency (cache hit rate, avg cost per generation, escalation rate, error rate + top errors), quality proxy (regeneration-within-15min, validation-critical rate, post-gen failure rate), top spenders, **per-tenant tier picker + Story-enrichment checkbox** (migration 048 — `llm_enable_story_enrichment` flag; POST handler persists both `llm_tier` and the flag and logs each change to `activity_log` separately so tier vs. feature-flag changes are auditable).
-  - **Tenant admin** `/settings/my-llm-usage` — current plan + description, **soft-cap progress bars** (warn at 80%, block at 100%), blocked-calls counter, KPIs (spend / calls / input / output tokens), daily-spend bars, spend-by-feature table, plan comparison table.
-- **Story-view enrichment** (migration 048): new task `story_view_generation` → Haiku 4.5, no escalation. Task routes LLM output to `test_case_versions.story_view JSONB`; the render path falls back to the mechanical step view when NULL. Tenant opt-in via the superadmin checkbox above. See "Story view — BA-readable test cases" section below for the full pipeline.
-- **Domain Packs** (migration 049): per-tenant opt-in parallel knowledge channel for `test_plan_generation`. Markdown files with YAML frontmatter in `salesforce_domain_packs/` describe specific Salesforce domains (Case escalation, Lead conversion, etc.). When a requirement's text matches a pack's keywords, the pack content is injected as an **uncached** user-message block after the existing dynamic block — gives Sonnet concrete patterns to follow for domains where it would otherwise need Opus. Attribution (`[{id, version}, ...]`) rides `llm_usage_log.context->'domain_packs_applied'` — same JSONB-key pattern as story_view, no dedicated column. Tenant flag `llm_enable_domain_packs` (default off); superadmin toggles via the "Packs" checkbox next to "Story" in `/settings/llm-usage`. v1 is keyword-only (word-boundary regex via `knowledge._text`); object-match scoring path exists but stays dormant until `referenced_objects` plumbing lands. See "Domain Packs — prescriptive domain knowledge" section below.
+- **Feedback loop** (migration 033): `generation_quality_signals` table + `feedback_rules.py` aggregate signals into a prompt-ready `### Common mistakes to avoid:` block — natural-language imperatives ranked by severity × frequency, top-5. (Signal sources that wrote to v1 tables — validator-critical, ba_rejected — retired with the v1 layer; the aggregation surface remains.)
+- **Domain Packs / knowledge channel**: the pack + rules mechanism lives in **S5** (`primeqa/knowledge/` — `domain_packs.py`, `domain_pack_provider.py`, `provider.py`, `feedback_rules.py` stays in `intelligence/llm/`). Its original v1 consumer (`generation.py`) retired with v1; S3 generation carries a `domain_pack_refs` slot (`generation/protocol.py`). Whether the S5→S3 consumption is fully wired is design-tracked in `docs/architecture/substrate_5_knowledge/SPEC.md` + DEFERRED_ITEMS (the seam was "settled as not wired" per D-156). Flag `llm_enable_domain_packs`; attribution rides `llm_usage_log.context->'domain_packs_applied'`.
+- **Dashboards**: superadmin `/settings/llm-usage` (cost by task/model/tenant/day, efficiency, top spenders, per-tenant tier picker) + tenant admin `/settings/my-llm-usage` (plan, soft-cap progress bars, blocked-calls counter, spend-by-feature).
 - **Providers** (`providers/registry.py`): routes by model-id prefix. `claude-*` → Anthropic, `gpt-*` / `o1-*` → OpenAI stub (raises NotImplementedError today). Cross-vendor fallback chains are architecturally supported — the router just needs both sides present in the registry.
 - **PII redaction** (`redact.py`): compiled regexes scrub emails, IPs, SSN-shaped, long digit runs from outbound prompts. Structure-preserving.
-- **Migration**: never bypass the gateway. New callers always go through `llm_call()`. Legacy direct-Anthropic paths (`IntelligenceService._call_llm_legacy`) remain only as fallback when no `tenant_id` + `api_key` is available (i.e. system-level calls) and are scheduled for removal once every call site has a tenant context.
+- **Migration**: never bypass the gateway. New callers always go through `llm_call()`. Legacy direct-Anthropic paths remain only as fallback when no `tenant_id` + `api_key` is available (i.e. system-level calls).
 
-## Run event log (cross-service real-time)
+## The live engine — S1–S8 substrate
 
-In `primeqa/runs/streams.py` + `run_events` table (migration 027):
+The release-intelligence loop runs on an eight-substrate decomposition. Each
+substrate is a self-contained package with its own design SPEC under
+`docs/architecture/substrate_*/SPEC.md` (the canonical, current design-of-record).
 
-- Worker/service code calls `emit_stage_started`, `emit_stage_finished`, `emit_test_started`, `emit_test_finished`, `emit_step_started`, `emit_step_finished`, `emit_log`, `emit_run_status`. Each fans out to:
-  1. **In-process `EventBus`** (live, same-process delivery)
-  2. **`run_events` row** via `record_event()` — durable, cross-service
-- `record_event` opens its own `Session(bind=engine)` (not `SessionLocal()`) so closing it does **not** close the caller's scoped session. That was the cause of a DetachedInstanceError fire drill; never regress this.
-- SSE endpoint `GET /api/runs/:id/events` interleaves three channels: in-process bus, DB tail every ~1s (cross-service), DB snapshot every 5s. Initial connect backfills the last 200 events so refresh repopulates the log panel.
-- Scheduler's `trim_run_events` keeps ≤1000 events per run (runs every 10 min).
-- Privacy: API bodies, SOQL, credentials **never** land in events. Full per-step payloads live in `run_step_results` (role-gated).
+| # | Substrate | Package | Role |
+|---|---|---|---|
+| S1 | Semantic org model | `semantic` + `sync` | Salesforce metadata as a bitemporal behavior graph (entities + edges); live sync engine. Schema-per-tenant. |
+| S2 | Test representation | `test_representation` | Canonical claims + recipes — the shared test-case representation |
+| S3 | Generation | `generation` | AI generates claims/recipes from Jira requirements, grounded in S1, ground-or-refuse |
+| S4 | Execution engine | `execution_engine` | Runs recipes against Salesforce, captures grounded `RunEvidence`, provisioning + reverse-order cleanup, async job queue |
+| S5 | Knowledge | `knowledge` | Domain packs + learned rules + system-rules channel that sharpen generation |
+| S6 | Interpretation | `interpretation` | Deterministic-first verdicts + cause attribution over the captured evidence |
+| S7 | Conversation | `conversation` | Grounded-or-refuse Q&A surface (`/ask`), LLM-free retrieval + bounded assembly |
+| S8 | Evolution | `evolution` | Grounding-validity (intact / drifted / broken) as the org changes, + repair suggestions |
 
-## AI test-plan generation (multi-TC per requirement)
+- **Decision**: `primeqa/intelligence/substrate_decision.py` → GO / CONDITIONAL_GO / NO_GO with per-requirement explainability (D-237). Wired to releases; surfaced on `/releases/<id>?tab=decision`.
+- **Async execution**: S1 sync and S4 execution run through DB-backed job queues (`s1_sync_jobs`, `s4_execution_jobs`) consumed by the worker; the scheduler runs reaper + dead-man's-switch ticks.
+- **Run-time test-data injection** (D-235) lives in S4 field-overrides (positive-only, sync UI). The v1 Test Data Engine (templates/factories) was removed (D-243).
+- **Fix-proposal agent** (D-236): the LLM proposes repairs with confidence + rationale + diff; flag-gated auto-apply on sandbox only (`evolution/repair.py`).
+- **Live proof**: the full loop runs daily against the live **env-59** org (`docs/design/flagship-live-proof.md`); the canonical HIGH-tier requirement is **SQ-205** (Service Cloud case escalation).
 
-In `primeqa/intelligence/generation.py` + `primeqa/test_management/service.py`, migration 028:
+The architecture is documented in `docs/architecture/PLATFORM_VISION.md`
+(the 8-substrate vision) and the per-substrate SPEC/EVOLUTION/DEFERRED docs.
+The append-only `docs/architecture/DECISIONS_LOG.md` is the canonical decision
+ledger.
 
-- One Generate click → **3–6 test cases** covering `positive / negative_validation / boundary / edge_case / regression` (one scenario per TC). Replaces the old "one click = one TC" model which hid coverage gaps.
-- `TestCaseGenerator.generate_plan(requirement, meta_version_id)` returns `{test_cases: [...], explanation}`.
-- `TestManagementService.generate_test_plan(...)` creates a `generation_batches` row + N `test_cases` rows (each with `coverage_type` + `generation_batch_id`) + N `test_case_versions`.
-- **Supersession is batch-wide**: a new Generate soft-deletes all own-user drafts for the requirement (any prior batch); approved/active TCs are immutable.
-- Cost per batch is estimated from tokens using a model→$ lookup table and stored on `generation_batches.cost_usd`. Surfaced to superadmin only.
-- Executor name prefix is `PQA_{run_id}_{tc_id}_{logical_id}` to prevent 5 TCs from one requirement colliding on Salesforce Name uniqueness. Idempotency key carries `tc_id` too.
-- Fail-fast: `StepExecutor.execute_step` raises a clear error when a `$var` reference has no prior `state_ref`; message includes available vars and the fix hint. Catches the most common AI-generator quality bug before hitting Salesforce.
-
-## Static test-case validator (migration 029)
-
-`primeqa/intelligence/validator.py` — catches AI hallucinations **before** a run wastes an API burst.
-
-- `TestCaseValidator(metadata_repo, meta_version_id)` eager-hydrates an object-by-api-name index + `{object_id: {field_api: MetaField}}` nested map. Cheap to construct — one DB round-trip reused across many `.validate()` calls.
-- Rules (severity tier drives UI color + preflight block):
-
-  | Severity | Rule | What |
-  |---|---|---|
-  | `critical` | `object_not_found` | `target_object` missing in metadata |
-  | `critical` | `field_not_found` | `field_values` / `assertions` key missing |
-  | `critical` | `field_not_createable` | `create` step uses a read-only field |
-  | `warning` | `field_not_updateable` | `update` step uses a read-only field |
-  | `critical` | `unresolved_state_ref` | `$var` used without a prior `state_ref` |
-  | `critical` | `soql_from_object_not_found` | SOQL `FROM` points at a missing object |
-  | `critical` | `soql_column_not_found` | SOQL `SELECT` column missing on `FROM` object |
-  | `info` | `fields_not_synced` | Object exists but its fields weren't synced; skipping deep checks |
-
-- Fuzzy suggestions via `difflib.get_close_matches(cutoff=0.6)` for field / object / state-ref names — up to 3 candidates per issue. UI renders them as one-click **Apply** buttons.
-- Relationship-aware SOQL: `Owner.Id` is valid when `OwnerId` exists as a reference field (same for `__r` → `__c`). Doesn't cry wolf on standard lookups.
-- `apply_fix(steps, issue, replacement)` is a pure function returning new steps with the replacement applied. Used by `TestManagementService.apply_validation_fix` to create a new `test_case_version` (generation_method=`'manual'`).
-
-Three integration points:
-
-1. **After generation** — `generate_test_plan` runs the validator on each new version and stores the report in `test_case_versions.validation_report` (JSONB).
-2. **Before execution** — worker's `_run_execute_stage` checks the report before each TC. If `status == "critical"` and run config doesn't carry `skip_validation` / `force_run`, the TC is blocked with `failure_type='validation_blocked'` and a clear log event — no SF call wasted. Superadmin override via `config.skip_validation`.
-3. **During execution** — existing `$var` fail-fast in `executor.py` remains as the defence-in-depth runtime layer.
-
-APIs: `POST /api/test-cases/:id/revalidate` (optional `{environment_id}`), `POST /api/test-cases/:id/apply-validation-fix` (body `{issue, replacement}`).
-
-UI on test case detail page: red banner for critical, yellow for warnings, green "No issues" on clean. Each issue lists its suggested replacements as Apply buttons that patch the step JSON and reload.
-
-## Reliability fixes (Prompt 15, migration 046)
-
-Three correctness fixes to generation + execution pathways:
-
-**Fix 1 — Transaction wrap around `generate_test_plan`**. The batch
-creation loop (`primeqa/test_management/service.py:generate_test_plan`)
-used to commit after each TC, so a mid-loop exception left half the
-batch persisted. Now:
-- `db.flush()` through the loop (no commits)
-- `_store_validation_report(commit=False)` joins the caller's tx
-- One final `db.commit()` after the last TC; any raise gets a
-  `rollback()` and re-raises so the async worker can mark the
-  `generation_jobs` row failed with a clean error
-
-**Fix 2 — Negative-test result interpretation**. Steps flagged
-`expect_fail` are flipped in the executor to `status=passed` with
-`failure_class=expected_fail_verified` (real) or
-`expected_fail_unverified` (validation rule missing — the negative
-test passed when it shouldn't). The Go/No-Go dashboard now surfaces
-both counts via `compute_negative_counts(db, run_id)` in
-`primeqa/release/dashboard.py`, and the hero subline reads
-"9 passed · 2 failed · 3 expected failures ✓ · 1 unexpected pass ✗"
-so reviewers distinguish "negative test SF rejected correctly" from
-"negative test SF did NOT reject".
-
-**Fix 3 — Verify-step comparison capture** (migration 046).
-`run_step_results.comparison_details` JSONB with shape
-`{"mismatches": [{"field", "expected", "actual"}, ...]}`. Populated
-only when a verify step has ≥1 mismatch (NULL otherwise). The
-executor produces three companion outputs in one pass:
-- `assertion_failures: [str]` (legacy list-of-strings, kept)
-- `assertion_summary: "N of M fields mismatched: f1, f2..."`
-- `comparison_details: {mismatches: [...]}`
-
-`StepExecutor.execute_step` surfaces `assertion_summary` to
-`run_step_results.error_message` (previously dumped `str(body)`, an
-unreadable wall of JSON) and writes `comparison_details` onto the
-dedicated column so the UI can render per-field rows without
-parsing `api_response`.
-
-## Story view — BA-readable test cases (migration 048)
-
-Generated test cases default to the mechanical view (step 1 create
-Opportunity {StageName:"Prospecting"}, step 2 verify…). BAs and
-stakeholders who approve release plans can't scan that quickly. The
-**story view** is an LLM-generated human-readable layer over the same
-version: one-paragraph description / preconditions / expected outcome
-plus a sharpened title. Feature-gated per tenant (default off).
-
-Lives in:
-  - `migrations/048_story_view.sql` — `test_case_versions.story_view JSONB`
-    (nullable) + `tenant_agent_settings.llm_enable_story_enrichment BOOLEAN`
-  - `primeqa/intelligence/llm/prompts/story_view.py` — prompt module,
-    `VERSION="story_view@v1"`, `MAX_TOKENS=800`, `SUPPORTS_CACHE=False`,
-    `SUPPORTS_ESCALATION=False`. One Haiku 4.5 shot, no fallback.
-  - `primeqa/intelligence/enrichment.py` — `StoryViewEnricher` wraps
-    `llm_call(task="story_view_generation", …)`, validates that the four
-    required keys (`title` / `description` / `preconditions_narrative` /
-    `expected_outcome`) are present and non-empty, hard-caps text length
-    (200 / 2000 / 2000 / 2000 chars) so a runaway model can't blow out
-    the JSONB row or the UI. Never raises; any failure returns `None`.
-  - `primeqa/templates/components/_tc_body.html` — shared Jinja macro
-    `tc_body(version, tc, mode, step_comments)`. Three render modes:
-    `full` (detail page), `review_form` (pending review with per-step
-    textareas), `review_view` (completed review with comment pills).
-    When `version.story_view` is NULL, falls through to the mechanical
-    `_mechanical_steps()` rendering — backward-compatible with every
-    pre-migration version.
-  - Route wiring: `primeqa/views.py` `test_cases_detail` and
-    `_reviews_detail_impl` plumb `story_view` through their context
-    dicts; templates call the macro.
-
-Enrichment runs **inside** the Prompt 15 atomic transaction in
-`TestManagementService.generate_test_plan`:
-  - `_story_enrichment_enabled(tenant_id, db)` checks the per-tenant
-    flag with a tolerant try/except (settings-lookup failures default
-    to False so a transient DB blip can't break generation)
-  - `db.flush()` only — no intermediate commits; a failure in the
-    enricher logs a warning and leaves `version.story_view=NULL`, the
-    batch still commits cleanly
-  - LLM usage log rows are written by the gateway under
-    `task='story_view_generation'`; superadmin `/settings/llm-usage`
-    per-task cost breakdown surfaces them automatically.
-
-Superadmin toggle: `/settings/llm-usage` → "Top tenants by spend"
-table → per-tenant Plan cell has a checkbox ("Story") alongside the
-tier picker. `POST /settings/tenant-tier/<id>` handler persists both
-`llm_tier` and `llm_enable_story_enrichment` in one roundtrip,
-writing separate `ActivityLog` rows for each change so the audit
-trail distinguishes tier changes from feature-flag toggles.
-
-Cost envelope: ~800 tokens per TC on Haiku 4.5 ≈ $0.0004/TC. No cache
-blocks (the prompt is already small). No fallback chain (a failed
-enrichment is silent and harmless).
-
-## Domain Packs — prescriptive domain knowledge (migration 049)
-
-AI test-plan generation uses the router's tier chain
-(Sonnet→Opus) to decide which model handles a requirement. Opus is
-5× the cost of Sonnet; routing a requirement HIGH because it
-mentions "Case escalation" is money spent on breadth-of-training
-that Opus already has. What Sonnet needs to match Opus on these
-requirements isn't more parameters — it's **your team's domain
-knowledge** about how that Salesforce area actually behaves.
-
-Domain Packs is a parallel knowledge channel that injects
-tenant-curated domain knowledge into the generation prompt when
-the requirement matches. A single pack of ~1200 tokens routinely
-lifts Sonnet output quality on a covered domain to Opus parity.
-
-Lives in:
-  - `migrations/049_llm_enable_domain_packs.sql` — per-tenant flag
-    `tenant_agent_settings.llm_enable_domain_packs BOOLEAN DEFAULT false`.
-    **No migration for attribution** — it rides the existing
-    `llm_usage_log.context` JSONB column under the key
-    `domain_packs_applied` (same pattern as story_view).
-  - `salesforce_domain_packs/<id>.md` — markdown files with YAML
-    frontmatter (`id`, `title`, `keywords`, `objects`,
-    `token_budget`, `version`). See
-    `salesforce_domain_packs/README.md` for the author + security
-    guide. Pack files are **trusted git-controlled content** — they
-    MUST NOT be populated from user uploads, Jira fetches, or any
-    untrusted source.
-  - `primeqa/intelligence/knowledge/_text.py` — shared word-boundary
-    + inflection-aware `kw_count` / `matched_keywords` helpers.
-    Reused by `detect_complexity` in `test_plan_generation.py` so
-    both sites use identical matching semantics (no "workflow
-    silently matching flow" regressions).
-  - `primeqa/intelligence/knowledge/domain_packs.py` —
-    `DomainPack` dataclass, `DomainPackLibrary` (loads `*.md`,
-    reloads on mtime, skips README), `DomainPackSelector`
-    (keyword + object scoring with measured-token budget cap).
-    **Parallel knowledge channel; NOT a `KnowledgeProvider`
-    implementation** — rules are short proscriptive statements,
-    packs are long prescriptive patterns.
-  - `primeqa/intelligence/knowledge/domain_pack_provider.py` — thin
-    facade exposing `get_packs(requirement_text, referenced_objects,
-    max_tokens) → (packs, attribution)`.
-  - `primeqa/intelligence/generation.py` — feature flag gate
-    (`_domain_packs_enabled`) + resolver (`_resolve_domain_packs`)
-    called immediately before `llm_call`. When the flag is off, the
-    provider is never constructed (no filesystem IO, no overhead).
-    Packs are passed through `context["domain_packs"]`.
-  - `primeqa/intelligence/llm/prompts/test_plan_generation.py`:
-    `build()` appends a **fourth uncached** user-message block
-    (`# DOMAIN PACKS`) after the existing dynamic block when packs
-    are present, and writes `domain_packs_applied: [{id, version}]`
-    into `context_for_log`. The existing gateway→usage.record
-    plumbing writes this into `llm_usage_log.context` automatically.
-
-Selector rules:
-  - Keywords matched word-boundary + inflection-aware against
-    `jira_summary + jira_description + acceptance_criteria`.
-  - Score = `len(matched_keywords) + 2 × len(matched_objects)`. v1
-    keeps `referenced_objects=None` from the caller so the
-    object-score contribution is dormant — the code path exists and
-    is tested, but activates only once the requirements pipeline
-    extracts objects up front (v1.1).
-  - Token budget: enforced via measured `len(content) // 4`, not
-    the author-declared `token_budget` frontmatter key. Higher-scored
-    packs fit first; smaller packs still considered when the
-    current pack blows the cap.
-  - Ties broken by `pack.id` ascending for deterministic ordering.
-
-**Applied on ALL routed tiers (Sonnet AND Opus).** Opus benefits
-from tenant-specific domain knowledge too; ~1200 extra input
-tokens at Opus rates is noise (~$0.018/call).
-
-Superadmin toggle: `/settings/llm-usage` → Top tenants by spend
-table → per-tenant Plan cell now has **both** the "Story"
-checkbox (migration 048) and "Packs" checkbox (migration 049)
-alongside the tier picker. `POST /settings/tenant-tier/<id>`
-persists all three fields (tier + story + packs) and writes
-separate `ActivityLog` rows for each change so the audit trail
-distinguishes tier changes from feature-flag toggles.
-
-First pack: `salesforce_domain_packs/case_escalation.md` targets
-Service Cloud escalation patterns (IsEscalated semantics,
-Case_SLA__c / Escalation__c lookups, Flow-triggered vs manual
-escalation, common pitfalls). Matches SQ-205 in the current
-production corpus — the canonical HIGH-tier requirement.
-
-## Tester's focused /run page — four-mode pickers (Prompt 16)
-
-`/run` is the lean, one-click path for the most common runs. The Run
-Wizard at `/runs/new` stays as the advanced mixed-source surface —
-"Advanced wizard →" link at the top points to it.
-
-Four mode tabs, each gated by permission:
-
-| Tab | Permission | Picker |
-|---|---|---|
-| Sprint  | `run_sprint` | Sprints aggregated across every scrum board the env's Jira can see; ticket checkboxes for per-ticket inclusion |
-| Tickets | `run_single_ticket` | Recent-tickets list + debounced search (`q` + filter chips `mine / current_sprint / open / recent`); multi-select selected list |
-| Suite   | `run_suite` | Dropdown with inline "N TCs · gate X%" metadata; per-TC exclusion checkboxes below |
-| Release | `run_sprint \|\| run_suite` | Release list with ticket/TC counts; contents panel with ticket + TC checkboxes + quick filters (Tickets Only / TCs Only / None) |
-
-The page itself requires `run_sprint || run_suite` (bulk perms). Users
-with only `run_single_ticket` are redirected to `/requirements` by the
-landing logic.
-
-**Dynamic production banner**: every `<option>` in the env dropdown
-carries `data-is-production="true|false"`. A `#prod-gate` wrapper
-(banner + "I confirm" checkbox) starts hidden; JS flips it visible
-only when the selected env is production, and clears the checkbox on
-switch-away. Server-side `/api/bulk-runs` ignores `confirm_production`
-on non-prod envs and blocks prod runs without it (including the
-Tickets tab).
-
-**Env-scoped picker endpoints** (`primeqa/execution/routes.py`):
-- `GET /api/jira/sprints?environment_id=` — aggregates sprints across
-  projects → scrum boards → sprints; active-first + newest-start sort
-- `GET /api/jira/sprints/<sprint_id>/tickets?environment_id=` — sprint's issues
-- `GET /api/jira/tickets/recent?environment_id=&limit=10` — last views
-- `GET /api/jira/tickets/search?environment_id=&q=&filter=mine,open,current_sprint,recent`
-- `GET /api/suites/<suite_id>/overview` — TC list + gate + last run
-- `GET /api/releases?environment_id=` — tenant releases (ticket/TC counts)
-- `GET /api/releases/<id>/contents` — tickets + test_cases for the picker
-
-**POST /api/bulk-runs** accepts `run_type` ∈ `{sprint, single,
-tickets, suite, release}`. Suite mode accepts
-`exclude_test_case_ids[]`; release mode accepts `test_case_ids[]` +
-`ticket_keys[]` overrides so the picker's unchecks flow through
-cleanly. Release mode is gated on `bulk_run` (same layer-1 as sprint).
-
-**Recent-ticket tracking** (migration 047, `user_recent_tickets`):
-keyed `(user_id, environment_id, jira_key)` with `viewed_at` timestamp.
-Capped at 20 rows per `(user, env)` — the write path (`record_view()`
-in `primeqa/runs/recent_tickets.py`) upserts + prunes in one
-transaction. Hooked from:
-- `GET /requirements/<id>` — every detail-page view records the key
-- `POST /api/bulk-runs` tickets/sprint modes — every submitted key
-  (best-effort; failures never block the request)
-
-The Tickets tab reads this list via `/api/jira/tickets/recent` when
-the search box is empty.
-
-## Context-driven run triggers + rerun / labels / AI failure summary
-
-The Runs tab used to be both the history view AND the primary way to trigger runs (via the Run Wizard). Multi-TC generation made the wizard feel like the wrong starting point — most users want to run the tests that belong to a thing, not recompose the selection. Context-driven triggers live alongside the source.
-
-**Trigger from the source**:
-- `POST /requirements/:id/run` — run every active TC linked to a requirement. Per-row button on Requirements list; `▶ Run N test cases` on Requirement detail. Visibility-scoped (private TCs owned by others are excluded).
-- `POST /releases/:id/run` — run everything in a Release's test plan. `▶ Run test plan` button in the Test Plan tab header.
-- `POST /suites/:id/run` (pre-existing) — run a suite.
-- `POST /test-cases/:id/run` (pre-existing) — run a single TC.
-- Run Wizard at `/runs/new` is the **advanced** path for mixed-source runs (e.g. Jira tickets + a suite + hand-picked TCs in one run). Runs list now says "Advanced: build run" for it, with a banner that points to the source pages as the primary entry.
-
-**Requirements list state-aware buttons**:
-The list handler runs one group-by over TCs per visible requirement and picks the Generate button label from the user's own state:
-- No my-draft AND no approved/active → `Generate`
-- My draft exists → `Regenerate` (outline style)
-- Approved/active TC exists (but no my-draft) → `Generate again`
-
-TC count + coverage chips render inline on each row when tests exist.
-
-**Run detail extras (migration 030)**:
-- `pipeline_runs.label` — free-form 100-char tag. Inline debounced editor on run detail; substring-match filter on the run history page (`?label=release-`).
-- `↻ Rerun` per-row on failed results → `POST /runs/:id/rerun-one {test_case_id}` queues a single-TC rerun with `parent_run_id` linkage.
-- `↻ Rerun verbatim` in the header → `POST /runs/:id/rerun-verbatim` collects every `(test_case_id, test_case_version_id)` from the original and stores `version_pin` in `run.config`. The worker's `_run_execute_stage` reads `run.config.version_pin[str(tc_id)]` before falling back to `current_version_id`. Critical when the TC has been edited since the original run.
-- `failure_summary_ai` (superadmin only) — `POST /runs/:id/summarise-failures` prompts the env's LLM with every failed step's error text and caches a 3-6 sentence root-cause summary. `failure_summary_at` + `failure_summary_model` drive the "Regenerate" affordance.
-
-**Run cost panel on /runs/:id (superadmin only)**:
-Sums `generation_batches.cost_usd` for the batches that produced this run's TCs, plus agent fix-and-rerun attempt counts (per-attempt token tracking is a future migration). Collapsible panel with a grand total in the summary line. Panel is never rendered for non-superadmin roles.
-
-## The Run Experience (R1–R7 + post-R7 enhancements)
-
-```
-1. Run Wizard (/runs/new) — Jira ticket search (chips + live preview) + suites + sections + requirements + hand-picks
-2. As the user types in the Jira box, GET /api/jira/search hits the env's
-   Jira connection, caches for 8 s, returns an HTMX fragment with status +
-   issue type + project; click / Enter adds a chip
-3. Every chip change debounced-fires POST /api/runs/preview (read-only
-   RunWizardResolver) updating the sticky "N Jira tickets, M suites → K
-   test cases" summary bar
-4. Clicking Preview goes to /runs/new/preview: Preflight checks
-   (credentials, metadata freshness, per-test skip by metadata category,
-   size caps 100/500 with superadmin OVERRIDE), cost (superadmin only),
-   per-test skip list
-5. Queue pipeline_run; worker dispatches stages. Executor runs each TC's
-   steps against Salesforce, writing run_test_results + run_step_results +
-   run_events rows. SSE interleaves in-process bus + 1s DB event tail +
-   5s snapshot poll so the `/runs/:id` log panel shows every milestone
-   cross-service (web and worker are separate Railway services).
-6. On step failure: AgentOrchestrator triages (pattern DB + taxonomy
-   regex), proposes a fix (LLM), gates on env_type != production AND
-   confidence ≥ High threshold
-7. Auto-apply on sandbox creates new TestCaseVersion, reruns with
-   parent_run_id
-8. UI shows Agent fixes tab with Accept / Revert / Edit; Pipeline log
-   panel supports Download .txt / .json for ticket attachments.
-9. Scheduler cron fires scheduled_runs (suites only in v1). Also trims
-   run_events to ≤1000 per run and reaps stuck stages (5-min heartbeat).
-10. Flake scorer auto-quarantines chronically flipping tests
-11. /api/releases/:id/status honors agent_verdict_counts per release
-```
-
-Requirements → test cases flow (post-R7):
-
-```
-1. Create requirements manually via "+ New Requirement" OR import from Jira
-   (chip picker: HTMX live search + multi-select + paste fallback)
-2. Click Generate → AI generate_plan returns 3–6 test cases covering
-   positive / negative_validation / boundary / edge_case / regression
-3. Each TC gets coverage_type + generation_batch_id; batch captures the
-   LLM's rationale + token/cost for superadmin audit
-4. Supersession: regenerating soft-deletes prior own-drafts for that
-   requirement; approved/active TCs spawn a fresh TC alongside
-5. Bulk-generate: pick N requirements → POST /api/requirements/bulk-generate
-   runs ≤5 in parallel via ThreadPoolExecutor (hard cap 20 per call)
-6. Test Library shows a Coverage column with colored badges; Requirement
-   detail page groups linked TCs by coverage bucket + shows "AI test plan
-   rationale" callout
-```
-
-Full decision ledger and architecture in `docs/design/run-experience.md`.
+> **Retired with v1 (D-191…D-221, migration 053):** the `pipeline_runs` Run
+> Wizard + SSE `run_events` log, the multi-TC generator over
+> `test_case_versions`/`generation_batches`, the static validator
+> (`validator.py`), the story-view enricher (`enrichment.py`), the v1
+> fix-and-rerun `AgentOrchestrator`, and BA reviews (`ba_reviews`). The retired
+> v1 Run-experience design lives in `docs/archive/design/run-experience.md`.
 
 ## Self-Validation Suite
 
-PrimeQA runs itself via a JSON-driven E2E suite — the canonical artifact
-is at `primeqa/system_validation/suites/primeqa_core.json`. Grammar is
-documented in `docs/design/system-validation.md`. Run with:
+Plimsol runs itself via a JSON-driven E2E suite — the canonical artifact
+is at `primeqa/system_validation/suites/primeqa_core.json` (now named
+"Plimsol Core Validation"). Grammar is documented in
+`docs/design/system-validation.md`. Run with:
 
 ```bash
 python tests/test_system_validation.py
@@ -600,8 +290,7 @@ python tests/test_system_validation.py
 
 The suite covers 8 workflow categories (Requirements, Test Library, Run
 Flow, Jira, Preview, Metadata, Agent, UI Nav) and is authorable by
-non-engineers or LLMs. Roadmap: ingest the JSON back into the
-`test_cases` table so PrimeQA stores and runs tests of itself.
+non-engineers or LLMs.
 
 ## Key commands
 ```bash
@@ -609,20 +298,23 @@ non-engineers or LLMs. Roadmap: ingest the JSON back into the
 source venv/bin/activate
 python -m primeqa.app                    # Flask dev server on :5000
 
-# Full test suite (integration tests against Railway)
-python tests/test_auth.py                # 15
-python tests/test_environments.py        # 14
-python tests/test_system_validation.py   # 4 runner + 13 canonical suite outcomes
-python tests/test_llm_architecture.py    # 25 (Phases 1-7 — gateway / tiers / limits / dashboards / feedback loop)
-python tests/test_eval_harness.py        # 15 (offline prompt regression harness)
-python tests/test_run_tests_page.py      # 15 (substrate /run page + legacy /api/bulk-runs)
-# (v1 suites retired with the engine, D-221 — substrate suites + tests/unit are the corpus)
+# Integration tests (against the Railway database) — current corpus
+python tests/test_auth.py                # auth
+python tests/test_environments.py        # environments
+python tests/test_system_validation.py   # runner + canonical suite outcomes
+python tests/test_llm_architecture.py    # gateway / tiers / limits / dashboards / feedback
+python tests/test_eval_harness.py        # offline prompt regression harness
+python tests/test_run_tests_page.py      # substrate /run page
+python tests/test_s4_execution_jobs.py   # S4 async execution queue
+python tests/test_s7_conversation_contract.py   # S7 conversation
+python tests/test_tenant_isolation.py    # cross-tenant isolation
+# (run `ls tests/test_*.py` for the full current list)
 
 # Deploy
 git push origin main                     # Railway auto-deploys 3 services
 
-# Apply a migration (idempotent since 016)
-psql "$DATABASE_URL" -f migrations/049_llm_enable_domain_packs.sql
+# Apply a public migration (idempotent since 016)
+psql "$DATABASE_URL" -f migrations/056_drop_dead_test_data_tables.sql
 ```
 
 ## Environment variables
@@ -634,11 +326,10 @@ psql "$DATABASE_URL" -f migrations/049_llm_enable_domain_packs.sql
 - `PORT` — HTTP port (Railway sets, default 5000)
 - `FLASK_ENV` — `production` on Railway
 
-## Database (60+ tables)
-PostgreSQL on Railway with pgvector extension. Migrations are plain SQL files
-run via `psql`. **Never mutate an existing migration** — add a new numbered
-one. Migrations 016+ are idempotent (use `ADD COLUMN IF NOT EXISTS` and
-`CREATE INDEX IF NOT EXISTS`).
+## Database
+PostgreSQL on Railway with pgvector. **Two migration systems coexist:**
+- **Public/v2 tables** — numbered plain-SQL files in `migrations/` (001–056), run via `psql`. **Never mutate an existing migration** — add a new numbered one. Migrations 016+ are idempotent (`ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`).
+- **Substrate tables** — schema-per-tenant DDL via `alembic` (the substrate uses one schema per tenant; v2 product tables stay in `public` keyed by `tenant_id`).
 
 ## Conventions
 - Repository pattern: all DB queries go through repository classes
@@ -646,26 +337,26 @@ one. Migrations 016+ are idempotent (use `ADD COLUMN IF NOT EXISTS` and
 - API routes return JSON under `/api/*` using the uniform envelope
 - Web views render templates under `/`
 - Tests are integration tests against the real Railway database
-- Tenant isolation: every new table includes `tenant_id`, every query filters by it
-- AI outputs carry structured reasoning so Phase 11 explainability can surface them
-- Use summary tables (test_case_risk_factors, etc.) instead of heavy joins for dashboards
+- Tenant isolation: every new table includes `tenant_id` (public) or lives in the tenant's schema (substrate); every query scopes by it
+- AI outputs carry structured reasoning so the decision layer can surface explainability
 - Commit messages are descriptive, prefixed with phase/feature name. **Author `AK <amjad.khan@teamd.co.in>`; no `Co-Authored-By` trailer** (see _Working rules → Commits & branches_)
 - Every destructive/admin action writes to `activity_log` via the service layer
 - All lists paginate with per_page capped at 50 — there are no unbounded list endpoints anymore
 - **Section create is idempotent** — `create_section` returns an existing active row if one matches `(tenant_id, parent_id, name)`. Prevents duplicate-tree regrowth from integration tests.
-- **AI generation is batch-first** — every Generate click on a requirement produces N TCs in one `generation_batches` row; supersession is batch-wide per `(tenant_id, requirement_id, owner_id)`. Single-TC `generate_test_case()` remains only for explicit re-gen of a specific `test_case_id`.
-- **Thread-safety**: SQLAlchemy sessions are **not** shared across threads. Bulk endpoints using `ThreadPoolExecutor` open `Session(bind=engine)` per thread. `record_event()` same pattern — never `SessionLocal()` if the caller is holding a scoped session.
-- **Cross-service observability**: worker/service milestones write to the `run_events` DB table in addition to the in-process BUS. Web's SSE endpoint tails the table so Railway's split services still deliver live updates.
+- **Thread-safety**: SQLAlchemy sessions are **not** shared across threads. Bulk endpoints / per-thread work open `Session(bind=engine)` per thread — never share a scoped session across threads.
 - **HTML unicode**: never write `\uXXXX` escapes directly in Jinja/HTML content — HTML doesn't interpret them. Use the actual UTF-8 character or `&#NNNN;` entity. (JS string literals **do** interpret `\uXXXX`; those are fine.)
 
 ## The Release Intelligence Loop
 
 ```
-Release → Requirements (Jira) → AI-generated Tests
-       → Metadata Impacts (per-category sync status) → Risk Scores → Ranked Test Plan
-       → Test Data (templates/factories) → Executions (live SSE timeline)
-       → On failure: agent triage → sandbox auto-apply OR human review queue
-       → Results → Decision Engine → GO/NO-GO Recommendation (respects agent verdict flag)
+Release → Requirements (Jira)
+       → S1 semantic org model (per-category metadata sync)
+       → S3 AI-generated claims/recipes (grounded in S1, ground-or-refuse)
+       → S4 execution against Salesforce → grounded RunEvidence (+ provisioning/cleanup)
+       → S6 interpretation → verdict + cause attribution
+       → S8 grounding-validity (intact/drifted/broken as the org changes)
+       → Decision Engine (substrate_decision.py) → GO/NO-GO Recommendation (explainable)
+       → S8 fix-proposal agent (human-gated; flag-gated sandbox auto-apply)
        → Human confirms → CI/CD proceeds
 ```
 

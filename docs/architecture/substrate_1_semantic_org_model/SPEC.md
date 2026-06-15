@@ -4,11 +4,14 @@
 
 **Last substantive update:** 2026-04-25 (Phase 2 — storage, data model, diff engine, query interface)
 
-**Implementation status (per D-023):** Phase 2 is design-locked but
-implementation-deferred. The first implementation milestone is `change_log`
-+ `diff_window` in `public` schema (no entities/edges, no schema-per-tenant,
-no `logical_versions`). Full structural implementation gated on pilot
-validation. See D-023.
+**Implementation status:** SHIPPED and live in prod (tenant_1). The full
+structural model is implemented — `entities`/`edges` + detail tables and the
+`logical_versions` version anchor (`logical_version_seq`) in schema-per-tenant,
+with `primeqa/semantic/` (entities/edges/query.py) and the live sync engine
+`primeqa/sync/` (engine/materialize/batching). The earlier D-023 framing
+(change_log + diff_window first, no entities/edges, no logical_versions)
+is **superseded** — see EVOLUTION D-189 / D-204 / D-242. `meta_versions.id`
+is no longer the version anchor (`logical_version_seq` is).
 
 **Supersedes:** the flat "metadata context" pattern in current generation code.
 
@@ -557,17 +560,17 @@ Per D-010 / D-013. (See Phase 1 spec section 7 for full tiering.)
 - Schema migration strategy at scale (parallel runners, failure handling)
 - Cleanup and retention policy for change_log
 
-**Reclassified deferrals (D-023) — design-locked, implementation-deferred
-pending pilot validation of the diff capability:**
+**Reclassified deferrals (D-023) — NOW IMPLEMENTED (Phase 2 shipped, live
+in prod tenant_1; see EVOLUTION D-189 / D-204 / D-242):**
 
-- Schema-per-tenant infrastructure (Alembic, `get_tenant_connection`, schema
-  provisioning, admin entry points)
-- Canonical `entities`/`edges` tables and the 14 Tier 1 edge types
-- `logical_versions` table (current implementation reuses `meta_versions.id`
-  as version anchor)
-- Effective permissions materialized view
-- `SemanticOrgModel` query class — repositories use direct SQL until query
-  patterns surface from real consumers
+- ✅ Schema-per-tenant infrastructure (Alembic, `get_tenant_connection`, schema
+  provisioning, admin entry points) — **shipped**
+- ✅ Canonical `entities`/`edges` tables and the Tier-1 edge types
+  (`primeqa/semantic/edges.py` `TIER_1_EDGES`) — **shipped**
+- ✅ `logical_versions` table — **shipped**; `logical_version_seq` is the real
+  version anchor (no longer `meta_versions.id`)
+- ⏳ Effective permissions materialized view — still deferred
+- ✅ `SemanticOrgModel` query class (`primeqa/semantic/query.py`) — **shipped**
 
 ---
 

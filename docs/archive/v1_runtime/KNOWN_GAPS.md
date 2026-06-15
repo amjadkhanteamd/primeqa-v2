@@ -1,5 +1,13 @@
 # PrimeQA v1 Runtime — Known Gaps
 
+> **ARCHIVED 2026-06-15.** The v1 runtime this ledger covers was retired
+> (D-191…D-221): `executor.py`, `worker._run_execute_stage`, `submit_review`,
+> `BAReview`, the `pipeline_runs` web — all deleted, and the v1 product tables
+> dropped in migration 053. Every gap below anchors to a symbol that no longer
+> exists, so the ledger is preserved as history rather than updated. Any gap
+> with a live successor on the substrate engine belongs in that substrate's
+> `DEFERRED_ITEMS.md`, not here.
+
 A living ledger of known gaps in the **v1 runtime** — the Flask app under
 `primeqa/` (execution, test_management, intelligence, runs, core, …). This is the
 durable, deduplicated home; it is distinct from:

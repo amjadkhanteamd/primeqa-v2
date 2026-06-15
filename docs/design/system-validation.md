@@ -1,14 +1,14 @@
-# PrimeQA Self-Validation Suite
+# Plimsol Self-Validation Suite
 
 ## Concept
 
-A canonical, declarative end-to-end test suite that exercises PrimeQA
-**through PrimeQA's own conventions** — API-first, workflow-driven,
-state-validating. The suite is expressed in a PrimeQA-flavoured step
+A canonical, declarative end-to-end test suite that exercises Plimsol
+**through Plimsol's own conventions** — API-first, workflow-driven,
+state-validating. The suite is expressed in a Plimsol-flavoured step
 grammar (similar to the Salesforce step schema, but adapted for HTTP +
 DB assertions) and executed by a Python runner.
 
-> Before every deploy: **run PrimeQA on PrimeQA.**
+> Before every deploy: **run Plimsol on Plimsol.**
 
 This is not a replacement for the domain integration suites
 (`tests/test_*.py`). Those are fast, surgical, and run against the
@@ -77,7 +77,7 @@ for idempotency (`"name": "SysVal $uuid"` generates a new name per run).
 
 ```json
 {
-  "name": "PrimeQA Core Validation",
+  "name": "Plimsol Core Validation",
   "version": "1.0",
   "tags": ["system", "e2e", "core"],
   "categories": [
@@ -123,14 +123,14 @@ the failed step's details, and the assertion diff when applicable.
 
 - **v1 (this commit)**: JSON-driven runner, canonical 8-category suite,
   Python test wrapper
-- **v2**: Ingest the JSON suites into PrimeQA's own `test_cases` table so
-  they appear in the Test Library. Requires extending `step_schema.py`
-  with `http` and `verify` actions and teaching the existing executor to
-  dispatch on action type.
+- **v2**: Ingest the JSON suites into Plimsol's own test representation so
+  they appear in the Test Library. (The original v1 `test_cases` table was
+  dropped in migration 053; a re-ingest target would now be the substrate's
+  S2 claim/recipe representation.)
 - **v3**: Agent-assisted self-repair — when the self-validation suite
-  fails, the R5 agent proposes a fix (likely a code change or a config
-  tweak). Closes the loop.
-- **v4**: Public "PrimeQA tests itself" dashboard — run the suite on
+  fails, the fix-proposal agent (D-236) proposes a fix (likely a code change
+  or a config tweak). Closes the loop.
+- **v4**: Public "Plimsol tests itself" dashboard — run the suite on
   every deploy, publish pass-rate + flakiness metrics.
 
 ## Why JSON, not pytest
@@ -140,7 +140,7 @@ the failed step's details, and the assertion diff when applicable.
   generate new tests from a one-line description ("add a test that
   verifies the `/runs/:id/compare` page shows flipped-red tests")
 - **Re-ingestable** — the JSON is trivially loaded into the test_cases
-  table (roadmap v2), letting PrimeQA literally store and run tests of
+  table (roadmap v2), letting Plimsol literally store and run tests of
   itself
 - **Stable across refactors** — no Python imports to update when code
   moves; the suite is purely about the HTTP + DB contract

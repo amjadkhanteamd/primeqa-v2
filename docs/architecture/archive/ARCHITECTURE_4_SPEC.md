@@ -1,5 +1,10 @@
 # PrimeQA Architecture 4 — Tool-Use Test Plan Generation
 
+> **ARCHIVED 2026-06-15 — never implemented; superseded by the Substrate 3
+> generation design** (`docs/architecture/substrate_3_generation/SPEC.md`;
+> A4 resolved per OPEN_QUESTIONS S3-Q-005 / Q-004). Kept as historical
+> reference alongside `ARCHITECTURE_4_NOTE.md`.
+
 **Status:** v4 — post-Claude-Code-v2-audit, ready for implementation
 **Supersedes:** the one-shot JSON generation path in `primeqa/intelligence/llm/prompts/test_plan_generation.py`
 **Scope:** Test plan generation for Salesforce requirements. Execution, review, and dashboard layers are unchanged.

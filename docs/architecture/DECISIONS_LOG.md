@@ -14249,3 +14249,53 @@ the `CASCADE` drop cannot touch live data. Applied after a zero-row check, per t
 gated-drop discipline. **No live feature is affected — D-235 field-overrides is untouched.**
 
 ---
+
+## D-244 — Documentation currency pass: align the doc corpus with the shipped state (rebrand + v1 retirement + archive)
+
+**Decision.** A documentation-only sweep over the full doc corpus (78 docs audited) to remove
+staleness that accumulated across four shipped events the docs never caught up to: the
+**PrimeQA → Plimsol** rename (2026-06-15, display text only — `primeqa/` package path and the
+`window.PrimeQA` JS namespace intentionally kept), the **v1 product-layer retirement**
+(D-191…D-221, migration 053), the **Test Data removal** (D-243, migration 056), and **migration
+range drift** (docs cited 030/049; actual max is 056). No code changed.
+
+**Updated (11 docs).** `CLAUDE.md` — surgically rewritten: brand; Project-structure block leads
+with the S1–S8 substrate (`semantic`/`sync`/`test_representation`/`generation`/`execution_engine`/
+`knowledge`/`interpretation`/`conversation`/`evolution`) + cross-cutting + a legacy-modules note;
+the confirmed-dead v1 feature sections cut (Run event log, multi-TC generation over
+`test_case_versions`, the static validator, story-view enricher, the R1–R7 Run Experience, the
+tester `/run` four-mode picker, context-driven triggers) and replaced with a concise "live engine —
+S1–S8 substrate" section + pointer; migration range → 056; `data_engine`/`risk_engine` references
+removed; LLM-gateway section kept (core survives, `llm_usage_log` not dropped) with a note that its
+v1-table integration points (story-view → `test_case_versions`, validator feedback signals,
+`generation_batches` cost) retired. `README.md` — substrate-accurate rewrite; the stale
+"~210 tests / 18 suites" loop (which named deleted suites) replaced with the real corpus; the
+plaintext admin credential **kept unchanged at AK's explicit instruction**. `docs/CONVENTIONS.md`,
+`docs/product/PRIMEQA_PRODUCT_DEFINITION.md` (§6.1/§6.3 past-tensed; architecture §1–§5 unchanged),
+`docs/design/system-validation.md`, `docs/architecture/README.md` (indexed the operational logs),
+`PLATFORM_VISION.md` (brand + past-tensed the S3/S4 framings; substrate decomposition unchanged;
+revision bumped per its own rule), `perturb_and_restore_protocol.md` (DRAFT→ACTIVE; P1 fixture name
+`Case_Escalation_Flow`→`SQ205_Create_Case_SLA`; P3 drift-needs-a-sync correction),
+`docs/archive/README.md`, `substrate_1/SPEC.md` (§14 reclassified-deferrals marked IMPLEMENTED),
+`substrate_5/SPEC.md` (D-148 relocation framing + the dead `intelligence/generation.py` consumer
+claim corrected). `greenfield_cutover/SEQUENCE.md` corrected to the executed reality (Step 4 done
+via D-185/D-189–D-192; Step 5b's `test_case_versions` drop shipped in 053/D-221.5; **`requirements`,
+`llm_usage_log`, `generation_quality_signals` were KEPT**, not dropped; the `meta_*` physical drop
+is the one remaining tail).
+
+**Archived (8 docs, `git mv` — history preserved).** To `docs/archive/`:
+`PRIMEQA_ARCHITECTURE_SPEC_v2.2.md` (self-declared LEGACY; v1 schema dropped),
+`design/run-experience.md` (retired v1 Run Wizard), `v1_runtime/KNOWN_GAPS.md` (v1 runtime gone).
+To `docs/architecture/archive/`: `ARCHITECTURE_4_SPEC.md` (never implemented; superseded by S3),
+`5b_predrop_checklist.md` (completed one-off). To substrate `_archive/` subfolders:
+`substrate_1/PHASE_0_PLAN.md`, `substrate_3/PRECONDITIONS.md`,
+`substrate_3/PHASE_2_FORENSIC_REPORT.md` (completed planning/forensic snapshots). Each carries a
+supersession banner; live inbound cross-references re-pointed (`substrate_3/SPEC.md` +
+`BACKGROUND.md`, `substrate_4/DEFERRED_ITEMS.md`). Append-only docs (this log; substrate
+`EVOLUTION.md`s) left untouched — their historical cross-refs to moved files are period-correct.
+
+**Left for a human.** `substrate_3_generation/SUBSTRATE_3_WORLDVIEW.md` — not stale; a keep-as-is
+vs. fold-into-`BACKGROUND.md` organizational call, deferred to AK. The `meta_*` physical drop
+remains the single open cutover tail (tracked in `greenfield_cutover/SEQUENCE.md` Step 5a).
+
+---

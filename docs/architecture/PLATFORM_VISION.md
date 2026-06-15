@@ -1,8 +1,11 @@
-# PrimeQA Platform Vision
+# Plimsol Platform Vision
 
 **Status:** near-immutable. Changes require explicit DECISIONS_LOG entry.
-**Last substantive revision:** 2026-04-24
-**Version:** 1.0
+**Last substantive revision:** 2026-06-15 (currency pass: brand PrimeQA → Plimsol; past-tensed the now-shipped S3/S4 framings. Substrate decomposition unchanged.)
+**Version:** 1.1
+
+> Product renamed PrimeQA → Plimsol on 2026-06-15 (display text only; the
+> `primeqa/` package path and doc filenames are unchanged).
 
 > **Architectural authority.** Per D-001, the platform is architected
 > as 8 substrates. This document is the authoritative source for
@@ -13,9 +16,9 @@
 > on substrate naming or scope, this document is authoritative (per
 > D-050).
 
-## What PrimeQA Is
+## What Plimsol Is
 
-PrimeQA is to QA what Claude Code is to developers.
+Plimsol is to QA what Claude Code is to developers.
 
 Not a test automation tool where humans write tests faster. A platform where QA and development teams describe what they want tested in natural language, and the system handles generation, execution, maintenance, coverage evolution, and interpretation autonomously.
 
@@ -23,7 +26,7 @@ The promise is not "faster test scripts." The promise is "no scripts" — a QA a
 
 ## Product Scope
 
-PrimeQA tests Salesforce orgs across five archetypes:
+Plimsol tests Salesforce orgs across five archetypes:
 
 1. **Data behavior** — records created/updated/deleted per permissions and rules
 2. **Configuration** — metadata assertions about layouts, record types, validation rules, Flows, permissions
@@ -71,13 +74,13 @@ Must represent tests across all five archetypes using a common substrate — not
 
 Reads a requirement (Jira ticket, change spec, natural language prompt) and produces test cases represented in Substrate 2.
 
-The architecture we've been iterating on (Architecture 4, v1 through v4) is an attempt at this substrate. Its design needs to be revisited once Substrates 1 and 2 are defined — with a proper semantic org model and rich test representation, Substrate 3 becomes considerably simpler than A4 proposed.
+The architecture we iterated on early (Architecture 4, v1 through v4) was an attempt at this substrate. With Substrates 1 and 2 defined, Substrate 3 was designed and shipped (`primeqa/generation/`, `docs/architecture/substrate_3_generation/`) — considerably simpler than A4 proposed, and A4 was resolved (OPEN_QUESTIONS Q-004 / S3 Theme 5).
 
 ### Substrate 4 — Execution Engine
 
 Runs tests and captures evidence. Archetype-aware: data-behavior tests run via API, configuration tests via Tooling API queries, permission tests via "run as" context, UI tests via browser automation, integration tests via event capture.
 
-Current PrimeQA execution engine handles only Archetype 1 (CRUD + verify). This substrate must expand to all five archetypes over time. The design must permit that expansion without rewrite.
+The live execution engine (`primeqa/execution_engine/`, S4) centers on Archetype 1 (CRUD + verify) today, with metadata/permission inspection. This substrate must expand to all five archetypes over time. The design must permit that expansion without rewrite.
 
 ### Substrate 5 — Knowledge System
 

@@ -1,5 +1,10 @@
 # 5b pre-drop checklist (D-221 R5) — run ON THE DAY, before migration 053
 
+> **COMPLETED — ARCHIVED 2026-06-15.** Migration 053 was applied 2026-06-14
+> (DECISIONS_LOG D-221.5; all 20 v1 product tables dropped cleanly, post-drop
+> smoke green). This checklist's purpose is discharged; retained as the audit
+> record of how the irreversible drop was gated.
+
 The drop is IRREVERSIBLE. Every line below must pass on the day of execution;
 any failure = HOLD and investigate. AK's explicit GO is recorded in the
 DECISIONS_LOG close entry alongside the outputs of these checks.

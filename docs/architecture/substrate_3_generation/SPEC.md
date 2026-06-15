@@ -15,7 +15,7 @@ Design proceeded in two phases, both now complete:
 - **Phase 1 (design — complete):** Conceptual shape across seven themes: substrate boundaries, generation request shape, per-archetype strategies, grounded-negative discipline, LLM integration architecture, prompt management, quality envelope. Locked across D-070–D-094 (§§2–8).
 - **Phase 2 (implementation — complete):** Concrete implementation surfaces — request types, ledger schema, prompt versioning, eval infrastructure, routing, the production runner. Built across D-095–D-106. **§9 (Realized State) is the authoritative record of what is actually built**; §§2–8 below remain the design-era record, including the theme-close refusal-taxonomy snapshots (6/7/8 kinds) that §9 supersedes with the realized 9.
 
-See `BACKGROUND.md` for why this substrate exists. See `PRECONDITIONS.md` for the ground state at Phase 1 design start. See `OPEN_QUESTIONS.md` for design surfaces under deliberation. See `DECISIONS_LOG.md` D-070 onward for full design rationale.
+See `BACKGROUND.md` for why this substrate exists. See `_archive/PRECONDITIONS.md` (archived 2026-06-15 as a historical pre-design snapshot) for the ground state at Phase 1 design start. See `OPEN_QUESTIONS.md` for design surfaces under deliberation. See `DECISIONS_LOG.md` D-070 onward for full design rationale.
 
 ---
 

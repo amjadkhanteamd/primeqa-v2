@@ -46,7 +46,7 @@ The synchronous run path is realized (`run_recipe_execution` + `run_recipe_execu
 
 ## 5. Failure-path / remediation (F7, held by design)
 
-- **S4 does not remediate.** S4 captures a failure's *truth* (the `errored` outcome + evidence); it does not fix it. The relationship between an S4 execution failure and the dormant v1 fix-and-rerun agent (G-001, `docs/v1_runtime/KNOWN_GAPS.md`) is settled later — S4 produces the evidence a remediation loop would consume. — **D-108 F7**
+- **S4 does not remediate.** S4 captures a failure's *truth* (the `errored` outcome + evidence); it does not fix it. The v1 fix-and-rerun agent referenced here (G-001, now `docs/archive/v1_runtime/KNOWN_GAPS.md`) retired with the v1 layer; the substrate successor is the D-236 fix-proposal agent, which consumes S4's evidence — S4 produces the evidence a remediation loop would consume. — **D-108 F7**
 
 ## 6. Smaller plumbing deferrals
 

@@ -1,6 +1,6 @@
 # Substrate 5 — Knowledge System — SPEC
 
-**Status:** Opened + ratified (Phase 4, D-134). The realized surface is **already built + deployed** in the v1 intelligence stack; this SPEC formalizes it as Substrate 5 — its boundary, its provider-port contract, and the realized vs deferred line. No new runtime behavior is introduced by the opening; the only code change is the unified public-API surface + a contract drift-guard (Phase 4 Slice 2).
+**Status:** Opened + ratified (Phase 4, D-134); the realized surface is built + deployed. Since the opening, the package was relocated to its top-level home `primeqa/knowledge/` (cutover Step-1, D-148) — see §2. This SPEC formalizes S5's boundary, its provider-port contract, and the realized vs deferred line. (Its original v1 consumer, `intelligence/generation.py`, was retired with the v1 product layer in D-221; the S5→S3 consumption seam is design-tracked in §6 / DEFERRED_ITEMS.)
 
 ## Purpose
 
@@ -16,7 +16,7 @@ S5 is **cross-cutting** (dependency graph: `S3 ←— S5`): it shapes generation
 
 ## 2. The realized surface (the three channels)
 
-S5's code lives at `primeqa/knowledge/` (its top-level package since the cutover Step-1 relocation, D-148) + `primeqa/intelligence/llm/feedback_rules.py` (the feedback aggregator stays in the v1 LLM layer, wrapped via `LearnedRulesProvider`). It is consumed by **v1 test-case generation** (`intelligence/generation.py` → the LLM gateway → `prompts/test_plan_generation.py`); the S3 *substrate* generation does not consume it yet (see §6 / DEFERRED).
+S5's code lives at `primeqa/knowledge/` (its top-level package since the cutover Step-1 relocation, D-148) + `primeqa/intelligence/llm/feedback_rules.py` (the feedback aggregator stays in the LLM layer, wrapped via `LearnedRulesProvider`). Its original consumer was **v1 test-case generation** (`intelligence/generation.py` → the LLM gateway → `prompts/test_plan_generation.py`); that v1 generator was retired with the v1 product layer (D-221), so the channel's v1 consumption path no longer exists. The S3 *substrate* generation carries a `domain_pack_refs` slot (`generation/protocol.py`) but the S5→S3 consumption seam was "settled as not wired" (D-156) — see §6 / DEFERRED.
 
 ### 2.1 The provider port — short proscriptive rules (`knowledge/provider.py`)
 - **`Rule`** (frozen): `id` (dedup key), `object_name`/`field_name` (None = applies everywhere), `category` (`field_behaviour`/`operation`/`assertion`), `rule_text` (compressed imperative, ≤~140 chars), `source` (`system`/`curated`/`learned`), `confidence` (0–1), `scope` (`global`/`org`).

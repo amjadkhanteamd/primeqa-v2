@@ -8,9 +8,10 @@ and watching the engine notice. This document is the **written procedure**:
 what gets touched, how, the expected engine observation, and the restore
 ritual that returns the org to fixture state.
 
-**Status: DRAFT — awaiting AK's sign-off on the "may touch" list (§2).**
-Nothing in this document is executed until then. Execution requires the sf
-CLI (`primeqa-sandbox` alias, already authenticated) or AK's own Setup access.
+**Status: ACTIVE — §2 "may touch" list signed off 2026-06-12 (see
+`dogfood_matrix_log.md`). P1 and P3 windows have been executed; P2 is on hold
+pending an AK may-touch extension.** Execution requires the sf CLI
+(`primeqa-sandbox` alias, already authenticated) or AK's own Setup access.
 
 ---
 
@@ -38,7 +39,7 @@ CLI (`primeqa-sandbox` alias, already authenticated) or AK's own Setup access.
 
 | # | Artifact | Perturbation | Restore |
 |---|---|---|---|
-| P1 | Flow `Case_Escalation_Flow` (the SQ-205 fixture, sandbox_fixtures/sq205/) | Deactivate (Setup → Flows → Deactivate, or deploy with `status: Draft`) | Re-activate; confirm `IsEscalated`/`Last_Escalation_Date__c` stamping resumes on a probe Case |
+| P1 | Flow `SQ205_Create_Case_SLA` (the SQ-205 fixture Flow, sandbox_fixtures/sq205/; companion `SQ205_Escalation_Effects`) | Deactivate (Setup → Flows → Deactivate, or deploy with `status: Draft`) | Re-activate; confirm `IsEscalated`/`Last_Escalation_Date__c` stamping resumes on a probe Case |
 | P2 | VR `Opportunity.Contract_Value_Required_On_Closed_Won` | Toggle `active=false` | Toggle back `active=true` |
 | P3 | VR `Lead.RequireReason`-class rule (any one VR with a derivable formula; exact pick at execution) | Edit the error-condition formula to a non-equivalent comparison (e.g. threshold change) | Restore the recorded original formula text byte-for-byte |
 | P4 | Field `Case_SLA__c.Response_Hours__c` (fixture custom field) | Change length/precision (e.g. precision 18→16) | Restore recorded original |
@@ -53,9 +54,12 @@ CLI (`primeqa-sandbox` alias, already authenticated) or AK's own Setup access.
   create SUCCEEDS where rejection was asserted → verdict
   `prohibition_not_enforced`, cause `vr_inactive` (the D-111.1 cause we have
   never seen live).
-- **P3 (formula edited)** → after a fresh S1 sync, S8's grounding-validity
-  recompute should flag the claim (`vr_formula_drift` family); without a
-  sync, a rerun shows `vr_formula_drift` / `vr_formula_indeterminate` cause.
+- **P3 (formula edited)** → grounding drift needs a fresh S1 sync: only after
+  the sync does S8's grounding-validity recompute flag the claim
+  (`vr_formula_drift` family). A bare rerun without an intervening sync does
+  **not** surface drift — the engine is still grounded against the pre-edit
+  formula. (Corrected here per `dogfood_matrix_log.md`; the earlier
+  drift-without-sync expectation was wrong.)
 - **P4 (field property)** → the property-claim on that field (generate one
   first) flips from passed to failed; S8 grounding drift board shows the
   entity-level change after sync.

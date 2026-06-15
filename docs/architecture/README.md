@@ -1,6 +1,6 @@
-# PrimeQA Architecture Documentation
+# Plimsol Architecture Documentation
 
-This directory is the canonical source of truth for PrimeQA's platform architecture. It is the foundation we design against and return to when context is needed across sessions.
+This directory is the canonical source of truth for Plimsol's platform architecture. It is the foundation we design against and return to when context is needed across sessions. (The product was renamed PrimeQA → Plimsol on 2026-06-15; the `primeqa/` package path is unchanged.)
 
 **If you are new to this repo:** start with `PLATFORM_VISION.md`. Read it in full. Then read the README in the substrate you're working on.
 
@@ -15,6 +15,13 @@ This directory is the canonical source of truth for PrimeQA's platform architect
 | `DECISIONS_LOG.md` | Chronological record of architectural decisions | Append-only |
 | `OPEN_QUESTIONS.md` | Open design questions by substrate | Mutable — items added and resolved continuously |
 | `PARKING_LOT.md` | Deferred ideas with explicit "revisit when X" triggers | Mutable, but items must have triggers |
+
+### Operational logs
+
+| File | Purpose | Mutability |
+|---|---|---|
+| `dogfood_matrix_log.md` | Append-only session log for the env-59 perturb-and-restore dogfood arc | Append-only |
+| `perturb_and_restore_protocol.md` | Procedure for the env-59 perturb-and-restore dogfood windows | Mutable (procedure doc) |
 
 ## Substrate directories
 

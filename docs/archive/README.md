@@ -1,9 +1,32 @@
 # Documentation Archive
 
-Historical PrimeQA documentation that is no longer authoritative but
-preserved for reference.
+Historical Plimsol (formerly PrimeQA) documentation that is no longer
+authoritative but preserved for reference.
 
 ## Currently archived
+
+### `architecture/PRIMEQA_ARCHITECTURE_SPEC_v2.2.md`
+
+The original v2 Flask/HTMX architecture spec (36-table v1 schema). The
+v1 product layer it describes was retired (D-191…D-221) and its product
+tables dropped in migration 053; the live architecture is the S1–S8
+substrate (see `docs/architecture/PLATFORM_VISION.md`). Archived
+2026-06-15. Retains the LEGACY header + its pointers to PLATFORM_VISION /
+PRIMEQA_PRODUCT_DEFINITION.
+
+### `design/run-experience.md`
+
+The R1–R7 design doc for the retired v1 Run Wizard / `pipeline_runs` flow
+and the v1 agent fix-and-rerun loop. Every implementation file it names is
+deleted and its backing tables were dropped (migration 053). The live run
+path is the S4 substrate execution engine. Archived 2026-06-15.
+
+### `v1_runtime/KNOWN_GAPS.md`
+
+Gap ledger for the v1 Flask execution/test-management runtime, which was
+fully retired (D-191…D-221). Every gap it records anchors to deleted v1
+symbols (`executor.py`, `submit_review`, `pipeline_runs`). Archived
+2026-06-15 as the historical record.
 
 ### `build_plans/PRIMEQA_BUILD_PLAN.md`
 
@@ -50,13 +73,16 @@ Active test location is the top-level `tests/` directory. Archived
 The following remain at their current locations with legacy headers
 because they are still operationally relevant:
 
-- **`PRIMEQA_ARCHITECTURE_SPEC_v2.2.md`** (root) — describes the v2
-  Flask/HTMX runtime which is still operational. Will be archived
-  after Phase 4 cutover (substrate-1 replaces v2 `meta_*` tables).
 - **`docs/architecture/substrate_1_semantic_org_model/PHASE_2_PLAN.md`**
   — locked planning artifact. Captures the plan as approved at
   Phase 2 start. Actual implementation choices tracked in
-  `PHASE_2_PLAN_corrections.md` and `DECISIONS_LOG.md`.
+  `PHASE_2_PLAN_corrections.md` and `DECISIONS_LOG.md`. Kept in place
+  because `DECISIONS_LOG` D-242 cites it as design-of-record.
+
+(The root `PRIMEQA_ARCHITECTURE_SPEC_v2.2.md` was moved into
+`architecture/` here on 2026-06-15 — see "Currently archived" above —
+now that the Phase-4 cutover has run and the v1 product tables are
+dropped.)
 
 ## Not archived (still in play)
 

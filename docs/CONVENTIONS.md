@@ -1,4 +1,8 @@
-# PrimeQA Documentation and Working Conventions
+# Plimsol Documentation and Working Conventions
+
+> Product renamed PrimeQA → Plimsol on 2026-06-15 (display text only). Doc
+> filenames like `PRIMEQA_PRODUCT_DEFINITION.md` keep their names; the
+> `primeqa/` package path is unchanged.
 
 ## Phase numbering
 
@@ -11,13 +15,17 @@ first reference per section if ambiguous.
 Per `PRIMEQA_PRODUCT_DEFINITION.md` §6.3. The customer-visible product
 evolution.
 
+As of 2026-06-15 the whole ladder below has shipped — all 8 substrates are
+live and the v1 product layer was retired (D-191…D-221). Kept as the
+historical phasing record.
+
 - Product-Phase 1: Substrate 1 foundation (shipped)
 - Product-Phase 2: Substrate 1 sync layer (shipped)
-- Product-Phase 3: Substrate 2 (Test Representation) design [next]
-- Product-Phase 4: Substrate 3 (Generation Engine)
-- Product-Phase 5: Substrate 4 (Execution Engine)
-- Product-Phase 6: Substrate 6 (Observation and Interpretation) — v1 product moment
-- Product-Phase 7+: Hardening, Substrate 5 / 7 / 8, multi-tenant, etc.
+- Product-Phase 3: Substrate 2 (Test Representation) design (shipped)
+- Product-Phase 4: Substrate 3 (Generation Engine) (shipped)
+- Product-Phase 5: Substrate 4 (Execution Engine) (shipped)
+- Product-Phase 6: Substrate 6 (Observation and Interpretation) — v1 product moment (shipped; decision loop live, D-237)
+- Product-Phase 7+: Substrate 5 / 7 / 8 (shipped); hardening + multi-tenant readiness in progress
 
 ### Substrate 1 12-week engineering phases
 
@@ -26,8 +34,8 @@ Per D-024. Internal engineering phases for shipping S1.
 - S1-Phase 0: scaffolding (shipped)
 - S1-Phase 1: edges, derivation, etc. (shipped)
 - S1-Phase 2: sync engine (shipped)
-- S1-Phase 3: query class
-- S1-Phase 4: cutover (replaces v2 `meta_*`)
+- S1-Phase 3: query class (shipped)
+- S1-Phase 4: cutover (replaces v2 `meta_*`) — largely complete (D-191…D-221); the `meta_*` physical table drop is the one remaining tail
 - S1-Phase 5: hardening
 
 ### Architecture 4 rollout phases (legacy)
@@ -45,9 +53,9 @@ v2 runtime context only.
 
 Two patterns coexist depending on what you're working on:
 
-- **v2 runtime work** (Flask routes, HTMX templates, `meta_*` tables,
-  v2 generation/execution): commit directly to `main`. Iteration is
-  fast; `main` is the integration surface.
+- **v2 runtime work** (Flask routes, HTMX templates, the `core` /
+  `release` / `runs` web layer, `meta_*` tables): commit directly to
+  `main`. Iteration is fast; `main` is the integration surface.
 - **Substrate work** (substrate_1_semantic_org_model and future
   substrates): work on feature branches named
   `phase-N-substrate-M` (e.g., `phase-2-substrate-1-sync`). Merge to
@@ -150,10 +158,13 @@ isolation. Each has named revisit triggers.
 The repository contains two parallel migration systems covering
 different schema domains:
 
-- **`migrations/`** — numbered `.sql` files (001 through 049+),
-  applied via `psql`. Canonical migration system for v2 runtime
-  tables (`test_cases`, `test_case_versions`, `requirements`,
-  `generation_batches`, `llm_usage_log`, etc.).
+- **`migrations/`** — numbered `.sql` files (001 through 056),
+  applied via `psql`. Canonical migration system for the `public`-schema
+  v2 runtime tables that survive (`requirements`, `releases`,
+  `llm_usage_log`, `generation_quality_signals`, `connections`, etc.).
+  The v1 product tables it once managed (`test_cases`,
+  `test_case_versions`, `pipeline_runs`, `generation_batches`, …) were
+  dropped in migration 053 (D-221).
 - **`alembic/`** — Python migrations under `versions/shared/` and
   `versions/tenant/`. Canonical migration system for substrate-1
   (semantic org model) tables: `entities`, `edges`,
@@ -166,8 +177,10 @@ domain:
 - v2 runtime table change → new numbered `.sql` in `migrations/`
 - substrate-1 table change → new alembic revision
 
-The dual-system pattern is intentional. When v2 sunsets after
-Phase 4 cutover, `migrations/` becomes a candidate for archive
+The dual-system pattern is intentional. The Phase-4 cutover has now
+largely run (v1 product tables dropped, migration 053), but `migrations/`
+remains live — it still holds the history for the surviving
+`public`-schema v2 tables, so it is not yet an archive candidate
 (see `PARKING_LOT.md`).
 
 ### Migration apply pattern

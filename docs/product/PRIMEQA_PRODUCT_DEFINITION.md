@@ -1,11 +1,11 @@
-# PrimeQA — Product Definition
+# Plimsol — Product Definition
 
-**Status:** Foundation document. All subsequent phase plans, architectural decisions, and feature scoping derive from this document.
+**Status:** Foundation document. All subsequent phase plans, architectural decisions, and feature scoping derive from this document. The architecture (§1–§5, the 8-substrate model) remains authoritative and current; §6's phasing/current-state has been refreshed (all 8 substrates shipped, see §6.1).
 **Owner:** Amjad
-**Date:** 2026-04-30
-**Version:** 1.0 (initial)
+**Date:** 2026-04-30 (currency refresh 2026-06-15)
+**Version:** 1.1 (product renamed Plimsol → Plimsol 2026-06-15, display text only — `primeqa/` package path unchanged)
 
-> **This document describes PrimeQA as a product.** The underlying
+> **This document describes Plimsol as a product.** The underlying
 > architectural decomposition into 8 substrates is in
 > `docs/architecture/PLATFORM_VISION.md`, which is the architectural
 > authority per D-001.
@@ -27,7 +27,7 @@ Every section is intended to be substantive. Skip to sections of interest, but t
 
 ---
 
-## 1. Why PrimeQA exists
+## 1. Why Plimsol exists
 
 ### 1.1 The problem we are solving
 
@@ -41,15 +41,15 @@ A typical Salesforce QA engineer working on a sprint team validates JIRA-driven 
 
 This investigation typically takes 30 to 120 minutes per failure. On a Friday afternoon before a release, with multiple failures, the engineer cannot do this work in the time available. They either escalate to the developer team and delay the release, or they make a release decision under uncertainty.
 
-This is the core problem PrimeQA exists to solve.
+This is the core problem Plimsol exists to solve.
 
 ### 1.2 What this is not
 
-PrimeQA is not a faster Provar. It is not a smarter Copado. It is not a way to generate more test cases. The problem is not that QA teams cannot run tests or write them; the problem is that they cannot understand failures fast enough to act on them confidently.
+Plimsol is not a faster Provar. It is not a smarter Copado. It is not a way to generate more test cases. The problem is not that QA teams cannot run tests or write them; the problem is that they cannot understand failures fast enough to act on them confidently.
 
 The existing tools in this space optimize for the wrong thing. Provar excels at building and maintaining stable regression suites that survive Salesforce UI changes. Copado integrates testing into DevOps pipelines. Both ship robust execution engines and metadata-aware test authoring. Neither closes the gap between "this test failed" and "here is exactly why, here is what to do about it, here is how confident you should be in this answer."
 
-That gap is the unowned layer. Owning it is what PrimeQA is.
+That gap is the unowned layer. Owning it is what Plimsol is.
 
 ### 1.3 Why now, why us
 
@@ -69,7 +69,7 @@ This is the leverage thesis. We do not compete with ten years of edge-case handl
 
 ### 2.1 The primary user
 
-PrimeQA is built for the **mid-level Salesforce QA Engineer**, two to six years into their career, working in a sprint-based team.
+Plimsol is built for the **mid-level Salesforce QA Engineer**, two to six years into their career, working in a sprint-based team.
 
 This user is not the QA Lead, who oversees strategy but does not execute day-to-day testing. They are not a junior QA, who lacks the Salesforce-specific intuition to use the product effectively. They are the engineer doing the actual testing work daily.
 
@@ -77,7 +77,7 @@ Their environment includes a Salesforce project (often an ongoing implementation
 
 Their mental model is concrete and outcome-oriented. They think in steps ("create a record, update its stage, verify the trigger fires"), in business logic ("if the customer is inactive, save should fail"), and in outcomes ("did the test pass or fail"). They do not think in metadata graphs, Apex internals, or system architecture. They are not engineers who will accept abstract tooling; they want clarity, not power.
 
-### 2.2 What their day looks like before PrimeQA
+### 2.2 What their day looks like before Plimsol
 
 The morning begins with picking up JIRA tickets assigned for testing. The engineer reads the acceptance criteria, tries to understand what the developer built, and prepares to validate it.
 
@@ -87,7 +87,7 @@ In the afternoon, tests start failing. The engineer investigates: checks data, o
 
 The evenings before a release are the hardest. A regression suite runs. Multiple tests fail. The QA Lead is asking for a status update. Developers are asking whether the failures are real bugs or test data issues. The release manager is waiting for a go/no-go decision. The engineer has to triage failures against the clock, and the failures themselves are opaque.
 
-### 2.3 The moment PrimeQA wins
+### 2.3 The moment Plimsol wins
 
 We call this the Priya scene. It is the design center of the product.
 
@@ -95,9 +95,9 @@ It is Friday, 6:45 PM. Release cut at 7:30 PM. Priya is the QA Engineer responsi
 
 The regression suite has just finished. 120 tests executed, 4 failed. Slack is already lighting up. The QA Lead asks for status. A developer asks whether the failures are real bugs or data problems. The release manager wants to know whether they can go live.
 
-Without PrimeQA, Priya opens the test logs, re-runs the failed tests, checks the data setup, opens Salesforce to look at validation rules and flows, asks a developer for help on the one she cannot diagnose. Forty-five to ninety minutes pass. The release is delayed or shipped under uncertainty.
+Without Plimsol, Priya opens the test logs, re-runs the failed tests, checks the data setup, opens Salesforce to look at validation rules and flows, asks a developer for help on the one she cannot diagnose. Forty-five to ninety minutes pass. The release is delayed or shipped under uncertainty.
 
-With PrimeQA, Priya opens the failed test in PrimeQA's UI. She sees:
+With Plimsol, Priya opens the failed test in Plimsol's UI. She sees:
 
 ```
 Test: Close Opportunity — High Value
@@ -135,65 +135,65 @@ She requires **clarity**, not power. A simple structured explanation, not a dash
 
 She requires **evidence**, not narration. The system should show the rule it mapped to, the error response it parsed, the change record it found. She should be able to verify the chain by clicking through to source.
 
-She requires **honesty under uncertainty**. If PrimeQA is not sure why a test failed, it must say so. Confident wrongness is worse than no answer.
+She requires **honesty under uncertainty**. If Plimsol is not sure why a test failed, it must say so. Confident wrongness is worse than no answer.
 
-She requires **trust**. If PrimeQA is wrong even a few times in a row, she stops believing it. The trust must be earned with every interaction. Once lost, regaining it is much harder than building it.
+She requires **trust**. If Plimsol is wrong even a few times in a row, she stops believing it. The trust must be earned with every interaction. Once lost, regaining it is much harder than building it.
 
 These four requirements — clarity, evidence, honesty, trust — are the architectural rails. Every design decision is evaluated against them.
 
 ---
 
-## 3. What PrimeQA is, and what it is not
+## 3. What Plimsol is, and what it is not
 
-### 3.1 What PrimeQA is
+### 3.1 What Plimsol is
 
-PrimeQA is an **AI-native QA platform for Salesforce**, centered on failure comprehension, with test generation and execution as supporting capabilities.
+Plimsol is an **AI-native QA platform for Salesforce**, centered on failure comprehension, with test generation and execution as supporting capabilities.
 
 The product owns a complete workflow:
 
-- **Generate.** The engineer selects a JIRA ticket, a batch of tickets, or an entire sprint, and asks PrimeQA to generate test cases. Generation is grounded in PrimeQA's semantic model of the connected Salesforce org. Tests are produced in a structured format the engineer can review and edit.
+- **Generate.** The engineer selects a JIRA ticket, a batch of tickets, or an entire sprint, and asks Plimsol to generate test cases. Generation is grounded in Plimsol's semantic model of the connected Salesforce org. Tests are produced in a structured format the engineer can review and edit.
 
 - **Review.** The engineer reviews generated tests, edits them, regenerates as needed. Approval is explicit. Nothing runs without review in the initial version of the product.
 
-- **Execute.** Approved tests are run by PrimeQA's own execution engine, which drives Salesforce through a hybrid of UI automation and API calls. Execution captures rich structured traces of what happened.
+- **Execute.** Approved tests are run by Plimsol's own execution engine, which drives Salesforce through a hybrid of UI automation and API calls. Execution captures rich structured traces of what happened.
 
-- **Understand.** When tests fail, PrimeQA's attribution layer maps the failure back to the semantic model entities involved (the validation rule that fired, the flow that ran, the field that was missing) and produces a clean, grounded, QA-readable explanation. Where attribution cannot confidently identify the cause, the system says so honestly and falls back to raw error visibility.
+- **Understand.** When tests fail, Plimsol's attribution layer maps the failure back to the semantic model entities involved (the validation rule that fired, the flow that ran, the field that was missing) and produces a clean, grounded, QA-readable explanation. Where attribution cannot confidently identify the cause, the system says so honestly and falls back to raw error visibility.
 
-The whole workflow lives inside PrimeQA. Test cases are stored in PrimeQA's own database. The web UI is the engineer's primary working surface for test lifecycle and failure investigation. External systems like TestRail, Zephyr, JIRA, and Excel are integrated through export and synchronization but are not the system of record.
+The whole workflow lives inside Plimsol. Test cases are stored in Plimsol's own database. The web UI is the engineer's primary working surface for test lifecycle and failure investigation. External systems like TestRail, Zephyr, JIRA, and Excel are integrated through export and synchronization but are not the system of record.
 
-### 3.2 What PrimeQA is not
+### 3.2 What Plimsol is not
 
-PrimeQA is not a replacement for Provar's stable regression suites. Customers running large, mature regression suites in Provar should continue to do so. PrimeQA is for sprint-level testing — the daily and weekly work of validating JIRA-driven changes — and for failure comprehension across all testing.
+Plimsol is not a replacement for Provar's stable regression suites. Customers running large, mature regression suites in Provar should continue to do so. Plimsol is for sprint-level testing — the daily and weekly work of validating JIRA-driven changes — and for failure comprehension across all testing.
 
-PrimeQA is not a general-purpose test management system. TestRail and Zephyr are general; they support any testing workflow across any technology. PrimeQA is Salesforce-specific by design and gets its power from that specificity.
+Plimsol is not a general-purpose test management system. TestRail and Zephyr are general; they support any testing workflow across any technology. Plimsol is Salesforce-specific by design and gets its power from that specificity.
 
-PrimeQA is not a generic AI assistant. ChatGPT can explain a Salesforce error message in the abstract. PrimeQA explains a specific test failure with grounded references to specific entities in a specific org with specific recent changes. The grounding is not ornamental; it is what makes the explanation trustworthy.
+Plimsol is not a generic AI assistant. ChatGPT can explain a Salesforce error message in the abstract. Plimsol explains a specific test failure with grounded references to specific entities in a specific org with specific recent changes. The grounding is not ornamental; it is what makes the explanation trustworthy.
 
-PrimeQA is not a code-generation tool. The tests it produces are structured records, not code. The execution engine consumes those records. The engineer interacts with tests through the web UI, not through commits to a Git repository.
+Plimsol is not a code-generation tool. The tests it produces are structured records, not code. The execution engine consumes those records. The engineer interacts with tests through the web UI, not through commits to a Git repository.
 
-PrimeQA is not a solve-everything tool. It does not handle every Salesforce edge case at launch, does not compete with ten years of accumulated UI quirk handling, does not optimize for breadth of test coverage. It optimizes for the moments where it can deliver overwhelming value, and degrades gracefully where it cannot.
+Plimsol is not a solve-everything tool. It does not handle every Salesforce edge case at launch, does not compete with ten years of accumulated UI quirk handling, does not optimize for breadth of test coverage. It optimizes for the moments where it can deliver overwhelming value, and degrades gracefully where it cannot.
 
 ### 3.3 The honest competitive picture
 
-The most likely customer objection is: "We already have Provar. Why do we need PrimeQA?"
+The most likely customer objection is: "We already have Provar. Why do we need Plimsol?"
 
-The honest answer is that Provar and PrimeQA solve different problems.
+The honest answer is that Provar and Plimsol solve different problems.
 
 Provar excels at building and maintaining stable regression test suites that survive Salesforce updates. Its metadata-aware test authoring and execution are mature and effective for what they do. But creating and maintaining Provar tests is expensive in time and skill. Most teams use Provar selectively for critical flows; the rest of their testing is manual or spreadsheet-based.
 
 ChatGPT (or any general-purpose LLM tool) can explain errors in the abstract. But it has no access to the specific org, the specific metadata, the specific changes. The QA engineer still has to gather and interpret context before asking the question, and even then the answer is ungrounded.
 
-PrimeQA fills the gap. It sits inside the workflow, captures execution context automatically, maps failures to specific entities in the model, and explains them with grounded evidence. There is no copy-paste, no manual context-gathering, no dependency on the engineer's tribal knowledge.
+Plimsol fills the gap. It sits inside the workflow, captures execution context automatically, maps failures to specific entities in the model, and explains them with grounded evidence. There is no copy-paste, no manual context-gathering, no dependency on the engineer's tribal knowledge.
 
-In practice, customers will often run both: Provar for large stable regression suites that they have already invested in, PrimeQA for sprint-level testing and the failure-comprehension moment. PrimeQA does not require Provar to go away. It requires only that customers see value in solving the failure-comprehension problem properly, which they universally do.
+In practice, customers will often run both: Provar for large stable regression suites that they have already invested in, Plimsol for sprint-level testing and the failure-comprehension moment. Plimsol does not require Provar to go away. It requires only that customers see value in solving the failure-comprehension problem properly, which they universally do.
 
 ---
 
-## 4. How PrimeQA works
+## 4. How Plimsol works
 
 ### 4.1 The eight-substrate architecture
 
-PrimeQA is built on eight substrates, each with a distinct responsibility, loosely coupled to the others through clean interfaces. This framing is authoritative per `docs/architecture/PLATFORM_VISION.md` and D-001 / D-050. The v1 product moment is built on S1 + S2 + S3 + S4 + S6; the remaining three substrates (S5, S7, S8) are part of the architectural foundation but ship later.
+Plimsol is built on eight substrates, each with a distinct responsibility, loosely coupled to the others through clean interfaces. This framing is authoritative per `docs/architecture/PLATFORM_VISION.md` and D-001 / D-050. The v1 product moment is built on S1 + S2 + S3 + S4 + S6; the remaining three substrates (S5, S7, S8) are part of the architectural foundation but ship later.
 
 ```
               Substrate 7 — Conversation and Control
@@ -242,9 +242,9 @@ The substrate exposes a clean query interface (a planned materialized view in Ph
 
 **Responsibility:** Be the canonical data structure for a test case — executable, human-readable, evolvable.
 
-A test case in PrimeQA is more than "JSON with steps." It captures test intent, coverage (which entities in the model the test touches), relationships to org entities (the validation rule it exercises, the flow it triggers), execution history (which runs it was part of, what their results were), assumptions about org state, and provenance (which JIRA ticket generated it, which prompt version, which Domain Pack shaped it).
+A test case in Plimsol is more than "JSON with steps." It captures test intent, coverage (which entities in the model the test touches), relationships to org entities (the validation rule it exercises, the flow it triggers), execution history (which runs it was part of, what their results were), assumptions about org state, and provenance (which JIRA ticket generated it, which prompt version, which Domain Pack shaped it).
 
-Tests are stored as structured records in PrimeQA's database. Generation history, edit history, and execution history are all first-class — they are what enable Substrate 6 (Observation and Interpretation) to explain failures by mapping them back to the originating intent. The representation is what Substrate 3 (Generation) produces and what Substrate 4 (Execution) consumes; the two substrates can evolve independently because they meet at this stable contract.
+Tests are stored as structured records in Plimsol's database. Generation history, edit history, and execution history are all first-class — they are what enable Substrate 6 (Observation and Interpretation) to explain failures by mapping them back to the originating intent. The representation is what Substrate 3 (Generation) produces and what Substrate 4 (Execution) consumes; the two substrates can evolve independently because they meet at this stable contract.
 
 The substrate is designed to represent tests across the full range of QA archetypes (data-behavior, configuration, permission, UI, integration) using a single common representation, not five different ones. The initial product covers one archetype; the representation must not foreclose the others.
 
@@ -252,22 +252,22 @@ The substrate is designed to represent tests across the full range of QA archety
 
 **Responsibility:** Produce test cases in Substrate 2's representation from natural-language requirements (JIRA tickets), grounded in Substrate 1.
 
-Generation is **user-driven**, not background-driven. The engineer selects one or more JIRA tickets, either individually or as a sprint batch, and explicitly asks PrimeQA to generate tests. The system does not generate tests automatically when JIRA tickets land. Background generation creates noise, erodes trust, and produces output the engineer never asked for.
+Generation is **user-driven**, not background-driven. The engineer selects one or more JIRA tickets, either individually or as a sprint batch, and explicitly asks Plimsol to generate tests. The system does not generate tests automatically when JIRA tickets land. Background generation creates noise, erodes trust, and produces output the engineer never asked for.
 
 Generation is **batch-capable**. Engineers work in batches, not one ticket at a time. The system handles a sprint of tickets at once, generating tests for all of them, and presenting them for review.
 
 Generation is **review-gated**. Every generated test is reviewed by the engineer before execution. There is no auto-approval path in the initial version of the product. Trust is brittle in the early stages; skipping review breaks it. The flow is: generate → review → approve → run.
 
-Generation is **iteratively refinable**. When generation gets a test wrong, the engineer corrects it inside PrimeQA — either editing the test directly or regenerating it with adjusted prompts. The correction loop does not bounce between tools. The requirement (the JIRA ticket) has not changed; only the interpretation has, and the interpretation is PrimeQA's responsibility.
+Generation is **iteratively refinable**. When generation gets a test wrong, the engineer corrects it inside Plimsol — either editing the test directly or regenerating it with adjusted prompts. The correction loop does not bounce between tools. The requirement (the JIRA ticket) has not changed; only the interpretation has, and the interpretation is Plimsol's responsibility.
 
 The internal flow for generation is approximately:
 
-1. Engineer selects JIRA tickets in PrimeQA's UI.
-2. PrimeQA fetches ticket descriptions (via JIRA integration).
-3. For each ticket, PrimeQA embeds the ticket content and retrieves the most semantically relevant entities from Substrate 1 (objects, fields, validation rules, flows, etc. that the ticket likely concerns).
+1. Engineer selects JIRA tickets in Plimsol's UI.
+2. Plimsol fetches ticket descriptions (via JIRA integration).
+3. For each ticket, Plimsol embeds the ticket content and retrieves the most semantically relevant entities from Substrate 1 (objects, fields, validation rules, flows, etc. that the ticket likely concerns).
 4. The retrieved entities, ticket content, and a structured prompt are sent to an LLM (Anthropic Claude Sonnet for this work, given quality matters more than cost here). Knowledge from Substrate 5 (Domain Packs, system rules, learned tenant facts) shapes the prompt.
 5. The LLM generates a test case in Substrate 2's representation, referencing real entity IDs from the retrieved set. Schema enforcement at the boundary prevents the LLM from inventing entity references.
-6. The generated test is presented in PrimeQA's UI for engineer review.
+6. The generated test is presented in Plimsol's UI for engineer review.
 
 The schema-enforcement step is critical. The LLM's output is constrained to reference only entities that exist in the model. If the LLM produces a test step that references a field that does not exist, that step fails validation and is not shown to the engineer. This is the architectural defense against hallucinated tests.
 
@@ -292,13 +292,13 @@ This trace is structured and machine-readable. It is not for human consumption d
 
 The principle is: **capture everything, explain selectively.** The richness of the trace is what enables intelligence later. Simplification happens in the explanation layer (Substrate 6), not at execution. Execution is where truth is preserved.
 
-The execution environment is **hybrid cloud-and-agent**. By default, tests run from PrimeQA's cloud infrastructure for ease of onboarding and scalability. For enterprise customers with strict security or data residency requirements, a customer-hosted agent runs tests within their own environment, with traces shipped back to PrimeQA's cloud for storage and analysis. The hybrid model is deferred build (cloud first, agent when an enterprise customer requires it).
+The execution environment is **hybrid cloud-and-agent**. By default, tests run from Plimsol's cloud infrastructure for ease of onboarding and scalability. For enterprise customers with strict security or data residency requirements, a customer-hosted agent runs tests within their own environment, with traces shipped back to Plimsol's cloud for storage and analysis. The hybrid model is deferred build (cloud first, agent when an enterprise customer requires it).
 
 ### 4.6 Substrate 5 — Knowledge System
 
 **Responsibility:** Persist and improve the knowledge that shapes generation and execution — Domain Packs (prescriptive patterns), system rules (proscriptive rules), per-tenant learned facts, cross-tenant patterns (within strict isolation boundaries), and user feedback signals that tune future generations.
 
-The substrate is what makes PrimeQA get smarter the more it is used. Domain Packs ship with PrimeQA today as the early manifestation of this substrate; learned facts and cross-tenant patterns are deferred to a later phase. The architectural commitment is that knowledge is data, not configuration: it accumulates, evolves, and is queryable.
+The substrate is what makes Plimsol get smarter the more it is used. Domain Packs ship with Plimsol today as the early manifestation of this substrate; learned facts and cross-tenant patterns are deferred to a later phase. The architectural commitment is that knowledge is data, not configuration: it accumulates, evolves, and is queryable.
 
 S5 is cross-cutting. Generation (S3) reads from it; execution (S4) and user feedback write signals back into it (what worked, what didn't); interpretation (S6) can consult it for context. It does not have a primary user-facing surface — it shows up through the quality of generation, the relevance of explanations, and the accuracy of suggested fixes.
 
@@ -314,7 +314,7 @@ The flow is approximately:
 4. Interpretation correlates with change history. The matched entity's recent supersession history (from Substrate 1's bitemporal model) is examined. If the entity was introduced or modified recently, the correlation is noted.
 5. JIRA correlation, where available, links the recent metadata change to a specific JIRA ticket. (See §5.5 on the JIRA correlation strategy and its limitations.)
 6. The structured record (matched entity, change context, JIRA link, confidence score) is fed to an LLM (Anthropic Claude Sonnet) to produce a clean QA-readable explanation. The LLM's output is constrained: it can describe the matched entity, reference its content, summarize the change context, and explain the implication. It cannot invent entities or claims that are not in the structured input.
-7. The explanation is presented in PrimeQA's UI alongside the structured evidence chain.
+7. The explanation is presented in Plimsol's UI alongside the structured evidence chain.
 
 When the substrate cannot confidently match a failure to a specific entity, the system says so honestly. The explanation reads: "Failure occurred during save operation. Unable to map to a specific rule. See raw error." This is better than hallucinating an explanation. The architectural rule (§4.11) is precision over completeness, and graceful fallback over confident wrongness.
 
@@ -322,7 +322,7 @@ The interpretation layer also performs **failure clustering**. When multiple tes
 
 ### 4.8 Substrate 7 — Conversation and Control
 
-**Responsibility:** Be the natural-language layer through which users interact with PrimeQA. Not a chatbot bolted onto a dashboard, but a surface integrated throughout — generation, debugging, and coverage exploration are all conversational where conversation is the natural shape of the interaction.
+**Responsibility:** Be the natural-language layer through which users interact with Plimsol. Not a chatbot bolted onto a dashboard, but a surface integrated throughout — generation, debugging, and coverage exploration are all conversational where conversation is the natural shape of the interaction.
 
 Example questions S7 must answer well: "Why is our regression coverage dropping?" "What's at risk if we deploy this package?" "Show me tests for the new approval process." "Did yesterday's failures have a common cause?"
 
@@ -332,7 +332,7 @@ S7 is deferred for v1. The initial product is structured-UI-first; conversationa
 
 **Responsibility:** Maintain tests as the org evolves so engineers don't have to. Field renamed → references in affected tests update. New required field added → affected tests adjust. Validation rule changed → tests re-verified against the new rule. Flow deactivated → dependent tests flagged for review.
 
-This is the maintenance burden Provar dumps on customers; PrimeQA automates it. The substrate sits between S1 (which detects org changes via its bitemporal model) and S2 (which it rewrites). Depending on the change type, S8 may act autonomously (rename propagation), propose changes for review (semantic adjustments), or flag for human attention (deactivation cascades). The autonomy gradient is a S8 design question, not yet resolved (see Q-006 in `docs/architecture/OPEN_QUESTIONS.md`).
+This is the maintenance burden Provar dumps on customers; Plimsol automates it. The substrate sits between S1 (which detects org changes via its bitemporal model) and S2 (which it rewrites). Depending on the change type, S8 may act autonomously (rename propagation), propose changes for review (semantic adjustments), or flag for human attention (deactivation cascades). The autonomy gradient is a S8 design question, not yet resolved (see Q-006 in `docs/architecture/OPEN_QUESTIONS.md`).
 
 S8 is deferred for v1. The architectural commitment is that S1 makes change detection feasible (bitemporal model) and S2 makes tests rewritable (rich representation); when S8 ships, it has the substrates it needs.
 
@@ -340,7 +340,7 @@ S8 is deferred for v1. The architectural commitment is that S1 makes change dete
 
 To make the architecture concrete, here is the Priya scene mapped to the substrates that produce each part of her experience.
 
-Priya runs a regression suite of 120 tests. Each test was previously generated by Substrate 3 from a JIRA ticket, in Substrate 2's representation, reviewed and approved by Priya, and stored in PrimeQA's database. Substrate 4 executes all 120 tests against the QA sandbox, capturing rich traces for each.
+Priya runs a regression suite of 120 tests. Each test was previously generated by Substrate 3 from a JIRA ticket, in Substrate 2's representation, reviewed and approved by Priya, and stored in Plimsol's database. Substrate 4 executes all 120 tests against the QA sandbox, capturing rich traces for each.
 
 Four tests fail. For each failure, Substrate 6's interpretation layer:
 
@@ -351,7 +351,7 @@ Four tests fail. For each failure, Substrate 6's interpretation layer:
 - Correlates the recent insertion with JIRA's change history (per the integration strategy described in §5.5) and finds JIRA SQ-211 as the source.
 - Notes that three other failed tests share the same matched validation rule.
 - Sends the structured attribution to the LLM with a constrained prompt; receives the clean explanation.
-- Renders the explanation in PrimeQA's UI with the evidence chain (rule entity link, supersession history link, JIRA SQ-211 link).
+- Renders the explanation in Plimsol's UI with the evidence chain (rule entity link, supersession history link, JIRA SQ-211 link).
 
 Priya sees the explanation in seconds. She trusts it because she can click through to verify each piece. She makes the release decision in thirty seconds.
 
@@ -363,21 +363,21 @@ These rules are non-negotiable foundations. Every design decision is evaluated a
 
 **Rule 1 — Precision over completeness in attribution.** When the system cannot confidently attribute a failure, it says so honestly. Confident wrongness is the most damaging failure mode and the architecture defends against it above all else.
 
-**Rule 2 — PrimeQA owns its own execution layer.** Attribution depends on rich, structured traces. We cannot rely on external execution tools for this data. Customers using Provar for regression suites continue to do so; PrimeQA does sprint-level testing end-to-end with its own execution.
+**Rule 2 — Plimsol owns its own execution layer.** Attribution depends on rich, structured traces. We cannot rely on external execution tools for this data. Customers using Provar for regression suites continue to do so; Plimsol does sprint-level testing end-to-end with its own execution.
 
-**Rule 3 — Tests stored in PrimeQA, exported to others.** PrimeQA's database is the system of record for tests. The web UI is the engineer's primary working surface. TestRail, Zephyr, JIRA, and Excel are integration targets, not systems of record.
+**Rule 3 — Tests stored in Plimsol, exported to others.** Plimsol's database is the system of record for tests. The web UI is the engineer's primary working surface. TestRail, Zephyr, JIRA, and Excel are integration targets, not systems of record.
 
 **Rule 4 — Capture everything, explain selectively.** The execution layer captures rich structured traces. The attribution layer interprets and selects. The UI explains in clean human terms. The richness is preserved internally; the simplification happens at the surface.
 
 **Rule 5 — Graceful fallback over hallucination.** When the system encounters something it cannot confidently handle, it falls back to honest "unable to map" responses with raw error visibility. It does not invent explanations. The architectural posture is that failing to deliver an explanation is acceptable; delivering a wrong one is not.
 
-**Rule 6 — Hybrid execution: cloud default, agent for enterprise.** The default execution environment is PrimeQA's cloud, for ease of onboarding. A customer-hosted agent is the enterprise option for security-sensitive customers. Both are first-class but the agent is built when an enterprise customer requires it, not before.
+**Rule 6 — Hybrid execution: cloud default, agent for enterprise.** The default execution environment is Plimsol's cloud, for ease of onboarding. A customer-hosted agent is the enterprise option for security-sensitive customers. Both are first-class but the agent is built when an enterprise customer requires it, not before.
 
 **Rule 7 — AI for translation, not invention.** AI's role is to translate structured technical context into natural-language explanations and to retrieve semantically relevant entities. AI does not invent structural facts about the org. The semantic model's structural truth is deterministic.
 
 **Rule 8 — Generation is user-driven, batch-capable, review-gated.** Tests are generated when the engineer asks. Generation handles batches naturally. Every test is reviewed before execution. There is no background generation, no auto-approval path.
 
-**Rule 9 — Correction loops stay inside PrimeQA.** When generation gets it wrong, the engineer corrects it without leaving the product. Edit-or-regenerate is the friction-free path. Bouncing between tools loses context.
+**Rule 9 — Correction loops stay inside Plimsol.** When generation gets it wrong, the engineer corrects it without leaving the product. Edit-or-regenerate is the friction-free path. Bouncing between tools loses context.
 
 ---
 
@@ -387,9 +387,9 @@ This section is about the things we deliberately do not do, the failure modes we
 
 ### 5.1 The most expensive failure mode
 
-Every product has a failure mode that, if it occurs frequently, kills the product. PrimeQA's is **confident wrongness in attribution**.
+Every product has a failure mode that, if it occurs frequently, kills the product. Plimsol's is **confident wrongness in attribution**.
 
-If PrimeQA explains a failure incorrectly and the engineer trusts the explanation, the engineer makes the wrong decision. They may report "no system bug" to the release manager when there is one, or they may dismiss a failure as expected when it is a regression. The downstream consequence is a customer-impacting bug shipping to production. This is the only failure mode where PrimeQA actively causes harm rather than just failing to deliver value.
+If Plimsol explains a failure incorrectly and the engineer trusts the explanation, the engineer makes the wrong decision. They may report "no system bug" to the release manager when there is one, or they may dismiss a failure as expected when it is a regression. The downstream consequence is a customer-impacting bug shipping to production. This is the only failure mode where Plimsol actively causes harm rather than just failing to deliver value.
 
 The architecture defends against this above all else. Specifically:
 
@@ -418,22 +418,22 @@ We do not try to match these in v1. We accept that:
 
 - Our execution engine handles common patterns reliably and falls back gracefully on edge cases. Coverage expands incrementally as data accumulates.
 - We do not ship CI/CD integrations in v1. They are post-v1 work.
-- We do not try to be the test data generation tool. Customers manage test data themselves; PrimeQA helps them understand when test data setup is the cause of a failure (a Substrate 6 capability), but does not generate test data automatically.
+- We do not try to be the test data generation tool. Customers manage test data themselves; Plimsol helps them understand when test data setup is the cause of a failure (a Substrate 6 capability), but does not generate test data automatically.
 - Our enterprise sales motion takes years to build. v1 lands with mid-market and progressive enterprise customers; broad enterprise adoption is a multi-year journey.
 
-The architectural sidestep is that we do not need to win on execution depth. We win on the failure-comprehension layer that Provar and Copado do not own. Customers can keep Provar for their stable regression suites; PrimeQA earns its keep on sprint-level testing and the moment-of-failure understanding.
+The architectural sidestep is that we do not need to win on execution depth. We win on the failure-comprehension layer that Provar and Copado do not own. Customers can keep Provar for their stable regression suites; Plimsol earns its keep on sprint-level testing and the moment-of-failure understanding.
 
 ### 5.3 Integration burden on customers
 
-PrimeQA requires customers to do some things they may not currently do. We should be honest about this.
+Plimsol requires customers to do some things they may not currently do. We should be honest about this.
 
 **Connect their Salesforce org(s) via OAuth.** Standard. Most testing tools require this. Low burden.
 
-**Use PrimeQA as the primary test working surface.** This is real. Customers with mature TestRail or Zephyr installations have to choose: keep using TestRail for general test management and use PrimeQA only for sprint-level sandbox tests, or migrate progressively to PrimeQA. We support export/sync to TestRail/Zephyr, so the choice is not binary, but customers do feel this.
+**Use Plimsol as the primary test working surface.** This is real. Customers with mature TestRail or Zephyr installations have to choose: keep using TestRail for general test management and use Plimsol only for sprint-level sandbox tests, or migrate progressively to Plimsol. We support export/sync to TestRail/Zephyr, so the choice is not binary, but customers do feel this.
 
 **Tag JIRA tickets in their deployment process** to enable change correlation in attribution explanations. Some customer teams do this; many do not. Where the link is absent, attribution explanations omit the JIRA reference and fall back to "rule introduced today" without a ticket link. We do not require the link for the product to work, but it makes the product better.
 
-**Run PrimeQA's execution engine** rather than depending on Provar for test execution. Customers running existing Provar test suites continue to do so for those suites. New tests authored in PrimeQA execute through PrimeQA. Some duplication of execution capability across the customer's stack is unavoidable in the transition.
+**Run Plimsol's execution engine** rather than depending on Provar for test execution. Customers running existing Provar test suites continue to do so for those suites. New tests authored in Plimsol execute through Plimsol. Some duplication of execution capability across the customer's stack is unavoidable in the transition.
 
 These are real burdens. They are not blockers. The Priya scene's value is large enough that engineers and QA leads are willing to take on the burden. We monitor onboarding friction and remove friction proactively.
 
@@ -441,11 +441,11 @@ These are real burdens. They are not blockers. The Priya scene's value is large 
 
 Some product capabilities depend on resolving questions that are still open.
 
-**Test data generation.** Test data setup is the hidden pain in QA work — engineers spend significant time creating Account-Opportunity-related-record chains in the right state. PrimeQA's v1 does not generate test data automatically. It captures and explains failures that happen because of test data issues (e.g., "test failed because Amount was null; the test data did not set Amount"). Whether to add test data generation as a Substrate 3 extension or a separate substrate is a v2-or-later question.
+**Test data generation.** Test data setup is the hidden pain in QA work — engineers spend significant time creating Account-Opportunity-related-record chains in the right state. Plimsol's v1 does not generate test data automatically. It captures and explains failures that happen because of test data issues (e.g., "test failed because Amount was null; the test data did not set Amount"). Whether to add test data generation as a Substrate 3 extension or a separate substrate is a v2-or-later question.
 
-**JIRA correlation strategy.** The Priya scene's "introduced via JIRA SQ-211" requires linking a metadata change in Substrate 1's bitemporal history to a JIRA ticket. Possible strategies: (a) the customer's deployment process tags Salesforce metadata with JIRA ticket IDs, (b) PrimeQA correlates by timing (the rule deployed at 2pm, ticket SQ-211 was merged at 1:55pm), (c) PrimeQA reads JIRA descriptions and matches to metadata semantically via LLM. (a) is most reliable but requires customer process; (b) is opportunistic; (c) is expensive and unreliable. We will likely build (a)+(b) hybrid for v1: prefer customer-tagged links where available, fall back to timing-based correlation otherwise, and degrade gracefully (omit the JIRA link in the explanation) when neither is available.
+**JIRA correlation strategy.** The Priya scene's "introduced via JIRA SQ-211" requires linking a metadata change in Substrate 1's bitemporal history to a JIRA ticket. Possible strategies: (a) the customer's deployment process tags Salesforce metadata with JIRA ticket IDs, (b) Plimsol correlates by timing (the rule deployed at 2pm, ticket SQ-211 was merged at 1:55pm), (c) Plimsol reads JIRA descriptions and matches to metadata semantically via LLM. (a) is most reliable but requires customer process; (b) is opportunistic; (c) is expensive and unreliable. We will likely build (a)+(b) hybrid for v1: prefer customer-tagged links where available, fall back to timing-based correlation otherwise, and degrade gracefully (omit the JIRA link in the explanation) when neither is available.
 
-**Multi-release support.** Enterprise customers have multiple releases in flight simultaneously: production at release N, UAT at N+1, dev sandboxes at N+2 with various features, integration sandboxes for merge testing. v1 PrimeQA represents one canonical metadata model — whatever was most recently synced. This works for single-release customers and works for multi-release customers with the limitation that the model represents one release context at a time. True multi-release support (parallel branches of the metadata model, branch-aware queries, merge testing) is deferred to a future phase when a customer drives the requirements.
+**Multi-release support.** Enterprise customers have multiple releases in flight simultaneously: production at release N, UAT at N+1, dev sandboxes at N+2 with various features, integration sandboxes for merge testing. v1 Plimsol represents one canonical metadata model — whatever was most recently synced. This works for single-release customers and works for multi-release customers with the limitation that the model represents one release context at a time. True multi-release support (parallel branches of the metadata model, branch-aware queries, merge testing) is deferred to a future phase when a customer drives the requirements.
 
 **Cost predictability at scale.** LLM costs are bounded but not yet validated against real customer-scale orgs. A 50,000-entity Salesforce org generates approximately $30-100 in LLM cost for initial sync (one-time) and approximately $5 per delta sync (when only changed entities are re-summarized). Test generation costs $0.05-0.20 per test; attribution costs cents per failure explanation. These numbers are bookable per-customer, but we will validate them against actual customer-scale orgs as part of Phase 2 readiness.
 
@@ -455,7 +455,21 @@ Some product capabilities depend on resolving questions that are still open.
 
 ### 6.1 Current state
 
-Substrate 1's foundation is built and shipped to main. Specifically, the bitemporal entity graph, the 14 typed edge categories, the 10 detail tables, the derivation logic, and 111 passing tests. The substrate compiles, runs, and is verifiable. It does not yet have anything writing to it from Salesforce — that is Phase 2.
+**As of 2026-06-15, all eight substrates are built, deployed, and the full
+release-intelligence loop runs daily against the live env-59 org.** S1
+(semantic org model + live sync), S2 (claims/recipes), S3 (grounded
+generation), S4 (execution engine with grounded evidence + provisioning/
+cleanup), S5 (knowledge), S6 (interpretation + cause attribution), S7
+(grounded-or-refuse conversation), and S8 (grounding-validity + repair) all
+ship as packages under `primeqa/`. The decision loop is wired (GO/NO-GO with
+explainable NO-GO, D-237). The original v1 product layer was retired
+(D-191…D-221, its product tables dropped in migration 053). All six product
+themes from the 2026-06 vision review closed 2026-06-14.
+
+*(Historical note: this section formerly described the as-of-Phase-1 state —
+"Substrate 1's foundation built, 111 passing tests, nothing writing to it from
+Salesforce yet." That snapshot is years of progress behind; the phase ladder
+in §6.3 below is now a completed record.)*
 
 ### 6.2 The substrate-first approach
 
@@ -467,13 +481,17 @@ The reward is that when v1 ships, the foundation supports the product's evolutio
 
 ### 6.3 Phasing toward v1
 
+> **Historical — the whole ladder below has shipped (2026-06-14).** This is the
+> phasing as planned; every phase is now complete and the v1 product moment
+> (Phase 6) is past. Kept as the build record.
+
 The product reaches v1 — the Priya scene end-to-end, working reliably for a customer — at the end of a phased build. The phases are:
 
 **Phase 1 (complete).** Substrate 1 foundation. Schema, edges, derivation, tests. Done.
 
 **Phase 2 (complete).** Substrate 1 sync. Pulls Salesforce metadata into the model. Adds embeddings (Voyage `voyage-3`, 1024 dim, per D-049) and lightweight LLM summaries (Claude Haiku 4.5, for Flow and ValidationRule per D-044) for retrieval. Builds the materialized-view query interface. Details in `docs/architecture/substrate_1_semantic_org_model/PHASE_2_PLAN.md` (locked planning artifact) and `PHASE_2_PLAN_corrections.md` (implementation divergences §1–§23).
 
-**Phase 3 (next).** Substrate 2 (Test Representation) design. The rich data structure for a test case — intent, coverage, relationships to org entities, execution history, provenance — designed to span all QA archetypes with a single representation.
+**Phase 3 (complete).** Substrate 2 (Test Representation) design. The rich data structure for a test case — intent, coverage, relationships to org entities, execution history, provenance — designed to span all QA archetypes with a single representation.
 
 **Phase 4.** Substrate 3 (Generation Engine). JIRA → test cases in Substrate 2's representation, grounded in Substrate 1. Web UI for review and approval. Schema-enforced LLM output to prevent hallucinated entity references. Iterative refinement loop. Knowledge from Substrate 5 (Domain Packs, system rules) shapes the prompt.
 
@@ -487,10 +505,10 @@ Each phase is detailed in its own phase plan document (`PHASE_N_PLAN.md`) at the
 
 ### 6.4 What v1 includes
 
-v1 PrimeQA delivers the Priya scene end-to-end:
+v1 Plimsol delivers the Priya scene end-to-end:
 
 - A QA engineer can connect a Salesforce sandbox.
-- They can synchronize the org's metadata into PrimeQA, populating Substrate 1.
+- They can synchronize the org's metadata into Plimsol, populating Substrate 1.
 - They can select JIRA tickets and generate test cases. Tests are reviewable, editable, regenerable.
 - They can approve tests and run them.
 - When tests fail, they see clean grounded explanations with confidence scores and evidence chains.
@@ -516,7 +534,7 @@ v1 deliberately does not include:
 - Test data generation (post-v1, may or may not earn inclusion)
 - Test prioritization, coverage analysis, flakiness detection (broader intelligence, post-v1)
 - Mobile UI, custom dashboards, advanced reporting (post-v1, prioritized by customer demand)
-- Non-Salesforce platforms (PrimeQA is Salesforce-specific by design; expansion to other platforms is years away if ever)
+- Non-Salesforce platforms (Plimsol is Salesforce-specific by design; expansion to other platforms is years away if ever)
 
 ### 6.6 The horizon beyond v1
 
@@ -540,7 +558,7 @@ These are real product opportunities. They are not v1. They are surfaced here so
 
 ## Appendix A — Glossary of key terms
 
-**Substrate.** A loosely-coupled architectural layer with a distinct responsibility and clean interfaces. PrimeQA is built on eight substrates (per `docs/architecture/PLATFORM_VISION.md` and D-001 / D-050). The v1 product moment is built on S1 + S2 + S3 + S4 + S6; S5 (Knowledge), S7 (Conversation), and S8 (Evolution) are part of the architectural foundation but ship later.
+**Substrate.** A loosely-coupled architectural layer with a distinct responsibility and clean interfaces. Plimsol is built on eight substrates (per `docs/architecture/PLATFORM_VISION.md` and D-001 / D-050). The v1 product moment is built on S1 + S2 + S3 + S4 + S6; S5 (Knowledge), S7 (Conversation), and S8 (Evolution) are part of the architectural foundation but ship later.
 
 **Bitemporal.** A data model where every row tracks both the time range it represents and (implicitly via supersession) the time range it was current truth. Allows history reconstruction.
 

@@ -1,5 +1,12 @@
 # Run Experience — Design Doc (R1–R6)
 
+> **ARCHIVED 2026-06-15.** This documents the **retired v1 Run Wizard /
+> `pipeline_runs` flow** and the v1 agent fix-and-rerun loop. The implementation
+> files it names are deleted and its backing tables were dropped (migration 053,
+> D-221). The live run path is the **S4 substrate execution engine**
+> (`primeqa/execution_engine/`; see `docs/architecture/substrate_4_execution/SPEC.md`).
+> Kept as the historical record of the R1–R6 decisions.
+
 > **Status: ALL SIX PHASES SHIPPED.** Commits: R1 `9045dfc`, R2 `aaa47d1`,
 > R3 `4ede25c`, R4 `452eb33`, R5 `479e483`, R6 `82d0a1e`. 46 new tests
 > across R1–R6, all passing. See

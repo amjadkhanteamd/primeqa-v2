@@ -1,5 +1,18 @@
 # Greenfield Cutover — SEQUENCE
 
+> **Currency note (2026-06-15).** The cutover has largely EXECUTED since this
+> was authored. Steps 0–3 + 5a are done; Step 4 was substantially addressed
+> (D-185, D-189–D-192); and **Step 5b's headline act shipped** — the v1
+> execution engine was retired and `test_case_versions` (with `test_cases`,
+> `generation_batches`, `ba_reviews`, the `run_*`/`pipeline_*` web, etc.)
+> dropped in **migration 053 (D-221.5, 2026-06-14)**; the four `data_*` tables
+> dropped in **056 (D-243)**. Two corrections to what shipped vs. what this doc
+> planned: **`requirements` was KEPT** (a surviving anchor, not dropped), and
+> **`llm_usage_log` + `generation_quality_signals` were KEPT** (not in the
+> drop-set). The **one remaining open tail is the physical `meta_*` table
+> drop** — see Step 5a's deferred list. Step bodies below carry their original
+> planning text; the per-step status lines reflect the executed reality.
+
 The cutover's **ordered, gated steps** (the sequencing law, D-146). Each step has an **entry-gate** (what must hold before it starts), an **exit-gate** (what proves it done), and a **rollback**. The ordering is **reversible-before-irreversible, additive-before-substitutive** — and the one irreversible act, the **`meta_*` drop, is strictly last** and gated on a clean parallel-run window.
 
 This is the order the execution phases follow. **Nothing here is built in Phase 7** (the design phase, D-145/D-146); each step becomes its own future phase. The "work" bullets fold in every "deferred to the cutover" item across the substrate docs — see the coverage table at the end.
@@ -48,10 +61,17 @@ Switch the v1 metadata *reads* to S1, behind the per-tenant `cutover_read_s1` fl
 - **Exit-gate:** flagged reads work + agree with the `meta_*`-sourced reads for the pilot tenants. *(Built + governance-tested now; the live dual-stack byte-parity probe — real-org S1 vs `meta_*` — is ops-deferred with #119, the same live half as Steps 0/2.)*
 - **Rollback:** flip `cutover_read_s1` back to `meta_*` (per tenant).
 
-## Step 4 — Parallel-run validation
+## Step 4 — Parallel-run validation — ✅ SUBSTANTIALLY DONE (D-185, D-189–D-192)
 
 Run both stacks; prove S1-sourced reads equal `meta_*`-sourced reads over a window; land the remaining additive seams.
 
+- **Landed (D-185, D-189–D-192).** The metadata read-parity harness
+  (`primeqa/metadata_bridge/parity.py`, S1 vs `meta_*`) ran a clean parity
+  window (D-189/D-190), then `cutover_read_s1` was flipped **ON for tenant 1**
+  with S1 verified as the production read source (D-192). The S1 read-bridge
+  was relocated to `primeqa/metadata_bridge/` (accessor / parity / s1_reader /
+  s1_sync_console) at D-191. The GO/NO-GO folding of S6 verdicts and the
+  S3-ledger retirement are tracked with the decision-loop work (theme #3).
 - **Entry-gate:** step 3 (the flagged reads live).
 - **Work:** measure parity (S1 vs `meta_*`) across generation/validation/preflight over a validation window; fold S6 verdicts into the GO/NO-GO decision (additive); retire the S3 semantic ledger into S2 provenance once `get_provenance` ships (`test_provenance` rows already written; `llm_calls` stays). *(Carries: GO/NO-GO folding — D-111; the S3-ledger retirement — D-074.)*
 - **Exit-gate:** a clean parity window — no divergence — across the rollout tenants; the GO/NO-GO + ledger seams landed.
@@ -99,29 +119,45 @@ impact-table drop.
 - **Rollback:** 5a.1–5a.3 are reversible (git revert). Past the 5a.4 migration there is no rollback —
   archive-first is the only safety.
 
-## Step 5b — The v1 product-table drop: `test_case_versions` / `requirements` *(DEFERRED · substrate-execution program)*
+## Step 5b — The v1 product-table drop: `test_case_versions` (NOT `requirements`) *(✅ DONE — D-221.5, migration 053, 2026-06-14)*
 
-**Finding (D-194):** the v1 test-authoring + **execution** + agent-repair flow is still the live product
-and runs on `test_case_versions` — the executor reads `TestCaseVersion.steps` to run against Salesforce
-(`worker.py:_run_execute_stage`); the agent fix-and-rerun loop writes new versions; the validation gate
-reads `validation_report`. The substrate spine (S2 claims / S3 generation / S4 execution / S6 / S8)
-exists and UI Areas 2–5 (D-166–173) added **parallel, mostly-read** surfaces, but there is **no
-substrate execution / repair / validation path yet**. So retiring these tables is **not a reader
-re-point — it is replacing the v1 execution engine with the S4/S3 spine + a data backfill + a dual-run
-cutover.**
+> **Status (2026-06-15):** EXECUTED. The v1 execution engine was retired and the
+> v1 product tables dropped in **migration 053** — `test_case_versions`,
+> `test_cases`, `generation_batches`, `ba_reviews`, the `pipeline_runs` /
+> `run_*` / `pipeline_stages` web, `test_suites` / `suite_test_cases` /
+> `scheduled_runs`, etc. (D-221.5; post-drop smoke green). The four `data_*`
+> tables followed in **056** (D-243). **`requirements` was KEPT** as a surviving
+> anchor (it is NOT in migration 053). **`llm_usage_log` and
+> `generation_quality_signals` were also KEPT.** The original "DEFERRED ·
+> not near-term" framing below is superseded — kept as the pre-execution
+> finding. The one piece this step does **not** cover, still open, is the
+> physical `meta_*` table drop (Step 5a's deferred list).
+
+**Finding (D-194, pre-execution):** the v1 test-authoring + **execution** + agent-repair flow was still the live product
+and ran on `test_case_versions` — the executor read `TestCaseVersion.steps` to run against Salesforce
+(`worker.py:_run_execute_stage`); the agent fix-and-rerun loop wrote new versions; the validation gate
+read `validation_report`. The substrate spine (S2 claims / S3 generation / S4 execution / S6 / S8)
+existed and UI Areas 2–5 (D-166–173) added **parallel, mostly-read** surfaces, but there was **no
+substrate execution / repair / validation path yet**. So retiring these tables was **not a reader
+re-point — it was replacing the v1 execution engine with the S4/S3 spine** (which then shipped: F6
+provisioning/cleanup, the enqueue loop, update/delete + N-create, D-196–D-205; corpus reached zero v1
+rows so the dual-run gate was redefined substrate-only, D-220).
 
 - **Entry-gate:** Step 5a done **and** S4 execution at v1 parity **and** every v1
   `requirements`/`test_case_versions` reader retired (the ~28 views/template sites + the release/runs
   resolvers + the intelligence/agent/validation core + the ~17-FK web).
-- **Phased (gated on S4 maturing):** A — S4 execution at v1 parity (run S3 recipes, write results);
-  B — agent fix-and-rerun + the validation gate on the spine; C — re-point the v1 reader surfaces (test
-  library, reviews, `/impacts`→S8, run history/detail, the `/run` 4-mode picker → S4, release
-  test-plan); D — backfill v1 `test_case_versions` → S3 recipes; E — dual-run flagged → cutover → drop
-  `test_case_versions` + `requirements` + the FK web (`run_test_results`, `agent_fix_attempts`,
-  `ba_reviews`, `test_case_data_bindings`, `release_*`, `generation_batches`, `llm_usage_log`,
-  `generation_quality_signals`).
-- **Not near-term** — substrate-roadmap scope, not Step-5-prep.
-- **Rollback:** none past the drop.
+- **Phased (all shipped):** A — S4 execution at v1 parity (run S3 recipes, write results, D-196–D-205);
+  B — fix-proposal agent + the executability gate on the spine (D-223, D-236); C — re-point the v1 reader
+  surfaces (test library, reviews, run history/detail, the `/run` picker → S4, release test-plan, the UI
+  Areas 2–5 program); D — the corpus reached **zero v1 rows**, so no backfill was needed and the dual-run
+  gate was redefined substrate-only (D-220); E — the drop ran as **migration 053** (D-221.5).
+- **What migration 053 actually dropped (vs. this plan):** `test_case_versions`, `test_cases`,
+  `generation_batches`, `ba_reviews`, `run_test_results` / `run_step_results` / `run_events` / the rest of
+  the `run_*` + `pipeline_*` web, `test_suites` / `suite_test_cases` / `scheduled_runs` /
+  `test_case_tags` / `test_case_parameter_sets` / `generation_jobs`. **`requirements` was KEPT** (surviving
+  anchor). **`llm_usage_log` and `generation_quality_signals` were KEPT** (not dropped). The `data_*` /
+  `test_case_data_bindings` tables dropped separately in **migration 056** (D-243).
+- **Rollback:** none past the drop (executed; archived first).
 
 ---
 
@@ -141,13 +177,20 @@ Every "deferred to the cutover" item across the substrate docs, mapped to its st
 | v1 read-path switch → S1: generation + validator/linter ✅ **built (D-158–D-162)**; preflight → Step 5 (GAP-2 — no clean S1 freshness map yet) | D-012 / D-003 | **3** |
 | Folding S6 verdicts into v1's GO/NO-GO | D-111 / D-137 | **4** |
 | S3 semantic-ledger retirement → S2 provenance (`get_provenance`) | D-074 | **4** |
-| `meta_*` drop (the 8 metadata tables + the FK web) ✅ **prereqs met (D-189–193); decoupled (D-194)** | D-012 / D-065 | **5a** |
-| v1 product-table drop (`test_case_versions` / `requirements`) — substrate-execution program, gated on S4 parity (D-194) | D-065 | **5b** |
+| `meta_*` drop (the 8 metadata tables + the FK web) — ⏳ **STILL OPEN** (the one remaining cutover tail; prereqs met D-189–193, decoupled D-194) | D-012 / D-065 | **5a** |
+| v1 product-table drop (`test_case_versions`; `requirements` KEPT) ✅ **DONE — migration 053, D-221.5** | D-065 | **5b** |
 
-**Explicitly NOT in the cutover** (post-cutover, per the SPEC §5): the MIGRATE tables (`test_suites` / `sections` / `suite_test_cases` / `ba_reviews` → future substrates, D-065); `llm_calls` (stays in S3, D-074); S4 F2/F4–F7 + the S8 mechanics phase.
+**Explicitly NOT in the cutover** (post-cutover, per the SPEC §5): the MIGRATE tables — but as executed, `test_suites` / `suite_test_cases` / `ba_reviews` were **dropped** with the v1 layer (migration 053), not migrated to future substrates; **`sections` survives**. `llm_calls` (stays in S3, D-074); S4 F2/F4–F7 + the S8 mechanics phase shipped (D-196–D-236).
 
 ---
 
 ## Status
 
-**Authored Phase 7 (2026-06-03, D-146).** The gated sequence + the consolidated work-list are fixed. Execution is later phases, each running one step against its entry-gate; the `meta_*` drop is the final, irreversible step gated on a clean parallel run.
+**Authored Phase 7 (2026-06-03, D-146).** The gated sequence + the consolidated work-list are fixed.
+
+**Executed (as of 2026-06-15).** Steps 0–3 + 5a are done; Step 4 was substantially
+addressed (D-185, D-189–D-192); Step 5b's v1 product-table drop ran in migration 053
+(D-221.5). The **one remaining step is the physical `meta_*` table drop** (Step 5a's
+deferred list) — the final, irreversible act, gated on relaxing the
+`test_case_versions.metadata_version_id` FK (now moot, that table is dropped) and a
+clean parallel run.
