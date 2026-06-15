@@ -13,6 +13,24 @@ class ReleaseService:
     def __init__(self, release_repo):
         self.release_repo = release_repo
 
+    def _log(self, tenant_id, user_id, action, entity_id=None, details=None):
+        """Best-effort audit write to activity_log (entity_type='release').
+
+        Never raises — an audit-log failure must not break the release action.
+        Reuses the service's existing DB session so the entry lands in the same
+        tenant/transaction context. Mirrors test_management's service _log helper.
+        Callers pass `action` strings under the activity_log VARCHAR(50) cap.
+        """
+        try:
+            from primeqa.core.repository import ActivityLogRepository
+            ActivityLogRepository(self.release_repo.db).log_activity(
+                tenant_id, user_id, action, "release", entity_id, details or {},
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            import logging
+            logging.getLogger("primeqa.release").warning(
+                "release activity-log write failed (%s): %s", action, e)
+
     def create_release(self, tenant_id, name, created_by, **kwargs):
         if kwargs.get("status") and kwargs["status"] not in VALID_STATUSES:
             raise ValueError(f"Invalid status. Must be one of: {', '.join(VALID_STATUSES)}")

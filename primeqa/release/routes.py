@@ -50,13 +50,16 @@ def create_release():
         return json_error("VALIDATION_ERROR", "name is required", http=400)
     svc, db = _get_service()
     try:
-        return jsonify(svc.create_release(
+        result = svc.create_release(
             request.user["tenant_id"], data["name"], request.user["id"],
             version_tag=data.get("version_tag"),
             description=data.get("description"),
             target_date=data.get("target_date"),
             decision_criteria=data.get("decision_criteria"),
-        )), 201
+        )
+        svc._log(request.user["tenant_id"], request.user["id"],
+                 "release.created", result.get("id"), {"name": data["name"]})
+        return jsonify(result), 201
     except ValueError as e:
         return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:
@@ -86,10 +89,13 @@ def update_release(release_id):
     expected = data.pop("expected_updated_at", None)
     svc, db = _get_service()
     try:
-        return jsonify(svc.update_release(
+        result = svc.update_release(
             release_id, request.user["tenant_id"], data,
             expected_updated_at=expected,
-        )), 200
+        )
+        svc._log(request.user["tenant_id"], request.user["id"],
+                 "release.updated", release_id, {"fields": sorted(data.keys())})
+        return jsonify(result), 200
     except ValueError as e:
         return json_error("VALIDATION_ERROR", str(e), http=400)
     except ConflictError as e:
@@ -104,6 +110,8 @@ def delete_release(release_id):
     svc, db = _get_service()
     try:
         svc.delete_release(release_id, request.user["tenant_id"])
+        svc._log(request.user["tenant_id"], request.user["id"],
+                 "release.deleted", release_id)
         return jsonify(message="Deleted"), 200
     except ValueError as e:
         return json_error("VALIDATION_ERROR", str(e), http=400)
@@ -121,6 +129,9 @@ def add_requirement(release_id):
     try:
         svc.add_requirement(release_id, request.user["tenant_id"],
                             data["requirement_id"], request.user["id"])
+        svc._log(request.user["tenant_id"], request.user["id"],
+                 "release.requirement.added", release_id,
+                 {"requirement_id": data["requirement_id"]})
         return jsonify(message="Added"), 200
     except ValueError as e:
         return json_error("VALIDATION_ERROR", str(e), http=400)
@@ -134,6 +145,9 @@ def remove_requirement(release_id, req_id):
     svc, db = _get_service()
     try:
         svc.remove_requirement(release_id, request.user["tenant_id"], req_id)
+        svc._log(request.user["tenant_id"], request.user["id"],
+                 "release.requirement.removed", release_id,
+                 {"requirement_id": req_id})
         return jsonify(message="Removed"), 200
     except ValueError as e:
         return json_error("VALIDATION_ERROR", str(e), http=400)
@@ -162,6 +176,10 @@ def add_requirements_bulk(release_id):
         result = svc.add_requirements_bulk(
             release_id, request.user["tenant_id"], ids, request.user["id"],
         )
+        svc._log(request.user["tenant_id"], request.user["id"],
+                 "release.requirements.bulk", release_id,
+                 {"added": len(result.get("added", [])),
+                  "skipped": len(result.get("skipped", []))})
         return jsonify(result), 200
     except ValueError as e:
         return json_error("VALIDATION_ERROR", str(e), http=400)
@@ -187,6 +205,9 @@ def evaluate_decision(release_id):
         result = evaluate_and_record(
             db, release, request.user["tenant_id"],
             release_repo=svc.release_repo)
+        svc._log(request.user["tenant_id"], request.user["id"],
+                 "release.decision.evaluated", release_id,
+                 {"recommendation": result.get("recommendation")})
         return jsonify(result), 200
     finally:
         db.close()
@@ -227,6 +248,10 @@ def finalize_decision(release_id, decision_id):
             decision_id, release_id, final, request.user["id"], data.get("override_reason"))
         if not d:
             return json_error("NOT_FOUND", "Decision not found", http=404)
+        svc._log(request.user["tenant_id"], request.user["id"],
+                 "release.decision.finalized", release_id,
+                 {"decision_id": decision_id, "final_decision": d.final_decision,
+                  "override": bool(data.get("override_reason"))})
         return jsonify({"final_decision": d.final_decision}), 200
     finally:
         db.close()
@@ -333,6 +358,9 @@ def mint_status_token(release_id):
         raw = secrets.token_urlsafe(32)
         release.status_poll_token_hash = _hash_poll_token(raw)
         db.commit()
+        # Audit the capability grant — NEVER the raw token, only that one was minted.
+        svc._log(request.user["tenant_id"], request.user["id"],
+                 "release.status_token.minted", release_id)
 
         proto = request.headers.get("X-Forwarded-Proto", request.scheme or "https")
         if proto not in ("http", "https"):
@@ -359,6 +387,8 @@ def revoke_status_token(release_id):
             return json_error("NOT_FOUND", "Release not found", http=404)
         release.status_poll_token_hash = None
         db.commit()
+        svc._log(request.user["tenant_id"], request.user["id"],
+                 "release.status_token.revoked", release_id)
         return jsonify({"release_id": release_id, "status": "revoked"}), 200
     finally:
         db.close()
