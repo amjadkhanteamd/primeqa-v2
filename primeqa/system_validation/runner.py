@@ -10,6 +10,7 @@ See docs/design/system-validation.md for the grammar reference.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import uuid as _uuid
@@ -123,9 +124,19 @@ class StepResult:
 
 
 def _do_login(step, vars, adapter):
+    # Tenant-parameterized self-validation: env vars override the suite's
+    # literal credentials so the SAME suite can run against any tenant's admin
+    # (the readiness check for a freshly-onboarded tenant). The suite JSON's
+    # values remain the fallback, so unset env keeps the default tenant-1 run
+    # byte-identical. The email is the true tenant selector — AuthService.login
+    # derives tenant from the users row and ignores a client tenant_id unless
+    # the same email exists in more than one tenant.
+    email = os.environ.get("SYSVAL_ADMIN_EMAIL") or step.get("email")
+    password = os.environ.get("SYSVAL_ADMIN_PASSWORD") or step.get("password")
+    tenant_id = os.environ.get("SYSVAL_TENANT_ID") or step.get("tenant_id", 1)
     body = {
-        "email": step["email"], "password": step["password"],
-        "tenant_id": step.get("tenant_id", 1),
+        "email": email, "password": password,
+        "tenant_id": int(tenant_id),
     }
     resp = adapter.request("POST", "/api/auth/login", body=body)
     if resp["status_code"] != 200:

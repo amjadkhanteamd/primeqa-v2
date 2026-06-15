@@ -28,6 +28,9 @@ class Release(Base):
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    # Migration 055: SHA-256 of the public /status polling token (CI/CD).
+    # NULL until a Release Owner mints one; the raw token is never stored.
+    status_poll_token_hash = Column(String(64))
 
     requirements = relationship("ReleaseRequirement", back_populates="release", cascade="all, delete-orphan")
     test_plan_items = relationship("ReleaseTestPlanItem", back_populates="release", cascade="all, delete-orphan")

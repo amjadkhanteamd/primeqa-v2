@@ -418,7 +418,7 @@ def run_tests():
         # directly with a non-existent env id.
         db = SessionLocal()
         try:
-            allowed, reason = check_environment_policy(9_999_999, "single_run", db)
+            allowed, reason = check_environment_policy(9_999_999, "single_run", db, 1)
             assert allowed is False
             assert "not found" in reason.lower()
         finally:

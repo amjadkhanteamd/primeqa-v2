@@ -621,7 +621,7 @@ _ACTION_PERMISSION: dict[str, str] = {
 
 
 def check_environment_policy(environment_id: int, action: str, db: Session,
-                              *, confirm_production: bool = False
+                              tenant_id: int, *, confirm_production: bool = False
                               ) -> tuple[bool, str]:
     """Check whether the env's run policy permits `action`.
 
@@ -629,6 +629,9 @@ def check_environment_policy(environment_id: int, action: str, db: Session,
         environment_id: the environment to evaluate
         action: 'single_run' | 'bulk_run' | 'scheduled_run'
         db: SQLAlchemy session
+        tenant_id: the caller's tenant — the env lookup is scoped to it so a
+            caller can never evaluate (or leak the name/policy of) an env in
+            another tenant by passing a foreign environment_id.
         confirm_production: set to True when the caller has explicitly
             confirmed running against a production env (e.g. passed
             `confirm_production=true` in the request body).
@@ -647,7 +650,7 @@ def check_environment_policy(environment_id: int, action: str, db: Session,
     if col is None:
         return False, f"Unknown action {action!r}"
 
-    env = db.query(Environment).filter_by(id=environment_id).first()
+    env = db.query(Environment).filter_by(id=environment_id, tenant_id=tenant_id).first()
     if env is None:
         return False, f"Environment {environment_id} not found"
 
@@ -782,7 +785,7 @@ def require_run_permission(action: str):
             db = SessionLocal()
             try:
                 allowed, reason = check_environment_policy(
-                    env_id, action, db,
+                    env_id, action, db, user.get("tenant_id"),
                     confirm_production=_extract_confirm_production(),
                 )
             finally:

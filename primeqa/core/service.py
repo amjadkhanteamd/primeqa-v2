@@ -392,7 +392,7 @@ class ConnectionService:
                     timeout=15,
                 )
                 if token_resp.status_code != 200:
-                    self.conn_repo.update_status(connection_id, "error")
+                    self.conn_repo.update_status(connection_id, "error", tenant_id)
                     return {"status": "failed", "detail": token_resp.text[:500]}
                 token_data = token_resp.json()
                 access_token = token_data.get("access_token", "")
@@ -427,12 +427,12 @@ class ConnectionService:
             else:
                 return {"status": "error", "detail": "Unknown connection type"}
 
-            self.conn_repo.update_status(connection_id, "active" if ok else "error")
+            self.conn_repo.update_status(connection_id, "active" if ok else "error", tenant_id)
             if ok:
                 return {"status": "connected"}
             return {"status": "failed", "detail": resp.text[:500]}
         except Exception as e:
-            self.conn_repo.update_status(connection_id, "error")
+            self.conn_repo.update_status(connection_id, "error", tenant_id)
             return {"status": "failed", "detail": str(e)}
 
     @staticmethod

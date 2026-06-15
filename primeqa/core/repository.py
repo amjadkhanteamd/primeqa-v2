@@ -319,8 +319,16 @@ class ConnectionRepository:
         self.db.commit()
         return True
 
-    def update_status(self, connection_id, status):
-        conn = self.db.query(Connection).filter(Connection.id == connection_id).first()
+    def update_status(self, connection_id, status, tenant_id=None):
+        # Defense-in-depth tenant scope. Callers reach this only after a
+        # tenant-scoped get_connection_decrypted, so the filter is belt-and-
+        # braces today — but the bare-id query was a footgun the moment any
+        # new caller skipped that check. tenant_id stays optional so existing
+        # behaviour is preserved; pass it whenever the tenant is known.
+        q = self.db.query(Connection).filter(Connection.id == connection_id)
+        if tenant_id is not None:
+            q = q.filter(Connection.tenant_id == tenant_id)
+        conn = q.first()
         if conn:
             conn.status = status
             conn.updated_at = datetime.now(timezone.utc)

@@ -115,11 +115,17 @@ class ReleaseRepository:
             return True
         return False
 
-    def list_requirements(self, release_id):
+    def list_requirements(self, release_id, tenant_id=None):
         from primeqa.test_management.models import Requirement
-        return self.db.query(Requirement).join(
+        q = self.db.query(Requirement).join(
             ReleaseRequirement, ReleaseRequirement.requirement_id == Requirement.id,
-        ).filter(ReleaseRequirement.release_id == release_id).all()
+        ).filter(ReleaseRequirement.release_id == release_id)
+        if tenant_id is not None:
+            # Defense-in-depth: requirements are already release-scoped via
+            # release_requirements, but the webhook path passes the release's
+            # tenant so a cross-tenant requirement can never ride along.
+            q = q.filter(Requirement.tenant_id == tenant_id)
+        return q.all()
 
     # --- Test Plan Items ---
 
@@ -191,8 +197,16 @@ class ReleaseRepository:
             ReleaseDecision.release_id == release_id,
         ).order_by(ReleaseDecision.created_at.desc()).first()
 
-    def finalize_decision(self, decision_id, final_decision, decided_by, override_reason=None):
-        d = self.db.query(ReleaseDecision).filter(ReleaseDecision.id == decision_id).first()
+    def finalize_decision(self, decision_id, release_id, final_decision, decided_by, override_reason=None):
+        # Tenant isolation: the decision must belong to the release named in
+        # the URL. The route loads that release tenant-scoped first (so a
+        # cross-tenant release_id 404s before we get here); filtering on
+        # release_id as well closes the gap where a decision id from another
+        # tenant's release could be finalized through this caller's release.
+        d = self.db.query(ReleaseDecision).filter(
+            ReleaseDecision.id == decision_id,
+            ReleaseDecision.release_id == release_id,
+        ).first()
         if not d:
             return None
         d.final_decision = final_decision

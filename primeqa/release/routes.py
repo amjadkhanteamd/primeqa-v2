@@ -20,6 +20,16 @@ def _get_service():
     return ReleaseService(ReleaseRepository(db)), db
 
 
+def _hash_poll_token(raw: str) -> str:
+    """SHA-256 of the raw status-poll token, hex-encoded — stored in
+    releases.status_poll_token_hash (migration 055). Mirrors the
+    shared-dashboard link idiom: the raw token is handed to CI once at
+    mint time and never persisted, so a DB dump can't leak active tokens.
+    Lookups hash the incoming ?token= and match by equality."""
+    import hashlib
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 @release_bp.route("/api/releases", methods=["GET"])
 @require_auth
 def list_releases():
@@ -207,7 +217,14 @@ def finalize_decision(release_id, decision_id):
             )
     svc, db = _get_service()
     try:
-        d = svc.release_repo.finalize_decision(decision_id, final, request.user["id"], data.get("override_reason"))
+        # Tenant isolation: confirm the release belongs to the caller's tenant
+        # before finalizing. Mirrors evaluate_decision above — without this the
+        # repo would finalize any decision id regardless of tenant.
+        release = svc.release_repo.get_release(release_id, request.user["tenant_id"])
+        if not release:
+            return json_error("NOT_FOUND", "Release not found", http=404)
+        d = svc.release_repo.finalize_decision(
+            decision_id, release_id, final, request.user["id"], data.get("override_reason"))
         if not d:
             return json_error("NOT_FOUND", "Decision not found", http=404)
         return jsonify({"final_decision": d.final_decision}), 200
@@ -219,6 +236,14 @@ def finalize_decision(release_id, decision_id):
 def public_release_status(release_id):
     """Public endpoint for CI/CD to poll release decision status.
 
+    Capability is a per-release opaque token (migration 055): the caller must
+    pass `?token=` matching the release's `status_poll_token_hash`. This both
+    authenticates the poll (no interactive login needed, so CI still works) and
+    proves the tenant \u2014 the matched release scopes the response. Without a valid
+    token the endpoint is a 404, so release ids are no longer an unauthenticated
+    cross-tenant oracle. A Release Owner mints/revokes the token via
+    POST/DELETE /api/releases/<id>/status-token.
+
     R5 / Q3: if the latest decision has `agent_verdict_counts=true` (default),
     CI sees the post-agent result (which may flip red\u2192green after the agent
     auto-fixed and rerun passed). If false, CI sees the pre-agent (raw human)
@@ -226,29 +251,35 @@ def public_release_status(release_id):
     """
     db = next(get_db())
     try:
-        from primeqa.release.models import Release, ReleaseDecision, ReleaseRun
-        from primeqa.execution.models import PipelineRun
+        from primeqa.release.models import Release, ReleaseDecision
         from sqlalchemy import desc
-        release = db.query(Release).filter(Release.id == release_id).first()
+        token = request.args.get("token", "")
+        if not token:
+            return json_error("UNAUTHORIZED", "A status token is required.", http=401)
+        # Scope by id AND token hash. A NULL status_poll_token_hash (no token
+        # minted) never equals a real hash, so unminted releases stay 404 \u2014
+        # wrong-token, no-token, and nonexistent-release are indistinguishable
+        # to the caller (no existence oracle across tenants).
+        release = db.query(Release).filter(
+            Release.id == release_id,
+            Release.status_poll_token_hash == _hash_poll_token(token),
+        ).first()
         if not release:
             return json_error("NOT_FOUND", "Release not found", http=404)
         latest = db.query(ReleaseDecision).filter(
             ReleaseDecision.release_id == release_id,
         ).order_by(desc(ReleaseDecision.created_at)).first()
 
-        # Compute post-agent rolled-up stats if there have been agent reruns.
-        # When `agent_verdict_counts=false` we ignore agent-triggered reruns
-        # and only reflect the original (parent_run_id IS NULL) runs.
+        # The legacy v1 pass/fail rollup joined ReleaseRun -> pipeline_runs, but
+        # the v1 execution engine + its pipeline_runs table were retired (D-221)
+        # and PipelineRun was deleted from execution.models — so that import +
+        # join were making THIS endpoint 500 on every call (latent since the
+        # retirement; the token-gate work is the first caller to exercise it).
+        # Post-retirement the verdict CI consumes is the substrate block (D-198),
+        # projected below. The rollup is kept (zeroed) for response-shape
+        # stability; substrate.metrics now carries the real counts.
         agent_counts = True if latest is None else bool(latest.agent_verdict_counts)
-        q = db.query(PipelineRun).join(
-            ReleaseRun, ReleaseRun.pipeline_run_id == PipelineRun.id,
-        ).filter(ReleaseRun.release_id == release_id)
-        if not agent_counts:
-            q = q.filter(PipelineRun.parent_run_id.is_(None))
-        runs = q.all()
-        passed = sum(r.passed or 0 for r in runs)
-        failed = sum(r.failed or 0 for r in runs)
-        total  = sum(r.total_tests or 0 for r in runs)
+        passed = failed = total = runs_counted = 0
 
         # D-198 (slice 4): the substrate block for CI — PROJECTED from the latest
         # decision's stored reasoning envelope (no substrate query on this hot
@@ -277,9 +308,56 @@ def public_release_status(release_id):
             "decided_at": latest.decided_at.isoformat() if latest and latest.decided_at else None,
             "agent_verdict_counts": agent_counts,
             "rollup": {"passed": passed, "failed": failed, "total": total,
-                       "runs_counted": len(runs)},
+                       "runs_counted": runs_counted},
             "substrate": substrate_block,
         }), 200
+    finally:
+        db.close()
+
+
+@release_bp.route("/api/releases/<int:release_id>/status-token", methods=["POST"])
+@require_role("admin", "tester")
+def mint_status_token(release_id):
+    """Mint (or rotate) the opaque polling token for this release's public
+    /status endpoint. Returns the raw token ONCE — only its SHA-256 hash is
+    stored, so it can't be retrieved again; re-POST to rotate. Tenant-scoped
+    via get_release so a caller can only mint for their own releases."""
+    import secrets
+    svc, db = _get_service()
+    try:
+        release = svc.release_repo.get_release(release_id, request.user["tenant_id"])
+        if not release:
+            return json_error("NOT_FOUND", "Release not found", http=404)
+        raw = secrets.token_urlsafe(32)
+        release.status_poll_token_hash = _hash_poll_token(raw)
+        db.commit()
+
+        proto = request.headers.get("X-Forwarded-Proto", request.scheme or "https")
+        if proto not in ("http", "https"):
+            proto = "https"
+        base = f"{proto}://{request.host}"
+        return jsonify({
+            "release_id": release_id,
+            "token": raw,
+            "status_url": f"{base}/api/releases/{release_id}/status?token={raw}",
+        }), 201
+    finally:
+        db.close()
+
+
+@release_bp.route("/api/releases/<int:release_id>/status-token", methods=["DELETE"])
+@require_role("admin", "tester")
+def revoke_status_token(release_id):
+    """Revoke the release's polling token. Subsequent /status polls 404 until a
+    new token is minted. Tenant-scoped; idempotent (already-NULL is a no-op)."""
+    svc, db = _get_service()
+    try:
+        release = svc.release_repo.get_release(release_id, request.user["tenant_id"])
+        if not release:
+            return json_error("NOT_FOUND", "Release not found", http=404)
+        release.status_poll_token_hash = None
+        db.commit()
+        return jsonify({"release_id": release_id, "status": "revoked"}), 200
     finally:
         db.close()
 
@@ -324,6 +402,21 @@ def ci_webhook_trigger():
         if not release:
             return json_error("NOT_FOUND", "Release not found", http=404)
 
+        # Tenant hardening (A5): the webhook is authenticated only by the
+        # single global WEBHOOK_SECRET, so a holder could otherwise enqueue
+        # claims against ANY tenant's environment by passing a foreign
+        # environment_id. The tenant is authoritative from the release row;
+        # the supplied environment_id must belong to that same tenant.
+        from primeqa.core.models import Environment
+        env = db.query(Environment).filter(
+            Environment.id == environment_id,
+            Environment.tenant_id == release.tenant_id,
+        ).first()
+        if not env:
+            return json_error(
+                "NOT_FOUND",
+                "Environment not found for this release's tenant", http=404)
+
         # D-221 R3: the v1 pipeline half retired with the engine — the CI
         # trigger is substrate-only now. CI polls /status whose D-198
         # substrate block carries the verdict over fresh evidence.
@@ -331,7 +424,8 @@ def ci_webhook_trigger():
         from primeqa.release.decision_composer import external_keys_for_requirements
         from primeqa.release.repository import ReleaseRepository
         keys = external_keys_for_requirements(
-            ReleaseRepository(db).list_requirements(release_id))
+            ReleaseRepository(db).list_requirements(
+                release_id, tenant_id=release.tenant_id))
         substrate = enqueue_claims_for_keys(
             release.tenant_id, keys, environment_id)
 
