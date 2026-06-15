@@ -1,10 +1,64 @@
 <!DOCTYPE html>
-<html lang="en" class="h-full bg-gray-50">
+<html lang="en" class="h-full" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}PrimeQA{% endblock %}</title>
+    <title>{% block title %}Plimsol{% endblock %}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/brand/favicon.svg">
+    <script>
+      /* Apply the saved theme before first paint to avoid a flash. Dark is default. */
+      (function () {
+        try {
+          var t = localStorage.getItem('plimsol-theme') || 'dark';
+          document.documentElement.setAttribute('data-theme', t);
+        } catch (e) {}
+      })();
+    </script>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      /* Map Tailwind's color scale onto the Plimsol theme tokens (defined in
+         plimsol-theme.css). This re-themes every existing utility class
+         (bg-gray-50, text-gray-900, indigo-600, …) with no per-element edits,
+         and flips dark<->light via the [data-theme] attribute. `white`/`black`
+         stay literal so text-white on solid buttons remains safe. */
+      (function () {
+        var steps = [50,100,200,300,400,500,600,700,800,900];
+        function ramp(name, fb) {
+          var o = {};
+          steps.forEach(function (s) { o[s] = 'var(--tw-' + name + '-' + s + ', ' + fb + ')'; });
+          return o;
+        }
+        var gray = ramp('gray', '#8b93a1');
+        var azure = ramp('indigo', '#2f6be0');
+        var green = ramp('green', '#3fcf8e');
+        var red = ramp('red', '#ff6257');
+        var amber = ramp('amber', '#e2a33c');
+        var blue = ramp('blue', '#45c2f0');
+        var purple = ramp('purple', '#b794f6');
+        tailwind.config = {
+          theme: {
+            extend: {
+              fontFamily: {
+                sans: ['Geist', 'ui-sans-serif', 'system-ui', '-apple-system', 'sans-serif'],
+                mono: ['Geist Mono', 'ui-monospace', 'SF Mono', 'monospace'],
+                display: ['Instrument Serif', 'Georgia', 'serif'],
+              },
+              colors: {
+                gray: gray, slate: gray, zinc: gray, neutral: gray, stone: gray,
+                indigo: azure, blue: blue, sky: blue, cyan: blue,
+                green: green, emerald: green, teal: green, lime: green,
+                red: red, rose: red,
+                amber: amber, yellow: amber, orange: amber,
+                purple: purple, violet: purple, fuchsia: purple,
+                accent: azure,
+                ship: green, hold: red,
+              },
+            },
+          },
+        };
+      })();
+    </script>
+    <link rel="stylesheet" href="/static/css/plimsol-theme.css">
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     {# CSRF — must load BEFORE any script that uses fetch() so the
        global fetch wrapper is installed early. Same-origin,
@@ -32,11 +86,23 @@
 <body class="h-full">
 {% if user %}
 <div class="min-h-full">
-    <nav class="bg-white shadow-sm border-b border-gray-200">
+    <nav class="plimsol-nav">
         <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
             <div class="flex h-14 justify-between">
                 <div class="flex items-center">
-                    <a href="/" class="text-xl font-bold text-indigo-600 mr-8">PrimeQA</a>
+                    <a href="/" class="plimsol-brand flex items-center gap-2 mr-7" aria-label="Plimsol home">
+                        <svg class="mark" width="26" height="22" viewBox="0 0 110 100" fill="none" aria-hidden="true">
+                            <circle cx="44" cy="50" r="29" stroke="currentColor" stroke-width="7"></circle>
+                            <line x1="3" y1="50" x2="76" y2="50" stroke="currentColor" stroke-width="7" stroke-linecap="round"></line>
+                            <g stroke="currentColor" stroke-linecap="round">
+                                <line x1="87" y1="40" x2="87" y2="60" stroke-width="2.91"></line>
+                                <line x1="87" y1="41" x2="100" y2="41" stroke-width="3.64"></line>
+                                <line x1="87" y1="50" x2="104" y2="50" stroke-width="3.64"></line>
+                                <line x1="87" y1="59" x2="97" y2="59" stroke-width="3.64"></line>
+                            </g>
+                        </svg>
+                        <span class="text-lg font-semibold tracking-tight" style="color:var(--text-primary)">Plimsol</span>
+                    </a>
                     {# Migration 039/040: permission-driven navigation.
                        `sidebar_items` is injected by
                        primeqa.core.permissions.register_template_context.
@@ -66,6 +132,12 @@
                     </div>
                 </div>
                 <div class="flex items-center space-x-3">
+                    {# Theme toggle — flips dark/light and remembers the choice. #}
+                    <button type="button" class="text-gray-400 hover:text-gray-600 p-1.5 rounded-md hover:bg-gray-100" title="Toggle light / dark" aria-label="Toggle theme"
+                            onclick="(function(){var h=document.documentElement,n=h.getAttribute('data-theme')==='dark'?'light':'dark';h.setAttribute('data-theme',n);try{localStorage.setItem('plimsol-theme',n)}catch(e){}})()">
+                        <svg class="th-sun h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.7" stroke="currentColor"><circle cx="12" cy="12" r="4"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+                        <svg class="th-moon h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.7" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                    </button>
                     {# Settings gear — hidden for users with no manage_* perms. #}
                     {% if can_see_settings %}
                     <a href="/settings" class="{% if active_page and active_page.startswith('settings') %}text-indigo-600{% else %}text-gray-400 hover:text-gray-600{% endif %} p-1.5 rounded-md hover:bg-gray-100" title="Settings">
@@ -129,6 +201,9 @@ document.addEventListener('click',e=>{document.querySelectorAll('.relative > div
 <script src="/static/js/loading.js"></script>
 <script src="/static/js/modal.js"></script>
 <script src="/static/js/unsaved_changes.js"></script>
+<script>/* Brand alias — the internal JS namespace stays PrimeQA; expose it under the
+   new brand name too so new code can use window.Plimsol.* */
+  window.Plimsol = window.PrimeQA;</script>
 {% else %}
 <div class="min-h-full flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
     {% block public_content %}{% endblock %}

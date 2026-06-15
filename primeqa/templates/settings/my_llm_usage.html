@@ -1,5 +1,5 @@
 {% extends "settings/base.html" %}
-{% block title %}My LLM usage - PrimeQA{% endblock %}
+{% block title %}My LLM usage - Plimsol{% endblock %}
 {% block settings_content %}
 
 <div class="space-y-6">
@@ -8,7 +8,7 @@
   <div class="flex items-center justify-between">
     <div>
       <h1 class="text-2xl font-bold text-gray-900">LLM usage &amp; plan</h1>
-      <p class="mt-1 text-sm text-gray-500">Your tenant's AI spend and rate limits against the PrimeQA shared-key pool.</p>
+      <p class="mt-1 text-sm text-gray-500">Your tenant's AI spend and rate limits against the Plimsol shared-key pool.</p>
     </div>
     <form method="GET" action="/settings/my-llm-usage" class="flex items-center gap-2 text-sm">
       <label for="days" class="text-gray-500">Window</label>
@@ -311,12 +311,12 @@
       </tbody>
     </table>
     <p class="mt-3 text-xs text-gray-500">
-      To change plans, contact your PrimeQA account manager. Tier changes are applied by a platform admin.
+      To change plans, contact your Plimsol account manager. Tier changes are applied by a platform admin.
     </p>
   </div>
 
   <p class="text-xs text-gray-400 italic">
-    All figures aggregated from the PrimeQA LLM gateway over the last {{ days }} days.
+    All figures aggregated from the Plimsol LLM gateway over the last {{ days }} days.
     Blocked-call counts include both explicit cap hits and provider-side rate limits.
   </p>
 </div>
