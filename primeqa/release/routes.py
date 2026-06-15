@@ -475,21 +475,3 @@ def ci_webhook_trigger():
         }), 201
     finally:
         db.close()
-
-
-@release_bp.route("/api/releases/<int:release_id>/score-risks", methods=["POST"])
-@require_role("admin", "tester")
-def score_release_risks(release_id):
-    from primeqa.intelligence.risk_engine import RiskEngine
-    svc, db = _get_service()
-    try:
-        release = svc.release_repo.get_release(release_id, request.user["tenant_id"])
-        if not release:
-            return json_error("NOT_FOUND", "Release not found", http=404)
-        engine = RiskEngine(db)
-        plan_count = engine.rank_release_test_plan(release_id)
-        return jsonify({
-            "plan_items_ranked": plan_count,
-        }), 200
-    finally:
-        db.close()
