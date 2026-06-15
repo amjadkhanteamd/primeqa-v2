@@ -14126,4 +14126,97 @@ the field-default cause + the live env-59 capture remain the two logged residual
 
 ---
 
+## D-242 — S1 edge-lifecycle residual: superseded-entity edges are never closed by the live sync path (gap-ledger 1.3)
+
+**Date:** 2026-06-14
+**Substrates affected:** [S1 semantic_org_model] — root-cause documentation + a one-time
+operational backfill (`scripts/backfill_close_dangling_edges_d242.sql`). ZERO code change in
+this entry, ZERO migration. The code fix-forward (close-on-supersession in the live sync path)
+is a deferred S1 slice, not done here.
+**Status:** active — residual logged; backfill produced + adversarially verified; AK runs it.
+
+**Context (gap-ledger 1.3, reframed).** 1.3 began as a cosmetic tidy of contamination clutter
+(junk `logical_versions` 60/61/62 + 4 sandbox test orgs synced 2026-06-12). Root-causing it
+surfaced a far broader, systemic S1 edge-lifecycle gap, of which the contamination is a 4-edge
+rounding error.
+
+**The mechanism (code-grounded).** The live sync edge-writer
+(`primeqa/sync/materialize.py` → `materialize_edges_for_entities` →
+`batched_materialize_edges` → `_materialize_edges_property_{less,bearing}`) supersedes edges
+only by incoming-vs-existing set-difference **keyed on `source_entity_id`**
+(`_batch_read_existing_edges_for_sources` / `_with_hash` read `WHERE source_entity_id = ANY(<incoming ids>)`).
+But an entity supersession mints a **new** `entity_id` (SCD-2 close-old/insert-new,
+`materialize.py:188-196`) and the edge-writer then reads existing edges only for the **new**
+ids. The **old** id's edges are therefore never in the close set and retain
+`valid_to_seq IS NULL` — a dangling "active" edge hanging off a now-historical entity version.
+The batched writer correctly handles **intra-entity** edge churn (stable source id; target
+added/removed; property-hash change) but **not** entity-identity-changing supersession — which
+is exactly what `primeqa/semantic/derivation.py::supersede_and_derive` step 1
+(`UPDATE edges SET valid_to_seq WHERE source_entity_id = <old eid> AND valid_to_seq IS NULL`)
+covered. That primitive has **zero production callers** (it survives only in tests + its own
+`__main__` self-test); `primeqa/sync/engine.py` never imports `derivation`.
+
+**Divergence verdict: unlogged divergence (not a logged design choice).** The ratified design
+of record had Phase-2 sync call `derivation.supersede_and_derive` per entity to close a
+superseded entity's edges (`substrate_1_semantic_org_model/PHASE_1_SUMMARY.md` §"Sync engine";
+`PHASE_2_PLAN.md` `run_sync` step 4; **D-037**, which still asserts "`supersede_and_derive`
+is called per entity after its detail row is written"). The shipped Phase-2 implementation
+instead wrote edges through a **parallel** batched writer (designed in
+`PHASE_2_PLAN_corrections.md` §11) and **never wired `supersede_and_derive` in**. No DECISIONS_LOG
+or OPEN_QUESTIONS entry recorded the replacement. **D-037's assertion is therefore now known
+stale** (append-only log: corrected here, not edited in place) until the fix-forward lands.
+
+**Measured impact (prod tenant_1, read-only, 2026-06-14, HEAD logical_version_seq = 64).**
+3154 dangling current edges (~13% of 23543 current edges): Profile 2331, Field 714, Layout 76,
+User 29, ValidationRule 4, across 96 distinct superseded sources. 3150/3154 are legit env-59
+daily supersession (org `902850e3`); 4 are the two sandbox test orgs. **Benign for live reads,
+proven empirically:** zero dangles surface in any current read — outbound reads bind a resolved
+current near-id, inbound reads filter the dangle via the far-source `_as_of` window
+(`query.py`), and `mv_active_graph` JOINs only active entities. The base `edges` table is
+nonetheless internally inconsistent (`verify_derivation_integrity` would flag these as "extra"),
+the rows' `valid_to_seq IS NULL` is semantically wrong, and the population grows with every
+id-changing supersession. The sibling class (current-source / **superseded-target** current
+edges) = 0 today and is transient (fixed on the source's next re-sync) — out of scope here.
+
+**Decision — Option A (AK-approved 2026-06-14): document + one-time backfill; defer the code
+fix.** Live reads are provably correct today and the bloat is slow-growing, so there is no fire;
+a one-time backfill buys a clean base table immediately, and the code fix deserves its own
+scoped S1 slice with a supersession test and a live re-sync. (Option C — clean only the 4
+contamination edges — was rejected as masking the systemic issue.)
+
+**The backfill (`scripts/backfill_close_dangling_edges_d242.sql`).** Closes each dangle at the
+seq its source entity was superseded (`valid_to_seq := src.valid_to_seq`) — the bitemporally
+correct close moment (census: valid interval for all 3154; gap 1..11; zero `close <= open`).
+**Adversarially verified** (5-agent workflow, every claim grounded against prod read-only + the
+code): row-selection closes EXACTLY the 3154 (1:1 join on the `entities` PK, no fan-out;
+disjoint from the 20389 legit current edges; zero orphan FKs); changes NO current read result;
+idempotent. Two must-fixes the review caught are folded into the script: (1) it sets
+`app.tenant_id` (the `edges_tenant_assertion` CHECK is re-evaluated on every UPDATEd row — a bare
+`psql` `UPDATE` aborts and closes 0 rows); (2) a self-guarding `DO` block asserts the row count
+and re-verifies 0 dangles, RAISE-rolling-back on any drift from the census.
+
+**Deferred fix-forward (Option B — a later S1 slice, NOT done here).** Wire a closure step into
+the live sync supersession path: when an entity supersedes, close its prior id's still-open edges
+at `logical_version_seq` — either call `supersede_and_derive` on the prior ids, or add a
+`_batch_close_edges_for_superseded_sources` helper in `materialize.py` doing
+`UPDATE edges SET valid_to_seq = :seq WHERE source_entity_id = ANY(<prior ids>) AND valid_to_seq IS NULL`
+— plus a supersession regression test, and run `verify_derivation_integrity`. Stops the
+regrowth; makes this backfill permanent.
+
+**Cross-refs / residuals.** D-037 (its "called per entity" assertion is now-known-false until
+the fix lands), D-040 (per-entity new-id provenance), `PHASE_2_PLAN_corrections.md` §11 (the
+parallel writer), D-241 (sibling residual pattern). `supersede_and_derive` stays the canonical
+reference semantics until the fix-forward lands.
+
+**Close.** Backfill run clean on prod (2026-06-15, AK): **3156 dangling edges closed**, zero
+pathological, `dangles_remaining = 0`. The count is +2 over the 2026-06-14 census (3154) — one
+intervening nightly sync superseded ~2 more entities and orphaned their edges, the systemic
+mechanism in miniature; the script's in-transaction recount closed the live 3156 (`updated =
+before`, `after = 0` → self-guard passed). The base `edges` table is internally consistent as of
+this run. **This is a point-in-time clean, not permanent**: until the Option-B fix-forward lands
+(close-on-supersession in `materialize.py`), every future id-changing supersession re-creates
+dangles. Option-A (gap-ledger 1.3) is complete; Option-B remains the open, deferred S1 slice.
+
+---
+
 ---
