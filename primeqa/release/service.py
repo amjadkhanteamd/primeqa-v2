@@ -57,7 +57,7 @@ class ReleaseService:
         r = self.release_repo.get_release(release_id, tenant_id)
         if not r:
             return None
-        requirements = self.release_repo.list_requirements(release_id)
+        requirements = self.release_repo.list_requirements(release_id, tenant_id=tenant_id)
         test_plan = self.release_repo.list_test_plan(release_id)
         runs = self.release_repo.list_runs(release_id)
         latest_decision = self.release_repo.get_latest_decision(release_id)
@@ -83,9 +83,23 @@ class ReleaseService:
         }
 
     def add_requirement(self, release_id, tenant_id, requirement_id, added_by):
+        from primeqa.test_management.models import Requirement
         r = self.release_repo.get_release(release_id, tenant_id)
         if not r:
             raise ValueError("Release not found")
+        # Tenant isolation: the requirement must belong to the caller's tenant
+        # before it can be linked (mirrors add_requirements_bulk). Without this,
+        # a foreign requirement_id could be attached to this tenant's release and
+        # then leak back through get_release_detail's list_requirements
+        # (jira_key / jira_summary). release_requirements has no tenant column,
+        # so the guard must live here.
+        own = self.release_repo.db.query(Requirement.id).filter(
+            Requirement.id == requirement_id,
+            Requirement.tenant_id == tenant_id,
+            Requirement.deleted_at.is_(None),
+        ).first()
+        if not own:
+            raise ValueError("Requirement not found")
         self.release_repo.add_requirement(release_id, requirement_id, added_by)
 
     def remove_requirement(self, release_id, tenant_id, requirement_id):

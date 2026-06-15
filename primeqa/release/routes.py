@@ -257,9 +257,11 @@ def public_release_status(release_id):
         if not token:
             return json_error("UNAUTHORIZED", "A status token is required.", http=401)
         # Scope by id AND token hash. A NULL status_poll_token_hash (no token
-        # minted) never equals a real hash, so unminted releases stay 404 \u2014
-        # wrong-token, no-token, and nonexistent-release are indistinguishable
-        # to the caller (no existence oracle across tenants).
+        # minted) never equals a real hash, so when a token IS supplied,
+        # wrong-token / unminted-release / nonexistent-release all return the
+        # same 404 \u2014 no cross-tenant existence oracle. (A missing token
+        # short-circuits to 401 above, before any release lookup, so it too
+        # leaks nothing about which release ids exist.)
         release = db.query(Release).filter(
             Release.id == release_id,
             Release.status_poll_token_hash == _hash_poll_token(token),

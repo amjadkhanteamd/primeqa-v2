@@ -6,12 +6,13 @@ Covers the cross-tenant gaps closed in the multi-tenant-readiness arc:
   2. check_environment_policy is tenant-scoped         (cross-tenant env probe)
   3. public /status requires a per-release token        (UNAUTH cross-tenant read)
   4. update_status honours tenant_id                    (defense-in-depth)
+  5. add_requirement rejects a foreign-tenant requirement (adversarial-review fix)
 
-Fixtures are created in tenant 1 and cleaned up in a finally. Cross-tenant
-behaviour is proven by passing a *mismatched* tenant_id rather than standing up
-a second tenant — a full 2-tenant E2E lands with the provisioning plan. The
-list_requirements tenant filter (A5) shares the same mismatched-tenant-id
-mechanism verified here and in test 2/4.
+Tests 1-4 prove cross-tenant behaviour by passing a *mismatched* tenant_id
+(fixtures live in tenant 1, cleaned up in a finally). Test 5 needs a REAL second
+tenant — add_requirement uses one tenant_id for both the release and the
+requirement, so it stands up a throwaway tenant + section + requirement and tears
+them down. A full 2-tenant E2E across all paths lands with the provisioning plan.
 
 Run: python tests/test_tenant_isolation.py
 """
@@ -198,6 +199,74 @@ def t_update_status_tenant_scoped():
         db.close()
 
 
+# --------------------------------------------------------------------------
+# 5. add_requirement rejects a foreign-tenant requirement (adversarial-review
+#    finding). This is the one isolation test that needs a REAL 2nd tenant —
+#    the others use a mismatched tenant_id, but add_requirement uses one
+#    tenant_id for both the release and the requirement, so a genuinely foreign
+#    requirement (release in tenant 1, requirement in tenant 2) is required to
+#    exercise the new guard.
+# --------------------------------------------------------------------------
+def t_add_requirement_tenant_scoped():
+    from primeqa.release.service import ReleaseService
+    from primeqa.release.models import ReleaseRequirement
+    from primeqa.test_management.models import Requirement, Section
+    from primeqa.core.models import Tenant
+    sfx = uuid.uuid4().hex[:8]
+    db = SessionLocal()
+    uid = _a_user_id(db)
+
+    # Foreign-tenant fixtures (a throwaway tenant 2 + section + requirement).
+    t2 = Tenant(name=f"ISO Tenant {sfx}", slug=f"iso-{sfx}")
+    db.add(t2); db.commit(); db.refresh(t2)
+    sec2 = Section(tenant_id=t2.id, name=f"ISO Sec {sfx}", position=0, created_by=uid)
+    db.add(sec2); db.commit(); db.refresh(sec2)
+    foreign_req = Requirement(tenant_id=t2.id, section_id=sec2.id, source="manual",
+                              created_by=uid, jira_key=f"FOR-{sfx}",
+                              jira_summary="foreign tenant secret")
+    db.add(foreign_req); db.commit(); db.refresh(foreign_req)
+
+    repo = ReleaseRepository(db)
+    rel = repo.create_release(TENANT_ID, f"ISO-REQ-{sfx}", uid)
+    svc = ReleaseService(repo)
+    own_req = db.query(Requirement).filter(
+        Requirement.tenant_id == TENANT_ID,
+        Requirement.deleted_at.is_(None)).first()
+    try:
+        # NEGATIVE: a foreign-tenant requirement must be rejected, no row created.
+        rejected = False
+        try:
+            svc.add_requirement(rel.id, TENANT_ID, foreign_req.id, uid)
+        except ValueError as e:
+            rejected = "not found" in str(e).lower()
+        assert rejected, "cross-tenant requirement was NOT rejected by add_requirement"
+        leaked = db.query(ReleaseRequirement).filter(
+            ReleaseRequirement.release_id == rel.id,
+            ReleaseRequirement.requirement_id == foreign_req.id).first()
+        assert leaked is None, "a cross-tenant release_requirements row was created"
+
+        # POSITIVE: a same-tenant requirement still links (no happy-path regression).
+        if own_req is not None:
+            svc.add_requirement(rel.id, TENANT_ID, own_req.id, uid)
+            linked = db.query(ReleaseRequirement).filter(
+                ReleaseRequirement.release_id == rel.id,
+                ReleaseRequirement.requirement_id == own_req.id).first()
+            assert linked is not None, "same-tenant requirement failed to link"
+    finally:
+        try:
+            db.query(ReleaseRequirement).filter(
+                ReleaseRequirement.release_id == rel.id).delete()
+            db.delete(rel)
+            db.delete(foreign_req)
+            db.delete(sec2)
+            db.delete(t2)
+            db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+
+
 if __name__ == "__main__":
     print("\n=== Multi-tenant isolation tests ===\n")
     results.append(test("1. finalize_decision must match the URL release_id",
@@ -208,6 +277,8 @@ if __name__ == "__main__":
                         t_status_requires_token))
     results.append(test("4. update_status honours tenant_id",
                         t_update_status_tenant_scoped))
+    results.append(test("5. add_requirement rejects a foreign-tenant requirement",
+                        t_add_requirement_tenant_scoped))
 
     passed = sum(1 for r in results if r)
     total = len(results)

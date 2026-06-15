@@ -58,7 +58,7 @@ def evaluate_and_record(db, release, tenant_id, *, release_repo) -> dict:
         get_release_substrate_decision,
     )
     keys = external_keys_for_requirements(
-        release_repo.list_requirements(release.id))
+        release_repo.list_requirements(release.id, tenant_id=tenant_id))
     substrate = get_release_substrate_decision(tenant_id, keys, criteria)
 
     if substrate.get("available") and substrate.get("applicable"):

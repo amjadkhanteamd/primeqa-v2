@@ -133,10 +133,19 @@ def _do_login(step, vars, adapter):
     # the same email exists in more than one tenant.
     email = os.environ.get("SYSVAL_ADMIN_EMAIL") or step.get("email")
     password = os.environ.get("SYSVAL_ADMIN_PASSWORD") or step.get("password")
-    tenant_id = os.environ.get("SYSVAL_TENANT_ID") or step.get("tenant_id", 1)
+    raw_tenant = os.environ.get("SYSVAL_TENANT_ID") or step.get("tenant_id", 1)
+    # Guard the int() so an operator typo in SYSVAL_TENANT_ID surfaces as a clean
+    # setup StepError (which marks every test errored) instead of an uncaught
+    # ValueError that aborts the whole run with a traceback. (The login route
+    # ignores body tenant_id per audit fix C-1 — the email is the real selector —
+    # so this value is belt-and-braces, but a bad value must not crash the suite.)
+    try:
+        tenant_id = int(raw_tenant)
+    except (TypeError, ValueError):
+        raise StepError(f"SYSVAL_TENANT_ID is not an integer: {raw_tenant!r}", step)
     body = {
         "email": email, "password": password,
-        "tenant_id": int(tenant_id),
+        "tenant_id": tenant_id,
     }
     resp = adapter.request("POST", "/api/auth/login", body=body)
     if resp["status_code"] != 200:
