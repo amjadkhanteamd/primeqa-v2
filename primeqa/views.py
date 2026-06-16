@@ -2943,15 +2943,13 @@ def requirements_import_jira():
 
 
 @views_bp.route("/api/s3-generation-jobs", methods=["POST"])
-@_require_auth_api
+@require_tier_api(Tier.MEMBER)
 def api_s3_generation_enqueue():
-    """Enqueue an S3 generation job. Authed; gated on the v1 generation role
-    (admin / tester, superadmin bypass — mirrors /requirements/<id>/generate).
-    Resolves the requirement (v1-side) + validates the environment, then pins a
-    queued job and returns immediately; the worker's s3_generation_tick runs it."""
-    if request.user.get("role") not in ("admin", "tester", "superadmin"):
-        return ({"error": {"code": "FORBIDDEN",
-                           "message": "Generation requires the tester or admin role."}}, 403)
+    """Enqueue an S3 generation job. Gated at the Member tier (D-245 Phase 6 —
+    the floor of the old inline ``("admin","tester","superadmin")`` list, so
+    ``ba`` is admitted too; superadmin passes via the ladder top). Resolves the
+    requirement (v1-side) + validates the environment, then pins a queued job and
+    returns immediately; the worker's s3_generation_tick runs it."""
     body = request.get_json(silent=True) or {}
     try:
         requirement_id = int(body["requirement_id"])
@@ -3009,19 +3007,20 @@ def api_s3_generation_status(job_id):
 
 
 @views_bp.route("/api/s4-execution-jobs", methods=["POST"])
-@_require_auth_api
+@require_tier_api(Tier.MEMBER)
 def api_s4_execution_enqueue():
     """Enqueue an S4 recipe-execution job (async; the worker's s4_execution_tick
     runs it). Authed; gated on the run role (admin / tester, superadmin bypass —
     mirrors /claims/<id>/run). Validates the environment + applies the
     production-confirm gate at **enqueue** time (the run is deferred to the worker,
     so the human confirm must happen here — not at run time as the sync button
-    does), then pins a queued job and returns 202; poll GET /api/s4-execution-jobs/<id>."""
+    does), then pins a queued job and returns 202; poll GET /api/s4-execution-jobs/<id>.
+
+    D-245 Phase 6: gated at the Member tier (the floor of the old inline
+    ``("admin","tester","superadmin")`` list — ``ba`` admitted too, superadmin
+    via the ladder top)."""
     from uuid import UUID
 
-    if request.user.get("role") not in ("admin", "tester", "superadmin"):
-        return ({"error": {"code": "FORBIDDEN",
-                           "message": "Running requires the tester or admin role."}}, 403)
     body = request.get_json(silent=True) or {}
     try:
         test_id = str(UUID(str(body["test_id"])))
@@ -3086,8 +3085,10 @@ def api_s3_generation_cancel(job_id):
     job = store.get_job(job_id)
     if job is None:
         return ({"error": {"code": "NOT_FOUND", "message": "Job not found"}}, 404)
+    # D-245: ownership OR Admin tier (the old inline ("admin","superadmin")
+    # list — superadmin passes via the ladder top).
     if (job.created_by != request.user["id"]
-            and request.user.get("role") not in ("admin", "superadmin")):
+            and not authorize(request.user, Tier.ADMIN)[0]):
         return ({"error": {"code": "FORBIDDEN",
                            "message": "Only the creator or an admin can cancel."}}, 403)
     if job.status in ("completed", "failed", "cancelled"):

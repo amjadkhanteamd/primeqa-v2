@@ -14372,3 +14372,61 @@ role ladder without environment scope — rejected: environment access is a real
 (Groups) that role tier cannot express.
 
 ---
+
+## D-245 — REALIZED (Phases 0–7 shipped on `authz-role-ladder`; supersedes the design above where they differ)
+
+The redesign landed as planned across Phases 0–7. Final state + the deviations discovered during
+build (each verified against code, not asserted):
+
+- **Phases 1–4 (additive, behavior-preserving):** `primeqa/core/authz.py` (`Tier`, `ROLE_TO_TIER`,
+  `rank` fail-low, `authorize`, `AuthorizationError`, + `floor_tier`/`tier_label`); `require_tier` /
+  `require_tier_api` OUTER decorators; `EnvironmentRepository.is_environment_accessible` (env-scope
+  axis); `PolicyError` + `ReadOnlyClient` Protocol + the production/policy dispatch gate at the
+  single chokepoint (`execution_engine/run.py`) + the stranded-cleanup reaper guard. Every Phase-2
+  replacement gate applied as the OUTER decorator (double-gated) **before** any deletion.
+- **Phase 5 (delete the permission-set layer):** `permissions.py` slimmed ~1006→~175 LOC (kept
+  `SharedDashboardLink`, `NotificationPreference`, and a role-derived `_role_capabilities` shim that
+  feeds the nav + `has_permission()` templates from role tier). Deleted the 3 permission-set-admin
+  routes; `migration 057` drops `user_permission_sets` + `permission_sets` (idempotent, CASCADE;
+  every other migration-039 column kept). Inventory diff (`scripts/authz_inventory.py`):
+  177→174 routes — **exactly** the 3 permission-set routes vanished, 0 added, **0 downgraded to
+  login-only** (the regression oracle held).
+- **Phase 6 (role-lists → floor-tier):** `role_required` / `require_role` are now thin wrappers over
+  `authorize(floor_tier(roles))`; explicit role names stay at call sites as documentation. The two
+  inline `("admin","tester","superadmin")` checks on the S3/S4 enqueue APIs became
+  `@require_tier_api(Tier.MEMBER)` decorators — **upgrading 2 routes from ungated to MEMBER-gated**.
+- **Phase 7 (cleanup + docs):** create-user role dropdown relabeled to the tier names
+  (Viewer/Member/Admin; stored values preserved — Member stored as `tester`; new users default to
+  Viewer = least privilege). CLAUDE.md Permission Model rewritten to this model.
+
+**Deviations from the design (discovered + handled during build):**
+1. **Nav-shim completeness fix (production).** The Phase-5 `_role_capabilities` map omitted
+   `view_own_results`/`view_all_results` (+ `manage_test_suites`, `view_suite_quality_gates`) — the
+   Results sidebar item would have vanished for every non-superadmin. Added them at the faithful
+   tiers after sweeping every capability `SIDEBAR_ITEMS` / the landing map / template
+   `has_permission()` reference.
+2. **`finalize_decision` override bug (Phase-5 fallout).** The NO-GO override sub-gate read
+   `g.effective_permissions`, which the permission layer used to populate — after deletion it was
+   always empty, silently narrowing override from "admins with `override_quality_gate`" to
+   **superadmin-only**. The route is already `@require_role("admin")` (Admin floor) and
+   `override_quality_gate` was admin-only, so the dead body-check was removed; the route's Admin gate
+   is the enforcement (restores pre-Phase-5 behavior).
+3. **Integration-test corpus migrated (AK-approved "migrate now").** Deleted 3 tests that only
+   exercised the deleted layer (`test_permission_sets`, `test_admin_permission_ui`,
+   `test_permission_enforcement`); rewrote 5 onto the role model (`test_run_tests_page`,
+   `test_developer_experience`, `test_results_page`, `test_tenant_isolation` [dropped the
+   `check_environment_policy` case → unit-covered], `test_dynamic_ui` [full role-driven rewrite;
+   its old per-permission-set framing dissolved and several assertions were already stale]). These
+   are Railway integration tests (DB + JWT) — import/compile-checked here; **a real Railway run is
+   required to confirm green** (flagged in each file header).
+
+**Verification:** app boots; `tests/unit/` 2771 green (includes exhaustive ladder + `floor_tier` +
+decorator + env-scope + dispatch-gate cases); inventory regression oracle clean (no login-only
+drop; 2 upgrades). Full detail in `docs/architecture/VERIFICATION_REPORT_D245.md`.
+
+**Known-residual (pre-existing, NOT introduced by D-245, left as-is per smallest-correct-change):**
+`AuthService.list_groups` scopes "see all" on `role == "admin"`, which excludes superadmin from the
+god-mode all-groups view — a latent inconsistency the ladder (`rank(role) >= Tier.ADMIN`) would fix;
+deferred to avoid scope creep.
+
+---
