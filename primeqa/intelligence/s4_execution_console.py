@@ -55,7 +55,7 @@ def _map_run_result(result) -> dict:
 
 
 def trigger_claim_run(tenant_id: int, test_id, environment_id: int, *,
-                      client=None, field_overrides=None) -> dict:
+                      client=None, field_overrides=None, caller_tier=None) -> dict:
     """Run the eligible recipe for ``test_id`` on ``environment_id`` (synchronous).
     Best-effort — returns ``{ok: False, error}`` on any failure (never raises).
     On success: ``{ok: True, ran, outcome, verdict, recipe_id}`` (``ran=False`` +
@@ -70,7 +70,8 @@ def trigger_claim_run(tenant_id: int, test_id, environment_id: int, *,
         from primeqa.execution_engine.run import run_recipe_execution_for_tenant
         result = run_recipe_execution_for_tenant(
             tenant_id, UUID(str(test_id)), environment_id=environment_id,
-            client=client, field_overrides=field_overrides or None)
+            client=client, field_overrides=field_overrides or None,
+            caller_tier=caller_tier)
         return _map_run_result(result)
     except Exception as exc:                      # credential / SF / execution error
         log.warning("trigger_claim_run failed for tenant %s test %s env %s: %s",

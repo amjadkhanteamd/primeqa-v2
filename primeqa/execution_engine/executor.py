@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from primeqa.execution_engine.errors import AssertionResolutionError
 from primeqa.execution_engine.errors import UnsupportedPredicateError
+from primeqa.execution_engine.read_only_client import ReadOnlyClient
 from primeqa.execution_engine.evidence import (
     AssertEvidence,
     ErrorSurface,
@@ -48,12 +49,14 @@ _SUPPORTED_PREDICATES = frozenset({"exists", "equals", "is_null"})
 
 
 def execute_metadata_inspection(
-    plan: MetadataInspectionPlan, *, client, environment_id: int,
+    plan: MetadataInspectionPlan, *, client: ReadOnlyClient, environment_id: int,
 ) -> RunEvidence:
     """Execute a metadata-inspection plan against ``client``.
 
-    ``client`` is anything with ``.query(soql) -> list[dict]`` (injected, so
-    unit tests drive a stub with no org / no PG). ``environment_id`` is the
+    ``client`` is a :class:`ReadOnlyClient` (L1, D-245) — SOQL reads only, no
+    mutation verb. ``ToolingReadClient`` satisfies it; a ``DataMutationClient``
+    does not (a type error), so no write is reachable from this path. Injected,
+    so unit tests drive a stub with no org / no PG. ``environment_id`` is the
     env the client is bound to — recorded as evidence context.
 
     Returns a :class:`RunEvidence` carrying the grounded outcome + per-step

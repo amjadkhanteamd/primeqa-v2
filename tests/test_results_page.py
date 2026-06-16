@@ -12,6 +12,11 @@ styling, SSE streaming, and rerun flows. New surface:
     endpoint
 
 Tests here exercise what's NEW. Existing /runs tests stay green.
+
+NOTE (D-245): integration test — runs against the live Railway DB + mints JWTs.
+Re-run on a real environment to confirm green; it cannot execute in a sandbox
+that blocks DB writes / token minting. Nav capabilities are role-derived now
+(_role_capabilities), so the deleted permission-set seeding was removed.
 """
 
 import os
@@ -27,9 +32,7 @@ from sqlalchemy import text
 from primeqa.app import app
 from primeqa.core.models import User
 from primeqa.core.navigation import build_sidebar, get_landing_page
-from primeqa.core.permissions import (
-    BASE_PERMISSION_SETS, PermissionSet, UserPermissionSet,
-)
+from primeqa.core.permissions import _role_capabilities
 from primeqa.db import SessionLocal
 
 TENANT_ID = 1
@@ -62,19 +65,6 @@ def login_form(email, password):
                        follow_redirects=False)
 
 
-def _force_perms(user_id: int, api_names: list[str]):
-    db = SessionLocal()
-    try:
-        db.query(UserPermissionSet).filter_by(user_id=user_id).delete()
-        for name in api_names:
-            ps = db.query(PermissionSet).filter_by(
-                tenant_id=TENANT_ID, api_name=name).first()
-            db.add(UserPermissionSet(user_id=user_id, permission_set_id=ps.id))
-        db.commit()
-    finally:
-        db.close()
-
-
 def run_tests():
     results = []
     print("\n=== Results Page Tests ===\n")
@@ -85,7 +75,8 @@ def run_tests():
     # 1. Sidebar: Results nav item points at /results
     # --------------------------------------------------------------
     def test_sidebar_points_at_results():
-        perms = set(next(s for s in BASE_PERMISSION_SETS if s["api_name"] == "tester_base")["permissions"])
+        # D-245: a Member (tester role) holds the run + view-results caps.
+        perms = _role_capabilities("tester")
         items = build_sidebar(perms, "/results")
         results_item = next((i for i in items if i["id"] == "results"), None)
         assert results_item is not None, "Results nav item missing"

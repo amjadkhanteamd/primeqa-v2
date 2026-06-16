@@ -44,8 +44,9 @@ from primeqa.execution_engine.data_executor import (
     execute_data_recipe,
     plan_data_recipe_world,
 )
-from primeqa.execution_engine.errors import PlanTranslationError
+from primeqa.execution_engine.errors import PlanTranslationError, PolicyError
 from primeqa.execution_engine.evidence import RunEvidence
+from primeqa.core.authz import AuthorizationError, Tier
 from primeqa.execution_engine.executor import execute_metadata_inspection
 from primeqa.execution_engine.finalize import finalize_run
 from primeqa.test_representation import SemanticTransactionCoordinator
@@ -79,6 +80,77 @@ _METADATA_RECIPE_KIND = "metadata-recipe"
 _DATA_RECIPE_KIND = "data-recipe"
 
 
+def _resolve_env_gate(session, environment_id: int):
+    """Read ``(execution_policy, is_production)`` for the env from a live session.
+
+    The ``environments`` row lives in ``public`` (reachable on the tenant
+    search_path). Returns ``(None, None)`` when no session is available (the
+    async execute bracket holds none — its caller resolves the gate up front in
+    the open select bracket and passes it in)."""
+    if session is None:
+        return (None, None)
+    try:
+        from primeqa.core.models import Environment
+        env = (session.query(Environment)
+               .filter(Environment.id == environment_id).first())
+    except Exception:
+        # The env row is unreadable from this session (e.g. a substrate-only
+        # test session with no `environments` table). Degrade the dispatch gate
+        # to skip — the route + enqueue layers still gate, and a production
+        # session always resolves the row (public is on the search_path).
+        return (None, None)
+    if env is None:
+        return (None, None)
+    return (env.execution_policy, bool(env.is_production))
+
+
+def _authorize_dispatch(recipe, *, execution_policy, is_production, caller_tier):
+    """The production / resource-policy dispatch gate (D-245, Phase 4) — applied
+    at the single chokepoint :func:`_execute_for_kind`. Three distinct errors,
+    never conflated.
+
+    The **resource-policy** rule (i, below) is role-independent and fires on every
+    entry (sync, async/queued, system). The **production-role** rule (ii) needs a
+    human ``caller_tier``; it is supplied on the sync path
+    (``/claims/<id>/run`` passes ``rank(role)``) but is ``None`` on the async path
+    (the worker runs as *system*). The async production decision is therefore made
+    at the **enqueue boundary** instead — ``api_s4_execution_enqueue`` rejects a
+    non-Admin enqueue against a production env (D-245 review fix) — because the
+    authenticated caller is known there, not in the worker.
+
+    ``recipe_kind == metadata-recipe`` IS the read-only inspection vertical: the
+    bridge enforces ``mode == metadata_read`` (``build_metadata_inspection_plan``
+    raises otherwise), so the kind is the reliable read-mode discriminator. **When
+    a metadata-write/deploy recipe kind is added, this gate MUST also check the
+    mode** — a write-mode metadata recipe mutates and is not inspection.
+
+    Order:
+      (i)  Resource policy (``env.execution_policy``) — env state, applies to
+           EVERYONE incl. admins/system: ``disabled`` → reject all (PolicyError);
+           ``read_only`` → reject any non-inspection recipe (PolicyError).
+      (ii) Production role — only when a user ``caller_tier`` is supplied: a
+           non-Admin against a production env may run ONLY the inspection
+           vertical; a data-recipe is hard-rejected (AuthorizationError).
+    """
+    read_only_inspection = recipe.recipe_kind == _METADATA_RECIPE_KIND
+
+    if execution_policy == "disabled":
+        raise PolicyError(
+            "environment execution_policy=disabled — no runs permitted "
+            f"(recipe_kind={recipe.recipe_kind!r})")
+    if execution_policy == "read_only" and not read_only_inspection:
+        raise PolicyError(
+            "environment execution_policy=read_only — only the read-only "
+            "metadata inspection vertical may run; data-recipes are rejected "
+            "regardless of role")
+
+    if (is_production and caller_tier is not None
+            and int(caller_tier) < int(Tier.ADMIN) and not read_only_inspection):
+        raise AuthorizationError(
+            "production environment — only an Admin may run a data-recipe "
+            "(mutating) here; your role may run only the read-only inspection")
+
+
 @dataclass(frozen=True)
 class RunPathResult:
     """The outcome of a run-path invocation — two distinguishable shapes.
@@ -110,6 +182,7 @@ def run_recipe_execution(
     coordinator=None,
     record_sink=None,
     field_overrides=None,
+    caller_tier=None,
 ) -> RunPathResult:
     """Execute the eligible recipe for ``test_id`` end-to-end on ``session``.
 
@@ -138,7 +211,7 @@ def run_recipe_execution(
 
     evidence = _execute_for_kind(
         recipe, session, environment_id, client, record_sink=record_sink,
-        field_overrides=field_overrides)
+        field_overrides=field_overrides, caller_tier=caller_tier)
     state = finalize_run(session, evidence, coordinator=coord)
     interpretation = _interpret_and_persist(session, evidence)
 
@@ -152,7 +225,8 @@ def run_recipe_execution(
 
 
 def _execute_for_kind(recipe, session, environment_id: int, client,
-                      record_sink=None, world_plans=None, field_overrides=None):
+                      record_sink=None, world_plans=None, field_overrides=None,
+                      *, env_gate=None, caller_tier=None):
     """Dispatch on ``recipe.recipe_kind`` → the matching bridge + executor.
 
     The inspection path (``metadata-recipe``) is unchanged from D-108.4; the
@@ -165,6 +239,15 @@ def _execute_for_kind(recipe, session, environment_id: int, client,
     ``session`` may be ``None``); when ``None``, the sync path builds the live S1
     reader from ``session`` as before. An unknown kind fails loud — the run path
     has no executor for it (deferred recipe kinds)."""
+    # D-245 Phase 4 — the production / resource-policy gate, at the single
+    # dispatch chokepoint (covers sync + async). Sync passes a live `session`
+    # (resolve the env policy here); async passes a pre-resolved `env_gate`
+    # (its execute bracket holds no DB connection — `session` is None).
+    policy, is_prod = (env_gate if env_gate is not None
+                       else _resolve_env_gate(session, environment_id))
+    _authorize_dispatch(recipe, execution_policy=policy,
+                        is_production=is_prod, caller_tier=caller_tier)
+
     if recipe.recipe_kind == _METADATA_RECIPE_KIND:
         plan = build_metadata_inspection_plan(recipe)
         tooling = client or resolve_tooling_client(session, environment_id)
@@ -267,6 +350,7 @@ def run_recipe_execution_for_tenant(
     client=None,
     coordinator=None,
     field_overrides=None,
+    caller_tier=None,
 ) -> RunPathResult:
     """Production entry: own the tenant connection + the single commit.
 
@@ -300,6 +384,7 @@ def run_recipe_execution_for_tenant(
                 coordinator=coordinator,
                 record_sink=sink,
                 field_overrides=field_overrides,
+                caller_tier=caller_tier,
             )
         finally:
             session.close()
@@ -341,6 +426,7 @@ def run_recipe_execution_async(
     available_environment: Optional[ExecutionEnvironmentBody] = None,
     coordinator=None,
     session_scope=None,
+    caller_tier=None,
 ) -> RunPathResult:
     """Async-safe execution: bracket the live read with **brief transactions** so
     no DB connection is held across Salesforce I/O (D-129; data path D-230.2). Three
@@ -383,6 +469,9 @@ def run_recipe_execution_async(
         )
         prep = (_prepare_async_execute(recipe, session, environment_id, client)
                 if recipe is not None else None)
+        # D-245 Phase 4: resolve the env policy HERE (session open) so the
+        # execute bracket — which holds no connection — can gate without a read.
+        env_gate = _resolve_env_gate(session, environment_id)
     if recipe is None:
         return RunPathResult(ran=False, reason="no_eligible_recipe")
     resolved_client, world_plans = prep
@@ -393,7 +482,8 @@ def run_recipe_execution_async(
     sink = StrandedRecordSink(tenant_id, environment_id)
     evidence = _execute_for_kind(
         recipe, None, environment_id, resolved_client,
-        record_sink=sink, world_plans=world_plans)
+        record_sink=sink, world_plans=world_plans,
+        env_gate=env_gate, caller_tier=caller_tier)
 
     # 3. persist + posture + interpret — a fresh brief transaction.
     with scope(tenant_id) as session:

@@ -120,6 +120,79 @@ def run_tests():
         assert r.status_code == 404, f"{r.status_code} {r.data[:200]}"
     results.append(test("404 on unknown job id (poll)", test_status_404_unknown_job))
 
+    def test_member_blocked_from_production_enqueue():
+        # D-245 review fix: the production-tier gate must be enforced at ENQUEUE
+        # (the worker runs as system and cannot re-derive the caller's tier, so
+        # _authorize_dispatch's production-role rule is inert on the async path).
+        # A non-Admin (ba/tester=Member) may NOT enqueue execution against a
+        # production env; an Admin passes the tier gate.
+        import bcrypt
+        from primeqa.core.models import User, Environment as Env
+        member_email = "s4_member_prodgate@primeqa.io"
+        client.post("/api/auth/users", headers=H,
+                    json={"email": member_email, "password": "test123",
+                          "full_name": "S4 Member", "role": "tester"})
+        db = SessionLocal()
+        member_id = None
+        try:
+            u = db.query(User).filter_by(email=member_email, tenant_id=TENANT_ID).first()
+            if u is not None:
+                u.role = "tester"
+                u.is_active = True
+                u.password_hash = bcrypt.hashpw(
+                    b"test123", bcrypt.gensalt(rounds=4)).decode("utf-8")
+                db.commit()
+                member_id = u.id
+        finally:
+            db.close()
+        if member_id is None:
+            print("    SKIP: could not provision member fixture")
+            return
+        # Throwaway production env OWNED by the member, so it passes the env-scope
+        # check and this isolates the production-tier gate (not the group gate).
+        db = SessionLocal()
+        try:
+            penv = Env(tenant_id=TENANT_ID, name="ISO Prod Env (s4 prodgate test)",
+                       env_type="production", sf_instance_url="https://example.invalid",
+                       sf_api_version="60.0", is_production=True, is_active=True,
+                       created_by=member_id)
+            db.add(penv)
+            db.commit()
+            db.refresh(penv)
+            penv_id = penv.id
+        finally:
+            db.close()
+        try:
+            mtoken = login_api(member_email, "test123")
+            assert mtoken, "member login failed"
+            MH = {"Authorization": f"Bearer {mtoken}"}
+            r = client.post("/api/s4-execution-jobs", headers=MH,
+                            json={"test_id": str(uuid4()), "environment_id": penv_id,
+                                  "confirm_production": True})
+            assert r.status_code == 403, \
+                f"member prod enqueue expected 403, got {r.status_code} {r.data[:200]}"
+            assert r.get_json()["error"]["code"] == "FORBIDDEN"
+            # An Admin is NOT blocked by the production-tier gate.
+            ra = client.post("/api/s4-execution-jobs", headers=H,
+                             json={"test_id": str(uuid4()), "environment_id": penv_id,
+                                   "confirm_production": True})
+            assert ra.status_code != 403, \
+                f"admin prod enqueue should clear the tier gate, got 403 {ra.data[:200]}"
+        finally:
+            db = SessionLocal()
+            try:
+                db.execute(text(
+                    "DELETE FROM tenant_1.s4_execution_jobs WHERE environment_id = :e"),
+                    {"e": penv_id})
+                e = db.query(Env).filter_by(id=penv_id).first()
+                if e:
+                    db.delete(e)
+                db.commit()
+            finally:
+                db.close()
+    results.append(test("Member blocked from PRODUCTION enqueue (403); admin clears tier gate",
+                        test_member_blocked_from_production_enqueue))
+
     passed = sum(1 for x in results if x)
     print(f"\n{passed}/{len(results)} passed\n")
     return passed == len(results)

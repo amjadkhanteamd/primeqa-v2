@@ -61,17 +61,30 @@ def require_auth(f):
 
 
 def require_role(*roles):
+    """D-245 Phase 6: thin wrapper over the role ladder for **API** routes. Gates
+    at ``floor_tier(roles)`` (the lowest listed role's tier) via the same
+    ``authorize()`` path as ``require_tier_api`` — superadmin still passes (ladder
+    top), and a list naming ``tester`` now also admits ``ba`` (both ``MEMBER``),
+    the one intended widening. The explicit role names stay at call sites as
+    living documentation of audience."""
+    from primeqa.core.authz import floor_tier
+    return require_tier_api(floor_tier(roles))
+
+
+def require_tier_api(min_tier):
+    """D-245 Phase-2 transitional role gate for **API** routes — the new
+    ``authorize()`` path, applied as the OUTER decorator (fail-closed). Enforces
+    auth then the minimum role tier, returning a 403 envelope on deny (matches
+    ``require_role``'s API contract). The permanent replacement gate for the
+    permission decorators removed in Phase 5."""
+    from primeqa.core.authz import authorize
+
     def decorator(f):
         @wraps(f)
         @require_auth
         def decorated(*args, **kwargs):
-            # Super Admin is a tenant-wide god-mode role: always passes every
-            # role check (Q: "god mode"). Seeded per tenant, excluded from the
-            # 20-user cap elsewhere.
-            role = request.user["role"]
-            if role == "superadmin":
-                return f(*args, **kwargs)
-            if role not in roles:
+            allow, _reason = authorize(getattr(request, "user", None), min_tier)
+            if not allow:
                 return json_error("FORBIDDEN", "Insufficient permissions", http=403)
             return f(*args, **kwargs)
         return decorated

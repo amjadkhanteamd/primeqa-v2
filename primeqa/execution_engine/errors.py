@@ -42,6 +42,18 @@ class PlanTranslationError(ExecutionEngineError):
         self.recipe_id = recipe_id
 
 
+class PolicyError(ExecutionEngineError):
+    """The target environment's run policy refuses this run (D-245, Phase 4).
+
+    The **resource-policy** gate, distinct from authorization (may this user
+    attempt it — ``core.authz.AuthorizationError``) and executability (can the
+    substrate realize it — ``UnexecutableClaimError``). Raised at the dispatch
+    chokepoint when ``env.execution_policy`` forbids the recipe: ``disabled``
+    rejects all runs; ``read_only`` permits only the read-only metadata
+    inspection vertical and rejects any data-recipe **regardless of role**.
+    """
+
+
 class CredentialResolutionError(ExecutionEngineError):
     """Could not resolve an authenticated client for a target environment —
     the environment / connection is missing, or the OAuth flow yielded no

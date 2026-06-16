@@ -137,52 +137,49 @@ tests/                         # Integration tests (run against the Railway data
 - All resources are tenant-scoped via `tenant_id`
 - Environments scope by group membership (admin + superadmin see all)
 - Settings pages live under `/settings/*` with a sidebar layout
-- **Superadmin is god-mode**: always passes `require_role` / `role_required`, sees cost + raw LLM prompts + agent settings
+- **Superadmin is god-mode**: the top rung of the role ladder (`Tier.SUPERADMIN`), so it passes every `authorize()` / `require_tier` / `require_role` check by rank; sees cost + raw LLM prompts + agent settings.
 
-## Permission Model
+## Permission Model (D-245: role ladder × environment scope)
 
-Canonical authorization model for the platform. Every new feature — API
-endpoint, UI action, scheduled job, agent decision — must resolve against
-this model. When in doubt, default to denial + log a rationale.
+Canonical authorization model. Every new feature — API endpoint, UI action,
+scheduled job, agent decision — must resolve against it. When in doubt, default
+to denial. The additive permission-set layer was **deleted** in D-245; do not
+reintroduce permission sets, `require_permission`, or `check_environment_policy`.
 
-- **Additive Permission Sets, no deny rules.** Authorization resolves as
-  the **union** of every set granted to the caller. No set can subtract
-  from another set's grants. Forbid a capability by not granting it, not
-  by layering a deny.
-- **Two-layer access**: every authorization check composes **user
-  permissions** (who the caller is) AND **environment run policies**
-  (what the target env will accept — e.g. production blocks agent
-  auto-apply per Q2). Both must allow the action; either can veto.
-- **Five Base Permission Sets** (all other custom sets derive from
-  these):
-  - **Developer** — author / edit test cases, run sandbox pipelines,
-    view own runs
-  - **Tester** — run pipelines against assigned envs, triage failures,
-    accept/revert agent fixes on sandbox
-  - **Release Owner** — create/manage releases, approve agent fixes on
-    production candidates, finalize GO/NO-GO decisions
-  - **Admin** — tenant admin: users, groups, connections, envs;
-    cannot override production agent auto-apply
-  - **API Access** — programmatic token holder; equivalent to Developer
-    scope unless explicitly extended. Token-scoped, never interactive.
-- **Ownership on all resources**: every row carries
-  `owner_user_id` (who owns the resource) and — on execution rows —
-  `triggered_by_user_id` (who kicked off the run). Ownership is a
-  separate axis from role. "Own" views always scope by the caller's
-  user id.
-- **Release state on runs**: runs inherit a
-  release-lifecycle state independent of their execution status —
-  `PENDING` / `APPROVED` / `OVERRIDDEN`. Agent auto-apply + production
-  deploys gate on this state; a Release Owner's approval flips
-  PENDING→APPROVED, and Admin OVERRIDDEN is audited separately.
-- **Superadmin stays god-mode** for cross-tenant ops (cost, raw LLM
-  prompts, agent settings override, pre-flight override). Superadmin
-  bypass is intentionally simple and outside the permission-set union;
-  its use is always logged to `activity_log`.
-- **Every new endpoint / action** must map to (a) the union of Base
-  Permission Sets that grant it and (b) the env run-policy flags it
-  needs. If either mapping is unclear, surface the question in the PR
-  before shipping.
+- **Two independent axes** — kept deliberately separate:
+  1. **Role ladder** (`primeqa/core/authz.py`): `Tier` `Viewer(1) < Member(2) <
+     Admin(3) < Superadmin(4)`. The stored DB `role` values are unchanged
+     (`viewer` / `ba` / `tester` / `admin` / `superadmin`, plus the CHECK
+     constraint); `rank(role)` maps each to a tier — **`ba` and `tester` both map
+     to `Member`**. "Is this caller allowed?" reduces to one `>=` comparison.
+  2. **Environment access scope** (Groups): which envs a caller can target,
+     via `EnvironmentRepository.list_environments` /
+     `is_environment_accessible` (admin + superadmin see all).
+- **Single enforcement path**: `authorize(subject, min_tier, resource=None)`
+  returns `(allow, reason)` and never raises. Route decorators wrap it:
+  - `require_tier(min_tier)` (web, redirect on deny) /
+    `require_tier_api(min_tier)` (API, 403 envelope).
+  - Legacy `role_required(*roles)` / `require_role(*roles)` are now **thin
+    wrappers** over the ladder — they gate at `floor_tier(roles)` (the lowest
+    listed role's tier). The explicit role names stay at call sites as living
+    documentation of audience.
+- **Three distinct gates, three distinct errors** — never conflated:
+  - **Authorization** → `AuthorizationError` (role tier below minimum).
+  - **Resource policy** → `PolicyError` (the target env's `execution_policy`
+    refuses the action — `full` / `read_only` / `disabled`; `is_production` +
+    `caller_tier < ADMIN` blocks non-inspection dispatch). Enforced at the
+    single execution chokepoint (`execution_engine/run.py`).
+  - **Executability** → `NotExecutableError` (the substrate cannot realize it).
+- **Ownership on all resources**: every row carries `owner_user_id` and — on
+  execution rows — `triggered_by_user_id`. Ownership is a separate axis from
+  role; "own" views scope by the caller's user id.
+- **Release state on runs**: `PENDING` / `APPROVED` / `OVERRIDDEN`, independent
+  of execution status; agent auto-apply + production deploys gate on it.
+- **Superadmin god-mode** is just the ladder's top rung (no special-case union);
+  its use on cross-tenant ops is logged to `activity_log`.
+- **Every new endpoint / action** must declare (a) its **minimum tier** and
+  (b) the **env run-policy** it needs. If either is unclear, surface it in the
+  PR before shipping. `scripts/authz_inventory.py` audits route gates.
 
 ## Security posture (post-audit 2026-04-19)
 
@@ -193,7 +190,7 @@ this model. When in doubt, default to denial + log a rationale.
 - **Public release-status endpoint is token-gated** (migration 055): `GET /api/releases/:id/status` requires a per-release opaque poll token (`status_poll_token_hash`, sha256); no token / wrong token → 404. Mint + revoke are Release-Owner/admin, tenant-scoped.
 - **Global 500 handler**: `app.errorhandler(Exception)` returns envelope (`/api/*`) or minimal HTML (web). Never leaks stack. Server-side full stack still logged.
 - **Input validation**: `create_section` length-validates name; `feedback.capture_user_feedback` type-checks verdict; bulk endpoints coerce ids to positive ints before hitting the DB.
-- **Tenant isolation**: cross-tenant write/read paths in the release + permission + connection layers are tenant-scoped (release decisions filter by `release_id`; `check_environment_policy` takes `tenant_id`; see `tests/test_tenant_isolation.py`).
+- **Tenant isolation**: cross-tenant write/read paths in the release + environment + connection layers are tenant-scoped (release decisions filter by `release_id`; environment access scopes through `EnvironmentRepository.is_environment_accessible(tenant_id, …)` — D-245 replaced the old `check_environment_policy`; see `tests/test_tenant_isolation.py` + `tests/unit/test_authz_env_scope.py`).
 - **Unbounded queries**: `core/repository.py list_*` capped at 500 rows. DB-side dashboard queries use CTEs + JOINs to avoid N+1.
 
 ## UI component kit (`templates/components/`)

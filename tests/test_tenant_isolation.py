@@ -3,16 +3,23 @@
 Covers the cross-tenant gaps closed in the multi-tenant-readiness arc:
 
   1. finalize_decision must match the URL release_id  (cross-tenant WRITE fix)
-  2. check_environment_policy is tenant-scoped         (cross-tenant env probe)
-  3. public /status requires a per-release token        (UNAUTH cross-tenant read)
-  4. update_status honours tenant_id                    (defense-in-depth)
-  5. add_requirement rejects a foreign-tenant requirement (adversarial-review fix)
+  2. public /status requires a per-release token        (UNAUTH cross-tenant read)
+  3. update_status honours tenant_id                    (defense-in-depth)
+  4. add_requirement rejects a foreign-tenant requirement (adversarial-review fix)
+  5. is_environment_accessible is tenant-scoped         (D-245 env-scope axis)
 
-Tests 1-4 prove cross-tenant behaviour by passing a *mismatched* tenant_id
-(fixtures live in tenant 1, cleaned up in a finally). Test 5 needs a REAL second
-tenant — add_requirement uses one tenant_id for both the release and the
-requirement, so it stands up a throwaway tenant + section + requirement and tears
-them down. A full 2-tenant E2E across all paths lands with the provisioning plan.
+Tests 1-3 prove cross-tenant behaviour by passing a *mismatched* tenant_id
+(fixtures live in tenant 1, cleaned up in a finally). Tests 4-5 need a REAL second
+tenant, so they stand up a throwaway tenant + fixture and tear it down. A full
+2-tenant E2E across all paths lands with the provisioning plan.
+
+D-245: cross-tenant *environment* access scoping moved off the deleted
+``check_environment_policy`` onto the role-ladder + Groups model
+(``EnvironmentRepository.is_environment_accessible`` → ``list_environments``,
+whose ``Environment.tenant_id == tenant_id`` filter is the load-bearing guarantee).
+The unit test ``tests/unit/test_authz_env_scope.py`` covers the membership /
+coercion logic with ``list_environments`` *stubbed*, so it does NOT exercise that
+tenant filter; test 5 below does, against the real DB with a foreign-tenant env.
 
 Run: python tests/test_tenant_isolation.py
 """
@@ -28,8 +35,7 @@ load_dotenv()
 
 from primeqa.app import app
 from primeqa.db import SessionLocal
-from primeqa.core.models import Connection, Environment, User
-from primeqa.core.permissions import check_environment_policy
+from primeqa.core.models import Connection, User
 from primeqa.core.repository import ConnectionRepository
 from primeqa.release.repository import ReleaseRepository
 from primeqa.release.routes import _hash_poll_token
@@ -87,28 +93,7 @@ def t_finalize_matches_release():
 
 
 # --------------------------------------------------------------------------
-# 2. check_environment_policy is tenant-scoped
-# --------------------------------------------------------------------------
-def t_env_policy_tenant_scoped():
-    db = SessionLocal()
-    try:
-        env = db.query(Environment).filter_by(tenant_id=TENANT_ID).first()
-        assert env is not None, "seed data: expected a tenant-1 environment"
-        # Correct tenant: evaluates the policy (allowed, or a policy reason —
-        # never the 'not found' branch).
-        _, reason = check_environment_policy(env.id, "single_run", db, TENANT_ID)
-        assert "not found" not in reason.lower(), \
-            f"own-tenant env reported not-found: {reason!r}"
-        # Mismatched tenant: the env is invisible (no name/policy leak).
-        ok2, reason2 = check_environment_policy(env.id, "single_run", db, 999_999)
-        assert ok2 is False and "not found" in reason2.lower(), \
-            f"cross-tenant env probe was NOT blocked: ok={ok2} reason={reason2!r}"
-    finally:
-        db.close()
-
-
-# --------------------------------------------------------------------------
-# 3. public /status requires a per-release token (the unauth leak fix)
+# 2. public /status requires a per-release token (the unauth leak fix)
 # --------------------------------------------------------------------------
 def t_status_requires_token():
     # NOTE: each DB mutation uses its own short-lived session that is closed
@@ -167,7 +152,7 @@ def t_status_requires_token():
 
 
 # --------------------------------------------------------------------------
-# 4. update_status honours tenant_id (defense-in-depth)
+# 3. update_status honours tenant_id (defense-in-depth)
 # --------------------------------------------------------------------------
 def t_update_status_tenant_scoped():
     db = SessionLocal()
@@ -200,7 +185,7 @@ def t_update_status_tenant_scoped():
 
 
 # --------------------------------------------------------------------------
-# 5. add_requirement rejects a foreign-tenant requirement (adversarial-review
+# 4. add_requirement rejects a foreign-tenant requirement (adversarial-review
 #    finding). This is the one isolation test that needs a REAL 2nd tenant —
 #    the others use a mismatched tenant_id, but add_requirement uses one
 #    tenant_id for both the release and the requirement, so a genuinely foreign
@@ -267,18 +252,71 @@ def t_add_requirement_tenant_scoped():
             db.close()
 
 
+# --------------------------------------------------------------------------
+# 5. is_environment_accessible is tenant-scoped (the D-245 env-scope axis that
+#    replaced check_environment_policy). Re-homes the cross-tenant env probe the
+#    old test #2 covered — exercising the REAL list_environments tenant filter
+#    (the unit test stubs list_environments, so it cannot catch a tenant-filter
+#    regression). Stands up a throwaway tenant + env and asserts a tenant-1 caller
+#    cannot reach it.
+# --------------------------------------------------------------------------
+def t_env_access_tenant_scoped():
+    from primeqa.core.models import Tenant, Environment
+    from primeqa.core.repository import EnvironmentRepository
+    sfx = uuid.uuid4().hex[:8]
+    db = SessionLocal()
+    uid = _a_user_id(db)
+    # An admin caller in tenant 1 — admins take the "see all" branch, so the
+    # ONLY thing scoping them is the tenant filter (the load-bearing guarantee).
+    admin = db.query(User).filter(User.tenant_id == TENANT_ID,
+                                  User.role.in_(("admin", "superadmin")),
+                                  User.is_active == True).first()
+    t2 = Tenant(name=f"ISO Env Tenant {sfx}", slug=f"isoenv-{sfx}")
+    db.add(t2); db.commit(); db.refresh(t2)
+    foreign_env = Environment(tenant_id=t2.id, name=f"ISO Env {sfx}",
+                              env_type="sandbox", sf_instance_url="https://example.invalid",
+                              sf_api_version="60.0", created_by=uid)
+    db.add(foreign_env); db.commit(); db.refresh(foreign_env)
+    repo = EnvironmentRepository(db)
+    own_env = (db.query(Environment)
+               .filter(Environment.tenant_id == TENANT_ID,
+                       Environment.is_active == True).first())
+    try:
+        # NEGATIVE: a tenant-1 caller (even admin = "see all") must NOT reach a
+        # tenant-2 env — the tenant filter, not group membership, is the guard.
+        assert admin is not None, "seed data: expected an admin/superadmin in tenant 1"
+        reachable = repo.is_environment_accessible(
+            TENANT_ID, admin.id, admin.role, foreign_env.id)
+        assert reachable is False, \
+            "cross-tenant env was accessible — tenant filter on list_environments broke"
+        # POSITIVE: a same-tenant env IS reachable (no happy-path regression).
+        if own_env is not None:
+            assert repo.is_environment_accessible(
+                TENANT_ID, admin.id, admin.role, own_env.id) is True, \
+                "own-tenant env not accessible to an admin"
+    finally:
+        try:
+            db.delete(foreign_env)
+            db.delete(t2)
+            db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+
+
 if __name__ == "__main__":
     print("\n=== Multi-tenant isolation tests ===\n")
     results.append(test("1. finalize_decision must match the URL release_id",
                         t_finalize_matches_release))
-    results.append(test("2. check_environment_policy is tenant-scoped",
-                        t_env_policy_tenant_scoped))
-    results.append(test("3. public /status requires a per-release token",
+    results.append(test("2. public /status requires a per-release token",
                         t_status_requires_token))
-    results.append(test("4. update_status honours tenant_id",
+    results.append(test("3. update_status honours tenant_id",
                         t_update_status_tenant_scoped))
-    results.append(test("5. add_requirement rejects a foreign-tenant requirement",
+    results.append(test("4. add_requirement rejects a foreign-tenant requirement",
                         t_add_requirement_tenant_scoped))
+    results.append(test("5. is_environment_accessible is tenant-scoped",
+                        t_env_access_tenant_scoped))
 
     passed = sum(1 for r in results if r)
     total = len(results)

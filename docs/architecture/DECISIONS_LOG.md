@@ -14299,3 +14299,191 @@ vs. fold-into-`BACKGROUND.md` organizational call, deferred to AK. The `meta_*` 
 remains the single open cutover tail (tracked in `greenfield_cutover/SEQUENCE.md` Step 5a).
 
 ---
+
+## D-245 — Authorization Model: Role Ladder × Environment Scope (supersedes the additive permission-set model)
+
+**Provenance.** No prior decision record existed for this redesign — `docs/decisions/`
+does not exist and no DECISIONS_LOG entry by this name was present. This entry is authored
+from AK's inline specification with AK's **explicit GO** (2026-06-16, "Proceed — inline spec is
+canonical"), and it **supersedes** the additive permission-set "Permission Model" documented in
+`CLAUDE.md` (the five Base sets Developer/Tester/Release Owner/Admin/API Access, migration 039).
+Implemented on branch `authz-role-ladder` (PR to main, not merged) across phases 0–7.
+
+**Decision.** Replace the permission-set authorization layer with **two orthogonal axes**:
+
+1. **Role ladder** — ordered tiers, a single comparable rank:
+   `Viewer(1) < Member(2) < Admin(3) < Superadmin(4)`. The stored DB `role` values and their
+   CHECK constraints are **kept**; a code-side `rank(role)` maps them:
+   `viewer→Viewer, ba→Member, tester→Member, admin→Admin, superadmin→Superadmin`.
+2. **Environment access scope** — via Groups. User-facing environment selection routes through a
+   single chokepoint `list_environments(tenant, user, role)`; any client-supplied `environment_id`
+   is validated against the caller's accessible set before use.
+
+**Single enforcement path.** `authorize(subject, min_tier, resource=None) → (allow/deny, reason)`.
+The two legacy decorator families (`require_role`, `role_required`) become thin wrappers over it.
+No provenance object.
+
+**Three gates, three distinct errors — never conflated:**
+- **Authorization** (`AuthorizationError`) — "may this user attempt this?" (role tier).
+- **Resource policy** (`PolicyError`) — what the target env will accept (`execution_policy`:
+  `disabled` rejects all; `read_only` permits only the read-only metadata-inspection vertical;
+  `full` continues).
+- **Executability** (`NotExecutableError`) — "can the substrate realize it?" (pre-existing).
+
+**Production boundary.** At the recipe-execution dispatch chokepoint
+(`execution_engine/run.py` `run_recipe_execution`/`_execute_for_kind`, covering both the sync and
+async entries): if `env.is_production` AND tier < Admin, permit **only** the inspection vertical —
+keyed on the read **mode** (`recipe_kind == "metadata-recipe"` AND `mode == "metadata_read"`), not
+recipe_kind alone, since a metadata_write/deploy recipe mutates. Admins get full prod. The
+metadata-inspection executor takes a `ReadOnlyClient` (query/query_data only) so that passing a
+mutation client to the read path is a **type error** (L1: non-mutation enforced, not emergent).
+The stranded-record reaper (`stranded_cleanup.py`) is guarded independently of dispatch: never reap
+a `read_only`/`disabled` env; gate/skip-and-log a production env.
+
+**Deleted (the permission-set layer) — under the ORDERING INVARIANT (replacements before deletion).**
+Tables `permission_sets`/`user_permission_sets` (new append-only migration), models
+`PermissionSet`/`UserPermissionSet`, the resolution/seed/policy functions + constants, decorators
+`require_permission`/`require_page_permission`/`require_run_permission`, the `core/service.py`
+bootstrap, all call sites, the dead env run-policy scaffolding (`check_environment_policy`,
+`require_run_permission`, `require_approval` enforcement scaffolding, `max_api_calls_per_run`), the
+`/settings/permission-sets` page, and the own-vs-all results permissions. **Kept** (separate
+features): `SharedDashboardLink`, `NotificationPreference`, the dashboard-sharing routes (now
+role-gated). No permission-set decorator is removed until the route it solely gated carries a
+verified replacement role gate — violating this would drop routes to login-only (a security
+regression).
+
+**One intended behavior change.** BA widening: `ba` maps to `Member` alongside `tester`, so BA
+gains what tester had (claim run/deprecate/quarantine; requirement/release/milestone edit). All
+other conversions preserve behavior (admin-only→Admin, superadmin-only→Superadmin, any list
+allowing tester or ba→Member).
+
+**Phasing (each phase test-gated; replacements strictly before deletion):** 0 baseline+inventory ·
+1 ladder+`authorize()` (additive) · 2 replacement role gates (double-gated, OUTER decorator) ·
+3 environment-scope chokepoint · 4 production gate + `execution_policy` + `ReadOnlyClient` + reaper
+guard · 5 delete the permission-set layer (hard interlock: every Phase-2 route re-verified gated) ·
+6 convert legacy role-lists to min-tier · 7 cleanup + docs. The BEFORE/AFTER authorization
+inventory (`scripts/authz_inventory.py` → `docs/authz_inventory_before.md`) is the regression
+oracle: no route may drop to login-only.
+
+**Alternatives considered.** (a) Keep the additive permission-set model and only add the role
+ladder on top — rejected: the two layers drifted (own-vs-all, env run-policy scaffolding mostly
+dead) and the union semantics made "what can this user do?" unanswerable from one call. (b) Pure
+role ladder without environment scope — rejected: environment access is a real second axis
+(Groups) that role tier cannot express.
+
+---
+
+## D-245 — REALIZED (Phases 0–7 shipped on `authz-role-ladder`; supersedes the design above where they differ)
+
+The redesign landed as planned across Phases 0–7. Final state + the deviations discovered during
+build (each verified against code, not asserted):
+
+- **Phases 1–4 (additive, behavior-preserving):** `primeqa/core/authz.py` (`Tier`, `ROLE_TO_TIER`,
+  `rank` fail-low, `authorize`, `AuthorizationError`, + `floor_tier`/`tier_label`); `require_tier` /
+  `require_tier_api` OUTER decorators; `EnvironmentRepository.is_environment_accessible` (env-scope
+  axis); `PolicyError` + `ReadOnlyClient` Protocol + the production/policy dispatch gate at the
+  single chokepoint (`execution_engine/run.py`) + the stranded-cleanup reaper guard. Every Phase-2
+  replacement gate applied as the OUTER decorator (double-gated) **before** any deletion.
+- **Phase 5 (delete the permission-set layer):** `permissions.py` slimmed ~1006→~175 LOC (kept
+  `SharedDashboardLink`, `NotificationPreference`, and a role-derived `_role_capabilities` shim that
+  feeds the nav + `has_permission()` templates from role tier). Deleted the 3 permission-set-admin
+  routes; `migration 057` drops `user_permission_sets` + `permission_sets` (idempotent, CASCADE;
+  every other migration-039 column kept). Inventory diff (`scripts/authz_inventory.py`):
+  177→174 routes — **exactly** the 3 permission-set routes vanished, 0 added, **0 downgraded to
+  login-only** (the regression oracle held).
+- **Phase 6 (role-lists → floor-tier):** `role_required` / `require_role` are now thin wrappers over
+  `authorize(floor_tier(roles))`; explicit role names stay at call sites as documentation. The two
+  inline `("admin","tester","superadmin")` checks on the S3/S4 enqueue APIs became
+  `@require_tier_api(Tier.MEMBER)` decorators — **upgrading 2 routes from ungated to MEMBER-gated**.
+- **Phase 7 (cleanup + docs):** create-user role dropdown relabeled to the tier names
+  (Viewer/Member/Admin; stored values preserved — Member stored as `tester`; new users default to
+  Viewer = least privilege). CLAUDE.md Permission Model rewritten to this model.
+
+**Deviations from the design (discovered + handled during build):**
+1. **Nav-shim completeness fix (production).** The Phase-5 `_role_capabilities` map omitted
+   `view_own_results`/`view_all_results` (+ `manage_test_suites`, `view_suite_quality_gates`) — the
+   Results sidebar item would have vanished for every non-superadmin. Added them at the faithful
+   tiers after sweeping every capability `SIDEBAR_ITEMS` / the landing map / template
+   `has_permission()` reference.
+2. **`finalize_decision` override bug (Phase-5 fallout).** The NO-GO override sub-gate read
+   `g.effective_permissions`, which the permission layer used to populate — after deletion it was
+   always empty, silently narrowing override from "admins with `override_quality_gate`" to
+   **superadmin-only**. The route is already `@require_role("admin")` (Admin floor) and
+   `override_quality_gate` was admin-only, so the dead body-check was removed; the route's Admin gate
+   is the enforcement (restores pre-Phase-5 behavior).
+3. **Integration-test corpus migrated (AK-approved "migrate now").** Deleted 3 tests that only
+   exercised the deleted layer (`test_permission_sets`, `test_admin_permission_ui`,
+   `test_permission_enforcement`); rewrote 5 onto the role model (`test_run_tests_page`,
+   `test_developer_experience`, `test_results_page`, `test_tenant_isolation` [dropped the
+   `check_environment_policy` case → unit-covered], `test_dynamic_ui` [full role-driven rewrite;
+   its old per-permission-set framing dissolved and several assertions were already stale]). These
+   are Railway integration tests (DB + JWT) — import/compile-checked here; **a real Railway run is
+   required to confirm green** (flagged in each file header).
+
+**Verification:** app boots; `tests/unit/` 2771 green (includes exhaustive ladder + `floor_tier` +
+decorator + env-scope + dispatch-gate cases); inventory regression oracle clean (no login-only
+drop; 2 upgrades). Full detail in `docs/architecture/VERIFICATION_REPORT_D245.md`.
+
+**Known-residual (pre-existing, NOT introduced by D-245, left as-is per smallest-correct-change):**
+`AuthService.list_groups` scopes "see all" on `role == "admin"`, which excludes superadmin from the
+god-mode all-groups view — a latent inconsistency the ladder (`rank(role) >= Tier.ADMIN`) would fix;
+deferred to avoid scope creep.
+
+---
+
+## D-245 — PRE-MERGE ADVERSARIAL REVIEW + FIXES (6-dimension review of the branch diff before merge)
+
+A multi-agent adversarial review (privilege-escalation, gate-completeness, deletion blast-radius,
+behavior-change, tenant-isolation, test-integrity — each finding refuted against the real code)
+ran over the full `main..authz-role-ladder` diff. It surfaced **one genuine security gap the test
+suites could not** (the happy paths were all green), plus quality findings. Fixes landed before merge:
+
+1. **[HIGH — fixed] Production-tier gate bypassed on the async/queued S4 path.** The D-245 dispatch
+   gate (`_authorize_dispatch`) blocks a non-Admin from running a *mutating* data-recipe against an
+   `is_production` env, but its production-role rule fires only when `caller_tier is not None`. The
+   **sync** path (`/claims/<id>/run`) threads `caller_tier=rank(role)`; the **async** path (the
+   worker consumer → `run_recipe_execution_async`) passes `caller_tier=None`, and the s4_execution
+   job row carries no tier column — so a Member (ba/tester) could POST `/api/s4-execution-jobs`
+   `{environment_id:<prod>, confirm_production:true}` and the queued data-recipe would mutate the
+   production org with the role rule skipped (the sync button correctly blocks the same caller). Not
+   a regression vs `main` (which had no gate at all) — an **incomplete new control** on its primary
+   (unattended) use case. **Fix:** the authorization decision is made at the **enqueue boundary**
+   (`api_s4_execution_enqueue`), where the caller is authenticated — a non-Admin enqueue against an
+   `is_production` env is rejected (403); the worker correctly remains *system* (`caller_tier=None`).
+   The `_authorize_dispatch` docstring's "covers both the sync and async entries" claim was corrected
+   accordingly. **Fail-closed choice:** the deferred API path is Admin-only for production (no
+   non-Admin read-only-inspection-on-prod carve-out, unlike the sync path); revisit by threading the
+   enqueuer's tier onto the job row if that carve-out is ever needed on the async path.
+2. **[LOW — fixed] Same route skipped the env-scope axis.** `api_s4_execution_enqueue` validated
+   tenant (`get_environment`) but not Groups (`is_environment_accessible`) — the one run surface
+   that skipped the env-scope check every sync sibling enforces. Added `is_environment_accessible`
+   to the enqueue route (within-tenant group-scope parity).
+3. **[LOW — fixed] UI/API mismatch on `revoke_shared_links`.** The `_role_capabilities` shim gated
+   it at `ADMIN` (hiding the revoke control) while the route admits `MEMBER`. Aligned the shim to
+   `MEMBER` to match the route + `share_dashboard`.
+4. **[MEDIUM — fixed] Dropped cross-tenant env-scope test coverage + a misleading docstring.** The
+   migrated `test_tenant_isolation` claimed the env-scope scenario was "unit-tested in
+   `test_authz_env_scope.py`", but that unit test *stubs* `list_environments`, so it never exercises
+   the load-bearing `Environment.tenant_id == tenant_id` filter. Corrected the docstring and added a
+   real-DB cross-tenant assertion (`t_env_access_tenant_scoped`, test 5) that stands up a throwaway
+   foreign-tenant env and asserts `is_environment_accessible` rejects it. Added a Member-blocked-from-
+   production-enqueue integration test (`test_s4_execution_jobs`).
+
+**Surfaced for AK sign-off (deliberate consequences of the 5-preset → 4-tier collapse, NOT bugs —
+documenting rather than silently shipping):**
+- **Share/approve audience shift.** On `main` the `viewer` role carried `release_owner_base`
+  (`share_dashboard`, `approve_release`, `revoke_shared_links`). D-245 maps `viewer` → Viewer
+  (read-only), so a viewer **loses** those, and `ba`/`tester` (→ Member) **gain** them. The
+  share-link routes (`@require_tier_api(Tier.MEMBER)`) enforce this. The "release owner" function now
+  lives at Member, not at the `viewer` role.
+- **`ba` → `tester` normalization on user-edit save.** The relabeled form maps an existing `ba`
+  user onto the `Member` (`tester`) option; saving rewrites the stored role `ba`→`tester` (both
+  Member; `AuthService.update_user` revokes their refresh tokens on the change). Benign — no code
+  branches on the `ba` literal — but a silent stored-value change.
+
+**Re-verification after fixes:** app boots; `tests/unit/` 2771 green; route inventory unchanged at
+174 (the enqueue routes stay MEMBER-gated, the production guard is an in-body check). The two
+new/changed integration tests (`test_tenant_isolation` #5, `test_s4_execution_jobs` prod-gate) are
+Railway integration tests — re-run on a real environment to confirm green.
+
+---
