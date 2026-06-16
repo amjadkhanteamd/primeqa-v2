@@ -26,11 +26,18 @@ GATE_NAMES = {
     "login_required",
     "require_role",
     "role_required",
+    "require_tier",          # D-245 new role-ladder gate (web)
+    "require_tier_api",      # D-245 new role-ladder gate (API)
     "require_permission",
     "require_page_permission",
     "require_run_permission",
     "require_env_policy",
 }
+
+# The role gates that survive the Phase-5 permission-layer deletion. A route that
+# carries one of these is NOT at risk of dropping to login-only.
+ROLE_GATES = {"require_role", "role_required", "require_tier", "require_tier_api"}
+PERMISSION_GATES = {"require_permission", "require_page_permission", "require_run_permission"}
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

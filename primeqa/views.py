@@ -15,6 +15,8 @@ from primeqa.core.repository import (
     ConnectionRepository, GroupRepository,
 )
 from primeqa.core.service import AuthService, EnvironmentService, ConnectionService, GroupService
+from primeqa.core.authz import Tier, authorize
+from primeqa.core.auth import require_tier_api
 from primeqa.release.repository import ReleaseRepository
 from primeqa.release.service import ReleaseService
 
@@ -67,6 +69,25 @@ def role_required(*roles):
             if role == "superadmin":
                 return f(*args, **kwargs)
             if role not in roles:
+                return redirect("/")
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
+
+
+def require_tier(min_tier):
+    """D-245 Phase-2 transitional role gate — the new ``authorize()`` path,
+    applied as the **OUTER** decorator (fail-closed: a below-tier caller is
+    rejected before reaching the inner permission gate). Web semantics: it
+    enforces auth (``login_required``) then the role tier, redirecting to ``/``
+    on deny (mirrors ``role_required``). Left in place after Phase 5 deletes the
+    permission layer — it is the route's permanent replacement gate."""
+    def decorator(f):
+        @wraps(f)
+        @login_required
+        def decorated(*args, **kwargs):
+            allow, _reason = authorize(getattr(request, "user", None), min_tier)
+            if not allow:
                 return redirect("/")
             return f(*args, **kwargs)
         return decorated
@@ -201,6 +222,7 @@ from primeqa.core.auth import require_auth as _require_auth_api  # noqa: E402
 
 
 @views_bp.route("/dashboard")
+@require_tier(Tier.VIEWER)
 @login_required
 def release_dashboard():
     """Release Owner's executive view. Answers 'is it safe to release?'
@@ -243,6 +265,7 @@ def release_dashboard():
 
 
 @views_bp.route("/substrate-insights")
+@require_tier(Tier.VIEWER)
 @login_required
 def substrate_insights():
     """Cutover Step 2 (D-155): the additive substrate-insights read surface.
@@ -265,6 +288,7 @@ def substrate_insights():
 
 
 @views_bp.route("/knowledge")
+@require_tier(Tier.MEMBER)
 @login_required
 def knowledge():
     """UI Area 7 (D-176): read-only knowledge admin over the S5 substrate — System
@@ -305,6 +329,7 @@ def _resolve_env_llm(db, tenant_id, environment_id):
 
 
 @views_bp.route("/ask", methods=["GET", "POST"])
+@require_tier(Tier.VIEWER)
 @login_required
 def ask():
     """S7 grounded answering (D-163.4): ask a question about the test system; get an
@@ -355,6 +380,7 @@ def ask():
 
 
 @views_bp.route("/api/dashboard/share", methods=["POST"])
+@require_tier_api(Tier.MEMBER)
 @_require_auth_api
 def api_dashboard_share():
     """Generate a shareable dashboard URL. Returns 201 with the
@@ -433,6 +459,7 @@ def api_dashboard_share():
 
 
 @views_bp.route("/api/dashboard/share/<int:link_id>/revoke", methods=["POST"])
+@require_tier_api(Tier.MEMBER)
 @_require_auth_api
 def api_dashboard_share_revoke(link_id):
     """Revoke a shared dashboard link so subsequent visits return a
@@ -462,6 +489,7 @@ def api_dashboard_share_revoke(link_id):
 
 
 @views_bp.route("/api/dashboard/share", methods=["GET"])
+@require_tier_api(Tier.MEMBER)
 @_require_auth_api
 def api_dashboard_share_list():
     """List active + recent shared links in the caller's tenant.
@@ -582,6 +610,7 @@ def results_list_alias():
 
 
 @views_bp.route("/run")
+@require_tier(Tier.MEMBER)
 @login_required
 def run_page():
     """Run approved substrate tests in bulk: pick an environment + the
@@ -635,6 +664,7 @@ def run_page():
 
 
 @views_bp.route("/run", methods=["POST"])
+@require_tier(Tier.MEMBER)
 @login_required
 def run_page_submit():
     """Enqueue one s4 execution job per approved claim of the selected
@@ -1233,6 +1263,7 @@ def _settings_users_payload(db, tenant_id, search: str = ""):
 
 
 @views_bp.route("/settings/users")
+@require_tier(Tier.ADMIN)
 @login_required
 def settings_users():
     """List all users in the tenant with their assigned permission sets."""
@@ -1258,6 +1289,7 @@ def settings_users():
 
 
 @views_bp.route("/settings/users/<int:user_id>")
+@require_tier(Tier.ADMIN)
 @login_required
 def settings_user_detail(user_id):
     """User detail: info, assigned sets, effective permissions by category."""
@@ -1523,6 +1555,7 @@ def api_revoke_permission_set(user_id, pset_id):
 
 
 @views_bp.route("/api/users/<int:user_id>/deactivate", methods=["POST"])
+@require_tier_api(Tier.ADMIN)
 @_require_auth_api
 def api_deactivate_user(user_id):
     """Deactivate a user. Blocks self-deactivation + last-superadmin lockout."""
@@ -1566,6 +1599,7 @@ def api_deactivate_user(user_id):
 
 
 @views_bp.route("/api/users/<int:user_id>/activate", methods=["POST"])
+@require_tier_api(Tier.ADMIN)
 @_require_auth_api
 def api_activate_user(user_id):
     """Re-activate a user."""

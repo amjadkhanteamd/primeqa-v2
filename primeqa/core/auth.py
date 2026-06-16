@@ -76,3 +76,23 @@ def require_role(*roles):
             return f(*args, **kwargs)
         return decorated
     return decorator
+
+
+def require_tier_api(min_tier):
+    """D-245 Phase-2 transitional role gate for **API** routes — the new
+    ``authorize()`` path, applied as the OUTER decorator (fail-closed). Enforces
+    auth then the minimum role tier, returning a 403 envelope on deny (matches
+    ``require_role``'s API contract). The permanent replacement gate for the
+    permission decorators removed in Phase 5."""
+    from primeqa.core.authz import authorize
+
+    def decorator(f):
+        @wraps(f)
+        @require_auth
+        def decorated(*args, **kwargs):
+            allow, _reason = authorize(getattr(request, "user", None), min_tier)
+            if not allow:
+                return json_error("FORBIDDEN", "Insufficient permissions", http=403)
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
