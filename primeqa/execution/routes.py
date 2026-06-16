@@ -6,7 +6,6 @@ Endpoints: /api/runs/*
 from flask import Blueprint, jsonify, request
 
 from primeqa.core.auth import require_auth, require_role
-from primeqa.core.permissions import require_run_permission
 from primeqa.db import get_db
 from primeqa.shared.api import json_error
 

@@ -59,17 +59,8 @@ class User(Base):
     preferred_environment_id = Column(Integer, ForeignKey("environments.id", ondelete="SET NULL"))
 
     tenant = relationship("Tenant", back_populates="users")
-
-    # Migration 039: assigned permission sets (many-to-many via UserPermissionSet).
-    # Resolving the effective permission set for this user is the job of
-    # primeqa.core.permissions.get_effective_permissions(user_id, db) —
-    # the SQLAlchemy relationship is here for eager loading / cascade only.
-    permission_set_assignments = relationship(
-        "UserPermissionSet",
-        primaryjoin="User.id == UserPermissionSet.user_id",
-        foreign_keys="UserPermissionSet.user_id",
-        cascade="all, delete-orphan",
-    )
+    # D-245: the v1 permission-set relationship was removed with the layer
+    # (authorization is the role ladder now; the `role` column is the grant).
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "email", name="users_tenant_email_unique"),
@@ -340,15 +331,10 @@ class UserRecentTicket(Base):
     )
 
 
-# Migration 039: ensure the permission-set model classes are registered
-# with SQLAlchemy's declarative base whenever primeqa.core.models is
-# imported, so the User.permission_set_assignments relationship can
-# resolve its string target ("UserPermissionSet") during mapper
-# configuration. Without this, worker + scheduler processes — which
-# don't go through app.py's explicit permissions import — crash at
-# first query with `NameError: name 'UserPermissionSet' is not defined`
-# inside the relationship resolver.
-#
-# Kept at the BOTTOM of the file so User/Tenant/Environment are fully
-# defined before permissions.py is parsed.
+# Register the surviving models in permissions.py (SharedDashboardLink,
+# NotificationPreference) with the declarative base whenever
+# primeqa.core.models is imported — so worker + scheduler processes (which
+# don't go through app.py's explicit import) resolve them. (The v1
+# permission-set models were removed in D-245.) Kept at the BOTTOM so
+# User/Tenant/Environment are fully defined first.
 from primeqa.core import permissions as _permissions_models  # noqa: F401, E402

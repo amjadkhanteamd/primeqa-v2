@@ -6,7 +6,6 @@ Endpoints: /api/releases/*
 from flask import Blueprint, jsonify, request
 
 from primeqa.core.auth import require_auth, require_role
-from primeqa.core.permissions import require_permission
 from primeqa.db import get_db
 from primeqa.release.repository import ReleaseRepository
 from primeqa.release.service import ReleaseService
@@ -215,7 +214,6 @@ def evaluate_decision(release_id):
 
 @release_bp.route("/api/releases/<int:release_id>/decisions/<int:decision_id>/finalize", methods=["POST"])
 @require_role("admin")
-@require_permission("approve_release", "override_quality_gate", require_all=False)
 def finalize_decision(release_id, decision_id):
     # Overriding a NO-GO requires `override_quality_gate`; plain GO / conditional
     # approval only needs `approve_release`. The require_any wrapper lets either

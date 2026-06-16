@@ -72,6 +72,14 @@ def rank(role: Any) -> Tier:
     return ROLE_TO_TIER.get(str(role).strip().lower(), Tier.VIEWER)
 
 
+def tier_label(role: Any) -> str:
+    """Human display label for a stored role's ladder tier — ``Viewer`` /
+    ``Member`` / ``Admin`` / ``Superadmin``. The stored DB role value
+    (``viewer`` / ``ba`` / ``tester`` / ``admin`` / ``superadmin``) is unchanged;
+    this is the user-facing name for the *tier* it maps to (D-245, Phase 7)."""
+    return rank(role).name.capitalize()
+
+
 def _subject_role(subject: Any) -> Any:
     """Extract the role value from a subject.
 

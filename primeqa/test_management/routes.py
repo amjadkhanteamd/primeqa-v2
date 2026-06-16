@@ -15,7 +15,6 @@ Soft-delete / restore / purge convention:
 from flask import Blueprint, jsonify, request
 
 from primeqa.core.auth import require_auth, require_role
-from primeqa.core.permissions import require_permission
 from primeqa.core.repository import (
     ActivityLogRepository, ConnectionRepository, EnvironmentRepository,
 )

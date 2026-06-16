@@ -117,18 +117,16 @@ def login_submit():
         if not result:
             return render_template("auth/login.html", user=None, error="Invalid email or password")
 
-        # Migration 040: route the user to the landing page their permission-set
-        # union unlocks (or their saved preference, if still reachable). This
-        # replaces the old hardcoded `/` redirect so developers don't land on a
-        # dashboard they can't read, and admins don't always bounce through the
-        # dashboard before reaching settings.
-        from primeqa.core.permissions import get_effective_permissions
+        # Route the user to the landing page their ROLE unlocks (or their saved
+        # preference, if still reachable). D-245: capabilities are role-derived
+        # now — there is no permission-set union.
+        from primeqa.core.permissions import _role_capabilities
         from primeqa.core.navigation import get_landing_page
         from primeqa.core.models import User
 
         user_row = db.query(User).filter_by(id=result["user"]["id"]).first()
         is_superadmin = (user_row.role == "superadmin") if user_row else False
-        perms = get_effective_permissions(result["user"]["id"], db)
+        perms = _role_capabilities(user_row.role if user_row else None)
         preferred = user_row.preferred_landing_page if user_row else None
         landing = get_landing_page(perms, preferred=preferred,
                                    is_superadmin=is_superadmin)
@@ -229,7 +227,6 @@ def release_dashboard():
     in 5 seconds: hero Go/No-Go, ticket grid, quality gates, sprint
     trend, intelligence summary."""
     from primeqa.core.models import User
-    from primeqa.core.permissions import require_page_permission
     # D-219: the dashboard reads substrate evidence (v1-shaped drop-in).
     from primeqa.intelligence.substrate_dashboard import (
         get_substrate_dashboard_data as get_dashboard_data,
@@ -238,7 +235,6 @@ def release_dashboard():
         resolve_active_environment, list_switchable_environments,
     )
 
-    @require_page_permission("view_dashboard")
     def _render():
         db = next(get_db())
         try:
@@ -275,10 +271,8 @@ def substrate_insights():
     Renders an empty-state until the live-SF sync populates S1 + the first
     runs/recompute ticks land. Gated on ``view_intelligence_report`` (ba + admin
     + superadmin)."""
-    from primeqa.core.permissions import require_page_permission
     from primeqa.intelligence.substrate_insights import get_substrate_insights
 
-    @require_page_permission("view_intelligence_report")
     def _render():
         insights = get_substrate_insights(request.user["tenant_id"])
         return render_template("substrate_insights.html", **ctx(
@@ -297,10 +291,8 @@ def knowledge():
     by contract**: rule/pack content is authored via git PR, never a UI write (the
     trusted-content boundary — prompt-injection defence). Best-effort: the S5 read
     can never break this page."""
-    from primeqa.core.permissions import require_page_permission
     from primeqa.intelligence.knowledge_console import get_knowledge_overview
 
-    @require_page_permission("manage_knowledge")
     def _render():
         knowledge = get_knowledge_overview(request.user["tenant_id"])
         return render_template("knowledge.html", **ctx(
@@ -337,10 +329,8 @@ def ask():
     ``view_intelligence_report`` (ba + admin + superadmin). The substrate answer
     stores are empty until the live-SF sync + first runs land, so the default
     result is a grounded refusal — correct behaviour."""
-    from primeqa.core.permissions import require_page_permission
     from primeqa.intelligence.conversation_bridge import answer_question
 
-    @require_page_permission("view_intelligence_report")
     def _render():
         tid = request.user["tenant_id"]
         db = next(get_db())
@@ -400,9 +390,8 @@ def api_dashboard_share():
     from datetime import datetime, timedelta, timezone
     import secrets
     from primeqa.core.models import Environment
-    from primeqa.core.permissions import SharedDashboardLink, require_permission
+    from primeqa.core.permissions import SharedDashboardLink
 
-    @require_permission("share_dashboard")
     def _do():
         body = request.get_json(silent=True) or {}
         try:
@@ -480,9 +469,8 @@ def api_dashboard_share_revoke(link_id):
     """Revoke a shared dashboard link so subsequent visits return a
     'link revoked' page. Soft-only — row stays for audit."""
     from datetime import datetime, timezone
-    from primeqa.core.permissions import SharedDashboardLink, require_permission
+    from primeqa.core.permissions import SharedDashboardLink
 
-    @require_permission("revoke_shared_links")
     def _do():
         db = next(get_db())
         try:
@@ -509,9 +497,8 @@ def api_dashboard_share_revoke(link_id):
 def api_dashboard_share_list():
     """List active + recent shared links in the caller's tenant.
     Used by the 'manage share links' UI on the dashboard."""
-    from primeqa.core.permissions import SharedDashboardLink, require_permission
+    from primeqa.core.permissions import SharedDashboardLink
 
-    @require_permission("share_dashboard")
     def _do():
         db = next(get_db())
         try:
@@ -634,13 +621,11 @@ def run_page():
     retired pipeline engine. Production environments are excluded — the
     D-214 sandbox-only execution posture."""
     from primeqa.core.models import Environment
-    from primeqa.core.permissions import require_page_permission
     from primeqa.intelligence.s4_execution_console import (
         list_runnable_requirements,
     )
     from primeqa.test_management.models import Requirement
 
-    @require_page_permission("run_sprint", "run_suite", require_all=False)
     def _render():
         db = next(get_db())
         try:
@@ -688,9 +673,7 @@ def run_page_submit():
     requirements (all of them when run_all is set)."""
     from flask import flash
     from primeqa.core.models import Environment
-    from primeqa.core.permissions import require_page_permission
 
-    @require_page_permission("run_sprint", "run_suite", require_all=False)
     def _submit():
         tid = request.user["tenant_id"]
         env_id = request.form.get("environment_id", type=int)
@@ -886,12 +869,8 @@ def environments_sync_substrate(env_id):
     Async via the worker queue; reuses the ``trigger_metadata_sync`` permission."""
     from urllib.parse import quote
 
-    from primeqa.core.permissions import _resolve_effective_permissions
     from primeqa.metadata_bridge.s1_sync_console import trigger_s1_sync
-    if (request.user.get("role") != "superadmin"
-            and "trigger_metadata_sync" not in _resolve_effective_permissions()):
-        flash("You don't have permission to trigger a substrate sync.", "warning")
-        return redirect(f"/environments/{env_id}")
+    # Gated by @role_required("admin", "superadmin") above (D-245).
     db = next(get_db())
     try:
         env = EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"])
@@ -926,12 +905,8 @@ def environments_requeue_enrichment(env_id):
     Async via the worker queue; reuses the ``trigger_metadata_sync`` permission."""
     from urllib.parse import quote
 
-    from primeqa.core.permissions import _resolve_effective_permissions
     from primeqa.metadata_bridge.s1_sync_console import requeue_s1_enrichment
-    if (request.user.get("role") != "superadmin"
-            and "trigger_metadata_sync" not in _resolve_effective_permissions()):
-        flash("You don't have permission to requeue enrichment.", "warning")
-        return redirect(f"/environments/{env_id}")
+    # Gated by @role_required("admin", "superadmin") above (D-245).
     res = requeue_s1_enrichment(request.user["tenant_id"], env_id)
     if res.get("ok"):
         n = res.get("requeued", 0)
@@ -1205,44 +1180,16 @@ def users_toggle_active(user_id):
     return redirect("/settings/users")
 
 
-# --- Permission-set admin UI (migration 039+) -----------------------------
-
-# Permission category mapping used in the user detail page and the
-# assignment modal. Kept in one place so the UI groups consistently
-# wherever permissions are listed.
-PERMISSION_CATEGORIES = {
-    "Execution": [
-        "connect_personal_org", "run_single_ticket", "run_sprint",
-        "run_suite", "rerun_own_ticket", "trigger_metadata_sync",
-    ],
-    "Reporting": [
-        "view_own_results", "view_own_diagnosis", "view_all_results",
-        "view_all_diagnosis", "view_all_results_summary",
-        "view_intelligence_report", "view_intelligence_summary",
-        "view_trends", "view_dashboard", "view_knowledge_attribution",
-    ],
-    "Test Management": [
-        "review_test_cases", "manage_test_suites", "view_test_library",
-        "view_coverage_map", "view_suite_quality_gates",
-        "share_dashboard", "revoke_shared_links", "approve_release",
-    ],
-    "Administration": [
-        "manage_environments", "manage_jira_connections", "manage_sf_connections",
-        "manage_ai_models", "manage_users", "manage_permission_sets",
-        "manage_knowledge", "manage_skills", "view_audit_log", "view_api_usage",
-        "configure_scheduled_runs", "manage_rate_limits", "override_quality_gate",
-        "view_all_personal_environments", "delete_any_personal_environment",
-    ],
-    "API & Automation": [
-        "api_authenticate", "webhook_notifications",
-    ],
-}
+# --- User admin UI (role ladder, D-245) -----------------------------------
 
 
 def _settings_users_payload(db, tenant_id, search: str = ""):
-    """Build the list-page payload: users + their assigned permission sets."""
+    """Build the list-page payload: users + their role-ladder tier (D-245).
+
+    The DB ``role`` value is kept; ``role_label`` is the user-facing tier name
+    (Viewer / Member / Admin / Superadmin) the role maps to."""
     from primeqa.core.models import User
-    from primeqa.core.permissions import PermissionSet, UserPermissionSet
+    from primeqa.core.authz import tier_label
 
     users = (db.query(User)
              .filter_by(tenant_id=tenant_id)
@@ -1253,42 +1200,22 @@ def _settings_users_payload(db, tenant_id, search: str = ""):
         users = [u for u in users
                  if s in (u.full_name or "").lower() or s in (u.email or "").lower()]
 
-    # One query: all assignments for these users.
-    uids = [u.id for u in users]
-    ps_map: dict[int, list[PermissionSet]] = {}
-    if uids:
-        rows = (db.query(UserPermissionSet, PermissionSet)
-                .join(PermissionSet, PermissionSet.id == UserPermissionSet.permission_set_id)
-                .filter(UserPermissionSet.user_id.in_(uids))
-                .order_by(PermissionSet.is_base.desc(), PermissionSet.name.asc())
-                .all())
-        for ups, ps in rows:
-            ps_map.setdefault(ups.user_id, []).append(ps)
-    payload = []
-    for u in users:
-        sets = ps_map.get(u.id, [])
-        base = next((p for p in sets if p.is_base), None)
-        extras = [p for p in sets if not p.is_base]
-        payload.append({
-            "id": u.id,
-            "full_name": u.full_name,
-            "email": u.email,
-            "is_active": u.is_active,
-            "role": u.role,
-            "base_set": base,
-            "extra_sets": extras,
-        })
-    return payload
+    return [{
+        "id": u.id,
+        "full_name": u.full_name,
+        "email": u.email,
+        "is_active": u.is_active,
+        "role": u.role,
+        "role_label": tier_label(u.role),
+    } for u in users]
 
 
 @views_bp.route("/settings/users")
 @require_tier(Tier.ADMIN)
 @login_required
 def settings_users():
-    """List all users in the tenant with their assigned permission sets."""
-    from primeqa.core.permissions import require_page_permission
+    """List all users in the tenant with their role-ladder tier (D-245)."""
 
-    @require_page_permission("manage_users")
     def _render():
         db = next(get_db())
         try:
@@ -1311,16 +1238,15 @@ def settings_users():
 @require_tier(Tier.ADMIN)
 @login_required
 def settings_user_detail(user_id):
-    """User detail: info, assigned sets, effective permissions by category."""
-    from flask import abort, flash
-    from primeqa.core.models import User
-    from primeqa.core.permissions import (
-        PermissionSet, UserPermissionSet, get_effective_permissions,
-        require_page_permission,
-    )
-    from primeqa.core.navigation import get_landing_page
+    """User detail: info + role-ladder tier + activation control (D-245).
 
-    @require_page_permission("manage_users")
+    The permission-set sections (assigned sets / effective-permissions) were
+    removed in D-245 — access is now the role ladder. Role is edited via the
+    existing ``/users/<id>/edit`` form."""
+    from flask import flash
+    from primeqa.core.models import User
+    from primeqa.core.authz import tier_label
+
     def _render():
         db = next(get_db())
         try:
@@ -1329,61 +1255,6 @@ def settings_user_detail(user_id):
                 flash("User not found.", "error")
                 return redirect("/settings/users")
 
-            # Assigned sets in display order (base first).
-            rows = (db.query(UserPermissionSet, PermissionSet)
-                    .join(PermissionSet,
-                          PermissionSet.id == UserPermissionSet.permission_set_id)
-                    .filter(UserPermissionSet.user_id == u.id)
-                    .order_by(PermissionSet.is_base.desc(),
-                              PermissionSet.name.asc())
-                    .all())
-            assigned = [{
-                "id": ps.id, "name": ps.name, "api_name": ps.api_name,
-                "is_base": ps.is_base, "is_system": ps.is_system,
-                "assigned_at": ups.assigned_at,
-                "contains_admin": "manage_users" in (ps.permissions or []),
-            } for (ups, ps) in rows]
-
-            # Available (unassigned) sets for the assignment modal.
-            assigned_ids = {a["id"] for a in assigned}
-            all_sets = (db.query(PermissionSet)
-                        .filter_by(tenant_id=u.tenant_id)
-                        .order_by(PermissionSet.is_base.desc(),
-                                  PermissionSet.is_system.desc(),
-                                  PermissionSet.name.asc())
-                        .all())
-
-            # Effective permissions grouped by category, with attribution
-            # (which assigned set introduced each one).
-            effective = get_effective_permissions(u.id, db)
-            attribution: dict[str, str] = {}
-            for (ups, ps) in rows:
-                for p in (ps.permissions or []):
-                    # Base sets win the attribution tie.
-                    if p not in attribution or ps.is_base:
-                        attribution[p] = ps.name
-            grouped: list[dict] = []
-            for cat, perms in PERMISSION_CATEGORIES.items():
-                entries = [{"perm": p, "source": attribution.get(p, "—")}
-                           for p in perms if p in effective]
-                if entries:
-                    grouped.append({"category": cat, "entries": entries})
-            # Fallback for any permissions not in our category map.
-            uncategorized = [p for p in effective
-                             if not any(p in v for v in PERMISSION_CATEGORIES.values())]
-            if uncategorized:
-                grouped.append({
-                    "category": "Other",
-                    "entries": [{"perm": p, "source": attribution.get(p, "—")}
-                                for p in sorted(uncategorized)],
-                })
-
-            preferred = u.preferred_landing_page
-            computed = get_landing_page(
-                effective, preferred=preferred,
-                is_superadmin=(u.role == "superadmin"),
-            )
-
             is_self = (u.id == request.user["id"])
 
             return render_template("settings/user_detail.html", **ctx(
@@ -1391,186 +1262,12 @@ def settings_user_detail(user_id):
                 breadcrumb_section="Users",
                 breadcrumb_section_url="settings/users",
                 breadcrumb_item=u.full_name,
-                edit_user=u, assigned=assigned, all_sets=all_sets,
-                grouped=grouped, landing_preferred=preferred,
-                landing_computed=computed, is_self=is_self,
+                edit_user=u, role_label=tier_label(u.role), is_self=is_self,
             ))
         finally:
             db.close()
 
     return _render()
-
-
-@views_bp.route("/settings/permission-sets")
-@login_required
-def settings_permission_sets():
-    """List all permission sets in the tenant: base, granular, custom."""
-    from primeqa.core.permissions import (
-        PermissionSet, UserPermissionSet, require_page_permission,
-    )
-    from sqlalchemy import func as sf
-
-    @require_page_permission("manage_permission_sets")
-    def _render():
-        db = next(get_db())
-        try:
-            sets = (db.query(PermissionSet)
-                    .filter_by(tenant_id=request.user["tenant_id"])
-                    .order_by(PermissionSet.is_base.desc(),
-                              PermissionSet.is_system.desc(),
-                              PermissionSet.name.asc())
-                    .all())
-            # User-count per set, in one query.
-            counts = dict((r[0], r[1]) for r in (
-                db.query(UserPermissionSet.permission_set_id,
-                         sf.count(UserPermissionSet.user_id))
-                .group_by(UserPermissionSet.permission_set_id)
-                .all()))
-            rows = [{
-                "id": ps.id, "name": ps.name, "api_name": ps.api_name,
-                "description": ps.description,
-                "is_base": ps.is_base, "is_system": ps.is_system,
-                "permissions_count": len(ps.permissions or []),
-                "users_count": counts.get(ps.id, 0),
-            } for ps in sets]
-            base = [r for r in rows if r["is_base"] and r["is_system"]]
-            granular = [r for r in rows if not r["is_base"] and r["is_system"]]
-            custom = [r for r in rows if not r["is_system"]]
-            return render_template("settings/permission_sets_list.html", **ctx(
-                active_page="settings_permission_sets",
-                settings_page="permission_sets",
-                breadcrumb_section="Permission Sets",
-                base_sets=base, granular_sets=granular, custom_sets=custom,
-            ))
-        finally:
-            db.close()
-
-    return _render()
-
-
-# --- Permission-set assignment APIs ---------------------------------------
-# NOTE: these use require_auth (not login_required) so Bearer tokens from
-# /api/auth/login work as the canonical auth path — matches the rest of
-# /api/* and avoids the test-client-cookie-leak behaviour on mixed auth.
-
-from primeqa.core.auth import require_auth as _require_auth_api
-
-
-@views_bp.route("/api/users/<int:user_id>/permission-sets", methods=["POST"])
-@_require_auth_api
-def api_assign_permission_sets(user_id):
-    """Assign one or more permission sets to a user.
-
-    Body: {"permission_set_ids": [1, 5, 12]}
-    Idempotent — already-assigned sets are skipped silently.
-    """
-    from primeqa.core.models import User
-    from primeqa.core.permissions import (
-        PermissionSet, assign_permission_set, require_permission,
-    )
-
-    @require_permission("manage_users")
-    def _do():
-        body = request.get_json(silent=True) or {}
-        raw_ids = body.get("permission_set_ids")
-        if not isinstance(raw_ids, list) or not raw_ids:
-            return ({"error": {"code": "VALIDATION_ERROR",
-                               "message": "permission_set_ids must be a non-empty list"}}, 400)
-        try:
-            ids = [int(x) for x in raw_ids]
-        except (TypeError, ValueError):
-            return ({"error": {"code": "VALIDATION_ERROR",
-                               "message": "permission_set_ids must be integers"}}, 400)
-
-        db = next(get_db())
-        try:
-            u = db.query(User).filter_by(id=user_id).first()
-            if u is None or u.tenant_id != request.user["tenant_id"]:
-                return ({"error": {"code": "NOT_FOUND", "message": "User not found"}}, 404)
-            # Tenant-scope all requested sets.
-            sets = (db.query(PermissionSet)
-                    .filter(PermissionSet.id.in_(ids),
-                            PermissionSet.tenant_id == u.tenant_id)
-                    .all())
-            found_ids = {ps.id for ps in sets}
-            missing = [i for i in ids if i not in found_ids]
-            if missing:
-                return ({"error": {"code": "VALIDATION_ERROR",
-                                   "message": f"Unknown permission set ids: {missing}"}},
-                        400)
-            added = 0
-            for ps in sets:
-                if assign_permission_set(u.id, ps.id, db,
-                                         assigned_by=request.user["id"]):
-                    added += 1
-            db.commit()
-            return ({"assigned": added, "requested": len(ids)}, 200)
-        finally:
-            db.close()
-
-    return _do()
-
-
-@views_bp.route("/api/users/<int:user_id>/permission-sets/<int:pset_id>",
-                methods=["DELETE"])
-@_require_auth_api
-def api_revoke_permission_set(user_id, pset_id):
-    """Revoke a permission-set assignment from a user.
-
-    Self-protect: an admin can't remove their own manage_users grant.
-    """
-    from primeqa.core.models import User
-    from primeqa.core.permissions import (
-        PermissionSet, require_permission, revoke_permission_set,
-    )
-
-    @require_permission("manage_users")
-    def _do():
-        db = next(get_db())
-        try:
-            u = db.query(User).filter_by(id=user_id).first()
-            if u is None or u.tenant_id != request.user["tenant_id"]:
-                return ({"error": {"code": "NOT_FOUND", "message": "User not found"}}, 404)
-            ps = db.query(PermissionSet).filter_by(id=pset_id).first()
-            if ps is None or ps.tenant_id != u.tenant_id:
-                return ({"error": {"code": "NOT_FOUND", "message": "Permission set not found"}}, 404)
-            # Self-protect: prevent lock-out.
-            if (u.id == request.user["id"]
-                    and "manage_users" in (ps.permissions or [])
-                    and request.user.get("role") != "superadmin"):
-                return ({"error": {
-                    "code": "SELF_ADMIN_REVOKE",
-                    "message": "Cannot remove your own admin permissions.",
-                }}, 400)
-            # Task 7: last-superadmin guard on permission-set removal.
-            # If the target is a superadmin AND this set contains
-            # manage_users AND they're the only active superadmin in the
-            # tenant, refuse — otherwise the tenant loses god-mode
-            # access entirely.
-            if (u.role == "superadmin"
-                    and "manage_users" in (ps.permissions or [])):
-                other_supers = (db.query(User)
-                                .filter(User.tenant_id == u.tenant_id,
-                                        User.role == "superadmin",
-                                        User.is_active == True,
-                                        User.id != u.id)
-                                .count())
-                if other_supers == 0:
-                    return ({"error": {
-                        "code": "LAST_SUPERADMIN",
-                        "message": ("Cannot strip admin permissions from the "
-                                    "last active superadmin in this tenant."),
-                    }}, 400)
-            removed = revoke_permission_set(u.id, ps.id, db)
-            db.commit()
-            if not removed:
-                return ({"error": {"code": "NOT_FOUND",
-                                   "message": "Assignment not found"}}, 404)
-            return ("", 204)
-        finally:
-            db.close()
-
-    return _do()
 
 
 @views_bp.route("/api/users/<int:user_id>/deactivate", methods=["POST"])
@@ -1579,9 +1276,7 @@ def api_revoke_permission_set(user_id, pset_id):
 def api_deactivate_user(user_id):
     """Deactivate a user. Blocks self-deactivation + last-superadmin lockout."""
     from primeqa.core.models import User
-    from primeqa.core.permissions import require_permission
 
-    @require_permission("manage_users")
     def _do():
         if user_id == request.user["id"] and request.user.get("role") != "superadmin":
             return ({"error": {"code": "SELF_DEACTIVATE",
@@ -1623,9 +1318,7 @@ def api_deactivate_user(user_id):
 def api_activate_user(user_id):
     """Re-activate a user."""
     from primeqa.core.models import User
-    from primeqa.core.permissions import require_permission
 
-    @require_permission("manage_users")
     def _do():
         db = next(get_db())
         try:
