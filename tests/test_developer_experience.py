@@ -3,6 +3,11 @@
 Focused on the deterministic pieces — ordering, env resolution, route
 gating, and the switcher POST. The Jira fetch path is unit-tested via a
 stub (we can't depend on a live Jira in CI).
+
+NOTE (D-245): integration test — runs against the live Railway DB + mints JWTs.
+Re-run on a real environment to confirm green; it cannot execute in a sandbox
+that blocks DB writes / token minting. Authorization is the role ladder now;
+the deleted permission-set seeding (`_force_perms`) was removed.
 """
 
 import os
@@ -13,11 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv()
 
-from sqlalchemy import text
-
 from primeqa.app import app
 from primeqa.core.models import Environment, User
-from primeqa.core.permissions import PermissionSet, UserPermissionSet
 from primeqa.db import SessionLocal
 from primeqa.runs.my_tickets import (
     list_switchable_environments,
@@ -54,20 +56,6 @@ def login_form(email, password):
     return r
 
 
-def _force_perms(user_id: int, api_names: list[str]):
-    db = SessionLocal()
-    try:
-        db.query(UserPermissionSet).filter_by(user_id=user_id).delete()
-        for name in api_names:
-            ps = db.query(PermissionSet).filter_by(
-                tenant_id=TENANT_ID, api_name=name).first()
-            assert ps is not None, f"PermissionSet {name!r} missing"
-            db.add(UserPermissionSet(user_id=user_id, permission_set_id=ps.id))
-        db.commit()
-    finally:
-        db.close()
-
-
 def _ensure_user(admin_token, email, password, role):
     client.post("/api/auth/users",
                 headers={"Authorization": f"Bearer {admin_token}"},
@@ -87,7 +75,6 @@ def run_tests():
 
     admin_token = login_api("admin@primeqa.io", "changeme123")
     dev_user = _ensure_user(admin_token, "dev_x@primeqa.io", "test123", "tester")
-    _force_perms(dev_user.id, ["developer_base"])
 
     # --------------------------------------------------------------
     # 1. /tickets renders for Developer Base

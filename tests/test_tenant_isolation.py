@@ -3,16 +3,20 @@
 Covers the cross-tenant gaps closed in the multi-tenant-readiness arc:
 
   1. finalize_decision must match the URL release_id  (cross-tenant WRITE fix)
-  2. check_environment_policy is tenant-scoped         (cross-tenant env probe)
-  3. public /status requires a per-release token        (UNAUTH cross-tenant read)
-  4. update_status honours tenant_id                    (defense-in-depth)
-  5. add_requirement rejects a foreign-tenant requirement (adversarial-review fix)
+  2. public /status requires a per-release token        (UNAUTH cross-tenant read)
+  3. update_status honours tenant_id                    (defense-in-depth)
+  4. add_requirement rejects a foreign-tenant requirement (adversarial-review fix)
 
-Tests 1-4 prove cross-tenant behaviour by passing a *mismatched* tenant_id
-(fixtures live in tenant 1, cleaned up in a finally). Test 5 needs a REAL second
+Tests 1-3 prove cross-tenant behaviour by passing a *mismatched* tenant_id
+(fixtures live in tenant 1, cleaned up in a finally). Test 4 needs a REAL second
 tenant — add_requirement uses one tenant_id for both the release and the
 requirement, so it stands up a throwaway tenant + section + requirement and tears
 them down. A full 2-tenant E2E across all paths lands with the provisioning plan.
+
+D-245: cross-tenant *environment* access scoping moved off the deleted
+``check_environment_policy`` onto the role-ladder + Groups model
+(``EnvironmentRepository.is_environment_accessible``), which is unit-tested in
+``tests/unit/test_authz_env_scope.py`` — so that scenario was removed from here.
 
 Run: python tests/test_tenant_isolation.py
 """
@@ -28,8 +32,7 @@ load_dotenv()
 
 from primeqa.app import app
 from primeqa.db import SessionLocal
-from primeqa.core.models import Connection, Environment, User
-from primeqa.core.permissions import check_environment_policy
+from primeqa.core.models import Connection, User
 from primeqa.core.repository import ConnectionRepository
 from primeqa.release.repository import ReleaseRepository
 from primeqa.release.routes import _hash_poll_token
@@ -87,28 +90,7 @@ def t_finalize_matches_release():
 
 
 # --------------------------------------------------------------------------
-# 2. check_environment_policy is tenant-scoped
-# --------------------------------------------------------------------------
-def t_env_policy_tenant_scoped():
-    db = SessionLocal()
-    try:
-        env = db.query(Environment).filter_by(tenant_id=TENANT_ID).first()
-        assert env is not None, "seed data: expected a tenant-1 environment"
-        # Correct tenant: evaluates the policy (allowed, or a policy reason —
-        # never the 'not found' branch).
-        _, reason = check_environment_policy(env.id, "single_run", db, TENANT_ID)
-        assert "not found" not in reason.lower(), \
-            f"own-tenant env reported not-found: {reason!r}"
-        # Mismatched tenant: the env is invisible (no name/policy leak).
-        ok2, reason2 = check_environment_policy(env.id, "single_run", db, 999_999)
-        assert ok2 is False and "not found" in reason2.lower(), \
-            f"cross-tenant env probe was NOT blocked: ok={ok2} reason={reason2!r}"
-    finally:
-        db.close()
-
-
-# --------------------------------------------------------------------------
-# 3. public /status requires a per-release token (the unauth leak fix)
+# 2. public /status requires a per-release token (the unauth leak fix)
 # --------------------------------------------------------------------------
 def t_status_requires_token():
     # NOTE: each DB mutation uses its own short-lived session that is closed
@@ -167,7 +149,7 @@ def t_status_requires_token():
 
 
 # --------------------------------------------------------------------------
-# 4. update_status honours tenant_id (defense-in-depth)
+# 3. update_status honours tenant_id (defense-in-depth)
 # --------------------------------------------------------------------------
 def t_update_status_tenant_scoped():
     db = SessionLocal()
@@ -200,7 +182,7 @@ def t_update_status_tenant_scoped():
 
 
 # --------------------------------------------------------------------------
-# 5. add_requirement rejects a foreign-tenant requirement (adversarial-review
+# 4. add_requirement rejects a foreign-tenant requirement (adversarial-review
 #    finding). This is the one isolation test that needs a REAL 2nd tenant —
 #    the others use a mismatched tenant_id, but add_requirement uses one
 #    tenant_id for both the release and the requirement, so a genuinely foreign
@@ -271,13 +253,11 @@ if __name__ == "__main__":
     print("\n=== Multi-tenant isolation tests ===\n")
     results.append(test("1. finalize_decision must match the URL release_id",
                         t_finalize_matches_release))
-    results.append(test("2. check_environment_policy is tenant-scoped",
-                        t_env_policy_tenant_scoped))
-    results.append(test("3. public /status requires a per-release token",
+    results.append(test("2. public /status requires a per-release token",
                         t_status_requires_token))
-    results.append(test("4. update_status honours tenant_id",
+    results.append(test("3. update_status honours tenant_id",
                         t_update_status_tenant_scoped))
-    results.append(test("5. add_requirement rejects a foreign-tenant requirement",
+    results.append(test("4. add_requirement rejects a foreign-tenant requirement",
                         t_add_requirement_tenant_scoped))
 
     passed = sum(1 for r in results if r)

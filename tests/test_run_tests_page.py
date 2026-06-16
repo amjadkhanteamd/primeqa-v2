@@ -4,10 +4,19 @@ The v1 four-mode /run page + /api/bulk-runs API these tests originally
 covered were retired with the v1 engine (D-221 R2); the /run page was
 rebuilt as the substrate requirement-picker (D-219). What remains:
 
-  1. /run renders for tester (has run_sprint)
-  2. /run redirects for developer (no bulk perms)
+  1. /run renders for a Member (tester role — has bulk-run)
+  2. /run redirects for a Viewer (viewer role — below Member)
   3. /run excludes production envs (sandbox-only picker)
-  4. Navigation + landing page updated to /run (tester lands there)
+  4. Landing page: a tester (Member) lands on /requirements
+
+D-245: authorization is the role ladder now (viewer<member<admin<superadmin
+via primeqa.core.authz.rank); the deleted permission-set seeding (`_force_perms`)
+is gone. Access on /run gates at Tier.MEMBER, so the "no access" case is a
+`viewer`-role user (the tier below Member), redirected to `/` by require_tier.
+
+NOTE (D-245): integration test — runs against the live Railway DB + mints JWTs.
+Re-run on a real environment to confirm green; it cannot execute in a sandbox
+that blocks DB writes / token minting.
 """
 
 import os
@@ -23,9 +32,7 @@ from sqlalchemy import text
 from primeqa.app import app
 from primeqa.core.models import Environment, User
 from primeqa.core.navigation import get_landing_page
-from primeqa.core.permissions import (
-    BASE_PERMISSION_SETS, PermissionSet, UserPermissionSet,
-)
+from primeqa.core.permissions import _role_capabilities
 from primeqa.db import SessionLocal
 
 TENANT_ID = 1
@@ -58,26 +65,13 @@ def login_form(email, password):
                        follow_redirects=False)
 
 
-def _force_perms(user_id: int, api_names: list[str]):
-    db = SessionLocal()
-    try:
-        db.query(UserPermissionSet).filter_by(user_id=user_id).delete()
-        for name in api_names:
-            ps = db.query(PermissionSet).filter_by(
-                tenant_id=TENANT_ID, api_name=name).first()
-            assert ps is not None, f"PermissionSet {name!r} missing"
-            db.add(UserPermissionSet(user_id=user_id, permission_set_id=ps.id))
-        db.commit()
-    finally:
-        db.close()
-
-
 def _ensure_user(admin_token, email, password, role):
     """Return a user row with a known password + role.
 
     Reset-in-place rather than delete-and-recreate — the user may be
     referenced by pipeline_runs.triggered_by FK from earlier happy-path
-    test runs, and those rows aren't ours to purge.
+    test runs, and those rows aren't ours to purge. D-245: role IS the
+    authorization tier now — no permission-set seeding.
     """
     import bcrypt
     db = SessionLocal()
@@ -90,8 +84,6 @@ def _ensure_user(admin_token, email, password, role):
             existing.role = role
             existing.is_active = True
             existing.full_name = email.split("@")[0].replace(".", " ").title()
-            db.execute(text("DELETE FROM user_permission_sets WHERE user_id = :id"),
-                       {"id": existing.id})
             db.commit()
     finally:
         db.close()
@@ -120,21 +112,15 @@ def _ensure_user(admin_token, email, password, role):
 
 def run_tests():
     results = []
-    print("\n=== Run Tests Page + /api/bulk-runs ===\n")
+    print("\n=== Run Tests Page (substrate requirement-picker, D-219/D-245) ===\n")
 
     admin_token = login_api("admin@primeqa.io", "changeme123")
+    # tester role -> Member tier (has bulk-run); viewer role -> below Member.
     tester_user = _ensure_user(admin_token, "tester_rt@primeqa.io", "test123", "tester")
-    dev_user = _ensure_user(admin_token, "dev_rt@primeqa.io", "test123", "tester")
-    _force_perms(tester_user.id, ["tester_base"])
-    _force_perms(dev_user.id, ["developer_base"])
+    _ensure_user(admin_token, "dev_rt@primeqa.io", "test123", "viewer")
 
     # --- Page render ---
     def test_run_renders_for_tester():
-        # Re-force perms right before the check. Concurrent chain runs
-        # can mutate the tester's perms between the top-of-suite setup
-        # and this test firing. The contract we're verifying is "a
-        # tester_base holder sees /run" — so anchor that at test time.
-        _force_perms(tester_user.id, ["tester_base"])
         login_form("tester_rt@primeqa.io", "test123")
         r = client.get("/run", follow_redirects=False)
         assert r.status_code == 200, f"Expected 200, got {r.status_code}"
@@ -144,25 +130,24 @@ def run_tests():
         assert ("requirement_keys" in html or "Nothing approved" in html), \
             "Substrate requirement picker (or its empty state) missing"
         assert 'data-mode="sprint"' not in html, "v1 mode tabs should be gone"
-    results.append(test("1. /run renders the substrate run page",
+    results.append(test("1. /run renders the substrate run page (tester=Member)",
                         test_run_renders_for_tester))
 
-    def test_run_redirects_for_developer():
+    def test_run_redirects_for_viewer():
+        # D-245: /run gates at Tier.MEMBER; a viewer is below it, so
+        # require_tier redirects to "/".
         login_form("dev_rt@primeqa.io", "test123")
         r = client.get("/run", follow_redirects=False)
         assert r.status_code in (301, 302), f"Expected redirect, got {r.status_code}"
-        # developer_base -> /requirements
-        assert "/requirements" in r.headers["Location"], r.headers["Location"]
-    results.append(test("2. /run redirects developer (no bulk perms)",
-                        test_run_redirects_for_developer))
+        assert r.headers["Location"].endswith("/"), r.headers["Location"]
+    results.append(test("2. /run redirects a Viewer (below Member tier)",
+                        test_run_redirects_for_viewer))
 
     def test_run_excludes_production_envs():
         # D-219: the env picker offers sandboxes only.
-        _force_perms(tester_user.id, ["tester_base"])
         login_form("tester_rt@primeqa.io", "test123")
         r = client.get("/run")
         html = r.data.decode("utf-8", "replace")
-        from primeqa.core.models import Environment
         db = SessionLocal()
         try:
             prods = (db.query(Environment)
@@ -176,14 +161,12 @@ def run_tests():
     results.append(test("3. /run excludes production environments",
                         test_run_excludes_production_envs))
 
-    # --- (the /api/bulk-runs contract tests retired with the endpoint, D-221 R2) ---
-
-    def test_tester_lands_on_run_page():
-        # Tester base lands on /run (not /runs/new) per the spec.
-        perms = set(next(s for s in BASE_PERMISSION_SETS if s["api_name"] == "tester_base")["permissions"])
-        assert get_landing_page(perms) == "/requirements"
-    results.append(test("15. Tester base landing page is /requirements (D-218)",
-                        test_tester_lands_on_run_page))
+    def test_tester_lands_on_requirements():
+        # D-218/D-245: a Member (tester) lands on /requirements. Capabilities
+        # are role-derived now — feed get_landing_page from _role_capabilities.
+        assert get_landing_page(_role_capabilities("tester")) == "/requirements"
+    results.append(test("4. Tester (Member) landing page is /requirements (D-218)",
+                        test_tester_lands_on_requirements))
 
     # --- summary ---
     passed = sum(results)
