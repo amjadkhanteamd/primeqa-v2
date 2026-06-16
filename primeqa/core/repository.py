@@ -183,6 +183,22 @@ class EnvironmentRepository:
         # Audit M-2: hard 500-row cap.
         return q.limit(500).all()
 
+    def is_environment_accessible(self, tenant_id, user_id, role, environment_id) -> bool:
+        """Phase 3 (D-245): is ``environment_id`` within the caller's accessible
+        set? The environment-scope axis — reuses ``list_environments`` scoping
+        (admin/superadmin → every active env; other roles → created-by + the
+        envs their groups grant). Use this to validate any **client-supplied**
+        ``environment_id`` BEFORE executing/generating against it, so a caller
+        cannot target an env outside their groups by POSTing its id."""
+        if environment_id is None:
+            return False
+        try:
+            target = int(environment_id)
+        except (TypeError, ValueError):
+            return False
+        accessible = {e.id for e in self.list_environments(tenant_id, user_id, role)}
+        return target in accessible
+
     def update_environment(self, environment_id, tenant_id, updates):
         env = self.get_environment(environment_id, tenant_id)
         if not env:

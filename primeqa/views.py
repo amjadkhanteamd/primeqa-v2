@@ -344,7 +344,9 @@ def ask():
     def _render():
         tid = request.user["tenant_id"]
         db = next(get_db())
-        environments = EnvironmentRepository(db).list_environments(tid)
+        # Phase 3 (D-245): scope the env dropdown to the caller's accessible set.
+        environments = EnvironmentRepository(db).list_environments(
+            tid, request.user["id"], request.user["role"])
         form = {"question": "", "environment_id": "", "requirement_key": "",
                 "object_api_name": ""}
         answer = None
@@ -355,6 +357,12 @@ def ask():
             form["object_api_name"] = (request.form.get("object_api_name") or "").strip()
             env_id = (int(form["environment_id"])
                       if form["environment_id"].isdigit() else None)
+            # Phase 3 (D-245): drop an out-of-scope env filter so a caller can't
+            # ground an answer over an environment outside their groups.
+            if env_id is not None and not EnvironmentRepository(db).is_environment_accessible(
+                    tid, request.user["id"], request.user["role"], env_id):
+                env_id = None
+                form["environment_id"] = ""
             if form["question"]:
                 api_key, model = _resolve_env_llm(db, tid, env_id)
                 answer = answer_question(
@@ -410,6 +418,13 @@ def api_dashboard_share():
 
         db = next(get_db())
         try:
+            # Phase 3 (D-245): only share a dashboard for an env the caller can
+            # access (groups), not any env in the tenant. 404 hides existence.
+            if not EnvironmentRepository(db).is_environment_accessible(
+                    request.user["tenant_id"], request.user["id"],
+                    request.user["role"], env_id):
+                return ({"error": {"code": "NOT_FOUND",
+                                   "message": "Environment not found"}}, 404)
             env = (db.query(Environment)
                    .filter_by(id=env_id,
                               tenant_id=request.user["tenant_id"])
@@ -630,10 +645,12 @@ def run_page():
         db = next(get_db())
         try:
             tid = request.user["tenant_id"]
-            envs = (db.query(Environment)
-                    .filter_by(tenant_id=tid, is_active=True)
-                    .filter(Environment.is_production.is_(False))
-                    .order_by(Environment.name.asc()).all())
+            # Phase 3 (D-245): scope the env list to the caller's accessible
+            # set (groups), not just the tenant. Non-prod only (D-214).
+            envs = [e for e in EnvironmentRepository(db).list_environments(
+                        tid, request.user["id"], request.user["role"])
+                    if not e.is_production]
+            envs.sort(key=lambda e: (e.name or "").lower())
             runnable = list_runnable_requirements(tid)
             keys = [r["key"] for r in runnable["rows"]]
             summaries = {}
@@ -681,12 +698,14 @@ def run_page_submit():
         keys = request.form.getlist("requirement_keys")
         db = next(get_db())
         try:
-            env = (db.query(Environment)
-                   .filter_by(id=env_id, tenant_id=tid).first()
-                   if env_id else None)
-            if env is None:
-                flash("Pick an environment to run against.", "error")
+            # Phase 3 (D-245): validate the client-supplied env_id is within the
+            # caller's accessible set (groups) BEFORE running — not just tenant.
+            repo = EnvironmentRepository(db)
+            if not (env_id and repo.is_environment_accessible(
+                    tid, request.user["id"], request.user["role"], env_id)):
+                flash("Pick an environment you have access to.", "error")
                 return redirect("/run")
+            env = repo.get_environment(env_id, tid)
             if env.is_production:
                 flash("Substrate runs are sandbox-only — production "
                       "environments cannot be targeted here.", "error")
@@ -1911,6 +1930,7 @@ def groups_update(group_id):
 
 
 @views_bp.route("/groups/<int:group_id>")
+@require_tier(Tier.ADMIN)
 @login_required
 def groups_detail(group_id):
     db = next(get_db())
@@ -2563,6 +2583,13 @@ def requirements_generate_substrate(req_id):
         return redirect(f"/requirements/{req_id}")
     db = next(get_db())
     try:
+        # Phase 3 (D-245): validate the client-supplied env against the caller's
+        # accessible set (groups) before generating.
+        if not EnvironmentRepository(db).is_environment_accessible(
+                request.user["tenant_id"], request.user["id"],
+                request.user["role"], environment_id):
+            flash("Pick an environment you have access to.", "error")
+            return redirect(f"/requirements/{req_id}")
         from primeqa.intelligence.s3_generation_console import trigger_s3_generation
         res = trigger_s3_generation(
             db, tenant_id=request.user["tenant_id"], requirement_id=req_id,
@@ -2721,7 +2748,14 @@ def claims_run(test_id):
     try:
         from primeqa.core.repository import EnvironmentRepository
         from primeqa.runs.bulk import environment_can_bulk_run
-        env = EnvironmentRepository(db).get_environment(environment_id, tid)
+        repo = EnvironmentRepository(db)
+        # Phase 3 (D-245): the env must be within the caller's accessible set
+        # (groups) before a live run targets it.
+        if not repo.is_environment_accessible(
+                tid, request.user["id"], request.user["role"], environment_id):
+            flash("Pick an environment you have access to.", "error")
+            return redirect(f"/claims/{test_id}")
+        env = repo.get_environment(environment_id, tid)
         if env is None:
             flash("Environment not found.", "error")
             return redirect(f"/claims/{test_id}")
@@ -3553,6 +3587,11 @@ def releases_run(release_id):
         env_id = request.form.get("environment_id", type=int)
         if not env_id:
             flash("Pick an environment to run against.", "error")
+            return redirect(f"/releases/{release_id}")
+        # Phase 3 (D-245): env must be within the caller's accessible set (groups).
+        if not EnvironmentRepository(db).is_environment_accessible(
+                tid, request.user["id"], request.user["role"], env_id):
+            flash("Pick an environment you have access to.", "error")
             return redirect(f"/releases/{release_id}")
         env = EnvironmentRepository(db).get_environment(env_id, tid)
         if env is None:
