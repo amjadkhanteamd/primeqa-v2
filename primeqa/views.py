@@ -15,7 +15,7 @@ from primeqa.core.repository import (
     ConnectionRepository, GroupRepository,
 )
 from primeqa.core.service import AuthService, EnvironmentService, ConnectionService, GroupService
-from primeqa.core.authz import Tier, authorize, rank
+from primeqa.core.authz import Tier, authorize, floor_tier, rank
 from primeqa.core.auth import require_tier_api
 from primeqa.release.repository import ReleaseRepository
 from primeqa.release.service import ReleaseService
@@ -61,18 +61,13 @@ def login_required(f):
 
 
 def role_required(*roles):
-    def decorator(f):
-        @wraps(f)
-        @login_required
-        def decorated(*args, **kwargs):
-            role = request.user["role"]
-            if role == "superadmin":
-                return f(*args, **kwargs)
-            if role not in roles:
-                return redirect("/")
-            return f(*args, **kwargs)
-        return decorated
-    return decorator
+    """D-245 Phase 6: the legacy role list is now a thin wrapper over the role
+    ladder. It gates at ``floor_tier(roles)`` (the lowest listed role's tier)
+    via the same ``authorize()`` path as ``require_tier`` — so superadmin still
+    passes (ladder top), and a list naming ``tester`` now also admits ``ba``
+    (both ``MEMBER``), the one intended widening. The explicit role names stay
+    at the call sites as living documentation of audience."""
+    return require_tier(floor_tier(roles))
 
 
 def require_tier(min_tier):

@@ -11,6 +11,7 @@ from primeqa.core.authz import (
     AuthorizationError,
     rank,
     authorize,
+    floor_tier,
 )
 
 ALL_ROLES = ["viewer", "ba", "tester", "admin", "superadmin"]
@@ -127,3 +128,59 @@ class TestAuthorizationError:
 
     def test_default_reason(self):
         assert AuthorizationError().reason == "not authorized"
+
+
+class TestFloorTier:
+    """D-245 Phase 6: legacy role lists become `authorize(floor_tier(roles))`.
+
+    The floor is the lowest tier among the listed roles; everyone at-or-above
+    passes. These cover every list that actually appears at a call site plus the
+    invariant that the conversion preserves the old admitted set EXCEPT for the
+    one intended `ba` widening on `tester`-without-`ba` lists.
+    """
+
+    @pytest.mark.parametrize("roles,expected", [
+        (("admin",),                              Tier.ADMIN),
+        (("admin", "superadmin"),                 Tier.ADMIN),
+        (("superadmin",),                         Tier.SUPERADMIN),
+        (("admin", "tester"),                     Tier.MEMBER),
+        (("admin", "tester", "superadmin"),       Tier.MEMBER),
+        (("admin", "ba", "tester", "superadmin"), Tier.MEMBER),
+    ])
+    def test_real_call_site_lists(self, roles, expected):
+        assert floor_tier(roles) is expected
+
+    def test_superadmin_in_list_is_redundant(self):
+        assert floor_tier(("admin",)) is floor_tier(("admin", "superadmin"))
+
+    def test_empty_list_admits_only_god(self):
+        # role not in [] -> deny-all-but-superadmin; floor is the ladder top.
+        assert floor_tier(()) is Tier.SUPERADMIN
+
+    def test_lowest_role_wins(self):
+        assert floor_tier(("admin", "viewer")) is Tier.VIEWER
+
+    @pytest.mark.parametrize("roles", [
+        ("admin",), ("admin", "superadmin"), ("superadmin",),
+        ("admin", "ba", "tester", "superadmin"),
+    ])
+    def test_non_tester_gap_lists_preserve_admitted_set(self, roles):
+        # For every role, floor-tier authorize() must match the old
+        # "role in list OR superadmin" semantics — these lists have no
+        # tester-without-ba gap, so the sets are identical.
+        floor = floor_tier(roles)
+        for role in ALL_ROLES:
+            old_allows = role in roles or role == "superadmin"
+            new_allows = authorize(role, floor)[0]
+            assert new_allows is old_allows, (role, roles)
+
+    def test_tester_without_ba_widens_to_ba_only(self):
+        # The one intended behavior change: a list naming tester (not ba) now
+        # also admits ba. Everything else is unchanged.
+        roles = ("admin", "tester")
+        floor = floor_tier(roles)
+        assert authorize("ba", floor)[0] is True          # widened
+        assert authorize("tester", floor)[0] is True       # unchanged
+        assert authorize("admin", floor)[0] is True        # unchanged
+        assert authorize("superadmin", floor)[0] is True   # god-mode
+        assert authorize("viewer", floor)[0] is False      # still denied

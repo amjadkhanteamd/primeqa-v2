@@ -72,6 +72,22 @@ def rank(role: Any) -> Tier:
     return ROLE_TO_TIER.get(str(role).strip().lower(), Tier.VIEWER)
 
 
+def floor_tier(roles) -> Tier:
+    """The minimum ladder tier that admits every role in a legacy role list.
+
+    D-245 Phase 6: a legacy ``role_required("admin", "tester")`` gate is
+    re-expressed as ``authorize(min_tier=floor_tier(roles))`` — the floor is the
+    lowest tier among the listed roles, so everyone at-or-above it passes.
+    ``superadmin`` in a list is redundant (the ladder top always passes). An
+    empty list yields ``SUPERADMIN`` (admit only god-mode), matching the old
+    ``role not in []`` deny-all-but-superadmin behaviour.
+
+    The one *intended* consequence: a list naming ``tester`` but not ``ba`` now
+    also admits ``ba`` — both map to ``MEMBER``."""
+    tiers = [rank(r) for r in roles]
+    return min(tiers) if tiers else Tier.SUPERADMIN
+
+
 def tier_label(role: Any) -> str:
     """Human display label for a stored role's ladder tier — ``Viewer`` /
     ``Member`` / ``Admin`` / ``Superadmin``. The stored DB role value
