@@ -279,7 +279,8 @@ def t_env_access_tenant_scoped():
     db.add(foreign_env); db.commit(); db.refresh(foreign_env)
     repo = EnvironmentRepository(db)
     own_env = (db.query(Environment)
-               .filter(Environment.tenant_id == TENANT_ID).first())
+               .filter(Environment.tenant_id == TENANT_ID,
+                       Environment.is_active == True).first())
     try:
         # NEGATIVE: a tenant-1 caller (even admin = "see all") must NOT reach a
         # tenant-2 env — the tenant filter, not group membership, is the guard.
