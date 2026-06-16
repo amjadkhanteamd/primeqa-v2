@@ -15,7 +15,7 @@ from primeqa.core.repository import (
     ConnectionRepository, GroupRepository,
 )
 from primeqa.core.service import AuthService, EnvironmentService, ConnectionService, GroupService
-from primeqa.core.authz import Tier, authorize
+from primeqa.core.authz import Tier, authorize, rank
 from primeqa.core.auth import require_tier_api
 from primeqa.release.repository import ReleaseRepository
 from primeqa.release.service import ReleaseService
@@ -2767,8 +2767,12 @@ def claims_run(test_id):
         return redirect(f"/claims/{test_id}")
 
     from primeqa.intelligence.s4_execution_console import trigger_claim_run
+    # Phase 4 (D-245): pass the caller's role tier so the dispatch gate can apply
+    # the production role rule (a non-Admin may run only the read-only inspection
+    # vertical against a production env).
     res = trigger_claim_run(tid, str(test_id), environment_id,
-                            field_overrides=field_overrides)
+                            field_overrides=field_overrides,
+                            caller_tier=rank(request.user["role"]))
     if not res.get("ok"):
         flash(f"Run failed: {res.get('error', 'unknown error')}", "error")
     elif not res.get("ran"):
