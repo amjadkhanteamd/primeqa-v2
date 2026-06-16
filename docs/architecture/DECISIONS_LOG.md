@@ -14430,3 +14430,60 @@ god-mode all-groups view — a latent inconsistency the ladder (`rank(role) >= T
 deferred to avoid scope creep.
 
 ---
+
+## D-245 — PRE-MERGE ADVERSARIAL REVIEW + FIXES (6-dimension review of the branch diff before merge)
+
+A multi-agent adversarial review (privilege-escalation, gate-completeness, deletion blast-radius,
+behavior-change, tenant-isolation, test-integrity — each finding refuted against the real code)
+ran over the full `main..authz-role-ladder` diff. It surfaced **one genuine security gap the test
+suites could not** (the happy paths were all green), plus quality findings. Fixes landed before merge:
+
+1. **[HIGH — fixed] Production-tier gate bypassed on the async/queued S4 path.** The D-245 dispatch
+   gate (`_authorize_dispatch`) blocks a non-Admin from running a *mutating* data-recipe against an
+   `is_production` env, but its production-role rule fires only when `caller_tier is not None`. The
+   **sync** path (`/claims/<id>/run`) threads `caller_tier=rank(role)`; the **async** path (the
+   worker consumer → `run_recipe_execution_async`) passes `caller_tier=None`, and the s4_execution
+   job row carries no tier column — so a Member (ba/tester) could POST `/api/s4-execution-jobs`
+   `{environment_id:<prod>, confirm_production:true}` and the queued data-recipe would mutate the
+   production org with the role rule skipped (the sync button correctly blocks the same caller). Not
+   a regression vs `main` (which had no gate at all) — an **incomplete new control** on its primary
+   (unattended) use case. **Fix:** the authorization decision is made at the **enqueue boundary**
+   (`api_s4_execution_enqueue`), where the caller is authenticated — a non-Admin enqueue against an
+   `is_production` env is rejected (403); the worker correctly remains *system* (`caller_tier=None`).
+   The `_authorize_dispatch` docstring's "covers both the sync and async entries" claim was corrected
+   accordingly. **Fail-closed choice:** the deferred API path is Admin-only for production (no
+   non-Admin read-only-inspection-on-prod carve-out, unlike the sync path); revisit by threading the
+   enqueuer's tier onto the job row if that carve-out is ever needed on the async path.
+2. **[LOW — fixed] Same route skipped the env-scope axis.** `api_s4_execution_enqueue` validated
+   tenant (`get_environment`) but not Groups (`is_environment_accessible`) — the one run surface
+   that skipped the env-scope check every sync sibling enforces. Added `is_environment_accessible`
+   to the enqueue route (within-tenant group-scope parity).
+3. **[LOW — fixed] UI/API mismatch on `revoke_shared_links`.** The `_role_capabilities` shim gated
+   it at `ADMIN` (hiding the revoke control) while the route admits `MEMBER`. Aligned the shim to
+   `MEMBER` to match the route + `share_dashboard`.
+4. **[MEDIUM — fixed] Dropped cross-tenant env-scope test coverage + a misleading docstring.** The
+   migrated `test_tenant_isolation` claimed the env-scope scenario was "unit-tested in
+   `test_authz_env_scope.py`", but that unit test *stubs* `list_environments`, so it never exercises
+   the load-bearing `Environment.tenant_id == tenant_id` filter. Corrected the docstring and added a
+   real-DB cross-tenant assertion (`t_env_access_tenant_scoped`, test 5) that stands up a throwaway
+   foreign-tenant env and asserts `is_environment_accessible` rejects it. Added a Member-blocked-from-
+   production-enqueue integration test (`test_s4_execution_jobs`).
+
+**Surfaced for AK sign-off (deliberate consequences of the 5-preset → 4-tier collapse, NOT bugs —
+documenting rather than silently shipping):**
+- **Share/approve audience shift.** On `main` the `viewer` role carried `release_owner_base`
+  (`share_dashboard`, `approve_release`, `revoke_shared_links`). D-245 maps `viewer` → Viewer
+  (read-only), so a viewer **loses** those, and `ba`/`tester` (→ Member) **gain** them. The
+  share-link routes (`@require_tier_api(Tier.MEMBER)`) enforce this. The "release owner" function now
+  lives at Member, not at the `viewer` role.
+- **`ba` → `tester` normalization on user-edit save.** The relabeled form maps an existing `ba`
+  user onto the `Member` (`tester`) option; saving rewrites the stored role `ba`→`tester` (both
+  Member; `AuthService.update_user` revokes their refresh tokens on the change). Benign — no code
+  branches on the `ba` literal — but a silent stored-value change.
+
+**Re-verification after fixes:** app boots; `tests/unit/` 2771 green; route inventory unchanged at
+174 (the enqueue routes stay MEMBER-gated, the production guard is an in-body check). The two
+new/changed integration tests (`test_tenant_isolation` #5, `test_s4_execution_jobs` prod-gate) are
+Railway integration tests — re-run on a real environment to confirm green.
+
+---

@@ -3035,9 +3035,30 @@ def api_s4_execution_enqueue():
     try:
         from primeqa.core.repository import EnvironmentRepository
         from primeqa.runs.bulk import environment_can_bulk_run
-        env = EnvironmentRepository(db).get_environment(environment_id, tenant_id)
+        repo = EnvironmentRepository(db)
+        env = repo.get_environment(environment_id, tenant_id)
         if env is None:
             return ({"error": {"code": "NOT_FOUND", "message": "Environment not found."}}, 404)
+        # D-245: group-scope parity with the sync run paths (/claims/<id>/run,
+        # /run, /releases/<id>/run) — a Member may only target envs their Groups
+        # grant; admin/superadmin see all. Without this the async API was the one
+        # run surface that skipped the env-scope axis.
+        if not repo.is_environment_accessible(
+                tenant_id, request.user["id"], request.user.get("role"), environment_id):
+            return ({"error": {"code": "FORBIDDEN",
+                               "message": "You don't have access to this environment."}}, 403)
+        # D-245: the production dispatch gate must be DECIDED HERE. Execution is
+        # deferred to the worker, which legitimately runs as system (caller_tier
+        # is None), so _authorize_dispatch's production-role rule cannot fire on
+        # the async path. Fail closed: a non-Admin may not enqueue execution
+        # against a production env via the API. (The sync /claims/<id>/run path
+        # threads caller_tier, so its gate additionally permits non-Admin
+        # read-only inspection on prod; the deferred API path is Admin-only for
+        # production — see DECISIONS_LOG D-245 REALIZED.)
+        if env.is_production and rank(request.user.get("role")) < Tier.ADMIN:
+            return ({"error": {"code": "FORBIDDEN",
+                               "message": "Running against a production environment "
+                                          "requires the Admin role."}}, 403)
         ok, msg = environment_can_bulk_run(env, confirm_production)
         if not ok:
             return ({"error": {"code": "PRODUCTION_CONFIRM_REQUIRED", "message": msg}}, 400)

@@ -106,8 +106,17 @@ def _resolve_env_gate(session, environment_id: int):
 
 def _authorize_dispatch(recipe, *, execution_policy, is_production, caller_tier):
     """The production / resource-policy dispatch gate (D-245, Phase 4) — applied
-    at the single chokepoint :func:`_execute_for_kind`, so it covers both the
-    sync and async entries. Three distinct errors, never conflated.
+    at the single chokepoint :func:`_execute_for_kind`. Three distinct errors,
+    never conflated.
+
+    The **resource-policy** rule (i, below) is role-independent and fires on every
+    entry (sync, async/queued, system). The **production-role** rule (ii) needs a
+    human ``caller_tier``; it is supplied on the sync path
+    (``/claims/<id>/run`` passes ``rank(role)``) but is ``None`` on the async path
+    (the worker runs as *system*). The async production decision is therefore made
+    at the **enqueue boundary** instead — ``api_s4_execution_enqueue`` rejects a
+    non-Admin enqueue against a production env (D-245 review fix) — because the
+    authenticated caller is known there, not in the worker.
 
     ``recipe_kind == metadata-recipe`` IS the read-only inspection vertical: the
     bridge enforces ``mode == metadata_read`` (``build_metadata_inspection_plan``

@@ -84,6 +84,10 @@ _CAPABILITY_MIN_TIER: dict[str, Tier] = {
     "review_test_cases": Tier.MEMBER,
     "manage_test_suites": Tier.MEMBER,
     "share_dashboard": Tier.MEMBER,
+    # revoke matches share + the route gate (@require_tier_api(Tier.MEMBER)) — the
+    # shim previously hid the revoke control at ADMIN while the API admitted
+    # Member, a UI/API mismatch (D-245 review fix).
+    "revoke_shared_links": Tier.MEMBER,
     "approve_release": Tier.MEMBER,
     "override_quality_gate": Tier.MEMBER,
     "manage_knowledge": Tier.MEMBER,
@@ -95,7 +99,6 @@ _CAPABILITY_MIN_TIER: dict[str, Tier] = {
     "manage_groups": Tier.ADMIN,
     "trigger_metadata_sync": Tier.ADMIN,
     "view_audit_log": Tier.ADMIN,
-    "revoke_shared_links": Tier.ADMIN,
 }
 
 

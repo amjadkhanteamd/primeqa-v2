@@ -103,3 +103,17 @@ here to keep the change minimal. Flagged for a follow-up.
 
 - The DB CHECK constraint on `users.role` and the stored role values are unchanged (5 values).
 - Superadmin remains creatable only out-of-band (the form never mints superadmin — pre-existing).
+
+## 8. Pre-merge adversarial review (6 dimensions) + fixes
+
+A multi-agent adversarial review of the whole branch diff ran before merge. It caught **one genuine
+security gap the green test suites missed**: the production-tier dispatch gate was enforced on the
+synchronous run path but bypassed on the async/queued S4 path (the worker runs as system with no
+`caller_tier`, so the production-role rule was inert; a Member could enqueue a mutating data-recipe
+against production via `/api/s4-execution-jobs`). **Fixed** by deciding the production authorization
+at the enqueue boundary (`api_s4_execution_enqueue` rejects a non-Admin enqueue against an
+`is_production` env) + adding the env-scope (`is_environment_accessible`) check the route had skipped.
+Also fixed: a `revoke_shared_links` UI/API tier mismatch, a misleading test docstring, and the dropped
+cross-tenant env-scope coverage (re-homed as a real-DB assertion). Two consequences of the 5→4 tier
+collapse (share/approve audience shift; `ba`→`tester` edit normalization) were surfaced for sign-off.
+Full record: `DECISIONS_LOG` D-245 PRE-MERGE ADVERSARIAL REVIEW + FIXES.
