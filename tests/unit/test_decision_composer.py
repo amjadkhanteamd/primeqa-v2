@@ -25,7 +25,7 @@ class _Repo:
     def __init__(self):
         self.decisions = []
 
-    def list_requirements(self, release_id):
+    def list_requirements(self, release_id, tenant_id=None):
         return []
 
     def create_decision(self, **kw):
