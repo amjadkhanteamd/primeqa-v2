@@ -14299,3 +14299,76 @@ vs. fold-into-`BACKGROUND.md` organizational call, deferred to AK. The `meta_*` 
 remains the single open cutover tail (tracked in `greenfield_cutover/SEQUENCE.md` Step 5a).
 
 ---
+
+## D-245 — Authorization Model: Role Ladder × Environment Scope (supersedes the additive permission-set model)
+
+**Provenance.** No prior decision record existed for this redesign — `docs/decisions/`
+does not exist and no DECISIONS_LOG entry by this name was present. This entry is authored
+from AK's inline specification with AK's **explicit GO** (2026-06-16, "Proceed — inline spec is
+canonical"), and it **supersedes** the additive permission-set "Permission Model" documented in
+`CLAUDE.md` (the five Base sets Developer/Tester/Release Owner/Admin/API Access, migration 039).
+Implemented on branch `authz-role-ladder` (PR to main, not merged) across phases 0–7.
+
+**Decision.** Replace the permission-set authorization layer with **two orthogonal axes**:
+
+1. **Role ladder** — ordered tiers, a single comparable rank:
+   `Viewer(1) < Member(2) < Admin(3) < Superadmin(4)`. The stored DB `role` values and their
+   CHECK constraints are **kept**; a code-side `rank(role)` maps them:
+   `viewer→Viewer, ba→Member, tester→Member, admin→Admin, superadmin→Superadmin`.
+2. **Environment access scope** — via Groups. User-facing environment selection routes through a
+   single chokepoint `list_environments(tenant, user, role)`; any client-supplied `environment_id`
+   is validated against the caller's accessible set before use.
+
+**Single enforcement path.** `authorize(subject, min_tier, resource=None) → (allow/deny, reason)`.
+The two legacy decorator families (`require_role`, `role_required`) become thin wrappers over it.
+No provenance object.
+
+**Three gates, three distinct errors — never conflated:**
+- **Authorization** (`AuthorizationError`) — "may this user attempt this?" (role tier).
+- **Resource policy** (`PolicyError`) — what the target env will accept (`execution_policy`:
+  `disabled` rejects all; `read_only` permits only the read-only metadata-inspection vertical;
+  `full` continues).
+- **Executability** (`NotExecutableError`) — "can the substrate realize it?" (pre-existing).
+
+**Production boundary.** At the recipe-execution dispatch chokepoint
+(`execution_engine/run.py` `run_recipe_execution`/`_execute_for_kind`, covering both the sync and
+async entries): if `env.is_production` AND tier < Admin, permit **only** the inspection vertical —
+keyed on the read **mode** (`recipe_kind == "metadata-recipe"` AND `mode == "metadata_read"`), not
+recipe_kind alone, since a metadata_write/deploy recipe mutates. Admins get full prod. The
+metadata-inspection executor takes a `ReadOnlyClient` (query/query_data only) so that passing a
+mutation client to the read path is a **type error** (L1: non-mutation enforced, not emergent).
+The stranded-record reaper (`stranded_cleanup.py`) is guarded independently of dispatch: never reap
+a `read_only`/`disabled` env; gate/skip-and-log a production env.
+
+**Deleted (the permission-set layer) — under the ORDERING INVARIANT (replacements before deletion).**
+Tables `permission_sets`/`user_permission_sets` (new append-only migration), models
+`PermissionSet`/`UserPermissionSet`, the resolution/seed/policy functions + constants, decorators
+`require_permission`/`require_page_permission`/`require_run_permission`, the `core/service.py`
+bootstrap, all call sites, the dead env run-policy scaffolding (`check_environment_policy`,
+`require_run_permission`, `require_approval` enforcement scaffolding, `max_api_calls_per_run`), the
+`/settings/permission-sets` page, and the own-vs-all results permissions. **Kept** (separate
+features): `SharedDashboardLink`, `NotificationPreference`, the dashboard-sharing routes (now
+role-gated). No permission-set decorator is removed until the route it solely gated carries a
+verified replacement role gate — violating this would drop routes to login-only (a security
+regression).
+
+**One intended behavior change.** BA widening: `ba` maps to `Member` alongside `tester`, so BA
+gains what tester had (claim run/deprecate/quarantine; requirement/release/milestone edit). All
+other conversions preserve behavior (admin-only→Admin, superadmin-only→Superadmin, any list
+allowing tester or ba→Member).
+
+**Phasing (each phase test-gated; replacements strictly before deletion):** 0 baseline+inventory ·
+1 ladder+`authorize()` (additive) · 2 replacement role gates (double-gated, OUTER decorator) ·
+3 environment-scope chokepoint · 4 production gate + `execution_policy` + `ReadOnlyClient` + reaper
+guard · 5 delete the permission-set layer (hard interlock: every Phase-2 route re-verified gated) ·
+6 convert legacy role-lists to min-tier · 7 cleanup + docs. The BEFORE/AFTER authorization
+inventory (`scripts/authz_inventory.py` → `docs/authz_inventory_before.md`) is the regression
+oracle: no route may drop to login-only.
+
+**Alternatives considered.** (a) Keep the additive permission-set model and only add the role
+ladder on top — rejected: the two layers drifted (own-vs-all, env run-policy scaffolding mostly
+dead) and the union semantics made "what can this user do?" unanswerable from one call. (b) Pure
+role ladder without environment scope — rejected: environment access is a real second axis
+(Groups) that role tier cannot express.
+
+---
