@@ -163,6 +163,25 @@ def reap_stranded_records(
     for env_id in {r["environment_id"] for r in stranded}:
         try:
             with get_tenant_connection(tenant_id) as conn:
+                # D-245 Phase 4 — REAPER GUARD (independent of the dispatch gate):
+                # the reaper DELETEs, which is a mutation. Never reap an env the
+                # run policy protects: skip read_only / disabled, and gate (skip +
+                # log) a production env. Only a ``full``, non-production env is
+                # reaped; everything else is left for a human / a policy change.
+                pol = conn.execute(text(
+                    "SELECT execution_policy, is_production FROM environments "
+                    "WHERE id = :id"), {"id": env_id}).mappings().first()
+                if (pol is None or pol["execution_policy"] != "full"
+                        or pol["is_production"]):
+                    log.warning(
+                        "reap: tenant %s env %s SKIPPED — run policy protects it "
+                        "(execution_policy=%s, is_production=%s); a delete is a "
+                        "mutation and is not reaped here",
+                        tenant_id, env_id,
+                        pol["execution_policy"] if pol else None,
+                        pol["is_production"] if pol else None)
+                    clients[env_id] = None
+                    continue
                 clients[env_id] = client_resolver(Session(bind=conn), env_id)
         except Exception as exc:
             log.warning("reap: tenant %s env %s client resolve failed: %s",
