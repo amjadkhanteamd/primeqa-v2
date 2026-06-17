@@ -381,6 +381,46 @@ class RefusalRouter:
 
 
 # ---------------------------------------------------------------------------
+# Property-claim grounding: semantic value comparison (D-246)
+# ---------------------------------------------------------------------------
+
+def _property_value_matches(asserted: Any, s1_value: Any) -> bool:
+    """Whether a property-claim's LLM-asserted value semantically equals the
+    S1-stored native value (D-246). The LLM routinely expresses a correct value
+    in a different representation — the string ``"8"`` for an S1 integer ``8`` —
+    which a strict ``==`` wrongly dismissed as ``insufficient_grounding`` (the
+    SQ-212 AC6/AC7 finding). Compare by coercing the asserted value to the S1
+    value's NATIVE type so a semantically-equal value grounds, while a genuinely
+    different value (``"9"`` vs ``8``) still dismisses.
+
+    Generic over the stored native type — never type-specific (the resolver
+    handles length / precision / scale, all ints here, plus any future detail
+    type). Coercion that is impossible (``"abc"`` -> int) or lossy/ambiguous
+    (the float ``8.7`` -> int ``8``) is rejected via a round-trip check: the
+    values are treated as unequal so the resolver dismisses. Invent-nothing —
+    a false match is worse than a miss, and the emitted claim still carries the
+    S1-read value, never the asserted one."""
+    if asserted == s1_value:
+        return True
+    if asserted is None or s1_value is None:
+        return False
+    native = type(s1_value)
+    try:
+        coerced = native(asserted)
+    except (TypeError, ValueError):
+        return False
+    if coerced != s1_value:
+        return False
+    # Round-trip guard against lossy/ambiguous coercion (int(8.7) == 8,
+    # bool("false") is True): the coerced value must reproduce the asserted
+    # representation to count as a match.
+    try:
+        return type(asserted)(coerced) == asserted
+    except (TypeError, ValueError):
+        return False
+
+
+# ---------------------------------------------------------------------------
 # GovernanceCore — implements GovernanceProvider (D-096.6)
 # ---------------------------------------------------------------------------
 
@@ -1076,7 +1116,11 @@ class GovernanceCore:
                                         "detail": f"property {property_name!r} is not S1-modeled on "
                                                   f"{e.entity_type} (Tier-1 ceiling)", "property": property_name}))
         s1_value = details[property_name]
-        if asserted is not None and s1_value != asserted:
+        # D-246: compare semantically against the S1-native type — a correct
+        # value in a different representation ("8" vs int 8) grounds; a genuinely
+        # different one ("9" vs 8) still dismisses. The grounded value emitted
+        # below is always S1's (expected_value=s1_value), never the asserted.
+        if asserted is not None and not _property_value_matches(asserted, s1_value):
             cand.dismissal_reason = "insufficient_grounding"
             return IntentResolution([], NextAction.REFUSE, self._delta([], [cand]),
                                     refusal=RefusalDirective(RefusalKind.UNGROUNDED_CLAIM, {
