@@ -1,3 +1,12 @@
+Scan every requirement for metadata facts, not only behaviors. Ask, for each:
+does it name a field or object that must EXIST? a metadata attribute with a
+specific VALUE (length, precision, scale, required, type)? a structural
+RELATIONSHIP between two entities (a rule applies to an object, a field belongs
+to an object)? Each is a first-class intent in its own right — propose it even
+when the requirement ALSO asserts a runtime behavior over the same entity. One
+property-claim per atomic attribute: a field stated to have precision 4 AND
+scale 1 is TWO property intents.
+
 Configuration claims concern the org's metadata structure itself. All are
 Layer-1-*complete*: reading the metadata IS the verification, so no caveat is
 attached.
@@ -13,10 +22,12 @@ attached.
   attribute value* — e.g. "the Industry field is required", "Name has length
   80" — propose a `property-claim`. In `target_subject_hint` give the flat
   subject (`entity_type` + `sf_api_name`) plus `property_name` (the attribute,
-  e.g. `"is_required"`) and `expected_value` (the value the requirement states,
-  verbatim). The substrate reads the value from the org and grounds only if it
-  matches — it never takes the asserted value on faith. If the requirement names
-  no concrete value, propose `existence-claim` instead.
+  e.g. `"is_required"`, `"length"`, `"precision"`, `"scale"`) and
+  `expected_value` (the value the requirement states, verbatim). Propose ONE
+  property-claim per atomic attribute — a field with precision 4 AND scale 1 is
+  two property intents, not one. The substrate reads the value from the org and
+  grounds only if it matches — it never takes the asserted value on faith. If
+  the requirement names no concrete value, propose `existence-claim` instead.
 - **Metadata-relationship.** When the requirement assumes a structural
   relationship between two metadata entities — e.g. "Validation Rule R applies
   to Account", "Field F belongs to Case" — propose a

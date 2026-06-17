@@ -21,9 +21,11 @@ Data-behavior claims concern how records and fields behave at runtime.
   (the field's **fully-qualified `Object.Field` API name**, e.g.
   `"Account.Status"` — never a bare `"Status"`) and `expected_value` (the value
   the requirement states, verbatim). The substrate grounds the claim on that
-  named field existing on the Object and carries the value into the test. If the
-  requirement states **no concrete value**, do not invent one — propose the
-  Object-level claim and let the substrate defer.
+  named field existing on the Object and carries the value into the test. A
+  requirement that a user-entered field is "stored", "retained", or "saved as
+  entered" with a named value is a value-claim — propose it with that field and
+  value. If the requirement states **no concrete value**, do not invent one —
+  propose the Object-level claim and let the substrate defer.
 - **State transitions (state-transition-claim).** When the requirement asserts
   the ORG moves a record to a state ("when a Case is created, Status becomes
   In Escalation", "ClosedDate is populated on close"), propose a
