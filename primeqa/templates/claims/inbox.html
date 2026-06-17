@@ -40,6 +40,7 @@
           <tr class="hover:bg-gray-50">
             <td class="px-4 py-2">
               <a href="/claims/{{ c.test_id }}" class="font-medium text-indigo-600 hover:underline">{{ c.title }}</a>
+              {% if c.requirement_summary %}<div class="text-xs text-gray-500 mt-0.5">{{ c.requirement_summary }}</div>{% endif %}
               <div class="text-xs text-gray-400 mt-0.5">{{ c.claim_kind.replace('-', ' ') }} &middot; v{{ c.version_seq }}</div>
             </td>
             <td class="px-4 py-2">

@@ -51,6 +51,26 @@ def _literal(value: Any) -> str:
     return f'"{value}"' if isinstance(value, str) else str(value)
 
 
+def _expected_value(ev: Any) -> str:
+    """Render an ExpectedValue (LiteralValue / NullValue) as a short literal.
+    A NullValue is an explicit absence assertion → ``blank`` rather than the
+    ``None`` that ``_literal`` would print for a missing ``value`` key."""
+    if isinstance(ev, dict) and ev.get("kind") == "null":
+        return "blank"
+    return _literal(ev)
+
+
+def _first_field_change(state: Any) -> Optional[tuple]:
+    """The first ``(field_external_id, rendered_value)`` of a StateDescriptor's
+    ``field_values`` map, or None when there is no field-level binding."""
+    if isinstance(state, dict):
+        fv = state.get("field_values")
+        if isinstance(fv, dict) and fv:
+            field, ev = next(iter(fv.items()))
+            return field, _expected_value(ev)
+    return None
+
+
 def claim_title(claim_kind: str, asserted_truth: Optional[dict]) -> str:
     """The claim as one plain-English sentence. Deterministic; falls back to
     the humanized kind when the body lacks the expected fields."""
@@ -76,7 +96,9 @@ def claim_title(claim_kind: str, asserted_truth: Optional[dict]) -> str:
             edge = (body.get("edge_type") or "applies to").replace("_", " ").lower()
             return f"{src} {edge} {tgt}"
         if claim_kind == "capability-claim":
-            grantee = _ref_name(body.get("grantee")) or "the profile"
+            # The granting Profile/PermissionSet is stored under
+            # ``granting_subject`` (CapabilityClaimBody) — NOT ``grantee``.
+            grantee = _ref_name(body.get("granting_subject")) or "the profile"
             target = _ref_name(body.get("target")) or "the object"
             cap = (body.get("granted_capability") or "access").replace("_", " ")
             return f"{grantee} has {cap} on {target}"
@@ -84,6 +106,28 @@ def claim_title(claim_kind: str, asserted_truth: Optional[dict]) -> str:
             field = _ref_name(body.get("field")) or "the field"
             layout = _ref_name(body.get("layout")) or "the layout"
             return f"{field} appears on {layout}"
+        if claim_kind == "state-transition-claim":
+            subject = _ref_name(body.get("subject")) or "the record"
+            change = _first_field_change(body.get("to_state"))
+            if change:
+                field, val = change
+                return f"{subject}: {field} becomes {val}"
+            return f"{subject} reaches the expected state"
+        if claim_kind == "automation-effect-claim":
+            automation = _ref_name(body.get("automation")) or "the automation"
+            effect = body.get("expected_effect") or {}
+            ekind = effect.get("kind") if isinstance(effect, dict) else None
+            if ekind == "field_change":
+                change = _first_field_change(effect.get("changes"))
+                if change:
+                    field, val = change
+                    return f"{automation} sets {field} to {val}"
+                return f"{automation} updates the record"
+            if ekind == "blocked_operation":
+                return f"{automation} blocks the change"
+            if ekind == "side_effect":
+                return f"{automation} fires a side effect"
+            return f"{automation} fires"
     except Exception:
         pass
     return claim_kind.replace("-", " ")

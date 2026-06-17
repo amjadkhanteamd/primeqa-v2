@@ -39,6 +39,79 @@ def test_title_never_raises_on_garbage():
     assert claim_title("value-claim", {"subject": 42, "expected_value": object()})
 
 
+# ---------------------------------------------------------------------------
+# Descriptive titles for the live data-behavior kinds that used to fall back
+# to the bare humanized kind ("automation effect claim", "state transition
+# claim"), plus the capability-claim field-name regression.
+# ---------------------------------------------------------------------------
+
+def test_state_transition_title_reads_to_state():
+    body = {
+        "subject": {"external_id": "Case"},
+        "to_state": {"field_values": {"Status": {"kind": "literal", "value": "Escalated"}}},
+        "triggering_event": {"trigger_kind": "data-mutation-trigger", "description": "x"},
+    }
+    assert claim_title("state-transition-claim", body) == \
+        'Case: Status becomes "Escalated"'
+
+
+def test_state_transition_title_falls_back_when_no_field_values():
+    body = {"subject": {"external_id": "Opportunity"}, "to_state": {"field_values": {}}}
+    assert claim_title("state-transition-claim", body) == \
+        "Opportunity reaches the expected state"
+
+
+def test_automation_effect_title_field_change():
+    body = {
+        "automation": {"external_id": "SLA_Escalation_Flow"},
+        "expected_effect": {
+            "kind": "field_change",
+            "changes": {"field_values": {"SLA_Deadline__c": {"kind": "literal", "value": 24}}},
+        },
+    }
+    assert claim_title("automation-effect-claim", body) == \
+        "SLA_Escalation_Flow sets SLA_Deadline__c to 24"
+
+
+def test_automation_effect_title_blocked_and_side_effect():
+    blocked = {"automation": {"external_id": "Amount_Guard"},
+               "expected_effect": {"kind": "blocked_operation", "reason": "too big"}}
+    assert claim_title("automation-effect-claim", blocked) == \
+        "Amount_Guard blocks the change"
+    side = {"automation": {"external_id": "Case_Email_Alert"},
+            "expected_effect": {"kind": "side_effect"}}
+    assert claim_title("automation-effect-claim", side) == \
+        "Case_Email_Alert fires a side effect"
+
+
+def test_automation_effect_title_falls_back_when_no_effect():
+    body = {"automation": {"external_id": "Some_Flow"}}
+    assert claim_title("automation-effect-claim", body) == "Some_Flow fires"
+
+
+def test_capability_title_reads_granting_subject_not_grantee():
+    # Regression: the body key is ``granting_subject`` (CapabilityClaimBody),
+    # not ``grantee`` — the old code read the wrong key and fell back.
+    body = {"granting_subject": {"external_id": "Sales User"},
+            "target": {"external_id": "Opportunity"},
+            "granted_capability": "edit"}
+    assert claim_title("capability-claim", body) == "Sales User has edit on Opportunity"
+
+
+def test_null_expected_value_renders_blank():
+    body = {
+        "subject": {"external_id": "Lead"},
+        "to_state": {"field_values": {"OwnerId": {"kind": "null"}}},
+    }
+    assert claim_title("state-transition-claim", body) == "Lead: OwnerId becomes blank"
+
+
+def test_new_kinds_still_fall_back_on_empty_body():
+    assert claim_title("state-transition-claim", {}) == \
+        "the record reaches the expected state"
+    assert claim_title("automation-effect-claim", {}) == "the automation fires"
+
+
 def test_depth_behavioral_when_any_data_recipe():
     assert claim_depth(["metadata-recipe", "data-recipe"]) == "behavioral"
     assert claim_depth(["data-recipe"]) == "behavioral"

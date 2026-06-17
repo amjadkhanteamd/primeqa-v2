@@ -710,11 +710,11 @@ def run_page_submit():
                 created_by=request.user["id"])
             count = result["enqueued"]
         if count == 0:
-            flash("No approved claims matched the selection.", "error")
+            flash("No approved test cases matched the selection.", "error")
             return redirect("/run")
         skipped = result.get("skipped_unexecutable") or 0
         flash(f"{count} substrate run{'s' if count != 1 else ''} queued"
-              + (f" — {skipped} claim{'s' if skipped != 1 else ''} skipped "
+              + (f" — {skipped} test case{'s' if skipped != 1 else ''} skipped "
                  f"(not yet executable)" if skipped else ""),
               "success")
         return redirect("/runs/substrate")
@@ -2291,6 +2291,27 @@ def requirements_generate_substrate(req_id):
     return redirect(f"/requirements/{req_id}")
 
 
+def _attach_requirement_summaries(tenant_id, claims):
+    """Resolve each test-case row's source-requirement key to its summary and
+    attach it as ``requirement_summary`` — the "why this test exists" context
+    line. Best-effort: a missing v1 row / DB hiccup simply leaves it unset."""
+    claims = claims or []
+    keys = {c.get("requirement_key") for c in claims if c.get("requirement_key")}
+    if not keys:
+        return
+    try:
+        from primeqa.intelligence.substrate_dashboard import _requirement_summaries
+        db = next(get_db())
+        try:
+            summaries = _requirement_summaries(db, tenant_id, keys)
+        finally:
+            db.close()
+    except Exception:
+        return
+    for c in claims:
+        c["requirement_summary"] = summaries.get(c.get("requirement_key"))
+
+
 @views_bp.route("/claims")
 @login_required
 def claims_list():
@@ -2302,6 +2323,7 @@ def claims_list():
     per_page = request.args.get("per_page", 20, type=int) or 20
     q = (request.args.get("q") or "").strip() or None
     data = list_claims(request.user["tenant_id"], page=page, per_page=per_page, q=q)
+    _attach_requirement_summaries(request.user["tenant_id"], data.get("claims"))
     # D-232: mark quarantined rows for the list badge — one best-effort batch read
     # over the active ledger rows (a missing table degrades to no badges).
     from primeqa.intelligence import quarantine as _quar
@@ -2327,6 +2349,7 @@ def claims_inbox():
     page = request.args.get("page", 1, type=int) or 1
     data = list_claims(request.user["tenant_id"], page=page, per_page=50,
                        status="draft")
+    _attach_requirement_summaries(request.user["tenant_id"], data.get("claims"))
     return render_template("claims/inbox.html", **ctx(
         active_page="test_library", data=data))
 
@@ -2364,9 +2387,11 @@ def claims_detail(test_id):
                       "has_connection": bool(getattr(e, "connection_id", None))}
                      for e in envs]
         if req_key:
-            from primeqa.intelligence.substrate_dashboard import _requirement_rows
+            from primeqa.intelligence.substrate_dashboard import (
+                _requirement_rows, _requirement_summaries)
             req_id = _requirement_rows(db, tid, [req_key]).get(req_key)
-            requirement = {"key": req_key, "id": req_id,
+            summary = _requirement_summaries(db, tid, [req_key]).get(req_key)
+            requirement = {"key": req_key, "id": req_id, "summary": summary,
                            "url": f"/requirements/{req_id}" if req_id else None}
     finally:
         db.close()
@@ -2464,7 +2489,7 @@ def claims_run(test_id):
     if not res.get("ok"):
         flash(f"Run failed: {res.get('error', 'unknown error')}", "error")
     elif not res.get("ran"):
-        flash("Nothing ran — the claim needs an approved recipe that matches the "
+        flash("Nothing ran — the test case needs an approved recipe that matches the "
               f"environment ({res.get('reason', 'no_eligible_recipe')}).", "error")
     else:
         v = res.get("verdict")
@@ -2493,13 +2518,13 @@ def claims_approve(test_id):
         # flash claimed runnability even when zero runs were enqueued.
         queued = res.get("auto_enqueued") or 0
         if res.get("unexecutable"):
-            flash(f"Claim approved, but no run was queued: {res['unexecutable']}",
+            flash(f"Test case approved, but no run was queued: {res['unexecutable']}",
                   "warning")
         elif queued:
-            flash(f"Claim approved — {queued} verification run"
+            flash(f"Test case approved — {queued} verification run"
                   f"{'s' if queued != 1 else ''} queued.", "success")
         else:
-            flash("Claim approved. No run was queued (no auto-verify sandbox "
+            flash("Test case approved. No run was queued (no auto-verify sandbox "
                   "environment is connected).", "warning")
     else:
         flash(f"Could not approve: {res.get('error', 'unknown error')}", "error")
@@ -2522,14 +2547,14 @@ def claims_deprecate(test_id):
     from primeqa.intelligence.s4_execution_console import deprecate_claim
     reason = (request.form.get("reason") or "").strip()
     if not reason:
-        flash("A reason is required to deprecate a claim.", "error")
+        flash("A reason is required to deprecate a test case.", "error")
         return redirect(f"/claims/{test_id}")
     res = deprecate_claim(request.user["tenant_id"], str(test_id), reason)
     if res.get("ok"):
         if res.get("already"):
-            flash("Claim was already deprecated.", "warning")
+            flash("Test case was already deprecated.", "warning")
         else:
-            flash("Claim deprecated — it no longer grades releases or runs. "
+            flash("Test case deprecated — it no longer grades releases or runs. "
                   "The reason is recorded in its provenance.", "success")
     else:
         flash(f"Could not deprecate: {res.get('error', 'unknown error')}", "error")
@@ -2555,13 +2580,13 @@ def claims_quarantine(test_id):
         ok = quarantine.pin(tid, str(test_id), reason=reason,
                             actor=request.user["id"], source="manual")
         log_action = "quarantine_pin"
-        ok_msg = ("Claim quarantined — it no longer counts toward the release "
+        ok_msg = ("Test case quarantined — it no longer counts toward the release "
                   "pass-rate.")
     elif action == "unpin":
         reason = None
         ok = quarantine.unpin(tid, str(test_id), actor=request.user["id"])
         log_action = "quarantine_lift"
-        ok_msg = ("Quarantine lifted — the claim counts toward the release "
+        ok_msg = ("Quarantine lifted — the test case counts toward the release "
                   "pass-rate again.")
     else:
         flash("Unknown quarantine action.", "error")
@@ -3332,8 +3357,8 @@ def releases_run(release_id):
         flash(f"Could not queue substrate runs: {e}", "error")
         return redirect(f"/releases/{release_id}?tab=decision")
     if result["enqueued"] == 0:
-        flash("No approved claims found for this release's requirements — "
-              "approve drafts in the claims inbox first.", "error")
+        flash("No approved test cases found for this release's requirements — "
+              "approve drafts in the approval inbox first.", "error")
         return redirect(f"/releases/{release_id}?tab=decision")
     skipped = result.get("skipped_unexecutable") or 0
     flash(f"{result['enqueued']} substrate run"

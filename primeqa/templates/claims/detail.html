@@ -3,7 +3,7 @@
 {% from 'components/_empty_state.html' import empty_state %}
 {% from 'components/_modal.html' import modal_shell %}
 {% from 'components/_buttons.html' import btn_danger_link %}
-{% block title %}Claim - Plimsol{% endblock %}
+{% block title %}Test case - Plimsol{% endblock %}
 {% block content %}
 
 {# D-165 (UI Area 2 slice 2b): read-only semantic view of one S2 claim + its
@@ -44,11 +44,11 @@
 
 <div class="max-w-4xl space-y-6">
   {% if not detail or not detail.available %}
-    {{ empty_state(title='Claim unavailable',
+    {{ empty_state(title='Test case unavailable',
         description='The substrate could not be read for your tenant right now.') }}
   {% elif not detail.found or not c %}
-    {{ empty_state(title='Claim not found',
-        description='No current claim version matches this id. It may have been superseded or removed.') }}
+    {{ empty_state(title='Test case not found',
+        description='No current version of this test case matches this id. It may have been superseded or removed.') }}
   {% else %}
     <!-- Header -->
     <div>
@@ -82,6 +82,10 @@
         {% endif %}
       </div>
       <h1 class="mt-2 text-2xl font-bold text-gray-900">{{ c.title or c.claim_kind.replace('-', ' ') }}</h1>
+      {# The "why this test exists" line — the originating requirement's summary. #}
+      {% if requirement and requirement.summary %}
+      <p class="mt-1 text-sm text-gray-600">{{ requirement.summary }}</p>
+      {% endif %}
       <p class="mt-1 text-xs text-gray-400">{{ c.claim_kind.replace('-', ' ') }} &middot; <span class="font-mono break-all" title="{{ c.test_id }}">{{ c.test_id[:8] }}</span></p>
       {# D-233: the back-link to the requirement this claim was generated from.
          Links when the key resolves to a viewable requirement; shows the key as
@@ -102,14 +106,14 @@
          click must not silently undo a reasoned deprecation. -->
     {% if c.status == 'deprecated' %}
     <div class="rounded-md bg-slate-50 border border-slate-200 p-3">
-      <p class="text-sm text-slate-700">This claim is <strong>deprecated</strong> — a recorded human decision (the reason lives in its provenance). It cannot run and cannot be re-approved from here; regenerate the requirement to get a fresh claim.</p>
+      <p class="text-sm text-slate-700">This test case is <strong>deprecated</strong> — a recorded human decision (the reason lives in its provenance). It cannot run and cannot be re-approved from here; regenerate the requirement to get a fresh test case.</p>
     </div>
     {% elif c.status != 'approved' and user.role in ['admin', 'tester', 'superadmin'] %}
     <div class="rounded-md bg-amber-50 border border-amber-100 p-3 flex items-center justify-between gap-3">
-      <p class="text-sm text-amber-800">This claim is a <strong>{{ c.status }}</strong> — approve it to make the claim + its recipes runnable.</p>
+      <p class="text-sm text-amber-800">This test case is a <strong>{{ c.status }}</strong> — approve it to make the test case + its recipes runnable.</p>
       <form method="POST" action="/claims/{{ c.test_id }}/approve">
         {{ csrf_input | safe }}
-        <button type="submit" class="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500 whitespace-nowrap">Approve claim</button>
+        <button type="submit" class="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500 whitespace-nowrap">Approve test case</button>
       </form>
     </div>
     {% endif %}
@@ -129,16 +133,16 @@
         {% endif %}
       </div>
       {% if quarantine and quarantine.active %}
-        <p class="text-xs text-gray-500 mb-3">This claim is <strong>held out of the release pass-rate</strong>{% if quarantine.source != 'manual' %} automatically, because it has been flipping between pass and fail (flaky){% endif %}. Lift the quarantine to let it count toward GO/NO-GO again.</p>
+        <p class="text-xs text-gray-500 mb-3">This test case is <strong>held out of the release pass-rate</strong>{% if quarantine.source != 'manual' %} automatically, because it has been flipping between pass and fail (flaky){% endif %}. Lift the quarantine to let it count toward GO/NO-GO again.</p>
         <form method="POST" action="/claims/{{ c.test_id }}/quarantine">
           {{ csrf_input | safe }}
           <input type="hidden" name="action" value="unpin">
           <button type="submit" class="rounded-md bg-white ring-1 ring-orange-300 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-50">Lift quarantine</button>
         </form>
       {% else %}
-        <p class="text-xs text-gray-500 mb-3">Quarantine a known-flaky claim to hold it out of the release pass-rate so it can't sink a GO/NO-GO while you investigate. This is a recorded decision and stays in effect until lifted{% if quarantine and quarantine.manual == 'lifted' %} <span class="text-gray-400">(currently manually lifted &mdash; the automatic flake signal is suppressed)</span>{% endif %}.</p>
+        <p class="text-xs text-gray-500 mb-3">Quarantine a known-flaky test case to hold it out of the release pass-rate so it can't sink a GO/NO-GO while you investigate. This is a recorded decision and stays in effect until lifted{% if quarantine and quarantine.manual == 'lifted' %} <span class="text-gray-400">(currently manually lifted &mdash; the automatic flake signal is suppressed)</span>{% endif %}.</p>
         <button type="button" onclick="window.PrimeQA.openModal('quarantine-claim-modal')"
-          class="rounded-md bg-white ring-1 ring-orange-300 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-50">Quarantine this claim&hellip;</button>
+          class="rounded-md bg-white ring-1 ring-orange-300 px-3 py-1.5 text-sm font-semibold text-orange-700 hover:bg-orange-50">Quarantine this test case&hellip;</button>
       {% endif %}
     </div>
     {% endif %}
@@ -150,10 +154,10 @@
     {% if siblings and siblings.siblings %}
     <div class="bg-white shadow rounded-lg">
       <div class="px-4 py-3 border-b">
-        <h3 class="text-sm font-semibold text-gray-700">Related claims on this requirement
+        <h3 class="text-sm font-semibold text-gray-700">Related test cases on this requirement
           <span class="text-gray-500 font-normal">({{ siblings.siblings | length }})</span>
         </h3>
-        <p class="text-xs text-gray-400 mt-0.5">Same requirement, same claim kind. If this claim replaces one of these, deprecate the predecessor so it stops grading releases.</p>
+        <p class="text-xs text-gray-400 mt-0.5">Same requirement, same test type. If this test case replaces one of these, deprecate the predecessor so it stops grading releases.</p>
       </div>
       <ul class="divide-y divide-gray-200">
         {% for s in siblings.siblings %}
@@ -177,7 +181,7 @@
     {% if user.role in ['admin', 'tester', 'superadmin'] %}
     <div class="bg-white shadow rounded-lg p-5">
       <div class="flex items-center justify-between mb-1">
-        <h3 class="text-sm font-semibold text-gray-700">Run this claim</h3>
+        <h3 class="text-sm font-semibold text-gray-700">Run this test case</h3>
         <span class="text-xs text-gray-400">Executes the eligible recipe live against Salesforce (S4).</span>
       </div>
       <p class="text-xs text-gray-500 mb-3">Runs synchronously &mdash; the page waits for the result, then shows the outcome + verdict below.</p>
@@ -234,7 +238,7 @@
         <div>
           <div class="px-4 py-3">
             <h3 class="text-sm font-semibold text-gray-700">Asserted truth</h3>
-            <p class="text-xs text-gray-400">What this claim says is true about the org.</p>
+            <p class="text-xs text-gray-400">What this test case says is true about the org.</p>
           </div>
           <div class="px-6 pb-4">
             {% if c.asserted_truth %}{{ render_value(c.asserted_truth) }}
@@ -246,7 +250,7 @@
         <div>
           <div class="px-4 py-3">
             <h3 class="text-sm font-semibold text-gray-700">Semantic conditions</h3>
-            <p class="text-xs text-gray-400">The conditions under which the claim holds.</p>
+            <p class="text-xs text-gray-400">The conditions under which the test case holds.</p>
           </div>
           <div class="px-6 pb-4">
             {% if c.semantic_conditions %}{{ render_value(c.semantic_conditions) }}
@@ -260,7 +264,7 @@
             <h3 class="text-sm font-semibold text-gray-700">Recipes
               <span class="text-gray-500 font-normal">({{ c.recipes | length }})</span>
             </h3>
-            <span class="text-xs text-gray-400">How the claim is verified.</span>
+            <span class="text-xs text-gray-400">How the test case is verified.</span>
           </div>
           {% if c.recipes %}
           <div class="divide-y divide-gray-200 border-t">
@@ -291,7 +295,7 @@
             {% endfor %}
           </div>
           {% else %}
-          <div class="px-6 pb-6 text-sm text-gray-500">No active recipes for this claim.</div>
+          <div class="px-6 pb-6 text-sm text-gray-500">No active recipes for this test case.</div>
           {% endif %}
         </div>
 
@@ -329,7 +333,7 @@
           {% endfor %}
         </ul>
       {% else %}
-        <div class="px-6 py-6 text-sm text-gray-500">No runs yet. Use <strong>Run</strong> above to execute this claim.</div>
+        <div class="px-6 py-6 text-sm text-gray-500">No runs yet. Use <strong>Run</strong> above to execute this test case.</div>
       {% endif %}
     </div>
   {% endif %}
@@ -339,11 +343,11 @@
    required reason; a quarantine is reversible and often a quick triage call).
    It rides activity_log.details, not a claim column. #}
 {% if c and c.status != 'deprecated' and user.role in ['admin', 'tester', 'superadmin'] and not (quarantine and quarantine.active) %}
-{% call modal_shell(id='quarantine-claim-modal', title='Quarantine this claim', size='md') %}
+{% call modal_shell(id='quarantine-claim-modal', title='Quarantine this test case', size='md') %}
   <form method="POST" action="/claims/{{ c.test_id }}/quarantine">
     {{ csrf_input | safe }}
     <input type="hidden" name="action" value="pin">
-    <p class="text-sm text-gray-600 mb-3">A quarantined claim is held out of the release pass-rate so a known-flaky test can't sink a GO/NO-GO decision. It stays quarantined until someone lifts it. Add a note so the next person knows why.</p>
+    <p class="text-sm text-gray-600 mb-3">A quarantined test case is held out of the release pass-rate so a known-flaky test can't sink a GO/NO-GO decision. It stays quarantined until someone lifts it. Add a note so the next person knows why.</p>
     <label for="quarantine-reason" class="block text-xs font-medium text-gray-500 mb-1">Reason <span class="text-gray-400">(optional)</span></label>
     <textarea id="quarantine-reason" name="reason" rows="3"
       class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
@@ -352,7 +356,7 @@
       <button type="button" data-modal-close
         class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700">Cancel</button>
       <button type="submit"
-        class="rounded-md bg-orange-600 px-3 py-2 text-sm font-semibold text-white hover:bg-orange-500">Quarantine claim</button>
+        class="rounded-md bg-orange-600 px-3 py-2 text-sm font-semibold text-white hover:bg-orange-500">Quarantine test case</button>
     </div>
   </form>
 {% endcall %}
@@ -361,10 +365,10 @@
 {# D-228 (F3): the deprecate modal — the reason is REQUIRED (D-ε-5) and lands
    in the claim's provenance, never as a column. #}
 {% if c and c.status != 'deprecated' and user.role in ['admin', 'tester', 'superadmin'] %}
-{% call modal_shell(id='deprecate-claim-modal', title='Deprecate this claim', size='md') %}
+{% call modal_shell(id='deprecate-claim-modal', title='Deprecate this test case', size='md') %}
   <form method="POST" action="/claims/{{ c.test_id }}/deprecate">
     {{ csrf_input | safe }}
-    <p class="text-sm text-gray-600 mb-3">A deprecated claim stops grading releases and stops being runnable. This is a recorded decision &mdash; say why, so the next person reading the provenance understands it.</p>
+    <p class="text-sm text-gray-600 mb-3">A deprecated test case stops grading releases and stops being runnable. This is a recorded decision &mdash; say why, so the next person reading the provenance understands it.</p>
     <label for="deprecate-reason" class="block text-xs font-medium text-gray-500 mb-1">Reason <span class="text-red-600">*</span></label>
     <textarea id="deprecate-reason" name="reason" required rows="3"
       class="w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm"
@@ -373,7 +377,7 @@
       <button type="button" data-modal-close
         class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm text-gray-700">Cancel</button>
       <button type="submit"
-        class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">Deprecate claim</button>
+        class="rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-500">Deprecate test case</button>
     </div>
   </form>
 {% endcall %}

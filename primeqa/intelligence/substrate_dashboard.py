@@ -82,6 +82,37 @@ def _requirement_rows(db, tenant_id: int, keys) -> dict:
     return out
 
 
+def _requirement_summaries(db, tenant_id: int, keys) -> dict:
+    """{external_key: requirement summary/title} from the shared public
+    requirements store — the "why this test exists" context line under a test's
+    title. Keys are ``jira_key`` (Jira) or ``req-<id>`` (manual); the title lives
+    in ``jira_summary`` for both forms (manual create maps its title there). Blank
+    summaries are omitted; a missing requirement row simply doesn't appear."""
+    from primeqa.test_management.models import Requirement
+    out: dict = {}
+    jira_keys = [k for k in keys if not k.startswith("req-")]
+    manual: dict = {}
+    for k in keys:
+        if k.startswith("req-"):
+            try:
+                manual[int(k[4:])] = k
+            except ValueError:
+                pass
+    if jira_keys:
+        for r in (db.query(Requirement)
+                  .filter(Requirement.tenant_id == tenant_id,
+                          Requirement.jira_key.in_(jira_keys)).all()):
+            if r.jira_summary:
+                out[r.jira_key] = r.jira_summary
+    if manual:
+        for r in (db.query(Requirement)
+                  .filter(Requirement.tenant_id == tenant_id,
+                          Requirement.id.in_(list(manual))).all()):
+            if r.jira_summary:
+                out[manual[r.id]] = r.jira_summary
+    return out
+
+
 def _grid_status(rows) -> str:
     """v1 ticket-grid vocabulary from a requirement's evidence rows:
     any failing latest run → failed; full green coverage → passed;
