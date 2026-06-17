@@ -112,6 +112,28 @@ _DESCRIPTOR_FIELD_PROPS = {
         "enum": _CLAIM_KINDS,
         "description": "Optional; the substrate may select a different claim_kind if grounding is stronger.",
     },
+    # D-247 per-AC coverage: tag the intent with the acceptance-criterion it
+    # addresses (1-based index into the top-level acceptance_criteria list), or
+    # mark an AC explicitly un-testable instead of inventing a claim for it.
+    "ac_ref": {
+        "type": "integer",
+        "description": (
+            "Optional; the 1-based index (into acceptance_criteria) of the AC "
+            "this intent addresses, when the requirement is AC-structured."
+        ),
+    },
+    "no_admissible_test": {
+        "type": "boolean",
+        "description": (
+            "Optional; set true (with no_admissible_test_reason, and ac_ref) to "
+            "explicitly refuse an AC the org cannot ground a test for — this "
+            "ADDRESSES the AC honestly instead of inventing a claim."
+        ),
+    },
+    "no_admissible_test_reason": {
+        "type": "string",
+        "description": "Required when no_admissible_test is true: why no admissible test exists.",
+    },
 }
 
 PROPOSE_SEMANTIC_INTENT_SCHEMA = {
@@ -131,6 +153,27 @@ PROPOSE_SEMANTIC_INTENT_SCHEMA = {
         # form is preferred; the singular form remains for pinned-prompt replay.
         "required": [],
         "properties": {
+            # D-247: the AC list the model identified in the requirement (the
+            # coverage denominator). Each AC must be addressed by >=1 intent
+            # (via ac_ref) or an explicit no_admissible_test intent. Omitted for
+            # freeform requirements with no enumerable criteria.
+            "acceptance_criteria": {
+                "type": "array",
+                "description": (
+                    "The acceptance criteria you identified in the requirement, "
+                    "in order. Every AC must be addressed — by an intent tagged "
+                    "with its ac_ref, or by a no_admissible_test intent."
+                ),
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["index", "label"],
+                    "properties": {
+                        "index": {"type": "integer", "description": "1-based position."},
+                        "label": {"type": "string", "description": "Short paraphrase of the AC."},
+                    },
+                },
+            },
             "intent_descriptors": {
                 "type": "array",
                 "minItems": 1,
@@ -313,6 +356,23 @@ def normalize_propose_input(inp: dict) -> list[dict]:
     return [inp]
 
 
+def _validate_acceptance_criteria(inp: dict, errors: list[str]) -> None:
+    """D-247: the optional model-declared AC list — type-only (``{index:int>0,
+    label:str}``). Semantics (every AC addressed) are the runtime coverage
+    loop's job, not Layer A's."""
+    acs = inp.get("acceptance_criteria")
+    if acs is None:
+        return
+    if not isinstance(acs, list):
+        errors.append("acceptance_criteria, if present, must be an array of {index, label}")
+        return
+    for i, ac in enumerate(acs):
+        idx = ac.get("index") if isinstance(ac, dict) else None
+        label = ac.get("label") if isinstance(ac, dict) else None
+        if not (isinstance(idx, int) and not isinstance(idx, bool) and idx > 0) or not _is_str(label):
+            errors.append(f"acceptance_criteria[{i}] must be {{index:int>0, label:str}}")
+
+
 def _validate_descriptor_fields(desc: dict, errors: list[str], prefix: str) -> None:
     """The shared per-intent descriptor checks (legacy nested form and D-207
     flat array items carry the same fields)."""
@@ -327,6 +387,17 @@ def _validate_descriptor_fields(desc: dict, errors: list[str], prefix: str) -> N
     ck = desc.get("claim_kind_hint")
     if ck is not None and ck not in _CLAIM_KINDS:
         errors.append(f"{prefix}claim_kind_hint, if present, must be one of {_CLAIM_KINDS}")
+    # D-247 per-AC coverage fields — all optional, type-only (semantics enforced
+    # by the runtime coverage loop, not Layer A).
+    ac_ref = desc.get("ac_ref")
+    if ac_ref is not None and not (isinstance(ac_ref, int) and not isinstance(ac_ref, bool) and ac_ref > 0):
+        errors.append(f"{prefix}ac_ref, if present, must be a positive integer")
+    nat = desc.get("no_admissible_test")
+    if nat is not None and not isinstance(nat, bool):
+        errors.append(f"{prefix}no_admissible_test, if present, must be a boolean")
+    natr = desc.get("no_admissible_test_reason")
+    if natr is not None and not _is_str(natr):
+        errors.append(f"{prefix}no_admissible_test_reason, if present, must be a string")
 
 
 def _validate_propose(inp: dict) -> LayerAResult:
@@ -343,6 +414,10 @@ def _validate_propose(inp: dict) -> LayerAResult:
         return LayerAResult(False, [
             "intent_descriptors is required: one entry per distinct testable "
             "intent the requirement implies"])
+
+    # D-247: the optional declared AC list (the coverage denominator). Type-only;
+    # accumulated into `errors` so it surfaces alongside whichever form is used.
+    _validate_acceptance_criteria(inp, errors)
 
     if has_array:
         arr = inp.get("intent_descriptors")
