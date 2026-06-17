@@ -39,6 +39,50 @@ def test_layer_a_rejects_missing_excerpt():
     assert not res.ok and "requirement_excerpt" in res.feedback
 
 
+def test_layer_a_accepts_ac_coverage_fields():
+    # D-247: declared AC list + ac_ref-tagged intents + a no_admissible_test refusal.
+    inp = {
+        "acceptance_criteria": [
+            {"index": 1, "label": "rejects no Account"},
+            {"index": 2, "label": "SLA object exists"},
+        ],
+        "intent_descriptors": [
+            dict(VALID_PROPOSE["intent_descriptor"],
+                 requirement_excerpt="reject without Account", ac_ref=1),
+            {"requirement_excerpt": "the SLA object exists",
+             "archetype_hint": "configuration",
+             "target_subject_hint": {"entity_type": "Object", "sf_api_name": "Case_SLA__c"},
+             "polarity_hint": "positive", "ac_ref": 2,
+             "no_admissible_test": True, "no_admissible_test_reason": "no SLA config in org"},
+        ],
+    }
+    assert T.validate_layer_a(T.TOOL_PROPOSE, inp).ok
+
+
+def test_layer_a_ac_coverage_fields_are_optional():
+    # Backward compat: a propose with none of the D-247 fields stays valid.
+    assert T.validate_layer_a(T.TOOL_PROPOSE, VALID_PROPOSE).ok
+
+
+def test_layer_a_rejects_bad_ac_ref():
+    for bad in ("1", True, 0, -1):
+        desc = dict(VALID_PROPOSE["intent_descriptor"], ac_ref=bad)
+        res = T.validate_layer_a(T.TOOL_PROPOSE, {"requirement_excerpt": "x", "intent_descriptor": desc})
+        assert not res.ok and "ac_ref" in res.feedback
+
+
+def test_layer_a_rejects_bad_no_admissible_test():
+    desc = dict(VALID_PROPOSE["intent_descriptor"], no_admissible_test="yes")
+    res = T.validate_layer_a(T.TOOL_PROPOSE, {"requirement_excerpt": "x", "intent_descriptor": desc})
+    assert not res.ok and "no_admissible_test" in res.feedback
+
+
+def test_layer_a_rejects_bad_acceptance_criteria():
+    inp = dict(VALID_PROPOSE, acceptance_criteria=[{"index": "one", "label": "x"}])
+    res = T.validate_layer_a(T.TOOL_PROPOSE, inp)
+    assert not res.ok and "acceptance_criteria" in res.feedback
+
+
 def test_layer_a_rejects_bad_archetype():
     desc = dict(VALID_PROPOSE["intent_descriptor"], archetype_hint="data-behavior")  # hyphen invalid
     res = T.validate_layer_a(T.TOOL_PROPOSE, {"requirement_excerpt": "x", "intent_descriptor": desc})
