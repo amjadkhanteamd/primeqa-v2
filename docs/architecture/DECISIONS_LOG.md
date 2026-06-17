@@ -14539,3 +14539,82 @@ behavioral-first prompting (never-proposed AC4/AC8); precision/scale intent-deco
 (AC7). No prompt or `scoped_neighborhood` change in this commit.
 
 ---
+
+## D-247 — Per-AC coverage enforcer ("AI lists, computer double-checks") + generation@v9 (the SQ-212 all-9 fix)
+
+**Date:** 2026-06-17 · **Status:** active · branch `phase-41-substrate-3-coverage-enforcer`
+
+**Context.** D-246 banked the SQ-212 diagnosis: of 9 ACs, AC4/AC5/AC8 were
+**never proposed** by the LLM (silent omission) and AC7 (precision+scale)
+mis-shaped into one property intent. D-246 deferred the prompt + coverage fix;
+this is that pass. AK chose a **deterministic per-AC enforcer** over a prompt-only
+debiaser — coverage must be guaranteed, not just nudged.
+
+**The honesty reconciliation (tightens, does not overturn, D-083).** The logged
+principle ("partial coverage with honest dismissals beats forced breadth",
+base.md) is kept verbatim. The enforcer guarantees per-AC **accountability** —
+every AC ends as an intent OR an explicit, recorded refusal — never **forced
+emission**. The substrate originates nothing; it only points the model back at AC
+text the requirement already contains. The operational rule tightens from "silent
+partial coverage is acceptable" to "partial coverage is acceptable but must be
+per-AC and explicit." Supersedes the D-246 deferral note for the never-proposed
+class.
+
+**The AC denominator — HYBRID ("AI lists, computer double-checks", AK call).** A
+server-side regex parser alone is brittle on real Jira text (SQ-212 uses Jira `#`
+ordered-list markers + an inline `9.` + duplicated text, pre-`1513cc1`). So the
+**model declares** the AC list (`acceptance_criteria: [{index,label}]` on the
+propose tool) and tags each intent with `ac_ref`; a new pure module
+`primeqa/generation/coverage.py` provides the **regex FLOOR** cross-check
+(`parse_acceptance_criteria` over `#`/numbered/bulleted/`AC\d+`, deduped,
+conservative, no-op on no structure) — `floor_shortfall(declared, detected)`
+raises an under-declaration signal. No existing AC-splitter to reuse.
+
+**The mechanism.**
+- **S2/tool surface (tools.py):** optional `ac_ref:int`, `no_admissible_test:bool`,
+  `no_admissible_test_reason:str` per intent + a top-level `acceptance_criteria`
+  array. Type-only Layer-A validation (all optional — freeform requirements and
+  Layer-A archetype-uniformity untouched).
+- **Runtime (runtime.py):** on the first propose turn, capture the declared list +
+  floor; record each turn's `ac_ref` tags (covered) and `no_admissible_test`
+  (refused-with-reason). If any AC is unaddressed (or the floor suspects
+  under-declaration), re-prompt **ONCE** naming exactly those ACs (the
+  escalation-hop discipline; `max_turns` is the backstop), then build a per-AC
+  `coverage_map` (covered | refused | `untagged_after_reprompt`) onto
+  `attempted_interpretation` — rides the existing JSONB, **no migration**.
+- **Governance (governance_core.py):** `resolve_intent` offsets path-ids by the
+  prior turn's `candidate_paths` count (`_reindex_paths` gains an offset; 0 on the
+  first turn ⇒ byte-identical to pre-D-247); `_resolve_no_admissible_test` records
+  a per-AC refusal without grounding and without routing the whole requirement to
+  REFUSE; `_check_refs_one` skips a `no_admissible_test` intent (no S1 ref needed).
+- **AC7 = two property-claims** (AK call) — precision and scale as two intents via
+  the existing D-207 multi-intent machinery + the D-246 semantic comparison. No
+  new claim shape.
+- **Prompt generation@v8 → v9:** metadata structure made a first-class
+  decomposition target (existence/property/metadata-relationship as scan targets,
+  not behavior props); property atomicity (precision+scale = two intents);
+  value-claim persistence framing; the `ac_ref`/`no_admissible_test` coverage
+  contract. The honest-dismissals guard kept verbatim. Frozen
+  `versions/generation_v9.md`; registry `CURRENT="generation@v9"` + recorded hash.
+
+**Verification.** Deterministic, no-LLM unit proof of the enforcer (the real
+guarantee): `tests/unit/generation/test_coverage.py` (the floor) +
+`test_coverage_enforcer.py` (capture/tag/one-hop re-prompt naming exactly the
+uncovered ACs/coverage_map covered-vs-refused-vs-untagged/freeform no-op/floor
+shortfall + the governance no_admissible_test & path-offset). Plus
+`test_tools.py` (the optional fields) and `test_prompt_registry.py` (v9 hash
+guard + substance, honest-dismissals preserved). Full `tests/unit/` green (2826+).
+**Definition-of-done eval probe** — an SQ-212 corpus case asserting
+`claims_count >= 8` (AK's chosen bar) — is **deferred to the eval-harness
+environment**: the corpus is DB-backed integration (seeds S1 fixtures) and the
+probe's live leg needs `ANTHROPIC_API_KEY`; it cannot be authored-and-verified in
+the local env without risking the scripted `test_eval_corpus_full_spectrum`.
+
+**Risks.** AC-parse brittleness → no-op-on-no-structure (the floor can only add
+accountability, never break a working path); re-prompt doubles LLM cost on
+AC-structured requirements → bounded to one hop, fires only when ACs are actually
+unaddressed; `path_offset` touches a load-bearing aggregation → defaults to 0,
+guarded by `test_multi_intent`. The deterministic per-AC enforcer is the
+guarantee; the prompt only reduces how often the re-prompt fires.
+
+---

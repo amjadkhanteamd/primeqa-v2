@@ -24,12 +24,12 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v8():
-    # D-227: CURRENT bumped to v8 (cross-object trigger + parent-stamp
-    # hint contracts). v1..v7 stay frozen + pinned-resolvable
+def test_current_resolves_to_v9():
+    # D-247: CURRENT bumped to v9 (config-first-class decomposition + the per-AC
+    # coverage contract). v1..v8 stay frozen + pinned-resolvable
     # (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v8"
-    assert registry.get() == registry.get("generation@v8")
+    assert registry.CURRENT == "generation@v9"
+    assert registry.get() == registry.get("generation@v9")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # the substance the schemas don't enforce (D-103.3) is present
@@ -51,6 +51,13 @@ def test_current_resolves_to_v8():
     # v6's automation-effect + state-transition hint contracts (D-210.1)
     assert "state-transition-claim" in sys and "trigger_object" in sys
     assert "effect_object" in sys and "effect_lookup_field" in sys
+    # v9's config-first-class decomposition + per-AC coverage contract (D-247)
+    assert "metadata structure" in sys
+    assert "Scan every requirement" in sys
+    assert "precision" in sys and "scale" in sys            # property atomicity
+    assert "ac_ref" in sys and "no_admissible_test" in sys  # the coverage contract
+    # the honest-dismissals guard is preserved verbatim (not overturned)
+    assert "honest" in sys and "forced breadth" in sys
 
 
 def test_unknown_version_raises():

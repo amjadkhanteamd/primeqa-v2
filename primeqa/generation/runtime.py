@@ -47,6 +47,7 @@ from primeqa.generation.governance import (
 )
 from primeqa.generation.protocol import BudgetSpec, GenerationOutcome, GenerationRequest
 from primeqa.generation.prompts import registry as prompts_registry
+from primeqa.generation import coverage as _coverage
 from primeqa.generation import tools as _tools
 from primeqa.generation.tools import TOOLS, TOOL_EMIT, TOOL_PROPOSE, TOOL_SELECT
 
@@ -308,6 +309,21 @@ class RequirementState:
     # finalize still honors them as a legacy one-element fallback when set
     # directly by older callers/tests.)
     groundings: list = field(default_factory=list)
+    # D-247 per-AC coverage enforcer ("AI lists, computer double-checks").
+    # ``coverage_acs`` is the MODEL-declared AC list (the denominator), captured
+    # on the first propose turn; ``coverage_floor`` is the regex cross-check
+    # count (catches under-declaration). ``coverage_tagged`` / ``coverage_refused``
+    # accumulate the ac_refs addressed across the single bounded re-prompt hop.
+    # ``coverage_map`` is the per-AC verdict, persisted onto
+    # attempted_interpretation (rides JSONB — no migration). Empty declared list
+    # ⇒ the enforcer is a no-op (freeform requirements behave as before).
+    coverage_captured: bool = False
+    coverage_acs: list = field(default_factory=list)
+    coverage_floor: int = 0
+    coverage_tagged: set = field(default_factory=set)
+    coverage_refused: dict = field(default_factory=dict)
+    coverage_reprompted: bool = False
+    coverage_map: dict = field(default_factory=dict)
 
     def merge_interpretation(self, delta: Optional[dict]) -> None:
         """Store a governance-authored semantic-provenance fragment. The spine
@@ -455,14 +471,32 @@ class GenerationRuntime:
 
             # --- Dispatch to the semantic seam ---
             if tu.name == TOOL_PROPOSE:
+                # D-247: capture the model-declared AC list + regex floor on the
+                # first propose turn; record which ACs this turn addresses.
+                self._coverage_capture(state, ctx, tu.input)
+                self._coverage_tag(state, tu.input)
                 res = seam.resolve_intent(intent_input=tu.input, ctx=ctx, state=state)
                 state.merge_interpretation(res.interpretation_delta)
                 state.candidates_proposed += 1
                 state.candidates_admissibly_grounded += len(res.grounded_candidates)
-                if res.next_action == NextAction.REFUSE:
+                # Accumulate grounded candidates across the (single) re-prompt hop.
+                state.presented_candidates = (
+                    list(state.presented_candidates) + list(res.grounded_candidates))
+                # D-247: re-prompt ONCE for unaddressed ACs (or to re-enumerate if
+                # the floor suspects under-declaration). Skip the SELECT path
+                # (highest-specificity single-intent) — orthogonal to coverage.
+                if (res.next_action != NextAction.AWAIT_SELECTION
+                        and self._coverage_should_reprompt(state)):
+                    state.coverage_reprompted = True
+                    self._respond(state, tu, self._coverage_reprompt_text(state))
+                    phase = Phase.PROPOSE
+                    phase_attempt = 1
+                    continue
+                self._coverage_finalize(state)
+                # Refuse only when NOTHING grounded across all turns (cumulative).
+                if not state.presented_candidates:
                     return self._route(res.refusal, ctx, state, seam)
-                state.presented_candidates = res.grounded_candidates
-                self._respond(state, tu, _present_candidates(res.grounded_candidates))
+                self._respond(state, tu, _present_candidates(state.presented_candidates))
                 phase = Phase.SELECT if res.next_action == NextAction.AWAIT_SELECTION else Phase.EMIT
                 phase_attempt = 1
                 continue
@@ -531,6 +565,101 @@ class GenerationRuntime:
         next (forced) phase has the substrate response in context."""
         state.messages.append(_assistant_tool_use_msg(tu))
         state.messages.append(_user_tool_result_msg(tu, content, is_error=False))
+
+    # -- D-247 per-AC coverage enforcer ---------------------------------
+    @staticmethod
+    def _descriptors(propose_input: dict) -> list:
+        """The per-intent descriptor objects of a propose call (array items, or
+        the legacy single intent_descriptor) — for reading ac_ref tags."""
+        if not isinstance(propose_input, dict):
+            return []
+        arr = propose_input.get("intent_descriptors")
+        if isinstance(arr, list):
+            return [d for d in arr if isinstance(d, dict)]
+        d = propose_input.get("intent_descriptor")
+        return [d] if isinstance(d, dict) else []
+
+    def _coverage_capture(self, state: RequirementState, ctx: ConversationContext,
+                          propose_input: dict) -> None:
+        """First propose turn only: capture the model-declared AC list (the
+        coverage denominator) + the regex floor (the under-declaration cross-
+        check). No declared ACs ⇒ the enforcer stays a no-op."""
+        if state.coverage_captured:
+            return
+        state.coverage_captured = True
+        declared = (propose_input.get("acceptance_criteria")
+                    if isinstance(propose_input, dict) else None) or []
+        state.coverage_acs = [
+            a for a in declared
+            if isinstance(a, dict) and isinstance(a.get("index"), int)
+            and not isinstance(a.get("index"), bool)]
+        state.coverage_floor = len(
+            _coverage.parse_acceptance_criteria(ctx.requirement_text or ""))
+
+    def _coverage_tag(self, state: RequirementState, propose_input: dict) -> None:
+        """Record the ac_refs this turn addresses — a real intent (covered) or an
+        explicit no_admissible_test (refused-with-reason)."""
+        for d in self._descriptors(propose_input):
+            ref = d.get("ac_ref")
+            if not (isinstance(ref, int) and not isinstance(ref, bool) and ref > 0):
+                continue
+            state.coverage_tagged.add(ref)
+            if d.get("no_admissible_test"):
+                state.coverage_refused[ref] = (
+                    d.get("no_admissible_test_reason") or "no admissible test")
+
+    def _coverage_should_reprompt(self, state: RequirementState) -> bool:
+        if not state.coverage_acs or state.coverage_reprompted:
+            return False
+        declared = {a["index"] for a in state.coverage_acs}
+        uncovered = _coverage.compute_uncovered(declared, state.coverage_tagged)
+        shortfall = _coverage.floor_shortfall(len(declared), state.coverage_floor)
+        return bool(uncovered) or shortfall > 0
+
+    def _coverage_reprompt_text(self, state: RequirementState) -> str:
+        labels = {a["index"]: a.get("label", "") for a in state.coverage_acs}
+        uncovered = _coverage.compute_uncovered(set(labels), state.coverage_tagged)
+        parts: list[str] = []
+        if uncovered:
+            listed = "\n".join(f"  - AC{i}: {labels.get(i, '')}" for i in uncovered)
+            parts.append(
+                "These acceptance criteria have no intent yet. Address EACH in a "
+                "new propose call: either an intent tagged with its ac_ref, or an "
+                "intent with no_admissible_test=true + no_admissible_test_reason "
+                "if the org genuinely cannot ground a test for it. Do not invent a "
+                "claim the requirement does not state.\n" + listed)
+        shortfall = _coverage.floor_shortfall(len(labels), state.coverage_floor)
+        if shortfall > 0:
+            parts.append(
+                f"Also: the requirement text appears to contain at least "
+                f"{state.coverage_floor} acceptance criteria but you declared "
+                f"{len(labels)}. Re-read and add any you missed (tagging each with "
+                f"its ac_ref), or confirm your list is complete.")
+        return "\n\n".join(parts) or "Re-check acceptance-criteria coverage."
+
+    def _coverage_finalize(self, state: RequirementState) -> None:
+        """Build the per-AC coverage_map onto attempted_interpretation (rides the
+        existing JSONB — no migration). Every declared AC gets one verdict:
+        covered (an intent addressed it), refused (model declared no admissible
+        test), or untagged_after_reprompt (the silent-omission backstop)."""
+        if not state.coverage_acs:
+            return
+        cmap: dict = {}
+        for a in state.coverage_acs:
+            idx, label = a["index"], a.get("label", "")
+            if idx in state.coverage_refused:
+                cmap[str(idx)] = {"status": "refused", "label": label,
+                                  "reason": state.coverage_refused[idx]}
+            elif idx in state.coverage_tagged:
+                cmap[str(idx)] = {"status": "covered", "label": label}
+            else:
+                cmap[str(idx)] = {"status": "refused", "label": label,
+                                  "reason": "untagged_after_reprompt"}
+        state.coverage_map = cmap
+        state.attempted_interpretation["coverage_map"] = cmap
+        shortfall = _coverage.floor_shortfall(len(state.coverage_acs), state.coverage_floor)
+        if shortfall > 0:
+            state.attempted_interpretation["coverage_floor_shortfall"] = shortfall
 
     def _route(self, directive: RefusalDirective, ctx: ConversationContext,
                state: RequirementState, seam: GovernanceProvider) -> RequirementResult:

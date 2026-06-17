@@ -458,6 +458,8 @@ class GovernanceCore:
 
     def _check_refs_one(self, intent_input: dict, at: int) -> RefCheck:
         desc = intent_input.get("intent_descriptor") or {}
+        if desc.get("no_admissible_test"):
+            return RefCheck(ok=True)   # D-247: a per-AC refusal needs no S1 ref
         hint = desc.get("target_subject_hint") or {}
 
         # configuration metadata-relationship: target_subject_hint carries the
@@ -531,8 +533,17 @@ class GovernanceCore:
         intents ground (the first refusal directive routes). The legacy
         singular form resolves exactly as before."""
         per_intent = normalize_propose_input(intent_input)
+        # D-247: a follow-up propose turn (the coverage enforcer's single
+        # re-prompt) must not collide with the prior turn's path ids — offset by
+        # the candidate_paths already accumulated on the state. Offset 0 on the
+        # first turn ⇒ byte-identical to the pre-D-247 behavior.
+        ai = getattr(state, "attempted_interpretation", None)
+        offset = len(ai.get("candidate_paths") or []) if isinstance(ai, dict) else 0
         if len(per_intent) == 1:
-            return self._resolve_one(per_intent[0], ctx, state)
+            res = self._resolve_one(per_intent[0], ctx, state)
+            if offset:
+                _reindex_paths(res, offset)
+            return res
 
         merged: dict = {"candidate_paths": [], "dismissed_alternatives_by_reason": {},
                         "scoped_neighborhood": []}
@@ -544,7 +555,7 @@ class GovernanceCore:
             # decision 7) — intent-scoped selection is deliberately unbuilt.
             assert len(res.grounded_candidates) <= 1, \
                 "multi-intent propose met >1 grounded candidate for one intent"
-            _reindex_paths(res, i)
+            _reindex_paths(res, i + offset)
             d = res.interpretation_delta or {}
             merged["candidate_paths"].extend(d.get("candidate_paths") or [])
             for reason, ids in (d.get("dismissed_alternatives_by_reason") or {}).items():
@@ -566,6 +577,12 @@ class GovernanceCore:
     def _resolve_one(self, intent_input: dict, ctx: ConversationContext, state: Any) -> IntentResolution:
         desc = intent_input.get("intent_descriptor") or {}
         excerpt = intent_input.get("requirement_excerpt", "")
+        # D-247: an explicit per-AC refusal — the model declares no admissible
+        # test for this AC. Recorded (surfaces in attempted_interpretation), never
+        # ground; the runtime maps it into coverage_map. The honesty hinge: the
+        # substrate originates nothing, it only records the model's refusal.
+        if desc.get("no_admissible_test"):
+            return self._resolve_no_admissible_test(desc, excerpt)
         archetype = desc.get("archetype_hint")
         if archetype == "configuration":
             return self._resolve_configuration(intent_input, ctx, state)
@@ -970,6 +987,27 @@ class GovernanceCore:
         return eff_ep, lookup_ep, eff_field_ep
 
     # -- configuration metadata-relationship admissibility (D-098.1) ----
+    def _resolve_no_admissible_test(self, desc: dict, excerpt: str) -> IntentResolution:
+        """D-247: record a model-declared per-AC refusal (no_admissible_test). No
+        grounding — produces a dismissed candidate so it surfaces in
+        attempted_interpretation, plus a refusal directive that only routes if it
+        is the last-standing intent (the multi-intent aggregator ignores it once
+        any sibling grounds). The substrate originates nothing; it records the
+        model's refusal verbatim (the honesty hinge)."""
+        hint = desc.get("target_subject_hint") or {}
+        cand = _Candidate(
+            path_id="c0", archetype=desc.get("archetype_hint") or "data_behavior",
+            claim_kind=desc.get("claim_kind_hint") or "",
+            subject_refs=[{"entity_type": hint.get("entity_type"),
+                           "sf_api_name": hint.get("sf_api_name")}],
+            requirement_anchor=excerpt, status="dismissed",
+            dismissal_reason="no_admissible_test")
+        reason = desc.get("no_admissible_test_reason") or "no admissible test for this AC"
+        return IntentResolution(
+            grounded_candidates=[], next_action=NextAction.REFUSE,
+            interpretation_delta=self._delta([], [cand]),
+            refusal=self._router.no_relevant_context(reason))
+
     def _resolve_configuration(self, intent_input: dict, ctx: ConversationContext, state: Any) -> IntentResolution:
         """Edge-existence admissibility for a config metadata-relationship-claim
         (Layer-1-complete, D-079): resolve both endpoints, verify the asserted
