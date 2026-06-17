@@ -43,9 +43,6 @@ class TestManagementService:
             )
         self.section_repo = section_repo
         self.requirement_repo = requirement_repo
-        self.test_case_repo = test_case_repo
-        self.suite_repo = suite_repo
-        self.review_repo = review_repo
         # activity log is optional — if absent we silently skip writes
         self.activity_repo = activity_repo
 
