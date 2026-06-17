@@ -97,7 +97,7 @@
   <!-- Fields -->
   <div class="bg-white shadow rounded-lg divide-y divide-gray-200">
     <div class="px-6 py-4">
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Jira description</h3>
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">{% if req.source == 'jira' %}Jira description{% else %}Description{% endif %}</h3>
       {% if req.jira_description %}
       <p class="text-sm text-gray-800 whitespace-pre-wrap">{{ req.jira_description }}</p>
       {% else %}

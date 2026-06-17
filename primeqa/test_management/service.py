@@ -246,10 +246,16 @@ class TestManagementService:
 
     @staticmethod
     def _extract_acceptance_criteria(fields):
+        # Only return a value when Jira actually carries a dedicated
+        # "acceptance"-named custom field. Falling back to `description`
+        # duplicated the whole description into acceptance_criteria on every
+        # import (teamd's Jira has no AC custom field), so the requirement
+        # detail page rendered the same text twice. None == "no AC"; the
+        # description still lives in jira_description.
         for cf_key, cf_val in fields.items():
             if "acceptance" in cf_key.lower() and cf_val:
                 return str(cf_val)
-        return fields.get("description", "")
+        return None
 
     # ---- Dict helpers --------------------------------------------------------
 
