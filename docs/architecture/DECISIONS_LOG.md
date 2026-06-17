@@ -14487,3 +14487,55 @@ new/changed integration tests (`test_tenant_isolation` #5, `test_s4_execution_jo
 Railway integration tests — re-run on a real environment to confirm green.
 
 ---
+
+## D-246 — Property-claim grounding: semantic value coercion (scoped S3 pull-forward) + the SQ-212 generation diagnosis
+
+**Date:** 2026-06-17 · **Status:** active · branch `phase-40-substrate-3-property-coercion`
+
+**(i) SQ-212 generation diagnosis (banked).** Requirement SQ-212 (req 296, "Case
+Escalation & SLA", 9 ACs), S3 job 30 @ S1 seq 68, env 59, produced 4 `data_behavior`
+claims (automation-effect, prohibition [2 recipes], 2 state-transitions). The 5 missing
+claim-kinds split into **two distinct failure stages**, verified against the live
+`attempted_interpretation` trace (one candidate path per proposed intent, `_reindex_paths`
+governance_core.py:1402):
+- **Never proposed by the LLM** (no candidate path): AC4 value (`Notes__c`), AC5 existence
+  (`Case_SLA__c`), AC8 metadata-relationship (`Escalation_Reason_Required` APPLIES_TO Case).
+- **Proposed then dismissed** `insufficient_grounding`: AC6 property length (`SLA_Code__c`=8,
+  path c3), AC7 property precision/scale (`Target_Hours__c` 4/1, path c4).
+
+**No archetype wall** — the requirement path `resolve_intent`→`_resolve_one`
+(governance_core.py:526) dispatches **all five archetypes**; `evaluate()`'s
+`data_behavior`-on-`Object` gate (line 250) is the separate refusal-vertical reasoner, NOT
+the intent path. **Grounding-gap ruled out** — S1 holds every SQ-212 field + the VR at seq
+68 (incl. `length`=8, `precision`=4, `scale`=1; observed in `tenant_1.field_details`).
+**G-2 stands narrowly closed** (D-228): the prohibition's 2nd recipe is the verified-negative
+APPLIES_TO inspection fallback — the one realized multi-recipe instance.
+
+**(ii) The fix (scoped pull-forward).** `_resolve_property`'s value gate compared the
+LLM-asserted value to the S1 value with a strict `!=`, dismissing correct values expressed in
+a different representation (the string `"8"` vs S1 int `8`). Root-cause fix:
+`_property_value_matches` coerces the asserted value to the S1-native type before comparing
+(generic over the stored type — never type-specific; round-trip-guarded against lossy/false
+matches like `int(8.7)==8`); a genuinely different value (`"9"` vs `8`) still dismisses; the
+emitted value is unchanged (always S1's `expected_value=s1_value`). **Justification for the
+pull-forward:** it unblocks property-claim *execution* — one of the two still-unproven
+executable kinds. AC7 (combined precision+scale in one property pair) still dismisses by
+design — out of scope.
+
+**Verification.** Unit conformance test (the proof): `tests/unit/generation/
+test_property_value_coercion.py` — 19 cases: `"8"`/`"4"`/`"1"` ground, `"9"`/`"5"`/`"2"` and
+the lossy/uncoercible guards (`8.7`, `"8.0"`, `"08"`, `"abc"`, `None`) dismiss, plus a
+str-native case proving genericity. Full generation unit suite green (182). **E2E (Option A,
+attempted live):** ran `run_generation` directly pinned at seq 68 — **blocked on a local
+environment limitation** (`CREDENTIAL_ENCRYPTION_KEY` unset locally → the env-59 LLM-connection
+key decrypted to Fernet ciphertext → Anthropic 401). **Zero prod writes** (abort-on-error
+before persistence; verified: 0 outcomes for the aborted request, SQ-212 still has only job
+30). The live emission datapoint is deferred to the deployed worker (which holds the key) and
+is non-deterministic regardless (it can demonstrate, not falsify — the unit test is the proof).
+
+**Explicitly deferred to a post-S4 generation pass:** `scoped_neighborhood`
+single-hop-off-subject (root of the never-proposed AC5 + `Case_SLA__c` invisibility);
+behavioral-first prompting (never-proposed AC4/AC8); precision/scale intent-decomposition
+(AC7). No prompt or `scoped_neighborhood` change in this commit.
+
+---
