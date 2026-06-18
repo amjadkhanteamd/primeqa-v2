@@ -367,3 +367,82 @@ def step_plain(step: Any) -> str:
     except Exception:
         pass
     return kind.replace("_", " ") if isinstance(kind, str) else "step"
+
+
+# ---------------------------------------------------------------------------
+# Plain-words cause + friendly time / duration (Results page — triage at scale)
+# ---------------------------------------------------------------------------
+
+# One plain sentence per S6 cause_kind — the failure-cluster headline on the
+# Results page. The "real defect vs fixable" split is NOT here (that's
+# repair_agent.proposal_for); this is only the human-readable name of the cause.
+_CAUSE_PLAIN = {
+    "enforcement_gap":
+        "A forbidden action was allowed — the rule didn't fire",
+    "vr_formula_drift":
+        "The validation rule changed — it no longer blocks this",
+    "vr_inactive":
+        "The validation rule is turned off",
+    "no_active_vr":
+        "No active validation rule backs this anymore",
+    "vr_formula_indeterminate":
+        "The validation rule couldn't be evaluated on this record",
+    "platform_constraint":
+        "Blocked by a different rule than the one under test",
+    "automation_inactive":
+        "The automation is turned off — no active flow fires",
+    "automation_effect_absent":
+        "The automation ran but didn't make the expected change",
+    "field_not_createable":
+        "The test set a field the org won't accept on create",
+}
+
+
+def cause_plain(cause_kind: Optional[str]) -> Optional[str]:
+    """One plain sentence for an S6 ``cause_kind`` (the failure-cluster
+    headline). Falls back to the humanized kind; None → None."""
+    if not cause_kind:
+        return None
+    return _CAUSE_PLAIN.get(cause_kind, cause_kind.replace("_", " ").capitalize())
+
+
+def duration_human(ms: Any) -> str:
+    """A run duration in friendly units: sub-second stays ``ms``, >= 1s →
+    seconds with one decimal. None / non-numeric → ''."""
+    if ms is None:
+        return ""
+    try:
+        ms = int(ms)
+    except (TypeError, ValueError):
+        return ""
+    if ms < 1000:
+        return f"{ms} ms"
+    return f"{ms / 1000:.1f}s"
+
+
+def time_ago(iso: Optional[str], now=None) -> str:
+    """A friendly relative time for an ISO timestamp string: 'just now',
+    'Nm ago', 'Nh ago', 'Nd ago', then an absolute 'Mon DD' beyond a week.
+    ``now`` is injectable so tests are deterministic. Never raises → '' on a
+    bad/empty value."""
+    if not iso:
+        return ""
+    from datetime import datetime, timezone
+    try:
+        ts = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return ""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    if now is None:
+        now = datetime.now(timezone.utc)
+    secs = (now - ts).total_seconds()
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{int(secs // 60)}m ago"
+    if secs < 86400:
+        return f"{int(secs // 3600)}h ago"
+    if secs < 7 * 86400:
+        return f"{int(secs // 86400)}d ago"
+    return ts.strftime("%b %d")

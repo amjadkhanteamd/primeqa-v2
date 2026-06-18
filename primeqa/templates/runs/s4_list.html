@@ -7,64 +7,185 @@
 {# D-168 (UI Area 3 slice 3b): the global S4 runs index — a focused new surface
    (the dense v1 /runs page is re-pointed at cutover Step 5). #}
 <div class="max-w-5xl space-y-5">
-  <div class="flex items-start justify-between">
+  {% set af = active_filters or {} %}
+  {% set s = (overview.summary if overview else None) %}
+
+  <!-- Header + scope (environment + time window, carried across the lens toggle) -->
+  <div class="flex items-start justify-between gap-4 flex-wrap">
     <div>
-      <h1 class="text-xl font-semibold text-gray-900">Runs <span class="text-gray-400 text-base">(Substrate S4)</span></h1>
-      <p class="mt-1 text-sm text-gray-500">Every execution run, newest first &mdash; outcome + the S6 verdict. Click a run for its evidence.</p>
+      <h1 class="text-xl font-semibold text-gray-900">Results</h1>
+      <p class="mt-1 text-sm text-gray-500">How your release looks right now &mdash; newest first. Click a test to see its evidence.</p>
     </div>
-    {# D-218: the v1 archive stays reachable after Results re-pointed here. #}
-    <a href="/runs" class="text-xs text-gray-400 hover:text-gray-600 hover:underline whitespace-nowrap mt-1">Legacy v1 run history &rarr;</a>
+    <div class="flex items-center gap-2 mt-1 text-xs whitespace-nowrap">
+      <form method="GET" action="/runs/substrate" class="flex items-center gap-2">
+        <input type="hidden" name="group" value="{{ group }}">
+        <select name="env" onchange="this.form.submit()" class="rounded-md border border-gray-300 px-2 py-1 text-xs">
+          <option value="">All environments</option>
+          {% for e in envs_for_picker %}
+          <option value="{{ e.id }}" {% if af.env == e.id %}selected{% endif %}>{{ e.name }}</option>
+          {% endfor %}
+        </select>
+        <select name="since" onchange="this.form.submit()" class="rounded-md border border-gray-300 px-2 py-1 text-xs">
+          {% if af.since and af.since not in ['24h','7d','30d','today'] %}<option value="{{ af.since }}" selected>{{ af.since }}</option>{% endif %}
+          {% for val, lbl in [('24h','Last 24h'), ('7d','Last 7 days'), ('30d','Last 30 days'), ('today','Today')] %}
+          <option value="{{ val }}" {% if af.since == val %}selected{% endif %}>{{ lbl }}</option>
+          {% endfor %}
+        </select>
+      </form>
+      <a href="/runs" class="text-gray-400 hover:text-gray-600 hover:underline">Legacy v1 history &rarr;</a>
+    </div>
   </div>
 
-  {# D-231: the failures front door — outcome triage chips. `filter_qs` (leading-&)
-     preserves the active facets across pagination; `base_qs` carries the
-     non-outcome facets when switching outcome. #}
-  {% set af = active_filters or {} %}
-  {% set _fp = [] %}
-  {% if af.outcome %}{% set _ = _fp.append('outcome=' ~ af.outcome) %}{% endif %}
-  {% if af.verdict %}{% set _ = _fp.append('verdict=' ~ af.verdict) %}{% endif %}
-  {% if af.env %}{% set _ = _fp.append('env=' ~ af.env) %}{% endif %}
-  {% if af.since %}{% set _ = _fp.append('since=' ~ af.since) %}{% endif %}
-  {% set any_filter = _fp | length > 0 %}
-  {% set filter_qs = ('&' ~ (_fp | join('&'))) if _fp else '' %}
-  {% set _bp = [] %}
-  {% if af.verdict %}{% set _ = _bp.append('verdict=' ~ af.verdict) %}{% endif %}
-  {% if af.env %}{% set _ = _bp.append('env=' ~ af.env) %}{% endif %}
-  {% if af.since %}{% set _ = _bp.append('since=' ~ af.since) %}{% endif %}
-  {% set base_qs = _bp | join('&') %}
-
-  {% if data and data.available %}
-  <div class="flex items-center gap-2 flex-wrap text-xs">
-    <span class="text-gray-400 mr-1">Show</span>
-    {% for oc, lbl in [('', 'All'), ('failed', 'Failed'), ('errored', 'Errored'), ('passed', 'Passed')] %}
-      {% set is_active = (af.outcome or '') == oc %}
-      {% set _cp = [] %}
-      {% if oc %}{% set _ = _cp.append('outcome=' ~ oc) %}{% endif %}
-      {% if base_qs %}{% set _ = _cp.append(base_qs) %}{% endif %}
-      <a href="/runs/substrate{{ ('?' ~ (_cp | join('&'))) if _cp else '' }}"
-         class="px-2.5 py-1 rounded-full border {% if is_active %}bg-indigo-600 text-white border-indigo-600{% else %}bg-white text-gray-600 border-gray-300 hover:bg-gray-50{% endif %}">{{ lbl }}</a>
-    {% endfor %}
-    <span class="text-gray-200">|</span>
-    {% set today_active = af.outcome == 'failed' and af.since == 'today' %}
-    <a href="/runs/substrate?outcome=failed&amp;since=today"
-       class="px-2.5 py-1 rounded-full border {% if today_active %}bg-red-600 text-white border-red-600{% else %}bg-white text-red-700 border-red-200 hover:bg-red-50{% endif %}">Today&rsquo;s failures</a>
-    {% if any_filter %}<a href="/runs/substrate" class="ml-1 text-gray-400 hover:text-gray-600 hover:underline">clear</a>{% endif %}
+  {# Answer-first health banner (only when the overview read succeeded). #}
+  {% if s %}
+  <div class="bg-gray-50 rounded-lg p-4">
+    <div class="flex items-end justify-between gap-4 flex-wrap mb-3">
+      <div class="flex items-baseline gap-2">
+        <span class="text-3xl font-semibold {% if s.pass_rate is none %}text-gray-400{% elif s.pass_rate >= 90 %}text-green-600{% elif s.pass_rate >= 70 %}text-amber-600{% else %}text-red-600{% endif %}">{{ s.pass_rate if s.pass_rate is not none else '—' }}%</span>
+        <span class="text-sm text-gray-500">passing &middot; {{ s.passed }} of {{ s.total }} tests green</span>
+      </div>
+      {% if s.failing %}
+      <div class="text-sm text-red-700">&#9888; {{ s.failing }} failing &middot; {{ s.causes }} root cause{{ '' if s.causes == 1 else 's' }} &middot; {{ s.reqs_failing }} requirement{{ '' if s.reqs_failing == 1 else 's' }}</div>
+      {% elif s.passed == s.total and s.total %}
+      <div class="text-sm text-green-700">&#10003; all green in this window</div>
+      {% endif %}
+    </div>
+    {% if s.total %}
+    <div class="flex h-2 rounded-full overflow-hidden gap-0.5 bg-gray-200">
+      <div class="bg-green-500" style="flex: {{ s.passed }}"></div>
+      <div class="bg-red-500" style="flex: {{ s.failing }}"></div>
+      <div class="bg-gray-300" style="flex: {{ s.total - s.passed - s.failing }}"></div>
+    </div>
+    {% endif %}
   </div>
   {% endif %}
 
-  {% if not data or not data.available %}
-    {{ empty_state(title='Runs unavailable',
-        description='The substrate could not be read for your tenant right now.') }}
-  {% elif data.runs %}
+  {# The lens toggle — preserves env + time scope. #}
+  {% set _sq = [] %}
+  {% if af.env %}{% set _ = _sq.append('env=' ~ af.env) %}{% endif %}
+  {% if af.since %}{% set _ = _sq.append('since=' ~ af.since) %}{% endif %}
+  {% set scope_suffix = ('&' ~ (_sq | join('&'))) if _sq else '' %}
+  <div class="flex items-center gap-2 text-sm flex-wrap">
+    <span class="text-gray-400 text-xs">Group by</span>
+    {% for g, lbl in [('requirement','Requirement'), ('cause','Root cause'), ('runs','All runs')] %}
+    <a href="/runs/substrate?group={{ g }}{{ scope_suffix }}"
+       class="px-3 py-1 rounded-full border {% if group == g %}bg-indigo-600 text-white border-indigo-600{% else %}bg-white text-gray-600 border-gray-300 hover:bg-gray-50{% endif %}">{{ lbl }}</a>
+    {% endfor %}
+  </div>
+
+  {# ── Lens: by requirement (default) ─────────────────────────────────── #}
+  {% if group == 'requirement' %}
+    {% if not overview or not overview.available %}
+      {{ empty_state(title='Results unavailable',
+          description='We couldn&rsquo;t load your results right now — please try again.') }}
+    {% elif overview.by_requirement %}
+      {% for r in overview.by_requirement %}
+      <div class="bg-white shadow rounded-lg p-4">
+        <div class="flex items-center gap-3">
+          <span class="w-2 h-2 rounded-full flex-none {% if r.failed %}bg-red-500{% else %}bg-green-500{% endif %}"></span>
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium text-gray-900 truncate">{% if r.requirement_key %}{{ r.requirement_key }} &middot; {% endif %}{{ r.requirement_summary or 'Tests not linked to a requirement' }}</div>
+            <div class="text-xs text-gray-400">{{ r.passed }} / {{ r.total }} passing{% if r.last_ago %} &middot; last run {{ r.last_ago }}{% endif %}</div>
+          </div>
+          <div class="flex h-1.5 w-28 rounded-full overflow-hidden gap-0.5 bg-gray-200 flex-none">
+            <div class="bg-green-500" style="flex: {{ r.passed }}"></div>
+            <div class="bg-red-500" style="flex: {{ r.failed }}"></div>
+          </div>
+          {% if r.failed %}<span class="text-xs text-red-600 font-medium flex-none whitespace-nowrap">{{ r.failed }} failed</span>{% else %}<span class="text-xs text-green-600 flex-none whitespace-nowrap">all green</span>{% endif %}
+        </div>
+        {% if r.failed %}
+        <div class="mt-2 border-t border-gray-100 divide-y divide-gray-100">
+          {% for t in r.tests if t.outcome != 'passed' %}
+          <a href="/claims/{{ t.test_id }}" class="flex items-center gap-2 py-2 hover:bg-gray-50 -mx-1 px-1 rounded">
+            <span class="text-red-500 flex-none">&#10007;</span>
+            <div class="min-w-0 flex-1">
+              <div class="text-sm text-gray-800">{{ t.title }}</div>
+              <div class="text-xs text-gray-500">{{ t.verdict_plain }}{% if t.finished_ago %} &middot; {{ t.finished_ago }}{% endif %}</div>
+            </div>
+          </a>
+          {% endfor %}
+          {% if r.passed %}<div class="py-2 text-xs text-green-600">&#10003; {{ r.passed }} more passing</div>{% endif %}
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    {% else %}
+      {{ empty_state(title='No results in this window',
+          description='No tests ran in the selected environment + time range. Widen the time filter, or run tests from a test case.') }}
+    {% endif %}
+
+  {# ── Lens: by root cause (failures clustered; fixing one clears many) ── #}
+  {% elif group == 'cause' %}
+    {% if not overview or not overview.available %}
+      {{ empty_state(title='Results unavailable',
+          description='We couldn&rsquo;t load your results right now — please try again.') }}
+    {% elif overview.by_cause %}
+      <p class="text-xs text-gray-400">{{ overview.summary.failing }} failure{{ '' if overview.summary.failing == 1 else 's' }} fall into {{ overview.by_cause | length }} cause{{ '' if (overview.by_cause | length) == 1 else 's' }} &mdash; fixing one clears many.</p>
+      {% for c in overview.by_cause %}
+      <div class="bg-white shadow rounded-lg p-4">
+        <div class="flex items-center gap-3">
+          <span class="text-xl font-semibold flex-none {% if c.cause_class == 'real_defect' %}text-red-600{% else %}text-amber-600{% endif %}" style="min-width:26px">{{ c.count }}</span>
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium text-gray-900">{{ c.cause_plain }}</div>
+            <div class="text-xs text-gray-400">across {{ c.requirement_count }} requirement{{ '' if c.requirement_count == 1 else 's' }}</div>
+          </div>
+          {% if c.cause_class == 'real_defect' %}
+          <span class="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800 font-medium flex-none whitespace-nowrap">real defect &middot; needs a human</span>
+          {% else %}
+          <span class="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-medium flex-none whitespace-nowrap">fixable{% if repairs is not none %} &middot; see repairs below{% endif %}</span>
+          {% endif %}
+        </div>
+        <div class="mt-2 border-t border-gray-100 divide-y divide-gray-100">
+          {% for t in c.tests %}
+          <a href="/claims/{{ t.test_id }}" class="flex items-center gap-2 py-2 hover:bg-gray-50 -mx-1 px-1 rounded">
+            <span class="text-gray-400 flex-none font-mono text-xs w-16 truncate">{{ t.requirement_key or '—' }}</span>
+            <div class="min-w-0 flex-1">
+              <div class="text-sm text-gray-800">{{ t.title }}</div>
+              <div class="text-xs text-gray-500">{{ t.verdict_plain }}{% if t.finished_ago %} &middot; {{ t.finished_ago }}{% endif %}</div>
+            </div>
+          </a>
+          {% endfor %}
+          {% if c.count > (c.tests | length) %}<div class="py-2 text-xs text-gray-400">+ {{ c.count - (c.tests | length) }} more with this cause</div>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      {{ empty_state(title='No failures in this window',
+          description='Nothing is failing in the selected scope. Switch to &ldquo;Requirement&rdquo; for the full picture.') }}
+    {% endif %}
+
+  {# ── Lens: all runs (the chronological feed) ────────────────────────── #}
+  {% else %}
+    {% set _bp = ['group=runs'] %}
+    {% if af.env %}{% set _ = _bp.append('env=' ~ af.env) %}{% endif %}
+    {% if af.since %}{% set _ = _bp.append('since=' ~ af.since) %}{% endif %}
+    {% set base_qs = _bp | join('&') %}
+    {% if data and data.available %}
+    <div class="flex items-center gap-2 flex-wrap text-xs">
+      <span class="text-gray-400 mr-1">Show</span>
+      {% for oc, lbl in [('', 'All'), ('failed', 'Failed'), ('errored', 'Errored'), ('passed', 'Passed')] %}
+        {% set _cp = [base_qs] %}
+        {% if oc %}{% set _ = _cp.append('outcome=' ~ oc) %}{% endif %}
+        <a href="/runs/substrate?{{ _cp | join('&') }}"
+           class="px-2.5 py-1 rounded-full border {% if (af.outcome or '') == oc %}bg-indigo-600 text-white border-indigo-600{% else %}bg-white text-gray-600 border-gray-300 hover:bg-gray-50{% endif %}">{{ lbl }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if not data or not data.available %}
+      {{ empty_state(title='Runs unavailable',
+          description='We couldn&rsquo;t load your results right now — please try again.') }}
+    {% elif data.runs %}
     <div class="bg-white shadow rounded-lg overflow-hidden">
       <table class="min-w-full divide-y divide-gray-200 text-sm">
         <thead class="bg-gray-50">
           <tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
             <th class="px-4 py-2">Outcome</th>
-            <th class="px-4 py-2">Verdict</th>
-            <th class="px-4 py-2">Claim</th>
-            <th class="px-4 py-2">Finished</th>
-            <th class="px-4 py-2">Duration</th>
+            <th class="px-4 py-2">Test case</th>
+            <th class="px-4 py-2">From</th>
+            <th class="px-4 py-2">Result</th>
+            <th class="px-4 py-2">Environment</th>
+            <th class="px-4 py-2">When</th>
             <th class="px-4 py-2">Run</th>
           </tr>
         </thead>
@@ -78,10 +199,11 @@
                 {% elif r.outcome == 'errored' %}bg-amber-100 text-amber-800
                 {% else %}bg-gray-100 text-gray-700{% endif %}">{{ r.outcome }}</span>
             </td>
-            <td class="px-4 py-2 text-gray-600">{{ r.verdict.replace('_', ' ') if r.verdict else '—' }}</td>
-            <td class="px-4 py-2"><a href="/claims/{{ r.claim_test_id }}" class="text-indigo-600 hover:underline font-mono text-xs">{{ r.claim_test_id[:8] }}</a></td>
-            <td class="px-4 py-2 text-gray-500">{{ r.finished_at[:19] if r.finished_at else '' }}</td>
-            <td class="px-4 py-2 text-gray-500">{% if r.duration_ms is not none %}{{ r.duration_ms }} ms{% endif %}</td>
+            <td class="px-4 py-2"><a href="/claims/{{ r.claim_test_id }}" class="text-indigo-600 hover:underline">{{ r.title or r.claim_test_id[:8] }}</a></td>
+            <td class="px-4 py-2 text-gray-500 text-xs">{{ r.requirement_key or '' }}</td>
+            <td class="px-4 py-2 text-gray-600 text-xs" {% if r.verdict %}title="{{ r.verdict }}"{% endif %}>{{ r.verdict_plain or '—' }}</td>
+            <td class="px-4 py-2 text-gray-500 text-xs">{{ env_names.get(r.environment_id) or ('env ' ~ r.environment_id) }}</td>
+            <td class="px-4 py-2 text-gray-500 text-xs" {% if r.finished_at %}title="{{ r.finished_at[:19] }}"{% endif %}>{{ r.finished_ago }}</td>
             <td class="px-4 py-2"><a href="/runs/{{ r.run_id }}" class="text-indigo-600 hover:underline font-mono text-xs">{{ r.run_id[:8] }} &rarr;</a></td>
           </tr>
           {% endfor %}
@@ -89,16 +211,13 @@
       </table>
     </div>
     <div class="flex items-center justify-between">
-      <p class="text-xs text-gray-500">{{ data.total }} run{{ '' if data.total == 1 else 's' }}{% if any_filter %} match{{ 'es' if data.total == 1 else '' }} the filter{% endif %}</p>
-      {{ render_pagination(data.page, data.total_pages, '/runs/substrate', filter_qs) }}
+      <p class="text-xs text-gray-500">{{ data.total }} run{{ '' if data.total == 1 else 's' }}</p>
+      {{ render_pagination(data.page, data.total_pages, '/runs/substrate', '&' ~ base_qs) }}
     </div>
-  {% elif any_filter %}
-    {{ empty_state(title='No runs match these filters',
-        description='Nothing here for the current filter. Clear it to see every run.',
-        cta_label='Clear filters', cta_url='/runs/substrate') }}
-  {% else %}
-    {{ empty_state(title='No runs yet',
-        description='Approve + run a claim to create execution runs.') }}
+    {% else %}
+      {{ empty_state(title='No runs in this window',
+          description='Nothing ran in the selected scope. Widen the time filter, or run tests from a test case.') }}
+    {% endif %}
   {% endif %}
 
   {# D-214: scheduled substrate regressions (admin+). One cadence per

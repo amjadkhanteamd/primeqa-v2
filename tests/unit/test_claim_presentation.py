@@ -112,6 +112,55 @@ def test_new_kinds_still_fall_back_on_empty_body():
     assert claim_title("automation-effect-claim", {}) == "the automation fires"
 
 
+# ---------------------------------------------------------------------------
+# Results-page helpers: cause_plain / duration_human / time_ago
+# ---------------------------------------------------------------------------
+
+def test_cause_plain_known_and_fallback():
+    from primeqa.intelligence.claim_presentation import cause_plain
+    assert cause_plain("enforcement_gap") == \
+        "A forbidden action was allowed — the rule didn't fire"
+    # unknown kind → humanized
+    assert cause_plain("some_future_cause") == "Some future cause"
+    assert cause_plain(None) is None
+    assert cause_plain("") is None
+
+
+def test_duration_human():
+    from primeqa.intelligence.claim_presentation import duration_human
+    assert duration_human(None) == ""
+    assert duration_human(0) == "0 ms"
+    assert duration_human(999) == "999 ms"
+    assert duration_human(1000) == "1.0s"
+    assert duration_human(9090) == "9.1s"
+    assert duration_human("nope") == ""
+
+
+def test_time_ago_relative_with_injected_now():
+    from datetime import datetime, timedelta, timezone
+    from primeqa.intelligence.claim_presentation import time_ago
+    now = datetime(2026, 6, 18, 12, 0, 0, tzinfo=timezone.utc)
+
+    def iso(delta):
+        return (now - delta).isoformat()
+
+    assert time_ago(iso(timedelta(seconds=10)), now) == "just now"
+    assert time_ago(iso(timedelta(minutes=5)), now) == "5m ago"
+    assert time_ago(iso(timedelta(hours=2)), now) == "2h ago"
+    assert time_ago(iso(timedelta(days=3)), now) == "3d ago"
+    assert time_ago(iso(timedelta(days=30)), now) == "May 19"
+    assert time_ago(None, now) == ""
+    assert time_ago("not-a-date", now) == ""
+
+
+def test_time_ago_naive_timestamp_treated_as_utc():
+    from datetime import datetime, timezone
+    from primeqa.intelligence.claim_presentation import time_ago
+    now = datetime(2026, 6, 18, 12, 0, 0, tzinfo=timezone.utc)
+    # a naive ISO string (no offset) must not raise and is read as UTC
+    assert time_ago("2026-06-18T11:00:00", now) == "1h ago"
+
+
 def test_depth_behavioral_when_any_data_recipe():
     assert claim_depth(["metadata-recipe", "data-recipe"]) == "behavioral"
     assert claim_depth(["data-recipe"]) == "behavioral"

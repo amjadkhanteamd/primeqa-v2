@@ -125,22 +125,26 @@ def run_tests():
     # --------------------------------------------------------------
     # 5-9. D-231 — the failures front door (triage filters + repair drill)
     # --------------------------------------------------------------
-    def test_runs_substrate_has_filter_chips():
+    def test_runs_substrate_shows_lens_toggle():
         login_form("admin@primeqa.io", "changeme123")
         r = client.get("/runs/substrate")
         assert r.status_code == 200, r.status_code
         html = r.get_data(as_text=True)
-        assert "Today" in html and "failures" in html, "no Today's-failures chip"
-        assert 'border-indigo-600">All' in html, "All chip not active by default"
-    results.append(test("5. /runs/substrate renders the triage filter chips (D-231)",
-                        test_runs_substrate_has_filter_chips))
+        # Results redesign (2026-06-18): the default front door is the grouped
+        # lens toggle (Requirement active), not the old flat chip list.
+        assert 'border-indigo-600">Requirement' in html, "Requirement lens not active by default"
+        assert "Root cause" in html and "All runs" in html, "lens toggle missing"
+    results.append(test("5. /runs/substrate renders the grouped lens toggle (Results redesign)",
+                        test_runs_substrate_shows_lens_toggle))
 
     def test_runs_outcome_filter_active():
         login_form("admin@primeqa.io", "changeme123")
+        # an outcome deep-link lands on the all-runs lens (where the filter is
+        # meaningful) with the Failed chip active; the All chip resets it.
         html = client.get("/runs/substrate?outcome=failed").get_data(as_text=True)
         assert 'border-indigo-600">Failed' in html, "Failed chip not active for ?outcome=failed"
-        assert ">clear<" in html, "no clear link when filtered"
-    results.append(test("6. ?outcome=failed drives the active Failed chip (D-231)",
+        assert ">All</a>" in html, "no All chip to reset the filter"
+    results.append(test("6. ?outcome=failed lands on the all-runs lens, Failed chip active (D-231)",
                         test_runs_outcome_filter_active))
 
     def test_runs_status_alias_lands():

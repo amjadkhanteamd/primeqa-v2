@@ -25,6 +25,9 @@ from uuid import UUID
 from sqlalchemy import text
 
 from primeqa.execution_engine.errors import UnexecutableClaimError
+from primeqa.intelligence.claim_presentation import (
+    claim_title, cause_plain, duration_human, time_ago, verdict_plain,
+)
 
 log = logging.getLogger(__name__)
 
@@ -198,10 +201,12 @@ def read_run_detail(tenant_id: int, run_id) -> dict:
 
 # --- list all runs (the global runs index) (3b) ------------------------------
 
-# D-231: the runs index is filterable (the failures front door). The page query
-# and the COUNT share ONE FROM + WHERE so pagination totals match the filtered set.
-# The LEFT JOIN to s6_interpretations is 1:0-or-1 (one S6 reading per run), so the
-# COUNT cardinality is unaffected whether or not a verdict filter is applied.
+# D-231: the runs index is filterable (the failures front door). The COUNT uses
+# this bare FROM; the page query appends two display-only joins (test_claims-current
+# for the title + a LATERAL generated_from for the Jira key). Both are 1:0-or-1 — the
+# LATERAL by LIMIT 1, the claim join by the one-current-version SCD invariant (valid_to
+# IS NULL) — so they do NOT change row cardinality and total/page parity holds. The
+# base s6_interpretations LEFT JOIN is likewise 1:0-or-1 (one S6 reading per run).
 _RUNS_FROM = ("FROM s4_execution_runs r "
               "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id")
 
@@ -245,15 +250,31 @@ def _list_runs(conn, *, limit: int, offset: int, outcome=None, verdict=None,
         "SELECT CAST(r.run_id AS text) AS run_id, "
         "CAST(r.claim_test_id AS text) AS claim_test_id, "
         "r.outcome::text AS outcome, r.finished_at, r.duration_ms, r.environment_id, "
-        "i.verdict::text AS verdict "
-        f"{_RUNS_FROM}{where} "
+        "i.verdict::text AS verdict, "
+        "c.claim_kind::text AS claim_kind, c.asserted_truth, "
+        "req.external_key AS requirement_key "
+        f"{_RUNS_FROM} "
+        "LEFT JOIN test_claims c ON c.test_id = r.claim_test_id AND c.valid_to IS NULL "
+        "LEFT JOIN LATERAL ("
+        "  SELECT l.external_key FROM test_requirement_links l "
+        "  WHERE l.test_id = r.claim_test_id AND l.link_kind = 'generated_from' "
+        "  ORDER BY l.linked_at DESC LIMIT 1) req ON true "
+        f"{where} "
         "ORDER BY r.finished_at DESC LIMIT :limit OFFSET :offset")
     rows = conn.execute(
         text(sql), {**params, "limit": limit, "offset": offset}).mappings().all()
     runs = [{"run_id": r["run_id"], "claim_test_id": r["claim_test_id"],
              "outcome": r["outcome"], "verdict": r["verdict"],
-             "finished_at": _iso(r["finished_at"]), "duration_ms": r["duration_ms"],
-             "environment_id": r["environment_id"]} for r in rows]
+             "verdict_plain": verdict_plain(r["verdict"], r["outcome"]),
+             "finished_at": _iso(r["finished_at"]),
+             "finished_ago": time_ago(_iso(r["finished_at"])),
+             "duration_ms": r["duration_ms"],
+             "duration_h": duration_human(r["duration_ms"]),
+             "environment_id": r["environment_id"],
+             "requirement_key": r["requirement_key"],
+             "title": (claim_title(r["claim_kind"], r["asserted_truth"])
+                       if r["claim_kind"] else None)}
+            for r in rows]
     return total, runs
 
 
@@ -284,6 +305,147 @@ def list_runs(tenant_id: int, *, page: int = 1, per_page: int = 20,
         return {"available": False, "runs": [], "total": 0,
                 "page": page, "per_page": per_page, "total_pages": 1,
                 "filters": filters}
+
+
+# --- results overview: group by requirement / by root cause (triage at scale) -
+# The Results page reads the *current state* of each test in scope — the LATEST
+# run per claim_test within (environment, time-window) — then aggregates it two
+# ways in pure Python: by the requirement (Jira) the test came from, and by the
+# S6 cause_kind of each failure. The "real defect vs fixable" split reuses the
+# repair agent's deterministic triage map (proposal_for). One DB hit feeds the
+# health banner + both lenses.
+
+_FAIL_OUTCOMES = ("failed", "errored")
+
+_SCOPED_LATEST_SQL = (
+    "WITH scoped AS ("
+    "  SELECT DISTINCT ON (r.claim_test_id) "
+    "    r.claim_test_id, CAST(r.run_id AS text) AS run_id, "
+    "    r.outcome::text AS outcome, r.finished_at, r.duration_ms, r.environment_id, "
+    "    i.verdict::text AS verdict, i.cause_kind "
+    "  FROM s4_execution_runs r "
+    "  LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
+    "  {where} "
+    "  ORDER BY r.claim_test_id, r.finished_at DESC) "
+    "SELECT CAST(s.claim_test_id AS text) AS test_id, s.run_id, s.outcome, "
+    "       s.finished_at, s.duration_ms, s.environment_id, s.verdict, s.cause_kind, "
+    "       c.claim_kind::text AS claim_kind, c.asserted_truth, "
+    "       req.external_key AS requirement_key "
+    "FROM scoped s "
+    "LEFT JOIN test_claims c ON c.test_id = s.claim_test_id AND c.valid_to IS NULL "
+    "LEFT JOIN LATERAL ("
+    "  SELECT l.external_key FROM test_requirement_links l "
+    "  WHERE l.test_id = s.claim_test_id AND l.link_kind = 'generated_from' "
+    "  ORDER BY l.linked_at DESC LIMIT 1) req ON true")
+
+
+def _scoped_latest(conn, *, environment_id=None, since=None):
+    """Pure: the latest run per claim_test within (environment, since), enriched
+    with the test's current claim_kind/asserted_truth (for the title) and its
+    source requirement key. One row per test."""
+    where, params = _runs_where(None, None, environment_id, since)
+    sql = _SCOPED_LATEST_SQL.format(where=where)
+    return conn.execute(text(sql), params).mappings().all()
+
+
+def _row_title(r):
+    return (claim_title(r["claim_kind"], r["asserted_truth"])
+            if r["claim_kind"] else (r["test_id"][:8] if r["test_id"] else "test"))
+
+
+def _aggregate_overview(rows, *, now=None) -> dict:
+    """Pure: turn the scoped latest-per-test rows into the health summary + the
+    two lenses (by requirement, by root cause). ``now`` is injectable so the
+    relative-time strings are deterministic in tests. No DB, no I/O beyond the
+    ``proposal_for`` triage map."""
+    from primeqa.intelligence.repair_agent import proposal_for
+
+    rows = list(rows)
+    failing = [r for r in rows if r["outcome"] in _FAIL_OUTCOMES]
+    total, passed = len(rows), sum(1 for r in rows if r["outcome"] == "passed")
+    summary = {
+        "total": total, "passed": passed, "failing": len(failing),
+        "pass_rate": round(passed / total * 100) if total else None,
+        # count the cluster BUCKETS (an unattributed bucket is a cluster in the
+        # by-cause lens too), so the banner number == len(by_cause).
+        "causes": len({r["cause_kind"] or "__unattributed__" for r in failing}),
+        "reqs_failing": len({r["requirement_key"] for r in failing
+                             if r["requirement_key"]}),
+    }
+
+    # --- by requirement (every test, failing tests first within a group) ---
+    req_map: dict = {}
+    for r in rows:
+        key = r["requirement_key"]
+        g = req_map.setdefault(key or " unlinked", {
+            "requirement_key": key, "tests": [], "passed": 0, "failed": 0,
+            "last_finished": None})
+        fin = _iso(r["finished_at"])
+        g["tests"].append({
+            "test_id": r["test_id"], "title": _row_title(r),
+            "outcome": r["outcome"], "verdict": r["verdict"],
+            "verdict_plain": verdict_plain(r["verdict"], r["outcome"]),
+            "finished_ago": time_ago(fin, now)})
+        if r["outcome"] == "passed":
+            g["passed"] += 1
+        elif r["outcome"] in _FAIL_OUTCOMES:
+            g["failed"] += 1
+        if fin and (g["last_finished"] is None or fin > g["last_finished"]):
+            g["last_finished"] = fin
+    by_requirement = []
+    for g in req_map.values():
+        g["total"] = len(g["tests"])
+        g["last_ago"] = time_ago(g["last_finished"], now)
+        g["tests"].sort(key=lambda t: (t["outcome"] == "passed", t["title"] or ""))
+        by_requirement.append(g)
+    by_requirement.sort(key=lambda g: (g["failed"] == 0, -g["failed"], -g["total"]))
+
+    # --- by root cause (failures only; a cause is a real defect unless EVERY
+    #     failure under it is agent-fixable per proposal_for) ---
+    cause_map: dict = {}
+    for r in failing:
+        ck = r["cause_kind"]
+        g = cause_map.setdefault(ck or " unattributed", {
+            "cause_kind": ck, "count": 0, "requirement_keys": set(),
+            "tests": [], "_all_fixable": True})
+        g["count"] += 1
+        if r["requirement_key"]:
+            g["requirement_keys"].add(r["requirement_key"])
+        if proposal_for(r["verdict"], r["cause_kind"], r["outcome"]) is None:
+            g["_all_fixable"] = False
+        if len(g["tests"]) < 5:
+            g["tests"].append({
+                "test_id": r["test_id"], "title": _row_title(r),
+                "requirement_key": r["requirement_key"],
+                "verdict_plain": verdict_plain(r["verdict"], r["outcome"]),
+                "finished_ago": time_ago(_iso(r["finished_at"]), now)})
+    by_cause = []
+    for g in cause_map.values():
+        g["cause_class"] = "fixable" if g.pop("_all_fixable") else "real_defect"
+        g["cause_plain"] = cause_plain(g["cause_kind"]) or "Unattributed failure"
+        g["requirement_count"] = len(g["requirement_keys"])
+        del g["requirement_keys"]
+        by_cause.append(g)
+    by_cause.sort(key=lambda g: -g["count"])
+
+    return {"summary": summary, "by_requirement": by_requirement,
+            "by_cause": by_cause}
+
+
+def runs_overview(tenant_id: int, *, environment_id=None, since=None) -> dict:
+    """Best-effort: the Results-page overview — health summary + by-requirement +
+    by-cause lenses over the latest run per test in scope. Never raises. Returns
+    ``{available, summary, by_requirement, by_cause}``; ``available=False`` on any
+    read error (page degrades to the empty state)."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            rows = _scoped_latest(conn, environment_id=environment_id, since=since)
+        return {"available": True, **_aggregate_overview(rows)}
+    except Exception as exc:
+        log.warning("runs_overview unavailable for tenant %s: %s", tenant_id, exc)
+        return {"available": False, "summary": None,
+                "by_requirement": [], "by_cause": []}
 
 
 # --- approve a claim (the run-enabler) ---------------------------------------

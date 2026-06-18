@@ -2621,10 +2621,13 @@ def _parse_runs_since(raw):
     None for empty/unrecognized input (a bad filter is ignored, never an error)."""
     if not raw:
         return None
-    from datetime import date, datetime, timezone
+    from datetime import date, datetime, timedelta, timezone
     if raw == "today":
         return datetime.now(timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0)
+    if raw in ("24h", "7d", "30d"):
+        hours = {"24h": 24, "7d": 168, "30d": 720}[raw]
+        return datetime.now(timezone.utc) - timedelta(hours=hours)
     try:
         d = date.fromisoformat(raw)
     except ValueError:
@@ -2639,7 +2642,9 @@ def s4_runs_list():
     newest-first. A focused new surface (the dense v1 /runs page is re-pointed at
     cutover Step 5). Best-effort read via the s4_execution_console bridge.
     D-214 adds the schedules panel (admin+): one cadence per env, sandbox-only."""
-    from primeqa.intelligence.s4_execution_console import _RUN_OUTCOMES, list_runs
+    from primeqa.intelligence.s4_execution_console import (
+        _RUN_OUTCOMES, list_runs, runs_overview)
+    tid = request.user["tenant_id"]
     page = request.args.get("page", 1, type=int) or 1
     per_page = request.args.get("per_page", 20, type=int) or 20
     # D-231 triage filters (the failures front door). `status` is the v1-alias arg
@@ -2648,31 +2653,69 @@ def s4_runs_list():
     raw_outcome = (request.args.get("outcome")
                    or request.args.get("status") or "").strip().lower()
     outcome = raw_outcome if raw_outcome in _RUN_OUTCOMES else None
+    # The lens: by requirement (default — "how's each feature"), by root cause,
+    # or the flat chronological feed. A status/outcome deep-link (the D-231
+    # failures front door / the /results?status=failed alias) lands on the 'runs'
+    # lens, where the outcome filter is meaningful (the grouped lenses ignore it).
+    group = (request.args.get("group") or "").strip().lower()
+    if group not in ("requirement", "cause", "runs"):
+        group = "runs" if raw_outcome else "requirement"
     verdict = (request.args.get("verdict") or "").strip() or None
     env = request.args.get("env", type=int)
-    since_raw = (request.args.get("since") or "").strip().lower() or None
+    # Default scope = last 24h: the Results page answers "what's the state now",
+    # not "all history". The time chip widens it.
+    since_raw = (request.args.get("since") or "").strip().lower() or "24h"
     since = _parse_runs_since(since_raw)
-    tid = request.user["tenant_id"]
-    data = list_runs(tid, page=page, per_page=per_page, outcome=outcome,
-                     verdict=verdict, environment_id=env, since=since)
-    # Echo the active facets (raw arg forms) so the template renders active chips
-    # + carries the filter across pagination/chip links.
-    active_filters = {"outcome": outcome, "verdict": verdict, "env": env,
-                      "since": since_raw}
 
-    schedules, sched_envs = None, []
+    # Environments — for the scope picker + resolving env names on run rows (envs
+    # are v1-side; the substrate stores only environment_id). Built for every
+    # caller so the picker + name map are always present (admin also gets the
+    # sandbox set for the add-schedule form).
+    env_names, envs_for_picker, sched_envs = {}, [], []
+    db = next(get_db())
+    try:
+        envs = EnvironmentRepository(db).list_environments(
+            tid, request.user["id"], request.user["role"])
+        env_names = {e.id: e.name for e in envs}
+        envs_for_picker = [{"id": e.id, "name": e.name} for e in envs]
+        sched_envs = [{"id": e.id, "name": e.name}
+                      for e in envs if not e.is_production]
+    finally:
+        db.close()
+
+    # The two grouped lenses share one overview read (health summary + both
+    # groupings); the flat "all runs" lens is the paginated chronological feed.
+    overview, data = None, None
+    if group == "runs":
+        data = list_runs(tid, page=page, per_page=per_page, outcome=outcome,
+                         verdict=verdict, environment_id=env, since=since)
+    else:
+        overview = runs_overview(tid, environment_id=env, since=since)
+        # the "why this test exists" requirement summaries (v1-side resolve)
+        try:
+            from primeqa.intelligence.substrate_dashboard import _requirement_summaries
+            keys = {g["requirement_key"] for g in (overview.get("by_requirement") or [])
+                    if g.get("requirement_key")}
+            if keys:
+                db = next(get_db())
+                try:
+                    sums = _requirement_summaries(db, tid, keys)
+                finally:
+                    db.close()
+                for g in overview["by_requirement"]:
+                    g["requirement_summary"] = sums.get(g.get("requirement_key"))
+        except Exception:
+            pass
+
+    # Echo the active facets (raw arg forms) so the template renders active chips
+    # + carries the filter across links.
+    active_filters = {"group": group, "outcome": outcome, "verdict": verdict,
+                      "env": env, "since": since_raw}
+
+    schedules = None
     if request.user["role"] in ("admin", "superadmin"):
         try:
             from primeqa.execution_engine.schedules import RunScheduleStore
-            db = next(get_db())
-            try:
-                envs = EnvironmentRepository(db).list_environments(
-                    tid, request.user["id"], request.user["role"])
-                env_names = {e.id: e.name for e in envs}
-                sched_envs = [{"id": e.id, "name": e.name}
-                              for e in envs if not e.is_production]
-            finally:
-                db.close()
             schedules = [{
                 "id": s.id, "environment_id": s.environment_id,
                 "environment": env_names.get(s.environment_id,
@@ -2691,8 +2734,10 @@ def s4_runs_list():
         from primeqa.intelligence.repair_agent import list_proposals
         repairs = list_proposals(tid)
     return render_template("runs/s4_list.html", **ctx(
-        active_page="test_library", data=data, active_filters=active_filters,
-        schedules=schedules, sched_envs=sched_envs, repairs=repairs))
+        active_page="test_library", group=group, overview=overview, data=data,
+        active_filters=active_filters, env_names=env_names,
+        envs_for_picker=envs_for_picker, schedules=schedules,
+        sched_envs=sched_envs, repairs=repairs))
 
 
 @views_bp.route("/runs/substrate/repairs/<int:proposal_id>", methods=["POST"])
