@@ -92,3 +92,34 @@ def test_empty_rows_safe():
                               "pass_rate": None, "causes": 0, "reqs_failing": 0}
     assert out["by_requirement"] == []
     assert out["by_cause"] == []
+
+
+# ---------------------------------------------------------------------------
+# The /run picker's per-requirement last-run health (pure aggregator)
+# ---------------------------------------------------------------------------
+
+def test_aggregate_req_health():
+    from primeqa.intelligence.s4_execution_console import _aggregate_req_health
+    fin = datetime(2026, 6, 18, 10, 0, 0, tzinfo=timezone.utc)
+    rows = [
+        {"key": "SQ-1", "outcome": "passed", "finished_at": fin},
+        {"key": "SQ-1", "outcome": "failed", "finished_at": fin},
+        {"key": "SQ-1", "outcome": None, "finished_at": None},      # never run
+        {"key": "SQ-2", "outcome": "passed", "finished_at": fin},
+        {"key": "SQ-2", "outcome": "passed", "finished_at": fin},
+        {"key": "SQ-3", "outcome": None, "finished_at": None},      # all unrun
+        {"key": "SQ-4", "outcome": "errored", "finished_at": fin},  # errored == failed
+    ]
+    h = _aggregate_req_health(rows, now=_NOW)
+    assert (h["SQ-1"]["total"], h["SQ-1"]["run"]) == (3, 2)
+    assert (h["SQ-1"]["passed"], h["SQ-1"]["failed"]) == (1, 1)
+    assert h["SQ-1"]["last_ago"] == "2h ago"
+    assert (h["SQ-2"]["total"], h["SQ-2"]["run"], h["SQ-2"]["failed"]) == (2, 2, 0)
+    assert (h["SQ-3"]["total"], h["SQ-3"]["run"]) == (1, 0)
+    assert h["SQ-3"]["last_ago"] == ""                              # never run
+    assert h["SQ-4"]["failed"] == 1                                 # errored counts
+
+
+def test_aggregate_req_health_empty():
+    from primeqa.intelligence.s4_execution_console import _aggregate_req_health
+    assert _aggregate_req_health([]) == {}

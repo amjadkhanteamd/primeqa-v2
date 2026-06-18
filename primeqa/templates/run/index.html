@@ -18,11 +18,11 @@
   </div>
 
   {% if not available %}
-    {{ empty_state(title='Test store unavailable',
-        description='The substrate could not be read for your tenant right now.') }}
+    {{ empty_state(title='Tests unavailable',
+        description='We couldn&rsquo;t load your tests right now — please try again.') }}
   {% elif not requirements %}
     {{ empty_state(title='Nothing approved to run',
-        description='Generate tests from a requirement, then approve the drafts in the claims inbox.',
+        description='Generate tests from a requirement, then approve the drafts in the approval inbox.',
         cta_label='Go to My Tickets', cta_url='/requirements') }}
   {% else %}
   <form method="POST" action="/run" class="space-y-5">
@@ -35,46 +35,66 @@
               class="rounded-md border border-gray-300 px-2 py-1.5 text-sm w-full max-w-sm">
         {% for e in environments %}<option value="{{ e.id }}">{{ e.name }}</option>{% endfor %}
       </select>
-      <p class="mt-1 text-xs text-gray-400">Production environments are excluded &mdash; substrate runs are sandbox-only.</p>
+      <p class="mt-1 text-xs text-gray-400">Production environments are excluded &mdash; test runs are sandbox-only.</p>
       {% else %}
       <p class="text-sm text-amber-700">No active sandbox environments &mdash; connect one under Settings.</p>
       {% endif %}
     </div>
 
     <div class="bg-white shadow rounded-lg overflow-hidden">
-      <div class="px-4 py-3 border-b flex items-center justify-between">
+      <div class="px-4 py-3 border-b flex items-center justify-between gap-3 flex-wrap">
         <h3 class="text-sm font-semibold text-gray-700">Requirements with approved tests</h3>
-        <label class="text-xs text-gray-500 inline-flex items-center gap-1.5">
-          <input type="checkbox" id="select-all" class="rounded border-gray-300"> select all
-        </label>
+        <div class="flex items-center gap-3">
+          <input type="text" id="req-search" placeholder="Search&hellip;" autocomplete="off"
+                 class="rounded-md border border-gray-300 px-2 py-1 text-xs w-40">
+          <label class="text-xs text-gray-500 inline-flex items-center gap-1.5">
+            <input type="checkbox" id="select-all" class="rounded border-gray-300"> select all
+          </label>
+        </div>
       </div>
       <table class="min-w-full divide-y divide-gray-200 text-sm">
         <tbody class="divide-y divide-gray-100">
           {% for r in requirements %}
-          <tr class="hover:bg-gray-50">
+          <tr class="hover:bg-gray-50 req-row" data-search="{{ (r.key ~ ' ' ~ (r.summary or '')) | lower }}">
             <td class="px-4 py-2 w-8">
               <input type="checkbox" name="requirement_keys" value="{{ r.key }}"
                      class="req-check rounded border-gray-300">
             </td>
-            <td class="px-4 py-2 font-mono text-xs text-gray-900">{{ r.key }}</td>
-            <td class="px-4 py-2 text-gray-600">{{ r.summary or '' }}</td>
+            <td class="px-4 py-2 font-mono text-xs text-gray-500 whitespace-nowrap">{% if r.key.startswith('req-') %}#{{ r.key[4:] }}{% else %}{{ r.key }}{% endif %}</td>
+            <td class="px-4 py-2 text-gray-700">{% if r.summary %}{{ r.summary }}{% else %}<span class="text-gray-400 italic">Untitled{% if not r.key.startswith('req-') %} &mdash; re-sync from Jira{% endif %}</span>{% endif %}</td>
+            <td class="px-4 py-2 whitespace-nowrap">
+              {% set h = r.health %}
+              {% if h and h.failed %}
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">{{ h.failed }} failed</span>
+              {% elif h and h.total and h.run == h.total %}
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">all green</span>
+              {% elif h and h.run %}
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">{{ h.run }}/{{ h.total }} run</span>
+              {% else %}
+              <span class="text-xs text-gray-400">never run</span>
+              {% endif %}
+              {% if h and h.last_ago %}<span class="text-xs text-gray-400 ml-1">{{ h.last_ago }}</span>{% endif %}
+            </td>
             <td class="px-4 py-2 text-right text-xs text-gray-500 whitespace-nowrap">
               {{ r.approved_claims }} test{{ '' if r.approved_claims == 1 else 's' }}
             </td>
           </tr>
           {% endfor %}
+          <tr id="req-no-match" class="hidden">
+            <td colspan="5" class="px-4 py-6 text-center text-sm text-gray-400">No requirements match your search.</td>
+          </tr>
         </tbody>
       </table>
     </div>
 
     <div class="flex items-center gap-3">
-      <button type="submit" {% if not environments %}disabled{% endif %}
+      <button type="submit" id="run-selected-btn" {% if not environments %}disabled{% endif %}
               class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50">
         Run selected</button>
       <button type="submit" name="run_all" value="1" {% if not environments %}disabled{% endif %}
               class="rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-700 ring-1 ring-gray-300 hover:bg-gray-50 disabled:opacity-50"
-              data-confirm="Queue a run of EVERY approved test on the selected environment?">
-        Run all approved</button>
+              data-confirm="Queue a run of EVERY approved test{% if total_tests %} ({{ total_tests }}){% endif %} on the selected environment?">
+        Run all approved{% if total_tests %} &middot; {{ total_tests }} test{{ '' if total_tests == 1 else 's' }}{% endif %}</button>
       <a href="/runs/substrate" class="text-sm text-gray-500 hover:underline ml-auto">View runs &rarr;</a>
     </div>
   </form>
@@ -82,9 +102,40 @@
 </div>
 
 <script>
+(function () {
   const all = document.getElementById('select-all');
+  const runSel = document.getElementById('run-selected-btn');
+  const search = document.getElementById('req-search');
+  const noMatch = document.getElementById('req-no-match');
+  const hasEnv = {{ 'true' if environments else 'false' }};
+  const checks = () => Array.from(document.querySelectorAll('.req-check'));
+
+  function syncRunSelected() {
+    if (!runSel) return;
+    const any = checks().some(c => c.checked && !c.closest('tr').classList.contains('hidden'));
+    runSel.disabled = !(any && hasEnv);
+  }
   if (all) all.addEventListener('change', () => {
-    document.querySelectorAll('.req-check').forEach(c => { c.checked = all.checked; });
+    checks().forEach(c => {
+      if (!c.closest('tr').classList.contains('hidden')) c.checked = all.checked;
+    });
+    syncRunSelected();
   });
+  document.addEventListener('change', (e) => {
+    if (e.target && e.target.classList && e.target.classList.contains('req-check')) syncRunSelected();
+  });
+  if (search) search.addEventListener('input', () => {
+    const q = search.value.trim().toLowerCase();
+    let visible = 0;
+    document.querySelectorAll('.req-row').forEach((row) => {
+      const match = !q || (row.dataset.search || '').indexOf(q) !== -1;
+      row.classList.toggle('hidden', !match);
+      if (match) visible++;
+    });
+    if (noMatch) noMatch.classList.toggle('hidden', visible > 0);
+    syncRunSelected();
+  });
+  syncRunSelected();
+})();
 </script>
 {% endblock %}

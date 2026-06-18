@@ -740,3 +740,74 @@ def list_runnable_requirements(tenant_id: int) -> dict:
         log.warning("list_runnable_requirements unavailable for tenant %s: %s",
                     tenant_id, exc)
         return {"available": False, "rows": []}
+
+
+# --- per-requirement last-run health (the /run picker's decide signal) --------
+# So the bulk-run picker isn't blind: for each requirement, the latest run per
+# APPROVED test → passed/failed/never-run, so "re-run the red ones" beats "run
+# everything and hope". Environment-agnostic (the page picks the env after
+# landing): the latest run for each test in ANY environment is its current state.
+
+def _requirement_health_rows(conn, keys):
+    """Pure: one row per approved test for the given requirement keys, carrying
+    that test's LATEST run outcome (NULL when never run) + finished_at.
+
+    One row per (test, key): the link PK is unique per (test_id, external_system,
+    external_key, link_kind) and external_system has a single value today, so the
+    per-key row count equals the picker's COUNT(DISTINCT test_id) — the health
+    ``total`` and the "N tests" count stay in lockstep."""
+    from sqlalchemy import bindparam
+    stmt = text(
+        "SELECT l.external_key AS key, lastrun.outcome AS outcome, "
+        "       lastrun.finished_at AS finished_at "
+        "FROM test_requirement_links l "
+        "JOIN test_claims c ON c.test_id = l.test_id "
+        "  AND c.valid_to IS NULL AND c.status = 'approved' "
+        "LEFT JOIN LATERAL ("
+        "  SELECT r.outcome::text AS outcome, r.finished_at "
+        "  FROM s4_execution_runs r "
+        "  WHERE r.claim_test_id = l.test_id "
+        "  ORDER BY r.finished_at DESC LIMIT 1) lastrun ON true "
+        "WHERE l.link_kind = 'generated_from' AND l.external_key IN :keys"
+    ).bindparams(bindparam("keys", expanding=True))
+    return conn.execute(stmt, {"keys": list(keys)}).mappings().all()
+
+
+def _aggregate_req_health(rows, *, now=None) -> dict:
+    """Pure: ``{key: {total, run, passed, failed, last_ago}}`` over the latest run
+    per approved test. ``total`` counts every approved test; ``run`` only those
+    with a run. ``now`` is injectable for deterministic relative-time tests."""
+    out: dict = {}
+    for r in rows:
+        g = out.setdefault(r["key"], {"total": 0, "run": 0, "passed": 0,
+                                      "failed": 0, "last_finished": None})
+        g["total"] += 1
+        if r["outcome"] is not None:
+            g["run"] += 1
+            if r["outcome"] == "passed":
+                g["passed"] += 1
+            elif r["outcome"] in ("failed", "errored"):
+                g["failed"] += 1
+        fin = _iso(r["finished_at"])
+        if fin and (g["last_finished"] is None or fin > g["last_finished"]):
+            g["last_finished"] = fin
+    for g in out.values():
+        g["last_ago"] = time_ago(g["last_finished"], now)
+    return out
+
+
+def requirement_run_health(tenant_id: int, keys) -> dict:
+    """Best-effort: per-requirement last-run health for the /run picker. Never
+    raises → ``{}`` on any read error (the page still renders without chips)."""
+    keys = list(keys)
+    if not keys:
+        return {}
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            rows = _requirement_health_rows(conn, keys)
+        return _aggregate_req_health(rows)
+    except Exception as exc:
+        log.warning("requirement_run_health unavailable for tenant %s: %s",
+                    tenant_id, exc)
+        return {}

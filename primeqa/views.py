@@ -617,7 +617,7 @@ def run_page():
     D-214 sandbox-only execution posture."""
     from primeqa.core.models import Environment
     from primeqa.intelligence.s4_execution_console import (
-        list_runnable_requirements,
+        list_runnable_requirements, requirement_run_health,
     )
     from primeqa.test_management.models import Requirement
 
@@ -649,10 +649,17 @@ def run_page():
                     summaries[f"req-{r.id}"] = r.jira_summary
             rows = [{**r, "summary": summaries.get(r["key"])}
                     for r in runnable["rows"]]
+            # per-requirement last-run health (the picker's decide signal) +
+            # the total approved-test count for the "Run all" button.
+            health = requirement_run_health(tid, keys)
+            for r in rows:
+                r["health"] = health.get(r["key"])
+            total_tests = sum(r.get("approved_claims") or 0 for r in rows)
             return render_template("run/index.html", **ctx(
                 active_page="run_tests", environments=[
                     {"id": e.id, "name": e.name} for e in envs],
                 requirements=rows, available=runnable["available"],
+                total_tests=total_tests,
             ))
         finally:
             db.close()
