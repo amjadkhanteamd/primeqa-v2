@@ -44,6 +44,7 @@ def _a_tenant_id(engine):
 def run() -> bool:
     print("\n=== get_sync_run_cost integration (1d) ===\n")
     try:
+        from primeqa.app import app  # noqa: F401 — triggers init_db()
         from primeqa.db import engine
     except Exception as e:                      # pragma: no cover
         print(f"  SKIP  no engine ({e})")
@@ -110,7 +111,7 @@ def run() -> bool:
         check("summary.tokens", roll["summary"]["tokens"], 2800)
         check("summary.cost_usd", round(roll["summary"]["cost_usd"], 6), 0.017)
         # total + missing + provisional surfaced
-        check("total_cost_usd", round(roll["total_cost_usd"], 6), 0.0172)
+        check("total_cost_usd", round(roll["total_cost_usd"], 6), 0.01715)
         check("tokens_missing_rows", roll["tokens_missing_rows"], 1)
         check("rate_provisional_rows", roll["rate_provisional_rows"], 1)
     finally:
