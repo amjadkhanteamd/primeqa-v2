@@ -14618,3 +14618,80 @@ guarded by `test_multi_intent`. The deterministic per-AC enforcer is the
 guarantee; the prompt only reduces how often the re-prompt fires.
 
 ---
+
+## D-248 — S1 sync cost telemetry: cost-measurement-first, the voyage-3 cost constant, and `sync_run_id` usage attribution
+
+**Context.** The S1 enrichment lane spends real money — Voyage embeddings + Claude
+summaries — but that spend was unmeasured per sync run: `record_embedding_usage`
+wrote count-only rows (`cost_usd=0.0`, `input_tokens=0`) and the summary
+generation's gateway usage rows carried no link back to the run that drove them.
+There was no way to answer "what did this org-sync cost?". This is the
+measurement slice (1d); it deliberately precedes the bucketing/gating refactor
+(1c).
+
+**Decision — measure first, change nothing else.** Pure instrumentation: capture
+and persist the tokens + cost that are already incurred, attributed to the
+`sync_run` that caused them, and add one read-side roll-up. It does **not**
+change what gets embedded or summarized, nor the diff/bucketing/gating logic —
+the volatile-field stripping and the `hash_normalized` gate are untouched (1c,
+later). No silent fallbacks: a missing Voyage token count is logged loud + marked
+`tokens_missing`, never written as a fabricated measured-zero.
+
+**Schema-placement finding + FK-vs-soft-ref decision.** `llm_usage_log` lives in
+the **PUBLIC** schema (migration 031, `tenant_id`-keyed); `sync_runs` lives
+**per-tenant** (alembic, `20260430_0020_phase2_sync_runs`). A foreign key from a
+public table into a per-tenant schema is impossible in PostgreSQL. → `sync_run_id`
+is a **soft `UUID` column with NO FK**, integrity enforced in application code
+(`sync/readiness.resolve_active_sync_run_id`, reading
+`connected_orgs.last_sync_run_id`), documented in a column comment. The migration
+is therefore a **public numbered SQL file** (`migrations/058_*.sql`,
+nullable + partial index `WHERE sync_run_id IS NOT NULL`, idempotent, reversible
+downgrade in-file) — **not** an alembic tenant migration.
+
+**The voyage-3 cost constant.** `VOYAGE_3_USD_PER_1M_TOKENS` lives next to the
+embeddings config (`intelligence/embeddings.py`). It is a **clearly-marked
+PLACEHOLDER** (`0.10`, with `VOYAGE_3_RATE_CONFIRMED=False`, a screaming comment,
+and a one-time runtime warning) — **not** a researched Voyage price; all cost math
+references the single constant via pure `voyage_embedding_cost_usd()`
+(`cost = tokens * rate / 1_000_000`). AK confirms the real rate and flips the flag
+before any cost is treated as authoritative. Until then every Voyage cost row
+carries an in-band `rate_provisional` marker and the roll-up surfaces
+`rate_provisional_rows`, so a placeholder price can never masquerade as confirmed.
+
+**`sync_run_id` usage attribution.** `embed_batch_with_usage()` surfaces the
+Voyage token count (`None` ⇒ unmeasured, no fabricated zero) without changing
+`embed_batch()`'s signature for existing callers. The embedding subtick threads
+tokens + the per-org `sync_run_id` into `record_embedding_usage` (now computing
+real cost); the summary subtick attributes cost **only on success** (mirrors
+`_mark_succeeded`, so a retried summary cannot double-count) and back-links **all**
+gateway usage rows via `usage.set_sync_run_many(resp.usage_log_ids, …)` — not just
+the final attempt — so an escalated summary's primary attempt is attributed too.
+Read side: `usage.get_sync_run_cost(sync_run_id)` sums `llm_usage_log` by
+`sync_run_id` into `{embedding, summary, total_cost_usd, tokens_missing_rows,
+rate_provisional_rows}` (embedding bucket = `EMBEDDING_TASK`, incl. each summary's
+own embedding; summary bucket = `entity_summary_*`).
+
+**Verification.** Full `tests/unit/` green (2862): cost math from the constant
+(zero + large token), token surfacing + missing→`None`, `record_embedding_usage`
+cost/missing/provisional + `sync_run_id` passthrough, `get_sync_run_cost` shaping
+over mixed embedding+summary rows, and the worker-orchestration suite updated to
+the tuple-returning embed + the attribution back-links. An integration test
+(`tests/test_sync_run_cost_integration.py`) exercises the real SQL bucketing over
+mixed rows and **self-skips** until migration 058 is applied to the DB. Two
+independent adversarial reviews ran before merge; both found **HIGH: none**. The
+review caught (and this slice fixed) the escalation under-attribution (use
+`usage_log_ids`, not `usage_log_id`) and the attribute-before-embed-could-fail
+double-count (moved attribution to the success path).
+
+**Pending (AK).** Apply `migrations/058_*.sql` to the DB, then run the integration
+test; confirm the real voyage-3 per-1M-token rate and flip
+`VOYAGE_3_RATE_CONFIRMED=True`.
+
+**Risks.** Placeholder rate → costs are provisional but loudly flagged (warning +
+`rate_provisional` row marker + roll-up count); soft `UUID` (no FK) → a dangling
+`sync_run_id` is possible in principle but the writer only ever sets the org's
+own active-run pointer; failed-then-permanently-failed summary spend is left
+unattributed (`NULL`) by design — consistent with the embedding lane, which only
+records usage on success.
+
+---
