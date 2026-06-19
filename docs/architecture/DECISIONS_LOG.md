@@ -14695,3 +14695,83 @@ unattributed (`NULL`) by design — consistent with the embedding lane, which on
 records usage on success.
 
 ---
+
+## D-249 — S1 sync skip-gate: SetupAuditTrail change-probe, SF-server-time watermark, success+`skipped` flag, fail-safe-to-full-sync
+
+**Context.** A full S1 sync re-fetches every metadata category for an org even
+when nothing changed. Salesforce exposes SetupAuditTrail — a log of setup/config
+changes — which lets the engine cheaply ask "did anything change since last
+time?" and skip the whole sync when the answer is no. This is slice 1b.1 (the
+skip gate + watermark); per-category delta-fetch and deletion reconciliation are
+1b.2.
+
+**Decision — an org-level skip gate before the phase loop.** On a FRESH run only
+(resumes always continue), the engine probes SetupAuditTrail. If the org has a
+confirmed watermark AND the probe succeeds AND reports no changes AND the
+watermark is recent enough to trust → SKIP: run no phases, enqueue no enrichment,
+leave entities/edges/watermark unchanged, record a lightweight skipped sync_run.
+Otherwise run the full sync exactly as before. Pure gate — does NOT touch
+per-category fetch, the hash/bucketing, or enrichment gating.
+
+**Fail-safe-to-full-sync (non-negotiable).** Any error / missing watermark /
+unauthorized probe / too-old watermark / ambiguity → run the full sync. The gate
+never skips on uncertainty, and a skip is always a recorded, logged decision
+(`_evaluate_skip_gate` is total — it never raises; the SF probe raises and the
+engine's broad `except` converts it to "no skip").
+
+**SF-server-time watermark.** No suitable watermark field existed:
+`connected_orgs.last_sync_completed_at` is dead/unreliable (never written; the
+D-183 freshness reader explicitly distrusts it), and the staleness clock is
+computed from `sync_runs` (latest `status IN ('success','partial_success')`),
+not a connected_orgs timestamp. Added `connected_orgs.setup_audit_watermark
+TIMESTAMPTZ NULL` (per-tenant alembic `20260619_0010`) — the Salesforce *server*
+time (read from the probe response's HTTP `Date` header) of the last confirmed
+setup state. It is captured at **fetch start** and advanced (via `COALESCE`, so
+an uncertain run never advances it) only on a successful full sync — fetch-start
+(not fetch-end) is conservative: a change during the fetch has `CreatedDate >`
+the watermark and is caught next run (worst case = one redundant sync, never a
+missed change). The watermark must be SF time, never local — comparing local
+time against `SetupAuditTrail.CreatedDate` would be wrong under clock skew.
+
+**Success + `skipped` flag, NOT a new status.** The prompt asked for a
+"skipped/no-op status" that also "satisfies the staleness clock" — but that clock
+filters `status IN ('success','partial_success')`, so a new `'skipped'` status
+would be invisible to it (and would violate the `sync_runs_completion_implies_
+terminal` CHECK). So a skip is recorded as terminal `status='success'`,
+`phase='done'`, `completed_at=NOW()` (which the clock counts) **plus** a new
+`sync_runs.skipped BOOLEAN NOT NULL DEFAULT false` flag for visibility — a flag,
+not a status enum value, keeps the blast radius to one additive column and zero
+status-reader changes. The skip leaves `ai_enrichment_status` untouched (a
+previously-`complete` org stays `complete`) and does not run the §26 readiness
+finalize loop (no entities moved). The pre-allocated (empty) `logical_versions`
+row makes the skip's `logical_version_seq` non-NULL so the clock counts it;
+as-of reads at that empty version return the identical current org model (nothing
+was superseded between it and the last real version).
+
+**SetupAuditTrail retention guard.** SF retains SetupAuditTrail ~180 days, so a
+watermark older than `MAX_SKIP_WATERMARK_AGE` (90 days, a conservative half)
+forces a full sync — a too-old watermark makes "no rows" unreliable (changes
+could have aged out), which is uncertainty. (Adversarial-review finding, fixed
+before commit.)
+
+**SF client.** `probe_setup_audit_trail(since) -> (has_changes, sf_server_time)`:
+`SELECT Id FROM SetupAuditTrail [WHERE CreatedDate > <Z-literal>] LIMIT 1` (one
+row is enough), unquoted ISO-8601 `Z` SOQL datetime literal, server time from the
+`Date` header. SetupAuditTrail needs "View Setup and Configuration"; without it
+SF returns 400 `INSUFFICIENT_ACCESS_OR_READONLY` → `SFRequestError` → engine
+fails safe.
+
+**Verification.** Unit-tested across the four required cases (skip / changes /
+first-sync / probe-fail-or-unauthorized → full sync), plus resume-bypass, the
+retention guard, the SOQL literal, and the Date-header parse. Two independent
+adversarial reviews ran (HIGH: none; the retention false-skip was the one MED,
+now fixed). Full `tests/unit/` green (2877). **Live exit-gate (pending, AK):** a
+double-sync on env-59 must show a real skip with the probe succeeding (also
+confirms the connected-app user can read SetupAuditTrail) before 1b.1 closes.
+
+**Risks.** Skip correctness rides on SetupAuditTrail being a faithful proxy for
+"metadata changed" — a change type that doesn't log there would be skipped (the
+retention guard + 1b.2 delta/deletion reconciliation bound this); each skip
+allocates an empty `logical_versions` row (cosmetic; reads unaffected).
+
+---
