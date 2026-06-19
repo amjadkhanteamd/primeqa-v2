@@ -244,22 +244,46 @@ def run_s1_sync_enqueuer_tick(
 
 
 def run_s1_sync_reaper_tick(
-    tenant_ids, *, stale_minutes: int = 10,
+    tenant_ids, *, stale_minutes: int = 10, run_stale_minutes: int = 360,
 ) -> dict[int, int]:
-    """The scheduler's reaper counterpart (D-153, mirrors ``run_s3_reaper_tick``):
-    fail jobs stuck past the heartbeat timeout, per tenant, with per-tenant
-    isolation. ``stale_minutes=10`` (D-178): the consumer now beats every ~30 s
-    *during* ``run_sync`` (not just once at start), so a 10-min-stale heartbeat is a
-    true worker-death signal — recovery in minutes instead of the old 45-min window.
-    A reaped job leaves its ``sync_run`` resumable, so a re-enqueue continues from
-    ``last_completed_phase`` (D-152 carry-forward). Returns
-    ``{tenant_id: reaped_count}``."""
+    """The scheduler's reaper counterpart (D-153, mirrors ``run_s3_reaper_tick``).
+    Two reaps per tenant, with per-tenant + per-reap isolation:
+
+    1. **Jobs** — fail ``s1_sync_jobs`` stuck past the heartbeat timeout
+       (``stale_minutes=10``, D-178): the consumer beats every ~30 s *during*
+       ``run_sync``, so a 10-min-stale heartbeat is a true worker-death signal. A
+       reaped job leaves its ``sync_run`` resumable (D-152 carry-forward).
+    2. **Stranded sync_runs** — finalize ``sync_runs`` stuck in ``'running'`` to
+       ``'failure'`` when they are structurally complete but never got finalized
+       (enrichment stranded). The job reaper only touches the queue, and the
+       resume mechanism skips structurally-complete runs, so without this such a
+       run is a perpetual ghost the freshness/cost readers trip over.
+       ``run_stale_minutes`` is generous (default 6 h, well beyond any legitimate
+       structural+enrichment run) and ONLY structurally-complete runs are reaped —
+       see ``readiness.reap_stranded_sync_runs`` for the collision-free rationale.
+
+    Returns ``{tenant_id: jobs_reaped + runs_reaped}``."""
+    from primeqa.sync import readiness
+    from primeqa.sync.fk_assertion import ENTITY_ORDER
     reaped: dict[int, int] = {}
     for tid in tenant_ids:
+        n = 0
         try:
-            reaped[tid] = SyncJobStore(tid).reap_stale_jobs(
-                stale_minutes=stale_minutes)
+            n += SyncJobStore(tid).reap_stale_jobs(stale_minutes=stale_minutes)
         except Exception as exc:
-            log.warning("s1_sync_reaper_tick: tenant %s failed: %s", tid, exc)
-            reaped[tid] = 0
+            log.warning("s1_sync_reaper_tick: job reap for tenant %s failed: %s",
+                        tid, exc)
+        try:
+            with get_tenant_connection(tid) as conn:
+                runs = readiness.reap_stranded_sync_runs(
+                    conn, stale_minutes=run_stale_minutes,
+                    final_phase=ENTITY_ORDER[-1])
+            if runs:
+                log.info("s1_sync_reaper_tick: finalized %d stranded sync_run(s) "
+                         "for tenant %s", runs, tid)
+            n += runs
+        except Exception as exc:
+            log.warning("s1_sync_reaper_tick: sync_run reap for tenant %s "
+                        "failed: %s", tid, exc)
+        reaped[tid] = n
     return reaped

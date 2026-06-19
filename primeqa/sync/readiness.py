@@ -288,6 +288,55 @@ def maybe_finalize_run(session, connected_org_id) -> bool:
 
 
 # ---------------------------------------------------------------------
+# Stranded-run reaper (sync_runs stuck 'running')
+# ---------------------------------------------------------------------
+
+def reap_stranded_sync_runs(
+    session, *, stale_minutes: int, final_phase: str,
+) -> int:
+    """Finalize ``sync_runs`` stranded in ``status='running'`` to ``'failure'``.
+
+    A run that completed ALL structural phases (``last_completed_phase =
+    final_phase``, i.e. ``ENTITY_ORDER[-1]``) but was never finalized — its
+    enrichment never drained to :func:`maybe_finalize_run` (worker death mid-
+    enrichment, or the §26 cross-org finalize race documented above) — stays
+    ``'running'`` forever. The job reaper only touches ``s1_sync_jobs``, and the
+    *resume* mechanism deliberately EXCLUDES structurally-complete runs
+    (``create_or_get_job`` / the enqueuer's needs-sync scan both gate on
+    ``last_completed_phase IS DISTINCT FROM 'Flow'``), so nothing else ever closes
+    them. This finalizes such a run (older than ``stale_minutes`` by
+    ``started_at``) to ``status='failure'`` + ``completed_at=NOW()`` so the
+    freshness reader, the cost roll-up, and the UI stop seeing a perpetual ghost.
+
+    **Deliberately narrow + collision-free.** ONLY structurally-complete runs are
+    touched. A run that is NOT structurally complete (``last_completed_phase`` !=
+    ``final_phase``) is resume-eligible — the enqueuer will re-create a job that
+    resumes it — so it is LEFT ALONE: forcing it to ``'failure'`` would corrupt the
+    in-flight resume (a resumed run whose status was flipped to terminal is never
+    re-finalized to ``'success'`` by :func:`maybe_finalize_run`'s ``status='running'``
+    guard, leaving a usable org model permanently marked failed).
+
+    ``stale_minutes`` should be GENEROUS (the caller defaults to hours) — well
+    beyond the longest legitimate structural+enrichment run — so a genuinely
+    in-flight enrichment drain is never reaped. Timing uses the DB clock (NOW()),
+    avoiding app/DB skew. Returns the number of runs reaped.
+    """
+    result = session.execute(text("""
+        UPDATE sync_runs
+        SET status = 'failure',
+            completed_at = NOW(),
+            error_message = COALESCE(error_message || ' | ', '')
+                || 'reaped: structural sync completed but the run was never '
+                || 'finalized (enrichment stranded); stuck in running past the '
+                || 'stale window'
+        WHERE status = 'running'
+          AND last_completed_phase = :final_phase
+          AND started_at < NOW() - make_interval(mins => :stale_minutes)
+    """), {"final_phase": final_phase, "stale_minutes": int(stale_minutes)})
+    return result.rowcount or 0
+
+
+# ---------------------------------------------------------------------
 # Operational requeue (D-180)
 # ---------------------------------------------------------------------
 

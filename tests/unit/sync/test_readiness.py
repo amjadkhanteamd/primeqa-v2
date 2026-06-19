@@ -434,3 +434,57 @@ class TestEnrichmentTickHarness:
         assert inc.call_count == 1
         assert inc.call_args.kwargs["embeddings_delta"] == 0
         assert inc.call_args.kwargs["summaries_delta"] == 2
+
+
+# ----------------------------------------------------------------------
+# reap_stranded_sync_runs — stranded-run reaper (sync_runs stuck 'running')
+# ----------------------------------------------------------------------
+
+class TestReapStrandedSyncRuns:
+    def _session(self, *, rowcount=1):
+        session = mock.MagicMock()
+        session.execute.return_value.rowcount = rowcount
+        return session
+
+    def test_finalizes_structurally_complete_running_runs(self) -> None:
+        session = self._session(rowcount=2)
+        n = readiness.reap_stranded_sync_runs(
+            session, stale_minutes=360, final_phase="Flow")
+        assert n == 2
+        assert session.execute.call_count == 1
+        sql = session.execute.call_args[0][0].text
+        params = session.execute.call_args[0][1]
+        # finalizes a RUNNING run to FAILURE with completed_at
+        assert "UPDATE sync_runs" in sql
+        assert "status = 'failure'" in sql
+        assert "completed_at = NOW()" in sql
+        assert "status = 'running'" in sql
+        assert params == {"final_phase": "Flow", "stale_minutes": 360}
+
+    def test_collision_safety_only_reaps_structurally_complete(self) -> None:
+        # THE correctness invariant: the reaper must gate on
+        # last_completed_phase = the final phase, so it NEVER touches a
+        # resume-eligible (not-structurally-complete) run — reaping one of those
+        # would strand an in-flight resume as a false failure.
+        session = self._session()
+        readiness.reap_stranded_sync_runs(
+            session, stale_minutes=360, final_phase="Flow")
+        sql = session.execute.call_args[0][0].text
+        assert "last_completed_phase = :final_phase" in sql
+        # and it is bounded by a stale window on started_at (the DB clock)
+        assert "started_at <" in sql
+        assert "make_interval(mins => :stale_minutes)" in sql
+
+    def test_final_phase_is_parameterized_not_hardcoded(self) -> None:
+        # final_phase is passed (ENTITY_ORDER[-1]) — a different terminal phase
+        # name flows straight through as the bind param.
+        session = self._session()
+        readiness.reap_stranded_sync_runs(
+            session, stale_minutes=720, final_phase="ZZZ")
+        assert session.execute.call_args[0][1] == {
+            "final_phase": "ZZZ", "stale_minutes": 720}
+
+    def test_returns_zero_when_nothing_stranded(self) -> None:
+        session = self._session(rowcount=0)
+        assert readiness.reap_stranded_sync_runs(
+            session, stale_minutes=360, final_phase="Flow") == 0
