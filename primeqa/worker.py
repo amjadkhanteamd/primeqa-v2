@@ -62,6 +62,7 @@ from primeqa.intelligence.embeddings import (
     EMBEDDING_MODEL_TAG,
     VoyageError,
     embed_batch,
+    embed_batch_with_usage,
 )
 from primeqa.intelligence.llm.limits import record_embedding_usage
 from primeqa.sync import readiness
@@ -502,7 +503,7 @@ def _embedding_subtick(session, tenant_id: int, voyage_resolver) -> TickResult:
                                       "no LLM connection / voyage_api_key configured")
             continue
         try:
-            vectors = embed_batch(
+            vectors, tokens = embed_batch_with_usage(
                 [t for (_, t) in rows], input_type="document", api_key=key)
         except VoyageError as e:
             _credit_fail(rows, e.retryable, str(e))
@@ -518,11 +519,29 @@ def _embedding_subtick(session, tenant_id: int, voyage_resolver) -> TickResult:
             _write_embedding(session, r["entity_id"], vec)
             _mark_succeeded(session, r["queue_id"])
             result.credit(org_by_id.get(r["entity_id"]), succeeded=1)
-        # Rate-limit accounting — one llm_usage_log row per Voyage batch.
+        # Cost + rate-limit accounting (1d) — one llm_usage_log row per Voyage
+        # batch, carrying the measured token count + cost and attributed to the
+        # sync_run that drove it. A Voyage-key group is usually one org; if a
+        # key collides across orgs we can't bind one batch row to multiple runs,
+        # so we leave sync_run_id NULL and log (no fabricated attribution).
         try:
+            group_orgs = {org_by_id.get(r["entity_id"]) for (r, _) in rows}
+            group_orgs.discard(None)
+            if len(group_orgs) == 1:
+                sync_run_id = readiness.resolve_active_sync_run_id(
+                    session, next(iter(group_orgs)))
+            else:
+                sync_run_id = None
+                if len(group_orgs) > 1:
+                    log.warning(
+                        "embedding batch spans %d orgs (shared Voyage key) — "
+                        "cost left unattributed to a sync_run (tenant %s)",
+                        len(group_orgs), tenant_id)
             record_embedding_usage(
                 tenant_id, batch_size=len(rows),
                 model=EMBEDDING_MODEL_TAG,
+                tokens=tokens,
+                sync_run_id=sync_run_id,
                 context={"primitive": "embedding"},
             )
         except Exception as e:
@@ -577,6 +596,7 @@ def _summary_subtick(session, tenant_id: int, api_key_resolver,
                           failed_permanent=1)
 
     from primeqa.intelligence.llm.gateway import llm_call, LLMError
+    from primeqa.intelligence.llm import usage
 
     for r in claimed:
         api_key = key_by_org.get(org_by_id.get(r["entity_id"]))
@@ -613,22 +633,54 @@ def _summary_subtick(session, tenant_id: int, api_key_resolver,
             _credit_fail(r, True, "LLM returned an empty summary")
             continue
 
+        org_id = org_by_id.get(r["entity_id"])
+
         # Embed the generated summary -> detail-table summary_embedding (D-179:
         # the Voyage key resolves per-org from the env's LLM connection).
         try:
-            summary_vec = embed_batch(
+            summary_vecs, summary_tokens = embed_batch_with_usage(
                 [summary_text], input_type="document",
-                api_key=vkey_by_org.get(org_by_id.get(r["entity_id"])),
-            )[0]
+                api_key=vkey_by_org.get(org_id),
+            )
+            summary_vec = summary_vecs[0]
         except VoyageError as e:
             _credit_fail(r, e.retryable, f"summary embedding failed: {e}")
             continue
+
+        # Cost telemetry (1d): this summary enrichment SUCCEEDED — attribute its
+        # LLM cost to the sync_run now (mirrors the _mark_succeeded below).
+        # Doing it here, AFTER the embed succeeds rather than right after
+        # llm_call, means a row that fails its embedding and RETRIES doesn't
+        # double-count its (re-generated) generation cost, and a permanently
+        # failed summary leaves no attributed cost — consistent with the
+        # embedding lane (which only records usage on success). One best-effort
+        # block so a telemetry hiccup can never break the enrichment write.
+        try:
+            sync_run_id = readiness.resolve_active_sync_run_id(session, org_id)
+            # Generation cost: back-link ALL gateway usage rows (usage_log_ids,
+            # not just the final usage_log_id) so an escalated summary's primary
+            # attempt is attributed too.
+            attempt_ids = (getattr(resp, "usage_log_ids", None)
+                           or [getattr(resp, "usage_log_id", None)])
+            usage.set_sync_run_many(attempt_ids, sync_run_id)
+            # The summary's own Voyage embedding is a real cost too — record it
+            # so get_sync_run_cost doesn't undercount (embedding bucket).
+            record_embedding_usage(
+                tenant_id, batch_size=1,
+                model=EMBEDDING_MODEL_TAG,
+                tokens=summary_tokens,
+                sync_run_id=sync_run_id,
+                context={"primitive": "summary_embedding"},
+            )
+        except Exception as e:
+            log.warning("summary cost-telemetry failed (tenant %s): %s",
+                        tenant_id, e)
 
         _write_summary(session, et, r["entity_id"], summary_text,
                        summary_vec, model=resp.model,
                        prompt_version=resp.prompt_version)
         _mark_succeeded(session, r["queue_id"])
-        result.credit(org_by_id.get(r["entity_id"]), succeeded=1)
+        result.credit(org_id, succeeded=1)
 
     session.commit()
     return result

@@ -9,7 +9,7 @@ from sqlalchemy import (
     BigInteger, Column, Integer, Numeric, String, Boolean, DateTime, Text,
     JSON, Float, ForeignKey, CheckConstraint, UniqueConstraint, Index,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
 
 from primeqa.db import Base
@@ -212,6 +212,12 @@ class LLMUsageLog(Base):
     requirement_id = Column(Integer, ForeignKey("requirements.id", ondelete="SET NULL"))
     test_case_id = Column(Integer)
     generation_batch_id = Column(BigInteger)
+
+    # S1 sync cost-telemetry (migration 058): soft cross-schema reference to
+    # <tenant_schema>.sync_runs(id) — no FK (public -> per-tenant is impossible).
+    # NULL for non-sync usage; set by the enrichment worker so embedding +
+    # summary cost can roll up per sync_run. as_uuid=False -> reads back as str.
+    sync_run_id = Column(UUID(as_uuid=False))
 
     context = Column(JSONB, nullable=False, server_default="{}")
 

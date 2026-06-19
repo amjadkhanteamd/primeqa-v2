@@ -408,3 +408,98 @@ class TestErrorClassification:
             with pytest.raises(VoyageError) as exc:
                 embed_batch(["hello"])
         assert exc.value.retryable is False
+
+
+# ----------------------------------------------------------------------
+# S1 sync cost-telemetry (1d): the Voyage cost rate + token surfacing
+# ----------------------------------------------------------------------
+
+from primeqa.intelligence.embeddings import (  # noqa: E402
+    VOYAGE_3_USD_PER_1M_TOKENS,
+    embed_batch_with_usage,
+    voyage_embedding_cost_usd,
+)
+
+
+class TestVoyageCostMath:
+    """``voyage_embedding_cost_usd`` is pure: cost = tokens * rate / 1e6.
+
+    Asserts the relationship to the constant (NOT a hard-coded dollar value)
+    so the tests survive AK confirming the real placeholder rate later.
+    """
+
+    def test_zero_tokens_is_zero_cost(self) -> None:
+        assert voyage_embedding_cost_usd(0) == 0.0
+
+    def test_one_million_tokens_equals_the_rate(self) -> None:
+        # 1,000,000 tokens * rate / 1,000,000 == rate, exactly.
+        assert voyage_embedding_cost_usd(1_000_000) == VOYAGE_3_USD_PER_1M_TOKENS
+
+    def test_scales_linearly_from_the_constant(self) -> None:
+        # large-token case: 250,000,000 tokens == 250 * the per-1M rate.
+        big = 250_000_000
+        expected = big * VOYAGE_3_USD_PER_1M_TOKENS / 1_000_000
+        assert voyage_embedding_cost_usd(big) == expected
+        # and it's strictly the constant-derived value, never a fabricated 0.
+        assert voyage_embedding_cost_usd(1) == VOYAGE_3_USD_PER_1M_TOKENS / 1_000_000
+
+
+class TestEmbedBatchWithUsage:
+    """``embed_batch_with_usage`` returns (vectors, total_tokens); tokens is
+    None when the Voyage response carried no count (no fabricated zero)."""
+
+    def _count_handler(self):
+        """Handler that echoes a well-formed response sized to the request's
+        input list (so total_tokens == n*4 per the _ok_response convention)."""
+        def handler(request):
+            import json as _json
+            n = len(_json.loads(request.content)["input"])
+            return httpx.Response(200, json=_ok_response(n))
+        return handler
+
+    def test_empty_input_returns_zero_tokens(self) -> None:
+        vecs, tokens = embed_batch_with_usage([])
+        assert vecs == [] and tokens == 0
+
+    def test_single_batch_surfaces_token_count(self, monkeypatch) -> None:
+        monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
+        with _patch_client(self._count_handler()):
+            vecs, tokens = embed_batch_with_usage(["a", "b", "c"])
+        assert len(vecs) == 3
+        assert tokens == 3 * 4          # _ok_response: total_tokens = n*4
+
+    def test_multi_chunk_sums_tokens_across_calls(self, monkeypatch) -> None:
+        """>128 inputs split into chunks; tokens sum across the chunk calls."""
+        monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
+        texts = [f"t{i}" for i in range(130)]   # 128 + 2 -> two chunks
+        with _patch_client(self._count_handler()):
+            vecs, tokens = embed_batch_with_usage(texts)
+        assert len(vecs) == 130
+        assert tokens == 130 * 4        # (128*4) + (2*4)
+
+    def test_missing_usage_yields_none_not_a_fabricated_zero(
+        self, monkeypatch,
+    ) -> None:
+        """A 200 whose body omits usage.total_tokens -> tokens is None (the
+        caller must mark it), vectors still returned. NO silent zero."""
+        monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
+
+        def handler(request):
+            body = _ok_response(1)
+            body.pop("usage", None)     # drop usage entirely
+            return httpx.Response(200, json=body)
+
+        with _patch_client(handler):
+            vecs, tokens = embed_batch_with_usage(["x"])
+        assert len(vecs) == 1
+        assert tokens is None           # not 0 — unmeasured, surfaced as None
+
+    def test_embed_batch_wrapper_still_returns_vectors_only(
+        self, monkeypatch,
+    ) -> None:
+        """The back-compat wrapper preserves the old list-only signature."""
+        monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
+        with _patch_client(self._count_handler()):
+            result = embed_batch(["a", "b"])
+        assert isinstance(result, list) and len(result) == 2
+        assert all(len(v) == EMBEDDING_DIM for v in result)

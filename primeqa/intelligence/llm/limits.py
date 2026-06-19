@@ -281,11 +281,14 @@ def record_embedding_usage(
     *,
     batch_size: int,
     model: str,
+    tokens: Optional[int] = None,
+    sync_run_id: Optional[str] = None,
     latency_ms: Optional[int] = None,
     context: Optional[Dict[str, Any]] = None,
 ) -> Optional[int]:
     """Log one embedding batch to llm_usage_log so `check()`'s
-    per-tenant call-count windows count it.
+    per-tenant call-count windows count it AND its real Voyage cost
+    rolls up per sync_run (migration 058, 1d cost-telemetry).
 
     Embeddings don't flow through `llm_call()` — they hit the Voyage
     API directly from the enrichment worker — so without this they'd
@@ -293,9 +296,16 @@ def record_embedding_usage(
     per text): a batch of up to 128 texts is one Voyage API call and
     counts as one call against the minute/hour windows.
 
-    `cost_usd` is recorded as 0.0 — Voyage cost accounting isn't wired
-    yet, and for v1 the call-count windows are what gate embeddings;
-    the daily-spend window is a deliberate no-op here.
+    `tokens`: the Voyage input-token count for the batch (from
+    `embed_batch_with_usage`). When given, `cost_usd` is computed from
+    `embeddings.voyage_embedding_cost_usd` (the per-1M-token rate). When
+    `None`, the response carried NO usable token count — recorded as a
+    call (the rate-limit windows still need it) but with input_tokens=0,
+    cost_usd=0.0, and a loud `tokens_missing` marker + ERROR log so the
+    zero is NEVER mistaken for a measured value (no silent fabrication).
+
+    `sync_run_id`: soft no-FK reference to the S1 sync_run this batch was
+    embedded for, so get_sync_run_cost can sum it (NULL when not in a sync).
 
     Thin wrapper over `usage.record` (the same writer the gateway
     uses) — lives in limits.py because "make embedding calls show up
@@ -303,20 +313,46 @@ def record_embedding_usage(
     never raises into the worker; returns the row id or None.
     """
     from primeqa.intelligence.llm import usage
+    from primeqa.intelligence.embeddings import (
+        voyage_embedding_cost_usd, VOYAGE_3_RATE_CONFIRMED,
+    )
 
     ctx: Dict[str, Any] = {"batch_size": int(batch_size)}
     if context:
         ctx.update(context)
+
+    if tokens is None:
+        # No silent fabricated zero: a missing token count is logged loud and
+        # marked, NOT written as if it were a measured 0-token / $0 batch.
+        log.error(
+            "record_embedding_usage: no token count for an embedding batch "
+            "(tenant=%s model=%s batch_size=%s) — recording the call with "
+            "tokens/cost UNMEASURED (tokens_missing), not a fabricated zero",
+            tenant_id, model, batch_size,
+        )
+        ctx["tokens_missing"] = True
+        input_tokens = 0
+        cost_usd = 0.0
+    else:
+        input_tokens = int(tokens)
+        cost_usd = voyage_embedding_cost_usd(input_tokens)
+        if not VOYAGE_3_RATE_CONFIRMED:
+            # In-band honesty: this cost came from a PLACEHOLDER rate. Mirror the
+            # tokens_missing marker so neither the row nor get_sync_run_cost ever
+            # passes a provisional price off as confirmed.
+            ctx["rate_provisional"] = True
+
     return usage.record(
         tenant_id=tenant_id,
         task=EMBEDDING_TASK,
         model=model,
         prompt_version=model,  # embeddings have no prompt — tag = model
-        input_tokens=0,
+        input_tokens=input_tokens,
         output_tokens=0,
-        cost_usd=0.0,
+        cost_usd=cost_usd,
         latency_ms=latency_ms,
         status="ok",
+        sync_run_id=sync_run_id,
         context=ctx,
     )
 

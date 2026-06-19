@@ -155,8 +155,8 @@ class TestEmbeddingSubtick:
                 "e1": "00000000-0000-0000-0000-00000000000a",
                 "e2": "00000000-0000-0000-0000-00000000000a",
             }
-            mock_embed = s.enter_context(_patch("embed_batch"))
-            mock_embed.return_value = [[0.1] * 1024, [0.2] * 1024]
+            mock_embed = s.enter_context(_patch("embed_batch_with_usage"))
+            mock_embed.return_value = ([[0.1] * 1024, [0.2] * 1024], 8)
             mock_write = s.enter_context(_patch("_write_embedding"))
             mock_ok = s.enter_context(_patch("_mark_succeeded"))
             mock_fail = s.enter_context(_patch("_mark_failed"))
@@ -173,10 +173,12 @@ class TestEmbeddingSubtick:
         assert mock_write.call_count == 2
         assert mock_ok.call_count == 2
         mock_fail.assert_not_called()
-        # usage recorded once per batch, with the batch size + tenant
+        # usage recorded once per batch, with the batch size + tenant + the
+        # measured token count (1d cost-telemetry)
         mock_usage.assert_called_once()
         assert mock_usage.call_args[0][0] == 7
         assert mock_usage.call_args.kwargs["batch_size"] == 2
+        assert mock_usage.call_args.kwargs["tokens"] == 8
 
     def test_distinct_voyage_keys_embed_per_group(self) -> None:
         """D-179: two orgs with DIFFERENT Voyage keys in one tenant tick
@@ -196,8 +198,8 @@ class TestEmbeddingSubtick:
             s.enter_context(_patch("_resolve_org_keys")).return_value = {
                 "org-a": "ka", "org-b": "kb",
             }
-            mock_embed = s.enter_context(_patch("embed_batch"))
-            mock_embed.return_value = [[0.1] * 1024]  # one row per group
+            mock_embed = s.enter_context(_patch("embed_batch_with_usage"))
+            mock_embed.return_value = ([[0.1] * 1024], 4)  # one row per group
             s.enter_context(_patch("_write_embedding"))
             s.enter_context(_patch("_mark_succeeded"))
             s.enter_context(_patch("record_embedding_usage"))
@@ -230,7 +232,7 @@ class TestEmbeddingSubtick:
             s.enter_context(_patch("_resolve_org_keys")).return_value = {
                 "org-a": None,
             }
-            mock_embed = s.enter_context(_patch("embed_batch"))
+            mock_embed = s.enter_context(_patch("embed_batch_with_usage"))
             mock_fail = s.enter_context(_patch("_mark_failed"))
             mock_fail.return_value = "failed_permanent"
             result = worker._embedding_subtick(
@@ -256,8 +258,8 @@ class TestEmbeddingSubtick:
             s.enter_context(_patch("_fetch_org_ids")).return_value = {
                 "e1": "org-a", "e2": "org-a",
             }
-            mock_embed = s.enter_context(_patch("embed_batch"))
-            mock_embed.return_value = [[0.1] * 1024]
+            mock_embed = s.enter_context(_patch("embed_batch_with_usage"))
+            mock_embed.return_value = ([[0.1] * 1024], 4)
             mock_write = s.enter_context(_patch("_write_embedding"))
             mock_ok = s.enter_context(_patch("_mark_succeeded"))
             s.enter_context(_patch("record_embedding_usage"))
@@ -285,7 +287,7 @@ class TestEmbeddingSubtick:
             s.enter_context(_patch("_fetch_org_ids")).return_value = {
                 "e1": "org-a",
             }
-            mock_embed = s.enter_context(_patch("embed_batch"))
+            mock_embed = s.enter_context(_patch("embed_batch_with_usage"))
             mock_ok = s.enter_context(_patch("_mark_succeeded"))
             result = worker._embedding_subtick(session, tenant_id=1, voyage_resolver=(lambda *a: 'vk'))
         assert result.did_work is True  # rows were claimed
@@ -303,7 +305,7 @@ class TestEmbeddingSubtick:
             s.enter_context(_patch("_fetch_semantic_texts")).return_value = {
                 "e1": "text",
             }
-            s.enter_context(_patch("embed_batch")).side_effect = VoyageError(
+            s.enter_context(_patch("embed_batch_with_usage")).side_effect = VoyageError(
                 "rate limited", retryable=True,
             )
             mock_fail = s.enter_context(_patch("_mark_failed"))
@@ -325,7 +327,7 @@ class TestEmbeddingSubtick:
             s.enter_context(_patch("_fetch_semantic_texts")).return_value = {
                 "e1": "text",
             }
-            s.enter_context(_patch("embed_batch")).side_effect = VoyageError(
+            s.enter_context(_patch("embed_batch_with_usage")).side_effect = VoyageError(
                 "auth error", retryable=False,
             )
             mock_fail = s.enter_context(_patch("_mark_failed"))
@@ -344,9 +346,9 @@ class TestEmbeddingSubtick:
             s.enter_context(_patch("_fetch_semantic_texts")).return_value = {
                 "e1": "a", "e2": "b",
             }
-            s.enter_context(_patch("embed_batch")).return_value = [
-                [0.1] * 1024,  # only 1 vector for 2 inputs
-            ]
+            s.enter_context(_patch("embed_batch_with_usage")).return_value = (
+                [[0.1] * 1024], 4,  # only 1 vector for 2 inputs
+            )
             mock_fail = s.enter_context(_patch("_mark_failed"))
             mock_write = s.enter_context(_patch("_write_embedding"))
             worker._embedding_subtick(session, tenant_id=1, voyage_resolver=(lambda *a: 'vk'))
@@ -408,8 +410,15 @@ class TestSummarySubtick:
                 "primeqa.intelligence.llm.gateway.llm_call",
                 return_value=resp,
             ))
-            mock_embed = s.enter_context(_patch("embed_batch"))
-            mock_embed.return_value = [[0.3] * 1024]
+            mock_embed = s.enter_context(_patch("embed_batch_with_usage"))
+            mock_embed.return_value = ([[0.3] * 1024], 6)
+            # 1d cost-telemetry: the summary-embedding usage record + the
+            # sync_run resolution are mocked so this orchestration test never
+            # touches a real DB.
+            s.enter_context(_patch("record_embedding_usage"))
+            s.enter_context(mock.patch.object(
+                worker.readiness, "resolve_active_sync_run_id",
+                return_value=None))
             mock_write = s.enter_context(_patch("_write_summary"))
             mock_ok = s.enter_context(_patch("_mark_succeeded"))
             result = worker._summary_subtick(session, tenant_id=4, api_key_resolver=(lambda *a: 'k'), voyage_resolver=(lambda *a: 'vk'))
@@ -441,7 +450,11 @@ class TestSummarySubtick:
                 "primeqa.intelligence.llm.gateway.llm_call",
                 return_value=resp,
             ))
-            s.enter_context(_patch("embed_batch")).return_value = [[0.1] * 1024]
+            s.enter_context(_patch("embed_batch_with_usage")).return_value = ([[0.1] * 1024], 4)
+            s.enter_context(_patch("record_embedding_usage"))
+            s.enter_context(mock.patch.object(
+                worker.readiness, "resolve_active_sync_run_id",
+                return_value=None))
             s.enter_context(_patch("_write_summary"))
             s.enter_context(_patch("_mark_succeeded"))
             worker._summary_subtick(session, tenant_id=1, api_key_resolver=(lambda *a: 'k'), voyage_resolver=(lambda *a: 'vk'))

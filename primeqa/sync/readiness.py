@@ -185,6 +185,29 @@ def increment_run_counters(
     })
 
 
+def resolve_active_sync_run_id(session, connected_org_id) -> Optional[str]:
+    """Return the org's active sync_run id — ``connected_orgs.last_sync_run_id``,
+    the same pointer ``increment_run_counters`` credits.
+
+    Used by the enrichment worker (1d cost-telemetry, migration 058) to
+    attribute embedding + summary LLM cost to the sync_run that drove the
+    work. Reads ``last_sync_run_id`` directly (NOT a ``status='running'``
+    scan) per this module's own guidance — that pointer is the canonical
+    active run even if its row has already been finalized; the cost still
+    belongs to it.
+
+    Returns the run id as a string (UUID canonical form), or ``None`` if the
+    org has no recorded run. Best-effort: never raises into the worker.
+    """
+    try:
+        rid = session.execute(text("""
+            SELECT last_sync_run_id FROM connected_orgs WHERE id = :org
+        """), {"org": str(connected_org_id)}).scalar()
+        return str(rid) if rid else None
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------
 # Terminal-state finalization
 # ---------------------------------------------------------------------

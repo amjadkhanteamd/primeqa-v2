@@ -40,6 +40,54 @@ BATCH_SIZE_LIMIT = 128
 # full 128-text batch.
 REQUEST_TIMEOUT_S = 60.0
 
+# ---------------------------------------------------------------------
+# Voyage cost rate (S1 sync cost-telemetry, 1d)
+# ---------------------------------------------------------------------
+#
+#   ⚠️  PLACEHOLDER RATE — NOT A CONFIRMED VOYAGE PRICE  ⚠️
+#
+# The cost-attribution plumbing (token capture → cost_usd → per-sync-run
+# roll-up via get_sync_run_cost) is wired end-to-end against this constant,
+# but the numeric value below is a deliberately neutral, round placeholder
+# so the math is exercised and unit-testable. It is NOT researched against
+# Voyage's pricing page and MUST NOT be treated as authoritative.
+#
+# Before any Voyage cost computed here is trusted (dashboards, billing,
+# decisions), confirm voyage-3's current USD-per-token price against Voyage's
+# pricing and set BOTH the value below AND flip VOYAGE_3_RATE_CONFIRMED=True.
+# While VOYAGE_3_RATE_CONFIRMED is False, voyage_embedding_cost_usd() emits a
+# one-time warning so the placeholder can never silently masquerade as real.
+VOYAGE_3_USD_PER_1M_TOKENS = 0.10   # PLACEHOLDER — confirm before trusting costs
+VOYAGE_3_RATE_CONFIRMED = False     # flip to True once the rate above is verified
+
+_rate_warning_emitted = False
+
+
+def voyage_embedding_cost_usd(total_tokens: int) -> float:
+    """Provisional USD cost for ``total_tokens`` voyage-3 input tokens.
+
+    ``cost = total_tokens * VOYAGE_3_USD_PER_1M_TOKENS / 1_000_000``.
+
+    PROVISIONAL until ``VOYAGE_3_RATE_CONFIRMED`` is flipped — emits a
+    one-time WARNING per process while the rate is unconfirmed so the
+    placeholder can never silently pass as a real price. Pure otherwise
+    (no DB, deterministic) so the cost math is unit-testable.
+
+    Callers must pass a real measured token count; ``None``/missing tokens
+    are the caller's to handle (see ``record_embedding_usage``) — this
+    function never fabricates a zero.
+    """
+    global _rate_warning_emitted
+    if not VOYAGE_3_RATE_CONFIRMED and not _rate_warning_emitted:
+        logger.warning(
+            "voyage_embedding_cost_usd: VOYAGE_3_USD_PER_1M_TOKENS=%s is a "
+            "PLACEHOLDER (VOYAGE_3_RATE_CONFIRMED=False) — embedding costs are "
+            "provisional until the rate is confirmed against Voyage pricing.",
+            VOYAGE_3_USD_PER_1M_TOKENS,
+        )
+        _rate_warning_emitted = True
+    return (int(total_tokens) * VOYAGE_3_USD_PER_1M_TOKENS) / 1_000_000.0
+
 
 class VoyageError(Exception):
     """A Voyage API failure, tagged with retryability.
@@ -75,10 +123,31 @@ def embed_batch(
     input_type: str = "document",
     api_key: str | None = None,
 ) -> list[list[float]]:
-    """Embed a list of texts via the Voyage API.
+    """Embed a list of texts via the Voyage API (vectors only).
 
-    Returns a list of ``EMBEDDING_DIM``-length float vectors, one per
-    input text, in input order.
+    Thin wrapper over :func:`embed_batch_with_usage` that discards the
+    token count — preserves the original signature for the many callers
+    (and tests) that only need vectors. Use ``embed_batch_with_usage``
+    when you need the Voyage token count for cost attribution.
+    """
+    return embed_batch_with_usage(
+        texts, input_type=input_type, api_key=api_key)[0]
+
+
+def embed_batch_with_usage(
+    texts: list[str],
+    input_type: str = "document",
+    api_key: str | None = None,
+) -> tuple[list[list[float]], int | None]:
+    """Embed a list of texts via the Voyage API, returning vectors + tokens.
+
+    Returns ``(vectors, total_tokens)`` — a list of ``EMBEDDING_DIM``-length
+    float vectors, one per input text, in input order.
+
+    ``total_tokens`` is the Voyage input-token count for the call, summed
+    across chunks. It is ``None`` when the Voyage response carried no usable
+    ``usage.total_tokens`` (NO silent fabricated zero — the caller logs/marks
+    the gap), and ``0`` for empty input.
 
     Inputs longer than ``BATCH_SIZE_LIMIT`` are split into sequential
     API calls; the per-chunk results are concatenated, so order is
@@ -99,7 +168,7 @@ def embed_batch(
     ``VoyageError`` (with ``.retryable``) and does not retry itself.
     """
     if not texts:
-        return []
+        return [], 0
 
     if api_key:
         api_key = api_key.strip()
@@ -114,6 +183,8 @@ def embed_batch(
     }
 
     all_embeddings: list[list[float]] = []
+    total_tokens = 0
+    tokens_missing = False
 
     with httpx.Client(timeout=REQUEST_TIMEOUT_S) as client:
         for start in range(0, len(texts), BATCH_SIZE_LIMIT):
@@ -183,12 +254,26 @@ def embed_batch(
 
             all_embeddings.extend(chunk_embeddings)
 
-            total_tokens = (
-                (data.get("usage") or {}).get("total_tokens", 0)
-            )
+            # Cost telemetry (1d): surface the Voyage input-token count.
+            # A missing usage.total_tokens means we CANNOT measure this
+            # call — flag the whole call unmeasured (loud) rather than
+            # counting a fabricated zero.
+            usage = data.get("usage") or {}
+            chunk_tokens = usage.get("total_tokens")
+            if chunk_tokens is None:
+                tokens_missing = True
+                logger.warning(
+                    "embed_batch_with_usage: Voyage response had no "
+                    "usage.total_tokens for a %d-text chunk — token count "
+                    "unmeasured for this call (not a fabricated zero)",
+                    len(chunk),
+                )
+            else:
+                total_tokens += int(chunk_tokens)
             logger.debug(
-                "Voyage embed batch: %d texts, %d tokens",
-                len(chunk), total_tokens,
+                "Voyage embed batch: %d texts, %s tokens",
+                len(chunk),
+                "unmeasured" if chunk_tokens is None else chunk_tokens,
             )
 
-    return all_embeddings
+    return all_embeddings, (None if tokens_missing else total_tokens)
