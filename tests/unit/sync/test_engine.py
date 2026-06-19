@@ -367,14 +367,20 @@ class TestRunSyncOrchestration:
         engine._phase_transaction = MagicMock()
         engine._phase_transaction.return_value.__enter__ = MagicMock()
         engine._phase_transaction.return_value.__exit__ = MagicMock(return_value=False)
+        # 1b.1: explicit no-skip (changes detected) so this test exercises the
+        # success path on its own terms, not via a probe-unpack accident.
+        engine._load_setup_audit_watermark = MagicMock(return_value=None)
+        engine.sf.probe_setup_audit_trail = MagicMock(return_value=(True, None))
 
         registry = {et: _success_phase_fn(et) for et in ENTITY_ORDER}
         with patch("primeqa.sync.engine.get_phase_function",
                    side_effect=lambda et: registry[et]):
             engine.run_sync(connected_org_id="org-1")
 
+        # success path threads the captured SF server time (None here — the
+        # probe returned no Date/server time).
         engine._mark_sync_run_structural_complete.assert_called_once_with(
-            "run-1", "org-1",
+            "run-1", "org-1", setup_audit_watermark=None,
         )
         engine._mark_sync_run_failed.assert_not_called()
 
@@ -645,8 +651,161 @@ class TestMarkSyncRunStructuralCompleteAdvancesReadiness:
         assert "UPDATE sync_runs" in str(sync_runs_call.args[0])
         assert sync_runs_call.args[1] == {"id": "run-1"}
         assert "UPDATE connected_orgs" in str(orgs_call.args[0])
+        # 1b.1: the connected_orgs UPDATE now also COALESCE-advances the
+        # setup_audit_watermark (None here = leave it unchanged).
+        assert "setup_audit_watermark" in str(orgs_call.args[0])
         assert orgs_call.args[1] == {
-            "run_id": "run-1", "id": "org-a",
+            "run_id": "run-1", "watermark": None, "id": "org-a",
         }
         assert "SELECT" in str(select_call.args[0])
         assert "sr.status = 'running'" in str(select_call.args[0])
+
+
+# ----------------------------------------------------------------------
+# Org-level skip gate (1b.1) — orchestration + decision logic
+# ----------------------------------------------------------------------
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from primeqa.sync.engine import _SkipDecision, MAX_SKIP_WATERMARK_AGE  # noqa: E402
+
+_T = datetime(2026, 6, 19, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _engine_with_mocked_helpers() -> SyncEngine:
+    engine = _make_engine()
+    engine._create_sync_run_row = MagicMock(return_value=("run-1", 1))
+    engine._get_logical_version_seq = MagicMock(return_value=1)
+    engine._get_last_completed_phase = MagicMock(return_value=None)
+    engine._advance_last_completed_phase = MagicMock()
+    engine._mark_sync_run_structural_complete = MagicMock()
+    engine._mark_sync_run_failed = MagicMock()
+    engine._mark_sync_run_skipped = MagicMock()
+    engine._phase_transaction = MagicMock()
+    engine._phase_transaction.return_value.__enter__ = MagicMock()
+    engine._phase_transaction.return_value.__exit__ = MagicMock(return_value=False)
+    return engine
+
+
+class TestSkipGateOrchestration:
+    def test_skip_runs_no_phases_and_records_skipped_run(self) -> None:
+        engine = _engine_with_mocked_helpers()
+        engine._evaluate_skip_gate = MagicMock(
+            return_value=_SkipDecision(True, "no setup changes since X", _T))
+        registry = {et: _success_phase_fn(et, count=0) for et in ENTITY_ORDER}
+        with patch("primeqa.sync.engine.get_phase_function",
+                   side_effect=lambda et: registry[et]) as mock_get:
+            result = engine.run_sync(connected_org_id="org-1")
+        assert result == "run-1"
+        engine._mark_sync_run_skipped.assert_called_once_with("run-1", "org-1")
+        # No phases ran; the org was NOT marked structural-complete (no enrichment)
+        mock_get.assert_not_called()
+        engine._advance_last_completed_phase.assert_not_called()
+        engine._mark_sync_run_structural_complete.assert_not_called()
+
+    def test_no_skip_runs_full_sync_and_advances_watermark(self) -> None:
+        engine = _engine_with_mocked_helpers()
+        engine._evaluate_skip_gate = MagicMock(
+            return_value=_SkipDecision(False, "changes detected", _T))
+        registry = {et: _success_phase_fn(et, count=1) for et in ENTITY_ORDER}
+        with patch("primeqa.sync.engine.get_phase_function",
+                   side_effect=lambda et: registry[et]):
+            result = engine.run_sync(connected_org_id="org-1")
+        assert result == "run-1"
+        engine._mark_sync_run_skipped.assert_not_called()
+        # full sync ran every phase
+        assert engine._advance_last_completed_phase.call_count == len(ENTITY_ORDER)
+        # watermark advanced to the SF server time captured at fetch start
+        engine._mark_sync_run_structural_complete.assert_called_once()
+        assert (engine._mark_sync_run_structural_complete
+                .call_args.kwargs["setup_audit_watermark"] == _T)
+
+    def test_resume_never_evaluates_skip_gate(self) -> None:
+        engine = _engine_with_mocked_helpers()
+        engine._evaluate_skip_gate = MagicMock()
+        registry = {et: _success_phase_fn(et, count=0) for et in ENTITY_ORDER}
+        with patch("primeqa.sync.engine.get_phase_function",
+                   side_effect=lambda et: registry[et]):
+            result = engine.run_sync(connected_org_id="org-1",
+                                     resume_sync_run_id="existing-run")
+        assert result == "existing-run"
+        engine._evaluate_skip_gate.assert_not_called()
+        engine._mark_sync_run_skipped.assert_not_called()
+        # resume completes structurally but does NOT advance the watermark
+        # (no fetch-start SF time was captured for the resumed run)
+        engine._mark_sync_run_structural_complete.assert_called_once()
+        assert (engine._mark_sync_run_structural_complete
+                .call_args.kwargs["setup_audit_watermark"] is None)
+
+
+class TestEvaluateSkipGate:
+    def _ctx_with_probe(self, *, returns=None, raises=None):
+        ctx = MagicMock(name="ctx")
+        if raises is not None:
+            ctx.sf_client.probe_setup_audit_trail.side_effect = raises
+        else:
+            ctx.sf_client.probe_setup_audit_trail.return_value = returns
+        return ctx
+
+    def test_watermark_and_no_changes_skips(self) -> None:
+        engine = _make_engine()
+        wm = datetime(2026, 6, 18, tzinfo=timezone.utc)
+        engine._load_setup_audit_watermark = MagicMock(return_value=wm)
+        ctx = self._ctx_with_probe(returns=(False, _T))
+        d = engine._evaluate_skip_gate(ctx, "org-1")
+        assert d.skip is True and d.server_time == _T
+        ctx.sf_client.probe_setup_audit_trail.assert_called_once_with(wm)
+
+    def test_watermark_and_changes_runs_full(self) -> None:
+        engine = _make_engine()
+        engine._load_setup_audit_watermark = MagicMock(
+            return_value=datetime(2026, 6, 18, tzinfo=timezone.utc))
+        d = engine._evaluate_skip_gate(
+            self._ctx_with_probe(returns=(True, _T)), "org-1")
+        assert d.skip is False and d.server_time == _T
+
+    def test_no_watermark_runs_full_but_captures_time(self) -> None:
+        engine = _make_engine()
+        engine._load_setup_audit_watermark = MagicMock(return_value=None)
+        d = engine._evaluate_skip_gate(
+            self._ctx_with_probe(returns=(False, _T)), "org-1")
+        assert d.skip is False
+        assert d.server_time == _T          # used to set the first watermark
+        assert "first" in d.reason
+
+    def test_probe_failure_is_failsafe_full_sync(self) -> None:
+        engine = _make_engine()
+        engine._load_setup_audit_watermark = MagicMock(
+            return_value=datetime(2026, 6, 18, tzinfo=timezone.utc))
+        d = engine._evaluate_skip_gate(
+            self._ctx_with_probe(raises=RuntimeError("403 no access")), "org-1")
+        assert d.skip is False and d.server_time is None
+
+    def test_watermark_read_failure_is_failsafe(self) -> None:
+        engine = _make_engine()
+        engine._load_setup_audit_watermark = MagicMock(
+            side_effect=RuntimeError("db down"))
+        ctx = MagicMock()
+        d = engine._evaluate_skip_gate(ctx, "org-1")
+        assert d.skip is False and d.server_time is None
+        ctx.sf_client.probe_setup_audit_trail.assert_not_called()
+
+    def test_stale_watermark_outside_retention_runs_full(self) -> None:
+        # A clean probe is NOT trusted when the watermark predates
+        # SetupAuditTrail's retention window — changes could have aged out.
+        engine = _make_engine()
+        old = _T - (MAX_SKIP_WATERMARK_AGE + timedelta(days=1))
+        engine._load_setup_audit_watermark = MagicMock(return_value=old)
+        d = engine._evaluate_skip_gate(
+            self._ctx_with_probe(returns=(False, _T)), "org-1")
+        assert d.skip is False          # no skip despite "no changes"
+        assert "retention" in d.reason
+        assert d.server_time == _T       # still captured for the watermark
+
+    def test_recent_watermark_within_retention_skips(self) -> None:
+        engine = _make_engine()
+        recent = _T - (MAX_SKIP_WATERMARK_AGE - timedelta(days=1))
+        engine._load_setup_audit_watermark = MagicMock(return_value=recent)
+        d = engine._evaluate_skip_gate(
+            self._ctx_with_probe(returns=(False, _T)), "org-1")
+        assert d.skip is True            # just inside the window -> skip allowed

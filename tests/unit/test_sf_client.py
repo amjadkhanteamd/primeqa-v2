@@ -3822,3 +3822,89 @@ class TestFetchCustomFieldMetadata:
         result = c.fetch_custom_field_metadata(["00N_gone", "00N_here"])
         assert set(result.keys()) == {"00N_here"}
         c.close()
+
+
+# ----------------------------------------------------------------------
+# probe_setup_audit_trail (1b.1 skip-gate signal)
+# ----------------------------------------------------------------------
+
+from datetime import datetime, timezone  # noqa: E402
+
+
+def _audit_handler(records, *, date_header="Wed, 19 Jun 2026 12:00:00 GMT",
+                   captured=None, status=200, err_code=None):
+    """MockTransport handler: token POST + a SetupAuditTrail query GET.
+
+    `captured` (optional dict) records the SOQL `q` of the query request.
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/services/oauth2/token"):
+            return _token_response()
+        # the SetupAuditTrail query
+        if captured is not None:
+            captured["q"] = request.url.params.get("q")
+            captured["path"] = request.url.path
+        if err_code is not None:
+            return httpx.Response(
+                status, json=[{"message": "no access", "errorCode": err_code}])
+        headers = {"Date": date_header} if date_header is not None else {}
+        return httpx.Response(200, json={"totalSize": len(records),
+                                         "done": True, "records": records},
+                              headers=headers)
+    return handler
+
+
+class TestProbeSetupAuditTrail:
+    def test_with_since_builds_where_limit1_and_reads_date(self) -> None:
+        cap: dict = {}
+        c = _make_client(httpx.MockTransport(
+            _audit_handler([{"Id": "0Ym1"}], captured=cap)))
+        since = datetime(2026, 6, 18, 9, 30, 0, tzinfo=timezone.utc)
+        has_changes, server_time = c.probe_setup_audit_trail(since)
+        c.close()
+        assert has_changes is True
+        # SOQL: unquoted ISO-8601 Z literal, LIMIT 1, on SetupAuditTrail
+        assert "FROM SetupAuditTrail" in cap["q"]
+        assert "WHERE CreatedDate > 2026-06-18T09:30:00Z" in cap["q"]
+        assert cap["q"].strip().endswith("LIMIT 1")
+        assert cap["path"].endswith(f"/services/data/{SF_API_VERSION}/query/")
+        # SF server time parsed from the Date response header
+        assert server_time == datetime(2026, 6, 19, 12, 0, 0, tzinfo=timezone.utc)
+
+    def test_without_since_omits_where(self) -> None:
+        cap: dict = {}
+        c = _make_client(httpx.MockTransport(_audit_handler([], captured=cap)))
+        has_changes, server_time = c.probe_setup_audit_trail(None)
+        c.close()
+        assert "WHERE" not in cap["q"]
+        assert cap["q"] == "SELECT Id FROM SetupAuditTrail LIMIT 1"
+        # no rows -> has_changes False; Date still captured
+        assert has_changes is False
+        assert server_time == datetime(2026, 6, 19, 12, 0, 0, tzinfo=timezone.utc)
+
+    def test_no_records_means_no_changes(self) -> None:
+        c = _make_client(httpx.MockTransport(_audit_handler([])))
+        has_changes, _ = c.probe_setup_audit_trail(
+            datetime(2026, 6, 18, tzinfo=timezone.utc))
+        c.close()
+        assert has_changes is False
+
+    def test_missing_date_header_yields_none_server_time(self) -> None:
+        c = _make_client(httpx.MockTransport(
+            _audit_handler([{"Id": "x"}], date_header=None)))
+        has_changes, server_time = c.probe_setup_audit_trail(None)
+        c.close()
+        assert has_changes is True
+        assert server_time is None     # unmeasured, not fabricated
+
+    def test_permission_error_raises_for_failsafe(self) -> None:
+        # SetupAuditTrail needs "View Setup and Configuration"; without it SF
+        # returns 400 INSUFFICIENT_ACCESS_OR_READONLY -> SFRequestError, which
+        # the engine treats as "unknown -> full sync".
+        c = _make_client(httpx.MockTransport(_audit_handler(
+            [], status=400, err_code="INSUFFICIENT_ACCESS_OR_READONLY")))
+        with pytest.raises(SFRequestError) as exc:
+            c.probe_setup_audit_trail(datetime(2026, 6, 18, tzinfo=timezone.utc))
+        c.close()
+        assert exc.value.status_code == 400
+        assert exc.value.error_code == "INSUFFICIENT_ACCESS_OR_READONLY"

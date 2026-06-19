@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
 from sqlalchemy import text
@@ -42,6 +44,32 @@ from primeqa.sync.result import PhaseResult
 
 
 logger = logging.getLogger(__name__)
+
+# Salesforce retains SetupAuditTrail entries for ~180 days. A skip trusts
+# "no rows since the watermark" as proof of "no changes" — but only while the
+# watermark is recent enough that SF still retains the whole window since it.
+# A watermark older than this forces a full sync: changes could have aged out
+# of the trail, so "no rows" is uncertainty, and the gate never skips on
+# uncertainty. 90 days is a conservative half of the retention window.
+MAX_SKIP_WATERMARK_AGE = timedelta(days=90)
+
+
+@dataclass
+class _SkipDecision:
+    """Outcome of the org-level skip gate (1b.1).
+
+    ``skip`` — True iff the whole sync can be skipped (org has a watermark AND
+    SetupAuditTrail confirms no setup changes since it). FAIL-SAFE default is
+    False (run the full sync) on any error / missing watermark / ambiguity.
+    ``reason`` — human-readable, logged + (on skip) recorded.
+    ``server_time`` — Salesforce server time captured at the probe (fetch start),
+    reused to advance the watermark on a successful full sync; None when the
+    probe couldn't capture it (then the watermark is NOT advanced — never on
+    uncertainty).
+    """
+    skip: bool
+    reason: str
+    server_time: datetime | None
 
 
 class SyncEngine:
@@ -135,6 +163,33 @@ class SyncEngine:
                     f"Schema/code drift detected."
                 )
 
+        # 3.5 Org-level skip gate (1b.1). On a FRESH run, ask Salesforce's
+        # SetupAuditTrail whether anything changed since the org's last confirmed
+        # sync (its setup_audit_watermark). If the org has a watermark AND the
+        # probe succeeds AND reports no changes → skip the whole sync: run no
+        # phases, enqueue no enrichment, leave entities/edges/watermark unchanged,
+        # and record a lightweight skipped sync_run. Otherwise fall through to the
+        # full sync exactly as before. FAIL SAFE: any error / missing watermark /
+        # ambiguity → run the full sync (the gate never skips on uncertainty).
+        # The SF server time captured here ("fetch start") advances the watermark
+        # on a successful full sync (see _mark_sync_run_structural_complete).
+        # Resumes are never skip-gated — an interrupted run must continue.
+        setup_audit_server_time: datetime | None = None
+        if resume_sync_run_id is None:
+            decision = self._evaluate_skip_gate(ctx, connected_org_id)
+            setup_audit_server_time = decision.server_time
+            if decision.skip:
+                self._mark_sync_run_skipped(sync_run_id, connected_org_id)
+                logger.info(
+                    "sync_run=%s org=%s SKIPPED: %s",
+                    sync_run_id, connected_org_id, decision.reason,
+                )
+                return sync_run_id
+            logger.info(
+                "sync_run=%s org=%s running full sync: %s",
+                sync_run_id, connected_org_id, decision.reason,
+            )
+
         # 4. Run phases.
         failed_phase: str | None = None
         first_error: PhaseExecutionError | None = None
@@ -187,6 +242,7 @@ class SyncEngine:
         if failed_phase is None:
             self._mark_sync_run_structural_complete(
                 sync_run_id, connected_org_id,
+                setup_audit_watermark=setup_audit_server_time,
             )
         else:
             # first_error is not None here (failed_phase truthy
@@ -365,10 +421,18 @@ class SyncEngine:
         self,
         sync_run_id: str,
         connected_org_id: str,
+        setup_audit_watermark: datetime | None = None,
     ) -> None:
         """All structural phases completed — advance phase to
         'enrichment' (the enrichment worker will pick up from here)
         and update connected_orgs.ai_enrichment_status.
+
+        ``setup_audit_watermark`` (1b.1): the Salesforce server time captured at
+        this run's fetch start. When given, it is written to
+        ``connected_orgs.setup_audit_watermark`` so the next sync's skip gate
+        compares against an SF-server-time value. When None (resume, or the
+        SetupAuditTrail probe couldn't capture SF time), the watermark is left
+        UNCHANGED via COALESCE — never advanced on uncertainty.
 
         Note: sync_run.status remains 'running' here. The terminal
         status ('success' / 'partial_success' / 'failure') is set by
@@ -418,9 +482,15 @@ class SyncEngine:
             conn.execute(text("""
                 UPDATE connected_orgs
                 SET ai_enrichment_status = 'structural_only',
-                    last_sync_run_id = :run_id
+                    last_sync_run_id = :run_id,
+                    setup_audit_watermark =
+                        COALESCE(:watermark, setup_audit_watermark)
                 WHERE id = :id
-            """), {"run_id": sync_run_id, "id": connected_org_id})
+            """), {
+                "run_id": sync_run_id,
+                "watermark": setup_audit_watermark,
+                "id": connected_org_id,
+            })
 
             # §26: readiness functions accept session-like with
             # .execute(); a SQLAlchemy connection works the same
@@ -456,6 +526,107 @@ class SyncEngine:
                 "msg": f"phase={failed_phase}: {error.original}",
                 "id": sync_run_id,
             })
+
+    # ------------------------------------------------------------------
+    # Internal: org-level skip gate (1b.1)
+    # ------------------------------------------------------------------
+
+    def _load_setup_audit_watermark(
+        self, connected_org_id: str,
+    ) -> datetime | None:
+        """SELECT setup_audit_watermark FROM connected_orgs WHERE id = :id.
+
+        Returns the stored Salesforce server-time watermark, or None when the
+        org has never had a confirmed sync (NULL).
+        """
+        with self._connect() as conn:
+            row = conn.execute(text("""
+                SELECT setup_audit_watermark FROM connected_orgs
+                WHERE id = :id
+            """), {"id": connected_org_id}).fetchone()
+        return row[0] if row else None
+
+    def _evaluate_skip_gate(
+        self, ctx: SyncContext, connected_org_id: str,
+    ) -> _SkipDecision:
+        """Decide whether this org's sync can be skipped (1b.1).
+
+        FAIL SAFE — never raises; any error / missing watermark / ambiguity
+        yields ``skip=False`` (run the full sync). Returns the SF server time
+        captured at the probe so the caller can advance the watermark after a
+        successful full sync.
+        """
+        try:
+            watermark = self._load_setup_audit_watermark(connected_org_id)
+        except Exception as e:
+            logger.warning(
+                "skip-gate: could not read setup_audit_watermark for org %s "
+                "(%s) — running full sync (fail-safe)", connected_org_id, e,
+            )
+            return _SkipDecision(False, "watermark unreadable", None)
+
+        try:
+            has_changes, server_time = ctx.sf_client.probe_setup_audit_trail(
+                watermark)
+        except Exception as e:
+            logger.warning(
+                "skip-gate: SetupAuditTrail probe failed for org %s (%s) — "
+                "running full sync (fail-safe)", connected_org_id, e,
+            )
+            return _SkipDecision(False, "SetupAuditTrail probe failed", None)
+
+        if watermark is None:
+            return _SkipDecision(
+                False, "no watermark (first confirmed sync)", server_time)
+        if has_changes:
+            return _SkipDecision(
+                False, "setup changes detected since watermark", server_time)
+        # Probe came back clean, but only trust it if the watermark is recent
+        # enough that SetupAuditTrail still retains the window since it (SF keeps
+        # ~180 days). An older watermark means changes could have aged out of the
+        # trail → "no rows" is uncertainty → run the full sync. Measure age
+        # against SF's clock (server_time) when available, else local now (a
+        # coarse 90-day threshold tolerates clock skew).
+        reference_now = server_time or datetime.now(timezone.utc)
+        if reference_now - watermark > MAX_SKIP_WATERMARK_AGE:
+            return _SkipDecision(
+                False,
+                f"watermark {watermark.isoformat()} older than "
+                f"{MAX_SKIP_WATERMARK_AGE.days}d — outside SetupAuditTrail "
+                f"retention, running full sync",
+                server_time)
+        return _SkipDecision(
+            True, f"no setup changes since {watermark.isoformat()}",
+            server_time)
+
+    def _mark_sync_run_skipped(
+        self, sync_run_id: str, connected_org_id: str,
+    ) -> None:
+        """Finalize a skipped sync_run (1b.1).
+
+        Terminal ``status='success'`` (so the D-183 staleness clock, which reads
+        ``status IN ('success','partial_success')``, counts the run as a recent
+        successful sync), ``phase='done'``, ``completed_at=NOW()``, ``skipped=true``.
+        Counter columns stay at their 0 defaults — no phases ran. Bumps
+        ``connected_orgs.last_sync_run_id`` (the skip is the org's latest run, so
+        it shows up in history) but leaves ``setup_audit_watermark``,
+        ``ai_enrichment_status``, and all entities/edges UNCHANGED, and enqueues
+        no enrichment.
+        """
+        with self._connect() as conn:
+            conn.execute(text("""
+                UPDATE sync_runs
+                SET status = 'success',
+                    phase = 'done',
+                    skipped = true,
+                    completed_at = NOW()
+                WHERE id = :id
+            """), {"id": sync_run_id})
+            conn.execute(text("""
+                UPDATE connected_orgs
+                SET last_sync_run_id = :run_id
+                WHERE id = :id
+            """), {"run_id": sync_run_id, "id": connected_org_id})
 
     # ------------------------------------------------------------------
     # Internal: context + transactions

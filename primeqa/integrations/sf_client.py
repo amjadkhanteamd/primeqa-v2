@@ -36,6 +36,8 @@ from __future__ import annotations
 import logging
 import time
 import urllib.parse
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Iterable
 
 import httpx
@@ -117,6 +119,33 @@ MAX_RETRIES = 3
 RETRY_BACKOFF_SEQ: tuple[float, ...] = (1.0, 2.0, 4.0)  # seconds
 
 logger = logging.getLogger(__name__)
+
+
+def _soql_datetime_literal(dt: datetime) -> str:
+    """Format a datetime as a SOQL datetime literal — ISO-8601, UTC, ``Z``,
+    UNQUOTED (e.g. ``2026-06-19T12:00:00Z``). SOQL datetime literals must not be
+    quoted; naive datetimes are assumed UTC."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_http_date(raw: str | None) -> datetime | None:
+    """Parse an HTTP ``Date`` response header (RFC 7231, e.g.
+    ``Wed, 19 Jun 2026 12:00:00 GMT``) into a tz-aware UTC datetime, or None if
+    the header is missing/unparseable. Used to read Salesforce's own clock at
+    fetch start (the setup-audit watermark must be SF server time, never local)."""
+    if not raw:
+        return None
+    try:
+        dt = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 class SalesforceClient:
@@ -324,6 +353,46 @@ class SalesforceClient:
             data = resp.json()
             records.extend(data.get("records", []))
         return records
+
+    def probe_setup_audit_trail(
+        self, since: datetime | None,
+    ) -> tuple[bool, datetime | None]:
+        """Probe Salesforce's SetupAuditTrail for setup changes since ``since``.
+
+        Issues ``SELECT Id FROM SetupAuditTrail [WHERE CreatedDate > <since>]
+        LIMIT 1`` — the S1 skip-gate only needs to know whether ANY change
+        exists, so one row is enough (no pagination). Returns
+        ``(has_changes, sf_server_time)``:
+
+          * ``has_changes`` — True if at least one SetupAuditTrail row exists
+            after ``since``. When ``since`` is None (no watermark / first sync)
+            the WHERE clause is omitted and this value is NOT meaningful (the
+            caller runs a full sync regardless); only ``sf_server_time`` is used.
+          * ``sf_server_time`` — Salesforce's own clock at fetch start, parsed
+            from the response ``Date`` header (tz-aware UTC), or None if the
+            header is missing/unparseable. The caller persists this as the new
+            watermark after a successful full sync, so subsequent probes always
+            compare against an SF-server-time value (never local time).
+
+        Requires the OAuth user to hold "View Setup and Configuration"
+        (SetupAuditTrail is a setup object). On insufficient permission
+        Salesforce returns HTTP 400 ``INSUFFICIENT_ACCESS_OR_READONLY`` →
+        ``_request`` raises ``SFRequestError``; auth/rate/network failures raise
+        as usual. This method does NOT swallow those — the caller (the engine
+        skip-gate) treats any raise as "unknown → run the full sync" (fail-safe).
+        """
+        where = ""
+        if since is not None:
+            where = f" WHERE CreatedDate > {_soql_datetime_literal(since)}"
+        soql = f"SELECT Id FROM SetupAuditTrail{where} LIMIT 1"
+        path = f"/services/data/{self.api_version}/query/"
+        # Direct _request (not _query_all): LIMIT 1 needs no cursor walk, and we
+        # need the raw response to read the Date header (SF server time).
+        resp = self._request("GET", path, params={"q": soql})
+        sf_server_time = _parse_http_date(resp.headers.get("Date"))
+        data = resp.json()
+        has_changes = bool(data.get("records"))
+        return has_changes, sf_server_time
 
     # --------------------------------------------------------------
     # Entity fetches (skinny scope: 3 types)
