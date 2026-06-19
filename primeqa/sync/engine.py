@@ -163,32 +163,33 @@ class SyncEngine:
                     f"Schema/code drift detected."
                 )
 
-        # 3.5 Org-level skip gate (1b.1). On a FRESH run, ask Salesforce's
-        # SetupAuditTrail whether anything changed since the org's last confirmed
-        # sync (its setup_audit_watermark). If the org has a watermark AND the
-        # probe succeeds AND reports no changes → skip the whole sync: run no
-        # phases, enqueue no enrichment, leave entities/edges/watermark unchanged,
-        # and record a lightweight skipped sync_run. Otherwise fall through to the
-        # full sync exactly as before. FAIL SAFE: any error / missing watermark /
-        # ambiguity → run the full sync (the gate never skips on uncertainty).
-        # The SF server time captured here ("fetch start") advances the watermark
-        # on a successful full sync (see _mark_sync_run_structural_complete).
-        # Resumes are never skip-gated — an interrupted run must continue.
-        setup_audit_server_time: datetime | None = None
-        if resume_sync_run_id is None:
-            decision = self._evaluate_skip_gate(ctx, connected_org_id)
-            setup_audit_server_time = decision.server_time
-            if decision.skip:
-                self._mark_sync_run_skipped(sync_run_id, connected_org_id)
-                logger.info(
-                    "sync_run=%s org=%s SKIPPED: %s",
-                    sync_run_id, connected_org_id, decision.reason,
-                )
-                return sync_run_id
+        # 3.5 Org-level skip gate (1b.1). ALWAYS probe Salesforce's SetupAuditTrail
+        # (whether anything changed since the org's setup_audit_watermark) so the
+        # SF server time that bootstraps/advances the watermark is captured on
+        # EVERY full sync — INCLUDING a resume. A resumed sync still fetches
+        # current SF state, so its watermark must advance too; otherwise a
+        # perpetually-resuming org (e.g. one with a stranded prior run that keeps
+        # getting re-enqueued for resume) could never bootstrap its watermark, and
+        # the skip gate would never engage. Only ACT on a skip decision for a
+        # FRESH run — a resume must continue the interrupted sync, never skip. FAIL
+        # SAFE: any error / missing watermark / ambiguity → run the full sync (the
+        # gate never skips on uncertainty). The captured SF time ("fetch start")
+        # advances the watermark on a successful full sync (see
+        # _mark_sync_run_structural_complete).
+        decision = self._evaluate_skip_gate(ctx, connected_org_id)
+        setup_audit_server_time = decision.server_time
+        if resume_sync_run_id is None and decision.skip:
+            self._mark_sync_run_skipped(sync_run_id, connected_org_id)
             logger.info(
-                "sync_run=%s org=%s running full sync: %s",
+                "sync_run=%s org=%s SKIPPED: %s",
                 sync_run_id, connected_org_id, decision.reason,
             )
+            return sync_run_id
+        logger.info(
+            "sync_run=%s org=%s running full sync (%s): %s",
+            sync_run_id, connected_org_id,
+            "resume" if resume_sync_run_id else "fresh", decision.reason,
+        )
 
         # 4. Run phases.
         failed_phase: str | None = None

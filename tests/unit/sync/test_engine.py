@@ -720,22 +720,26 @@ class TestSkipGateOrchestration:
         assert (engine._mark_sync_run_structural_complete
                 .call_args.kwargs["setup_audit_watermark"] == _T)
 
-    def test_resume_never_evaluates_skip_gate(self) -> None:
+    def test_resume_evaluates_gate_captures_watermark_but_never_skips(self) -> None:
+        # A resume MUST still evaluate the gate so the watermark is captured (a
+        # resumed full sync advances it too — otherwise a perpetually-resuming
+        # org never bootstraps its watermark). It must NOT act on a skip decision,
+        # even a skippable one — an interrupted sync must continue.
         engine = _engine_with_mocked_helpers()
-        engine._evaluate_skip_gate = MagicMock()
+        engine._evaluate_skip_gate = MagicMock(
+            return_value=_SkipDecision(True, "no changes", _T))
         registry = {et: _success_phase_fn(et, count=0) for et in ENTITY_ORDER}
         with patch("primeqa.sync.engine.get_phase_function",
                    side_effect=lambda et: registry[et]):
             result = engine.run_sync(connected_org_id="org-1",
                                      resume_sync_run_id="existing-run")
         assert result == "existing-run"
-        engine._evaluate_skip_gate.assert_not_called()
-        engine._mark_sync_run_skipped.assert_not_called()
-        # resume completes structurally but does NOT advance the watermark
-        # (no fetch-start SF time was captured for the resumed run)
+        engine._evaluate_skip_gate.assert_called_once()      # gate runs on resume
+        engine._mark_sync_run_skipped.assert_not_called()    # but never skips it
+        # the resumed full sync advances the watermark (the captured SF time)
         engine._mark_sync_run_structural_complete.assert_called_once()
         assert (engine._mark_sync_run_structural_complete
-                .call_args.kwargs["setup_audit_watermark"] is None)
+                .call_args.kwargs["setup_audit_watermark"] == _T)
 
 
 class TestEvaluateSkipGate:
@@ -764,7 +768,11 @@ class TestEvaluateSkipGate:
             self._ctx_with_probe(returns=(True, _T)), "org-1")
         assert d.skip is False and d.server_time == _T
 
-    def test_no_watermark_runs_full_but_captures_time(self) -> None:
+    def test_no_watermark_decision_captures_time(self) -> None:
+        # Decision-level only: the gate returns server_time on the no-watermark
+        # path. NOTE: this alone is NOT sufficient — it mocks away the run_sync
+        # threading. TestWatermarkCapturedEndToEnd is the faithful guard that the
+        # captured time actually reaches the connected_orgs watermark UPDATE.
         engine = _make_engine()
         engine._load_setup_audit_watermark = MagicMock(return_value=None)
         d = engine._evaluate_skip_gate(
@@ -809,3 +817,80 @@ class TestEvaluateSkipGate:
         d = engine._evaluate_skip_gate(
             self._ctx_with_probe(returns=(False, _T)), "org-1")
         assert d.skip is True            # just inside the window -> skip allowed
+
+
+# ----------------------------------------------------------------------
+# FAITHFUL end-to-end: the captured SF server time reaches the REAL
+# connected_orgs watermark UPDATE (mocks ONLY the probe boundary).
+# ----------------------------------------------------------------------
+
+from contextlib import contextmanager  # noqa: E402
+
+
+class TestWatermarkCapturedEndToEnd:
+    """Drive run_sync end-to-end. Mock ONLY the probe boundary (the SF call) and
+    the DB read of the watermark; let _evaluate_skip_gate, the run_sync
+    threading, AND the real _mark_sync_run_structural_complete SQL run — and
+    capture the actual connected_orgs UPDATE to assert it receives the captured
+    SF server time. A drop anywhere in that chain (the resume-guard bug) fails
+    this test. (The earlier orchestration/decision tests mocked these links away,
+    which is exactly why the bug went green.)"""
+
+    def _run_capture_watermark(self, *, resume):
+        engine = _make_engine()
+        engine._create_sync_run_row = MagicMock(return_value=("run-1", 1))
+        engine._get_logical_version_seq = MagicMock(return_value=1)
+        engine._get_last_completed_phase = MagicMock(return_value=None)
+        engine._advance_last_completed_phase = MagicMock()
+        engine._mark_sync_run_failed = MagicMock()
+        engine._mark_sync_run_skipped = MagicMock()
+        engine._phase_transaction = MagicMock()
+        engine._phase_transaction.return_value.__enter__ = MagicMock()
+        engine._phase_transaction.return_value.__exit__ = MagicMock(return_value=False)
+        # no-watermark org; mock ONLY the probe boundary + the watermark DB read
+        engine._load_setup_audit_watermark = MagicMock(return_value=None)
+        engine.sf.probe_setup_audit_trail = MagicMock(return_value=(False, _T))
+
+        captured: list = []
+
+        @contextmanager
+        def _fake_connect():
+            conn = MagicMock()
+
+            def _exec(sql, params=None):
+                captured.append((str(getattr(sql, "text", sql)), params))
+                r = MagicMock()
+                r.fetchall.return_value = []
+                r.rowcount = 0
+                r.scalar.return_value = None
+                return r
+            conn.execute.side_effect = _exec
+            yield conn
+        engine._connect = _fake_connect
+
+        registry = {et: _success_phase_fn(et, count=0) for et in ENTITY_ORDER}
+        with patch("primeqa.sync.engine.get_phase_function",
+                   side_effect=lambda et: registry[et]), \
+             patch("primeqa.sync.readiness.apply_org_status"), \
+             patch("primeqa.sync.readiness.maybe_finalize_run"):
+            engine.run_sync(connected_org_id="org-1",
+                            resume_sync_run_id=("prev-run" if resume else None))
+
+        # the REAL connected_orgs UPDATE's watermark bind param
+        upd = [p for (s, p) in captured
+               if "UPDATE connected_orgs" in s and p and "watermark" in p]
+        assert len(upd) == 1, f"expected one connected_orgs watermark UPDATE, got {upd}"
+        return engine, upd[0]["watermark"]
+
+    def test_fresh_run_writes_captured_time_to_watermark_update(self) -> None:
+        engine, watermark = self._run_capture_watermark(resume=False)
+        engine.sf.probe_setup_audit_trail.assert_called_once()
+        assert watermark == _T
+
+    def test_resume_run_writes_captured_time_to_watermark_update(self) -> None:
+        # The regression guard for the resume-guard bug: a resumed full sync must
+        # probe + thread the captured SF time into the connected_orgs UPDATE.
+        # RED before the fix (probe never called; watermark NULL), GREEN after.
+        engine, watermark = self._run_capture_watermark(resume=True)
+        engine.sf.probe_setup_audit_trail.assert_called_once()
+        assert watermark == _T
