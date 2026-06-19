@@ -761,26 +761,30 @@ class TestSkipGateOrchestration:
         assert (engine._mark_sync_run_structural_complete
                 .call_args.kwargs["setup_audit_watermark"] == _T)
 
-    def test_resume_evaluates_gate_captures_watermark_but_never_skips(self) -> None:
-        # A resume MUST still evaluate the gate so the watermark is captured (a
-        # resumed full sync advances it too — otherwise a perpetually-resuming
-        # org never bootstraps its watermark). It must NOT act on a skip decision,
-        # even a skippable one — an interrupted sync must continue.
+    def test_resume_does_not_evaluate_gate_or_advance_watermark(self) -> None:
+        # The skip gate is FRESH-ONLY (corrected invariant). A resume must
+        # continue the interrupted sync and NEVER touch the watermark: the gate
+        # is not even evaluated, and structural-complete receives a None
+        # watermark so the savepoint-guarded UPDATE is skipped entirely — the
+        # column keeps whatever value it had (including NULL). Advancing it on a
+        # resume was the T2 silent-miss bug.
         engine = _engine_with_mocked_helpers()
         engine._evaluate_skip_gate = MagicMock(
             return_value=_SkipDecision(True, "no changes", _T))
-        registry = {et: _success_phase_fn(et, count=0) for et in ENTITY_ORDER}
+        registry = {et: _success_phase_fn(et, count=1) for et in ENTITY_ORDER}
         with patch("primeqa.sync.engine.get_phase_function",
                    side_effect=lambda et: registry[et]):
             result = engine.run_sync(connected_org_id="org-1",
                                      resume_sync_run_id="existing-run")
         assert result == "existing-run"
-        engine._evaluate_skip_gate.assert_called_once()      # gate runs on resume
-        engine._mark_sync_run_skipped.assert_not_called()    # but never skips it
-        # the resumed full sync advances the watermark (the captured SF time)
+        engine._evaluate_skip_gate.assert_not_called()       # fresh-only gate
+        engine._mark_sync_run_skipped.assert_not_called()    # a resume never skips
+        # the resumed sync runs its remaining phases ...
+        assert engine._advance_last_completed_phase.call_count == len(ENTITY_ORDER)
+        # ... and finalizes WITHOUT advancing the watermark (None passed through)
         engine._mark_sync_run_structural_complete.assert_called_once()
         assert (engine._mark_sync_run_structural_complete
-                .call_args.kwargs["setup_audit_watermark"] == _T)
+                .call_args.kwargs["setup_audit_watermark"] is None)
 
 
 class TestEvaluateSkipGate:
@@ -869,15 +873,24 @@ from contextlib import contextmanager  # noqa: E402
 
 
 class TestWatermarkCapturedEndToEnd:
-    """Drive run_sync end-to-end. Mock ONLY the probe boundary (the SF call) and
-    the DB read of the watermark; let _evaluate_skip_gate, the run_sync
-    threading, AND the real _mark_sync_run_structural_complete SQL run — and
-    capture the actual connected_orgs UPDATE to assert it receives the captured
-    SF server time. A drop anywhere in that chain (the resume-guard bug) fails
-    this test. (The earlier orchestration/decision tests mocked these links away,
-    which is exactly why the bug went green.)"""
+    """Drive run_sync end-to-end with a STATEFUL model of
+    connected_orgs.setup_audit_watermark: the cell starts at a given value and
+    the REAL savepoint-guarded UPDATE — when the code issues it — mutates the
+    cell, exactly as Postgres would persist it. We mock ONLY the probe boundary
+    (the SF call) + the watermark DB read; _evaluate_skip_gate, the run_sync
+    threading, AND the real _mark_sync_run_structural_complete SQL all run for
+    real. We then assert the cell's FINAL value — the actual column value the
+    next sync would read.
 
-    def _run_capture_watermark(self, *, resume):
+    Corrected invariant under test: the watermark advances to the captured SF
+    server time ONLY on a FRESH run. A RESUME leaves it exactly as it was,
+    including NULL (advancing on resume was the T2 silent-miss bug). The earlier
+    orchestration/decision tests mock these links away, which is why a wrong
+    threading can pass them — this is the faithful guard."""
+
+    def _run_to_final_watermark(self, *, resume, existing_watermark):
+        cell = {"watermark": existing_watermark}
+
         engine = _make_engine()
         engine._create_sync_run_row = MagicMock(return_value=("run-1", 1))
         engine._get_logical_version_seq = MagicMock(return_value=1)
@@ -888,18 +901,26 @@ class TestWatermarkCapturedEndToEnd:
         engine._phase_transaction = MagicMock()
         engine._phase_transaction.return_value.__enter__ = MagicMock()
         engine._phase_transaction.return_value.__exit__ = MagicMock(return_value=False)
-        # no-watermark org; mock ONLY the probe boundary + the watermark DB read
-        engine._load_setup_audit_watermark = MagicMock(return_value=None)
-        engine.sf.probe_setup_audit_trail = MagicMock(return_value=(False, _T))
-
-        captured: list = []
+        # The gate (when it runs) reads the CURRENT column value; the probe
+        # boundary is mocked to "changes detected" so a FRESH run always does a
+        # full sync (and thus reaches the watermark advance) regardless of the
+        # existing value — isolating the fresh-vs-resume axis from the skip axis.
+        engine._load_setup_audit_watermark = MagicMock(
+            side_effect=lambda *_a, **_k: cell["watermark"])
+        engine.sf.probe_setup_audit_trail = MagicMock(return_value=(True, _T))
 
         @contextmanager
         def _fake_connect():
             conn = MagicMock()
 
             def _exec(sql, params=None):
-                captured.append((str(getattr(sql, "text", sql)), params))
+                s = str(getattr(sql, "text", sql))
+                # the REAL savepoint-guarded watermark UPDATE mutates the cell —
+                # exactly what Postgres would persist. Nothing else touches it.
+                if ("UPDATE connected_orgs" in s
+                        and "setup_audit_watermark" in s
+                        and params and "watermark" in params):
+                    cell["watermark"] = params["watermark"]
                 r = MagicMock()
                 r.fetchall.return_value = []
                 r.rowcount = 0
@@ -916,22 +937,30 @@ class TestWatermarkCapturedEndToEnd:
              patch("primeqa.sync.readiness.maybe_finalize_run"):
             engine.run_sync(connected_org_id="org-1",
                             resume_sync_run_id=("prev-run" if resume else None))
+        return engine, cell["watermark"]
 
-        # the REAL connected_orgs UPDATE's watermark bind param
-        upd = [p for (s, p) in captured
-               if "UPDATE connected_orgs" in s and p and "watermark" in p]
-        assert len(upd) == 1, f"expected one connected_orgs watermark UPDATE, got {upd}"
-        return engine, upd[0]["watermark"]
-
-    def test_fresh_run_writes_captured_time_to_watermark_update(self) -> None:
-        engine, watermark = self._run_capture_watermark(resume=False)
+    def test_fresh_run_advances_watermark_to_server_time(self) -> None:
+        # A fresh full sync establishes a single honest as-of → watermark := _T.
+        engine, watermark = self._run_to_final_watermark(
+            resume=False, existing_watermark=None)
         engine.sf.probe_setup_audit_trail.assert_called_once()
         assert watermark == _T
 
-    def test_resume_run_writes_captured_time_to_watermark_update(self) -> None:
-        # The regression guard for the resume-guard bug: a resumed full sync must
-        # probe + thread the captured SF time into the connected_orgs UPDATE.
-        # RED before the fix (probe never called; watermark NULL), GREEN after.
-        engine, watermark = self._run_capture_watermark(resume=True)
-        engine.sf.probe_setup_audit_trail.assert_called_once()
-        assert watermark == _T
+    def test_resume_leaves_existing_watermark_untouched(self) -> None:
+        # Starting at value V, a resume must NOT advance the watermark — the
+        # column is still V after the resume completes. RED against the
+        # advance-on-resume code (which would overwrite it with _T).
+        V = datetime(2026, 6, 1, 9, 0, 0, tzinfo=timezone.utc)
+        engine, watermark = self._run_to_final_watermark(
+            resume=True, existing_watermark=V)
+        engine.sf.probe_setup_audit_trail.assert_not_called()  # fresh-only gate
+        assert watermark == V
+
+    def test_resume_leaves_null_watermark_null(self) -> None:
+        # Same invariant from a NULL start: a resume never bootstraps the
+        # watermark (the reaper turns strands into fresh syncs for that). RED
+        # against the advance-on-resume code (which would set it to _T).
+        engine, watermark = self._run_to_final_watermark(
+            resume=True, existing_watermark=None)
+        engine.sf.probe_setup_audit_trail.assert_not_called()
+        assert watermark is None
