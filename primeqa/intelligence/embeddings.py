@@ -41,24 +41,17 @@ BATCH_SIZE_LIMIT = 128
 REQUEST_TIMEOUT_S = 60.0
 
 # ---------------------------------------------------------------------
-# Voyage cost rate (S1 sync cost-telemetry, 1d)
+# Voyage cost rate (S1 sync cost-telemetry — 1a: confirmed rate)
 # ---------------------------------------------------------------------
 #
-#   ⚠️  PLACEHOLDER RATE — NOT A CONFIRMED VOYAGE PRICE  ⚠️
-#
-# The cost-attribution plumbing (token capture → cost_usd → per-sync-run
-# roll-up via get_sync_run_cost) is wired end-to-end against this constant,
-# but the numeric value below is a deliberately neutral, round placeholder
-# so the math is exercised and unit-testable. It is NOT researched against
-# Voyage's pricing page and MUST NOT be treated as authoritative.
-#
-# Before any Voyage cost computed here is trusted (dashboards, billing,
-# decisions), confirm voyage-3's current USD-per-token price against Voyage's
-# pricing and set BOTH the value below AND flip VOYAGE_3_RATE_CONFIRMED=True.
-# While VOYAGE_3_RATE_CONFIRMED is False, voyage_embedding_cost_usd() emits a
-# one-time warning so the placeholder can never silently masquerade as real.
-VOYAGE_3_USD_PER_1M_TOKENS = 0.10   # PLACEHOLDER — confirm before trusting costs
-VOYAGE_3_RATE_CONFIRMED = False     # flip to True once the rate above is verified
+# voyage-3's standard published price: USD 0.06 per 1,000,000 input tokens.
+# Confirmed by AK against Voyage's pricing (1a), so VOYAGE_3_RATE_CONFIRMED is
+# True and costs computed from it are authoritative (no provisional warning /
+# rate_provisional marker is emitted while this flag is True). All cost math
+# references this single constant via voyage_embedding_cost_usd(). If Voyage
+# changes the price, update the value here and keep the flag True.
+VOYAGE_3_USD_PER_1M_TOKENS = 0.06   # confirmed voyage-3 rate (USD / 1M input tokens)
+VOYAGE_3_RATE_CONFIRMED = True      # rate above verified against Voyage pricing (1a)
 
 _rate_warning_emitted = False
 
