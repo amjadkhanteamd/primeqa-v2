@@ -61,7 +61,6 @@ from sqlalchemy import text as _sa_text
 from primeqa.intelligence.embeddings import (
     EMBEDDING_MODEL_TAG,
     VoyageError,
-    embed_batch,
     embed_batch_with_usage,
 )
 from primeqa.intelligence.llm.limits import record_embedding_usage

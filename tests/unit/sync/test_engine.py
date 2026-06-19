@@ -642,8 +642,10 @@ class TestMarkSyncRunStructuralCompleteAdvancesReadiness:
                 sync_run_id="run-1", connected_org_id="org-a",
             )
 
-        # 3 executes now: UPDATE sync_runs / UPDATE connected_orgs
-        # / SELECT running orgs.
+        # 3 executes when no watermark is given: UPDATE sync_runs / the
+        # load-bearing UPDATE connected_orgs / SELECT running orgs. The
+        # best-effort watermark UPDATE is SKIPPED (watermark is None), so the
+        # load-bearing UPDATE carries only ai_enrichment_status + last_sync_run_id.
         assert mock_conn.execute.call_count == 3
         sync_runs_call = mock_conn.execute.call_args_list[0]
         orgs_call = mock_conn.execute.call_args_list[1]
@@ -651,14 +653,53 @@ class TestMarkSyncRunStructuralCompleteAdvancesReadiness:
         assert "UPDATE sync_runs" in str(sync_runs_call.args[0])
         assert sync_runs_call.args[1] == {"id": "run-1"}
         assert "UPDATE connected_orgs" in str(orgs_call.args[0])
-        # 1b.1: the connected_orgs UPDATE now also COALESCE-advances the
-        # setup_audit_watermark (None here = leave it unchanged).
-        assert "setup_audit_watermark" in str(orgs_call.args[0])
-        assert orgs_call.args[1] == {
-            "run_id": "run-1", "watermark": None, "id": "org-a",
-        }
+        assert "last_sync_run_id" in str(orgs_call.args[0])
+        # the load-bearing UPDATE does NOT touch the watermark (1b.1 deploy-safety:
+        # the watermark write is a separate, savepoint-guarded best-effort UPDATE)
+        assert "setup_audit_watermark" not in str(orgs_call.args[0])
+        assert orgs_call.args[1] == {"run_id": "run-1", "id": "org-a"}
         assert "SELECT" in str(select_call.args[0])
         assert "sr.status = 'running'" in str(select_call.args[0])
+
+    def test_watermark_write_failure_is_swallowed_sync_still_finalizes(self) -> None:
+        """DEPLOY SAFETY (1b.1): if setup_audit_watermark is missing (tenant
+        migration 20260619_0010 not yet applied), the savepoint-guarded watermark
+        UPDATE fails — but the sync still finalizes. The load-bearing updates +
+        the §26 readiness loop still run; the function does NOT raise."""
+        from contextlib import contextmanager as _cm
+        from datetime import datetime as _dt, timezone as _tz
+
+        conn = MagicMock()
+        select_result = MagicMock()
+        select_result.fetchall.return_value = []
+        conn.execute.side_effect = [
+            MagicMock(),                           # UPDATE sync_runs
+            MagicMock(),                           # load-bearing connected_orgs
+            Exception("column setup_audit_watermark does not exist"),  # watermark
+            select_result,                         # §26 SELECT running orgs
+        ]
+
+        @_cm
+        def _savepoint():
+            yield                                  # bare CM: does NOT suppress
+        conn.begin_nested = MagicMock(side_effect=lambda: _savepoint())
+
+        engine = _make_engine()
+        engine._connect = MagicMock()
+        engine._connect.return_value.__enter__.return_value = conn
+        engine._connect.return_value.__exit__.return_value = False
+
+        with patch("primeqa.sync.readiness.apply_org_status"), \
+             patch("primeqa.sync.readiness.maybe_finalize_run"):
+            # must NOT raise despite the watermark column being "missing"
+            engine._mark_sync_run_structural_complete(
+                sync_run_id="run-1", connected_org_id="org-a",
+                setup_audit_watermark=_dt(2026, 6, 19, tzinfo=_tz.utc))
+
+        # all 4 executes attempted: the watermark write was tried (in a savepoint)
+        # and its failure swallowed, and the §26 SELECT still ran afterward.
+        assert conn.execute.call_count == 4
+        conn.begin_nested.assert_called_once()
 
 
 # ----------------------------------------------------------------------

@@ -431,9 +431,11 @@ class SyncEngine:
         ``setup_audit_watermark`` (1b.1): the Salesforce server time captured at
         this run's fetch start. When given, it is written to
         ``connected_orgs.setup_audit_watermark`` so the next sync's skip gate
-        compares against an SF-server-time value. When None (resume, or the
-        SetupAuditTrail probe couldn't capture SF time), the watermark is left
-        UNCHANGED via COALESCE — never advanced on uncertainty.
+        compares against an SF-server-time value. When None (the SetupAuditTrail
+        probe couldn't capture SF time), the watermark is simply not touched —
+        never advanced on uncertainty. The watermark write is BEST-EFFORT
+        (savepoint-guarded): it can never fail the load-bearing finalization, so
+        the sync still completes even if the watermark column isn't migrated yet.
 
         Note: sync_run.status remains 'running' here. The terminal
         status ('success' / 'partial_success' / 'failure') is set by
@@ -480,18 +482,40 @@ class SyncEngine:
                 SET phase = 'enrichment'
                 WHERE id = :id
             """), {"id": sync_run_id})
+            # Load-bearing: enrichment status + active-run pointer. These MUST
+            # commit for the run to finalize, so they are NOT coupled to the
+            # optional watermark write below.
             conn.execute(text("""
                 UPDATE connected_orgs
                 SET ai_enrichment_status = 'structural_only',
-                    last_sync_run_id = :run_id,
-                    setup_audit_watermark =
-                        COALESCE(:watermark, setup_audit_watermark)
+                    last_sync_run_id = :run_id
                 WHERE id = :id
-            """), {
-                "run_id": sync_run_id,
-                "watermark": setup_audit_watermark,
-                "id": connected_org_id,
-            })
+            """), {"run_id": sync_run_id, "id": connected_org_id})
+
+            # Best-effort: advance the setup-audit watermark (1b.1 optimization
+            # metadata). Wrapped in a SAVEPOINT so a missing column — e.g. tenant
+            # migration 20260619_0010 not yet applied to this schema (Railway has
+            # no deploy-time migration step; migrations are applied manually) —
+            # rolls back to the savepoint and degrades to "not advanced" instead
+            # of aborting the transaction and FAILING the whole sync at
+            # finalization. Mirrors the skip-gate READ's fail-safe; the watermark
+            # is only an optimization hint, never load-bearing.
+            if setup_audit_watermark is not None:
+                try:
+                    with conn.begin_nested():
+                        conn.execute(text("""
+                            UPDATE connected_orgs
+                            SET setup_audit_watermark = :watermark
+                            WHERE id = :id
+                        """), {"watermark": setup_audit_watermark,
+                               "id": connected_org_id})
+                except Exception as e:
+                    logger.warning(
+                        "could not advance setup_audit_watermark for org %s "
+                        "(%s) — finalizing the sync without it (migration "
+                        "20260619_0010 may not be applied to this schema yet)",
+                        connected_org_id, e,
+                    )
 
             # §26: readiness functions accept session-like with
             # .execute(); a SQLAlchemy connection works the same

@@ -266,13 +266,15 @@ def s1_sync_enqueuer_tick(ctx):
 
 
 def s1_sync_reaper_tick(ctx):
-    """Reap stale substrate-1 sync jobs (D-153).
+    """Reap stale substrate-1 sync jobs + finalize stranded sync_runs (D-153).
 
     s1_sync_jobs is per-tenant, so enumerate active tenants from shared.tenants and
     reap each — per-tenant try/except (in run_s1_sync_reaper_tick) so one tenant's
-    failure never starves the others. stale_minutes=45 (D-151) exceeds the longest
-    legitimate sync; a reaped job leaves its sync_run resumable, so a re-enqueue
-    continues from last_completed_phase (D-152 carry-forward).
+    failure never starves the others. run_s1_sync_reaper_tick does two reaps per
+    tenant: stale JOBS (default stale_minutes=10, D-178; a reaped job leaves its
+    sync_run resumable so a re-enqueue continues from last_completed_phase, D-152)
+    AND structurally-complete sync_runs stranded in 'running' (default
+    run_stale_minutes=360 / 6h) which the resume mechanism can never finalize.
     """
     try:
         from primeqa.sync.consumer import run_s1_sync_reaper_tick
