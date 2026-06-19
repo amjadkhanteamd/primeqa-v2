@@ -14775,3 +14775,56 @@ retention guard + 1b.2 delta/deletion reconciliation bound this); each skip
 allocates an empty `logical_versions` row (cosmetic; reads unaffected).
 
 ---
+
+## D-250 — S1 sync watermark invariant: advance on a FRESH run ONLY; a resume never advances (closes the T2 silent-miss gap; reverts the interim advance-on-resume deviation)
+
+**Context.** D-249 set the invariant: the SetupAuditTrail probe runs on a FRESH
+run only ("resumes always continue"), and `connected_orgs.setup_audit_watermark`
+advances to the captured SF server time only on a successful full sync. During
+1b.1 live bring-up env-59's watermark stayed NULL because its sync kept
+*resuming* a structurally-stranded run, and the resume path never probed, so it
+never captured a server time. The interim fix (commit `660be0e`, committed as a
+"fix" and **never logged**) deviated from D-249: it moved the gate evaluation out
+of the fresh-only guard so the probe ran on EVERY full sync — including a resume
+— and advanced the watermark on resume too, to bootstrap the stranded org.
+
+**The gap that introduced (T2 silent-miss).** A resume continues from a mid-phase
+checkpoint and does NOT re-fetch the already-completed early phases. Advancing the
+watermark to the resume-time probe (T2) lets a setup change to an already-fetched
+early-phase entity — one that landed at T1, after that phase ran but before the
+resume's T2 probe — fall below the advanced watermark and be silently SKIPPED on
+the next sync. The watermark would assert "the org is current as of T2" when the
+early phases were only fetched as of T1. A resume cannot honestly establish a
+single org-wide "as-of" time, so it must not set one.
+
+**Decision — restore D-249's fresh-only invariant; the reaper is the bootstrap.**
+The watermark advances ONLY on a fresh run (`resume_sync_run_id is None` — the same
+signal the skip *action* already gated on; no parallel notion of "fresh" is
+introduced). The gate is not evaluated on a resume; `setup_audit_server_time` stays
+`None`, so the savepoint-guarded watermark UPDATE is skipped and the column is left
+exactly as it was, **including NULL**. A perpetually-resuming org bootstraps its
+watermark through the run-reaper (the structurally-complete-strand reaper, commit
+`fdddaa4`), which finalizes the stranded run so the next sync is FRESH — not by
+advancing on resume. This **supersedes the interim `660be0e` advance-on-resume
+behavior**; it does not change D-249's fresh-run semantics (capture at fetch start,
+COALESCE-/savepoint-guarded advance, 90-day retention guard, fail-safe-to-full).
+
+**Deploy-safety untouched.** The 1b.1 deploy-safety split in
+`_mark_sync_run_structural_complete` — a load-bearing `connected_orgs` UPDATE
+(`ai_enrichment_status` + `last_sync_run_id`) plus a SEPARATE savepoint-guarded
+best-effort watermark UPDATE — is unchanged. A resume simply passes
+`setup_audit_watermark=None`, so the best-effort write is a no-op. No migration, no
+new column, no schema change; deploy-safe in any order.
+
+**Verification.** A faithful end-to-end unit test models `setup_audit_watermark` as
+a stateful column cell and asserts the ACTUAL post-sync value (mocks only the SF
+probe boundary; the real `_mark_sync_run_structural_complete` SQL runs):
+fresh-from-NULL → advances to the captured SF time; resume-from-V → still V;
+resume-from-NULL → still NULL. Stashing only the engine fix (keeping the new
+assertions) turns all three resume cases RED on the advance-on-resume code (the
+probe is called on resume; the watermark would be overwritten with the probe time)
+— proving the test catches the regression. Full `tests/unit/` green (2889); all
+three Railway entrypoints import clean. Ships before any 1b.1 live skip can fire,
+so the gap is closed in prod before a skip can act on a dishonest watermark.
+
+---
