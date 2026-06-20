@@ -70,6 +70,14 @@ class _SkipDecision:
     skip: bool
     reason: str
     server_time: datetime | None
+    # 1b.2: the watermark the gate READ (the delta "since"), distinct from
+    # ``server_time`` (the new time captured this run). Set only when the
+    # watermark was loaded AND the probe captured a server time — i.e. when a
+    # delta is both possible (a "since" exists) and the run will advance the
+    # watermark afterward. None on any fail-safe (unreadable watermark / probe
+    # failure / no watermark) → that run full-fetches. Consumed by run_sync to
+    # set ctx.delta_since on the fresh, non-skip path.
+    since_watermark: datetime | None = None
 
 
 class SyncEngine:
@@ -197,6 +205,14 @@ class SyncEngine:
                 "sync_run=%s org=%s running full sync (fresh): %s",
                 sync_run_id, connected_org_id, decision.reason,
             )
+            # 1b.2: offer the delta "since" to delta-safe phases. FRESH runs
+            # only (this branch). The watermark the gate read; None when there
+            # is no watermark or the probe couldn't capture a server time →
+            # every category full-fetches (fail-safe). A RESUME (else branch)
+            # leaves ctx.delta_since at its None default — it never deltas (and
+            # never advances the watermark, per D-250), because a resume does
+            # not re-fetch the early phases and cannot establish a single as-of.
+            ctx.delta_since = decision.since_watermark
         else:
             logger.info(
                 "sync_run=%s org=%s running full sync (resume) — "
@@ -613,11 +629,17 @@ class SyncEngine:
             return _SkipDecision(False, "SetupAuditTrail probe failed", None)
 
         if watermark is None:
+            # First confirmed sync: no "since" → full-fetch + bootstrap the
+            # watermark to server_time. since_watermark stays None (== watermark).
             return _SkipDecision(
-                False, "no watermark (first confirmed sync)", server_time)
+                False, "no watermark (first confirmed sync)", server_time,
+                since_watermark=watermark)
         if has_changes:
+            # Setup changed since the watermark → run, but delta-safe categories
+            # can delta from the watermark (since_watermark) and advance it.
             return _SkipDecision(
-                False, "setup changes detected since watermark", server_time)
+                False, "setup changes detected since watermark", server_time,
+                since_watermark=watermark)
         # Probe came back clean, but only trust it if the watermark is recent
         # enough that SetupAuditTrail still retains the window since it (SF keeps
         # ~180 days). An older watermark means changes could have aged out of the
@@ -626,15 +648,18 @@ class SyncEngine:
         # coarse 90-day threshold tolerates clock skew).
         reference_now = server_time or datetime.now(timezone.utc)
         if reference_now - watermark > MAX_SKIP_WATERMARK_AGE:
+            # Too old for the org-level SKIP (SetupAuditTrail rows may have aged
+            # out), but a per-category LastModifiedDate delta is still correct
+            # for any age, so since_watermark is still offered.
             return _SkipDecision(
                 False,
                 f"watermark {watermark.isoformat()} older than "
                 f"{MAX_SKIP_WATERMARK_AGE.days}d — outside SetupAuditTrail "
                 f"retention, running full sync",
-                server_time)
+                server_time, since_watermark=watermark)
         return _SkipDecision(
             True, f"no setup changes since {watermark.isoformat()}",
-            server_time)
+            server_time, since_watermark=watermark)
 
     def _mark_sync_run_skipped(
         self, sync_run_id: str, connected_org_id: str,

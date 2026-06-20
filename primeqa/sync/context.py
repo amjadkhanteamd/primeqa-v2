@@ -5,6 +5,7 @@ Per PHASE_2_STEP_4_SYNC_DESIGN.md §3.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 
@@ -48,6 +49,15 @@ class SyncContext:
     logical_version_seq: int    # logical_versions.version_seq allocated for this run
                                 # (used as valid_from_seq on entity INSERTs and
                                 # as the supersession boundary on SCD Type 2 updates)
+    delta_since: datetime | None = None
+    # 1b.2 per-category delta fetch. The org's setup_audit_watermark (the SF
+    # server time of the last confirmed complete sync) read at gate time, set
+    # ONLY on a FRESH run with a non-NULL watermark; None otherwise (resume, or
+    # no watermark) → every category full-fetches. A delta-safe phase
+    # (delta.DELTA_SAFE_ENTITY_TYPES) reads this via delta.delta_since_for to
+    # decide delta+reconcile vs full-fetch. NULL here is the primary fail-safe:
+    # no "since" → full-fetch. See D-250 (watermark advances only on a fresh
+    # complete sync, full or delta) and the 1b.2 design.
     svs_metadata_cache: dict[str, dict] = field(default_factory=dict)
     # Cache of fetched SVS Metadata, keyed by SVS FullName (e.g.,
     # 'AccountSource' → the full Metadata.standardValue dict).

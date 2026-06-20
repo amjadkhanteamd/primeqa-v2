@@ -687,6 +687,90 @@ def _batch_close_superseded(
     })
 
 
+def reconcile_deletions_by_sf_id(
+    conn: Any,
+    ctx: SyncContext,
+    entity_type: str,
+    present_sf_ids: set[str],
+    result: PhaseResult,
+) -> int:
+    """1b.2 delta-path DELETION RECONCILE — supersede entities deleted in SF.
+
+    A ``LastModifiedDate`` delta cannot see deletions: a record removed from
+    Salesforce stops appearing, it does not arrive "modified". So a delta-fetched
+    category MUST reconcile its full current id set against the model. This finds
+    the currently-valid entities of ``entity_type`` for THIS org whose Salesforce
+    Id (the dedicated indexed ``entities.sf_id`` column — extracted from
+    ``normalized["Id"]`` at insert, §26) is ABSENT from ``present_sf_ids`` (the
+    cheap full ``SELECT Id`` set) and:
+      - closes the entity row (SCD-2 via :func:`_batch_close_superseded`), and
+      - closes EVERY active edge touching it (source OR target) — a delta does
+        NOT re-run the entity's edge materialization, so a superseded entity would
+        otherwise leave dangling active edges.
+
+    Org scope: ``last_synced_from_org_id = ctx.connected_org_id`` (the same scope
+    as :func:`resolve_entity_id_by_external_id`), so an entity another org sourced
+    is never superseded by this org's fetch.
+
+    FAIL-SAFE on identity: a model row with a NULL ``sf_id`` (synthetic-id entity
+    types, or a placeholder Id filtered to NULL at insert) cannot be matched, so it
+    is LEFT untouched (never wrongly superseded). For ValidationRule the sf_id is
+    always present (Phase-1 selects Id; Id is not a volatile key), so this guard
+    never fires for VR; it bounds the blast radius for any malformed row.
+
+    NOTE: there is NO deletion detection on the full-fetch path today (the chunk
+    diff only ever buckets new/changed/unchanged for the chunk's own ids), so this
+    reconcile is NEW deletion detection that ships ONLY with the delta path — the
+    inseparable companion that makes a delta safe.
+
+    Returns the count superseded (also added to ``result.entities_superseded``).
+    """
+    rows = conn.execute(text("""
+        SELECT id, sf_id
+        FROM entities
+        WHERE last_synced_from_org_id = :org_id
+          AND entity_type = :etype
+          AND valid_to_seq IS NULL
+    """), {
+        "org_id": ctx.connected_org_id,
+        "etype": entity_type,
+    }).fetchall()
+    absent_entity_ids = [
+        str(r.id) for r in rows
+        if r.sf_id is not None and r.sf_id not in present_sf_ids
+    ]
+    if not absent_entity_ids:
+        return 0
+    _batch_close_superseded(conn, ctx, absent_entity_ids)
+    _close_edges_for_entities(conn, ctx, absent_entity_ids)
+    result.entities_superseded += len(absent_entity_ids)
+    return len(absent_entity_ids)
+
+
+def _close_edges_for_entities(
+    conn: Any,
+    ctx: SyncContext,
+    entity_ids: list[str],
+) -> None:
+    """Close (SCD-2) every currently-active edge that touches any of
+    ``entity_ids`` as source OR target. Used by the deletion reconcile so a
+    superseded entity leaves no dangling active edge. Closed-open semantics:
+    sets ``valid_to_seq = ctx.logical_version_seq`` (same as the other edge
+    close-outs)."""
+    if not entity_ids:
+        return
+    conn.execute(text("""
+        UPDATE edges
+        SET valid_to_seq = :close_seq
+        WHERE valid_to_seq IS NULL
+          AND (source_entity_id = ANY(CAST(:ids AS uuid[]))
+               OR target_entity_id = ANY(CAST(:ids AS uuid[])))
+    """), {
+        "close_seq": ctx.logical_version_seq,
+        "ids": entity_ids,
+    })
+
+
 def _batch_touch_existing(
     conn: Any,
     ctx: SyncContext,

@@ -538,8 +538,20 @@ class SalesforceClient:
         resp = self._request("GET", path)
         return resp.json()
 
-    def fetch_validation_rules(self) -> list[dict]:
+    def fetch_validation_rules(
+        self, modified_since: "datetime | None" = None,
+    ) -> list[dict]:
         """Tooling SOQL: SELECT … FROM ValidationRule, with FullName + Metadata.
+
+        1b.2 delta: when ``modified_since`` is given, Phase 1 is narrowed to
+        ``WHERE LastModifiedDate > <since>`` so only adds/mods since the org's
+        watermark are fetched (and Phase 2 only iterates those). ``LastModifiedDate``
+        is added to the Phase-1 projection so the filter column is present; it is
+        a ``_VOLATILE_KEYS`` field stripped by ``normalize`` before hashing, so it
+        never perturbs the change-detection diff. ``modified_since=None`` → the full
+        fetch, byte-for-byte the prior behavior. Deletions are NOT visible to a
+        LastModifiedDate delta — the caller MUST pair this with
+        ``fetch_validation_rule_ids`` + the deletion reconcile.
 
         Endpoint: GET /services/data/{api_version}/tooling/query/?q=<SOQL>
 
@@ -578,9 +590,15 @@ class SalesforceClient:
         # no EntityDefinition join.
         phase1_soql = (
             "SELECT Id, ValidationName, Active, ErrorMessage, "
-            "ErrorDisplayField, Description, EntityDefinitionId "
+            "ErrorDisplayField, Description, EntityDefinitionId, "
+            "LastModifiedDate "
             "FROM ValidationRule"
         )
+        if modified_since is not None:
+            phase1_soql += (
+                f" WHERE LastModifiedDate > "
+                f"{_soql_datetime_literal(modified_since)}"
+            )
         records: list[dict] = self._query_all(path, phase1_soql)
 
         # Phase 2: per-Id FullName + Metadata fetch (Salesforce
@@ -600,6 +618,22 @@ class SalesforceClient:
                 rec["Metadata"] = phase2_records[0].get("Metadata")
 
         return records
+
+    def fetch_validation_rule_ids(self) -> set[str]:
+        """1b.2 deletion reconcile: the full CURRENT set of ValidationRule Ids.
+
+        One cheap bulk Tooling ``SELECT Id FROM ValidationRule`` (Ids only — no
+        Phase-2 FullName/Metadata per-Id round-trips). The delta path diffs this
+        against the model's currently-valid VR entities (matched by SF Id stored
+        in the indexed ``entities.sf_id`` column) so a deletion — invisible to a
+        ``LastModifiedDate`` delta — is detected and superseded. Returns a set of
+        18-char Salesforce Ids; the unfiltered query is a SUPERSET of the modeled
+        (in-scope) VRs, so an out-of-scope Id present here never causes a wrong
+        supersede.
+        """
+        path = f"/services/data/{self.api_version}/tooling/query/"
+        records = self._query_all(path, "SELECT Id FROM ValidationRule")
+        return {r["Id"] for r in records if r.get("Id")}
 
     def fetch_record_types(self) -> list[dict]:
         """Tooling SOQL: SELECT … FROM RecordType, with FullName + Metadata.

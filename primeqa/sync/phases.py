@@ -31,9 +31,11 @@ logger = logging.getLogger(__name__)
 from primeqa.semantic.normalization import normalize
 from primeqa.sync.context import SyncContext
 from primeqa.sync.fk_assertion import ENTITY_ORDER
+from primeqa.sync.delta import delta_since_for
 from primeqa.sync.materialize import (
     batched_materialize,
     materialize_edges_for_entities,
+    reconcile_deletions_by_sf_id,
 )
 from primeqa.sync.result import PhaseResult
 from primeqa.sync.standard_value_set_match import (
@@ -1199,7 +1201,28 @@ def phase_validation_rule(ctx: SyncContext, conn: Any) -> PhaseResult:
     """
     result = PhaseResult(entity_type="ValidationRule")
 
-    raw_vrs = ctx.sf_client.fetch_validation_rules()
+    # 1b.2 delta gate. delta_since_for returns the org's watermark iff VR is on
+    # the delta-safe allow-list AND a valid window exists (a fresh run with a
+    # non-NULL watermark); None → full-fetch (resume / no watermark / off-list).
+    since = delta_since_for(ctx, "ValidationRule")
+    present_ids: "set[str] | None" = None
+    if since is not None:
+        # Delta + reconcile are ONE unit: BOTH SF reads must succeed or this
+        # category full-fetches (fail-safe — never a partial delta that could
+        # silently miss a change or deletion).
+        try:
+            raw_vrs = ctx.sf_client.fetch_validation_rules(modified_since=since)
+            present_ids = ctx.sf_client.fetch_validation_rule_ids()
+        except Exception as e:
+            logger.warning(
+                "phase_validation_rule: delta fetch/id-list failed (%s) — "
+                "full-fetch fallback for this category", e,
+            )
+            since = None
+            present_ids = None
+            raw_vrs = ctx.sf_client.fetch_validation_rules()
+    else:
+        raw_vrs = ctx.sf_client.fetch_validation_rules()
 
     # Filter VRs whose parent Object isn't in this sync's syncable
     # scope (per corrections-log §18). Surfaced live: sandbox has
@@ -1231,29 +1254,42 @@ def phase_validation_rule(ctx: SyncContext, conn: Any) -> PhaseResult:
             skipped_count,
         )
 
-    if not filtered_vrs:
-        return result
+    # Adds/mods write. On the DELTA path filtered_vrs holds only changed/new
+    # rules and may be EMPTY (nothing modified) — but a deletion can still need
+    # reconciling, so we must NOT early-return here on the delta path. Guard the
+    # materialize on non-empty and run the reconcile unconditionally below.
+    if filtered_vrs:
+        entity_id_map = batched_materialize(
+            ctx=ctx,
+            conn=conn,
+            entity_type="ValidationRule",
+            raw_payloads=filtered_vrs,
+            result=result,
+            return_id_map=True,
+        )
 
-    entity_id_map = batched_materialize(
-        ctx=ctx,
-        conn=conn,
-        entity_type="ValidationRule",
-        raw_payloads=filtered_vrs,
-        result=result,
-        return_id_map=True,
-    )
+        normalized_payloads = [
+            normalize("ValidationRule", p) for p in filtered_vrs
+        ]
+        materialize_edges_for_entities(
+            ctx=ctx,
+            conn=conn,
+            source_entity_type="ValidationRule",
+            entity_id_map=entity_id_map,
+            normalized_payloads=normalized_payloads,
+            result=result,
+        )
 
-    normalized_payloads = [
-        normalize("ValidationRule", p) for p in filtered_vrs
-    ]
-    materialize_edges_for_entities(
-        ctx=ctx,
-        conn=conn,
-        source_entity_type="ValidationRule",
-        entity_id_map=entity_id_map,
-        normalized_payloads=normalized_payloads,
-        result=result,
-    )
+    # 1b.2 MANDATORY deletion reconcile — delta path only. A LastModifiedDate
+    # delta cannot see deletions, so a delta MUST reconcile its full current id
+    # set against the model and supersede VRs (and their edges) now absent from
+    # Salesforce. Runs in this phase's transaction, atomic with the adds/mods.
+    # (The full-fetch path does NOT reconcile — it never detected entity
+    # deletions; 1b.2 introduces that only alongside the delta. See D-251.)
+    if since is not None and present_ids is not None:
+        reconcile_deletions_by_sf_id(
+            conn, ctx, "ValidationRule", present_ids, result,
+        )
 
     return result
 

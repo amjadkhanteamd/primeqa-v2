@@ -787,6 +787,50 @@ class TestSkipGateOrchestration:
                 .call_args.kwargs["setup_audit_watermark"] is None)
 
 
+class TestDeltaSinceThreading:
+    """1b.2: ctx.delta_since is set from the gate's since_watermark on a FRESH,
+    non-skip run, and stays None on a resume (no delta on resume — D-250)."""
+
+    def _capture_delta_since(self, engine, *, resume=False):
+        captured: dict = {}
+
+        def _cap(et):
+            def _fn(ctx, conn):
+                captured.setdefault("delta_since", ctx.delta_since)
+                return _success_phase_fn(et, count=1)(ctx, conn)
+            return _fn
+
+        with patch("primeqa.sync.engine.get_phase_function", side_effect=_cap):
+            engine.run_sync(connected_org_id="org-1",
+                            resume_sync_run_id=("prev" if resume else None))
+        return captured.get("delta_since")
+
+    def test_fresh_run_threads_since_watermark(self) -> None:
+        engine = _engine_with_mocked_helpers()
+        W = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        engine._evaluate_skip_gate = MagicMock(
+            return_value=_SkipDecision(False, "changes", _T, since_watermark=W))
+        assert self._capture_delta_since(engine) == W
+
+    def test_fresh_run_no_watermark_threads_none(self) -> None:
+        engine = _engine_with_mocked_helpers()
+        engine._evaluate_skip_gate = MagicMock(
+            return_value=_SkipDecision(
+                False, "first sync", _T, since_watermark=None))
+        assert self._capture_delta_since(engine) is None
+
+    def test_resume_never_threads_delta_since(self) -> None:
+        engine = _engine_with_mocked_helpers()
+        # The gate would offer a watermark, but a resume never evaluates the gate
+        # and so never deltas (D-250: a resume can't establish a single as-of).
+        engine._evaluate_skip_gate = MagicMock(
+            return_value=_SkipDecision(
+                False, "changes", _T,
+                since_watermark=datetime(2026, 6, 1, tzinfo=timezone.utc)))
+        assert self._capture_delta_since(engine, resume=True) is None
+        engine._evaluate_skip_gate.assert_not_called()
+
+
 class TestEvaluateSkipGate:
     def _ctx_with_probe(self, *, returns=None, raises=None):
         ctx = MagicMock(name="ctx")
