@@ -5,11 +5,14 @@ create-and-verify **data** recipe (Create `field=V` no rejection -> Read -> Asse
 `equals` `field==V`). The grounding fact is constructed directly here, mirroring how
 the negative emission is tested (`author_emission(GroundedNegative(...))`).
 
-The governance grounding stash that would build a `GroundedPositive` from a real
-intent is **held** (the synthesis->intent contract decision), so `value-claim` stays
-out of `EMITTABLE` and a real grounded value-claim keeps deferring `EMISSION_DEFERRED`
-at the resolve gate — the author-capability exists but is unreachable from a real
-requirement until the stash lands.
+The grounding stash + the `EMITTABLE` entry landed in **D-115.3 (Option Q resolved)**:
+`resolve_intent` now builds + stashes a `GroundedPositive` from a real intent
+(`governance_core.py`) and `("data_behavior", "value-claim")` is in `EMITTABLE`
+(`emission.py`), so a real grounded value-claim reaches `PROCEED_TO_EMIT` at the
+resolve gate (field exists + value carried verbatim; field-but-no-value still defers
+`EMISSION_DEFERRED` — S3 never fabricates a value). This file still constructs the
+`GroundedPositive` directly, to unit-test the author-capability in isolation. See
+DECISIONS_LOG D-115.3.
 """
 from __future__ import annotations
 

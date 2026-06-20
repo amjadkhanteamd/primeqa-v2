@@ -1,15 +1,16 @@
 """In-memory run evidence — S4-owned, evidence-first (SPEC §4, F2).
 
-The executor produces a :class:`RunEvidence` per run; **slice 3 persists it**
-(the result-model schema is deliberately unlocked until then). Capture is rich
+The executor produces a :class:`RunEvidence` per run; the result store persists
+it (D-108.3+). Capture is rich
 + honest: the query, the *structured filter* it encoded, the rows + count,
 per-step timings, and error surfaces — rich enough that S6 can recover *why* an
 outcome came out a given way (e.g. distinguish an **absent object** from a
 **present-but-no-VR** subject — both yield a 0-row read) **without S4 inferring
 it**. S4 records; S6 interprets (SPEC §4).
 
-Read-only-vertical N/As (before/after state, field diff, artifacts) are
-**reserved** in the shape but unused — they fill in with the CRUD / UI verticals.
+Some N/As (before/after state, field diff, artifacts) remain **reserved** in
+the shape (the UI vertical); the data-mutation vertical's ``created_records``
+cleanup audit is live (F6.1, D-196).
 """
 from __future__ import annotations
 
@@ -227,7 +228,8 @@ StepEvidence = Union[
 
 @dataclass(frozen=True)
 class RunEvidence:
-    """One metadata-inspection run's captured truth + grounded outcome.
+    """One run's captured truth + grounded outcome (metadata-inspection or
+    data-mutation vertical).
 
     ``run_id`` is the run's own identity — minted by the executor at run start
     (the run self-identifies from birth). It becomes the result-store PK
