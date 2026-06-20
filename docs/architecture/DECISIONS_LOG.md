@@ -14828,3 +14828,93 @@ three Railway entrypoints import clean. Ships before any 1b.1 live skip can fire
 so the gap is closed in prod before a skip can act on a dishonest watermark.
 
 ---
+
+## D-251 — S1 sync 1b.2: per-category delta-fetch with MANDATORY deletion reconcile (ValidationRule-only), delta-safe allow-list, fail-safe-to-full-fetch
+
+**Context.** 1b.1 (D-249) added an org-level skip gate + SF-server-time watermark.
+1b.2 is the next optimization: for *delta-safe* categories, replace the full
+re-fetch with a `LastModifiedDate > watermark` delta of adds/mods PLUS a deletion
+reconcile. Scoped this slice to **ValidationRule only** (the framework is generic;
+Profile is the natural next category).
+
+**The inseparable unit — delta + deletion reconcile.** A `LastModifiedDate` delta
+cannot see deletions (a removed record stops appearing; it never arrives
+"modified"). So **delta-fetch never ships for a category without its deletion
+reconcile** — the two are one unit. Per VR delta run: (1) adds/mods =
+`fetch_validation_rules(modified_since=watermark)` → the existing
+normalize/diff/SCD-2 write; (2) deletions = `fetch_validation_rule_ids()` (cheap
+bulk `SELECT Id`) reconciled against the model's currently-valid VR `sf_id`s →
+absent ⇒ supersede.
+
+**Premise correction (the full-fetch path never detected entity deletions).** The
+1b.2 pre-flight asked to "reuse" the existing full-fetch deletion detection — but
+there is none. `batched_materialize` only buckets new/changed/unchanged for each
+chunk's own ids (`_materialize_chunk` reads existing rows only for the incoming
+ids); the only absence-based close in the module is for **edges**. So an entity
+deleted in SF stays "valid" forever today. 1b.2's reconcile is therefore **NEW**
+deletion detection (it reuses the SCD-2 close *primitive* `_batch_close_superseded`,
+but the absent-set computation is new) — it *introduces* deletion detection the
+engine never had, shipping ONLY with the delta path. Correctness rider added: the
+reconcile also closes EVERY active edge touching a superseded entity (source OR
+target), because a delta does not re-run the entity's edge materialization.
+
+**`reconcile_deletions_by_sf_id` (materialize.py).** Identity = the indexed
+`entities.sf_id` column (= `normalized["Id"]`, §26), matched against the SF
+`SELECT Id` set. Org-scoped by `last_synced_from_org_id = ctx.connected_org_id`
+(REQUIRED for multi-org safety — a tenant-wide reconcile would wrongly supersede
+another org's VRs that are simply absent from *this* org's fetch). Fail-safe on
+identity: a NULL `sf_id` row is left untouched (never wrongly superseded). The
+unfiltered `SELECT Id` is a superset of the modeled in-scope VRs, so an
+out-of-scope Id never causes a wrong supersede.
+
+**Delta-safe allow-list (hardcoded, conservative; fail toward full-fetch on any
+doubt).** `primeqa/sync/delta.DELTA_SAFE_ENTITY_TYPES = {"ValidationRule"}`. A
+category is delta-safe only if Tooling-SOQL **and** carries a reliable
+`LastModifiedDate` **and** is cheaply `SELECT Id`-listable. The other 10 stay
+full-fetch: Object/Field/Layout (REST describe), PicklistValueSet/PicklistValue
+(no LastModifiedDate / no id list), PermissionSet (LastModifiedDate unconfirmed),
+User (Data API, not Tooling), RecordType (LastModifiedDate addable — deferred,
+verify), Flow (delta-capable but version-supersession complexity — deferred),
+Profile (delta-capable — the next slice). `delta_since_for(ctx, type)` is the
+single fail-safe funnel: off-list **or** no-window **or** resume → None →
+full-fetch.
+
+**Watermark-advance generalization — no change.** D-250's advance already fires on
+any complete FRESH sync (keyed on the captured SF server time + structural
+completion, independent of full-vs-delta); a resume never advances. A complete
+delta sync *is* a complete fresh sync → it advances automatically. The "since" is
+the watermark the gate read, threaded via `SyncContext.delta_since`, set ONLY on a
+fresh run with a non-NULL watermark (the gate's new `_SkipDecision.since_watermark`).
+A NULL watermark or a resume → `delta_since` None → full-fetch.
+
+**Fail-safe (non-negotiable).** No watermark → full-fetch. Both SF reads (delta +
+id-list) must succeed or the category full-fetches (never a partial delta). The
+reconcile write is atomic in the phase transaction. An empty add/mod delta STILL
+runs the reconcile (the `if not filtered_vrs: return` early-exit was removed — it
+would have skipped deletion detection). Off-allow-list categories always
+full-fetch; no category is ever silently skipped.
+
+**Verification.** Faithful real-DB test
+(`tests/integration/semantic/test_delta_reconcile_live.py`, mocks nothing): a VR
+absent from the SF id set is superseded + its edges closed, survivors untouched;
+**red-on-disable** — without the reconcile the deleted VR stays valid (then
+running it flips it), the proof a delta is unsafe without its reconcile;
+org-scoping + noop cases. Unit: allow-list gate, delta SOQL, the cheap id-list,
+and phase orchestration incl. the empty-delta-still-reconciles and
+fail-safe-fallback paths. Full `tests/unit/` green (2905); semantic integration
+green (90). No migration — pure code; deploy-safe.
+
+**Live exit-gate (pending, AK — before prod).** On env-59: bootstrap the watermark
+(one fresh sync; confirm `connected_orgs.setup_audit_watermark` non-NULL) → create
+an INACTIVE throwaway VR on a synced object → sync (it's modeled) → delete it in SF
+→ sync (the delta+reconcile run) → confirm the deleted VR's entity is superseded
+(`valid_to_seq` set, no current row), its edges closed, the live VR count dropped
+by exactly 1, and the run was real (`skipped=false`). Airtight because full-fetch
+has no deletion detection: a superseded VR after a re-sync can only come from the
+reconcile, which only runs on the delta path.
+
+**Risks / deferred.** Multi-org: the org-scoped reconcile is conservative but, in
+the D-030 canonical-shared-model corner (org A and org B share a VR, A deletes it
+while B's sync is stale), could supersede a VR B still has — bounded, irrelevant
+for single-org env-59, tracked for the multi-category rollout. Profile/RecordType/
+Flow/User/PermissionSet delta deferred to later slices.
