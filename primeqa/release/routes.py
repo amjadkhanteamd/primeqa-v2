@@ -396,7 +396,10 @@ def ci_webhook_trigger():
     # — sloppy deploy = open door. Now a missing secret is a
     # configuration error, 503 is returned, and the CI job fails
     # loudly rather than silently succeeding.
-    secret = os.getenv("WEBHOOK_SECRET", "")
+    # WEBHOOK_SECRET is OPTIONAL — resolved through core/secrets (the single
+    # secret chokepoint); unset → fail closed here (503), never at boot.
+    from primeqa.core.secrets import get_webhook_secret
+    secret = get_webhook_secret()
     if not secret:
         return json_error(
             "CONFIG_ERROR",

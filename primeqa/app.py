@@ -37,8 +37,14 @@ from primeqa.views import views_bp
 
 
 def create_app():
+    # F-3: fail closed at boot — in production, refuse to start unless the
+    # mandatory secrets (JWT_SECRET, CREDENTIAL_ENCRYPTION_KEY) are real
+    # non-default values. No-op outside production.
+    from primeqa.core.secrets import get_jwt_secret, validate_boot_secrets
+    validate_boot_secrets()
+
     application = Flask(__name__)
-    application.config["SECRET_KEY"] = os.getenv("JWT_SECRET", "dev-secret-change-me")
+    application.config["SECRET_KEY"] = get_jwt_secret()
 
     database_url = os.getenv("DATABASE_URL")
     if database_url:

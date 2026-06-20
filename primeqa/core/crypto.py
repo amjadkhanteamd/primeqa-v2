@@ -28,6 +28,13 @@ from cryptography.fernet import Fernet, InvalidToken
 log = logging.getLogger(__name__)
 
 
+class CredentialDecryptError(Exception):
+    """``decrypt()`` failed for a stored credential — almost always a wrong /
+    rotated / unset ``CREDENTIAL_ENCRYPTION_KEY``. Raised (never swallowed) so the
+    failure surfaces as "decryption failed", and the Fernet **ciphertext is never
+    forwarded as a secret** to Salesforce's token endpoint (F-8)."""
+
+
 def _derive_fernet(raw_key: str) -> Fernet:
     derived = hashlib.sha256(raw_key.encode()).digest()
     fernet_key = base64.urlsafe_b64encode(derived)

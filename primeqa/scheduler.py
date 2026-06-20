@@ -21,6 +21,10 @@ REAPER_INTERVAL = 60
 
 
 def create_scheduler_context():
+    # F-3: fail closed at boot (the scheduler fires the credentialed sync /
+    # execution job queues).
+    from primeqa.core.secrets import validate_boot_secrets
+    validate_boot_secrets()
     from primeqa import db as dbmod
     database_url = os.getenv("DATABASE_URL")
     if not database_url:

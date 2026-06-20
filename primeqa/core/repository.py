@@ -351,7 +351,7 @@ class ConnectionRepository:
             self.db.commit()
 
     def get_connection_decrypted(self, connection_id, tenant_id=None):
-        from primeqa.core.crypto import decrypt
+        from primeqa.core.crypto import CredentialDecryptError, decrypt
         conn = self.get_connection(connection_id, tenant_id)
         if not conn:
             return None
@@ -359,10 +359,18 @@ class ConnectionRepository:
         sensitive = self._sensitive_fields(conn.connection_type)
         for field in sensitive:
             if field in config and config[field]:
+                # F-8: a decrypt failure (wrong/rotated/unset key) must FAIL
+                # CLOSED — raise a typed error rather than swallow it and leave
+                # the Fernet ciphertext in the field, where _oauth_token would
+                # POST it to Salesforce as the client_secret/password.
                 try:
                     config[field] = decrypt(config[field])
-                except Exception:
-                    pass
+                except Exception as e:
+                    raise CredentialDecryptError(
+                        f"failed to decrypt sensitive field {field!r} for "
+                        f"connection {conn.id} (tenant {conn.tenant_id}); check "
+                        f"CREDENTIAL_ENCRYPTION_KEY (rotation in progress?)"
+                    ) from e
         return {
             "id": conn.id, "tenant_id": conn.tenant_id,
             "connection_type": conn.connection_type, "name": conn.name,

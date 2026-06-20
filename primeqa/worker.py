@@ -36,6 +36,10 @@ HEARTBEAT_INTERVAL = 30
 
 
 def create_worker_context():
+    # F-3: fail closed at boot — the worker decrypts customer creds + dispatches
+    # runs, so it must not start in production with a forgeable/absent secret.
+    from primeqa.core.secrets import validate_boot_secrets
+    validate_boot_secrets()
     from primeqa import db as dbmod
     database_url = os.getenv("DATABASE_URL")
     if not database_url:

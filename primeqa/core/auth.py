@@ -13,7 +13,11 @@ from primeqa.shared.api import json_error
 
 
 def _get_jwt_secret():
-    return os.getenv("JWT_SECRET", "dev-secret-change-me")
+    # F-3: fail-closed in production (raise on unset/empty/dev-default) so tokens
+    # are never signed/verified with a forgeable secret. core/secrets is the
+    # single resolution chokepoint.
+    from primeqa.core.secrets import get_jwt_secret
+    return get_jwt_secret()
 
 
 def require_auth(f):
