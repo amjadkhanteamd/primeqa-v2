@@ -16,10 +16,13 @@ Two cases form the safety proof:
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from sqlalchemy import text
 
+from primeqa.sync import phases
 from primeqa.sync.materialize import reconcile_deletions_by_sf_id
 from primeqa.sync.result import PhaseResult
 
@@ -121,6 +124,46 @@ def test_reconcile_noop_when_all_present(conn, seed) -> None:
     n = reconcile_deletions_by_sf_id(conn, ctx, "ValidationRule", {"VRKEEP"}, result)
     assert n == 0
     assert _valid_to(conn, keep) is None
+
+
+def test_phase_reconcile_uses_full_id_set_not_the_delta_subset(conn, seed) -> None:
+    # PHASE-WIRING / NO-FALSE-DELETION guard. Drive the REAL phase_validation_rule
+    # end-to-end with the delta path active. The delta fetch returns a SUBSET that
+    # EXCLUDES present VRs (here: empty — nothing modified, so A and B are present
+    # but delta-excluded); the FULL current id set (fetch_validation_rule_ids)
+    # omits only the genuinely-deleted VR (C). The reconcile must close ONLY C and
+    # leave A + B active.
+    #
+    # CATASTROPHIC case this guards: if the reconcile took its present-set from the
+    # DELTA fetch (the subset) instead of fetch_validation_rule_ids (the full set),
+    # every present-but-delta-excluded VR (A and B) would be wrongly superseded.
+    org = _make_org(conn)
+    v0 = seed.version()
+    obj = seed.entity("Object", "Account", valid_from_seq=v0, sf_id="OBJ")
+    a = seed.entity("ValidationRule", "Account.A", valid_from_seq=v0, sf_id="VRA")
+    b = seed.entity("ValidationRule", "Account.B", valid_from_seq=v0, sf_id="VRB")
+    c = seed.entity("ValidationRule", "Account.C", valid_from_seq=v0, sf_id="VRC")
+    _scope_to_org(conn, org, [obj, a, b, c])
+
+    v1 = seed.version()
+    sf = MagicMock(name="sf_client")
+    sf.fetch_validation_rules.return_value = []            # delta: nothing modified
+    sf.fetch_validation_rule_ids.return_value = {"VRA", "VRB"}  # FULL set: C deleted
+    ctx = SimpleNamespace(
+        sf_client=sf, connected_org_id=org, logical_version_seq=v1,
+        delta_since=datetime(2026, 6, 1, tzinfo=timezone.utc))  # delta path ON
+
+    phases.phase_validation_rule(ctx, conn)
+
+    # delta path ran: delta fetch with the watermark + the FULL id-list for reconcile
+    sf.fetch_validation_rules.assert_called_once_with(modified_since=ctx.delta_since)
+    sf.fetch_validation_rule_ids.assert_called_once()
+    # genuinely-absent (C) → superseded ...
+    assert _valid_to(conn, c) == v1
+    # ... present-but-delta-excluded (A, B) → STILL ACTIVE (the proving assertion:
+    # the reconcile used the full id set {VRA,VRB}, not the empty delta subset).
+    assert _valid_to(conn, a) is None
+    assert _valid_to(conn, b) is None
 
 
 def test_reconcile_is_org_scoped(conn, seed) -> None:
