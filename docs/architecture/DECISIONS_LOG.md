@@ -14960,3 +14960,63 @@ the watermark, OR generate any fresh SetupAuditTrail change after it so one sync
 (the reconcile then sweeps the already-deleted VR — it does not care WHAT un-skipped
 the sync). Do NOT clear the watermark to force a run: a NULL watermark makes the next
 sync full-fetch with `delta_since=None` → no reconcile.
+
+---
+
+## D-252 — S1 sync 1c: split the enrichment gate — carry embedding/summary forward on unchanged input+producer; eliminate re-embed/re-summarize on non-semantic field changes
+
+**Context.** Every CHANGED entity re-embedded (Voyage) and (Flow/VR) re-summarized
+(LLM), even when the change did not alter the ENRICHMENT INPUT — e.g. a normalized
+field not present in `semantic_text`. That re-runs paid AI calls for output that
+would be byte-identical. 1c splits the enrichment trigger off the coarse
+`hash_normalized` new/changed signal: it carries a prior version's embedding/summary
+FORWARD when the exact enrichment input is unchanged, and enqueues only the rest.
+
+**Confirmed inputs.** Embed input = `entities.semantic_text` (the exact string the
+worker feeds Voyage). Summary input = a COMPOSITE context (sf_api_name + semantic_text
++ detail columns + parent name + Metadata fields) assembled by
+`enrichment_gate.build_summary_context` — now THE single builder, called by BOTH the
+worker (to FEED the summary LLM) and the gate (to HASH), so the fed input is the
+hashed input by construction (no divergent second copy).
+
+**The gate (at materialize).** Migration `20260620_0010` adds (nullable, additive)
+`entities.semantic_text_hash` + `{flow,validation_rule}_details.summary_input_hash`.
+For a CHANGED entity, if the prior version's hash matches AND the prior is already
+enriched, the prior embedding/summary is copied forward COLUMN-TO-COLUMN inside
+Postgres (`UPDATE … FROM (VALUES …)`, the hash gate in the WHERE, `RETURNING` naming
+the carried rows) and omitted from the enqueue → no Voyage/LLM call. Embedding and
+summary are gated INDEPENDENTLY (a detail/Metadata change re-summarizes but need not
+re-embed). NEW entities always enqueue. Graceful: a prior not yet enriched (async
+worker lag) or a hash mismatch → re-enqueue, never stale.
+
+**Producer in the hash (CORRECTNESS — adversarial-review fix, MED).** The invariant
+is "hash-unchanged ⟺ OUTPUT-would-be-identical", which depends on BOTH the org-data
+input AND the PRODUCER. The first cut hashed only the input; a deploy that bumped the
+embedding model tag or an `entity_summary_*` prompt VERSION would have carried a stale
+old-producer embedding/summary forward for a changed-but-input-unchanged entity (a
+regression — pre-1c a changed entity always re-enriched under the current producer).
+Fixed by folding the producer into each hash: `embed_input_hash(semantic_text,
+EMBEDDING_MODEL_TAG)` and `summary_input_hash(…, summary_prompt_version(entity_type))`
+— resolved from the same sources the worker stamps. A producer bump changes the hash →
+re-enrich. (Two independent adversarial reviews ran; this was the one confirmed MED,
+fixed + tested before commit.)
+
+**Deploy-safety.** No behavior depends on the new columns existing: a missing column
+→ the gate finds no prior hash → re-enrich exactly like today. Pre-1c rows have NULL
+hashes → re-enrich once, then carry-forward engages. So the code is deploy-safe in any
+migration order; the migration is applied manually (Railway has no migration step).
+
+**Verification.** Faithful real-DB tests (mock only the Voyage/LLM boundary; real SCD-2
+copy + real read-back hash; assert the actual stored embedding/summary): embed
+carry-forward (carried-set names it → not enqueued → zero Voyage call), red-on-disable
+(without the gate the row stays unembedded; running it flips it), re-embed-on-change,
+async-lag-no-carry, summary carry/re-summarize, the divergence guard (the gate hashes
+exactly what the worker feeds), and the PRODUCER-BUMP guard (prior under an old prompt
+version → not carried). Full `tests/unit/` green (2914); semantic integration green
+(98); all three Railway entrypoints import clean.
+
+**Deferred.** Carry-forward is scoped to the immediately-prior version
+(`prior_entity_id`); broadening to "any tenant entity with the same input+producer
+hash" (cross-lineage embedding reuse — the embedding is a pure function of its input)
+is a later optimization. Profile/RecordType/Flow delta (1b.2 follow-on) and the 1b.2
+skip-defers-deletion backstops (D-251.1) remain separate open items.
