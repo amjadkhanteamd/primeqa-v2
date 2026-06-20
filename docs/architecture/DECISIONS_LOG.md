@@ -14918,3 +14918,45 @@ the D-030 canonical-shared-model corner (org A and org B share a VR, A deletes i
 while B's sync is stale), could supersede a VR B still has — bounded, irrelevant
 for single-org env-59, tracked for the multi-category rollout. Profile/RecordType/
 Flow/User/PermissionSet delta deferred to later slices.
+
+---
+
+## D-251.1 — 1b.2 live-verify finding: the 1b.1 skip gate can DEFER a deletion; two backstops (amends D-251 Risks)
+
+**Finding (from the env-59 live verify).** The 1b.1 skip gate sits *in front of*
+the 1b.2 reconcile: a skip runs NO phases, so the deletion reconcile only fires on
+a sync that actually RUNS. A deletion whose SetupAuditTrail entry is OLDER than the
+current watermark (e.g. it happened at/before the bootstrap full sync that first
+stamped the watermark, or during a quiet window) is "behind" the watermark — every
+subsequent sync probes "anything since the watermark?", sees nothing, and correctly
+SKIPS, so the reconcile never runs and the deleted entity lingers as currently-valid.
+Observed live: the env-59 probe VR `Account.PrimeQADeltaProbe` was deleted before the
+00:18 UTC watermark stamp; the 00:31 sync correctly skipped; the deletion was not
+yet swept. (The bootstrap full sync itself also cannot catch it — it runs with a
+then-NULL watermark, so `delta_since=None` → full-fetch with no reconcile.)
+
+**Severity — NOT a regression; bounded.** Pre-1b.2 the full-fetch path detected NO
+entity deletions ever, so 1b.2 is strictly better: a deferred deletion is caught on
+the next sync that RUNS, and the reconcile is watermark-independent (it diffs the
+full current `SELECT Id` set), so ANY non-skip sync sweeps up EVERY pending deletion,
+not just the one that un-skipped it. For an active org (constant SetupAuditTrail
+changes) deletions are caught within hours. The only un-bounded case is an org that
+goes permanently silent right after a deletion — rare, and still no worse than the
+pre-1b.2 "never caught". S8 grounding-validity is a second line of defence for the
+staleness window. So 1b.2 ships as-is.
+
+**Two cheap backstops (deferred follow-up, not blockers).**
+1. **Run the reconcile on the full-fetch path too** — it is a cheap watermark-
+   independent `SELECT Id` + diff, so running it on a full sync (bootstrap or
+   full-fallback), not only the delta path, catches deletions present at first sync
+   and on any fail-safe fallback. Lifts the reconcile from "delta-only" to "runs
+   whenever a delta-safe category syncs", closing the bootstrap gap.
+2. **Periodic forced non-skip sync** (e.g. weekly) — bypass the skip gate on a
+   schedule so deletions are swept within a bounded window regardless of
+   SetupAuditTrail timing, closing the permanently-quiet-org tail.
+
+**Verify methodology note.** To live-prove the reconcile, the deletion must post-date
+the watermark, OR generate any fresh SetupAuditTrail change after it so one sync runs
+(the reconcile then sweeps the already-deleted VR — it does not care WHAT un-skipped
+the sync). Do NOT clear the watermark to force a run: a NULL watermark makes the next
+sync full-fetch with `delta_since=None` → no reconcile.
