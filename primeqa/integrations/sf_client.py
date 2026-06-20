@@ -45,6 +45,7 @@ import httpx
 from .exceptions import (
     SFAuthError,
     SFClientError,
+    SFIncompletePaginationError,
     SFRateLimitError,
     SFRequestError,
 )
@@ -315,7 +316,9 @@ class SalesforceClient:
 
         return resp
 
-    def _query_all(self, path: str, soql: str) -> list[dict]:
+    def _query_all(
+        self, path: str, soql: str, *, require_complete: bool = False,
+    ) -> list[dict]:
         """Issue SOQL via the given path and walk pagination.
 
         Salesforce SOQL endpoints (both /tooling/query/ and /query/)
@@ -339,6 +342,16 @@ class SalesforceClient:
         they're passed to self._request unchanged. The cursor is in
         the path, not the params, so subsequent calls don't pass
         a `q` parameter.
+
+        `require_complete` (D-253): a malformed cursor page (`done=False`
+        with no `nextRecordsUrl`) is normally tolerated by silently
+        returning the rows accumulated so far — a SILENT PARTIAL. That is
+        unsafe when the result feeds a deletion reconcile (a truncated
+        id-set would mass-close live entities). When `require_complete=True`,
+        that branch RAISES `SFIncompletePaginationError` instead, so the
+        caller fails closed (skips the reconcile). The default (`False`) is
+        byte-for-byte the historical behavior; only `fetch_validation_rule_ids`
+        opts in today — every other caller is unchanged.
         """
         resp = self._request("GET", path, params={"q": soql})
         data = resp.json()
@@ -346,8 +359,16 @@ class SalesforceClient:
         while not data.get("done", True):
             next_url = data.get("nextRecordsUrl")
             if not next_url:
-                # Defensive: done=False with no nextRecordsUrl is
-                # malformed; break rather than infinite-loop.
+                # Defensive: done=False with no nextRecordsUrl is malformed.
+                if require_complete:
+                    # Fail closed: a partial id-set must NOT silently reach a
+                    # deletion reconcile (D-253).
+                    raise SFIncompletePaginationError(
+                        f"SOQL pagination ended on a malformed cursor "
+                        f"(done=False, no nextRecordsUrl) after "
+                        f"{len(records)} rows; require_complete=True"
+                    )
+                # Default: tolerate (break rather than infinite-loop).
                 break
             resp = self._request("GET", next_url)
             data = resp.json()
@@ -620,19 +641,27 @@ class SalesforceClient:
         return records
 
     def fetch_validation_rule_ids(self) -> set[str]:
-        """1b.2 deletion reconcile: the full CURRENT set of ValidationRule Ids.
+        """Deletion-reconcile present-set: the full CURRENT set of ValidationRule Ids.
 
         One cheap bulk Tooling ``SELECT Id FROM ValidationRule`` (Ids only — no
-        Phase-2 FullName/Metadata per-Id round-trips). The delta path diffs this
-        against the model's currently-valid VR entities (matched by SF Id stored
-        in the indexed ``entities.sf_id`` column) so a deletion — invisible to a
-        ``LastModifiedDate`` delta — is detected and superseded. Returns a set of
-        18-char Salesforce Ids; the unfiltered query is a SUPERSET of the modeled
+        Phase-2 FullName/Metadata per-Id round-trips). BOTH the delta and the
+        full-fetch reconcile paths (D-253) diff this against the model's
+        currently-valid VR entities (matched by SF Id stored in the indexed
+        ``entities.sf_id`` column) so a deletion — invisible to a
+        ``LastModifiedDate`` delta, and never detected by the full-fetch
+        bucketing either — is detected and superseded. Returns a set of 18-char
+        Salesforce Ids; the unfiltered query is a SUPERSET of the modeled
         (in-scope) VRs, so an out-of-scope Id present here never causes a wrong
         supersede.
+
+        Completeness-gated (D-253): issued with ``require_complete=True`` so a
+        truncated/partial id-list RAISES (`SFIncompletePaginationError`) instead
+        of silently returning a subset — the phase then fails closed (skips the
+        reconcile) rather than mass-closing live VRs on a partial id-set.
         """
         path = f"/services/data/{self.api_version}/tooling/query/"
-        records = self._query_all(path, "SELECT Id FROM ValidationRule")
+        records = self._query_all(
+            path, "SELECT Id FROM ValidationRule", require_complete=True)
         return {r["Id"] for r in records if r.get("Id")}
 
     def fetch_record_types(self) -> list[dict]:

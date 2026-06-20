@@ -18,10 +18,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import MagicMock
 
 from sqlalchemy import text
 
+from primeqa.integrations.exceptions import SFIncompletePaginationError
 from primeqa.sync import phases
 from primeqa.sync.materialize import reconcile_deletions_by_sf_id
 from primeqa.sync.result import PhaseResult
@@ -183,3 +185,171 @@ def test_reconcile_is_org_scoped(conn, seed) -> None:
         conn, ctx, "ValidationRule", set(), PhaseResult(entity_type="ValidationRule"))
     assert n == 0
     assert _valid_to(conn, other) is None
+
+
+# ----------------------------------------------------------------------
+# D-253 backstop #1 — full-fetch deletion reconcile + empty/partial REFUSAL on
+# BOTH paths. These drive the REAL phase_validation_rule end-to-end (mock only
+# the SF boundary). delta_since=None → the full-fetch branch.
+# ----------------------------------------------------------------------
+def _full_fetch_ctx(org, vseq, *, ids=None, ids_side_effect=None, raw=None):
+    sf = MagicMock(name="sf_client")
+    sf.fetch_validation_rules.return_value = raw if raw is not None else []
+    if ids_side_effect is not None:
+        sf.fetch_validation_rule_ids.side_effect = ids_side_effect
+    else:
+        sf.fetch_validation_rule_ids.return_value = ids if ids is not None else set()
+    ctx = SimpleNamespace(sf_client=sf, connected_org_id=org,
+                          logical_version_seq=vseq, delta_since=None)
+    return ctx, sf
+
+
+def _delta_ctx(org, vseq, *, ids=None, ids_side_effect=None):
+    sf = MagicMock(name="sf_client")
+    sf.fetch_validation_rules.return_value = []          # nothing modified
+    if ids_side_effect is not None:
+        sf.fetch_validation_rule_ids.side_effect = ids_side_effect
+    else:
+        sf.fetch_validation_rule_ids.return_value = ids if ids is not None else set()
+    ctx = SimpleNamespace(sf_client=sf, connected_org_id=org,
+                          logical_version_seq=vseq,
+                          delta_since=datetime(2026, 6, 1, tzinfo=timezone.utc))
+    return ctx, sf
+
+
+def test_full_fetch_closes_deleted_vr_and_edges(conn, seed) -> None:
+    # Backstop #1: on the FULL-FETCH path (delta_since=None) the reconcile now
+    # runs — a VR absent from the full SELECT Id set is superseded + its edges
+    # closed; survivors untouched. (Pre-D-253 the full-fetch path never detected
+    # entity deletions.)
+    org = _make_org(conn)
+    v0 = seed.version()
+    obj = seed.entity("Object", "Account", valid_from_seq=v0, sf_id="OBJACC")
+    keep = seed.entity("ValidationRule", "Account.Keep", valid_from_seq=v0, sf_id="VRKEEP")
+    deleted = seed.entity("ValidationRule", "Account.Del", valid_from_seq=v0, sf_id="VRDEL")
+    _scope_to_org(conn, org, [obj, keep, deleted])
+    del_edge = seed.edge(deleted, obj, "BELONGS_TO", "STRUCTURAL", valid_from_seq=v0)
+    keep_edge = seed.edge(keep, obj, "BELONGS_TO", "STRUCTURAL", valid_from_seq=v0)
+
+    v1 = seed.version()
+    ctx, sf = _full_fetch_ctx(org, v1, ids={"VRKEEP"})   # Del gone from SF
+    phases.phase_validation_rule(ctx, conn)
+
+    sf.fetch_validation_rules.assert_called_once_with()   # full fetch, no modified_since
+    sf.fetch_validation_rule_ids.assert_called_once()     # the gated id-list
+    assert _valid_to(conn, deleted) == v1                 # superseded
+    assert _edge_valid_to(conn, del_edge) == v1           # its edge closed
+    assert _valid_to(conn, keep) is None                  # survivor untouched
+    assert _edge_valid_to(conn, keep_edge) is None
+
+
+def test_full_fetch_red_on_disable_reconcile_is_the_mechanism(conn, seed) -> None:
+    # RED-ON-DISABLE (full-fetch): with the reconcile disabled the deletion is
+    # missed (the full-fetch path's materialize never detects it); enabling it
+    # flips it — proving the reconcile is the mechanism on this path.
+    org = _make_org(conn)
+    v0 = seed.version()
+    obj = seed.entity("Object", "Account", valid_from_seq=v0, sf_id="OBJACC")
+    deleted = seed.entity("ValidationRule", "Account.Del", valid_from_seq=v0, sf_id="VRDEL")
+    _scope_to_org(conn, org, [obj, deleted])
+
+    v1 = seed.version()
+    ctx, sf = _full_fetch_ctx(org, v1, ids={"VRKEEP"})    # Del absent from SF
+    with mock.patch.object(phases, "reconcile_deletions_by_sf_id") as rec_noop:
+        phases.phase_validation_rule(ctx, conn)
+        rec_noop.assert_called_once()                     # gate passed (reconcile reached) ...
+    assert _valid_to(conn, deleted) is None               # ...but disabled → Del still valid
+
+    phases.phase_validation_rule(ctx, conn)               # now with the REAL reconcile
+    assert _valid_to(conn, deleted) == v1                 # caught
+
+
+def test_full_fetch_partial_id_fetch_refuses(conn, seed) -> None:
+    # PARTIAL → REFUSE: the completeness-gated id-fetch RAISES (the require_complete
+    # malformed-cursor case) → the phase funnel sets present_ids=None → NO
+    # reconcile. Nothing is mass-closed despite a modeled VR looking absent.
+    org = _make_org(conn)
+    v0 = seed.version()
+    obj = seed.entity("Object", "Account", valid_from_seq=v0, sf_id="OBJACC")
+    a = seed.entity("ValidationRule", "Account.A", valid_from_seq=v0, sf_id="VRA")
+    b = seed.entity("ValidationRule", "Account.B", valid_from_seq=v0, sf_id="VRB")
+    _scope_to_org(conn, org, [obj, a, b])
+
+    v1 = seed.version()
+    ctx, sf = _full_fetch_ctx(
+        org, v1, ids_side_effect=SFIncompletePaginationError("partial"))
+    phases.phase_validation_rule(ctx, conn)
+
+    assert _valid_to(conn, a) is None                     # refused: NOT closed
+    assert _valid_to(conn, b) is None
+
+
+def test_full_fetch_empty_id_fetch_refuses(conn, seed) -> None:
+    # EMPTY → REFUSE (the catastrophic guard): an empty id-fetch (set()) must NOT
+    # mass-close every active VR — `if present_ids:` is falsy on set().
+    org = _make_org(conn)
+    v0 = seed.version()
+    obj = seed.entity("Object", "Account", valid_from_seq=v0, sf_id="OBJACC")
+    a = seed.entity("ValidationRule", "Account.A", valid_from_seq=v0, sf_id="VRA")
+    b = seed.entity("ValidationRule", "Account.B", valid_from_seq=v0, sf_id="VRB")
+    _scope_to_org(conn, org, [obj, a, b])
+
+    v1 = seed.version()
+    ctx, sf = _full_fetch_ctx(org, v1, ids=set())         # empty id-fetch
+    phases.phase_validation_rule(ctx, conn)
+
+    assert _valid_to(conn, a) is None                     # NOT mass-closed
+    assert _valid_to(conn, b) is None
+
+
+def test_full_fetch_uses_unfiltered_id_set_not_scope_filtered(conn, seed) -> None:
+    # SCOPE-FILTER TRAP: present_ids is the UNFILTERED SELECT Id superset. A VR
+    # whose parent Object is OUT of sync scope (so it's filtered from materialize)
+    # but PRESENT in SF must NOT be superseded — only the genuinely-absent VR
+    # closes. (If present_ids came from the scope-filtered set, the out-of-scope
+    # VR would be wrongly mass-closed.)
+    org = _make_org(conn)
+    v0 = seed.version()
+    acct = seed.entity("Object", "Account", valid_from_seq=v0, sf_id="OBJACC")
+    # NOTE: no Object entity for 'ManagedObj' → its VR is OUT of synced scope.
+    in_scope = seed.entity("ValidationRule", "Account.InScope", valid_from_seq=v0, sf_id="VRIN")
+    out_scope = seed.entity("ValidationRule", "ManagedObj.OutScope", valid_from_seq=v0, sf_id="VROUT")
+    deleted = seed.entity("ValidationRule", "Account.Del", valid_from_seq=v0, sf_id="VRDEL")
+    _scope_to_org(conn, org, [acct, in_scope, out_scope, deleted])
+
+    v1 = seed.version()
+    # the UNFILTERED full id-set: InScope + OutScope present in SF; Del gone.
+    ctx, sf = _full_fetch_ctx(org, v1, ids={"VRIN", "VROUT"})
+    phases.phase_validation_rule(ctx, conn)
+
+    assert _valid_to(conn, deleted) == v1                 # genuinely absent → closed
+    assert _valid_to(conn, in_scope) is None              # present + in scope → active
+    assert _valid_to(conn, out_scope) is None             # present but out-of-scope → STILL active
+
+
+def test_delta_empty_id_fetch_refuses(conn, seed) -> None:
+    # LATENT-HOLE CLOSURE (delta path): shipped 1b.2 fed an ungated id-fetch to
+    # the reconcile — an empty id-fetch would have mass-closed. D-253 closes it:
+    # `if present_ids:` refuses set() on the delta path too.
+    org = _make_org(conn)
+    v0 = seed.version()
+    a = seed.entity("ValidationRule", "Account.A", valid_from_seq=v0, sf_id="VRA")
+    _scope_to_org(conn, org, [a])
+    v1 = seed.version()
+    ctx, sf = _delta_ctx(org, v1, ids=set())              # empty id-fetch, delta path
+    phases.phase_validation_rule(ctx, conn)
+    assert _valid_to(conn, a) is None                     # NOT mass-closed on the delta path
+
+
+def test_delta_partial_id_fetch_refuses(conn, seed) -> None:
+    # Delta path, PARTIAL: the id-fetch RAISES → the delta try/except falls back to
+    # full-fetch, whose id-fetch ALSO raises → present_ids=None → no reconcile.
+    org = _make_org(conn)
+    v0 = seed.version()
+    a = seed.entity("ValidationRule", "Account.A", valid_from_seq=v0, sf_id="VRA")
+    _scope_to_org(conn, org, [a])
+    v1 = seed.version()
+    ctx, sf = _delta_ctx(
+        org, v1, ids_side_effect=SFIncompletePaginationError("partial"))
+    phases.phase_validation_rule(ctx, conn)
+    assert _valid_to(conn, a) is None                     # refused: NOT closed

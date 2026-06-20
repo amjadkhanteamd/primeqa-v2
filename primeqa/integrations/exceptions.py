@@ -63,3 +63,15 @@ class SFRequestError(SFClientError):
         obj = self._parsed()
         raw = obj.get("fields") if obj else None
         return [f for f in raw if isinstance(f, str)] if isinstance(raw, list) else []
+
+
+class SFIncompletePaginationError(SFClientError):
+    """A SOQL pagination walk ended on a malformed cursor (``done=False`` with no
+    ``nextRecordsUrl``) while the caller required a COMPLETE result.
+
+    Raised only by ``_query_all(require_complete=True)`` (D-253). The default
+    ``require_complete=False`` keeps the historical behavior — silently return the
+    rows-so-far. Callers that feed a present-set into a deletion reconcile pass
+    ``require_complete=True`` so a truncated id-list becomes a hard error they
+    fail-closed on (skip the reconcile) rather than a silent subset that would
+    mass-close live entities."""

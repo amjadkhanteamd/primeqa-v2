@@ -750,10 +750,13 @@ def reconcile_deletions_by_sf_id(
     always present (Phase-1 selects Id; Id is not a volatile key), so this guard
     never fires for VR; it bounds the blast radius for any malformed row.
 
-    NOTE: there is NO deletion detection on the full-fetch path today (the chunk
-    diff only ever buckets new/changed/unchanged for the chunk's own ids), so this
-    reconcile is NEW deletion detection that ships ONLY with the delta path — the
-    inseparable companion that makes a delta safe.
+    NOTE: the chunk diff only ever buckets new/changed/unchanged for the chunk's
+    own ids, so it never detected entity deletions — this reconcile is that
+    detection. As of D-253 it runs on BOTH the delta and the full-fetch path; the
+    caller gates it on a provably-complete present-set (`if present_ids:`, which
+    refuses an empty/partial id-fetch — this primitive has no internal empty guard,
+    so an empty ``present_sf_ids`` here WOULD close every active row of the type).
+    On the delta path it is the inseparable companion that makes a delta safe.
 
     Returns the count superseded (also added to ``result.entities_superseded``).
     """

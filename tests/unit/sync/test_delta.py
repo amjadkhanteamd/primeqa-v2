@@ -1,16 +1,19 @@
-"""Unit tests for 1b.2 per-category delta fetch (ValidationRule).
+"""Unit tests for 1b.2 per-category delta fetch (ValidationRule) + the D-253
+full-fetch deletion-reconcile backstop.
 
-Three layers, none touching a DB:
+Layers, none touching a DB:
   * the allow-list gate (``delta.delta_since_for``),
-  * the SF-client delta SOQL + the cheap id-list, and
-  * ``phase_validation_rule`` orchestration — that the delta path fetches with
-    the watermark, ALWAYS reconciles (even on an empty add/mod delta), the full
-    path does neither, and any SF error in the delta+id-list unit falls back to a
-    full fetch with NO reconcile (fail toward full-fetch).
+  * the SF-client delta SOQL + the cheap id-list + the ``_query_all``
+    ``require_complete`` fail-closed hardening (D-253), and
+  * ``phase_validation_rule`` orchestration — both the delta AND the full-fetch
+    path now fetch the id-list and reconcile (D-253 reverses the old
+    full-fetch-does-NOT-reconcile rule); the reconcile is gated on a non-empty
+    ``present_ids`` (``if present_ids:``) so an empty/partial id-fetch refuses to
+    mass-close on EITHER path.
 
-The real-DB SCD-2 supersede + edge close (and the red-on-disable deletion proof)
-live in tests/integration/semantic/test_delta_reconcile_live.py — this file mocks
-the materialize/reconcile boundary and asserts the ORCHESTRATION.
+The real-DB SCD-2 supersede + edge close (and the deletion/refusal proofs) live in
+tests/integration/semantic/test_delta_reconcile_live.py — this file mocks the
+materialize/reconcile boundary and asserts the ORCHESTRATION.
 """
 from __future__ import annotations
 
@@ -96,6 +99,49 @@ class TestFetchValidationRulesDelta:
 
 
 # ----------------------------------------------------------------------
+# 2b. _query_all require_complete fail-closed (D-253)
+# ----------------------------------------------------------------------
+class TestQueryAllRequireComplete:
+    """``_query_all(require_complete=True)`` RAISES on a malformed cursor instead
+    of silently returning a partial; the default (False) is byte-for-byte
+    unchanged (zero blast radius on the other callers)."""
+
+    def _client_with_pages(self, pages):
+        c = _client()
+        resps = []
+        for pg in pages:
+            r = MagicMock()
+            r.json.return_value = pg
+            resps.append(r)
+        c._request = MagicMock(side_effect=resps)
+        return c
+
+    def test_complete_multipage_walk_returns_full_aggregate(self) -> None:
+        c = self._client_with_pages([
+            {"records": [{"Id": "a"}], "done": False, "nextRecordsUrl": "/n1"},
+            {"records": [{"Id": "b"}], "done": True},
+        ])
+        out = c._query_all("/p", "SELECT Id FROM X", require_complete=True)
+        assert [r["Id"] for r in out] == ["a", "b"]      # full walk, no raise
+
+    def test_malformed_cursor_raises_under_require_complete(self) -> None:
+        from primeqa.integrations.exceptions import SFIncompletePaginationError
+        c = self._client_with_pages([
+            {"records": [{"Id": "a"}], "done": False},   # done=False, no cursor
+        ])
+        with pytest.raises(SFIncompletePaginationError):
+            c._query_all("/p", "SELECT Id FROM X", require_complete=True)
+
+    def test_malformed_cursor_default_is_silent_partial(self) -> None:
+        # Default require_complete=False unchanged: returns rows-so-far, no raise.
+        c = self._client_with_pages([
+            {"records": [{"Id": "a"}], "done": False},   # done=False, no cursor
+        ])
+        out = c._query_all("/p", "SELECT Id FROM X")
+        assert [r["Id"] for r in out] == ["a"]           # silent partial preserved
+
+
+# ----------------------------------------------------------------------
 # 3. phase_validation_rule orchestration
 # ----------------------------------------------------------------------
 def _ctx(delta_since):
@@ -158,27 +204,36 @@ class TestPhaseValidationRuleOrchestration:
         rec.assert_called_once()                   # ...but deletions reconciled
         assert rec.call_args[0][3] == {"kept"}
 
-    def test_full_path_never_deltas_or_reconciles(self) -> None:
+    def test_full_path_now_also_reconciles(self) -> None:
+        # D-253 backstop #1: the full-fetch path NOW fetches the id-list and
+        # reconciles (reverses the old "full-fetch does NOT reconcile").
         ctx, sf, bm, me, rec = self._run(
             delta_since=None,
             fetch_rules_side_effect=[[_vr()]],
+            fetch_ids_return={"vr1"},
         )
         sf.fetch_validation_rules.assert_called_once_with()   # no modified_since
-        sf.fetch_validation_rule_ids.assert_not_called()
-        rec.assert_not_called()
+        sf.fetch_validation_rule_ids.assert_called_once()     # the gated id-list
+        rec.assert_called_once()
+        assert rec.call_args[0][3] == {"vr1"}                 # full id-set threaded
 
-    def test_delta_fetch_error_falls_back_to_full_no_reconcile(self) -> None:
-        # delta query raises → full-fetch fallback, reconcile suppressed.
+    def test_delta_fetch_error_falls_back_to_full_and_reconciles(self) -> None:
+        # D-253: delta query raises → full-fetch fallback, which NOW reconciles via
+        # the full id-list (a complete set). (Pre-D-253 the reconcile was suppressed
+        # on any fallback.)
         ctx, sf, bm, me, rec = self._run(
             delta_since=_T,
             fetch_rules_side_effect=[RuntimeError("tooling 500"), [_vr()]],
+            fetch_ids_return={"vr1"},
         )
         assert sf.fetch_validation_rules.call_count == 2       # delta (raised) + full
         assert sf.fetch_validation_rules.call_args_list[1].args == ()
-        rec.assert_not_called()                                # never a partial delta
+        rec.assert_called_once()                               # full fallback reconciles
+        assert rec.call_args[0][3] == {"vr1"}
 
-    def test_id_list_error_falls_back_to_full_no_reconcile(self) -> None:
-        # delta query OK but the id-list raises → full-fetch fallback, no reconcile.
+    def test_id_list_error_on_both_attempts_no_reconcile(self) -> None:
+        # delta id-list raises → full fallback → the full id-list ALSO raises →
+        # present_ids stays None → no reconcile (fail-safe to NO-reconcile).
         from primeqa.sync import phases
         ctx, sf = _ctx(_T)
         sf.fetch_validation_rules.side_effect = [[_vr()], [_vr()]]
@@ -193,3 +248,12 @@ class TestPhaseValidationRuleOrchestration:
             phases.phase_validation_rule(ctx, conn)
         assert sf.fetch_validation_rules.call_count == 2
         rec.assert_not_called()
+
+    def test_empty_id_fetch_refuses_reconcile_on_both_paths(self) -> None:
+        # `if present_ids:` refuses set() → NO reconcile (no mass-close), on BOTH
+        # the delta and the full-fetch path. The D-253 catastrophic guard AND the
+        # latent-1b.2-hole closure (shipped 1b.2 would have mass-closed on empty).
+        for ds in (None, _T):
+            _c, sf, bm, me, rec = self._run(
+                delta_since=ds, fetch_rules_side_effect=[[]], fetch_ids_return=set())
+            rec.assert_not_called()

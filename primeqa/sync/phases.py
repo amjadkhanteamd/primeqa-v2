@@ -1201,15 +1201,20 @@ def phase_validation_rule(ctx: SyncContext, conn: Any) -> PhaseResult:
     """
     result = PhaseResult(entity_type="ValidationRule")
 
-    # 1b.2 delta gate. delta_since_for returns the org's watermark iff VR is on
-    # the delta-safe allow-list AND a valid window exists (a fresh run with a
-    # non-NULL watermark); None → full-fetch (resume / no watermark / off-list).
+    # Backstop #1 (D-253): the deletion reconcile runs on BOTH the delta and the
+    # full-fetch path, gated on a provably-complete present-set. `present_ids` is
+    # the org's full current VR id-set — the UNFILTERED `SELECT Id` superset from
+    # the dedicated, completeness-gated `fetch_validation_rule_ids`
+    # (require_complete=True → a truncated id-list RAISES, never a silent subset).
+    # Any fetch failure → present_ids=None → no reconcile (fail-safe to
+    # NO-reconcile). The materialize fetch (`fetch_validation_rules`) is untouched.
     since = delta_since_for(ctx, "ValidationRule")
     present_ids: "set[str] | None" = None
+    raw_vrs: "list[dict[str, Any]] | None" = None
     if since is not None:
-        # Delta + reconcile are ONE unit: BOTH SF reads must succeed or this
-        # category full-fetches (fail-safe — never a partial delta that could
-        # silently miss a change or deletion).
+        # DELTA path: adds/mods delta + the full id-set for the reconcile. BOTH
+        # SF reads must succeed or this category falls back to full-fetch (never
+        # a partial delta that could silently miss a change or a deletion).
         try:
             raw_vrs = ctx.sf_client.fetch_validation_rules(modified_since=since)
             present_ids = ctx.sf_client.fetch_validation_rule_ids()
@@ -1220,9 +1225,20 @@ def phase_validation_rule(ctx: SyncContext, conn: Any) -> PhaseResult:
             )
             since = None
             present_ids = None
-            raw_vrs = ctx.sf_client.fetch_validation_rules()
-    else:
+            raw_vrs = None
+    if since is None:
+        # FULL-FETCH path (fresh-no-window / resume / off-list / delta fallback):
+        # adds/mods = the whole current set; present_ids = the SAME unfiltered
+        # `SELECT Id`, completeness-gated, for the deletion reconcile (backstop #1).
         raw_vrs = ctx.sf_client.fetch_validation_rules()
+        try:
+            present_ids = ctx.sf_client.fetch_validation_rule_ids()
+        except Exception as e:
+            logger.warning(
+                "phase_validation_rule: full-fetch id-list failed (%s) — "
+                "no deletion reconcile this run", e,
+            )
+            present_ids = None
 
     # Filter VRs whose parent Object isn't in this sync's syncable
     # scope (per corrections-log §18). Surfaced live: sandbox has
@@ -1280,13 +1296,17 @@ def phase_validation_rule(ctx: SyncContext, conn: Any) -> PhaseResult:
             result=result,
         )
 
-    # 1b.2 MANDATORY deletion reconcile — delta path only. A LastModifiedDate
-    # delta cannot see deletions, so a delta MUST reconcile its full current id
-    # set against the model and supersede VRs (and their edges) now absent from
-    # Salesforce. Runs in this phase's transaction, atomic with the adds/mods.
-    # (The full-fetch path does NOT reconcile — it never detected entity
-    # deletions; 1b.2 introduces that only alongside the delta. See D-251.)
-    if since is not None and present_ids is not None:
+    # Deletion reconcile — backstop #1 (D-253), BOTH paths. A LastModifiedDate
+    # delta cannot see deletions, and the full-fetch bucketing never detected
+    # entity deletions either; so on BOTH paths the reconcile diffs the full
+    # current `SELECT Id` set against the model and supersedes VRs (and their
+    # edges) now absent from Salesforce, atomic with the adds/mods in this
+    # phase's transaction. `if present_ids:` is the single "provably complete"
+    # gate: truthiness refuses BOTH None (completeness unknown / fetch failed)
+    # AND set() (empty id-fetch), so an empty/partial fetch can NEVER mass-close
+    # (fail-safe to NO-reconcile). This also closes the latent 1b.2 hole where an
+    # empty/partial id-fetch on the delta path would have mass-closed.
+    if present_ids:
         reconcile_deletions_by_sf_id(
             conn, ctx, "ValidationRule", present_ids, result,
         )
