@@ -65,6 +65,7 @@ from primeqa.intelligence.embeddings import (
 )
 from primeqa.intelligence.llm.limits import record_embedding_usage
 from primeqa.sync import readiness
+from primeqa.sync.enrichment_gate import build_summary_context
 
 EMBEDDING_BATCH_LIMIT = 128       # Voyage's per-request input cap
 SUMMARY_BATCH_LIMIT = 5           # per-row LLM calls — keep ticks short
@@ -376,61 +377,14 @@ def _fetch_org_ids(session, entity_ids: list) -> Dict[str, Optional[str]]:
 
 def _fetch_summary_context(session, entity_type: str,
                            entity_id: str) -> Optional[dict]:
-    """Assemble the prompt context for one entity, or None if the
-    entity / detail row isn't found.
+    """Assemble the prompt context for one entity, or None if not found.
 
-    Pulls sf_api_name + semantic_text + the attributes JSONB + detail-
-    table columns, mapped to the keys the entity_summary_{flow,
-    validation_rule} prompts expect. Those prompts are defensive
-    (every key optional), so a sparse context still yields a usable
-    summary.
-    """
-    if entity_type == "Flow":
-        row = session.execute(_sa_text("""
-            SELECT e.sf_api_name, e.semantic_text, e.attributes,
-                   fd.flow_type, fd.trigger_type, fd.is_active,
-                   obj.sf_api_name AS trigger_obj
-            FROM entities e
-            JOIN flow_details fd ON fd.entity_id = e.id
-            LEFT JOIN entities obj
-                ON obj.id = fd.triggers_on_object_entity_id
-            WHERE e.id = :id
-        """), {"id": entity_id}).fetchone()
-        if row is None:
-            return None
-        attrs = row[2] or {}
-        meta = attrs.get("Metadata") or {}
-        return {
-            "name": row[0],
-            "semantic_text": row[1],
-            "process_type": row[3],
-            "trigger_type": row[4],
-            "is_active": row[5],
-            "triggers_on_object": row[6],
-            "description": meta.get("description") or attrs.get("description"),
-        }
-    if entity_type == "ValidationRule":
-        row = session.execute(_sa_text("""
-            SELECT e.sf_api_name, e.semantic_text, e.attributes,
-                   obj.sf_api_name AS obj_name
-            FROM entities e
-            JOIN validation_rule_details vrd ON vrd.entity_id = e.id
-            LEFT JOIN entities obj ON obj.id = vrd.object_entity_id
-            WHERE e.id = :id
-        """), {"id": entity_id}).fetchone()
-        if row is None:
-            return None
-        attrs = row[2] or {}
-        meta = attrs.get("Metadata") or {}
-        return {
-            "name": row[0],
-            "semantic_text": row[1],
-            "object": row[3],
-            "error_message": meta.get("errorMessage"),
-            "formula_text": meta.get("errorConditionFormula"),
-            "error_display_field": meta.get("errorDisplayField"),
-        }
-    return None
+    Delegates to the SHARED ``enrichment_gate.build_summary_context`` — the SAME
+    assembly the 1c materialize gate hashes for its summary carry-forward. Keeping
+    one builder means the input the LLM is FED is exactly the input that was
+    HASHED, so the gate can never carry a stale summary forward (no second,
+    divergent copy of the composite). See D-252."""
+    return build_summary_context(session, entity_type, entity_id)
 
 
 def _embedding_subtick(session, tenant_id: int, voyage_resolver) -> TickResult:

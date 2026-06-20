@@ -87,6 +87,12 @@ from primeqa.sync.batching import (
 )
 from primeqa.sync.context import SyncContext
 from primeqa.sync.detail_mappers import get_detail_mapper
+from primeqa.sync.enrichment_gate import (
+    embed_input_hash,
+    embed_model_tag,
+    summary_input_hash,
+    summary_prompt_version,
+)
 from primeqa.sync.presentation import to_presentation
 from primeqa.sync.result import PhaseResult
 
@@ -150,6 +156,10 @@ def _materialize_chunk(
         return {} if return_id_map else None
 
     # 1. Compute-only stage: prepare EntityForWrite objects.
+    # 1c: the embed-input hash is namespaced by the CURRENT embedding model tag, so
+    # a model bump changes the hash → the next sync re-embeds instead of carrying a
+    # stale old-model vector forward.
+    model_tag = embed_model_tag()
     incoming: list[EntityForWrite] = []
     for raw in raw_chunk:
         normalized = normalize(entity_type, raw)
@@ -162,6 +172,9 @@ def _materialize_chunk(
             presentation=presentation,
             semantic_text=semantic,
             hash_normalized=h,
+            # 1c: hash of the EXACT embed input (semantic_text) + model tag → drives
+            # the next sync's embedding carry-forward gate.
+            semantic_text_hash=embed_input_hash(semantic, model_tag),
         ))
 
     # 2. Batched SELECT for existing entities in this chunk.
@@ -250,18 +263,35 @@ def _materialize_chunk(
             ]
             write_field_refs_for_validation_rules(conn, vr_pairs, parent_resolver)
 
-    # 5. Batched UPSERT to enrichment queue for new + changed.
-    # Every entity gets an embedding row; only SUMMARY_ENABLED_ENTITY_
-    # TYPES get a summary row — so summaries_queued is only bumped for
-    # those types (was previously over-counted for all 11 types).
-    entity_ids_needing_enrichment = new_entity_ids + changed_new_ids
-    if entity_ids_needing_enrichment:
+    # 5. 1c enrichment gate + split enqueue. The full re-enrich on every changed
+    # entity is wasteful: a change to a normalized field that doesn't alter the
+    # embed/summary INPUT would still re-embed / re-summarize. The gate carries a
+    # prior version's embedding/summary FORWARD when its exact input hash is
+    # unchanged (no Voyage/LLM call) and enqueues only the rest. NEW entities have
+    # no prior → always enqueue. Embedding + summary are gated INDEPENDENTLY (a
+    # detail/Metadata change re-summarizes but need not re-embed).
+    embed_carried = _carry_forward_embeddings(
+        conn, buckets.changed, changed_new_ids)
+    summary_carried: set[str] = set()
+    if entity_type in SUMMARY_ENABLED_ENTITY_TYPES and detail_info is not None:
+        summary_carried = _apply_summary_gate(
+            conn, entity_type,
+            new_entity_ids,
+            list(zip(buckets.changed, changed_new_ids)))
+
+    all_enrich_ids = new_entity_ids + changed_new_ids
+    embed_ids = [eid for eid in all_enrich_ids if eid not in embed_carried]
+    if embed_ids:
         _batch_upsert_queue(
-            conn, entity_type, entity_ids_needing_enrichment, now,
-        )
-        result.embeddings_queued += len(entity_ids_needing_enrichment)
-        if entity_type in SUMMARY_ENABLED_ENTITY_TYPES:
-            result.summaries_queued += len(entity_ids_needing_enrichment)
+            conn, entity_type, embed_ids, now, primitives=["embedding"])
+        result.embeddings_queued += len(embed_ids)
+    if entity_type in SUMMARY_ENABLED_ENTITY_TYPES:
+        summary_ids = [eid for eid in all_enrich_ids
+                       if eid not in summary_carried]
+        if summary_ids:
+            _batch_upsert_queue(
+                conn, entity_type, summary_ids, now, primitives=["summary"])
+            result.summaries_queued += len(summary_ids)
 
     # 6. (Optional) Build {external_id: entity_id} for callers
     # that need to construct edges from this chunk's entities.
@@ -618,7 +648,7 @@ def _batch_insert_new_entities(
             f"CAST(:attr_{i} AS JSONB), :vfs_{i}, NULL, "
             f"current_setting('app.tenant_id')::INT, "
             f":created_at, :last_synced_at, 'sync', "
-            f":lsh_{i}, :org_id, :st_{i})"
+            f":lsh_{i}, :org_id, :st_{i}, :sth_{i})"
         )
         params[f"et_{i}"] = entity_type
         # §26: extract sf_id from normalized data; filter Salesforce's
@@ -634,6 +664,7 @@ def _batch_insert_new_entities(
         params[f"vfs_{i}"] = ctx.logical_version_seq
         params[f"lsh_{i}"] = e.hash_normalized
         params[f"st_{i}"] = e.semantic_text
+        params[f"sth_{i}"] = e.semantic_text_hash  # 1c embed-input hash
     params["created_at"] = now
     params["last_synced_at"] = now
     params["org_id"] = ctx.connected_org_id
@@ -643,7 +674,8 @@ def _batch_insert_new_entities(
             entity_type, sf_id, sf_api_name, display_name,
             attributes, valid_from_seq, valid_to_seq,
             tenant_id, created_at, last_synced_at, entity_origin,
-            last_seed_hash, last_synced_from_org_id, semantic_text
+            last_seed_hash, last_synced_from_org_id, semantic_text,
+            semantic_text_hash
         )
         VALUES {', '.join(values_clauses)}
         RETURNING id
@@ -836,19 +868,135 @@ SUMMARY_ENABLED_ENTITY_TYPES = frozenset({"Flow", "ValidationRule"})
 SALESFORCE_NULL_ID = "000000000000000AAA"
 
 
+def _carry_forward_embeddings(
+    conn: Any,
+    changed: list[EntityForWrite],
+    changed_new_ids: list[str],
+) -> set[str]:
+    """1c embed gate: copy a prior version's embedding onto the new (changed)
+    entity row when the embed input is unchanged (prior.semantic_text_hash ==
+    new.semantic_text_hash) AND the prior already carries an embedding. Returns
+    the set of new entity ids carried forward (so the caller omits their embedding
+    from the enqueue).
+
+    The vector is copied column-to-column INSIDE Postgres (UPDATE ... FROM) — never
+    round-tripped through Python — and the hash gate lives in the WHERE, so
+    ``RETURNING`` reports exactly which rows carried. Graceful: a prior with a NULL
+    embedding (not yet enriched — async worker lag) or a hash mismatch simply does
+    not match → not carried → re-enqueued (never stale)."""
+    if not changed:
+        return set()
+    value_rows: list[str] = []
+    params: dict[str, Any] = {}
+    for i, (e, new_id) in enumerate(zip(changed, changed_new_ids)):
+        if not e.prior_entity_id or not e.semantic_text_hash:
+            continue
+        value_rows.append(
+            f"(CAST(:nid_{i} AS uuid), CAST(:pid_{i} AS uuid), :h_{i})")
+        params[f"nid_{i}"] = new_id
+        params[f"pid_{i}"] = e.prior_entity_id
+        params[f"h_{i}"] = e.semantic_text_hash
+    if not value_rows:
+        return set()
+    sql = f"""
+        UPDATE entities AS n
+        SET embedding = p.embedding,
+            embedding_model = p.embedding_model,
+            embedding_generated_at = p.embedding_generated_at
+        FROM entities AS p,
+             (VALUES {', '.join(value_rows)}) AS m(new_id, prior_id, new_hash)
+        WHERE n.id = m.new_id
+          AND p.id = m.prior_id
+          AND p.embedding IS NOT NULL
+          AND p.semantic_text_hash = m.new_hash
+        RETURNING n.id
+    """
+    rows = conn.execute(text(sql), params).fetchall()
+    return {str(r.id) for r in rows}
+
+
+def _apply_summary_gate(
+    conn: Any,
+    entity_type: str,
+    new_ids: list[str],
+    changed_pairs: list[tuple[EntityForWrite, str]],
+) -> set[str]:
+    """1c summary gate (Flow / ValidationRule only). Two steps:
+
+    (a) Store ``summary_input_hash`` on EVERY new + changed detail row — the
+        SHA-256 of the EXACT summary-LLM input, via the shared
+        ``enrichment_gate.summary_input_hash`` (the same builder the worker feeds
+        the LLM), so a future sync can carry forward.
+    (b) For changed entities, copy the prior version's summary forward when its
+        ``summary_input_hash`` matches the new one AND the prior already has a
+        ``summary_text``. Returns the set of new entity ids carried forward.
+
+    Copy is column-to-column in Postgres; graceful on a NULL prior summary (async
+    worker lag) or a hash mismatch → re-enqueue (never stale). ``detail_table`` is
+    a fixed map from the CHECK-constrained entity_type — not user input — so the
+    interpolation is safe."""
+    detail_table = ("flow_details" if entity_type == "Flow"
+                    else "validation_rule_details")
+    # 1c: namespace the summary hash by the CURRENT summary prompt VERSION, so a
+    # prompt bump changes the hash → re-summarize instead of carrying a stale
+    # old-prompt summary forward.
+    prompt_version = summary_prompt_version(entity_type)
+    changed_new_ids = [nid for (_e, nid) in changed_pairs]
+    # (a) compute + store the new summary_input_hash for all new + changed.
+    for nid in new_ids + changed_new_ids:
+        h = summary_input_hash(conn, entity_type, nid, prompt_version)
+        if h is not None:
+            conn.execute(text(
+                f"UPDATE {detail_table} SET summary_input_hash = :h "
+                f"WHERE entity_id = :id"
+            ), {"h": h, "id": nid})
+    # (b) carry the prior summary forward where the input hash is unchanged.
+    value_rows: list[str] = []
+    params: dict[str, Any] = {}
+    for i, (e, nid) in enumerate(changed_pairs):
+        if not e.prior_entity_id:
+            continue
+        value_rows.append(f"(CAST(:nid_{i} AS uuid), CAST(:pid_{i} AS uuid))")
+        params[f"nid_{i}"] = nid
+        params[f"pid_{i}"] = e.prior_entity_id
+    if not value_rows:
+        return set()
+    sql = f"""
+        UPDATE {detail_table} AS n
+        SET summary_text = p.summary_text,
+            summary_embedding = p.summary_embedding,
+            summary_model = p.summary_model,
+            summary_prompt_version = p.summary_prompt_version,
+            summary_generated_at = p.summary_generated_at
+        FROM {detail_table} AS p,
+             (VALUES {', '.join(value_rows)}) AS m(new_id, prior_id)
+        WHERE n.entity_id = m.new_id
+          AND p.entity_id = m.prior_id
+          AND p.summary_text IS NOT NULL
+          AND p.summary_input_hash IS NOT NULL
+          AND p.summary_input_hash = n.summary_input_hash
+        RETURNING n.entity_id
+    """
+    rows = conn.execute(text(sql), params).fetchall()
+    return {str(r.entity_id) for r in rows}
+
+
 def _batch_upsert_queue(
     conn: Any,
     entity_type: str,
     entity_ids: list[str],
     now: datetime,
+    primitives: Optional[list[str]] = None,
 ) -> None:
     """Multi-row UPSERT to ai_enrichment_queue.
 
-    Always enqueues an `embedding` row per entity. Enqueues a
-    `summary` row too — but ONLY for entity types in
-    SUMMARY_ENABLED_ENTITY_TYPES (Flow, ValidationRule); the other
-    nine entity types have no summary_text storage, so a summary row
-    for them would be a permanently-unfulfillable orphan.
+    ``primitives`` (1c) — the primitive_type rows to enqueue for these ids.
+    Defaults to the legacy behavior: ``embedding`` for everything, plus
+    ``summary`` for SUMMARY_ENABLED_ENTITY_TYPES (Flow, ValidationRule) — the
+    other nine entity types have no summary_text storage, so a summary row for
+    them would be a permanently-unfulfillable orphan. The 1c gate passes an
+    explicit single-primitive list so it can enqueue ``embedding`` and ``summary``
+    over DIFFERENT id subsets (a carried-forward primitive is omitted).
 
     ON CONFLICT (entity_type, entity_id, primitive_type) DO UPDATE
     resets status='pending' + attempts=0 + clears prior timestamps —
@@ -858,10 +1006,13 @@ def _batch_upsert_queue(
     if not entity_ids:
         return
 
-    # embedding for everything; summary only for the enabled types.
-    primitives = ["embedding"]
-    if entity_type in SUMMARY_ENABLED_ENTITY_TYPES:
-        primitives.append("summary")
+    if primitives is None:
+        # embedding for everything; summary only for the enabled types.
+        primitives = ["embedding"]
+        if entity_type in SUMMARY_ENABLED_ENTITY_TYPES:
+            primitives.append("summary")
+    if not primitives:
+        return
 
     values_clauses: list[str] = []
     params: dict[str, Any] = {

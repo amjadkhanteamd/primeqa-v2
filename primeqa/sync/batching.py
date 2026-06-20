@@ -27,6 +27,11 @@ class EntityForWrite:
         presentation: presentation-shape dict for semantic_text input
         semantic_text: generated semantic text string
         hash_normalized: SHA-256 hex digest of normalized canonical
+        semantic_text_hash: 1c — SHA-256 of the exact embed input
+            (semantic_text). Persisted on the entity row so the next
+            sync's enrichment gate can carry a prior version's
+            embedding forward when this is unchanged. Set by the
+            materialize caller (enrichment_gate.embed_input_hash).
         prior_entity_id: for changed entities only — the existing
             entity row's id, used for SCD Type 2 supersession's
             UPDATE valid_to_seq step. Populated by bucket_entities,
@@ -37,6 +42,7 @@ class EntityForWrite:
     presentation: dict[str, Any]
     semantic_text: str
     hash_normalized: str
+    semantic_text_hash: str = ""
     prior_entity_id: str | None = None
 
 
