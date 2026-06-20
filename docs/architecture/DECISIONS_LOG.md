@@ -15020,3 +15020,79 @@ version → not carried). Full `tests/unit/` green (2914); semantic integration 
 hash" (cross-lineage embedding reuse — the embedding is a pure function of its input)
 is a later optimization. Profile/RecordType/Flow delta (1b.2 follow-on) and the 1b.2
 skip-defers-deletion backstops (D-251.1) remain separate open items.
+
+---
+
+## D-253 — S1 sync backstop #1: full-fetch ValidationRule deletion reconcile + _query_all fail-closed; reverses D-251's "full-fetch does NOT reconcile"
+
+**Context.** D-251 shipped the VR deletion reconcile on the DELTA path only; the
+in-code comments (phases.py, materialize.py) assert "the full-fetch path does NOT
+reconcile." D-251.1 then found, live on env-59, that the 1b.1 skip gate defers a
+deletion indefinitely when it sits behind the watermark: the probe
+`Account.PrimeQADeltaProbe` is deleted in SF yet still currently-valid in the model
+(53 active vs 52 present), because the only full sync that ran used the
+no-reconcile full-fetch path and every sync since correctly skipped. D-251.1 named
+the fix as backstop #1. This decision implements it (ValidationRule only).
+
+**Reverses D-251 (deliberate, logged behavior expansion).** The full-fetch path now
+ALSO runs the deletion reconcile. It is a cheap, watermark-independent `SELECT Id` +
+diff, so any full sync (bootstrap, full-fallback, forced sweep) catches deletions
+the delta path cannot reach — closing the env-59 stuck-probe class. The
+"delta-only" comments at phases.py:1283-1288 and materialize.py:753-756 and the
+`reconcile_deletions_by_sf_id` / `fetch_validation_rule_ids` docstrings are updated
+to "both paths, gated on a provably-complete present-set."
+
+**present_ids source — dedicated, gated `SELECT Id`.** Both paths derive
+`present_ids` from `fetch_validation_rule_ids()` (the existing cheap bulk
+`SELECT Id`), NOT from reuse of the materialize payload `raw_vrs`. This isolates the
+completeness requirement to the reconcile and leaves the materialize fetch
+(`fetch_validation_rules`) untouched. `present_ids` MUST be the UNFILTERED superset
+(never the in-scope-filtered list), so a VR whose parent Object merely dropped out
+of scope is not seen as deleted.
+
+**`_query_all` fail-closed (localized).** `_query_all` gains an opt-in
+`require_complete=False`. When True, the silent-partial defensive break (done=False
+with no nextRecordsUrl) RAISES instead of returning a truncated list.
+`fetch_validation_rule_ids()` is the only caller that passes `require_complete=True`;
+every other caller keeps the default → zero blast radius. A raise funnels through the
+phase try/except to `present_ids=None` → no reconcile.
+
+**Empty/partial = refuse to reconcile.** The reconcile fires from ONE collapsed call
+site, `if present_ids: reconcile_deletions_by_sf_id(...)`. Truthiness refuses BOTH
+None (completeness unknown) AND `set()` (empty id-fetch), so an empty or partial
+fetch can NEVER mass-close. Accepted corner: an org that deletes its very last VR
+yields an empty set and that final deletion is deferred until a VR reappears —
+bounded staleness, strictly preferable to a catastrophic mass-close. Fail-safe =
+fail-safe-to-NO-reconcile on every doubt.
+
+**Latent delta-path fix (shipped-bug closure).** `reconcile_deletions_by_sf_id` has
+NO internal empty guard (its only short-circuit guards the nothing-absent steady
+state). The shipped 1b.2 delta path reached it with `fetch_validation_rule_ids()`
+ungated, so a silent-partial or spurious-empty id-fetch would have mass-closed live
+VRs — unguarded in shipped code. Routing BOTH paths through the same
+`require_complete` id-fetch + `if present_ids:` gate closes that hole for the delta
+path too, not only the new full-fetch path.
+
+**Verification.** Faithful real-DB (mocks only the SF boundary): (1) full-fetch
+closes a genuinely-deleted VR + its edges, survivors untouched; (2) red-on-disable
+(full-fetch); (3) full-fetch PARTIAL → refuse (require_complete raise →
+present_ids=None → 0 supersessions); (4) full-fetch EMPTY → refuse (0, not all-N);
+(5) unit: hardened `_query_all` raises on a malformed cursor under
+require_complete=True, default-False unchanged; (6) scope-filter trap: a
+present-but-out-of-scope-parent VR stays active (unfiltered superset); (7)
+delta-branch empty/partial → refuse (latent-hole fix). Full `tests/unit/` green;
+semantic-integration green. No migration — pure code, deploy-safe (worst case = full
+sync, no reconcile = today's behavior).
+
+**Scope + follow-on.** ValidationRule only. RecordType / Profile / PermissionSet are
+a tracked Slice-2 fast-follow (same complete-if-gated + real-`sf_id` shape, once the
+`_query_all` hardening is proven; each needs its own gated id-fetch + per-type
+present-set caveat — RecordType unfiltered Phase-1 ids, PermissionSet the
+`Type!='Profile'` set, Profile's ~52K-edge blast radius makes its guard most
+load-bearing). User / Flow deferred (no clean complete present-set — User's is a
+Profile-dependent subset, Flow's `sf_id` is a computed chosen-version Id).
+NULL-`sf_id` types (Object, Field, Layout, PicklistValue, PicklistValueSet SVS half)
+are never wired — the reconcile keys on `sf_id`, so for them it is a guaranteed
+no-op. D-251.1 backstop #2 (periodic forced non-skip sweep) remains a separate
+deferred item. Slice-2 robustness: move the empty-refusal into the shared primitive
+when the call site generalizes.
