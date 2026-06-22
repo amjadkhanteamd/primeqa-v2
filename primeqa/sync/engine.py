@@ -328,7 +328,7 @@ class SyncEngine:
 
             # 2. Allocate logical_versions row with back-reference.
             logical_version_seq = self._allocate_logical_version(
-                conn, sync_run_id,
+                conn, sync_run_id, connected_org_id,
             )
 
             # 3. Back-link sync_run.logical_version_seq.
@@ -341,7 +341,7 @@ class SyncEngine:
         return sync_run_id, logical_version_seq
 
     def _allocate_logical_version(
-        self, conn: Any, sync_run_id: str,
+        self, conn: Any, sync_run_id: str, connected_org_id: str,
     ) -> int:
         """Allocate a new logical_versions row for this sync_run.
 
@@ -356,18 +356,25 @@ class SyncEngine:
         version_type='sync_run' per migration 20260512_0020.
         version_name='sync_run_{uuid}' is deterministic and never
         collides (UNIQUE constraint on version_name).
+
+        connected_org_id stamps the per-org partition key (per-org
+        Slice 1): every version this run produces belongs to the org
+        being synced. NULLABLE in the schema — a genesis/bootstrap or
+        test-fixture version with no sync_run is org-less.
         """
         result = conn.execute(text("""
             INSERT INTO logical_versions
                 (version_name, version_type, description,
-                 created_by_sync_run_id)
+                 created_by_sync_run_id, connected_org_id)
             VALUES
-                (:name, 'sync_run', :description, :sync_run_id)
+                (:name, 'sync_run', :description, :sync_run_id,
+                 :connected_org_id)
             RETURNING version_seq
         """), {
             "name": f"sync_run_{sync_run_id}",
             "description": f"Allocated by sync_run {sync_run_id}",
             "sync_run_id": sync_run_id,
+            "connected_org_id": connected_org_id,
         })
         row = result.fetchone()
         if row is None:

@@ -483,7 +483,7 @@ class TestConnectAndAllocateLogicalVersion:
         assert sync_run_id == "run-1"
         assert version_seq == 99
         engine._allocate_logical_version.assert_called_once_with(
-            mock_conn, "run-1",
+            mock_conn, "run-1", "org-1",
         )
 
 

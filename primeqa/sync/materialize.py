@@ -649,7 +649,7 @@ def _batch_insert_new_entities(
             f"CAST(:attr_{i} AS JSONB), :vfs_{i}, NULL, "
             f"current_setting('app.tenant_id')::INT, "
             f":created_at, :last_synced_at, 'sync', "
-            f":lsh_{i}, :org_id, :st_{i}, :sth_{i})"
+            f":lsh_{i}, :org_id, :org_id, :st_{i}, :sth_{i})"
         )
         params[f"et_{i}"] = entity_type
         # §26: extract sf_id from normalized data; filter Salesforce's
@@ -668,6 +668,10 @@ def _batch_insert_new_entities(
         params[f"sth_{i}"] = e.semantic_text_hash  # 1c embed-input hash
     params["created_at"] = now
     params["last_synced_at"] = now
+    # :org_id stamps BOTH last_synced_from_org_id (mutable "most recently
+    # sourced" provenance, D-040) AND connected_org_id (the stable per-org
+    # partition key — never rotated; the re-keyed idx_entities_unique_active
+    # is on (sf_id, connected_org_id)).
     params["org_id"] = ctx.connected_org_id
 
     sql = f"""
@@ -675,8 +679,8 @@ def _batch_insert_new_entities(
             entity_type, sf_id, sf_api_name, display_name,
             attributes, valid_from_seq, valid_to_seq,
             tenant_id, created_at, last_synced_at, entity_origin,
-            last_seed_hash, last_synced_from_org_id, semantic_text,
-            semantic_text_hash
+            last_seed_hash, last_synced_from_org_id, connected_org_id,
+            semantic_text, semantic_text_hash
         )
         VALUES {', '.join(values_clauses)}
         RETURNING id
@@ -1249,12 +1253,15 @@ def _batch_insert_new_edges(
         "edge_type": edge_type,
         "edge_category": edge_category,
         "valid_from_seq": ctx.logical_version_seq,
+        # Stable per-org partition key. An edge is intra-org (source and target
+        # are the same org's entities), so it inherits the running sync's org.
+        "org_id": ctx.connected_org_id,
     }
     for i, (sid, tid, props, h) in enumerate(new_rows):
         values_clauses.append(
             f"(CAST(:source_{i} AS uuid), CAST(:target_{i} AS uuid), "
             f":edge_type, :edge_category, "
-            f"CAST(:props_{i} AS JSONB), :valid_from_seq, :hash_{i})"
+            f"CAST(:props_{i} AS JSONB), :valid_from_seq, :hash_{i}, :org_id)"
         )
         params[f"source_{i}"] = sid
         params[f"target_{i}"] = tid
@@ -1263,7 +1270,8 @@ def _batch_insert_new_edges(
     sql = f"""
         INSERT INTO edges (
             source_entity_id, target_entity_id, edge_type,
-            edge_category, properties, valid_from_seq, last_seed_hash
+            edge_category, properties, valid_from_seq, last_seed_hash,
+            connected_org_id
         )
         VALUES {', '.join(values_clauses)}
     """
