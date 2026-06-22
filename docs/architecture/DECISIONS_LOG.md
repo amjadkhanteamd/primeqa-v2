@@ -15254,3 +15254,60 @@ make the sync dedup org-aware and retire the `last_synced_from_org_id` rotation;
 thread org through the S3/S4/S6/S7/S8 + metadata_bridge consumers; wire the
 cross-org diff surface (same claim-set, A vs B). NOT NULL tightening once the
 non-sync/genesis cases are routed through an org-aware helper.
+
+## D-256 — per-org Slice 2: SemanticOrgModel takes an optional constructor-bound connected_org_id; org=None is byte-identical org-blind, org=X scopes every read (additive, backward-compatible)
+
+**Context.** Slice 1 (D-255) gave the S1 spine an org dimension
+(``connected_org_id`` on entities / edges / logical_versions) but left the reader
+org-blind: ``SemanticOrgModel.current_version_seq()`` = global ``MAX`` and every
+read returns the whole tenant model. Slice 2 makes the reader *able* to scope to
+one org — the first thing that actually USES the dimension — without changing
+behavior for any current caller (all 13 consumers stay org-blind this slice; the
+consumer threading is Slice 3).
+
+**Decision — constructor-bound optional org.** ``SemanticOrgModel(conn,
+connected_org_id=None)``:
+- ``connected_org_id=None`` (the default, and what all 13 consumers pass) is the
+  legacy *org-blind* behavior — the generated SQL is **byte-identical** to the
+  pre-Slice-2 reader (the hard backward-compat contract; verified by a SQL-shape
+  unit test asserting zero ``connected_org_id`` in any of the 9 reads).
+- ``connected_org_id=X`` scopes:
+  - ``current_version_seq()`` → ``MAX(version_seq)`` among **org X's** versions
+    (X's latest sync), not the global tenant MAX.
+  - ``get_entities`` / ``get_related`` (+ ``_related_select``) and the three bulk
+    variants → ``AND <alias>.connected_org_id = X`` on the entities / edges alias.
+  - ``get_entity_details`` / ``get_picklist_values`` → **transitively via the
+    entities join** (detail tables carry no org column — D-025); a foreign-org id
+    resolves to no entity row → ``None``.
+
+**Why constructor, not per-method.** Grounded against the call sites: every one of
+the 13 consumers constructs a single ``SemanticOrgModel`` and threads one
+``at_seq`` through it — org is the same kind of once-bound read context. An
+optional second constructor arg leaves all 13 call sites untouched (org defaults
+None); a per-method ``org=`` arg would touch every call at every consumer. Binding
+at the constructor also sets up the org-required end-state (a later slice makes
+``connected_org_id`` mandatory once Slice 3 threads it through the consumers).
+
+**Deliberate non-changes.** ``_validate_version`` stays **org-blind** — a
+``version_seq`` is a valid pin if it exists on the shared (per-tenant) timeline;
+the org filter on the *reads* does the scoping, not the version-existence check.
+``edges.py`` (the edge-type registry — zero SELECTs) and ``connection.py``
+(tenant-schema resolution — no org concept) need no change; **only ``query.py``
+changed**. No consumer changed this slice.
+
+**Verification.** SQL-shape unit red-proof (``tests/unit/semantic/
+test_org_aware_reader.py``): org=None → no ``connected_org_id`` / no ``:org`` in
+any of the 9 reads; org=X → the predicate + bound ``:org`` on each. Behavioral
+discrimination integration red-proof (``tests/integration/semantic/
+test_org_aware_reader_live.py``, local-PG synthetic two-org fixture): ``get_entities(A)``
+returns only A's, ``current_version_seq(A)`` = A's latest (not the global MAX = B's),
+the SAME ``sf_id`` under two orgs is both-active (the Slice-1 loosening read back),
+a detail read under org A returns A's not B's, and org=None returns the union.
+Full ``tests/unit`` green (3067); the 37 existing reader integration tests pass
+org-blind (the behavioral regression proof); app / worker / scheduler boot. Impl
+commit ``ebe3f9b``; this is a separate append-only docs commit. Tier-1: push-gated;
+a light read-sanity on env-59 after deploy (no migration, no forced sync).
+
+**Follow-on.** Slice 3 threads ``connected_org_id`` through the consumers
+(execution first); then per-org GO/NO-GO, the cross-org diff surface, and the
+org-required (mandatory-org) tightening.
