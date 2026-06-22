@@ -189,22 +189,59 @@ class SemanticOrgModel:
     The model holds the connection for its lifetime. Validated ``version_seq``
     values are cached on the instance so repeated reads at the same pin don't
     re-check ``logical_versions``.
+
+    **Org scope (per-org Slice 2, D-256).** An optional ``connected_org_id``
+    binds the model to one org: ``None`` (the default) is the legacy *org-blind*
+    behavior — every read sees the whole tenant model, identical to before;
+    ``connected_org_id=X`` scopes every read to org X (``current_version_seq`` →
+    org X's latest version; entity/edge reads → ``WHERE connected_org_id = X``;
+    detail reads → transitively via the entities join, since detail tables carry
+    no org column — D-025). The scope is bound at the **constructor** (not
+    per-method) because every consumer already constructs one
+    ``SemanticOrgModel`` and threads a single ``at_seq`` through it; org is the
+    same kind of once-bound read context. This also sets up the org-required
+    end-state (a later slice makes ``connected_org_id`` mandatory).
     """
 
-    def __init__(self, conn: Connection) -> None:
+    def __init__(
+        self, conn: Connection, connected_org_id: Optional[str] = None,
+    ) -> None:
         self._conn = conn
+        self._org = connected_org_id
         self._validated_seqs: set[int] = set()
+
+    def _org_clause(self, alias: str, params: dict[str, Any]) -> Optional[str]:
+        """The per-org scope predicate on ``<alias>.connected_org_id``, or
+        ``None`` when org-blind (``self._org is None``).
+
+        When org-bound it binds ``:org`` into ``params`` and returns the bare
+        predicate; the caller appends it to its WHERE / clause list. ``alias`` is
+        always a trusted module literal naming an ``entities`` / ``edges`` /
+        ``logical_versions`` alias (detail tables have no org column — they are
+        scoped transitively through the joined entities alias, D-025). When
+        ``self._org is None`` the SQL is byte-identical to the pre-Slice-2
+        reader (the hard backward-compat contract)."""
+        if self._org is None:
+            return None
+        params["org"] = self._org
+        return f"{alias}.connected_org_id = CAST(:org AS uuid)"
 
     # -- primitive 5 -----------------------------------------------------
     def current_version_seq(self) -> int:
-        """The latest ``version_seq`` (``MAX`` over ``logical_versions``).
+        """The latest ``version_seq`` — ``MAX`` over ``logical_versions``, or
+        over **this org's** versions when org-bound (the latest sync of org X,
+        not the global tenant MAX).
 
-        Raises :class:`VersionNotFoundError` if the tenant has no versions —
-        there is nothing to pin (fail-loud rather than returning a sentinel).
+        Raises :class:`VersionNotFoundError` if there are no versions to pin —
+        for an org-bound model that means org X has never synced (fail-loud
+        rather than returning a sentinel).
         """
-        seq = self._conn.execute(
-            text("SELECT MAX(version_seq) FROM logical_versions")
-        ).scalar()
+        params: dict[str, Any] = {}
+        sql = "SELECT MAX(version_seq) FROM logical_versions"
+        org = self._org_clause("logical_versions", params)
+        if org is not None:
+            sql += f" WHERE {org}"
+        seq = self._conn.execute(text(sql), params).scalar()
         if seq is None:
             raise VersionNotFoundError()
         seq = int(seq)
@@ -256,6 +293,10 @@ class SemanticOrgModel:
                     clauses.append(f"{key} = :f_{key}")
                     params[f"f_{key}"] = value
 
+        org = self._org_clause("entities", params)
+        if org is not None:
+            clauses.append(org)
+
         sql = (
             "SELECT id, entity_type, sf_id, sf_api_name, display_name, "
             "attributes, valid_from_seq, valid_to_seq "
@@ -294,22 +335,27 @@ class SemanticOrgModel:
             "edge_types": list(edge_types),
         }
 
+        # Org scope on the edge (an edge is intra-org; the far entity follows).
+        # Bound once; the predicate string is reused across both UNION arms.
+        org = self._org_clause("e", params)
+
         selects: list[str] = []
         if direction in ("outbound", "both"):
-            selects.append(self._related_select("outbound"))
+            selects.append(self._related_select("outbound", org))
         if direction in ("inbound", "both"):
-            selects.append(self._related_select("inbound"))
+            selects.append(self._related_select("inbound", org))
         sql = " UNION ALL ".join(selects)
 
         rows = self._conn.execute(text(sql), params).mappings().all()
         return [self._row_to_related(m) for m in rows]
 
     @staticmethod
-    def _related_select(which: str) -> str:
+    def _related_select(which: str, org_clause: Optional[str] = None) -> str:
         # 'outbound': the queried entity is the edge source; far end = target.
         # 'inbound':  the queried entity is the edge target; far end = source.
         near = "source_entity_id" if which == "outbound" else "target_entity_id"
         far = "target_entity_id" if which == "outbound" else "source_entity_id"
+        org = f" AND {org_clause}" if org_clause is not None else ""
         return (
             "SELECT e.id AS edge_id, e.edge_type, e.edge_category, e.properties, "
             f"'{which}' AS direction, "
@@ -319,7 +365,7 @@ class SemanticOrgModel:
             f"JOIN entities t ON t.id = e.{far} AND {_as_of('t')} "
             f"WHERE e.{near} = CAST(:entity_id AS uuid) "
             "AND e.edge_type = ANY(:edge_types) "
-            f"AND {_as_of('e')}"
+            f"AND {_as_of('e')}{org}"
         )
 
     @staticmethod
@@ -353,11 +399,15 @@ class SemanticOrgModel:
         Tier-1 registry, never caller input (no raw-SQL injection surface).
         """
         self._validate_version(at_seq)
-        type_row = self._conn.execute(
-            text("SELECT entity_type FROM entities "
-                 "WHERE id = CAST(:eid AS uuid)"),
-            {"eid": str(entity_id)},
-        ).mappings().first()
+        params: dict[str, Any] = {"eid": str(entity_id)}
+        sql = "SELECT entity_type FROM entities WHERE id = CAST(:eid AS uuid)"
+        org = self._org_clause("entities", params)
+        if org is not None:
+            sql += f" AND {org}"
+        type_row = self._conn.execute(text(sql), params).mappings().first()
+        # Org-bound: a foreign-org id resolves to no row → None (the detail row,
+        # keyed 1:1 by entity_id, is in-org once the entity is). Detail tables
+        # carry no org column (D-025); the entity lookup carries the scope.
         if type_row is None:
             return None
         detail_table = _detail_table_for(type_row["entity_type"])
@@ -394,19 +444,21 @@ class SemanticOrgModel:
         SQL surface (consistent with ``get_entity_details``).
         """
         self._validate_version(at_seq)
+        params: dict[str, Any] = {
+            "pvs_id": str(picklist_value_set_id), "at_seq": at_seq,
+        }
+        org = self._org_clause("e", params)  # scope via the entities join (D-025)
+        org_sql = f" AND {org}" if org is not None else ""
         sql = (
             "SELECT pvd.entity_id, pvd.value_api_name, pvd.value_label, "
             "pvd.is_active, pvd.is_default, pvd.sort_order "
             "FROM picklist_value_details pvd "
             "JOIN entities e ON e.id = pvd.entity_id "
             "WHERE pvd.picklist_value_set_entity_id = CAST(:pvs_id AS uuid) "
-            "AND " + _as_of("e") + " "
+            "AND " + _as_of("e") + org_sql + " "
             "ORDER BY pvd.sort_order"
         )
-        rows = self._conn.execute(
-            text(sql),
-            {"pvs_id": str(picklist_value_set_id), "at_seq": at_seq},
-        ).mappings().all()
+        rows = self._conn.execute(text(sql), params).mappings().all()
         return [dict(r) for r in rows]
 
     # -- bulk reads: whole-org hydration in O(1) queries per shape (D-189) ----
@@ -438,15 +490,15 @@ class SemanticOrgModel:
         detail_table = _detail_table_for(entity_type)
         if detail_table is None:
             return {}
+        params: dict[str, Any] = {"at_seq": at_seq, "entity_type": entity_type}
+        org = self._org_clause("e", params)  # scope via the entities join (D-025)
+        org_sql = f" AND {org}" if org is not None else ""
         sql = (
             f"SELECT d.* FROM {detail_table} d "  # noqa: S608 — table from trusted registry
             "JOIN entities e ON e.id = d.entity_id "
-            "WHERE e.entity_type = :entity_type AND " + _as_of("e")
+            "WHERE e.entity_type = :entity_type AND " + _as_of("e") + org_sql
         )
-        rows = self._conn.execute(
-            text(sql),
-            {"at_seq": at_seq, "entity_type": entity_type},
-        ).mappings().all()
+        rows = self._conn.execute(text(sql), params).mappings().all()
         return {_as_uuid(r["entity_id"]): dict(r) for r in rows}
 
     def get_related_bulk(
@@ -478,6 +530,9 @@ class SemanticOrgModel:
             return {}
         near = "target_entity_id" if direction == "inbound" else "source_entity_id"
         far = "source_entity_id" if direction == "inbound" else "target_entity_id"
+        params: dict[str, Any] = {"at_seq": at_seq, "edge_types": list(edge_types)}
+        org = self._org_clause("e", params)  # scope on the edge (intra-org)
+        org_sql = f" AND {org}" if org is not None else ""
         sql = (
             f"SELECT e.{near} AS near_id, "
             "e.id AS edge_id, e.edge_type, e.edge_category, e.properties, "
@@ -486,12 +541,9 @@ class SemanticOrgModel:
             "t.attributes, t.valid_from_seq, t.valid_to_seq "
             "FROM edges e "
             f"JOIN entities t ON t.id = e.{far} AND {_as_of('t')} "
-            f"WHERE e.edge_type = ANY(:edge_types) AND {_as_of('e')}"
+            f"WHERE e.edge_type = ANY(:edge_types) AND {_as_of('e')}{org_sql}"
         )
-        rows = self._conn.execute(
-            text(sql),
-            {"at_seq": at_seq, "edge_types": list(edge_types)},
-        ).mappings().all()
+        rows = self._conn.execute(text(sql), params).mappings().all()
         out: dict[UUID, list[RelatedEntity]] = {}
         for m in rows:
             out.setdefault(_as_uuid(m["near_id"]), []).append(
@@ -511,16 +563,19 @@ class SemanticOrgModel:
         ``entities`` row (the detail table has no version columns).
         """
         self._validate_version(at_seq)
+        params: dict[str, Any] = {"at_seq": at_seq}
+        org = self._org_clause("e", params)  # scope via the entities join (D-025)
+        org_sql = f" AND {org}" if org is not None else ""
         sql = (
             "SELECT pvd.picklist_value_set_entity_id AS pvs_id, "
             "pvd.entity_id, pvd.value_api_name, pvd.value_label, "
             "pvd.is_active, pvd.is_default, pvd.sort_order "
             "FROM picklist_value_details pvd "
             "JOIN entities e ON e.id = pvd.entity_id "
-            "WHERE " + _as_of("e") + " "
+            "WHERE " + _as_of("e") + org_sql + " "
             "ORDER BY pvd.picklist_value_set_entity_id, pvd.sort_order"
         )
-        rows = self._conn.execute(text(sql), {"at_seq": at_seq}).mappings().all()
+        rows = self._conn.execute(text(sql), params).mappings().all()
         out: dict[UUID, list[dict[str, Any]]] = {}
         for r in rows:
             d = dict(r)
