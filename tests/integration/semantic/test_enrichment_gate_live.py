@@ -27,6 +27,7 @@ from primeqa.sync.enrichment_gate import (
     build_summary_context,
     summary_input_hash,
     summary_input_signature,
+    summary_model_tag,
     summary_prompt_version,
 )
 from primeqa.sync.materialize import (
@@ -203,8 +204,10 @@ class TestSummaryGate:
         stored = _summary_of(conn, new)[1]
         fed_ctx = build_summary_context(conn, "ValidationRule", str(new))
         pv = summary_prompt_version("ValidationRule")
+        # D-254: the gate namespaces the hash by prompt_version AND summary_model.
         recomputed = hashlib.sha256(
-            f"{pv}\x00{summary_input_signature(fed_ctx)}".encode("utf-8")).hexdigest()
+            f"{pv}\x00{summary_model_tag()}\x00{summary_input_signature(fed_ctx)}"
+            .encode("utf-8")).hexdigest()
         assert stored == recomputed
 
     def test_producer_bump_invalidates_carry_forward(self, conn, seed) -> None:
@@ -221,8 +224,11 @@ class TestSummaryGate:
         _vr_detail(conn, prior, obj, summary=None, sih=None)
         _vr_detail(conn, new, obj, summary=None, sih=None)
         # prior hash computed under an OLD prompt version (producer drift) ...
+        # (D-254: summary_input_hash also folds the summary model; the drift here
+        # is the prompt version, so the current model tag is the right argument.)
         old_h = summary_input_hash(conn, "ValidationRule", str(prior),
-                                   "entity_summary_validation_rule@v0")
+                                   "entity_summary_validation_rule@v0",
+                                   summary_model_tag())
         conn.execute(text("""
             UPDATE validation_rule_details
             SET summary_text = 'Old-prompt summary.', summary_input_hash = :h,
