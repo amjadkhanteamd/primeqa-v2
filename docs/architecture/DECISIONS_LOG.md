@@ -15096,3 +15096,73 @@ are never wired — the reconcile keys on `sf_id`, so for them it is a guarantee
 no-op. D-251.1 backstop #2 (periodic forced non-skip sweep) remains a separate
 deferred item. Slice-2 robustness: move the empty-refusal into the shared primitive
 when the call site generalizes.
+
+## D-254 — Phase-1 close-out: SUMMARY_MODEL is a platform env var (summary LLM, default Haiku), routed env-only to guarantee gate-model == worker-model (no drift); + sync_runs.describe_calls acceptance telemetry
+
+**Context.** Two Phase-1 (COGS + resync hardening) close-out items. (#5) The
+entity-summary LLM (Flow / ValidationRule plain-English summaries, §23 enrichment
+worker) was hardcoded to Haiku in the router; we want it swappable for cost
+without a deploy, and a swap must correctly re-summarize rather than serve stale
+summaries. (#4a) An "unchanged resync does almost no work" acceptance gate needs a
+describe-class API-call count, which did not exist (only embedding/summary counts
+did, via `llm_usage_log.sync_run_id`).
+
+**Decision — the SUMMARY_MODEL summary-model policy (load-bearing).** The summary
+model is a **platform-level** env var `SUMMARY_MODEL`, resolved by the single
+`router.summary_model()`:
+- Unset / empty → the default Haiku id (`claude-haiku-4-5-20251001`) — today's
+  behaviour, zero change. A set value MUST be one of the router's known model ids
+  `{HAIKU, SONNET, OPUS}`; anything else raises `SummaryModelConfigError`
+  (fail-loud, no silent fallback). `validate_summary_model()` runs at app + worker
+  + scheduler boot, **always-on** (not prod-only): an invalid value crash-loops
+  boot rather than silently breaking enrichment.
+- The router routes the two summary tasks to `[summary_model()]` **env-only** —
+  deliberately **NARROWING `always_use_opus`** for summary tasks. A premium
+  `always_use_opus` tenant's summaries now follow `SUMMARY_MODEL` (Haiku by
+  default), NOT Opus. Rationale (why env-only is mandatory, not just convenient):
+  the enrichment gate folds the summary model into the resync hash but **cannot
+  see tenant policy**; routing summaries by anything tenant-dependent would let
+  the hashed model **drift** from the model the worker actually calls. Env-only ⇒
+  both the router chain and the gate hash resolve through the same
+  `summary_model()` ⇒ gate-model == worker-model, by construction. Scoped to the
+  summary tasks ONLY; every other `_CHAINS` task/chain is untouched.
+- The resync hash folds the model: `enrichment_gate.summary_input_hash` now
+  namespaces by `(prompt_version, summary_model, context)` — via
+  `summary_model_tag()` (the same resolver) — mirroring `embed_input_hash`'s
+  `model_tag` fold. A `SUMMARY_MODEL` swap changes the hash → the 1c carry-forward
+  re-summarizes; same model+prompt+context carries forward unchanged.
+
+**Transition — backfill, not one-time re-summarize.** The new hash formula
+mismatches every stored (old-formula) hash. `scripts/backfill_summary_model_hash.py`
+recomputes every existing Flow/VR `summary_input_hash` under the new formula at the
+CURRENT model (Haiku — what those summaries were actually made with), per-tenant,
+idempotent. Run post-deploy, before the next sync, so unchanged rows do not
+needlessly re-summarize. Chosen over one-time re-summarize: the end state is
+symmetric with `embed_input_hash`, and the backfill is a thin per-row recompute.
+
+**Decision — #4a describe-call counter.** New `sync_runs.describe_calls INTEGER
+NOT NULL DEFAULT 0` (tenant alembic `20260622_0010`, additive/idempotent/deploy-
+safe). `SalesforceClient` counts every describe-class HTTP call (global describe,
+per-object describe, bulk `/composite/batch` per chunk, `describe/layouts`) and
+nothing else (SOQL/tooling queries are not describe-class). One client per run ⇒
+run-scoped. The engine flushes the count once at structural completion via
+`readiness.increment_run_counters(describe_calls_delta=...)`, credited AFTER
+`last_sync_run_id` points at this run, SAVEPOINT-guarded (a tenant missing the
+column degrades to "not credited", never fails the sync). The describe column is
+referenced ONLY when the delta is non-zero, so the embeddings/summaries worker
+path cannot regress on an unmigrated tenant. Enables the gate "unchanged resync →
+`describe_calls` ≤ 1, `emb_rows` == 0, `sum_rows` == 0".
+
+**Verification.** `tests/unit` red-proofs (config resolve/validate both directions;
+router routes summaries by config + narrows always_use_opus + leaves other tasks
+as-is; single-source-of-truth gate==worker; hash model-fold + backfill-match;
+describe-counter accuracy + conditional-column guard). Full `tests/unit` green
+(3052). App boots with SUMMARY_MODEL unset. Impl commit `6159911`; this is a
+separate docs commit (append-only). Tier-2: push gated; watched env-59 acceptance
+run after migration + backfill.
+
+**Scope + follow-on.** Allowed `SUMMARY_MODEL` values are exactly the three router
+constants; adding Fable / Opus 4.8 is a one-line allow-list extension. The summary
+re-embed follows naturally from a re-summarize (new summary → new summary
+embedding). The describe counter is engine-side only; no worker-side describe
+calls exist today.
