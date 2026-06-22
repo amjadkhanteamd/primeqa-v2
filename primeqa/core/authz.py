@@ -130,3 +130,59 @@ def authorize(subject: Any, min_tier: Tier | int, resource: Any = None) -> tuple
     if caller >= required:
         return True, f"allow: role {role!r} (tier {caller.name}) >= {required.name}"
     return False, f"deny: role {role!r} (tier {caller.name}) < required {required.name}"
+
+
+def can_assign_user_role(
+    caller_tier: Tier | int,
+    new_role: Any = None,
+    target_current_tier: Tier | int | None = None,
+) -> tuple[bool, str]:
+    """The user-mutation invariant — *who may write whose `users` row, to what role*.
+
+    A pure predicate (no I/O) layered **on top of** the tier gate that
+    ``authorize()`` decides. The decorator already proved the caller is at least
+    Admin; this proves the *target* and the *assigned role* are within the
+    caller's authority. Returns ``(ok, reason)`` and never raises — the service
+    chokepoint maps a deny to ``AuthorizationError`` (a forbidden op on a visible
+    row) and an *invalid* role string to a ``ValueError`` (a 400 validation
+    fault). It is the single source of truth behind both the create and update
+    paths (F-1 + the decapitation guard); tenant-scope (F-2) is enforced
+    separately by loading the target within the caller's tenant.
+
+    Three invariants, all ``<=`` against the caller's own tier (so an admin may
+    manage admins-and-below — matching ``create_user`` — but never a superadmin):
+
+    1. **Valid role** — ``new_role`` (when assigning one) must be a known DB role.
+    2. **No promotion above self** — ``rank(new_role) <= caller_tier`` (F-1: an
+       admin cannot mint a superadmin, including themselves).
+    3. **No modifying a user above you** — ``target_current_tier <= caller_tier``
+       (the decapitation guard: an admin cannot edit/demote/deactivate a
+       superadmin). Skipped on create (no pre-existing target).
+
+    ``new_role=None`` means "this update touches no role" (e.g. a name or
+    ``is_active`` change) — only invariant 3 applies. ``target_current_tier=None``
+    means "no pre-existing target" (create) — only invariants 1-2 apply.
+    """
+    caller = Tier(int(caller_tier))
+
+    if new_role is not None:
+        if str(new_role).strip().lower() not in ROLE_TO_TIER:
+            return False, f"invalid role {new_role!r}"
+        assigned = rank(new_role)
+        if assigned > caller:
+            return (
+                False,
+                f"deny: cannot assign role {new_role!r} (tier {assigned.name}) "
+                f"above your own tier {caller.name}",
+            )
+
+    if target_current_tier is not None:
+        target = Tier(int(target_current_tier))
+        if target > caller:
+            return (
+                False,
+                f"deny: cannot modify a user at tier {target.name} "
+                f"above your own tier {caller.name}",
+            )
+
+    return True, "allow"

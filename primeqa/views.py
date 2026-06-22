@@ -15,7 +15,7 @@ from primeqa.core.repository import (
     ConnectionRepository, GroupRepository,
 )
 from primeqa.core.service import AuthService, EnvironmentService, ConnectionService, GroupService
-from primeqa.core.authz import Tier, authorize, floor_tier, rank
+from primeqa.core.authz import AuthorizationError, Tier, authorize, floor_tier, rank
 from primeqa.core.auth import require_tier_api
 from primeqa.release.repository import ReleaseRepository
 from primeqa.release.service import ReleaseService
@@ -1097,10 +1097,11 @@ def users_create():
             password=request.form["password"],
             full_name=request.form["full_name"],
             role=request.form["role"],
+            caller=request.user,
         )
         flash(f"User {request.form['full_name']} created successfully", "success")
         return redirect("/users")
-    except ValueError as e:
+    except (ValueError, AuthorizationError) as e:
         return render_template("users/form.html", **ctx(
             active_page="settings_users", settings_page="users",
             breadcrumb_section="Users", breadcrumb_item="New User",
@@ -1145,10 +1146,10 @@ def users_update(user_id):
             "role": request.form.get("role"),
             "is_active": "is_active" in request.form,
         }
-        svc.update_user(user_id, **updates)
+        svc.update_user(user_id, request.user, **updates)
         flash("User updated successfully", "success")
         return redirect("/users")
-    except ValueError as e:
+    except (ValueError, AuthorizationError) as e:
         flash(str(e), "error")
         return redirect(f"/users/{user_id}/edit")
     finally:
@@ -1173,9 +1174,9 @@ def users_toggle_active(user_id):
         if user and user.tenant_id == request.user["tenant_id"]:
             new_status = not user.is_active
             svc = AuthService(user_repo, RefreshTokenRepository(db))
-            svc.update_user(user_id, is_active=new_status)
+            svc.update_user(user_id, request.user, is_active=new_status)
             flash(f"User {'activated' if new_status else 'deactivated'} successfully", "success")
-    except ValueError as e:
+    except (ValueError, AuthorizationError) as e:
         flash(str(e), "error")
     finally:
         db.close()

@@ -32,8 +32,16 @@ class UserRepository:
         tenants), so we return the list and let the caller decide."""
         return self.db.query(User).filter(User.email == email).all()
 
-    def get_user_by_id(self, user_id):
-        return self.db.query(User).filter(User.id == user_id).first()
+    def get_user_by_id(self, user_id, tenant_id=None):
+        # F-2: when a caller supplies its tenant, the lookup is scoped to it —
+        # a cross-tenant id simply returns None (the row is invisible to this
+        # caller). tenant_id stays optional so the system-level callers that
+        # legitimately have no tenant context (refresh-token rotation) are
+        # unaffected; the user-mutation chokepoint always passes it.
+        q = self.db.query(User).filter(User.id == user_id)
+        if tenant_id is not None:
+            q = q.filter(User.tenant_id == tenant_id)
+        return q.first()
 
     def create_user(self, tenant_id, email, password_hash, full_name, role):
         user = User(
@@ -48,8 +56,10 @@ class UserRepository:
         self.db.refresh(user)
         return user
 
-    def update_user(self, user_id, updates):
-        user = self.get_user_by_id(user_id)
+    def update_user(self, user_id, updates, tenant_id=None):
+        # F-2: the row is loaded through the same tenant-scoped getter, so an
+        # update can never reach a row outside the caller's tenant.
+        user = self.get_user_by_id(user_id, tenant_id=tenant_id)
         if not user:
             return None
         for key, value in updates.items():

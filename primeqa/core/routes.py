@@ -6,6 +6,7 @@ Endpoints: /api/auth/*, /api/users/*, /api/environments/*, /api/connections/*, /
 from flask import Blueprint, jsonify, request
 
 from primeqa.core.auth import require_auth, require_role
+from primeqa.core.authz import AuthorizationError
 from primeqa.db import get_db
 from primeqa.core.repository import (
     UserRepository, RefreshTokenRepository, EnvironmentRepository,
@@ -124,9 +125,9 @@ def create_user():
                           f"Missing required fields: {', '.join(missing)}",
                           http=400)
 
-    if data["role"] not in ("admin", "tester", "ba", "viewer"):
-        return json_error("VALIDATION_ERROR", "Invalid role", http=400)
-
+    # Role-value + role-ceiling validation is enforced at the single service
+    # chokepoint (create_user), so the API and web create routes can't diverge
+    # (this route used to validate the role string while the web form did not).
     svc, db = _get_auth_service()
     try:
         user = svc.create_user(
@@ -135,8 +136,11 @@ def create_user():
             password=data["password"],
             full_name=data["full_name"],
             role=data["role"],
+            caller=request.user,
         )
         return jsonify(user), 201
+    except AuthorizationError as e:
+        return json_error("FORBIDDEN", str(e), http=403)
     except ValueError as e:
         # Duplicate-email + tenant-cap are conflict states (resource
         # already exists / state prevents the op), not validation errors.
@@ -154,10 +158,15 @@ def create_user():
 @require_role("admin")
 def update_user(user_id):
     data = request.get_json(silent=True) or {}
+    # Pass only the mutable fields as kwargs (caller is positional) so a stray
+    # body key can't collide with the chokepoint's parameters.
+    fields = {k: data[k] for k in ("role", "is_active", "full_name") if k in data}
     svc, db = _get_auth_service()
     try:
-        user = svc.update_user(user_id, **data)
+        user = svc.update_user(user_id, request.user, **fields)
         return jsonify(user), 200
+    except AuthorizationError as e:
+        return json_error("FORBIDDEN", str(e), http=403)
     except ValueError as e:
         return json_error("VALIDATION_ERROR", str(e), http=400)
     finally:

@@ -11,6 +11,13 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
 
+from primeqa.core.authz import (
+    ROLE_TO_TIER,
+    AuthorizationError,
+    can_assign_user_role,
+    rank,
+)
+
 ACCESS_TOKEN_EXPIRY = timedelta(minutes=30)
 REFRESH_TOKEN_EXPIRY = timedelta(days=7)
 MAX_USERS_PER_TENANT = 20
@@ -19,6 +26,20 @@ MAX_REFRESH_TOKENS_PER_USER = 5
 
 def _get_jwt_secret():
     return os.getenv("JWT_SECRET", "dev-secret-change-me")
+
+
+def _caller_tenant(caller):
+    """Tenant id of the acting caller (the ``request.user`` dict or a row)."""
+    if isinstance(caller, dict):
+        return caller.get("tenant_id")
+    return getattr(caller, "tenant_id", None)
+
+
+def _caller_role(caller):
+    """Stored role value of the acting caller."""
+    if isinstance(caller, dict):
+        return caller.get("role")
+    return getattr(caller, "role", None)
 
 
 class AuthService:
@@ -90,7 +111,20 @@ class AuthService:
     def logout(self, user_id):
         self.token_repo.revoke_all_user_tokens(user_id)
 
-    def create_user(self, tenant_id, email, password, full_name, role):
+    def create_user(self, tenant_id, email, password, full_name, role, caller):
+        # F-1 (create side): the granted role must be a real DB role AND within
+        # the caller's own tier — an admin may create admins-and-below but never
+        # a superadmin (rank(role) <= caller tier). This is the single chokepoint
+        # both create routes funnel through: the API route previously validated
+        # the role string while the web route (POST /users/new) did NOT, so a
+        # tenant admin could mint a superadmin through the form. `caller` is the
+        # acting request.user; it is required (fail-closed — no anonymous create).
+        if str(role).strip().lower() not in ROLE_TO_TIER:
+            raise ValueError("Invalid role")
+        ok, reason = can_assign_user_role(rank(_caller_role(caller)), role)
+        if not ok:
+            raise AuthorizationError(reason)
+
         active_count = self.user_repo.count_active_users(tenant_id)
         if active_count >= MAX_USERS_PER_TENANT:
             raise ValueError(f"Tenant has reached the maximum of {MAX_USERS_PER_TENANT} active users")
@@ -107,15 +141,44 @@ class AuthService:
         # the grant.
         return self._user_dict(user)
 
-    def update_user(self, user_id, **kwargs):
+    def update_user(self, user_id, caller, **kwargs):
+        # Single authorization chokepoint for every user-row mutation. `caller`
+        # is the acting request.user and is REQUIRED (fail-closed — there is no
+        # tenant-/role-less update path). Both the API PATCH route and the web
+        # edit/toggle routes funnel through here, so the F-1/F-2 guards live in
+        # one place rather than per-route.
         allowed = {"role", "is_active", "full_name"}
         updates = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
         if not updates:
             raise ValueError("No valid fields to update")
-        # Capture the old row so we can detect a role change (audit M-3).
-        old = self.user_repo.get_user_by_id(user_id)
-        old_role = old.role if old else None
-        user = self.user_repo.update_user(user_id, updates)
+
+        caller_tenant = _caller_tenant(caller)
+        if caller_tenant is None:
+            # No caller tenant context -> never authorized (fail closed).
+            raise AuthorizationError("caller tenant unknown")
+        caller_tier = rank(_caller_role(caller))
+
+        # F-2: load the target SCOPED to the caller's tenant. A cross-tenant id
+        # is invisible to this caller -> "not found", so the mutation can never
+        # reach a row outside the caller's tenant.
+        old = self.user_repo.get_user_by_id(user_id, tenant_id=caller_tenant)
+        if not old:
+            raise ValueError("User not found")
+        old_role = old.role
+
+        # F-1: a new role value must be real AND within the caller's tier (no
+        # promotion above self, incl. self-promotion to superadmin). Decapitation
+        # guard: the caller may not modify a user whose current tier is above its
+        # own (an admin cannot edit/demote/deactivate a superadmin). Both via the
+        # single authz predicate.
+        new_role = updates.get("role")
+        if new_role is not None and str(new_role).strip().lower() not in ROLE_TO_TIER:
+            raise ValueError("Invalid role")
+        ok, reason = can_assign_user_role(caller_tier, new_role, rank(old_role))
+        if not ok:
+            raise AuthorizationError(reason)
+
+        user = self.user_repo.update_user(user_id, updates, tenant_id=caller_tenant)
         if not user:
             raise ValueError("User not found")
 
