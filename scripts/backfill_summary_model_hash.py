@@ -25,6 +25,10 @@ Run:
 import os
 import sys
 
+# Run as `python scripts/backfill_summary_model_hash.py` (or via `railway run`):
+# put the repo root on sys.path so `import primeqa` resolves regardless of CWD.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 def _fix_db_url() -> None:
     """Local convenience: railway.internal won't resolve outside Railway's network,
