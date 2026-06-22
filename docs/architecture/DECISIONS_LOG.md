@@ -15166,3 +15166,91 @@ constants; adding Fable / Opus 4.8 is a one-line allow-list extension. The summa
 re-embed follows naturally from a re-summarize (new summary → new summary
 embedding). The describe counter is engine-side only; no worker-side describe
 calls exist today.
+
+## D-255 — per-org Slice 1: the S1 model becomes per-org (connected_org_id on the spine + active-unique re-keyed to (sf_id, connected_org_id)); SUPERSEDES D-030's single canonical shared model
+
+**Context — the product thesis demands per-org.** D-030 made the S1 semantic
+model **one canonical model per tenant, shared across all of that tenant's orgs**:
+`entities`/`edges`/`logical_versions` carry `tenant_id` but no org, and the
+active-uniqueness invariant `idx_entities_unique_active` keys on `sf_id` ALONE
+(at most one active entity per sf_id, tenant-wide). The reader resolves "the org"
+implicitly via `current_version_seq()` = `MAX(version_seq)` over the whole tenant.
+That was right while the product was "model one org". It is wrong for the actual
+thesis: **model many orgs and diff them** (does sandbox B's metadata produce the
+same release outcomes as production A?). A shared model cannot represent two orgs
+that share an `sf_id` (same packaged/standard metadata), and cannot answer "which
+org" at read time. This decision turns the model **per-org**.
+
+**Decision — per-org modeling, one-table-tagged (not physically split).** Add a
+NULLABLE `connected_org_id UUID → connected_orgs(id)` org dimension to the **spine**
+— `entities`, `edges`, `logical_versions` — and re-key the active-unique index from
+`(sf_id)` to **`(sf_id, connected_org_id)`** (same partial `WHERE valid_to_seq IS
+NULL AND sf_id IS NOT NULL`). After this, two orgs CAN hold the same `sf_id` active
+concurrently; two active rows for the same `(sf_id, org)` still violate. One table,
+tagged by org — chosen over physical per-org tables/schemas because the bitemporal
+SCD-2 machinery, the detail/edge mechanics, and the sync writer are all reused
+unchanged; only the partition key is added.
+- **Detail tables (10) + `validation_rule_field_refs` + `change_log`: NO own
+  column — org is transitive.** Per D-025 every detail row's PK *is* `entity_id`
+  (`PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE`), 1:1 with its entity,
+  with no own validity; every read joins through `entities`. `change_log` is the
+  diff stream, scoped via `target_id`/`version_seq`. Tagging them would be
+  redundant denormalization with no read benefit.
+- **Edges DO get their own column** (vs transitive via source entity): edges are a
+  first-class versioned table (own identity + own validity), so co-locating org
+  with validity mirrors `entities` and lets a per-org bulk edge read filter without
+  a mandatory entity join. An edge is intra-org (source.org == target.org), so the
+  backfill from the source entity is unambiguous. Both edge unique indexes already
+  key on entity UUIDs (per-org by construction) and are NOT re-keyed.
+
+**Decision — claims stay SHARED; org is execution context, not identity.** S2
+claims/recipes are NOT tagged by org. A claim asserts a truth about *the metadata*
+("VR X blocks save when …"); the org it runs against is **execution context**
+carried on the run (`s4_execution_runs.environment_id`), not part of the claim's
+identity. **Cross-org diff is therefore "run the same claim-set against org A and
+org B and compare the result-sets"** — the diff lives in S4/S6 outcomes, not in
+duplicated per-org claims. This keeps one claim corpus authored once and validated
+everywhere, which is the point of a release-intelligence product.
+
+**Supersedes.** This **supersedes D-030** ("single canonical entity per sf_id /
+single canonical model across orgs"). D-030's org-blind dedup (`_batch_read_existing`)
+and last-writer-wins org rotation (`last_synced_from_org_id`) remain in force *this
+slice* (the writer is unchanged except to stamp the new key); they are retired in a
+later slice when the reader and dedup become org-aware. The stable partition key is
+`connected_org_id` (set once at insert, never rotated); `last_synced_from_org_id`
+stays as mutable provenance until the org-aware dedup lands.
+
+**Nullable this slice; NOT NULL deferred (justified by live data).** `connected_org_id`
+is NULLABLE on all three tables. The writer stamps it on every live insert; the
+backfill stamps every existing row from its source (entities ← `last_synced_from_org_id`,
+versions ← `created_by_sync_run_id`→`sync_runs.source_org_id`, edges ← source
+entity). The partition guarantee comes from **the writer stamp + the re-keyed unique
+index**, not from NOT NULL. NOT NULL is deferred because some rows are legitimately
+org-less: future non-sync entities (`entity_origin` ∈ {requirements, manual_curation})
+and **genesis/bootstrap `logical_versions` with no sync_run** — env-59 has exactly 2
+such genesis versions, so a blanket NOT NULL would have crash-failed the migration.
+A CHECK `entities_org_only_for_sync` (mirroring `entities_synced_from_only_for_sync`)
+keeps an org off non-sync entities.
+
+**Realization.** Tenant migration `20260622_0020` (off `20260622_0010`): adds the
+columns, backfills, adds the CHECK, re-keys the index — idempotent, per-tenant.
+Writer stamps the key at the 3 live sites (`materialize.py` entities + edges;
+`engine.py` `_allocate_logical_version`). Reader (`query.py`/`edges.py`/
+`connection.py`) **untouched** — org-blind this slice, zero consumer behaviour
+change. Impl commit `a319efd`; this is a separate docs commit (append-only). Tier-2.
+
+**Verification.** Index loosen/hold proven in a session-local TEMP table (same sf_id
++ different org → both active; duplicate `(sf_id, org)` → violates; SCD-2 + NULL-sf_id
+correct). Backfill zero-NULL proven read-only on env-59 (entities 6030/6030, edges
+all, logical_versions 39/41 — the 2 genesis versions NULL as predicted). Full
+`tests/unit` green (3058, +6 writer red-proofs). App/worker/scheduler boot with the
+nullable column. Applied to prod via `alembic -x mode=all_tenants upgrade 20260622_0020`
+(target the revision — the shared+tenant branch split makes bare `head` ambiguous)
+with watched env-59 read-back.
+
+**Follow-on (next slices, not built).** Make `SemanticOrgModel` org-aware
+(`current_version_seq(org)`, an org param threaded through all read/bulk methods);
+make the sync dedup org-aware and retire the `last_synced_from_org_id` rotation;
+thread org through the S3/S4/S6/S7/S8 + metadata_bridge consumers; wire the
+cross-org diff surface (same claim-set, A vs B). NOT NULL tightening once the
+non-sync/genesis cases are routed through an org-aware helper.
