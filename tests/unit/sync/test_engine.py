@@ -378,10 +378,13 @@ class TestRunSyncOrchestration:
             engine.run_sync(connected_org_id="org-1")
 
         # success path threads the captured SF server time (None here — the
-        # probe returned no Date/server time).
-        engine._mark_sync_run_structural_complete.assert_called_once_with(
-            "run-1", "org-1", setup_audit_watermark=None,
-        )
+        # probe returned no Date/server time) + the #4a describe-call count (an
+        # incidental telemetry kwarg; assert the load-bearing args, not its value).
+        engine._mark_sync_run_structural_complete.assert_called_once()
+        args, kwargs = engine._mark_sync_run_structural_complete.call_args
+        assert args == ("run-1", "org-1")
+        assert kwargs["setup_audit_watermark"] is None
+        assert "describe_calls" in kwargs        # #4a: describe count is threaded
         engine._mark_sync_run_failed.assert_not_called()
 
     def test_run_sync_marks_sync_run_failed_on_phase_error(self) -> None:

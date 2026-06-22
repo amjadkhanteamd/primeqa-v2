@@ -20,6 +20,7 @@ complexity combo.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -45,6 +46,57 @@ COMPLEXITY_HIGH = "high"
 OPUS = "claude-opus-4-7"
 SONNET = "claude-sonnet-4-5-20250929"
 HAIKU = "claude-haiku-4-5-20251001"
+
+
+# ---- Configurable summary model (Phase-1 close-out #5) ---------------------
+# The entity-summary step (Flow / ValidationRule plain-English summaries) is a
+# cheap, cosmetic enrichment whose model is a PLATFORM-level cost lever: set the
+# SUMMARY_MODEL env var to swap models without a deploy. Scoped to the summary
+# tasks ONLY — every other task/chain in _CHAINS is untouched.
+SUMMARY_MODEL_ENV = "SUMMARY_MODEL"
+_DEFAULT_SUMMARY_MODEL = HAIKU                 # unset → today's behaviour (Haiku 4.5)
+KNOWN_SUMMARY_MODELS = frozenset({HAIKU, SONNET, OPUS})  # the router's known model ids
+
+# The summary tasks routed by SUMMARY_MODEL. These resolve to a single-element
+# chain (no escalation), exactly as before — only the model id is now config.
+_SUMMARY_TASKS = frozenset({"entity_summary_flow", "entity_summary_validation_rule"})
+
+
+class SummaryModelConfigError(RuntimeError):
+    """SUMMARY_MODEL is set to a value the router does not know how to route.
+
+    Fail loud (no silent fallback to the default): a typo'd or unsupported model
+    id would otherwise silently break enrichment in any environment."""
+
+
+def summary_model() -> str:
+    """The model id the entity-summary step uses, from the SUMMARY_MODEL env var.
+
+    Unset / empty → the default (Haiku 4.5), i.e. no behaviour change. A set value
+    MUST be one of ``KNOWN_SUMMARY_MODELS`` — anything else raises
+    ``SummaryModelConfigError`` (no silent fallback). This is the SINGLE SOURCE OF
+    TRUTH for the summary model: both the router (which routes the summary tasks)
+    and the enrichment gate (which folds the model id into the summary hash) call
+    it, so the hashed model id can never drift from the model the worker calls."""
+    raw = os.getenv(SUMMARY_MODEL_ENV)
+    if not raw or not raw.strip():
+        return _DEFAULT_SUMMARY_MODEL
+    model = raw.strip()
+    if model not in KNOWN_SUMMARY_MODELS:
+        raise SummaryModelConfigError(
+            f"{SUMMARY_MODEL_ENV}={model!r} is not a known model id; allowed: "
+            f"{sorted(KNOWN_SUMMARY_MODELS)} (unset → {_DEFAULT_SUMMARY_MODEL})"
+        )
+    return model
+
+
+def validate_summary_model() -> None:
+    """Boot gate — ALWAYS-ON (not prod-only): a bad SUMMARY_MODEL breaks
+    enrichment in every environment, and the safe default means there is nothing
+    environment-specific to guard. Raises ``SummaryModelConfigError`` on an
+    unknown id; a no-op when unset or valid. Wired into the same boot points as
+    the secrets validator (app + worker + scheduler)."""
+    summary_model()
 
 
 @dataclass(frozen=True)
@@ -165,6 +217,18 @@ def select_chain(
     default; index 1 is used for the single-hop escalation on retry.
     """
     policy = tenant_policy or TenantPolicy()
+
+    # Summary tasks are routed by the platform-level SUMMARY_MODEL config (default
+    # Haiku), NOT by tenant policy. This is deliberate and DELIBERATELY overrides
+    # always_use_opus for summaries: the enrichment gate folds the model id into
+    # the summary hash via the same summary_model() resolver, and the gate cannot
+    # see tenant policy — so routing summaries by anything tenant-dependent would
+    # let the hashed model drift from the model the worker actually calls. Keeping
+    # summaries env-only guarantees gate-model == worker-model. (Net effect vs
+    # today: a premium always_use_opus tenant's summaries follow SUMMARY_MODEL —
+    # Haiku by default — instead of Opus; set SUMMARY_MODEL to change it.)
+    if task in _SUMMARY_TASKS:
+        return [summary_model()]
 
     # "Always Opus" premium tier: take whatever the chain would have been
     # and replace with Opus-only, no escalation needed (already at top).

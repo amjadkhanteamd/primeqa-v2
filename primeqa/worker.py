@@ -40,6 +40,10 @@ def create_worker_context():
     # runs, so it must not start in production with a forgeable/absent secret.
     from primeqa.core.secrets import validate_boot_secrets
     validate_boot_secrets()
+    # #5: validate SUMMARY_MODEL — ALWAYS-ON. The worker is what SUMMARIZES, so a
+    # bad SUMMARY_MODEL must fail it loud at boot rather than mid-enrichment.
+    from primeqa.intelligence.llm.router import validate_summary_model
+    validate_summary_model()
     from primeqa import db as dbmod
     database_url = os.getenv("DATABASE_URL")
     if not database_url:

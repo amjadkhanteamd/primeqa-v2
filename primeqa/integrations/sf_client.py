@@ -175,6 +175,13 @@ class SalesforceClient:
         # refresh-grant path unchanged.
         self._access_token: str | None = access_token
         self._client = httpx.Client(timeout=timeout)
+        # Phase-1 close-out #4a: describe-class API call counter. Incremented by
+        # every describe-class HTTP call (global describe, per-object describe,
+        # bulk /composite/batch describe, describe/layouts) and flushed once per
+        # sync run into sync_runs.describe_calls. NOT incremented by SOQL /
+        # tooling-query calls (those aren't describe-class). The client is created
+        # fresh per sync run, so this count is naturally scoped to one run.
+        self.describe_calls = 0
 
     # --------------------------------------------------------------
     # Lifecycle
@@ -426,6 +433,7 @@ class SalesforceClient:
         Each entry has at least: name, label, custom, queryable, etc.
         """
         path = f"/services/data/{self.api_version}/sobjects"
+        self.describe_calls += 1                 # #4a: global describe
         resp = self._request("GET", path)
         return resp.json().get("sobjects", [])
 
@@ -442,6 +450,7 @@ class SalesforceClient:
         """
         encoded = urllib.parse.quote(sobject_api_name, safe="")
         path = f"/services/data/{self.api_version}/sobjects/{encoded}/describe"
+        self.describe_calls += 1                 # #4a: per-object describe
         resp = self._request("GET", path)
         return resp.json().get("fields", [])
 
@@ -506,6 +515,7 @@ class SalesforceClient:
                 ]
             }
 
+            self.describe_calls += 1             # #4a: one /composite/batch describe per chunk
             resp = self._request("POST", path, json=payload)
             body = resp.json()
             sub_results = body.get("results") or []
@@ -556,6 +566,7 @@ class SalesforceClient:
             f"/services/data/{self.api_version}"
             f"/sobjects/{encoded}/describe/layouts"
         )
+        self.describe_calls += 1                 # #4a: describe/layouts
         resp = self._request("GET", path)
         return resp.json()
 

@@ -272,6 +272,9 @@ class SyncEngine:
             self._mark_sync_run_structural_complete(
                 sync_run_id, connected_org_id,
                 setup_audit_watermark=setup_audit_server_time,
+                # #4a: describe-class API calls accumulated by the SF client across
+                # this run's phases (one client per run → naturally run-scoped).
+                describe_calls=int(getattr(self.sf, "describe_calls", 0) or 0),
             )
         else:
             # first_error is not None here (failed_phase truthy
@@ -451,6 +454,7 @@ class SyncEngine:
         sync_run_id: str,
         connected_org_id: str,
         setup_audit_watermark: datetime | None = None,
+        describe_calls: int = 0,
     ) -> None:
         """All structural phases completed — advance phase to
         'enrichment' (the enrichment worker will pick up from here)
@@ -519,6 +523,29 @@ class SyncEngine:
                     last_sync_run_id = :run_id
                 WHERE id = :id
             """), {"run_id": sync_run_id, "id": connected_org_id})
+
+            # #4a: credit the describe-class API call count accumulated by the SF
+            # client across this run's phases into sync_runs.describe_calls. Done
+            # HERE (not before finalize) because last_sync_run_id now points at this
+            # run + status is still 'running', so increment_run_counters credits the
+            # correct run. SAVEPOINT-guarded + non-zero-only: a tenant missing the
+            # describe_calls column (migration 20260622_0010 not yet applied) rolls
+            # back to the savepoint and degrades to "not credited" rather than
+            # FAILING finalization. Telemetry, never load-bearing.
+            if describe_calls:
+                try:
+                    with conn.begin_nested():
+                        readiness.increment_run_counters(
+                            conn, connected_org_id,
+                            describe_calls_delta=describe_calls,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "could not credit describe_calls=%s for org %s (%s) — "
+                        "finalizing without it (migration 20260622_0010 may not be "
+                        "applied to this schema yet)",
+                        describe_calls, connected_org_id, e,
+                    )
 
             # Best-effort: advance the setup-audit watermark (1b.1 optimization
             # metadata). Wrapped in a SAVEPOINT so a missing column — e.g. tenant

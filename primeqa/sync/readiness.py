@@ -156,33 +156,48 @@ def increment_run_counters(
     embeddings_delta: int = 0,
     summaries_delta: int = 0,
     summaries_failed_delta: int = 0,
+    describe_calls_delta: int = 0,
 ) -> None:
     """Increment ``sync_runs.{embeddings_generated, summaries_generated,
-    summaries_failed}`` for the active sync_run of an org.
+    summaries_failed, describe_calls}`` for the active sync_run of an org.
 
     "Active" = the run id in ``connected_orgs.last_sync_run_id`` with
     ``status='running'``. If the latest run is already in a terminal
     state, this is a no-op (the run has already been finalized; we
     don't retroactively credit it).
 
-    All three deltas default to zero. If all are zero, the UPDATE is
+    All four deltas default to zero. If all are zero, the UPDATE is
     skipped entirely (saves a round-trip on no-op ticks).
+
+    #4a: ``describe_calls`` (migration 20260622_0010) is referenced ONLY when
+    ``describe_calls_delta`` is non-zero — so the embedding/summary worker path
+    (which passes 0) never touches that column and can't regress on a tenant whose
+    schema is not yet migrated. The engine's describe-count flush, which does pass
+    a non-zero delta, is savepoint-guarded by its caller.
     """
-    if embeddings_delta == 0 and summaries_delta == 0 and summaries_failed_delta == 0:
+    if (embeddings_delta == 0 and summaries_delta == 0
+            and summaries_failed_delta == 0 and describe_calls_delta == 0):
         return
-    session.execute(text("""
-        UPDATE sync_runs
-        SET embeddings_generated = embeddings_generated + :emb,
-            summaries_generated  = summaries_generated  + :sum,
-            summaries_failed     = summaries_failed     + :failed
-        WHERE id = (SELECT last_sync_run_id FROM connected_orgs WHERE id = :org)
-          AND status = 'running'
-    """), {
+    set_clauses = [
+        "embeddings_generated = embeddings_generated + :emb",
+        "summaries_generated  = summaries_generated  + :sum",
+        "summaries_failed     = summaries_failed     + :failed",
+    ]
+    params = {
         "emb": int(embeddings_delta),
         "sum": int(summaries_delta),
         "failed": int(summaries_failed_delta),
         "org": str(connected_org_id),
-    })
+    }
+    if describe_calls_delta:
+        set_clauses.append("describe_calls = describe_calls + :dc")
+        params["dc"] = int(describe_calls_delta)
+    session.execute(text(f"""
+        UPDATE sync_runs
+        SET {', '.join(set_clauses)}
+        WHERE id = (SELECT last_sync_run_id FROM connected_orgs WHERE id = :org)
+          AND status = 'running'
+    """), params)
 
 
 def resolve_active_sync_run_id(session, connected_org_id) -> Optional[str]:

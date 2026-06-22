@@ -60,6 +60,18 @@ def summary_prompt_version(entity_type: str) -> str:
     return getattr(get_prompt(task), "VERSION", task)
 
 
+def summary_model_tag() -> str:
+    """The current summary MODEL id the worker summarizes with — folded into the
+    summary hash so a model swap (the SUMMARY_MODEL env var) invalidates
+    carry-forward (re-summarize under the new model), mirroring ``embed_model_tag``.
+
+    SINGLE SOURCE OF TRUTH: resolves through the SAME ``router.summary_model()``
+    that the router uses to route the entity-summary tasks, so the model id folded
+    into the hash can never drift from the model the worker actually calls."""
+    from primeqa.intelligence.llm.router import summary_model
+    return summary_model()
+
+
 def embed_input_hash(semantic_text: Optional[str], model_tag: str) -> str:
     """SHA-256 of the exact embed input (``semantic_text``, the string the worker
     feeds Voyage) NAMESPACED BY the embedding ``model_tag``. An equal hash ⟺ the
@@ -136,16 +148,24 @@ def summary_input_signature(context: dict) -> str:
 
 
 def summary_input_hash(
-    execute: Any, entity_type: str, entity_id: str, prompt_version: str,
+    execute: Any, entity_type: str, entity_id: str,
+    prompt_version: str, summary_model: str,
 ) -> Optional[str]:
     """SHA-256 of the EXACT summary input for one entity — the composite context
     (via the shared ``build_summary_context``) NAMESPACED BY the summary
-    ``prompt_version``. None when the entity/detail isn't found — the gate then
-    won't carry forward (re-summarize, never stale). An equal hash ⟺ the summary
-    would be identical: same context AND same prompt."""
+    ``prompt_version`` AND the summary ``summary_model`` (the model id from
+    ``summary_model_tag()``). None when the entity/detail isn't found — the gate
+    then won't carry forward (re-summarize, never stale). An equal hash ⟺ the
+    summary would be identical: same context AND same prompt AND same model.
+
+    The model fold mirrors ``embed_input_hash``'s ``model_tag`` fold, so swapping
+    SUMMARY_MODEL invalidates carry-forward exactly the way an embedding model bump
+    does. ``summary_model`` is passed in (resolved once by the caller via
+    ``summary_model_tag()``) rather than read here, mirroring ``prompt_version``."""
     context = build_summary_context(execute, entity_type, entity_id)
     if context is None:
         return None
     return hashlib.sha256(
-        f"{prompt_version}\x00{summary_input_signature(context)}".encode("utf-8")
+        f"{prompt_version}\x00{summary_model}\x00{summary_input_signature(context)}"
+        .encode("utf-8")
     ).hexdigest()

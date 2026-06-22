@@ -25,6 +25,9 @@ def create_scheduler_context():
     # execution job queues).
     from primeqa.core.secrets import validate_boot_secrets
     validate_boot_secrets()
+    # #5: validate SUMMARY_MODEL — ALWAYS-ON (consistent across all 3 services).
+    from primeqa.intelligence.llm.router import validate_summary_model
+    validate_summary_model()
     from primeqa import db as dbmod
     database_url = os.getenv("DATABASE_URL")
     if not database_url:

@@ -42,6 +42,10 @@ def create_app():
     # non-default values. No-op outside production.
     from primeqa.core.secrets import get_jwt_secret, validate_boot_secrets
     validate_boot_secrets()
+    # #5: validate SUMMARY_MODEL against the router's known model ids — ALWAYS-ON
+    # (a bad value breaks enrichment in any environment; unset is valid → Haiku).
+    from primeqa.intelligence.llm.router import validate_summary_model
+    validate_summary_model()
 
     application = Flask(__name__)
     application.config["SECRET_KEY"] = get_jwt_secret()

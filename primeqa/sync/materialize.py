@@ -91,6 +91,7 @@ from primeqa.sync.enrichment_gate import (
     embed_input_hash,
     embed_model_tag,
     summary_input_hash,
+    summary_model_tag,
     summary_prompt_version,
 )
 from primeqa.sync.presentation import to_presentation
@@ -940,14 +941,17 @@ def _apply_summary_gate(
     interpolation is safe."""
     detail_table = ("flow_details" if entity_type == "Flow"
                     else "validation_rule_details")
-    # 1c: namespace the summary hash by the CURRENT summary prompt VERSION, so a
-    # prompt bump changes the hash → re-summarize instead of carrying a stale
-    # old-prompt summary forward.
+    # 1c: namespace the summary hash by the CURRENT summary prompt VERSION and the
+    # CURRENT summary MODEL (SUMMARY_MODEL), so a prompt bump OR a model swap
+    # changes the hash → re-summarize instead of carrying a stale summary forward.
+    # Both resolved ONCE per call: model_tag goes through the same resolver the
+    # router uses to route the summary tasks (no gate/worker drift).
     prompt_version = summary_prompt_version(entity_type)
+    model_tag = summary_model_tag()
     changed_new_ids = [nid for (_e, nid) in changed_pairs]
     # (a) compute + store the new summary_input_hash for all new + changed.
     for nid in new_ids + changed_new_ids:
-        h = summary_input_hash(conn, entity_type, nid, prompt_version)
+        h = summary_input_hash(conn, entity_type, nid, prompt_version, model_tag)
         if h is not None:
             conn.execute(text(
                 f"UPDATE {detail_table} SET summary_input_hash = :h "
