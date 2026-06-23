@@ -85,7 +85,7 @@ def compute_org_status(session, connected_org_id) -> str:
     Queue rows are scoped to the org via the transitive join
     ``ai_enrichment_queue.entity_id → entities.id``, filtered to the
     org's active entities
-    (``entities.last_synced_from_org_id = :id``,
+    (``entities.connected_org_id = :id``,
     ``entities.valid_to_seq IS NULL``).
 
     Single round-trip — one ``SELECT`` with CTEs for the latest sync
@@ -109,7 +109,7 @@ def compute_org_status(session, connected_org_id) -> str:
                 ) AS terminal
             FROM ai_enrichment_queue q
             JOIN entities e ON e.id = q.entity_id
-            WHERE e.last_synced_from_org_id = :id
+            WHERE e.connected_org_id = :id
               AND e.valid_to_seq IS NULL
         )
         SELECT
@@ -268,7 +268,7 @@ def maybe_finalize_run(session, connected_org_id) -> bool:
         SELECT COUNT(*)
         FROM ai_enrichment_queue q
         JOIN entities e ON e.id = q.entity_id
-        WHERE e.last_synced_from_org_id = :id
+        WHERE e.connected_org_id = :id
           AND e.valid_to_seq IS NULL
           AND q.status = 'failed_retryable'
     """), {"id": str(connected_org_id)}).scalar()
@@ -284,7 +284,7 @@ def maybe_finalize_run(session, connected_org_id) -> bool:
             SELECT 1
             FROM ai_enrichment_queue q
             JOIN entities e ON e.id = q.entity_id
-            WHERE e.last_synced_from_org_id = :id
+            WHERE e.connected_org_id = :id
               AND e.valid_to_seq IS NULL
               AND q.status = 'failed_permanent'
         )
@@ -369,7 +369,7 @@ def requeue_failed_enrichment(session, connected_org_id) -> int:
     hand-run SQL.
 
     Scope: rows joined to the org's active entities
-    (``entities.last_synced_from_org_id = org`` AND ``valid_to_seq IS
+    (``entities.connected_org_id = org`` AND ``valid_to_seq IS
     NULL``) with ``status='failed_permanent'``. The reset clears
     ``attempts`` and the prior run timestamps / error text so each row
     looks freshly enqueued. When ≥1 row is reset, recompute
@@ -399,7 +399,7 @@ def requeue_failed_enrichment(session, connected_org_id) -> int:
             SELECT q.id
             FROM ai_enrichment_queue q
             JOIN entities e ON e.id = q.entity_id
-            WHERE e.last_synced_from_org_id = :id
+            WHERE e.connected_org_id = :id
               AND e.valid_to_seq IS NULL
               AND q.status = 'failed_permanent'
         )
@@ -418,7 +418,7 @@ def count_failed_enrichment(session, connected_org_id) -> int:
         SELECT COUNT(*)
         FROM ai_enrichment_queue q
         JOIN entities e ON e.id = q.entity_id
-        WHERE e.last_synced_from_org_id = :id
+        WHERE e.connected_org_id = :id
           AND e.valid_to_seq IS NULL
           AND q.status = 'failed_permanent'
     """), {"id": str(connected_org_id)}).scalar() or 0)

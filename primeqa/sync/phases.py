@@ -79,7 +79,7 @@ def _synced_object_api_names(
     """
     rows = conn.execute(text("""
         SELECT sf_api_name FROM entities
-        WHERE last_synced_from_org_id = :org_id
+        WHERE connected_org_id = :org_id
           AND entity_type = 'Object'
           AND valid_to_seq IS NULL
     """), {"org_id": ctx.connected_org_id}).fetchall()
@@ -457,7 +457,7 @@ def phase_field(ctx: SyncContext, conn: Any) -> PhaseResult:
     # sync_run, so this returns the freshly-synced Object set.
     objects = conn.execute(text("""
         SELECT id, sf_api_name FROM entities
-        WHERE last_synced_from_org_id = :org_id
+        WHERE connected_org_id = :org_id
           AND entity_type = 'Object'
           AND valid_to_seq IS NULL
     """), {"org_id": ctx.connected_org_id}).fetchall()
@@ -745,7 +745,7 @@ def _build_record_type_field_to_pvs_map(
         FROM entities fe
         JOIN field_details fd ON fd.entity_id = fe.id
         JOIN entities pe ON pe.id = fd.picklist_value_set_entity_id
-        WHERE fe.last_synced_from_org_id = :org_id
+        WHERE fe.connected_org_id = :org_id
           AND fe.entity_type = 'Field'
           AND fe.valid_to_seq IS NULL
           AND fd.picklist_value_set_entity_id IS NOT NULL
@@ -889,7 +889,7 @@ def phase_layout(ctx: SyncContext, conn: Any) -> PhaseResult:
 
     objects = conn.execute(text("""
         SELECT id, sf_api_name FROM entities
-        WHERE last_synced_from_org_id = :org_id
+        WHERE connected_org_id = :org_id
           AND entity_type = 'Object'
           AND valid_to_seq IS NULL
     """), {"org_id": ctx.connected_org_id}).fetchall()
@@ -1059,7 +1059,7 @@ def _decorate_layouts_with_profile_assignments(
         SELECT attributes->>'Id' AS sf_id, sf_api_name
         FROM entities
         WHERE entity_type = 'Profile'
-          AND last_synced_from_org_id = :org_id
+          AND connected_org_id = :org_id
           AND valid_to_seq IS NULL
     """), {"org_id": ctx.connected_org_id}).fetchall():
         if row.sf_id and row.sf_api_name:
@@ -1073,7 +1073,7 @@ def _decorate_layouts_with_profile_assignments(
         SELECT attributes->>'Id' AS sf_id, id
         FROM entities
         WHERE entity_type = 'RecordType'
-          AND last_synced_from_org_id = :org_id
+          AND connected_org_id = :org_id
           AND valid_to_seq IS NULL
     """), {"org_id": ctx.connected_org_id}).fetchall():
         if row.sf_id and row.id:
@@ -1693,7 +1693,7 @@ def phase_user(ctx: SyncContext, conn: Any) -> PhaseResult:
     profile_rows = conn.execute(text("""
         SELECT attributes->>'Id' AS sf_id, sf_api_name
         FROM entities
-        WHERE last_synced_from_org_id = :org_id
+        WHERE connected_org_id = :org_id
           AND entity_type = 'Profile'
           AND valid_to_seq IS NULL
     """), {"org_id": ctx.connected_org_id}).fetchall()
@@ -1705,7 +1705,7 @@ def phase_user(ctx: SyncContext, conn: Any) -> PhaseResult:
     ps_rows = conn.execute(text("""
         SELECT attributes->>'Id' AS sf_id, sf_api_name
         FROM entities
-        WHERE last_synced_from_org_id = :org_id
+        WHERE connected_org_id = :org_id
           AND entity_type = 'PermissionSet'
           AND valid_to_seq IS NULL
     """), {"org_id": ctx.connected_org_id}).fetchall()

@@ -2101,8 +2101,8 @@ class TestSyncedObjectApiNames:
         assert result == set()
 
     def test_scopes_to_org_and_active(self) -> None:
-        """Query filters by last_synced_from_org_id (current
-        sync's connected_org) AND entity_type='Object' AND
+        """Query filters by connected_org_id (the stable per-org
+        partition key, D-258) AND entity_type='Object' AND
         valid_to_seq IS NULL. Verifies the SQL contains these
         scoping conditions."""
         ctx = _stub_ctx_with_mock_sf()
@@ -2112,7 +2112,7 @@ class TestSyncedObjectApiNames:
         sql_text = str(conn.execute.call_args[0][0])
         assert "entity_type = 'Object'" in sql_text
         assert "valid_to_seq IS NULL" in sql_text
-        assert "last_synced_from_org_id = :org_id" in sql_text
+        assert "connected_org_id = :org_id" in sql_text
         params = conn.execute.call_args[0][1]
         assert params["org_id"] == ctx.connected_org_id
 

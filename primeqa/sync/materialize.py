@@ -491,8 +491,9 @@ def resolve_entity_id_by_external_id(
     entity_id for picklist_value_details.picklist_value_set_entity_id).
 
     Filters:
-      - last_synced_from_org_id = ctx.connected_org_id (tenant +
-        connected org scope)
+      - connected_org_id = ctx.connected_org_id (tenant + per-org
+        partition scope, D-258 — the stable key, not the mutable
+        last_synced_from_org_id provenance)
       - entity_type = :entity_type
       - sf_api_name = :external_id
       - valid_to_seq IS NULL (currently-active row only)
@@ -503,7 +504,7 @@ def resolve_entity_id_by_external_id(
     """
     row = conn.execute(text("""
         SELECT id FROM entities
-        WHERE last_synced_from_org_id = :org_id
+        WHERE connected_org_id = :org_id
           AND entity_type = :entity_type
           AND sf_api_name = :external_id
           AND valid_to_seq IS NULL
@@ -560,23 +561,27 @@ def _batch_read_existing(
 ) -> dict[str, dict[str, Any]]:
     """Batched SELECT — one query, returns dict keyed by external_id.
 
-    Tenant-scoped (via the tenant_<N> schema search_path); finds
-    currently-active entities of the requested type regardless of
-    which org most recently sourced them. This is D-030's
-    "single canonical model across orgs" (§26) — when org B syncs
-    the same metadata as org A previously did, the hash check
-    finds the existing rows and the bucketing routes to
-    'unchanged' (or 'changed' if metadata diverged) rather than
-    inserting duplicates.
+    Tenant-scoped (via the tenant_<N> schema search_path) AND
+    org-scoped (``connected_org_id = ctx.connected_org_id``): finds
+    THIS org's currently-active entities of the requested type. This
+    is the per-org model (D-258, superseding D-030's single-canonical
+    §26): each org dedups against its OWN rows, so a second org syncing
+    the same metadata inserts its own parallel entity (allowed by the
+    re-keyed UNIQUE index on (sf_id, connected_org_id)) rather than
+    folding into the first org's row. The org scope also closes the
+    latent ``sf_api_name`` dict-key clobber: without it, two orgs
+    holding the same active API name would return two rows and the
+    return-dict would silently overwrite one.
 
     Filters: WHERE entity_type = :entity_type
               AND sf_api_name = ANY(:external_ids)
+              AND connected_org_id = :org_id     -- per-org partition
               AND valid_to_seq IS NULL  -- currently-active only
 
-    `ctx` is retained in the signature (not used for filtering
-    here) so the caller side stays uniform with the other
-    materialize helpers + so a future per-org override scope
-    could re-add it without a signature break.
+    Scoped on ``connected_org_id`` (the STABLE partition key the
+    re-keyed UNIQUE index enforces) — read-scope must agree with the
+    write-constraint, so a dedup miss can never become a unique
+    violation on insert.
     """
     if not external_ids:
         return {}
@@ -585,10 +590,12 @@ def _batch_read_existing(
         FROM entities
         WHERE entity_type = :entity_type
           AND sf_api_name = ANY(:external_ids)
+          AND connected_org_id = :org_id
           AND valid_to_seq IS NULL
     """), {
         "entity_type": entity_type,
         "external_ids": external_ids,
+        "org_id": ctx.connected_org_id,
     }).fetchall()
     return {
         row.sf_api_name: {
@@ -745,9 +752,9 @@ def reconcile_deletions_by_sf_id(
         NOT re-run the entity's edge materialization, so a superseded entity would
         otherwise leave dangling active edges.
 
-    Org scope: ``last_synced_from_org_id = ctx.connected_org_id`` (the same scope
-    as :func:`resolve_entity_id_by_external_id`), so an entity another org sourced
-    is never superseded by this org's fetch.
+    Org scope: ``connected_org_id = ctx.connected_org_id`` (the same per-org
+    partition scope as :func:`resolve_entity_id_by_external_id`, D-258), so an
+    entity belonging to another org is never superseded by this org's fetch.
 
     FAIL-SAFE on identity: a model row with a NULL ``sf_id`` (synthetic-id entity
     types, or a placeholder Id filtered to NULL at insert) cannot be matched, so it
@@ -768,7 +775,7 @@ def reconcile_deletions_by_sf_id(
     rows = conn.execute(text("""
         SELECT id, sf_id
         FROM entities
-        WHERE last_synced_from_org_id = :org_id
+        WHERE connected_org_id = :org_id
           AND entity_type = :etype
           AND valid_to_seq IS NULL
     """), {
@@ -819,20 +826,21 @@ def _batch_touch_existing(
 ) -> None:
     """Multi-row UPDATE: refresh last_synced_at for unchanged
     entities AND stamp last_synced_from_org_id with the current
-    sync's org (D-030 "most recently sourced from" semantic; §26).
+    sync's org ("most recently sourced from" provenance; D-040).
 
     Preserves all other fields including AI primitives. Per
     design doc §5: unchanged entities don't re-trigger enrichment.
 
-    Per D-030: when org B syncs the same metadata org A previously
-    materialized, the entity's last_synced_from_org_id mutates to
-    org B (reflecting "most recently sourced from this org");
-    last_seed_hash and AI primitives are preserved (the canonical
-    metadata hasn't changed). Downstream phase queries that filter
-    `WHERE last_synced_from_org_id = :org_id` absorb this naturally
-    because every entity touched during the running sync now
-    carries the running sync's org id (HOLD #A classification (a)
-    review of the 8 phases.py + 4 readiness.py filter sites).
+    Per-org (D-258): the unchanged_ids come from the now-org-scoped
+    dedup read (:func:`_batch_read_existing`, WHERE connected_org_id),
+    so this UPDATE only ever touches THIS org's own rows — the old
+    D-030 cross-org rotation (org B mutating org A's row) can no
+    longer happen. last_synced_from_org_id therefore stays equal to
+    connected_org_id for every active row and reverts to PURE
+    provenance: the write-path partition reads now filter on the
+    stable connected_org_id, not on this column. (Stamp retained for
+    provenance + the enrichment worker's entity→org resolution, which
+    still reads it — deferred switch.)
     """
     if not entity_ids:
         return
