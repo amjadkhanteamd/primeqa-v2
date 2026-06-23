@@ -15644,3 +15644,63 @@ works): reported out-of-band (this log is append-only). **Follow-on.** Slice B �
 the swallowed permission/metadata gaps into this taxonomy (the 11 critical
 ``except``-and-continue sites); Slice C — FLS detection / CF-1 (Tooling-vs-describe diff
 → "N fields hidden, grant access").
+
+## D-262 — Phase 2 Slice B: fail-loud the swallowed metadata-fetch gaps — surface them typed on sync_runs (completes the reliability half)
+
+**Context.** The recon found 11 sync sites that caught a metadata-fetch failure,
+logged a warning, and continued — so a permission/FLS denial that **dropped real
+model data** was indistinguishable from a network blip or a benign catalog gap
+(same disease as the ``_resolve_env_gate`` swallow). Slice B surfaces the
+data-loss subset, classified through the Slice-A taxonomy.
+
+**Decision — instrument the 5 DATA-LOSS sites; record + classify, keep the
+resilience.** ``fetch_custom_field_metadata`` (a field's metadata), 
+``fetch_standard_value_sets`` (an SVS), and the three permission-set queries
+``PermissionSetGroupComponent`` / ``PermissionSetLicense`` /
+``PermissionSetAssignment`` (INHERITS / license / HAS_PERMISSION_SET) now call
+``SalesforceClient.record_metadata_gap(site, exc, context)`` in their except block
+— still continue / empty-fallback (the sync is not crashed on one dropped item),
+but no longer SILENT. The dropped subject travels in ``context``.
+
+**Decision — accumulate on the client, flush at structural completion, finalize
+partial_success.** ``sf_client.metadata_gaps`` accumulates across the run (mirrors
+``describe_calls``); the engine flushes to ``sync_runs.{permission_gaps,
+gap_details}`` via ``readiness.record_run_gaps`` (savepoint-guarded);
+``maybe_finalize_run`` finalizes ``partial_success`` when ``has_failed_perm OR
+permission_gaps > 0`` — the existing terminal status (previously only for
+``failed_permanent`` enrichment rows), now also "sync finished, but with a
+recorded typed loss" instead of success-with-silent-loss.
+
+**Decision — genuine vs benign (no false positives).** ``genuine_gap_count``
+counts only TYPED failures (``permission`` / ``transient`` / …); a benign
+``unknown`` gap — a 404 because the org legitimately lacks a feature (PSG not
+enabled) — is recorded in ``gap_details`` for visibility but does NOT inflate
+``permission_gaps``, so it never false-positives a complete sync to
+``partial_success``. The taxonomy auto-separates a ``403`` (permission, counted)
+from a ``404`` (unknown, benign); a genuinely-empty successful query records
+nothing. (The ambiguous sites — PSG/PSL/PSA/SVS — rely on this 403-vs-404 split,
+noted inline.)
+
+**Decision — the 2 DEGRADATION sites are deliberately NOT instrumented.** The
+skip-gate ``SetupAuditTrail`` probe and the ValidationRule delta fallback recover
+to a FULL sync with **no data lost** (they degrade an optimization, not the
+model). Counting them in ``permission_gaps`` would false-positive a complete sync;
+they stay as their existing ``log.warning`` (an optimization-degradation concern,
+distinct from a data gap). Flagged for AK; reversible (a ``kind``-tagged,
+recorded-but-not-counted variant) if wanted.
+
+**Decision — INVERTED deploy order (migrate-first).** ``maybe_finalize_run`` now
+READS ``permission_gaps`` on EVERY finalize, so an absent column crashes finalize
+— ``DEFAULT 0`` covers old ROWS, not an absent column. Migration ``20260624_0020``
+(``sync_runs`` += ``permission_gaps INT NOT NULL DEFAULT 0`` + ``gap_details
+JSONB``) is applied to prod FIRST, then the code is pushed (same as Slice A).
+
+**Verification.** 8 new unit red-proofs (``build_gap`` classification incl. the
+benign-404; ``genuine_gap_count`` excludes ``unknown``; ``record_metadata_gap``
+accumulates + drives the count). 3128 unit green; app/worker/scheduler boot clean.
+Watched prod verify (env-59 steady-state still finalizes ``success`` with
+``permission_gaps=0``; the forced ``partial_success`` + ``gap_details`` shape; the
+benign-404-doesn't-inflate path): reported out-of-band (this log is append-only).
+Nothing about WHAT the sync produces changed. **This closes the reliability half
+of Phase 2.** **Follow-on.** Slice C — FLS detection / CF-1 (Tooling-vs-describe
+diff → "N fields hidden, grant the integration user access").
