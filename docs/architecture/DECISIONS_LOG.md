@@ -15533,3 +15533,55 @@ the founding thesis (separate picture per org + compare them) is live end-to-end
 schema (D-255), reader (D-256), consumers (D-257), write path (D-258), diff (D-259).
 **Follow-on.** Edge/detail-level model diff; the S6-cause overlay on result diff; a UI
 surface over both diffs; the optional result-diff covering index.
+
+## D-260 — S4 execution resolves the SF instance from the connection's authoritative instance_url (mirror sync), fixing the 401 INVALID_SESSION_ID class; env 78's display-URL data corrected
+
+**Context.** The D-259 result-diff live proof surfaced a finding, not the intended
+signal: all 26 claim runs against org #2 (env 78) ``errored`` with **HTTP 401
+INVALID_SESSION_ID** (uniform, zero records created — an execution fault, not metadata
+divergence). Root cause: the S4 execution credential path
+(``execution_engine/credentials.py``) built its Tooling/Data clients with
+``env.sf_instance_url`` **directly**, while the S1 SYNC path
+(``sync/credentials.py:71`` ``resolve_sync_sf_client``) prefers the **connection's**
+``instance_url`` — the authoritative My Domain the OAuth token is minted against —
+falling back to the env URL only when absent. ``environments.sf_instance_url`` is a
+user-entered display field (``core/routes.py``/``views.py`` form input, defaulting to
+the connection's ``instance_url`` only at create-time if blank); env 78's value is the
+Lightning **UI** host ``…lightning.force.com`` (not an API host). So the My-Domain-minted
+session was rejected against the Lightning host → 401. The two credential paths
+**diverging is the defect** — sync resolved correctly; execution was the outlier (env 59
+worked only because its ``env.sf_instance_url`` happens to already be a valid My Domain).
+
+**Decision — (B) code fix: execution resolves the instance the way sync does.** A local
+pure helper ``_resolve_instance_url(cfg, env) = cfg.get("instance_url") or
+env.sf_instance_url or ""`` (``execution_engine/credentials.py``) — the connection's
+``instance_url`` wins, env URL is the fallback. ``_resolve_org_token`` (which already had
+the decrypted ``conn["config"]`` in scope for the token) now returns it; the only two
+callers — ``resolve_tooling_client`` + ``resolve_data_mutation_client`` — pass the
+resolved instance to the client instead of ``env.sf_instance_url``. **Replicated, NOT
+shared**: a shared resolver would force editing sync's live proven line and create an
+S4→S1 import across the substrate boundary — not warranted for a one-line expression.
+Fixes the **class**: any org whose env display URL is a non-API host now still runs,
+because execution trusts the authoritative connection host. Backward-compatible — a
+connection without ``instance_url`` falls back to ``env.sf_instance_url`` (prior
+behaviour). **env 59 unaffected** — its connection + env are both valid My Domains, and
+the fix hands env 59 the exact resolution sync already proves valid for it.
+
+**Decision — (A) data correction.** env 78's ``environments.sf_instance_url`` corrected
+from the ``.lightning.force.com`` UI host to the My Domain ``.my.salesforce.com`` (the
+host connection 57 uses). A one-row prod data write (not a migration). With (B) in,
+execution works without (A) — but (A) is still correct (the env URL should be a real API
+host) and is needed by the OTHER ``env.sf_instance_url`` consumer
+(``core/service.py:336`` describe/validate).
+
+**Verification.** 7 new credential red-proofs (cfg-wins / env-fallback both directions;
+env-59-shaped stays a My Domain; the ``.lightning``→My-Domain repro; tooling+data
+wiring); 3093 unit green; app/worker/scheduler boot clean. The live re-sweep — the 26
+claims re-run against org #2 on the FIXED resolution, expecting a genuine
+pass/fail/error MIX with **zero** ``INVALID_SESSION_ID`` (the fix's pass/fail criterion),
+env-59's run + active-entity set the no-contamination abort-gate, org #2 records
+created-and-cleaned — then ``result_diff`` over the two orgs for the genuine
+metadata-divergence signal: reported out-of-band (this log is append-only).
+
+**Unblocks.** The D-259 result-diff genuine-signal proof — closing the per-org arc
+end-to-end on real two-org run data. **Follow-on.** None specific to this fix.
