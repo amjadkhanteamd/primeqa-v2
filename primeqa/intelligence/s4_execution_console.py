@@ -811,3 +811,114 @@ def requirement_run_health(tenant_id: int, keys) -> dict:
         log.warning("requirement_run_health unavailable for tenant %s: %s",
                     tenant_id, exc)
         return {}
+
+
+# --- per-org RESULT diff (per-org Slice 5, Leg B) ----------------------------
+# Compare the SAME claim's latest run OUTCOME across two orgs (environments). The
+# claim identity (``claim_test_id`` == ``TestClaim.test_id``) is shared across orgs
+# (claims are org-blind, D-257), so a claim run against both A and B yields a
+# cross-org pass/fail comparison — the per-org payoff: "same test, different org,
+# different result". v1 compares OUTCOME (passed/failed/errored/skipped); the S6
+# cause attribution (cause_kind/vr_name) is a DEFERRED richer overlay. Pure read;
+# no new index (179 runs today — an optional (claim_test_id, environment_id,
+# finished_at DESC) index is deferred until volume warrants it). Latest-run-wins is
+# the SQL DISTINCT ON; ``_aggregate_result_diff`` also defends it in Python (max
+# finished_at per (claim, env)).
+
+_RESULT_DIFF_SQL = (
+    "SELECT DISTINCT ON (claim_test_id, environment_id) "
+    "  CAST(claim_test_id AS text) AS claim_test_id, environment_id, "
+    "  outcome::text AS outcome, finished_at "
+    "FROM s4_execution_runs "
+    "WHERE environment_id IN (:env_a, :env_b) "
+    "ORDER BY claim_test_id, environment_id, finished_at DESC")
+
+
+def _result_diff_rows(conn, environment_id_a, environment_id_b):
+    """Pure read: the latest run per (claim_test_id, environment_id) restricted to
+    the two environments (DISTINCT ON … ORDER BY finished_at DESC → latest-wins).
+    One row per (claim, env)."""
+    return conn.execute(
+        text(_RESULT_DIFF_SQL),
+        {"env_a": environment_id_a, "env_b": environment_id_b}).mappings().all()
+
+
+def _aggregate_result_diff(rows, environment_id_a, environment_id_b) -> dict:
+    """Pure: group the latest-per-(claim, env) rows by ``claim_test_id`` into a
+    cross-org comparison. Defensive latest-run-wins — if >1 row arrives for a
+    (claim, env), the later ``finished_at`` wins (the SQL already dedups; this
+    keeps the aggregator correct on un-deduplicated input + unit-testable).
+
+    ``status`` per claim:
+      * ``agree``        — run in BOTH envs, same outcome
+      * ``differ``       — run in both, DIFFERENT outcome
+      * ``missing_in_a`` — run in B only (never run in A)
+      * ``missing_in_b`` — run in A only (never run in B)
+
+    Returns ``{claims: {claim_test_id: {outcome_a, outcome_b, status}}, totals}``.
+    A claim with no run in EITHER env is absent (nothing to compare)."""
+    latest: dict = {}      # claim_test_id -> {"a": (finished_at, outcome), "b": …}
+    for r in rows:
+        env = r["environment_id"]
+        if env == environment_id_a:
+            slot = "a"
+        elif env == environment_id_b:
+            slot = "b"
+        else:
+            continue                                  # defensive: not one of the two
+        fin = r["finished_at"]
+        g = latest.setdefault(r["claim_test_id"], {})
+        cur = g.get(slot)
+        if cur is None or (fin is not None and (cur[0] is None or fin > cur[0])):
+            g[slot] = (fin, r["outcome"])
+
+    claims: dict = {}
+    totals = {"agree": 0, "differ": 0, "missing_in_a": 0, "missing_in_b": 0}
+    for cid, g in latest.items():
+        oa = g["a"][1] if "a" in g else None
+        ob = g["b"][1] if "b" in g else None
+        if oa is None:
+            status = "missing_in_a"
+        elif ob is None:
+            status = "missing_in_b"
+        elif oa == ob:
+            status = "agree"
+        else:
+            status = "differ"
+        totals[status] += 1
+        claims[cid] = {"outcome_a": oa, "outcome_b": ob, "status": status}
+    return {"claims": claims, "totals": totals}
+
+
+def result_diff(tenant_id: int, environment_id_a: int, environment_id_b: int) -> dict:
+    """Best-effort per-org RESULT diff: for each claim, the latest run OUTCOME in
+    environment A vs B (the two orgs), classified agree | differ | missing_in_a |
+    missing_in_b (per-org Slice 5, Leg B). Resolves each ``environment_id`` → org
+    via ``get_connected_org_for_environment`` (the single per-org resolution seam,
+    D-257) for the output labels. v1 compares OUTCOME only; S6 cause attribution is
+    a deferred overlay. **Pure read.** Never raises → ``available=False`` on any
+    read error. Returns ``{available, environment_id_a, environment_id_b, org_a,
+    org_b, totals, claims}``."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.sync.credentials import get_connected_org_for_environment
+        with get_tenant_connection(tenant_id) as conn:
+            org_a = get_connected_org_for_environment(conn, environment_id_a)
+            org_b = get_connected_org_for_environment(conn, environment_id_b)
+            rows = _result_diff_rows(conn, environment_id_a, environment_id_b)
+            agg = _aggregate_result_diff(rows, environment_id_a, environment_id_b)
+        return {"available": True,
+                "environment_id_a": environment_id_a,
+                "environment_id_b": environment_id_b,
+                "org_a": org_a, "org_b": org_b,
+                "totals": agg["totals"], "claims": agg["claims"]}
+    except Exception as exc:
+        log.warning("result_diff unavailable for tenant %s envs %s/%s: %s",
+                    tenant_id, environment_id_a, environment_id_b, exc)
+        return {"available": False,
+                "environment_id_a": environment_id_a,
+                "environment_id_b": environment_id_b,
+                "org_a": None, "org_b": None,
+                "totals": {"agree": 0, "differ": 0,
+                           "missing_in_a": 0, "missing_in_b": 0},
+                "claims": {}}
