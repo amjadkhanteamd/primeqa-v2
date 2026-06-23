@@ -15585,3 +15585,62 @@ metadata-divergence signal: reported out-of-band (this log is append-only).
 
 **Unblocks.** The D-259 result-diff genuine-signal proof — closing the per-org arc
 end-to-end on real two-org run data. **Follow-on.** None specific to this fix.
+
+## D-261 — Phase 2 Slice A: a typed failure taxonomy makes sync + execution failures distinguishable in the run record (the reliability half of Phase 2)
+
+**Context.** Phase 2's reliability goal is "each failure class is distinguishable in
+the run record." It was not. The SF client raised typed exceptions (``SFAuthError`` /
+``SFRateLimitError`` / ``SFRequestError``, the last exposing the parsed SF
+``errorCode``) but the type was discarded downstream: S1 sync collapsed every failure
+to ``status='failure'`` + a freetext ``error_message`` (``_mark_sync_run_failed``); S4
+buried the exception class name in the ``evidence`` JSONB. Neither was queryable — no
+"permission failures per org", no "retry only auth failures". (Companion to the CF-1
+half: D-225 already surfaces FLS denials at S4 execution time; this slice makes the
+*class* of every failure queryable.)
+
+**Decision — one source of truth (``primeqa/integrations/failure_taxonomy.py``).**
+``category_for(error_type, sf_error_code)`` is the **single mapping table** →
+``auth`` / ``permission`` / ``transient`` / ``rate_limit`` / ``normalization`` /
+``unknown``. ``classify_failure(exc)`` is its canonical **exception** entry point — the
+sync engine passes the LIVE exception, so it reads ``SFRequestError.error_code`` + the
+HTTP ``status_code`` for the fullest fidelity (5xx → transient). The mapping is NOT
+duplicated at call sites — the S4 result store reuses ``category_for`` over the recorded
+evidence surface. Permission-shaped SF codes (``INSUFFICIENT_FIELD_ACCESS`` /
+``INSUFFICIENT_ACCESS*`` / ``INVALID_FIELD_FOR_INSERT_UPDATE`` — the CF-1/FLS signal) →
+``permission``. The category vocabulary lives in code (no DB CHECK) so a later slice can
+extend it without a migration.
+
+**Decision — additive queryable columns (migration ``20260624_0010``, off
+``20260623_0010``).** ``sync_runs`` and ``s4_execution_runs`` each gain
+``failure_category VARCHAR`` + ``sf_error_code VARCHAR`` (nullable; NULL = no failure).
+The existing freetext (``error_message`` / ``error_traceback``) and the ``evidence``
+JSONB are **kept** — these are additive promotions, not replacements. **No backfill** —
+historical runs stay NULL (we do not parse old freetext). Idempotent
+(``ADD COLUMN IF NOT EXISTS``). **Per-org-queryable for free**: ``sync_runs.source_org_id``
+and ``s4_execution_runs.environment_id`` already scope every failure to its org.
+
+**Decision — wire at the two record sites.** S1 ``_mark_sync_run_failed`` classifies
+``error.original`` and persists the typed columns alongside the kept freetext. S4
+``persist_run_evidence`` promotes the run-level error surface (``evidence.error``) via a
+new ``_run_failure`` helper (reuses ``category_for``; the SF code comes from the erroring
+mutation step, D-225). **Documented coarseness**: a read-path ``SFRequestError`` carries
+no captured ``errorCode`` in the step evidence, so it classifies by exception class only
+(``auth`` / ``rate_limit`` resolve; a bare SFRequestError stays ``unknown``) — the
+mutation path (where FLS denials predominate) classifies in full.
+
+**Decision — INVERTED deploy order (migrate-before-push).** Unlike a read-only additive
+column, these columns are WRITTEN on every run (``persist_run_evidence`` runs for passed
+runs too, writing ``failure_category=NULL``). Code-before-column would break every
+``s4_execution_runs`` INSERT. The columns are additive (the currently-deployed code
+ignores them), so the migration is applied to prod FIRST, then the code is pushed — the
+reverse of the usual push-then-apply.
+
+**Verification.** 28 new unit red-proofs (the classifier matrix — every SF exception
+type + representative codes; permission codes → ``permission``; 5xx → transient; non-SF
+/ bare-4xx → ``unknown``; the S4 derivation incl. business-rejection isolation). 3121
+unit green; app/worker/scheduler boot clean. Watched prod verify (a passing run writes
+NULL cleanly; a classified failure records the typed category + code; per-org filter
+works): reported out-of-band (this log is append-only). **Follow-on.** Slice B — surface
+the swallowed permission/metadata gaps into this taxonomy (the 11 critical
+``except``-and-continue sites); Slice C — FLS detection / CF-1 (Tooling-vs-describe diff
+→ "N fields hidden, grant access").
