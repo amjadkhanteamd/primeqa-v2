@@ -91,8 +91,14 @@ def _resolve_env_gate(session, environment_id: int):
         return (None, None)
     try:
         from primeqa.core.models import Environment
-        env = (session.query(Environment)
-               .filter(Environment.id == environment_id).first())
+        # SAVEPOINT-guard the read: if `environments` is unreadable (a
+        # substrate-only test session with no such table), the failed SELECT
+        # aborts the Postgres transaction. begin_nested() lets us roll that back
+        # to the savepoint so the OUTER transaction stays usable — otherwise the
+        # next statement (finalize_run's flush) hits InFailedSqlTransaction.
+        with session.begin_nested():
+            env = (session.query(Environment)
+                   .filter(Environment.id == environment_id).first())
     except Exception:
         # The env row is unreadable from this session (e.g. a substrate-only
         # test session with no `environments` table). Degrade the dispatch gate
