@@ -105,15 +105,24 @@ class MetadataS1Reader:
         return None
 
 
-def build_metadata_s1_reader(tenant_id, *, at_seq=None):
+def build_metadata_s1_reader(tenant_id, *, at_seq=None, environment_id=None):
     """Eager-hydrate the current S1 metadata into a :class:`MetadataS1Reader`.
     Best-effort: returns ``None`` on an empty S1 (``VersionNotFoundError``) or any
-    error — the accessor then falls back to ``meta_*``."""
+    error — the accessor then falls back to ``meta_*``.
+
+    per-org Slice 3b: an optional ``environment_id`` scopes the hydration to that
+    environment's org (resolved via ``get_connected_org_for_environment``). When it
+    is ``None`` (or no connected_org is provisioned), the reader stays org-blind —
+    the safe default for these advisory whole-tenant metadata pickers (no fail-loud
+    here, unlike the S4/S6 execution path)."""
     try:
         from primeqa.semantic.connection import get_tenant_connection
         from primeqa.semantic.query import SemanticOrgModel
+        from primeqa.sync.credentials import get_connected_org_for_environment
         with get_tenant_connection(tenant_id) as conn:
-            model = SemanticOrgModel(conn)
+            org_id = (get_connected_org_for_environment(conn, environment_id)
+                      if environment_id is not None else None)
+            model = SemanticOrgModel(conn, connected_org_id=org_id)
             seq = at_seq if at_seq is not None else model.current_version_seq()
             return hydrate_metadata_s1_reader(model, seq)
     except Exception as exc:                          # empty S1 / read error

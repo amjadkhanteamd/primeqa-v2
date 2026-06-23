@@ -99,3 +99,24 @@ def ensure_connected_org_for_environment(
         "VALUES (:t, :url, :label, :eid) RETURNING id"),
         {"t": org_type, "url": sf_instance_url,
          "label": f"env-{environment_id}", "eid": environment_id}).scalar()
+
+
+def get_connected_org_for_environment(conn, environment_id: int) -> "str | None":
+    """READ-ONLY resolution ``environment_id`` → ``connected_orgs.id`` (as text),
+    or ``None`` when no connected_org is provisioned for the environment.
+
+    The single per-org resolution seam (per-org Slice 3): every execution / read
+    consumer that scopes S1 to a run's org calls this. Returns the id as a string
+    (``SemanticOrgModel(conn, connected_org_id=...)`` casts to uuid in SQL).
+
+    Cardinality is 1:1 — guaranteed by the partial UNIQUE index
+    ``uq_connected_orgs_environment_id`` (Slice 3a) on top of
+    :func:`ensure_connected_org_for_environment`'s upsert — so this returns 0 or 1
+    row. Mirrors the correlated lookup in ``metadata_bridge/s1_sync_console.py``;
+    the write/upsert sibling is :func:`ensure_connected_org_for_environment`.
+    ``conn`` is a tenant-scoped connection (``connected_orgs`` lives per-tenant)."""
+    if environment_id is None:
+        return None
+    return conn.execute(text(
+        "SELECT CAST(id AS text) FROM connected_orgs WHERE environment_id = :eid"),
+        {"eid": environment_id}).scalar()

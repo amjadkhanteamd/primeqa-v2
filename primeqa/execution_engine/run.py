@@ -44,7 +44,9 @@ from primeqa.execution_engine.data_executor import (
     execute_data_recipe,
     plan_data_recipe_world,
 )
-from primeqa.execution_engine.errors import PlanTranslationError, PolicyError
+from primeqa.execution_engine.errors import (
+    OrgResolutionError, PlanTranslationError, PolicyError,
+)
 from primeqa.execution_engine.evidence import RunEvidence
 from primeqa.core.authz import AuthorizationError, Tier
 from primeqa.execution_engine.executor import execute_metadata_inspection
@@ -230,6 +232,20 @@ def run_recipe_execution(
     )
 
 
+def _resolve_run_org(session, environment_id: int) -> str:
+    """The run's ``connected_org_id`` (str), FAIL-LOUD if unresolved (per-org
+    Slice 3a, D-257). A run reads S1 *scoped to the org it executes against* — an
+    env with no provisioned connected_org would otherwise fall back to a wrong /
+    org-blind read, attributing the run's evidence against the wrong metadata."""
+    from primeqa.sync.credentials import get_connected_org_for_environment
+    org_id = get_connected_org_for_environment(session.connection(), environment_id)
+    if org_id is None:
+        raise OrgResolutionError(
+            f"no connected_org for environment_id={environment_id}; cannot scope "
+            f"S1 to the run's org (per-org Slice 3a)")
+    return org_id
+
+
 def _execute_for_kind(recipe, session, environment_id: int, client,
                       record_sink=None, world_plans=None, field_overrides=None,
                       *, env_gate=None, caller_tier=None):
@@ -273,7 +289,9 @@ def _execute_for_kind(recipe, session, environment_id: int, client,
         s1 = None
         if world_plans is None and plan.steps[0].expect_rejection is None:
             from primeqa.semantic.query import SemanticOrgModel
-            s1 = SemanticOrgModel(session.connection())
+            # per-org Slice 3a: scope the world-build S1 read to the run's org.
+            org_id = _resolve_run_org(session, environment_id)
+            s1 = SemanticOrgModel(session.connection(), connected_org_id=org_id)
         return execute_data_recipe(
             plan, client=data_client, environment_id=environment_id, s1=s1,
             world_plans=world_plans, record_sink=record_sink,
@@ -316,13 +334,26 @@ def _interpret_and_persist(session, evidence: RunEvidence) -> Optional[Interpret
     from primeqa.interpretation.result_store import persist_interpretation
     from primeqa.interpretation.s1_reader import S1ValidationRuleReader
     from primeqa.semantic.query import SemanticOrgModel
+    from primeqa.sync.credentials import get_connected_org_for_environment
 
     try:
+        # per-org Slice 3a: attribute against the org the run executed against.
+        # Best-effort (D-111.2): if the run's env has no connected_org, skip
+        # interpretation rather than read the wrong / org-blind model — the run
+        # truth is already flushed and survives.
+        org_id = get_connected_org_for_environment(
+            session.connection(), evidence.environment_id)
+        if org_id is None:
+            _log.warning(
+                "S6: no connected_org for environment_id=%s (run %s); "
+                "interpretation skipped, run truth preserved (D-111.2)",
+                evidence.environment_id, evidence.run_id)
+            return None
         with session.begin_nested():
             interpretation = interpret_run(
                 evidence, claim_kind=_claim_kind_of(session, evidence.claim_test_id))
             s1_reader = S1ValidationRuleReader(
-                SemanticOrgModel(session.connection()))
+                SemanticOrgModel(session.connection(), connected_org_id=org_id))
             interpretation = attribute_run(interpretation, evidence, s1=s1_reader)
             persist_interpretation(session, interpretation)
         return interpretation
@@ -521,8 +552,10 @@ def _prepare_async_execute(recipe, session, environment_id: int, client):
         plan = build_data_recipe_plan(recipe)
         if plan.steps[0].expect_rejection is None:
             from primeqa.semantic.query import SemanticOrgModel
+            # per-org Slice 3a: scope the pre-resolved world S1 read to the run's org.
+            org_id = _resolve_run_org(session, environment_id)
             world_plans = plan_data_recipe_world(
-                plan, SemanticOrgModel(session.connection()))
+                plan, SemanticOrgModel(session.connection(), connected_org_id=org_id))
         else:
             world_plans = {}    # 1-step create-rejected — no world, but async-prepared
         return (data_client, world_plans)

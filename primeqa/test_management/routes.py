@@ -355,7 +355,8 @@ def list_environment_objects(env_id):
         # D-195 Step 5a.1: metadata reads are S1-only (tenant-scoped org model);
         # gate on the S1 reader being hydrated, not on the inert meta_version id.
         from primeqa.metadata_bridge.s1_reader import build_metadata_s1_reader
-        reader = build_metadata_s1_reader(request.user["tenant_id"])
+        reader = build_metadata_s1_reader(
+            request.user["tenant_id"], environment_id=env_id)  # per-org Slice 3b
         if not reader:
             return jsonify([]), 200
         objects = reader.get_objects(None)
@@ -382,7 +383,8 @@ def list_object_fields(env_id, object_name):
             return jsonify([]), 200
         # D-195 Step 5a.1: S1-only (see list_environment_objects).
         from primeqa.metadata_bridge.s1_reader import build_metadata_s1_reader
-        reader = build_metadata_s1_reader(request.user["tenant_id"])
+        reader = build_metadata_s1_reader(
+            request.user["tenant_id"], environment_id=env_id)  # per-org Slice 3b
         if not reader:
             return jsonify([]), 200
         obj = reader.get_object_by_api_name(None, object_name)

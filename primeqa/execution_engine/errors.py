@@ -60,6 +60,17 @@ class CredentialResolutionError(ExecutionEngineError):
     token. A binding failure, not a run outcome (the run never started)."""
 
 
+class OrgResolutionError(ExecutionEngineError):
+    """A run's ``environment_id`` does not resolve to a ``connected_orgs`` row —
+    so S1 cannot be scoped to the run's org (per-org Slice 3a, D-257).
+
+    Fail-loud on the execution path: reading the wrong org's S1 (or the whole
+    tenant org-blind) would attribute a run's evidence against metadata the run
+    never executed against. A binding failure (the env has no provisioned/synced
+    org), not a run outcome.
+    """
+
+
 class UnsupportedEdgeError(ExecutionEngineError):
     """The translator has no edge→SOQL mapping for the edge a read captures.
 
