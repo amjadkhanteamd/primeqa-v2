@@ -15311,3 +15311,82 @@ a light read-sanity on env-59 after deploy (no migration, no forced sync).
 **Follow-on.** Slice 3 threads ``connected_org_id`` through the consumers
 (execution first); then per-org GO/NO-GO, the cross-org diff surface, and the
 org-required (mandatory-org) tightening.
+
+## D-257 — per-org Slice 3a+3b+3d: thread org through the execution spine (S4+S6) + metadata_bridge; env→org resolution is now DB-enforced UNIQUE; S3 generation stays org-blind by design
+
+**Context.** Slice 2 (D-256) made ``SemanticOrgModel`` org-aware but left every
+consumer org-blind (passing no ``connected_org_id``). Slice 3 threads the org
+through the consumers — the first code that USES the per-org dimension. The
+foundation recon settled the resolution path and the per-consumer policy; 3a+3b+3d
+are the cheap, env-59-no-op subset (3c S7, 3e Decision, 3f S8 are deferred — they
+need a UX call / a Release-target-env design / an ``s8_grounding_validity`` schema
+change respectively).
+
+**Decision — one resolution seam.** ``get_connected_org_for_environment(conn,
+environment_id) -> Optional[str]`` (``primeqa/sync/credentials.py``): read-only
+``SELECT id FROM connected_orgs WHERE environment_id = :eid``, returns ``None`` when
+no connected_org is provisioned. The single env→org resolution every consumer uses;
+mirrors ``s1_sync_console``'s correlated lookup; the write/upsert sibling is
+``ensure_connected_org_for_environment``.
+
+**Decision — env→org is now DB-enforced 1:1.** Migration ``20260623_0010`` (tenant
+branch, off ``20260622_0020``) adds a partial UNIQUE index
+``uq_connected_orgs_environment_id ON connected_orgs(environment_id) WHERE
+environment_id IS NOT NULL`` — the 1:1 cardinality the resolution assumes was app
+convention only (the non-unique ``idx_connected_orgs_environment_id`` +
+``ensure_connected_org_for_environment``'s SELECT-then-INSERT). A **fail-loud
+pre-check** in the migration raises (naming the offending rows) if any tenant
+already has a duplicate environment_id, rather than letting ``CREATE UNIQUE INDEX``
+crash opaquely. (env-59 pre-check: 0 duplicates.)
+
+**Decision — fail-loud on the execution path, fall-back on advisory reads.** The
+policy split the recon surfaced:
+- **3a S4** (``execution_engine/run.py`` ``_execute_for_kind`` sync +
+  ``_prepare_async_execute`` async): the data-recipe world build resolves the run's
+  org from ``environment_id`` (a function param; ``s4_execution_runs.environment_id``
+  is NOT NULL) and passes it to ``SemanticOrgModel(..., connected_org_id=org)``.
+  ``_resolve_run_org`` **raises ``OrgResolutionError``** (new in
+  ``execution_engine/errors.py``) when the env has no org — a wrong-org S1 read
+  would attribute the run's evidence against the wrong metadata.
+- **3a S6** (``_interpret_and_persist``): resolves from ``evidence.environment_id``;
+  org-less → **best-effort skip** (log + ``return None``, the D-111.2 boundary — the
+  run truth already flushed survives).
+- **3b metadata_bridge** (``build_metadata_s1_reader``): gains an optional
+  ``environment_id``; resolves + scopes when present, else **org-blind** (the safe
+  default for these whole-tenant advisory pickers — no fail-loud). Callers
+  ``test_management/routes.py`` list_environment_objects + list_object_fields pass
+  the env_id they already hold.
+
+**Decision — 3d: S3 generation stays org-blind, by design (no code).** Generation
+authors **shared** claims (D-255 — org is execution context, not claim identity);
+``GenerationRequest`` / ``SemanticContext`` carry no org. The idempotency key
+``(requirement_key, s1_version_seq)`` **needs no org**: there is exactly one
+claim-set per (requirement, S1 version), authored once and run against many orgs.
+Threading org into generation would be wrong, not just unnecessary.
+
+**Scope note — env-59 is single-org, so every threaded path is a NO-OP today**
+(org-bound reads == org-blind, as the Slice-2 read-sanity proved). The
+``OrgResolutionError`` fail-loud path **cannot be exercised on env-59** (it has an
+org) — it is **unit-proven only**, not live-verified, until a second org (or an
+org-less env) exists.
+
+**Also fixed (separate commit ``9baf666`` on main, not per-org).** ``_resolve_env_gate``
+swallowed a failed ``environments`` read without rolling back the aborted Postgres
+transaction, poisoning the next statement — surfaced as 6 local-PG substrate2
+integration failures (pre-existing on clean main). Now SAVEPOINT-guarded
+(``begin_nested``); no prod behaviour change.
+
+**Verification.** 6 unit red-proofs (helper resolve/None; ``_resolve_run_org``
+fail-loud; S6 skip-on-None) + 5 local-PG integration (helper resolves; UNIQUE
+violation on a 2nd org for the same env; metadata reader org-scoped vs org-blind
+union). Prod pre-check 0 duplicates. Full ``tests/unit`` green (3073); 477+
+execution unit + existing metadata_bridge integration green org-blind; reader
+``query.py`` untouched; app/worker/scheduler boot. Impl commit (rebased) on
+``per-org-s3-spine``; this is a separate append-only docs commit. Tier-2: push-gated;
+migration applied + watched env-59 read-sanity after.
+
+**Follow-on.** 3c (S7 /ask — resolve from the env dropdown; fail-loud vs single-org
+default is a UX call). 3e (Decision — needs a ``Release`` target-environment design).
+3f (S8 evolution — the heaviest: ``s8_grounding_validity`` needs a ``connected_org_id``
+column + PK change + per-org recompute). A future UNIQUE-on-NULL-env tightening if
+NULL-env connected_orgs are ever disallowed.
