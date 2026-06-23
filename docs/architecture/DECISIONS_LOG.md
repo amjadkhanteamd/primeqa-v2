@@ -15472,3 +15472,64 @@ per-org). **Follow-on.** worker.py enrichment org-resolution switch; the
 ``_batch_close_superseded`` depth guard (if ever a cross-org caller is introduced);
 the cross-org diff surface (same claim-set, org A vs org B); NOT NULL tightening on
 ``connected_org_id`` once all org-less genesis/checkpoint rows are reconciled.
+
+## D-259 — per-org Slice 5: org diff — the two-leg payoff (MODEL diff + RESULT diff), both pure-read, no migration; the founding thesis is now live end-to-end
+
+**Context.** Slices 1–4 (D-255…D-258) built the per-org machinery: schema dimension,
+org-aware reader, threaded consumers, org-aware write path — and proved two separate
+org pictures coexist live (env-59 + org #2: 5826 shared API-names, 138 shared sf_ids,
+each org its own rows). Slice 5 is the **payoff** the whole restructure existed for:
+*separate picture per org → compare them.* Two read-only diff legs.
+
+**Decision — Leg A: MODEL diff (``primeqa/semantic/diff.py``, new).**
+``diff_org_models(conn, org_a, org_b)`` reads each org's currently-active entities
+once (``SELECT entity_type, sf_api_name, last_seed_hash FROM entities WHERE
+connected_org_id = :org AND valid_to_seq IS NULL``), keys on **``(entity_type,
+sf_api_name)``** — the sync's own per-org dedup key (D-258), universal since
+``sf_api_name`` is populated for every entity — and partitions into
+``only_in_a / only_in_b / differs / same``. The content signal is **``last_seed_hash``**
+(the canonical change-hash the sync bucketing uses), NOT the ``attributes`` JSONB —
+cheaper and exactly the sync's own notion of "changed". Output is a serializable dict
+(``totals`` + per-``entity_type`` counts + the three delta lists), feeds a UI later.
+**Entity-level only (v1)** — edge/detail diff deferred (``get_related`` /
+``get_entity_details`` are per-entity → a graph diff is N round-trips, a later
+increment).
+
+**Decision — Leg B: RESULT diff (extend ``intelligence/s4_execution_console.py``).**
+``result_diff(tenant, env_a, env_b)`` reads the latest run per ``(claim_test_id,
+environment_id)`` (``DISTINCT ON … ORDER BY finished_at DESC`` — latest-run-wins),
+resolves each ``environment_id`` → org via ``get_connected_org_for_environment`` (the
+D-257 seam), and classifies each claim ``agree | differ | missing_in_a | missing_in_b``
+over **``outcome``** (passed/failed/errored/skipped). The claim identity
+(``claim_test_id`` == ``TestClaim.test_id``) is shared across orgs (claims are
+org-blind, D-257), so the SAME claim run against both orgs yields a cross-org pass/fail
+comparison. The S6 cause attribution (``cause_kind`` / ``vr_name``) is a **deferred**
+richer overlay; v1 compares outcome. **No new index** (179 runs — an optional
+``(claim_test_id, environment_id, finished_at DESC)`` index is deferred).
+
+**Both PURE READ.** No INSERT/UPDATE, no schema, no migration, no behaviour change to
+sync/execution. Leg A reads via the caller's conn; Leg B's only transaction is
+read-only SELECTs (grep-confirmed 0 writes in both legs). Reuses the
+``s4_execution_console`` patterns (pure ``_fn`` + best-effort wrapper returning
+``{available, …}``). Red-proofs: **31** new unit tests (Leg A four-bucket partition +
+identity ``only_a+same+differs==|A|`` + empty/identical/both-empty + fake-conn read
+wiring; Leg B four statuses + latest-run-wins + directional env grouping). 3086 unit
+green; app/worker/scheduler boot clean.
+
+**Live proof.** Leg A live-verified read-only on prod (env-59 vs org #2):
+``only_in_a=84, only_in_b=7, differs=190, same=5636`` (counts tie to 5910 / 5833), with
+the per-type breakdown surfacing where the orgs diverge (Layout 97 differ, PermissionSet
+53 differ, Profile 18 differ, Field 64 only-in-A). Leg B's live proof is the
+gate-lifting **run cycle** run immediately after this ships — the existing claims swept
+against org #2 (env 78) via the async S4 queue (the deployed worker holds the prod
+credential key; a synchronous local ``trigger_claim_run`` cannot decrypt prod
+connection creds), env-59's run + active-entity sets the no-contamination abort-gate —
+then ``result_diff`` over the two orgs. Divergence is the SIGNAL, not a bug: claims
+grounded in env-59's model that touch org #2's 84 absent / 190 differing entities
+legitimately fail/error. Results reported out-of-band (this log is append-only).
+
+**Supersedes / extends.** Extends D-255…D-258; **completes the per-org diff payoff** —
+the founding thesis (separate picture per org + compare them) is live end-to-end:
+schema (D-255), reader (D-256), consumers (D-257), write path (D-258), diff (D-259).
+**Follow-on.** Edge/detail-level model diff; the S6-cause overlay on result diff; a UI
+surface over both diffs; the optional result-diff covering index.
