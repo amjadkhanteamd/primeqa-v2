@@ -601,16 +601,29 @@ class SyncEngine:
         failed_phase: str,
         error: PhaseExecutionError,
     ) -> None:
-        """Mark sync_run.status='failure' with error context."""
+        """Mark sync_run.status='failure' with error context.
+
+        Phase 2 Slice A: classify the underlying exception into a typed
+        ``failure_category`` (+ the Salesforce ``sf_error_code`` when present) via
+        the shared taxonomy, persisted ALONGSIDE the existing freetext
+        ``error_message`` (the freetext is kept). ``source_org_id`` is already on
+        ``sync_runs``, so the typed failure is queryable per org with no extra work."""
+        from primeqa.integrations.failure_taxonomy import classify_failure
+
+        failure_category, sf_error_code = classify_failure(error.original)
         with self._connect() as conn:
             conn.execute(text("""
                 UPDATE sync_runs
                 SET status = 'failure',
                     completed_at = NOW(),
-                    error_message = :msg
+                    error_message = :msg,
+                    failure_category = :failure_category,
+                    sf_error_code = :sf_error_code
                 WHERE id = :id
             """), {
                 "msg": f"phase={failed_phase}: {error.original}",
+                "failure_category": failure_category,
+                "sf_error_code": sf_error_code,
                 "id": sync_run_id,
             })
 

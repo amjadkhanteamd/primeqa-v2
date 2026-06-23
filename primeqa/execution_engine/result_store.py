@@ -17,7 +17,8 @@ from __future__ import annotations
 import dataclasses
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, Text, func, text
+from sqlalchemy import (
+    BigInteger, Boolean, Column, DateTime, Integer, String, Text, func, text)
 from sqlalchemy.dialects.postgresql import ENUM, JSONB, UUID
 
 from primeqa.db import Base
@@ -53,6 +54,14 @@ class S4ExecutionRun(Base):
     finished_at = Column(DateTime(timezone=True), nullable=False)
     duration_ms = Column(Integer, nullable=True)
     evidence = Column(JSONB, nullable=False)
+    # Phase 2 Slice A: the run's typed failure class (auth/permission/transient/
+    # rate_limit/normalization/unknown) promoted from the top-level error surface,
+    # + the SF errorCode of the erroring step — queryable beside the JSONB trace.
+    # NULL for runs with no transport error (passed / assertion-failed / business
+    # rejection). environment_id (above) maps to the org, so this is per-org for
+    # free.
+    failure_category = Column(String, nullable=True)
+    sf_error_code = Column(String, nullable=True)
 
 
 class S4CreatedRecord(Base):
@@ -81,6 +90,34 @@ class S4CreatedRecord(Base):
     environment_id = Column(Integer, nullable=True)
 
 
+def _run_failure(evidence: RunEvidence):
+    """Phase 2 Slice A: derive the run-level ``(failure_category, sf_error_code)``
+    from the evidence's top-level error surface, reusing the shared taxonomy
+    (``integrations.failure_taxonomy.category_for`` — the single mapping table).
+
+    Returns ``(None, None)`` for a run with no transport error — ``passed`` /
+    assertion-``failed`` / a business rejection carry no ``evidence.error``. The SF
+    ``errorCode`` is read from the erroring step's evidence (D-225 captured it on
+    the mutation-attempt evidence — the FLS-write case). A read-path
+    ``SFRequestError`` has no captured code, so it classifies by exception class
+    only (auth / rate_limit resolve; a bare SFRequestError stays ``unknown``) — a
+    documented coarseness; the sync side classifies the LIVE exception in full via
+    ``classify_failure``."""
+    from primeqa.integrations.failure_taxonomy import category_for
+
+    err = getattr(evidence, "error", None)
+    if err is None:
+        return None, None
+    sf_error_code = None
+    for step in evidence.steps:
+        if getattr(step, "error", None) is not None:
+            code = getattr(step, "error_code", None)
+            if isinstance(code, str) and code:
+                sf_error_code = code
+                break
+    return category_for(err.error_type, sf_error_code), sf_error_code
+
+
 def persist_run_evidence(session, evidence: RunEvidence):
     """Persist one :class:`RunEvidence` as an ``s4_execution_runs`` row.
 
@@ -95,6 +132,7 @@ def persist_run_evidence(session, evidence: RunEvidence):
     reapable row. A finalize write would have been both too late (no durability)
     and a duplicate (the sink already wrote it).
     """
+    failure_category, sf_error_code = _run_failure(evidence)
     row = S4ExecutionRun(
         run_id=evidence.run_id,
         recipe_id=evidence.recipe_id,
@@ -107,6 +145,8 @@ def persist_run_evidence(session, evidence: RunEvidence):
         finished_at=evidence.finished_at,
         duration_ms=_duration_ms(evidence.started_at, evidence.finished_at),
         evidence=_evidence_trace(evidence),
+        failure_category=failure_category,
+        sf_error_code=sf_error_code,
     )
     session.add(row)
     session.flush()
