@@ -128,3 +128,33 @@ def _safe_error_code(exc: BaseException) -> Optional[str]:
     except Exception:
         return None
     return code if isinstance(code, str) and code else None
+
+
+# --- metadata-gap surfacing (Phase 2 Slice B) --------------------------------
+# A "gap" is a swallowed metadata-fetch failure that DROPPED real model data (a
+# field's metadata, a permission-set edge) — the sites that previously
+# log-and-continued, hiding a permission/FLS denial behind a warning. Each gap is
+# classified through the SAME taxonomy; the dropped subject travels in ``context``.
+
+def build_gap(site: str, exc: BaseException, *, context: Optional[dict] = None) -> dict:
+    """Classify a swallowed metadata-fetch failure into a serializable gap record.
+    ``site`` names the swallow location; ``context`` carries WHAT was dropped (e.g.
+    ``{"field_id": ...}`` / ``{"query": "PermissionSetGroupComponent"}``)."""
+    category, sf_error_code = classify_failure(exc)
+    return {
+        "site": site,
+        "category": category,
+        "sf_error_code": sf_error_code,
+        "context": context or {},
+    }
+
+
+def genuine_gap_count(gaps) -> int:
+    """How many surfaced gaps reflect a REAL data-loss failure (not a benign,
+    expected catalog gap). A gap classified ``unknown`` — e.g. a 404 because an
+    org legitimately lacks a feature (PSG not enabled) — is recorded for
+    visibility but does NOT count, so it never false-positives the run to
+    ``partial_success``. A typed failure (``permission`` / ``transient`` /
+    ``rate_limit`` / ``normalization``) is genuine and counts."""
+    return sum(1 for g in gaps
+               if g.get("category") and g["category"] != FailureCategory.UNKNOWN)

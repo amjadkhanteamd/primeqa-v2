@@ -289,7 +289,18 @@ def maybe_finalize_run(session, connected_org_id) -> bool:
               AND q.status = 'failed_permanent'
         )
     """), {"id": str(connected_org_id)}).scalar()
-    terminal = "partial_success" if has_failed_perm else "success"
+    # Phase 2 Slice B: a run that surfaced ≥1 GENUINE metadata-fetch gap (a typed
+    # failure that dropped real model data, flushed to permission_gaps by the
+    # engine at structural completion) also finalizes partial_success — the sync
+    # DID finish, but with a recorded, typed loss rather than success-with-silent-
+    # loss. (permission_gaps has DEFAULT 0; migrate-first guarantees the column.)
+    permission_gaps = session.execute(text("""
+        SELECT COALESCE(permission_gaps, 0)
+        FROM sync_runs
+        WHERE id = (SELECT last_sync_run_id FROM connected_orgs WHERE id = :org)
+    """), {"org": str(connected_org_id)}).scalar() or 0
+    terminal = ("partial_success"
+                if (has_failed_perm or permission_gaps > 0) else "success")
 
     result = session.execute(text("""
         UPDATE sync_runs
@@ -300,6 +311,27 @@ def maybe_finalize_run(session, connected_org_id) -> bool:
           AND status = 'running'
     """), {"terminal": terminal, "org": str(connected_org_id)})
     return (result.rowcount or 0) > 0
+
+
+def record_run_gaps(session, connected_org_id, permission_gaps, gap_details) -> None:
+    """Phase 2 Slice B: flush the run's surfaced metadata-fetch gaps to the active
+    sync_run — ``permission_gaps`` (the genuine-gap count) + ``gap_details`` (the
+    full classified list, JSONB). Mirrors :func:`increment_run_counters`'s "active
+    run" targeting (``last_sync_run_id`` + ``status='running'``). A no-op if the
+    run is already terminal. Called by the engine at structural completion, before
+    :func:`maybe_finalize_run` reads ``permission_gaps`` to decide the status."""
+    import json
+    session.execute(text("""
+        UPDATE sync_runs
+        SET permission_gaps = :n,
+            gap_details = CAST(:details AS JSONB)
+        WHERE id = (SELECT last_sync_run_id FROM connected_orgs WHERE id = :org)
+          AND status = 'running'
+    """), {
+        "n": int(permission_gaps),
+        "details": json.dumps(gap_details) if gap_details else None,
+        "org": str(connected_org_id),
+    })
 
 
 # ---------------------------------------------------------------------

@@ -554,6 +554,29 @@ class SyncEngine:
                         describe_calls, connected_org_id, e,
                     )
 
+            # Phase 2 Slice B: flush the swallowed metadata-fetch gaps the SF
+            # client accumulated this run (a permission/FLS denial that dropped
+            # real model data) to sync_runs.{permission_gaps, gap_details}. Done
+            # HERE — last_sync_run_id points at this run + status is still
+            # 'running', so record_run_gaps targets the right run, BEFORE
+            # maybe_finalize_run reads permission_gaps to decide success vs
+            # partial_success. SAVEPOINT-guarded like the describe_calls flush.
+            gaps = list(getattr(self.sf, "metadata_gaps", []) or [])
+            if gaps:
+                from primeqa.integrations.failure_taxonomy import genuine_gap_count
+                try:
+                    with conn.begin_nested():
+                        readiness.record_run_gaps(
+                            conn, connected_org_id,
+                            genuine_gap_count(gaps), gaps)
+                except Exception as e:
+                    logger.warning(
+                        "could not record %d metadata gap(s) for org %s (%s) — "
+                        "finalizing without them (migration 20260624_0020 may not "
+                        "be applied to this schema yet)",
+                        len(gaps), connected_org_id, e,
+                    )
+
             # Best-effort: advance the setup-audit watermark (1b.1 optimization
             # metadata). Wrapped in a SAVEPOINT so a missing column — e.g. tenant
             # migration 20260619_0010 not yet applied to this schema (Railway has

@@ -182,6 +182,20 @@ class SalesforceClient:
         # tooling-query calls (those aren't describe-class). The client is created
         # fresh per sync run, so this count is naturally scoped to one run.
         self.describe_calls = 0
+        # Phase 2 Slice B: swallowed metadata-fetch gaps accumulated across the
+        # run's phases (a permission/FLS denial that DROPPED real model data —
+        # previously hidden behind a log.warning). The engine flushes these to
+        # sync_runs.{permission_gaps, gap_details} at structural completion, the
+        # same pattern as describe_calls. Per-run by construction (fresh client).
+        self.metadata_gaps: list[dict] = []
+
+    def record_metadata_gap(self, site, exc, *, context=None):
+        """Phase 2 Slice B: surface a swallowed metadata-fetch failure — classify
+        it through the shared taxonomy and accumulate it (the caller keeps its
+        resilience: still continue / empty-fallback, just no longer SILENT). The
+        dropped subject travels in ``context``."""
+        from primeqa.integrations.failure_taxonomy import build_gap
+        self.metadata_gaps.append(build_gap(site, exc, context=context))
 
     # --------------------------------------------------------------
     # Lifecycle
@@ -846,6 +860,10 @@ class SalesforceClient:
                     "fetch_custom_field_metadata: failed for %s: %s",
                     field_id, e,
                 )
+                # Phase 2 Slice B: surface the dropped field (was silent).
+                self.record_metadata_gap(
+                    "fetch_custom_field_metadata", e,
+                    context={"field_id": field_id})
                 # Per-field tolerance — continue with the rest.
                 continue
             if records:
@@ -984,6 +1002,12 @@ class SalesforceClient:
                 # enabled, or sandbox-specific runtime hiccup).
                 # Informational — corrections-log §6 category 3.
                 skipped.append((label, e.status_code))
+                # Phase 2 Slice B: surface the dropped value-set. AMBIGUOUS — a
+                # 404 (SVS feature not enabled) classifies 'unknown' (benign, not
+                # counted); a 403 classifies 'permission' (counted).
+                self.record_metadata_gap(
+                    "fetch_standard_value_sets", e,
+                    context={"value_set": label})
                 continue
             if recs:
                 results.append(recs[0])
@@ -1150,6 +1174,13 @@ class SalesforceClient:
                 "query failed (%s); INHERITS_PERMISSION_SET edges "
                 "will be empty this sync.", e,
             )
+            # Phase 2 Slice B: surface the dropped edges. AMBIGUOUS site — a 404
+            # (org lacks the PSG feature) classifies as 'unknown' (benign, not
+            # counted); a 403 INSUFFICIENT_ACCESS classifies as 'permission'
+            # (counted) — the taxonomy separates them.
+            self.record_metadata_gap(
+                "fetch_permission_sets.PermissionSetGroupComponent", e,
+                context={"dropped": "INHERITS_PERMISSION_SET edges"})
             psg_components = []
 
         # Query 5: PermissionSetLicense — Data API. Builds Id →
@@ -1175,6 +1206,10 @@ class SalesforceClient:
                 "failed (%s); license_type will fall back to "
                 "'(no license)' sentinel.", e,
             )
+            # Phase 2 Slice B: surface the dropped license labels (was silent).
+            self.record_metadata_gap(
+                "fetch_permission_sets.PermissionSetLicense", e,
+                context={"dropped": "permission_set license labels"})
 
         return {
             "permission_sets": permission_sets,
@@ -1357,6 +1392,10 @@ class SalesforceClient:
                 "(%s); HAS_PERMISSION_SET edges will be empty for "
                 "this sync.", e,
             )
+            # Phase 2 Slice B: surface the dropped edges (was silent).
+            self.record_metadata_gap(
+                "fetch_users.PermissionSetAssignment", e,
+                context={"dropped": "HAS_PERMISSION_SET edges"})
             permission_set_assignments = []
 
         return {
