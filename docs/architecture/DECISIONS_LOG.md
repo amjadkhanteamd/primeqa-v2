@@ -15390,3 +15390,85 @@ default is a UX call). 3e (Decision — needs a ``Release`` target-environment d
 3f (S8 evolution — the heaviest: ``s8_grounding_validity`` needs a ``connected_org_id``
 column + PK change + per-org recompute). A future UNIQUE-on-NULL-env tightening if
 NULL-env connected_orgs are ever disallowed.
+
+## D-258 — per-org Slice 4: the sync WRITE PATH is now org-aware — the dedup read is scoped per-org and the 15 write-path partition reads unify onto the stable connected_org_id; a second org syncs into its own picture (no migration)
+
+**Context.** Slices 1–3 (D-255/256/257) added the org dimension to the schema, the
+reader, and the execution/bridge consumers — but the S1 **sync write path** still had
+exactly **one** org-blind site. The Slice-4 recon walked ``materialize.py`` +
+``phases.py`` + ``readiness.py`` + ``engine.py`` exhaustively and found it:
+``_batch_read_existing`` (the dedup read) selected currently-active entities by
+``(entity_type, sf_api_name)`` across **all** orgs (the retained-but-unused ``ctx``
+was the documented per-org seam). Every other write-path read was already org-scoped
+(via ``last_synced_from_org_id``); every insert already stamped the org (Slice 1). So
+a second org syncing shared metadata would **fold into the first org's rows** — the
+org-blind dedup would bucket them ``unchanged``/``changed`` and ``_batch_touch_existing``
+would rotate the first org's provenance — instead of inserting its own parallel rows.
+
+**Decision — scope the dedup read on ``connected_org_id`` (the STABLE key).**
+``_batch_read_existing`` gains ``AND connected_org_id = :org_id`` (bound to
+``ctx.connected_org_id``); new active-lookup key = ``(entity_type, sf_api_name,
+connected_org_id)``. Scoped on ``connected_org_id`` — **not** the mutable
+``last_synced_from_org_id`` — because that is the column the re-keyed UNIQUE index
+``idx_entities_unique_active(sf_id, connected_org_id)`` enforces: read-scope must agree
+with the write-constraint, so a dedup *miss* can never become a unique *violation* on
+insert. This also closes a latent **``sf_api_name`` dict-clobber**: without the org
+scope, two orgs holding the same active API name return two rows and the return-dict
+(keyed by ``sf_api_name``) silently overwrites one.
+
+**Decision — unify the 15 write-path partition reads onto ``connected_org_id``;
+``last_synced_from_org_id`` reverts to pure provenance.** The recon found the
+write-path entity-partition reads split across two columns (the new dedup read would
+key on ``connected_org_id``; 15 existing reads keyed on the mutable
+``last_synced_from_org_id``). Resolved the fork the recon surfaced in favour of a
+**single stable partition key**: switch all 15 reads to ``connected_org_id`` —
+``materialize.py`` ``resolve_entity_id_by_external_id`` + ``reconcile_deletions_by_sf_id``
+(2); ``phases.py`` (8: object/field/RT-PVS/layout×2/user×2/api-name); ``readiness.py``
+(5: org-status, finalize×2, requeue, count). ``last_synced_from_org_id`` keeps doing
+provenance duty only — still **stamped** by ``_batch_insert_new_entities`` (INSERT
+column) and ``_batch_touch_existing`` (SET), both unchanged. The two columns stay
+equal for every active row by construction (scoping the dedup read means no org ever
+touches another org's rows), so the switch is a behavioural **no-op today** and
+future-proofs the partition against the mutable column drifting.
+
+**Count correction.** The build prompt framed this as "the 11 reads"; the exhaustive
+inventory is **15** write-path partition reads (the prompt undercounted, omitting the
+5 ``readiness.py`` reads). The code is ground truth — all 15 switched.
+
+**Deferred — ``worker.py:366`` enrichment entity→org read.** The enrichment worker
+resolves an entity's org transitively via ``last_synced_from_org_id`` to pick the
+per-env provider key (D-179). Left on ``last_synced_from_org_id`` this slice (no-op
+today; switching it perturbs org #2's live enrichment path) — flagged as a follow-on,
+so "``last_synced_from_org_id`` is pure provenance" carries this one documented caveat.
+
+**Deferred (defense-in-depth, reviewer nit).** ``_batch_close_superseded`` (and its
+edge sibling ``_close_edges_for_entities``) close rows **by entity-id list**, org-correct
+**by construction** — every caller (``buckets.changed`` from the now-org-scoped dedup
+read; ``reconcile_deletions_by_sf_id``, itself org-scoped) passes only this org's ids.
+The 3-lens review suggested an ``AND connected_org_id = :org_id`` guard for depth. Not
+added: it is redundant today, a *silent-skip* guard on an SCD-2 close would mask a
+future bug rather than fail loud on the unique index, and the same transitive-via-id
+pattern covers ~10 close/touch/edge/junction functions (guarding one invites
+inconsistent scope-creep). Recorded here, not silently dropped.
+
+**Verification.** No migration — ``connected_org_id`` already exists (Slice 1); pure
+code. 602 sync+reader unit tests green (the one drift-guard ``test_scopes_to_org_and_active``
+updated to assert the new column). 3-lens adversarial review (completeness /
+correctness / live-safety) PASS. Central invariant live-confirmed read-only on env-59:
+**0** active rows where ``connected_org_id IS DISTINCT FROM last_synced_from_org_id``
+(of 5910 active). env-59 is single-org, so every path is a **no-op** there
+(steady-state syncs still skip). The **live two-org proof** — provisioning env 78's
+``connected_orgs`` row and syncing org #2 into its own picture with env-59's 5910-row
+active set untouched (the contamination abort-gate) — is the gate-lifting step run
+immediately after this ships; its result is reported out-of-band (this log is
+append-only). An optional covering index ``(entity_type, sf_api_name, connected_org_id)
+WHERE valid_to_seq IS NULL`` is deferred until a second org's steady-state shows the
+dedup read in the slow-query log (per-(type,name) cardinality is ~1–2 rows; the
+existing ``idx_entities_current_api_name`` post-filters org cheaply).
+
+**Supersedes / extends.** Extends D-255 (schema) + D-256 (reader) + D-257 (consumers);
+completes the write-path leg of D-255's supersession of D-030 (single-canonical →
+per-org). **Follow-on.** worker.py enrichment org-resolution switch; the
+``_batch_close_superseded`` depth guard (if ever a cross-org caller is introduced);
+the cross-org diff surface (same claim-set, org A vs org B); NOT NULL tightening on
+``connected_org_id`` once all org-less genesis/checkpoint rows are reconciled.
