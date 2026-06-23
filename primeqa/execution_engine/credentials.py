@@ -18,9 +18,25 @@ from primeqa.execution_engine.errors import CredentialResolutionError
 from primeqa.execution_engine.tooling_client import ToolingReadClient
 
 
+def _resolve_instance_url(cfg: dict, env) -> str:
+    """The Salesforce API host for the run. The CONNECTION's ``instance_url`` is
+    authoritative — the OAuth token is minted against it — so it WINS; the
+    environment's ``sf_instance_url`` is a user-entered display field that can be a
+    non-API host (e.g. ``.lightning.force.com``) and is the fallback only.
+
+    Mirrors the sync path (``sync/credentials.py`` ``resolve_sync_sf_client``);
+    replicated here (a local helper, NOT shared) to leave sync's proven resolution
+    untouched and avoid an S4→S1 import across the substrate boundary.
+    task_247242c3 — fixes the 401 INVALID_SESSION_ID class where an env's display
+    URL is not an API host."""
+    return cfg.get("instance_url") or env.sf_instance_url or ""
+
+
 def _resolve_org_token(db, environment_id: int):
     """Shared D-106.4 path: environment → SF-org connection (decrypted) →
-    ``_oauth_token``. Returns ``(env, access_token)``.
+    ``_oauth_token``. Returns ``(env, access_token, instance_url)`` — the
+    ``instance_url`` resolved the same way sync does (connection-authoritative;
+    :func:`_resolve_instance_url`).
 
     Raises :class:`CredentialResolutionError` when the environment / connection
     is missing or the OAuth flow yields no token — a binding failure, distinct
@@ -48,21 +64,22 @@ def _resolve_org_token(db, environment_id: int):
         raise CredentialResolutionError(
             f"OAuth for environment {environment_id} returned no access_token")
 
-    return env, access_token
+    instance_url = _resolve_instance_url(conn["config"], env)
+    return env, access_token, instance_url
 
 
 def resolve_tooling_client(db, environment_id: int) -> ToolingReadClient:
     """Resolve an authenticated Tooling-read client for ``environment_id``
     (the metadata-inspection vertical, D-108.1)."""
-    env, access_token = _resolve_org_token(db, environment_id)
+    env, access_token, instance_url = _resolve_org_token(db, environment_id)
     return ToolingReadClient(
-        env.sf_instance_url, env.sf_api_version, access_token)
+        instance_url, env.sf_api_version, access_token)
 
 
 def resolve_data_mutation_client(db, environment_id: int) -> DataMutationClient:
     """Resolve an authenticated data-mutation client for ``environment_id``
     (the behavioral-negative vertical, D-110.2). Same D-106.4 credential path
     as :func:`resolve_tooling_client`; a different thin transport."""
-    env, access_token = _resolve_org_token(db, environment_id)
+    env, access_token, instance_url = _resolve_org_token(db, environment_id)
     return DataMutationClient(
-        env.sf_instance_url, env.sf_api_version, access_token)
+        instance_url, env.sf_api_version, access_token)
