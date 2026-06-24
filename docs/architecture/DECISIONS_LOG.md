@@ -15704,3 +15704,70 @@ benign-404-doesn't-inflate path): reported out-of-band (this log is append-only)
 Nothing about WHAT the sync produces changed. **This closes the reliability half
 of Phase 2.** **Follow-on.** Slice C — FLS detection / CF-1 (Tooling-vs-describe
 diff → "N fields hidden, grant the integration user access").
+
+## D-263 — UI Pass 1: per-env sync history + ownership-gated run-detail + org-vs-org diff (read-only admin surfaces on the existing pattern)
+
+**Context.** The substrate had grown three intelligence surfaces with no UI: the
+per-org sync-run record (incl. the Phase-2 typed `failure_category` /
+`permission_gaps` / `gap_details` from D-261/D-262), the per-run AI cost
+(`llm_usage_log` keyed by `sync_run_id`, migration 058), and the two org-diff
+functions (`semantic.diff.diff_org_models` model diff + `s4_execution_console.
+result_diff` result diff, wired but caller-less since the per-org Slice 5). A
+Tier-0 recon confirmed the native pattern (server-rendered Jinja + Tailwind-CDN +
+HTMX, `ctx()` wrapper, `@role_required("admin")`, `settings/base.html` sidebar,
+inline `bg-*-100 text-*-800` pills — no pill macro, `pagination`/`_empty_state`
+macros) and the populated-column reality (the Phase-2 columns + `error_traceback`
+have no prod data yet; `error_traceback` is a dead column).
+
+**Decision — three pure-read surfaces, no schema, ship to a branch then `main`.**
+1. **Sync history** on `/environments/<id>` — the first PLURAL `sync_runs` reader
+   (`read_s1_sync_history`); every prior read was `LIMIT 1`. Paginated
+   (`per_page<=50`), `started_at DESC`; an over-range page snaps to the last real
+   page (no false "no syncs"). Renders only proven-populated columns; the
+   conditional Phase-2 columns render blank until real failure/gap data exists.
+2. **Run-detail** at `/environments/<int:env_id>/runs/<uuid:run_id>`
+   (`read_s1_run_detail`) — full outcome + the Phase-2 drilldown (typed
+   `failure_category`/`sf_error_code` with a plain-language hint, `permission_gaps`
+   + `gap_details` table, raw `error_message`) with a clean "no issues" state.
+3. **Org diff** at `/environments/diff` — one picker carrying BOTH axes
+   (`connected_orgs.id` UUID for the model diff, `environment_id` int for the
+   result diff) wires the two existing diff functions to UI.
+
+**Decision — the model column is read per-run, never the live setting.** A history
+/ run row shows the summary model THAT run used, sourced from `llm_usage_log.model`
+(the provider-echoed model captured at run time) via
+`get_sync_run_costs_batch` — `ARRAY_AGG(DISTINCT model) FILTER (WHERE task LIKE
+'entity_summary%')`. A zero-summary run renders "—"; it NEVER falls back to the
+current `SUMMARY_MODEL` env setting (which would show the wrong model on an old
+row). Cost + model ride ONE batched, **tenant-scoped** (`AND tenant_id = :tid`,
+defense-in-depth), index-backed query per page — not one `get_sync_run_cost`
+Session per row.
+
+**Decision — ownership is enforced IN SQL (fail-closed).** `_RUN_DETAIL_SQL`
+matches BOTH `id = :run_id` AND `source_org_id = (SELECT id FROM connected_orgs
+WHERE environment_id = :eid)`; a run not owned by the env's connected_org returns
+`found=False → 404`, and any read error also yields `found=False`. There is no
+code path that renders a run the env does not own (proved live both ways: an
+env-78 run under `/environments/<env-59>/runs/...` → 404). The env itself is
+tenant-scoped first via `get_environment(env_id, tenant_id)`. `/environments/diff`
+cannot collide with `/environments/<int:env_id>` (the int converter rejects the
+literal `diff`, as with `/environments/new`).
+
+**Scope.** PURE READ — no migration, no write path touched. New readers:
+`metadata_bridge/s1_sync_console.{read_s1_sync_history, read_s1_run_detail,
+list_connected_orgs, model_diff_for_envs}`; `intelligence/llm/usage.
+get_sync_run_costs_batch`. New routes + extended `environments_detail` in
+`views.py`; new `environments/{run_detail,diff}.html`, extended
+`environments/{detail,list}.html`. 13 unit red-proofs on the pure shapers
+(envelope math, `_ai_cost` = embeddings+summaries only, zero-summary "—",
+`gap_details` passthrough); full unit suite green (3141). Live red-proofs
+(ownership both ways, the honest model attribution = `claude-haiku-4-5` on summary
+runs / "—" on zero-summary, both diffs on env-59 vs env-78 = model 84/7/190/5636
++ result agree 6/differ 20/missing 4): reported out-of-band (this log is
+append-only). Adversarially reviewed (4 lenses + synthesis): 0 blockers / 0
+majors; the 2 minor findings (over-page clamp, diff list DOM caps) fixed pre-merge.
+
+**Deferred (Pass 2).** Result-claims sort-by-divergence (today head-capped at 300
+with exact totals); a truthful live current-phase progress bar (needs a small
+engine write — only `last_completed_phase` is pollable today, so "N of 11 phases
+complete" is honest but "currently running phase X" is only inferable).
