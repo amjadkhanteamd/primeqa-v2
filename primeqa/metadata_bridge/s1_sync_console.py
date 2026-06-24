@@ -73,12 +73,20 @@ def _read_status(conn, environment_id: int) -> dict:
         failed_enrichment = count_failed_enrichment(conn, org["id"])
     except Exception:
         failed_enrichment = 0
+    # UI Pass 2: the enrichment lane's done/total for the live progress bar.
+    # Best-effort; a count error -> 0/0 (the bar renders an empty enrichment lane).
+    try:
+        from primeqa.sync.readiness import count_enrichment_progress
+        enrichment = count_enrichment_progress(conn, org["id"])
+    except Exception:
+        enrichment = {"done": 0, "total": 0}
     return {
         "available": True,
         "provisioned": True,
         "last_sync_completed_at": _iso(org["last_sync_completed_at"]),
         "orphaned": orphaned,
         "failed_enrichment": failed_enrichment,
+        "enrichment": enrichment,
         "job": ({"status": job["status"], "error_code": job["error_code"],
                  "error_message": job["error_message"],
                  "created_at": _iso(job["created_at"]),
@@ -109,6 +117,19 @@ def read_s1_sync_status(tenant_id: int, environment_id: int) -> dict:
         log.warning("s1 sync status unavailable for tenant %s env %s: %s",
                     tenant_id, environment_id, exc)
         return {"available": False, "provisioned": False}
+
+
+def phase_order() -> list:
+    """The ordered structural sync phases (the single source — S1's
+    ``ENTITY_ORDER``), for the UI Pass 2 progress bar's "N of 11" lane. Best-effort:
+    ``[]`` if the substrate module can't be imported (the bar degrades to no phase
+    lane). Lazy import keeps this bridge import-time-decoupled from the engine."""
+    try:
+        from primeqa.sync.fk_assertion import ENTITY_ORDER
+        return list(ENTITY_ORDER)
+    except Exception as exc:
+        log.warning("phase_order unavailable: %s", exc)
+        return []
 
 
 _FRESHNESS_FAIL = {"available": False, "provisioned": False, "last_success_at": None,

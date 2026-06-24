@@ -851,7 +851,7 @@ def environments_detail(env_id):
 
         # D-164 (UI Area 1): Substrate-1 sync status — best-effort, never breaks the page.
         from primeqa.metadata_bridge.s1_sync_console import (
-            read_s1_sync_status, read_s1_sync_history)
+            read_s1_sync_status, read_s1_sync_history, phase_order)
         s1_status = read_s1_sync_status(request.user["tenant_id"], env_id)
         # UI Pass 1: paginated sync-run HISTORY beside the latest-sync panel.
         history_page = request.args.get("page", 1, type=int) or 1
@@ -864,6 +864,7 @@ def environments_detail(env_id):
             env=env_data, message=request.args.get("message"),
             sync_statuses=sync_statuses, meta_version_id=meta_version_id,
             s1_status=s1_status, s1_history=s1_history,
+            sync_phases=phase_order(),  # UI Pass 2: the 11-phase order for the live bar
         ))
     finally:
         db.close()

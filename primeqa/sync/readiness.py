@@ -454,3 +454,27 @@ def count_failed_enrichment(session, connected_org_id) -> int:
           AND e.valid_to_seq IS NULL
           AND q.status = 'failed_permanent'
     """), {"id": str(connected_org_id)}).scalar() or 0)
+
+
+def count_enrichment_progress(session, connected_org_id) -> dict:
+    """Enrichment lane done/total for an org (UI Pass 2 progress bar). ``done`` =
+    terminal rows (``succeeded`` ∪ ``failed_permanent``); ``total`` = all eligible
+    queue rows. Same per-org scoping as :func:`count_failed_enrichment` (the queue
+    joined to the org's ACTIVE entities). One cheap aggregate; pure read.
+
+    Returns ``{"done": int, "total": int}`` — the honest real-time tally for
+    "Enrichment {done}/{total}". ``total=0`` (no queue rows yet) is a valid state
+    the UI renders as 0/0."""
+    row = session.execute(text("""
+        SELECT
+            COUNT(*) FILTER (
+                WHERE q.status IN ('succeeded', 'failed_permanent')
+            ) AS done,
+            COUNT(*) AS total
+        FROM ai_enrichment_queue q
+        JOIN entities e ON e.id = q.entity_id
+        WHERE e.connected_org_id = :id
+          AND e.valid_to_seq IS NULL
+    """), {"id": str(connected_org_id)}).fetchone()
+    return {"done": int(row[0] or 0), "total": int(row[1] or 0)} if row \
+        else {"done": 0, "total": 0}

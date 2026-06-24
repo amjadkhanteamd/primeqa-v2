@@ -111,17 +111,72 @@
       {% set _active = (s1_status and s1_status.provisioned and not s1_status.orphaned and (
             (_run and _run.status in ['running','queued','claimed']) or
             (_job and _job.status in ['queued','claimed','running']))) %}
-      <div id="s1-sync-live" class="mt-3" data-env-id="{{ env.id }}" data-active="{{ '1' if _active else '0' }}">
-        <span id="s1-sync-badge" class="hidden text-xs text-blue-600 font-medium"
-              title="The substrate sync is running against Salesforce. This panel refreshes automatically when it finishes.">&#9679; syncing&hellip;</span>
+      {# UI Pass 2: live determinate progress bar. Two HONEST lanes — Structure shows
+         phases COMPLETE (last_completed_phase is the only recorded fact; we never
+         display a guessed currently-running phase), Enrichment shows done/total from
+         the queue. Server-renders the initial state, then the poller updates both
+         lanes in place every 5s (no full reload until the run is terminal). #}
+      {% set _e = (s1_status.enrichment if s1_status else None) or {'done': 0, 'total': 0} %}
+      {% set _lcp = _run.last_completed_phase if _run else None %}
+      {% set _np = (sync_phases | length) or 11 %}
+      {% set _dp = (sync_phases.index(_lcp) + 1) if (sync_phases and _lcp and _lcp in sync_phases) else 0 %}
+      {% set _struct_pct = (_dp * 100 // _np) if _np else 0 %}
+      {% set _enrich_pct = (_e.done * 100 // _e.total) if _e.total else 0 %}
+      <div id="s1-sync-live" class="mt-3" data-env-id="{{ env.id }}"
+           data-active="{{ '1' if _active else '0' }}" data-phases='{{ sync_phases | tojson }}'>
+        <div id="s1-sync-progress" class="space-y-3 {% if not _active %}hidden{% endif %}">
+          <div class="flex items-center gap-2 text-xs font-medium text-blue-600">
+            <span class="inline-block h-2 w-2 rounded-full bg-blue-500 animate-pulse-blue"></span> Sync in progress
+          </div>
+          <div>
+            <div class="flex items-center justify-between text-xs mb-1">
+              <span class="font-medium text-gray-700">Structure</span>
+              <span class="text-gray-500"><span id="s1-struct-text">{{ ('Structure ✓ · ' ~ _np ~ ' of ' ~ _np ~ ' phases') if (_dp >= _np and _dp > 0) else (_dp ~ ' of ' ~ _np ~ ' phases complete') }}</span> <span id="s1-struct-phase" class="text-gray-400">{{ ('· last: ' ~ _lcp) if _lcp else '' }}</span></span>
+            </div>
+            <div class="h-2 w-full rounded-full bg-gray-200"><div id="s1-struct-bar" class="h-2 rounded-full bg-indigo-600 transition-all" style="width: {{ _struct_pct }}%"></div></div>
+          </div>
+          <div>
+            <div class="flex items-center justify-between text-xs mb-1">
+              <span class="font-medium text-gray-700">Enrichment</span>
+              <span id="s1-enrich-text" class="text-gray-500">Enrichment {{ _e.done }}/{{ _e.total }}</span>
+            </div>
+            <div class="h-2 w-full rounded-full bg-gray-200"><div id="s1-enrich-bar" class="h-2 rounded-full bg-emerald-600 transition-all" style="width: {{ _enrich_pct }}%"></div></div>
+          </div>
+          <p class="text-xs text-gray-400">Updates every few seconds while the sync runs. Shows phases completed — not a guessed current phase.</p>
+        </div>
       </div>
       <script>
       (function(){
         var el = document.getElementById('s1-sync-live');
         if (!el || el.dataset.active !== '1') return;
         var envId = el.dataset.envId;
-        document.getElementById('s1-sync-badge').classList.remove('hidden');
-        var n = 0, TERMINAL = ['success', 'partial_success', 'failure'];
+        var PHASES = [];
+        try { PHASES = JSON.parse(el.dataset.phases || '[]'); } catch (e) { PHASES = []; }
+        var NP = PHASES.length || 11;
+        var TERMINAL = ['success', 'partial_success', 'failure'];
+        function pct(n, d){ return d > 0 ? Math.min(100, Math.round(n / d * 100)) : 0; }
+        function render(s){
+          var run = s && s.run;
+          var lcp = run ? run.last_completed_phase : null;
+          // HONEST: completed-phase count from the only recorded fact. No current-phase guess.
+          var done = (lcp && PHASES.indexOf(lcp) !== -1) ? PHASES.indexOf(lcp) + 1 : 0;
+          var sb = document.getElementById('s1-struct-bar');
+          if (sb) sb.style.width = pct(done, NP) + '%';
+          var st = document.getElementById('s1-struct-text');
+          if (st) st.textContent = (done >= NP && done > 0)
+            ? ('Structure ✓ · ' + NP + ' of ' + NP + ' phases')
+            : (done + ' of ' + NP + ' phases complete');
+          var sp = document.getElementById('s1-struct-phase');
+          if (sp) sp.textContent = lcp ? ('· last: ' + lcp) : '';
+          var e = (s && s.enrichment) || {done: 0, total: 0};
+          var eb = document.getElementById('s1-enrich-bar');
+          if (eb) eb.style.width = pct(e.done, e.total) + '%';
+          var et = document.getElementById('s1-enrich-text');
+          if (et) et.textContent = 'Enrichment ' + (e.done || 0) + '/' + (e.total || 0);
+        }
+        var prog = document.getElementById('s1-sync-progress');
+        if (prog) prog.classList.remove('hidden');
+        var n = 0;
         var t = setInterval(function(){
           n++;
           if (n > 180) { clearInterval(t); return; }   // ~15 min cap
@@ -129,9 +184,11 @@
                 {headers: {'Accept': 'application/json'}})
             .then(function(r){ return r.json(); })
             .then(function(s){
+              render(s);   // live in-place update each poll (no reload mid-run)
               if (s.run && TERMINAL.indexOf(s.run.status) !== -1) {
                 clearInterval(t);
-                setTimeout(function(){ window.location.reload(); }, 400);
+                // terminal: reflect the final state, then refresh the panel + history.
+                setTimeout(function(){ window.location.reload(); }, 800);
               }
             })
             .catch(function(){ /* keep polling */ });
