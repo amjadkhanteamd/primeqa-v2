@@ -48,8 +48,11 @@ from typing import Iterable, Optional
 SIDEBAR_ITEMS: list[dict] = [
     # Primary — the things you do day-to-day
     {
+        # The nav label matches the destination page's own title ("Requirements")
+        # — a requirement IS the Jira ticket, but the surface is named for the
+        # requirement everywhere else, so the tab name aligns to it (D-267).
         "id": "my_tickets",
-        "label": "My Tickets",
+        "label": "Requirements",
         "icon": "ticket",
         "url": "/requirements",
         "permission": "run_single_ticket",

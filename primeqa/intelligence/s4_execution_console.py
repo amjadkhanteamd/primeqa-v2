@@ -238,11 +238,12 @@ def _runs_where(outcome, verdict, environment_id, since):
 
 
 def _list_runs(conn, *, limit: int, offset: int, outcome=None, verdict=None,
-               environment_id=None, since=None):
+               environment_id=None, since=None, labels=None):
     """Pure: (total, page-rows) of runs newest-first on an open tenant conn — S4
     outcome/timing LEFT JOINed to the S6 verdict (verdict NULL when absent),
     filtered by the optional (outcome / verdict / environment_id / since) facets
-    (D-231). The COUNT uses the SAME FROM+WHERE so the total reflects the filter."""
+    (D-231). The COUNT uses the SAME FROM+WHERE so the total reflects the filter.
+    ``labels`` (the org label map) renders titles in business language (D-267)."""
     where, params = _runs_where(outcome, verdict, environment_id, since)
     total = conn.execute(
         text(f"SELECT COUNT(*) {_RUNS_FROM}{where}"), params).scalar() or 0
@@ -272,7 +273,7 @@ def _list_runs(conn, *, limit: int, offset: int, outcome=None, verdict=None,
              "duration_h": duration_human(r["duration_ms"]),
              "environment_id": r["environment_id"],
              "requirement_key": r["requirement_key"],
-             "title": (claim_title(r["claim_kind"], r["asserted_truth"])
+             "title": (claim_title(r["claim_kind"], r["asserted_truth"], labels)
                        if r["claim_kind"] else None)}
             for r in rows]
     return total, runs
@@ -290,12 +291,14 @@ def list_runs(tenant_id: int, *, page: int = 1, per_page: int = 20,
     filters = {"outcome": outcome, "verdict": verdict,
                "environment_id": environment_id, "since": since}
     try:
+        from primeqa.intelligence.entity_labels import label_map
         from primeqa.semantic.connection import get_tenant_connection
+        labels = label_map(tenant_id)        # business labels for the spine (D-267)
         with get_tenant_connection(tenant_id) as conn:
             total, runs = _list_runs(
                 conn, limit=per_page, offset=(page - 1) * per_page,
                 outcome=outcome, verdict=verdict,
-                environment_id=environment_id, since=since)
+                environment_id=environment_id, since=since, labels=labels)
         total_pages = max(1, (total + per_page - 1) // per_page)
         return {"available": True, "runs": runs, "total": total,
                 "page": page, "per_page": per_page, "total_pages": total_pages,
@@ -348,15 +351,16 @@ def _scoped_latest(conn, *, environment_id=None, since=None):
     return conn.execute(text(sql), params).mappings().all()
 
 
-def _row_title(r):
-    return (claim_title(r["claim_kind"], r["asserted_truth"])
+def _row_title(r, labels=None):
+    return (claim_title(r["claim_kind"], r["asserted_truth"], labels)
             if r["claim_kind"] else (r["test_id"][:8] if r["test_id"] else "test"))
 
 
-def _aggregate_overview(rows, *, now=None) -> dict:
+def _aggregate_overview(rows, *, now=None, labels=None) -> dict:
     """Pure: turn the scoped latest-per-test rows into the health summary + the
     two lenses (by requirement, by root cause). ``now`` is injectable so the
-    relative-time strings are deterministic in tests. No DB, no I/O beyond the
+    relative-time strings are deterministic in tests. ``labels`` (the org label
+    map) renders titles in business language. No DB, no I/O beyond the
     ``proposal_for`` triage map."""
     from primeqa.intelligence.repair_agent import proposal_for
 
@@ -382,7 +386,7 @@ def _aggregate_overview(rows, *, now=None) -> dict:
             "last_finished": None})
         fin = _iso(r["finished_at"])
         g["tests"].append({
-            "test_id": r["test_id"], "title": _row_title(r),
+            "test_id": r["test_id"], "title": _row_title(r, labels),
             "outcome": r["outcome"], "verdict": r["verdict"],
             "verdict_plain": verdict_plain(r["verdict"], r["outcome"]),
             "finished_ago": time_ago(fin, now)})
@@ -415,7 +419,7 @@ def _aggregate_overview(rows, *, now=None) -> dict:
             g["_all_fixable"] = False
         if len(g["tests"]) < 5:
             g["tests"].append({
-                "test_id": r["test_id"], "title": _row_title(r),
+                "test_id": r["test_id"], "title": _row_title(r, labels),
                 "requirement_key": r["requirement_key"],
                 "verdict_plain": verdict_plain(r["verdict"], r["outcome"]),
                 "finished_ago": time_ago(_iso(r["finished_at"]), now)})
@@ -438,10 +442,12 @@ def runs_overview(tenant_id: int, *, environment_id=None, since=None) -> dict:
     ``{available, summary, by_requirement, by_cause}``; ``available=False`` on any
     read error (page degrades to the empty state)."""
     try:
+        from primeqa.intelligence.entity_labels import label_map
         from primeqa.semantic.connection import get_tenant_connection
+        labels = label_map(tenant_id)        # business labels for the spine (D-267)
         with get_tenant_connection(tenant_id) as conn:
             rows = _scoped_latest(conn, environment_id=environment_id, since=since)
-        return {"available": True, **_aggregate_overview(rows)}
+        return {"available": True, **_aggregate_overview(rows, labels=labels)}
     except Exception as exc:
         log.warning("runs_overview unavailable for tenant %s: %s", tenant_id, exc)
         return {"available": False, "summary": None,

@@ -37,8 +37,8 @@
 {% set i = r.interpretation if r else None %}
 
 {{ breadcrumbs([
-  ('Claims', '/claims'),
-  ('Claim', ('/claims/' ~ r.claim_test_id) if r else None),
+  ('Tests', '/claims'),
+  ('Test case', ('/claims/' ~ r.claim_test_id) if r else None),
   ('Run', None),
 ]) }}
 

@@ -76,9 +76,10 @@ def trigger_s3_generation(db, *, tenant_id: int, requirement_id: int,
 
 # --- read: the requirement's generated test plan (S2 claims + recipes) -------
 
-def _read_claims(session, requirement_key: str) -> list[dict]:
+def _read_claims(session, requirement_key: str, labels=None) -> list[dict]:
     """Pure: the requirement's ``generated_from`` test plan on an open S2 session.
-    Directly testable on the semantic harness with seeded links/claims/recipes."""
+    Directly testable on the semantic harness with seeded links/claims/recipes.
+    ``labels`` (the org label map) renders titles in business language."""
     from primeqa.test_representation.coordinator import SemanticTransactionCoordinator
     coord = SemanticTransactionCoordinator()
     matches = coord.list_tests_by_requirement(
@@ -101,7 +102,8 @@ def _read_claims(session, requirement_key: str) -> list[dict]:
                          "priority": r.priority, "status": r.status} for r in recipes],
             "linked_at": _iso(m.linked_at),
             # D-206 triage surface: the claim AS a sentence + the honesty badge.
-            "title": claim_title(claim.claim_kind, _dump(claim.asserted_truth)),
+            "title": claim_title(claim.claim_kind, _dump(claim.asserted_truth),
+                                 labels),
             "depth": claim_depth([r.recipe_kind for r in recipes]),
         })
     # deterministic: archetype then claim_kind then test_id
@@ -114,12 +116,15 @@ def read_requirement_claims(tenant_id: int, requirement_key: str) -> dict:
     Returns ``{available, claims}`` — ``available=False`` on any read error (e.g.
     the tenant has no substrate schema)."""
     try:
+        from primeqa.intelligence.entity_labels import label_map
         from primeqa.semantic.connection import get_tenant_connection
         from sqlalchemy.orm import Session
+        labels = label_map(tenant_id)        # business labels for the spine (D-267)
         with get_tenant_connection(tenant_id) as conn:
             session = Session(bind=conn)
             try:
-                return {"available": True, "claims": _read_claims(session, requirement_key)}
+                return {"available": True,
+                        "claims": _read_claims(session, requirement_key, labels)}
             finally:
                 session.close()
     except Exception as exc:
@@ -169,10 +174,11 @@ def _dump(body):
     return body if isinstance(body, dict) else {}
 
 
-def _read_claim_detail(session, test_id) -> dict | None:
+def _read_claim_detail(session, test_id, labels=None) -> dict | None:
     """Pure: the current claim version + its active recipes, bodies dumped to
     JSON-safe dicts. Returns ``None`` when no live claim matches ``test_id``.
-    Directly testable on the generation harness."""
+    Directly testable on the generation harness. ``labels`` (the org label map)
+    renders the title in business language."""
     from primeqa.test_representation.coordinator import SemanticTransactionCoordinator
     coord = SemanticTransactionCoordinator()
     claim = coord.get_latest_claim(session, test_id)
@@ -189,7 +195,7 @@ def _read_claim_detail(session, test_id) -> dict | None:
         "valid_from": _iso(claim.valid_from),
         "identity_hash": claim.identity_hash,
         # D-206 triage surface: the claim AS a sentence + the honesty badge.
-        "title": claim_title(claim.claim_kind, asserted),
+        "title": claim_title(claim.claim_kind, asserted, labels),
         "depth": claim_depth([r.recipe_kind for r in recipes]),
         "asserted_truth": asserted,
         "semantic_conditions": _dump(claim.semantic_conditions),
@@ -212,12 +218,14 @@ def read_claim_detail(tenant_id: int, test_id) -> dict:
     raises. Returns ``{available, found, claim}`` — ``found=False`` when no live
     claim matches; ``available=False`` on any read error."""
     try:
+        from primeqa.intelligence.entity_labels import label_map
         from primeqa.semantic.connection import get_tenant_connection
         from sqlalchemy.orm import Session
+        labels = label_map(tenant_id)        # business labels for the spine (D-267)
         with get_tenant_connection(tenant_id) as conn:
             session = Session(bind=conn)
             try:
-                detail = _read_claim_detail(session, test_id)
+                detail = _read_claim_detail(session, test_id, labels)
                 return {"available": True, "found": detail is not None, "claim": detail}
             finally:
                 session.close()
@@ -234,10 +242,10 @@ def read_claim_detail(tenant_id: int, test_id) -> dict:
 # same kind legitimately coexist, e.g. SQ-205's two automation-effect claims);
 # this read gives the human that context at the moment of approval/deprecation.
 
-def _read_claim_siblings(session, test_id) -> list[dict]:
+def _read_claim_siblings(session, test_id, labels=None) -> list[dict]:
     """Pure: current claims linked to any of this claim's requirements with the
     same claim_kind, excluding the claim itself. Status chips + titles for the
-    panel; newest first."""
+    panel; newest first. ``labels`` renders titles in business language."""
     from sqlalchemy import text as _text
     rows = session.execute(_text(
         "SELECT DISTINCT c.test_id, c.claim_kind, c.archetype, c.status, "
@@ -260,7 +268,7 @@ def _read_claim_siblings(session, test_id) -> list[dict]:
         "claim_kind": r["claim_kind"],
         "archetype": r["archetype"],
         "status": r["status"],
-        "title": claim_title(r["claim_kind"], r["asserted_truth"]),
+        "title": claim_title(r["claim_kind"], r["asserted_truth"], labels),
         "requirement_key": r["external_key"],
         "updated_at": _iso(r["updated_at"]),
     } for r in rows]
@@ -270,13 +278,15 @@ def read_claim_siblings(tenant_id: int, test_id) -> dict:
     """Best-effort read of the claim's same-requirement same-kind siblings.
     Never raises. Returns ``{available, siblings}``."""
     try:
+        from primeqa.intelligence.entity_labels import label_map
         from primeqa.semantic.connection import get_tenant_connection
         from sqlalchemy.orm import Session
+        labels = label_map(tenant_id)        # business labels for the spine (D-267)
         with get_tenant_connection(tenant_id) as conn:
             session = Session(bind=conn)
             try:
                 return {"available": True,
-                        "siblings": _read_claim_siblings(session, test_id)}
+                        "siblings": _read_claim_siblings(session, test_id, labels)}
             finally:
                 session.close()
     except Exception as exc:
@@ -315,10 +325,12 @@ def read_claim_requirement(tenant_id: int, test_id) -> dict:
 # test_claims directly (the s1_sync_console pattern: a tenant-scoped raw read).
 # "Current" = valid_to IS NULL, matching get_latest_claim's filter.
 
-def _list_claims(conn, *, limit: int, offset: int, q=None, status=None):
+def _list_claims(conn, *, limit: int, offset: int, q=None, status=None,
+                 labels=None):
     """Pure: (total, page-rows) of current claims on an open tenant conn. ``q``
     ILIKE-matches claim_kind / archetype / test_id (enum cols cast to text);
     ``status`` filters exactly (the drafts inbox passes ``'draft'``).
+    ``labels`` (the org label map) renders titles in business language.
 
     Each row also carries the D-206 triage surface — ``title`` (the claim AS a
     plain-English sentence, from ``asserted_truth``), ``depth`` (behavioral vs
@@ -367,7 +379,7 @@ def _list_claims(conn, *, limit: int, offset: int, q=None, status=None):
     claims = [{"test_id": r["test_id"], "archetype": r["archetype"],
                "claim_kind": r["claim_kind"], "status": r["status"],
                "version_seq": r["version_seq"], "updated_at": _iso(r["updated_at"]),
-               "title": claim_title(r["claim_kind"], r["asserted_truth"]),
+               "title": claim_title(r["claim_kind"], r["asserted_truth"], labels),
                "depth": claim_depth(r["recipe_kinds"]),
                "requirement_key": r["requirement_key"],
                "last_run": ({"run_id": r["last_run_id"],
@@ -387,11 +399,13 @@ def list_claims(tenant_id: int, *, page: int = 1, per_page: int = 20, q=None,
     page = max(1, page)
     per_page = max(1, min(per_page, 50))
     try:
+        from primeqa.intelligence.entity_labels import label_map
         from primeqa.semantic.connection import get_tenant_connection
+        labels = label_map(tenant_id)        # business labels for the spine (D-267)
         with get_tenant_connection(tenant_id) as conn:
             total, claims = _list_claims(
                 conn, limit=per_page, offset=(page - 1) * per_page, q=q,
-                status=status)
+                status=status, labels=labels)
         total_pages = max(1, (total + per_page - 1) // per_page)
         return {"available": True, "claims": claims, "total": total,
                 "page": page, "per_page": per_page, "total_pages": total_pages}

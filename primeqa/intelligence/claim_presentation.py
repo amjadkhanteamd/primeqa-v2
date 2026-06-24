@@ -38,10 +38,30 @@ _OPERATION_WORDS = {
 }
 
 
-def _ref_name(ref: Any) -> Optional[str]:
-    """The human name of a reference dict (external_id preferred)."""
+def _label(name: Any, labels) -> Any:
+    """Resolve an sf_api_name to its business label via the (optional) label
+    map, falling back to the api name itself when unmapped. Non-str passes
+    through unchanged."""
+    if labels and isinstance(name, str):
+        return labels.get(name, name)
+    return name
+
+
+def _ref_name(ref: Any, labels=None) -> Optional[str]:
+    """The business name of a reference dict: its label when the org model knows
+    one (the label map), else the raw ``external_id`` (the api name)."""
     if isinstance(ref, dict):
-        return ref.get("external_id") or ref.get("sf_api_name")
+        api = ref.get("external_id") or ref.get("sf_api_name")
+        return _label(api, labels)
+    return None
+
+
+def _object_label_of(field_key: Any, labels) -> Optional[str]:
+    """The owning object's business label for an object-qualified field key
+    (``Case_SLA__c.Status__c`` → ``Case SLA``), or None when the key carries no
+    object prefix."""
+    if isinstance(field_key, str) and "." in field_key:
+        return _label(field_key.split(".", 1)[0], labels)
     return None
 
 
@@ -71,66 +91,133 @@ def _first_field_change(state: Any) -> Optional[tuple]:
     return None
 
 
-def claim_title(claim_kind: str, asserted_truth: Optional[dict]) -> str:
-    """The claim as one plain-English sentence. Deterministic; falls back to
-    the humanized kind when the body lacks the expected fields."""
+def claim_title(claim_kind: str, asserted_truth: Optional[dict],
+                labels=None) -> str:
+    """The claim as one plain-English sentence, in BUSINESS language.
+    Deterministic; falls back to the humanized kind when the body lacks the
+    expected fields. ``labels`` (an optional ``{sf_api_name: display_name}`` map
+    from :func:`primeqa.intelligence.entity_labels.label_map`) resolves the
+    subject/target api names to their org labels; without it the api names
+    render verbatim (the pre-label behavior). API names, flow/recipe names, and
+    schema terms (length/precision/scale) stay OUT of the title — they live in
+    the technical-details register, never the spine."""
     body = asserted_truth or {}
     try:
         if claim_kind == "prohibition-claim":
-            target = _ref_name(body.get("target")) or "the object"
+            target = _ref_name(body.get("target"), labels) or "the object"
             op = _OPERATION_WORDS.get(body.get("operation"), "the operation")
             return f"Rejects {op} on {target}"
         if claim_kind == "value-claim":
-            field = _ref_name(body.get("subject")) or "the field"
+            field = _ref_name(body.get("subject"), labels) or "the field"
             return f"{field} saves as {_literal(body.get('expected_value'))}"
         if claim_kind == "existence-claim":
-            subject = _ref_name(body.get("subject")) or "the metadata"
+            subject = _ref_name(body.get("subject"), labels) or "the metadata"
             return f"{subject} exists in the org"
         if claim_kind == "property-claim":
-            subject = _ref_name(body.get("subject")) or "the metadata"
-            prop = body.get("property_name") or "property"
-            return f"{subject}: {prop} is {_literal(body.get('expected_value'))}"
+            subject = _ref_name(body.get("subject"), labels) or "the metadata"
+            return _property_sentence(subject, body.get("property_name"),
+                                      body.get("expected_value"))
         if claim_kind == "metadata-relationship-claim":
-            src = _ref_name(body.get("source")) or "the rule"
-            tgt = _ref_name(body.get("target")) or "the object"
+            src = _ref_name(body.get("source"), labels) or "the rule"
+            tgt = _ref_name(body.get("target"), labels) or "the object"
             edge = (body.get("edge_type") or "applies to").replace("_", " ").lower()
             return f"{src} {edge} {tgt}"
         if claim_kind == "capability-claim":
             # The granting Profile/PermissionSet is stored under
             # ``granting_subject`` (CapabilityClaimBody) — NOT ``grantee``.
-            grantee = _ref_name(body.get("granting_subject")) or "the profile"
-            target = _ref_name(body.get("target")) or "the object"
+            grantee = _ref_name(body.get("granting_subject"), labels) or "the profile"
+            target = _ref_name(body.get("target"), labels) or "the object"
             cap = (body.get("granted_capability") or "access").replace("_", " ")
             return f"{grantee} has {cap} on {target}"
         if claim_kind == "layout-claim":
-            field = _ref_name(body.get("field")) or "the field"
-            layout = _ref_name(body.get("layout")) or "the layout"
+            field = _ref_name(body.get("field"), labels) or "the field"
+            layout = _ref_name(body.get("layout"), labels) or "the layout"
             return f"{field} appears on {layout}"
         if claim_kind == "state-transition-claim":
-            subject = _ref_name(body.get("subject")) or "the record"
+            subject = _ref_name(body.get("subject"), labels) or "the record"
             change = _first_field_change(body.get("to_state"))
             if change:
-                field, val = change
-                return f"{subject}: {field} becomes {val}"
+                fkey, val = change
+                return f"{subject}: {_label(fkey, labels)} becomes {val}"
             return f"{subject} reaches the expected state"
         if claim_kind == "automation-effect-claim":
-            automation = _ref_name(body.get("automation")) or "the automation"
+            # The asserted truth is the EFFECT, stated in business terms. The
+            # triggering automation (a Flow/recipe API name) is traceability,
+            # not the headline — it belongs in the technical details, never the
+            # spine (so the title leads with the effect, not the flow name).
             effect = body.get("expected_effect") or {}
             ekind = effect.get("kind") if isinstance(effect, dict) else None
             if ekind == "field_change":
                 change = _first_field_change(effect.get("changes"))
                 if change:
-                    field, val = change
-                    return f"{automation} sets {field} to {val}"
-                return f"{automation} updates the record"
+                    fkey, val = change
+                    field = _label(fkey, labels)
+                    obj = _object_label_of(fkey, labels)
+                    where = f"{obj} {field}" if obj else field
+                    return f"Automatically sets {where} to {val}"
+                return "An automation updates the record"
             if ekind == "blocked_operation":
-                return f"{automation} blocks the change"
+                return "An automation blocks the change"
             if ekind == "side_effect":
-                return f"{automation} fires a side effect"
-            return f"{automation} fires"
+                return "An automation fires a side effect"
+            return "An automation fires"
     except Exception:
         pass
     return claim_kind.replace("-", " ")
+
+
+# Property-claim readable templates (D-267): the schema term — length /
+# precision / scale — must NOT appear in the spine; it states the constraint in
+# business words. Other property kinds keep a generic, label-resolved fallback.
+def _property_num(ev: Any) -> Any:
+    """The magnitude of a property's ExpectedValue (LiteralValue) — the raw
+    number, unquoted (a length / precision / scale is always a count)."""
+    if isinstance(ev, dict):
+        ev = ev.get("value")
+    return ev
+
+
+# Business phrasing for the boolean field-detail properties that can ground (S1
+# ``field_details`` columns) — keeps the raw snake_case column name off the spine
+# (review D-267). Each entry: (phrase when the asserted value is true, false).
+_BOOL_PROPERTY = {
+    "is_unique": ("{s} must be unique", "{s} allows duplicate values"),
+    "is_nillable": ("{s} can be left blank", "{s} is required"),
+    "is_custom": ("{s} is a custom field", "{s} is a standard field"),
+    "is_calculated": ("{s} is a formula field", "{s} is not a formula field"),
+    "is_external_id": ("{s} is an external ID", "{s} is not an external ID"),
+}
+
+
+def _is_truthy(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ("true", "1", "yes")
+
+
+def _property_sentence(subject: str, property_name: Any,
+                       expected_value: Any) -> str:
+    """One business sentence for a property-claim: ``length`` → "is N
+    characters", ``precision`` → "holds up to N digits", ``scale`` → "has N
+    decimal place(s)"; the boolean field flags + ``field_type`` get business
+    phrasings. Any other property keeps a generic form with the property name
+    HUMANIZED (``is_unique`` → "is unique") — a raw schema column never reaches
+    the spine."""
+    n = _property_num(expected_value)
+    if property_name == "length":
+        return f"{subject} is {n} characters"
+    if property_name == "precision":
+        return f"{subject} holds up to {n} digits"
+    if property_name == "scale":
+        return f"{subject} has {n} decimal place{'' if n == 1 else 's'}"
+    if property_name == "field_type" and isinstance(n, str) and n:
+        return f"{subject} is a {n} field"
+    if property_name in _BOOL_PROPERTY:
+        tmpl = _BOOL_PROPERTY[property_name][0 if _is_truthy(n) else 1]
+        return tmpl.format(s=subject)
+    # generic fallback: humanize the property name so no snake_case column leaks.
+    prop = (property_name or "property").replace("_", " ")
+    return f"{subject}: {prop} is {_literal(expected_value)}"
 
 
 # ---------------------------------------------------------------------------
@@ -314,12 +401,36 @@ def _err_msg(err: Any) -> str:
     return "an error occurred"
 
 
-def _sobj(step: dict) -> str:
-    return step.get("sobject") or "record"
+# Salesforce metadata / Tooling sobjects that surface as the read target on an
+# inspection run — schema terms that must not leak into the spine. Mapped to a
+# plain phrase; a custom data sobject resolves via the org label map; anything
+# else falls back to the raw name (already business-ish for data objects).
+_SYSTEM_SOBJECT_PLAIN = {
+    "EntityDefinition": "object definition",
+    "FieldDefinition": "field definition",
+    "CustomField": "field definition",
+    "CustomObject": "object definition",
+    "ValidationRule": "validation rule",
+    "FlowDefinitionView": "flow definition",
+    "RecordType": "record type",
+    "PermissionSet": "permission set",
+    "Profile": "profile",
+}
 
 
-def _mutation_plain(kind: str, step: dict, err: Any) -> str:
-    obj = _sobj(step)
+def _sobj(step: dict, labels=None) -> str:
+    raw = step.get("sobject")
+    if not raw:
+        return "record"
+    if raw in _SYSTEM_SOBJECT_PLAIN:                  # a schema/Tooling sobject
+        return _SYSTEM_SOBJECT_PLAIN[raw]
+    if labels and raw in labels:                      # a custom data sobject
+        return labels[raw]
+    return raw
+
+
+def _mutation_plain(kind: str, step: dict, err: Any, labels=None) -> str:
+    obj = _sobj(step, labels)
     if err:
         return f"Couldn't attempt the {obj} {kind} — {_err_msg(err)}"
     success = bool(step.get("success"))
@@ -335,22 +446,29 @@ def _mutation_plain(kind: str, step: dict, err: Any) -> str:
     return tmpl.format(obj=obj, code=code_sfx)
 
 
-def step_plain(step: Any) -> str:
+def step_plain(step: Any, labels=None) -> str:
     """One plain-English sentence for an S4 evidence step (the run-detail trace).
     Pure + never-raises: dispatches on ``step['kind']`` and the outcome fields,
     falling back to the kind word on any unexpected shape so the run page never
-    breaks."""
+    breaks. ``labels`` (the org label map) de-jargons the read target —
+    ``EntityDefinition`` → "object definition" (a schema sobject) or a custom
+    sobject → its business label."""
     if not isinstance(step, dict):
         return "Step"
     kind = step.get("kind")
     try:
         err = step.get("error")
         if kind == "read":
-            obj = _sobj(step)
+            raw = step.get("sobject")
+            obj = _sobj(step, labels)
             if err:
                 return f"Couldn't read {obj} — {_err_msg(err)}"
             n = step.get("row_count")
-            if n is None:
+            if raw in _SYSTEM_SOBJECT_PLAIN:    # metadata/config inspection read
+                if n is None:
+                    return f"Read the {obj}"
+                return f"Read the {obj} ({n} row{'' if n == 1 else 's'})"
+            if n is None:                       # data read — the established form
                 return f"Read {obj}"
             return f"Read {n} {obj} row{'' if n == 1 else 's'}"
         if kind == "assert":
@@ -363,10 +481,53 @@ def step_plain(step: Any) -> str:
                 return "Checked the records — the assertion did NOT hold"
             return "Checked the records"
         if kind in _MUT_OK:
-            return _mutation_plain(kind, step, err)
+            return _mutation_plain(kind, step, err, labels)
     except Exception:
         pass
     return kind.replace("_", " ") if isinstance(kind, str) else "step"
+
+
+# ---------------------------------------------------------------------------
+# Plain-words run attribution (D-267 — business language in the S6 attribution)
+# ---------------------------------------------------------------------------
+
+def _read_step_subject(steps: Any):
+    """The ``(entity_type, external_id)`` of an inspection run's READ step — the
+    subject the S6 attribution names. Mirrors ``interpreter._read_subject``'s
+    source (the read step carries ``subject_entity_type`` /
+    ``subject_external_id``). Returns ``(None, None)`` with no read step."""
+    try:
+        for s in steps or ():
+            if isinstance(s, dict) and s.get("kind") == "read":
+                return s.get("subject_entity_type"), s.get("subject_external_id")
+    except Exception:
+        pass
+    return None, None
+
+
+def humanize_attribution(attribution: Any, steps: Any, labels=None) -> Any:
+    """Relabel a STORED S6 attribution sentence into business language at
+    DISPLAY time. The attribution prose was persisted with the raw api name
+    (``"The asserted metadata for Object Case_SLA__c is present …"``); this
+    rewrites the subject phrase ``"<EntityType> <api_name>"`` →
+    ``"the <label> <entity-type>"`` (``"the Case SLA object"``) using the org
+    label map + the run's read-step subject — fixing OLD and new runs alike
+    without mutating the substrate's store. Pure, never raises; returns the
+    input unchanged when there is nothing to resolve."""
+    if not attribution or not labels:
+        return attribution
+    try:
+        entity_type, external_id = _read_step_subject(steps)
+        if not entity_type or not external_id:
+            return attribution
+        label = labels.get(external_id)
+        if not label:
+            return attribution
+        old = f"{entity_type} {external_id}"
+        new = f"the {label} {entity_type.lower()}"
+        return attribution.replace(old, new)
+    except Exception:
+        return attribution
 
 
 # ---------------------------------------------------------------------------

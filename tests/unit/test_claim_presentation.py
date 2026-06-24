@@ -62,6 +62,8 @@ def test_state_transition_title_falls_back_when_no_field_values():
 
 
 def test_automation_effect_title_field_change():
+    # D-267: the title states the EFFECT in business terms; the triggering Flow
+    # API name is traceability (technical details), never the spine headline.
     body = {
         "automation": {"external_id": "SLA_Escalation_Flow"},
         "expected_effect": {
@@ -70,23 +72,24 @@ def test_automation_effect_title_field_change():
         },
     }
     assert claim_title("automation-effect-claim", body) == \
-        "SLA_Escalation_Flow sets SLA_Deadline__c to 24"
+        "Automatically sets SLA_Deadline__c to 24"
 
 
 def test_automation_effect_title_blocked_and_side_effect():
+    # D-267: no Flow name in the spine — these read off the effect kind alone.
     blocked = {"automation": {"external_id": "Amount_Guard"},
                "expected_effect": {"kind": "blocked_operation", "reason": "too big"}}
     assert claim_title("automation-effect-claim", blocked) == \
-        "Amount_Guard blocks the change"
+        "An automation blocks the change"
     side = {"automation": {"external_id": "Case_Email_Alert"},
             "expected_effect": {"kind": "side_effect"}}
     assert claim_title("automation-effect-claim", side) == \
-        "Case_Email_Alert fires a side effect"
+        "An automation fires a side effect"
 
 
 def test_automation_effect_title_falls_back_when_no_effect():
     body = {"automation": {"external_id": "Some_Flow"}}
-    assert claim_title("automation-effect-claim", body) == "Some_Flow fires"
+    assert claim_title("automation-effect-claim", body) == "An automation fires"
 
 
 def test_capability_title_reads_granting_subject_not_grantee():
@@ -109,7 +112,94 @@ def test_null_expected_value_renders_blank():
 def test_new_kinds_still_fall_back_on_empty_body():
     assert claim_title("state-transition-claim", {}) == \
         "the record reaches the expected state"
-    assert claim_title("automation-effect-claim", {}) == "the automation fires"
+    assert claim_title("automation-effect-claim", {}) == "An automation fires"
+
+
+# ---------------------------------------------------------------------------
+# Business labels in the spine (D-267) — claim_title resolves api names to org
+# display names via the optional label map; without it the api name renders
+# verbatim (the pre-label behavior, asserted above).
+# ---------------------------------------------------------------------------
+
+def test_existence_title_resolves_object_label():
+    body = {"subject": {"external_id": "Case_SLA__c"}}
+    labels = {"Case_SLA__c": "Case SLA"}
+    assert claim_title("existence-claim", body, labels) == \
+        "Case SLA exists in the org"
+    # no map → the api name (unchanged fallback)
+    assert claim_title("existence-claim", body) == "Case_SLA__c exists in the org"
+    # map missing the key → the api name (graceful)
+    assert claim_title("existence-claim", body, {"Other__c": "Other"}) == \
+        "Case_SLA__c exists in the org"
+
+
+def test_property_title_business_templates():
+    labels = {"Case_SLA__c.SLA_Code__c": "SLA Code",
+              "Case_SLA__c.Target_Hours__c": "SLA Target Hours"}
+    length = {"subject": {"external_id": "Case_SLA__c.SLA_Code__c"},
+              "property_name": "length", "expected_value": {"value": 8}}
+    assert claim_title("property-claim", length, labels) == "SLA Code is 8 characters"
+    precision = {"subject": {"external_id": "Case_SLA__c.Target_Hours__c"},
+                 "property_name": "precision", "expected_value": {"value": 4}}
+    assert claim_title("property-claim", precision, labels) == \
+        "SLA Target Hours holds up to 4 digits"
+    scale1 = {"subject": {"external_id": "Case_SLA__c.Target_Hours__c"},
+              "property_name": "scale", "expected_value": {"value": 1}}
+    assert claim_title("property-claim", scale1, labels) == \
+        "SLA Target Hours has 1 decimal place"
+    scale2 = {"subject": {"external_id": "Case_SLA__c.Target_Hours__c"},
+              "property_name": "scale", "expected_value": {"value": 2}}
+    assert claim_title("property-claim", scale2, labels) == \
+        "SLA Target Hours has 2 decimal places"
+    # the boolean field flags + field_type read as business sentences — no raw
+    # schema column name on the spine
+    is_unique = {"subject": {"external_id": "Case_SLA__c.SLA_Code__c"},
+                 "property_name": "is_unique", "expected_value": {"value": True}}
+    assert claim_title("property-claim", is_unique, labels) == "SLA Code must be unique"
+    nillable_false = {"subject": {"external_id": "Case_SLA__c.SLA_Code__c"},
+                      "property_name": "is_nillable", "expected_value": {"value": False}}
+    assert claim_title("property-claim", nillable_false, labels) == "SLA Code is required"
+    field_type = {"subject": {"external_id": "Case_SLA__c.SLA_Code__c"},
+                  "property_name": "field_type", "expected_value": {"value": "Currency"}}
+    assert claim_title("property-claim", field_type, labels) == \
+        "SLA Code is a Currency field"
+    # an unmapped property humanizes the column name — never raw snake_case
+    other = {"subject": {"external_id": "Case_SLA__c.SLA_Code__c"},
+             "property_name": "is_filterable", "expected_value": {"value": True}}
+    assert claim_title("property-claim", other, labels) == \
+        "SLA Code: is filterable is True"
+
+
+def test_automation_effect_title_object_qualified_field_label():
+    # the live SQ-205 shape: object-qualified field key → object + field labels,
+    # no Flow name.
+    body = {
+        "automation": {"external_id": "SQ205_Create_Case_SLA"},
+        "expected_effect": {
+            "kind": "field_change",
+            "changes": {"field_values": {
+                "Case_SLA__c.Status__c": {"kind": "literal", "value": "Active"}}},
+        },
+    }
+    labels = {"Case_SLA__c": "Case SLA", "Case_SLA__c.Status__c": "Status"}
+    assert claim_title("automation-effect-claim", body, labels) == \
+        'Automatically sets Case SLA Status to "Active"'
+
+
+def test_humanize_attribution_relabels_stored_subject():
+    from primeqa.intelligence.claim_presentation import humanize_attribution
+    attribution = ("The asserted metadata for Object Case_SLA__c is present "
+                   "(the inspection read returned it).")
+    steps = [{"kind": "read", "subject_entity_type": "Object",
+              "subject_external_id": "Case_SLA__c", "row_count": 1}]
+    labels = {"Case_SLA__c": "Case SLA"}
+    out = humanize_attribution(attribution, steps, labels)
+    assert "the Case SLA object is present" in out
+    assert "Case_SLA__c" not in out and "Object Case_SLA__c" not in out
+    # no labels → unchanged; no read step → unchanged; falsy → passthrough
+    assert humanize_attribution(attribution, steps, None) == attribution
+    assert humanize_attribution(attribution, [], labels) == attribution
+    assert humanize_attribution("", steps, labels) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -316,3 +406,19 @@ def test_step_plain_falls_back_and_never_raises():
     # garbage values must not raise
     assert sp({"kind": "create", "sobject": object(), "success": "yes",
                "matched": True})
+
+
+def test_step_plain_dejargons_system_sobject_read():
+    # D-267: a metadata/Tooling sobject must not leak into the spine — it reads
+    # as a plain phrase. A data sobject keeps the established form.
+    sp = _import_step_plain()
+    assert sp({"kind": "read", "sobject": "EntityDefinition", "row_count": 1}) == \
+        "Read the object definition (1 row)"
+    assert sp({"kind": "read", "sobject": "FieldDefinition", "row_count": 3}) == \
+        "Read the field definition (3 rows)"
+    # a data read is unchanged (Account is already business language)
+    assert sp({"kind": "read", "sobject": "Account", "row_count": 3}) == \
+        "Read 3 Account rows"
+    # a custom sobject resolves through the label map
+    assert sp({"kind": "read", "sobject": "Case_SLA__c", "row_count": 2},
+              {"Case_SLA__c": "Case SLA"}) == "Read 2 Case SLA rows"

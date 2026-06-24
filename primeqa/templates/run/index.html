@@ -23,7 +23,7 @@
   {% elif not requirements %}
     {{ empty_state(title='Nothing approved to run',
         description='Generate tests from a requirement, then approve the drafts in the approval inbox.',
-        cta_label='Go to My Tickets', cta_url='/requirements') }}
+        cta_label='Go to Requirements', cta_url='/requirements') }}
   {% else %}
   <form method="POST" action="/run" class="space-y-5">
     {{ csrf_input | safe }}
