@@ -15820,3 +15820,61 @@ moving — `last_completed_phase` advancing through ENTITY_ORDER, `enrichment.do
 climbing toward `total`, terminal finalize, env-59 entity count steady at 5910):
 reported out-of-band (this log is append-only). **This closes the Pass-2 live
 progress requirement.**
+
+## D-265 — 3f Slice 1: S8 grounding found LIVE (correcting "parked") + a fail-loud multi-org guardrail that refuses to blend + clears the stale blend rows
+
+**PARKED-VS-LIVE CORRECTION (the record was wrong).** The roadmap/memory carried
+"S8 = post-pilot, parked." The code does not match that: S8 grounding-validity is
+**LIVE** — `s8_grounding_tick` is in the scheduler's per-iteration tick list
+(`scheduler.py:79`), it re-grounds whenever S1 advances (freshness gate), the
+`s8_grounding_validity` table held **31 fresh rows** on tenant_1, and it is read by
+**5 consumers** — the GO/NO-GO **decision engine** (`substrate_decision.py`), the
+release evidence panel, the substrate-insights drift board, S7 `/ask`, and the
+requirements page. The record is corrected: **S8 grounding is live and consumed.**
+
+**The active bug it exposed.** `recompute_tenant_grounding` (`recompute.py`) builds
+the **org-BLIND** model (`SemanticOrgModel(conn)` — no org). On a tenant with >1
+connected org that has a model, this grounds every claim against the UNION/BLEND of
+all orgs — wrong for any org-divergent claim (an object present in org A but absent
+in org B grounds `intact` off the union). tenant_1 is now multi-org (env-59 +
+env-78), so the 31 rows were a blend the decision engine read.
+
+**Decision — fail-loud guardrail (interim safety, Slice 1).** Before building the
+org-blind model, `recompute_tenant_grounding` counts orgs-with-a-model
+(`COUNT(DISTINCT connected_org_id)` over active entities). If **>1**, it **REFUSES**
+— clears the tenant's stale blend rows + returns 0 without recomputing — rather than
+producing/maintaining blended verdicts. **0 or 1 org → proceed exactly as before**
+(single-org grounding stays correct; the core `recompute_grounding` is unchanged).
+Refuse rather than blend.
+
+**Decision — invalidate by DELETE, not an `unknown` flag.** A 6-way consumer sweep
+confirmed all 5 readers + the store treat a MISSING row gracefully
+(`read_grounding_validity` → None, `list_grounding_validity` omits it, the decision
+engine's grounding read → PASS / no blocker via strict-equality buckets), and that
+`unknown` is **out-of-domain** (`GroundingVerdict = Literal["intact","drifted",
+"broken"]`). DELETE gives the identical handled outcome while keeping `overall`
+inside its declared domain. After invalidation a multi-org tenant's claims read as
+"not grounded → no grounding-based block" — the honest interim posture
+(`pass_rate` / `has_runs` still gate the decision independently). The DELETE persists
+via `get_tenant_connection`'s commit-on-clean-exit, is tenant-scoped (per-tenant
+schema), and is idempotent (a later tick clears 0).
+
+**Follow-on — full per-org grounding (3f Slices 2-3).** Add `connected_org_id` +
+re-key the PK to `(test_id, version_seq, connected_org_id)`; replace the org-blind
+recompute with a per-org loop (`SemanticOrgModel(conn, org)` — the Slice-2 reader
+already exists) so each claim is grounded against each org separately; org-scope the
+5 consumers' reads. The store is a regenerable cache, so the deleted rows repopulate
+per-org once Slices 2-3 land.
+
+**Noted caveat.** A single physical org reconnected under a NEW `connected_orgs`
+UUID (old active entities still under the old id) would count 2 → false-refuse. This
+is a **pre-existing** per-org-model assumption (the whole D-255…D-260 arc keys on
+`connected_org_id`), not introduced here, and degrades gracefully (empty grounding →
+decision PASS, no false block).
+
+**Verification.** 5 unit red-proofs (guardrail both directions; helpers); full unit
+suite green (3158); S8 grounding integration green (11 — unchanged core);
+app/worker/scheduler boot clean. Adversarially reviewed (0 blockers / 0 majors).
+Live deterministic blend-row clear (tenant_1 31 rows → 0 via the guarded recompute;
+decision engine `intact`-blend → None/no-block; env-59 entities untouched): reported
+out-of-band (this log is append-only). **Slice 1 stops the active leak.**
