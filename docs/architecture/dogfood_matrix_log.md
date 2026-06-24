@@ -76,4 +76,4 @@ AK's one-line approval to extend §2.
 | value_persisted | ✓ |
 | cause `vr_inactive` | pending P2 extension |
 | cause `vr_formula_drift` | masked by Finding #2 — re-capture after 2.3 |
-| FLS `platform_constraint` (CF-1) | pending 0.3 (AK user) |
+| FLS `platform_constraint` (CF-1) | CUT — replaced by the admin-Run-As onboarding rule (D-266); detection no longer planned |

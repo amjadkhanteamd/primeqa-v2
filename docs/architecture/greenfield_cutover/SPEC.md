@@ -1,5 +1,7 @@
 # Greenfield Cutover — SPEC
 
+> **SUPERSEDED — cutover executed.** This is a point-in-time design record; do not read its present-tense premises as current. The v1 product layer was retired (D-191..D-221, migration 053) and the `meta_*` tables dropped; S6/S8 now have live consumers (S8 grounding D-142/D-143, read by 5 consumers incl. the decision engine); the model is now per connected org (D-255..D-260). Premise lines below are kept intact for the record.
+
 **Status:** Phase 7 (program) — opened docs-led (D-145). This is the authoritative design for the cutover where the substrate spine (S1–S8) replaces the live v1 product and the v1 `meta_*` tables are dropped. **Design only — the cutover *execution* runs in later phases, gated by the SEQUENCE.**
 
 **Last substantive update:** 2026-06-03 (opened; D-145)

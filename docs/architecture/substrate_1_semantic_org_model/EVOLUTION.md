@@ -148,3 +148,19 @@ store — tolerance is mandatory regardless, and a forced reshape would re-versi
 Full reader audit recorded in D-204; the one genuine data gap found — Flow `entry_condition_text`
 is not synced at all post-cutover (attributes = `{Id}`) — is the Tier-2 parse deferral, not a shape
 issue. DECISIONS_LOG D-203.1 / D-204.
+
+## 2026-06-24 — per-org model dimension + Phase-2 sync reliability
+
+The S1 model became **per connected org** within the tenant schema: entities, edges,
+and logical_versions gained a `connected_org_id` dimension; the active-unique index
+re-keyed to `(sf_id, connected_org_id)`; the reader (`SemanticOrgModel(conn,
+connected_org_id=...)`), the write path, the execution/metadata-bridge consumers, and
+an org-vs-org diff surface all became org-aware. Live-proven on two real orgs (env-59
+5910 entities + env-78 5833). The prior "single canonical model per tenant" / D-030
+"single canonical model across orgs" framing is superseded. DECISIONS_LOG D-255..D-260.
+
+Sync **reliability** hardened: a typed failure taxonomy (`failure_category` /
+`sf_error_code` on `sync_runs` + `s4_execution_runs`) and fail-loud surfacing of the
+previously-swallowed metadata-fetch gaps (`permission_gaps` / `gap_details` →
+`partial_success`). DECISIONS_LOG D-261 / D-262. (FLS/CF-1 detection CUT to an
+admin-Run-As onboarding rule, D-266.)

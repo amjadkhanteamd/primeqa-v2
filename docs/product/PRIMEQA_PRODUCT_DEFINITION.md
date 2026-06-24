@@ -218,7 +218,7 @@ Plimsol is built on eight substrates, each with a distinct responsibility, loose
 
 Read the graph as: every higher substrate depends on substrates below. Substrate 1 (semantic org model) is foundational — referenced directly by Generation, Execution, Evolution, Interpretation, and Knowledge. Substrate 2 (test representation) is also foundational and referenced by Generation, Execution, Interpretation, Evolution. Substrate 5 (knowledge) is cross-cutting — it shapes generation, gets signals from execution and user feedback, and feeds interpretation. Substrate 7 (conversation) sits on top and touches every other substrate as a user-facing surface.
 
-Each substrate is described below, including its responsibilities, its interfaces, and what it deliberately does not do. The deeply-built v1 substrates (S1, S2, S3, S4, S6) get full treatments; the foundational-but-deferred substrates (S5, S7, S8) get brief sections so readers know they exist and how they fit.
+Each substrate is described below, including its responsibilities, its interfaces, and what it deliberately does not do. The deeply-built v1 substrates (S1, S2, S3, S4, S6) get full treatments; the more-briefly-described substrates (S5, S7, S8 — all now built, see §6.1, but lighter v1 surfaces) get shorter sections so readers know they exist and how they fit.
 
 ### 4.2 Substrate 1 — Semantic Org Model
 
@@ -332,9 +332,9 @@ S7 is deferred for v1. The initial product is structured-UI-first; conversationa
 
 **Responsibility:** Maintain tests as the org evolves so engineers don't have to. Field renamed → references in affected tests update. New required field added → affected tests adjust. Validation rule changed → tests re-verified against the new rule. Flow deactivated → dependent tests flagged for review.
 
-This is the maintenance burden Provar dumps on customers; Plimsol automates it. The substrate sits between S1 (which detects org changes via its bitemporal model) and S2 (which it rewrites). Depending on the change type, S8 may act autonomously (rename propagation), propose changes for review (semantic adjustments), or flag for human attention (deactivation cascades). The autonomy gradient is a S8 design question, not yet resolved (see Q-006 in `docs/architecture/OPEN_QUESTIONS.md`).
+This is the maintenance burden Provar dumps on customers; Plimsol automates it. The substrate sits between S1 (which detects org changes via its bitemporal model) and S2 (which it rewrites). Depending on the change type, S8 may act autonomously (rename propagation), propose changes for review (semantic adjustments), or flag for human attention (deactivation cascades). The autonomy gradient is a S8 design question, not yet resolved (see Q-006 in `docs/architecture/OPEN_QUESTIONS.md`) — note that the grounding-validity predicate that would *gate* any such action is already live; it is these autonomous-action mechanics that remain deferred.
 
-S8 is deferred for v1. The architectural commitment is that S1 makes change detection feasible (bitemporal model) and S2 makes tests rewritable (rich representation); when S8 ships, it has the substrates it needs.
+S8's grounding-validity core is built and live — it runs every scheduler tick (`s8_grounding_tick` re-grounds a tenant's current claims when S1 advances) and is read by five consumers including the GO/NO-GO decision engine (per §6.1; D-142/D-143). What remains deferred is the *evolution mechanics* (autonomous re-grounding / supersession execution) and the admissibility leg (S3-blocked). The architectural commitment held: S1 makes change detection feasible (bitemporal model) and S2 makes tests rewritable (rich representation), so the grounding core had the substrates it needed.
 
 ### 4.10 The Priya scene retraced through architecture
 
@@ -428,6 +428,8 @@ The architectural sidestep is that we do not need to win on execution depth. We 
 Plimsol requires customers to do some things they may not currently do. We should be honest about this.
 
 **Connect their Salesforce org(s) via OAuth.** Standard. Most testing tools require this. Low burden.
+
+**Run the sync as a Salesforce System Administrator.** The integration user the org is connected as (the OAuth Run-As user) must be a System Administrator. Salesforce's REST describe API is field-level-security-aware, so any field hidden from the Run-As user is indistinguishable from a field that does not exist — the semantic org model would silently miss it. A System-Administrator Run-As user has full field visibility, which is why field-level-security / hidden-field detection (CF-1) is NOT built as a separate capability: it is replaced by this onboarding rule (D-266). This is enforced at setup/training time, not in code — an under-privileged Run-As user produces a quietly incomplete model with no error.
 
 **Use Plimsol as the primary test working surface.** This is real. Customers with mature TestRail or Zephyr installations have to choose: keep using TestRail for general test management and use Plimsol only for sprint-level sandbox tests, or migrate progressively to Plimsol. We support export/sync to TestRail/Zephyr, so the choice is not binary, but customers do feel this.
 
@@ -542,7 +544,7 @@ v1 establishes the failure-comprehension layer. v2 and beyond expand the surface
 
 **Pre-deployment impact analysis.** Given a JIRA ticket about to be merged, predict which tests will be affected and surface them for the developer to review. This is post-failure attribution run in reverse, against not-yet-deployed metadata changes.
 
-**Test maintenance intelligence.** When the org evolves (fields renamed, validation rules adjusted), automatically flag tests whose references are now broken and suggest updates. This is Substrate 8 (Evolution Engine) — applying the change-detection capabilities of S1's bitemporal model to S2's test representation, rather than running interpretation against live failures.
+**Test maintenance intelligence.** When the org evolves (fields renamed, validation rules adjusted), automatically flag tests whose references are now broken and suggest updates. This is Substrate 8 (Evolution Engine) — applying the change-detection capabilities of S1's bitemporal model to S2's test representation, rather than running interpretation against live failures. (The grounding-validity half — flagging tests whose references are now broken — is already built and live, see §4.9; it is the *suggest-updates* auto-repair half that remains on the horizon.)
 
 **Coverage analysis.** Given the org's metadata graph and the test inventory, identify gaps — entities or behaviors that no test exercises. Produce recommendations.
 

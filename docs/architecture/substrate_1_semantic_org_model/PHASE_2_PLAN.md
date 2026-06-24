@@ -1,5 +1,7 @@
 # PHASE_2_PLAN.md — Substrate 1, Phase 2
 
+> **HISTORICAL.** The "single canonical model" premise (D-030) was superseded by the per-org model (D-255..D-260; S1 now keys entities/edges/versions by `connected_org_id`). Read this as the as-approved Phase-2 plan, not current state.
+
 > **Status:** Locked planning artifact. Captures the plan as approved
 > at the start of Phase 2 (Substrate 1 sync). Implementation choices
 > that diverged from this plan are tracked in

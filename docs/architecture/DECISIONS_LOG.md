@@ -15878,3 +15878,29 @@ app/worker/scheduler boot clean. Adversarially reviewed (0 blockers / 0 majors).
 Live deterministic blend-row clear (tenant_1 31 rows → 0 via the guarded recompute;
 decision engine `intact`-blend → None/no-block; env-59 entities untouched): reported
 out-of-band (this log is append-only). **Slice 1 stops the active leak.**
+
+## D-266 — FLS/CF-1 detection is CUT; replaced by a mandatory admin-Run-As onboarding rule
+
+**Decision.** FLS / field-level-security (CF-1) detection is **not built** — it is
+replaced by a setup requirement: **the OAuth Run-As user a Salesforce org is
+connected as MUST be a Salesforce System Administrator.**
+
+**Reasoning.** Salesforce's REST describe API is FLS-aware: a field hidden from the
+Run-As user is **indistinguishable from a field that does not exist**, so the S1
+semantic org model would silently miss it (the CF-1 ambiguity — see Phase-2 Slice C
+design). A System-Administrator Run-As user has full field visibility, which makes
+FLS-hidden fields **impossible by construction** — a setup requirement instead of a
+detection feature. This is the smaller, more reliable lever: rather than build a
+Tooling-`FieldDefinition`-vs-describe diff to count hidden fields, require the
+connection to have nothing hidden.
+
+**Enforcement.** Setup/training-time, **NOT code-enforced** — an under-privileged
+Run-As user produces a quietly incomplete model with no error. This is the one
+admissibility assumption that became materially relevant once a second connected org
+exists (env-78), so it is recorded canonically here and propagated to the onboarding
+prerequisites (`docs/product/PRIMEQA_PRODUCT_DEFINITION.md` §5.3) + the operational
+connect record (memory `sf-prod-org-connected.md`).
+
+**Fallback.** The Phase-2 Slice C FLS-detection design (Tooling-vs-describe diff,
+`fls_hidden_fields_count` on `sync_runs`) is **retained for reference only** — to be
+revisited if the admin-Run-As rule is ever relaxed.

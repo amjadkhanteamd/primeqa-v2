@@ -1,5 +1,7 @@
 # PHASE_2_PLAN.md corrections log
 
+> **HISTORICAL.** The §26 D-030 reconciliation ("single canonical model across orgs; subsequent syncs update in place") was superseded by the per-org model (D-255..D-260). Read this as a point-in-time corrections log, not current state.
+
 Corrections made during implementation that should fold back into a
 future plan revision. These are surface-level errata, not architectural
 changes.

@@ -33,7 +33,7 @@ Design has proceeded in two phases:
 A continuously evolving, per-tenant graph that represents a Salesforce org — enriched with derived relationships that capture how entities depend on each other.
 
 **Concretely:**
-- One model per tenant, authoritative
+- One model per tenant, authoritative — now partitioned per connected org within the tenant schema (per-org dimension `connected_org_id`, D-255..D-260)
 - Event-sourced with logical version checkpoints
 - Behavior graph with derived edges (computed at sync time)
 - Tiered capability: TIER_1 (structure + validation parsing), TIER_2 (behavior interpretation), TIER_3 (deep semantics)
