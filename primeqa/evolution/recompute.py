@@ -110,17 +110,60 @@ def recompute_grounding(
     return RecomputeResult(grounded, skipped_fresh, remaining)
 
 
+# 3f Slice 1 — the multi-org fail-loud guardrail. Today's recompute reads the
+# org-BLIND model (``SemanticOrgModel(conn)`` with no org), so a tenant with >1
+# connected org that has a model would silently ground claims against a BLEND of
+# all its orgs — wrong for any org-divergent claim (e.g. an object present in org A
+# but absent in org B grounds 'intact' off the union). Until per-org grounding
+# lands (3f Slices 2-3), refuse rather than blend.
+_ORG_COUNT_SQL = text(
+    "SELECT COUNT(DISTINCT connected_org_id) FROM entities "
+    "WHERE valid_to_seq IS NULL AND connected_org_id IS NOT NULL")
+
+
+def _count_orgs_with_model(conn) -> int:
+    """How many connected orgs have a live model (active entities) in this tenant.
+    ``> 1`` ⇒ an org-blind grounding pass would BLEND them."""
+    return int(conn.execute(_ORG_COUNT_SQL).scalar() or 0)
+
+
+def _invalidate_blend_grounding(conn) -> int:
+    """Clear the tenant's grounding rows — on a multi-org tenant they were computed
+    org-blind (against the BLEND), so they're untrustworthy. DELETE (not an
+    out-of-domain ``overall='unknown'`` flag) keeps ``overall`` inside its declared
+    domain {intact,drifted,broken}; every consumer treats a MISSING row as 'not
+    grounded' gracefully (``read_grounding_validity`` → None, ``list`` omits it, the
+    decision engine's grounding read → PASS / no blocker). Returns rows cleared;
+    idempotent (a second call clears 0)."""
+    return int(conn.execute(text("DELETE FROM s8_grounding_validity")).rowcount or 0)
+
+
 def recompute_tenant_grounding(tenant_id: int, *, cap: int = _DEFAULT_CAP) -> int:
     """The production wrapper: open a tenant-scoped connection, build the tri-port
     reader pinned at the current S1 seq, and recompute. A tenant with no S1
     versions yet (``VersionNotFoundError``) has nothing to ground → 0. Returns the
-    number (re)grounded. The connection context owns the commit."""
+    number (re)grounded. The connection context owns the commit.
+
+    **3f Slice 1 guardrail.** Before building the org-blind model: if the tenant has
+    >1 connected org with a model, REFUSE — clear the stale blend rows + return 0
+    without recomputing (the org-blind blend would be wrong for divergent claims,
+    and the decision engine reads this store). A single-org (or zero-org) tenant is
+    unaffected: grounding proceeds exactly as before."""
     from sqlalchemy.orm import Session
 
     from primeqa.semantic.connection import get_tenant_connection
     from primeqa.semantic.query import SemanticOrgModel, VersionNotFoundError
 
     with get_tenant_connection(tenant_id) as conn:
+        org_count = _count_orgs_with_model(conn)
+        if org_count > 1:
+            cleared = _invalidate_blend_grounding(conn)
+            log.error(
+                "s8 grounding: tenant %s has %d orgs with a model — org-blind "
+                "grounding would blend them; REFUSING + cleared %d stale blend "
+                "row(s). Per-org grounding pending (3f Slices 2-3).",
+                tenant_id, org_count, cleared)
+            return 0
         model = SemanticOrgModel(conn)
         try:
             at_seq = model.current_version_seq()
