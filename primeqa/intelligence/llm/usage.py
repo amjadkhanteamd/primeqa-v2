@@ -268,3 +268,87 @@ def _shape_sync_run_cost(sync_run_id, row) -> Dict[str, Any]:
         "tokens_missing_rows": _i(r.get("missing_rows")),
         "rate_provisional_rows": _i(r.get("provisional_rows")),
     }
+
+
+def get_sync_run_costs_batch(sync_run_ids, *, tenant_id=None) -> Dict[str, Dict[str, Any]]:
+    """Batched per-sync-run cost + summary-model roll-up for a PAGE of runs.
+
+    The history table renders cost + model for N runs at once; calling
+    :func:`get_sync_run_cost` per row is N sessions + N scans (it opens its own
+    Session each call). This does it in ONE query — ``GROUP BY sync_run_id`` over
+    the page's run-ids — index-backed by the partial index on
+    ``llm_usage_log(sync_run_id)``.
+
+    ``tenant_id`` (when supplied) adds a defense-in-depth ``tenant_id = :tid``
+    predicate — the run-ids already come from a tenant-scoped read, but pinning the
+    tenant keeps this cross-schema lookup honest if a sync_run UUID were ever reused
+    across tenants. ``None`` (the default) leaves it tenant-agnostic for parity with
+    :func:`get_sync_run_cost`.
+
+    Returns ``{sync_run_id(str): {embedding{tokens,cost_usd,rows},
+    summary{tokens,cost_usd,rows}, total_cost_usd, summary_models:[str]}}`` — only
+    runs that have at least one ``llm_usage_log`` row appear; a run absent from the
+    map had no attributed usage (caller renders cost 0 / model "—").
+
+    ``summary_models`` is the DISTINCT models that actually produced THIS run's
+    entity summaries, read from ``llm_usage_log.model`` (the provider-echoed model
+    captured at run time) — the model THAT run used, NOT today's ``SUMMARY_MODEL``
+    setting. An empty list means the run produced no summaries (render "—").
+
+    Read-only; opens its own Session. Best-effort: ``{}`` on empty input or any
+    error (the history table degrades to zero cost / "—" model, never breaks).
+    """
+    ids = [str(s) for s in (sync_run_ids or []) if s]
+    if not ids:
+        return {}
+    try:
+        from sqlalchemy import text
+        from sqlalchemy.orm import Session
+        from primeqa.db import engine
+        from primeqa.intelligence.llm.limits import EMBEDDING_TASK
+
+        # Cast the bound id list to uuid[] (the column is uuid) so the equality is
+        # type-correct AND the partial index on sync_run_id stays usable.
+        sql = text("""
+            SELECT
+              CAST(sync_run_id AS text) AS srid,
+              COALESCE(SUM(CASE WHEN task = :emb THEN input_tokens ELSE 0 END), 0) AS emb_tokens,
+              COALESCE(SUM(CASE WHEN task = :emb THEN cost_usd     ELSE 0 END), 0) AS emb_cost,
+              COALESCE(SUM(CASE WHEN task = :emb THEN 1            ELSE 0 END), 0) AS emb_rows,
+              COALESCE(SUM(CASE WHEN task LIKE 'entity_summary%' THEN input_tokens ELSE 0 END), 0) AS sum_tokens,
+              COALESCE(SUM(CASE WHEN task LIKE 'entity_summary%' THEN cost_usd     ELSE 0 END), 0) AS sum_cost,
+              COALESCE(SUM(CASE WHEN task LIKE 'entity_summary%' THEN 1            ELSE 0 END), 0) AS sum_rows,
+              COALESCE(SUM(cost_usd), 0) AS total_cost,
+              ARRAY_AGG(DISTINCT model) FILTER (WHERE task LIKE 'entity_summary%') AS summary_models
+            FROM llm_usage_log
+            WHERE sync_run_id = ANY(CAST(:ids AS uuid[]))
+              AND (:tid IS NULL OR tenant_id = :tid)
+            GROUP BY sync_run_id
+        """)
+        sess = Session(bind=engine)
+        try:
+            rows = sess.execute(
+                sql, {"emb": EMBEDDING_TASK, "ids": ids, "tid": tenant_id}
+            ).mappings().all()
+        finally:
+            sess.close()
+
+        def _i(v): return int(v or 0)
+        def _f(v): return float(v or 0)
+        out: Dict[str, Dict[str, Any]] = {}
+        for r in rows:
+            models = sorted(m for m in (r.get("summary_models") or []) if m)
+            out[r["srid"]] = {
+                "embedding": {"tokens": _i(r.get("emb_tokens")),
+                              "cost_usd": _f(r.get("emb_cost")),
+                              "rows": _i(r.get("emb_rows"))},
+                "summary": {"tokens": _i(r.get("sum_tokens")),
+                            "cost_usd": _f(r.get("sum_cost")),
+                            "rows": _i(r.get("sum_rows"))},
+                "total_cost_usd": _f(r.get("total_cost")),
+                "summary_models": models,
+            }
+        return out
+    except Exception as e:
+        log.warning("get_sync_run_costs_batch failed (%d ids): %s", len(ids), e)
+        return {}

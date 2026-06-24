@@ -4,7 +4,10 @@
 <div class="space-y-6">
     <div class="flex justify-between items-center">
         <h1 class="text-2xl font-bold text-gray-900">Environments</h1>
-        <a href="/environments/new" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Add Environment</a>
+        <div class="flex items-center gap-3">
+            <a href="/environments/diff" class="rounded-md bg-white ring-1 ring-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Compare orgs</a>
+            <a href="/environments/new" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500">Add Environment</a>
+        </div>
     </div>
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {% for env in environments %}

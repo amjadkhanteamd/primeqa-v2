@@ -283,3 +283,250 @@ def read_org_model(tenant_id: int, object_api_name=None) -> dict:
     except Exception as exc:
         log.warning("org-model read unavailable for tenant %s: %s", tenant_id, exc)
         return {"available": False, "synced": False}
+
+
+# --- sync history (UI Pass 1) -------------------------------------------------
+# The first PLURAL sync_runs reader: every other read is LIMIT 1. Paginated, per
+# env (its connected_org). Cost + the model THAT run used ride a SEPARATE batched
+# read of public.llm_usage_log (cross-schema: sync_runs is per-tenant, the usage
+# log is public) — stitched in Python, never JOINed.
+
+def _duration_s(started, completed):
+    """Whole seconds between two datetimes; ``None`` when either is missing (a
+    still-running row has no completed_at)."""
+    if started is None or completed is None:
+        return None
+    try:
+        return int((completed - started).total_seconds())
+    except Exception:
+        return None
+
+
+# Only columns the recon proved are populated; ``error_message IS NOT NULL`` ->
+# has_error (we never expose the raw text on the list row). describe_calls /
+# failure_category / sf_error_code / permission_gaps are conditional (rendered
+# only when present) — landed recently, no backfill, so old rows show blank.
+_HISTORY_SQL = (
+    "SELECT id, status, started_at, completed_at, skipped, "
+    "entities_inserted, entities_superseded, entities_unchanged, edges_inserted, "
+    "embeddings_generated, summaries_generated, describe_calls, "
+    "failure_category, sf_error_code, permission_gaps, "
+    "(error_message IS NOT NULL) AS has_error "
+    "FROM sync_runs WHERE source_org_id = CAST(:org AS uuid) "
+    "ORDER BY started_at DESC LIMIT :limit OFFSET :offset")
+
+
+def _ai_cost(cost) -> float:
+    """AI cost = embeddings + summaries USD (NOT total_cost — the run's own LLM
+    spend). ``0.0`` when the run has no attributed usage (e.g. a skipped run)."""
+    if not cost:
+        return 0.0
+    return float(cost.get("embedding", {}).get("cost_usd", 0.0)) + \
+        float(cost.get("summary", {}).get("cost_usd", 0.0))
+
+
+def _shape_history_run(row, cost) -> dict:
+    """Pure: one ``sync_runs`` row + its cost/model roll-up (or ``None``) -> the
+    list-row dict. No I/O — unit-testable on plain dicts. ``summary_models`` is the
+    model THAT run used (from llm_usage_log); ``[]`` -> the UI renders "-"."""
+    models = (cost or {}).get("summary_models") or []
+    return {
+        "id": str(row["id"]),
+        "status": row["status"],
+        "started_at": _iso(row["started_at"]),
+        "completed_at": _iso(row["completed_at"]),
+        "duration_s": _duration_s(row["started_at"], row["completed_at"]),
+        "skipped": bool(row["skipped"]),
+        "entities_inserted": row["entities_inserted"],
+        "entities_superseded": row["entities_superseded"],
+        "entities_unchanged": row["entities_unchanged"],
+        "edges_inserted": row["edges_inserted"],
+        "embeddings_generated": row["embeddings_generated"],
+        "summaries_generated": row["summaries_generated"],
+        "describe_calls": row["describe_calls"],
+        "failure_category": row["failure_category"],
+        "sf_error_code": row["sf_error_code"],
+        "permission_gaps": row["permission_gaps"],
+        "has_error": bool(row["has_error"]),
+        "ai_cost_usd": _ai_cost(cost),
+        "summary_models": models,
+    }
+
+
+def _history_envelope(runs, total, page, per_page) -> dict:
+    """Pure: the paginated envelope (mirrors ``list_claims``)."""
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    return {"available": True, "provisioned": True, "runs": runs,
+            "total": total, "page": page, "per_page": per_page,
+            "total_pages": total_pages}
+
+
+def read_s1_sync_history(tenant_id: int, environment_id: int, *, page: int = 1,
+                         per_page: int = 20) -> dict:
+    """Best-effort paginated sync-run history for an environment (UI Pass 1).
+
+    Returns ``{available, provisioned, runs, total, page, per_page, total_pages}``
+    — ``provisioned=False`` (no rows) when the env has no connected_org yet;
+    ``available=False`` on any read error. ``per_page`` capped at 50. Never raises.
+    The cost/model columns ride a batched ``llm_usage_log`` read keyed by the page's
+    run-ids (cross-schema, stitched in Python — never one query per row)."""
+    page = max(1, page)
+    per_page = max(1, min(per_page, 50))
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            org = conn.execute(text(
+                "SELECT CAST(id AS text) FROM connected_orgs WHERE environment_id = :eid"),
+                {"eid": environment_id}).scalar()
+            if not org:
+                return {"available": True, "provisioned": False, "runs": [],
+                        "total": 0, "page": page, "per_page": per_page,
+                        "total_pages": 1}
+            total = int(conn.execute(text(
+                "SELECT COUNT(*) FROM sync_runs WHERE source_org_id = CAST(:org AS uuid)"),
+                {"org": org}).scalar() or 0)
+            # Snap an over-range page back to the last real page so the table +
+            # pagination still render (else an empty page reads as "no syncs").
+            total_pages = max(1, (total + per_page - 1) // per_page)
+            page = min(page, total_pages)
+            rows = conn.execute(text(_HISTORY_SQL), {
+                "org": org, "limit": per_page,
+                "offset": (page - 1) * per_page}).mappings().all()
+        # Cross-schema cost/model — own session on the public engine, stitched here.
+        from primeqa.intelligence.llm.usage import get_sync_run_costs_batch
+        costs = get_sync_run_costs_batch(
+            [str(r["id"]) for r in rows], tenant_id=tenant_id)
+        runs = [_shape_history_run(r, costs.get(str(r["id"]))) for r in rows]
+        return _history_envelope(runs, total, page, per_page)
+    except Exception as exc:
+        log.warning("s1 sync history unavailable for tenant %s env %s: %s",
+                    tenant_id, environment_id, exc)
+        return {"available": False, "provisioned": False, "runs": [],
+                "total": 0, "page": page, "per_page": per_page, "total_pages": 1}
+
+
+# --- run detail (UI Pass 1, the gap/error drilldown) -------------------------
+# OWNERSHIP is enforced IN SQL: the row must match BOTH the run id AND this env's
+# connected_org (correlated subquery). A run from a different env's org -> no match
+# -> found=False -> the route 404s. There is no code path that renders a run the
+# env does not own.
+
+_RUN_DETAIL_SQL = (
+    "SELECT id, status, started_at, completed_at, skipped, phase, "
+    "last_completed_phase, logical_version_seq, "
+    "entities_inserted, entities_superseded, entities_unchanged, "
+    "edges_inserted, edges_superseded, embeddings_generated, summaries_generated, "
+    "summaries_failed, describe_calls, failure_category, sf_error_code, "
+    "permission_gaps, gap_details, error_message "
+    "FROM sync_runs "
+    "WHERE id = CAST(:run_id AS uuid) "
+    "  AND source_org_id = (SELECT id FROM connected_orgs WHERE environment_id = :eid)")
+
+
+def _shape_run_detail(row, cost) -> dict:
+    """Pure: a full ``sync_runs`` row + cost/model -> the detail dict. ``gap_details``
+    passes through as the list of ``{site, category, sf_error_code, context}`` the
+    Phase-2 writer stored (or ``[]``)."""
+    models = (cost or {}).get("summary_models") or []
+    # gap_details is JSONB -> psycopg2 returns a parsed list (or None); anything
+    # else is treated as "no gaps".
+    gaps = row["gap_details"] if isinstance(row["gap_details"], list) else []
+    return {
+        "id": str(row["id"]),
+        "status": row["status"],
+        "started_at": _iso(row["started_at"]),
+        "completed_at": _iso(row["completed_at"]),
+        "duration_s": _duration_s(row["started_at"], row["completed_at"]),
+        "skipped": bool(row["skipped"]),
+        "phase": row["phase"],
+        "last_completed_phase": row["last_completed_phase"],
+        "logical_version_seq": row["logical_version_seq"],
+        "entities_inserted": row["entities_inserted"],
+        "entities_superseded": row["entities_superseded"],
+        "entities_unchanged": row["entities_unchanged"],
+        "edges_inserted": row["edges_inserted"],
+        "edges_superseded": row["edges_superseded"],
+        "embeddings_generated": row["embeddings_generated"],
+        "summaries_generated": row["summaries_generated"],
+        "summaries_failed": row["summaries_failed"],
+        "describe_calls": row["describe_calls"],
+        "failure_category": row["failure_category"],
+        "sf_error_code": row["sf_error_code"],
+        "permission_gaps": row["permission_gaps"],
+        "gap_details": gaps,
+        "error_message": row["error_message"],
+        "ai_cost_usd": _ai_cost(cost),
+        "summary_models": models,
+    }
+
+
+def read_s1_run_detail(tenant_id: int, environment_id: int, run_id) -> dict:
+    """Best-effort single-run detail, OWNERSHIP-GATED to ``environment_id``.
+
+    Returns ``{available, found, run}``. ``found=False`` when the run does not
+    belong to this env's connected_org (or does not exist) — the route renders a
+    404, never the run. Fail-closed: any read error -> ``found=False`` (we never
+    render a run we could not confirm ownership of). Never raises."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            row = conn.execute(text(_RUN_DETAIL_SQL),
+                               {"run_id": str(run_id),
+                                "eid": environment_id}).mappings().first()
+        if row is None:
+            return {"available": True, "found": False, "run": None}
+        from primeqa.intelligence.llm.usage import get_sync_run_costs_batch
+        costs = get_sync_run_costs_batch([str(row["id"])])
+        return {"available": True, "found": True,
+                "run": _shape_run_detail(row, costs.get(str(row["id"])))}
+    except Exception as exc:
+        log.warning("s1 run detail unavailable for tenant %s env %s run %s: %s",
+                    tenant_id, environment_id, run_id, exc)
+        return {"available": False, "found": False, "run": None}
+
+
+# --- org picker + model diff (UI Pass 1) -------------------------------------
+
+def list_connected_orgs(tenant_id: int) -> list:
+    """Best-effort: the tenant's connected orgs as the diff picker needs them —
+    ``[{id, label, environment_id, sf_instance_url}]``, EXCLUDING fixture rows with
+    a NULL ``environment_id``. ``id`` is the connected_org UUID (model-diff axis);
+    ``environment_id`` is the result-diff axis. Ordered by env id. ``[]`` on error."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        with get_tenant_connection(tenant_id) as conn:
+            rows = conn.execute(text(
+                "SELECT CAST(id AS text) AS id, label, environment_id, sf_instance_url "
+                "FROM connected_orgs WHERE environment_id IS NOT NULL "
+                "ORDER BY environment_id"), {}).mappings().all()
+        return [{"id": r["id"], "label": r["label"],
+                 "environment_id": r["environment_id"],
+                 "sf_instance_url": r["sf_instance_url"]} for r in rows]
+    except Exception as exc:
+        log.warning("list_connected_orgs unavailable for tenant %s: %s",
+                    tenant_id, exc)
+        return []
+
+
+def model_diff_for_envs(tenant_id: int, env_a: int, env_b: int) -> dict:
+    """Best-effort MODEL diff between two environments' orgs (wraps
+    :func:`primeqa.semantic.diff.diff_org_models`, resolving each env -> its
+    connected_org UUID). Returns the diff dict with ``available=True``, or
+    ``{available: False, reason}`` when an env is not synced / on error. Pure read."""
+    try:
+        from primeqa.semantic.connection import get_tenant_connection
+        from primeqa.sync.credentials import get_connected_org_for_environment
+        from primeqa.semantic.diff import diff_org_models
+        with get_tenant_connection(tenant_id) as conn:
+            org_a = get_connected_org_for_environment(conn, env_a)
+            org_b = get_connected_org_for_environment(conn, env_b)
+            if not org_a or not org_b:
+                return {"available": False,
+                        "reason": "one or both environments are not synced to the substrate yet"}
+            d = diff_org_models(conn, org_a, org_b)
+        d["available"] = True
+        return d
+    except Exception as exc:
+        log.warning("model_diff_for_envs unavailable for tenant %s envs %s/%s: %s",
+                    tenant_id, env_a, env_b, exc)
+        return {"available": False, "reason": "diff unavailable right now"}

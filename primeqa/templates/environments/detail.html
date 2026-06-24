@@ -1,5 +1,7 @@
 {% extends "settings/base.html" %}
 {% from 'components/_buttons.html' import btn_edit, btn_primary %}
+{% from 'components/pagination.html' import render_pagination %}
+{% from 'components/_empty_state.html' import empty_state %}
 {% block title %}{{ env.name }} - Plimsol{% endblock %}
 {% block settings_content %}
 <div class="space-y-6">
@@ -136,6 +138,93 @@
         }, 5000);
       })();
       </script>
+    </div>
+
+    <!-- UI Pass 1: sync-run HISTORY (paginated) ----------------------------- -->
+    <div class="bg-white shadow rounded-lg p-6">
+      <div class="flex items-center justify-between mb-1">
+        <h3 class="text-lg font-semibold text-gray-900">Sync history</h3>
+        {% if s1_history and s1_history.available and s1_history.total %}
+          <span class="text-xs text-gray-500">{{ s1_history.total }} run{{ '' if s1_history.total == 1 else 's' }}</span>
+        {% endif %}
+      </div>
+      <p class="text-sm text-gray-500 mb-4">Every substrate sync for this environment &mdash; what changed, what it cost, and which runs hit an issue. Click a run to drill into its detail.</p>
+
+      {% if not s1_history or not s1_history.available %}
+        <div class="text-sm text-gray-400">Sync history unavailable right now.</div>
+      {% elif not s1_history.provisioned %}
+        {{ empty_state(title='Not synced yet', description='Run a substrate sync above to start building this history.', compact=True) }}
+      {% elif s1_history.runs %}
+        <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+          <thead class="bg-gray-50">
+            <tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
+              <th class="px-3 py-2">Started</th>
+              <th class="px-3 py-2">Status</th>
+              <th class="px-3 py-2">Duration</th>
+              <th class="px-3 py-2">Type</th>
+              <th class="px-3 py-2">Entities (ins / sup / unch)</th>
+              <th class="px-3 py-2">Enrichment</th>
+              <th class="px-3 py-2">AI cost</th>
+              <th class="px-3 py-2">Model</th>
+              <th class="px-3 py-2">Issues</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-100">
+            {% for r in s1_history.runs %}
+            <tr class="hover:bg-gray-50">
+              <td class="px-3 py-2 whitespace-nowrap">
+                <a href="/environments/{{ env.id }}/runs/{{ r.id }}" class="font-medium text-indigo-600 hover:underline">{{ (r.started_at[:19] | replace('T', ' ')) if r.started_at else '—' }}</a>
+              </td>
+              <td class="px-3 py-2">
+                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+                  {% if r.status == 'success' %}bg-green-100 text-green-800
+                  {% elif r.status == 'partial_success' %}bg-amber-100 text-amber-800
+                  {% elif r.status == 'failure' %}bg-red-100 text-red-800
+                  {% elif r.status == 'running' %}bg-blue-100 text-blue-800
+                  {% else %}bg-gray-100 text-gray-700{% endif %}">{{ r.status }}</span>
+              </td>
+              <td class="px-3 py-2 text-gray-600 whitespace-nowrap">
+                {% if r.duration_s is not none %}{{ r.duration_s // 60 }}m {{ r.duration_s % 60 }}s{% else %}<span class="text-gray-400">—</span>{% endif %}
+              </td>
+              <td class="px-3 py-2">
+                {% if r.skipped %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-600" title="No metadata changes — this sync was skipped early.">skipped</span>
+                {% else %}
+                <span class="text-gray-600">full</span>{% if r.describe_calls %}<span class="text-xs text-gray-400 ml-1" title="Salesforce describe calls made">· {{ r.describe_calls }} describe</span>{% endif %}
+                {% endif %}
+              </td>
+              <td class="px-3 py-2 text-gray-600 whitespace-nowrap" title="inserted / superseded / unchanged">
+                <span class="text-green-700">+{{ r.entities_inserted }}</span> /
+                <span class="text-amber-700">~{{ r.entities_superseded }}</span> /
+                <span class="text-gray-400">={{ r.entities_unchanged }}</span>
+              </td>
+              <td class="px-3 py-2 text-gray-600 whitespace-nowrap" title="embeddings / summaries generated">
+                {{ r.embeddings_generated }}e / {{ r.summaries_generated }}s
+              </td>
+              <td class="px-3 py-2 text-gray-600 whitespace-nowrap">${{ '%.4f' | format(r.ai_cost_usd) }}</td>
+              <td class="px-3 py-2 text-gray-500 text-xs">
+                {% if r.summary_models %}{{ r.summary_models | join(', ') }}{% else %}<span class="text-gray-400">—</span>{% endif %}
+              </td>
+              <td class="px-3 py-2 whitespace-nowrap">
+                {% if r.failure_category %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800" title="Typed failure category">{{ r.failure_category }}{% if r.sf_error_code %} · {{ r.sf_error_code }}{% endif %}</span>
+                {% endif %}
+                {% if r.permission_gaps %}
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800 ml-1" title="Metadata dropped behind a permission/access gap">&#9888; {{ r.permission_gaps }} gap{{ '' if r.permission_gaps == 1 else 's' }}</span>
+                {% elif r.has_error and not r.failure_category %}
+                <span class="text-xs text-red-500" title="This run recorded an error message">error</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+        {{ render_pagination(s1_history.page, s1_history.total_pages, '/environments/' ~ env.id) }}
+      {% else %}
+        {{ empty_state(title='No syncs yet', description='Run a substrate sync above — its history will appear here.', compact=True) }}
+      {% endif %}
     </div>
 </div>
 {% endblock %}

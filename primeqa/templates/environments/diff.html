@@ -1,0 +1,163 @@
+{% extends "settings/base.html" %}
+{% from 'components/_empty_state.html' import empty_state %}
+{% block title %}Compare orgs - Plimsol{% endblock %}
+{% block settings_content %}
+{# UI Pass 1: org-vs-org comparison. The picker carries BOTH axes — each option's
+   value is the environment_id (result-diff axis); the route resolves it to the
+   connected_org UUID (model-diff axis). #}
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">Compare orgs</h1>
+    <p class="mt-1 text-sm text-gray-500">Pick two environments to compare their org models (structural metadata) and their test results (same test, different org, different outcome).</p>
+  </div>
+
+  <!-- Picker -->
+  <form method="GET" action="/environments/diff" class="bg-white shadow rounded-lg p-6">
+    {% if not orgs or orgs | length < 2 %}
+      {{ empty_state(title='Need two synced orgs', description='At least two environments must be synced to the substrate before you can compare them.', compact=True) }}
+    {% else %}
+    <div class="flex flex-wrap items-end gap-4">
+      <div>
+        <label for="a" class="block text-xs font-medium text-gray-500 uppercase mb-1">Org A</label>
+        <select id="a" name="a" class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+          <option value="">— select —</option>
+          {% for o in orgs %}
+          <option value="{{ o.environment_id }}" {% if sel_a == o.environment_id %}selected{% endif %}>{{ o.label }} (env {{ o.environment_id }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="b" class="block text-xs font-medium text-gray-500 uppercase mb-1">Org B</label>
+        <select id="b" name="b" class="rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+          <option value="">— select —</option>
+          {% for o in orgs %}
+          <option value="{{ o.environment_id }}" {% if sel_b == o.environment_id %}selected{% endif %}>{{ o.label }} (env {{ o.environment_id }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-500">Compare</button>
+    </div>
+    {% if same_sel %}
+    <p class="mt-3 text-sm text-amber-700">Pick two <strong>different</strong> environments to compare.</p>
+    {% endif %}
+    {% endif %}
+  </form>
+
+  {% if model is not none or results is not none %}
+  <div class="text-sm text-gray-500">Comparing <span class="font-medium text-gray-900">{{ label_a }}</span> (A) vs <span class="font-medium text-gray-900">{{ label_b }}</span> (B)</div>
+
+  <!-- MODEL diff (structural) -->
+  <div class="bg-white shadow rounded-lg p-6">
+    <h3 class="text-lg font-semibold text-gray-900 mb-1">Org model diff</h3>
+    <p class="text-sm text-gray-500 mb-4">Structural comparison of the two orgs' current metadata (objects, fields, rules &mdash; keyed by API name).</p>
+    {% if not model or not model.available %}
+      <div class="text-sm text-gray-400">{{ (model.reason if model and model.reason else 'Model diff unavailable right now.') }}</div>
+    {% else %}
+      {% set t = model.totals %}
+      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
+        <div class="rounded-md bg-gray-50 p-3"><p class="text-xs text-gray-500">Only in A</p><p class="text-xl font-semibold text-indigo-700">{{ t.only_in_a }}</p></div>
+        <div class="rounded-md bg-gray-50 p-3"><p class="text-xs text-gray-500">Only in B</p><p class="text-xl font-semibold text-indigo-700">{{ t.only_in_b }}</p></div>
+        <div class="rounded-md bg-gray-50 p-3"><p class="text-xs text-gray-500">Differs</p><p class="text-xl font-semibold text-amber-700">{{ t.differs }}</p></div>
+        <div class="rounded-md bg-gray-50 p-3"><p class="text-xs text-gray-500">Same</p><p class="text-xl font-semibold text-gray-700">{{ t.same }}</p></div>
+        <div class="rounded-md bg-gray-50 p-3"><p class="text-xs text-gray-500">A total</p><p class="text-xl font-semibold text-gray-700">{{ t.count_a }}</p></div>
+        <div class="rounded-md bg-gray-50 p-3"><p class="text-xs text-gray-500">B total</p><p class="text-xl font-semibold text-gray-700">{{ t.count_b }}</p></div>
+      </div>
+
+      <h4 class="text-sm font-semibold text-gray-700 mb-2">By entity type</h4>
+      <div class="overflow-x-auto mb-5">
+      <table class="min-w-full divide-y divide-gray-200 text-sm">
+        <thead class="bg-gray-50"><tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
+          <th class="px-3 py-2">Entity type</th><th class="px-3 py-2">Only A</th><th class="px-3 py-2">Only B</th><th class="px-3 py-2">Differs</th><th class="px-3 py-2">Same</th></tr></thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for et, c in model.by_entity_type.items() %}
+          {% if c.only_in_a or c.only_in_b or c.differs or c.same %}
+          <tr class="hover:bg-gray-50">
+            <td class="px-3 py-2 font-medium text-gray-700">{{ et }}</td>
+            <td class="px-3 py-2 text-indigo-700">{{ c.only_in_a }}</td>
+            <td class="px-3 py-2 text-indigo-700">{{ c.only_in_b }}</td>
+            <td class="px-3 py-2 text-amber-700">{{ c.differs }}</td>
+            <td class="px-3 py-2 text-gray-500">{{ c.same }}</td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div>
+          <h4 class="text-sm font-semibold text-indigo-700 mb-2">Only in A ({{ t.only_in_a }})</h4>
+          <div class="max-h-72 overflow-y-auto rounded-md border border-gray-200 divide-y divide-gray-100 text-xs">
+            {% for it in model.only_in_a[:200] %}<div class="px-3 py-1.5"><span class="text-gray-400">{{ it.entity_type }}</span> {{ it.sf_api_name }}</div>{% else %}<div class="px-3 py-2 text-gray-400">none</div>{% endfor %}
+            {% if t.only_in_a > 200 %}<div class="px-3 py-2 text-gray-400">… and {{ t.only_in_a - 200 }} more (see the total above)</div>{% endif %}
+          </div>
+        </div>
+        <div>
+          <h4 class="text-sm font-semibold text-indigo-700 mb-2">Only in B ({{ t.only_in_b }})</h4>
+          <div class="max-h-72 overflow-y-auto rounded-md border border-gray-200 divide-y divide-gray-100 text-xs">
+            {% for it in model.only_in_b[:200] %}<div class="px-3 py-1.5"><span class="text-gray-400">{{ it.entity_type }}</span> {{ it.sf_api_name }}</div>{% else %}<div class="px-3 py-2 text-gray-400">none</div>{% endfor %}
+            {% if t.only_in_b > 200 %}<div class="px-3 py-2 text-gray-400">… and {{ t.only_in_b - 200 }} more (see the total above)</div>{% endif %}
+          </div>
+        </div>
+        <div>
+          <h4 class="text-sm font-semibold text-amber-700 mb-2">Differs ({{ t.differs }})</h4>
+          <div class="max-h-72 overflow-y-auto rounded-md border border-gray-200 divide-y divide-gray-100 text-xs">
+            {% for it in model.differs[:200] %}<div class="px-3 py-1.5"><span class="text-gray-400">{{ it.entity_type }}</span> {{ it.sf_api_name }}</div>{% else %}<div class="px-3 py-2 text-gray-400">none</div>{% endfor %}
+            {% if t.differs > 200 %}<div class="px-3 py-2 text-gray-400">… and {{ t.differs - 200 }} more (see the total above)</div>{% endif %}
+          </div>
+        </div>
+      </div>
+    {% endif %}
+  </div>
+
+  <!-- RESULT diff (test outcomes) -->
+  <div class="bg-white shadow rounded-lg p-6">
+    <h3 class="text-lg font-semibold text-gray-900 mb-1">Test result diff</h3>
+    <p class="text-sm text-gray-500 mb-4">The latest outcome of each test in A vs B &mdash; where the same test passes in one org and fails in the other.</p>
+    {% if not results or not results.available %}
+      <div class="text-sm text-gray-400">Result diff unavailable right now.</div>
+    {% else %}
+      {% set rt = results.totals %}
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+        <div class="rounded-md bg-gray-50 p-3"><p class="text-xs text-gray-500">Agree</p><p class="text-xl font-semibold text-green-700">{{ rt.agree }}</p></div>
+        <div class="rounded-md bg-gray-50 p-3"><p class="text-xs text-gray-500">Differ</p><p class="text-xl font-semibold text-red-700">{{ rt.differ }}</p></div>
+        <div class="rounded-md bg-gray-50 p-3"><p class="text-xs text-gray-500">Missing in A</p><p class="text-xl font-semibold text-gray-700">{{ rt.missing_in_a }}</p></div>
+        <div class="rounded-md bg-gray-50 p-3"><p class="text-xs text-gray-500">Missing in B</p><p class="text-xl font-semibold text-gray-700">{{ rt.missing_in_b }}</p></div>
+      </div>
+      {% if results.claims %}
+      <div class="overflow-x-auto">
+      <table class="min-w-full divide-y divide-gray-200 text-sm">
+        <thead class="bg-gray-50"><tr class="text-left text-xs font-medium text-gray-500 uppercase tracking-wide">
+          <th class="px-3 py-2">Test</th><th class="px-3 py-2">A</th><th class="px-3 py-2">B</th><th class="px-3 py-2">Verdict</th></tr></thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for cid, c in (results.claims.items() | list)[:300] %}
+          <tr class="hover:bg-gray-50 {% if c.status == 'differ' %}bg-red-50{% endif %}">
+            <td class="px-3 py-2"><a href="/claims/{{ cid }}" class="text-indigo-600 hover:underline font-mono text-xs">{{ cid[:8] }}…</a></td>
+            <td class="px-3 py-2">
+              {% if c.outcome_a %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {% if c.outcome_a == 'passed' %}bg-green-100 text-green-800{% elif c.outcome_a == 'failed' %}bg-red-100 text-red-800{% elif c.outcome_a == 'errored' %}bg-amber-100 text-amber-800{% else %}bg-gray-100 text-gray-700{% endif %}">{{ c.outcome_a }}</span>{% else %}<span class="text-gray-400 text-xs">—</span>{% endif %}
+            </td>
+            <td class="px-3 py-2">
+              {% if c.outcome_b %}<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {% if c.outcome_b == 'passed' %}bg-green-100 text-green-800{% elif c.outcome_b == 'failed' %}bg-red-100 text-red-800{% elif c.outcome_b == 'errored' %}bg-amber-100 text-amber-800{% else %}bg-gray-100 text-gray-700{% endif %}">{{ c.outcome_b }}</span>{% else %}<span class="text-gray-400 text-xs">—</span>{% endif %}
+            </td>
+            <td class="px-3 py-2">
+              <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+                {% if c.status == 'agree' %}bg-green-100 text-green-800
+                {% elif c.status == 'differ' %}bg-red-100 text-red-800
+                {% else %}bg-gray-100 text-gray-700{% endif %}">{{ c.status }}</span>
+            </td>
+          </tr>
+          {% endfor %}
+          {% if results.claims | length > 300 %}
+          <tr><td colspan="4" class="px-3 py-2 text-xs text-gray-400">Showing the first 300 of {{ results.claims | length }} compared tests (the totals above count all of them).</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+      </div>
+      {% else %}
+      <div class="text-sm text-gray-400">No tests have run in both environments yet.</div>
+      {% endif %}
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

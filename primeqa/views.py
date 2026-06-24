@@ -7,7 +7,7 @@ import os
 from functools import wraps
 
 import jwt
-from flask import Blueprint, render_template, request, redirect, url_for, make_response, jsonify
+from flask import Blueprint, render_template, request, redirect, url_for, make_response, jsonify, abort
 
 from primeqa.db import get_db
 from primeqa.core.repository import (
@@ -850,15 +850,20 @@ def environments_detail(env_id):
                 }
 
         # D-164 (UI Area 1): Substrate-1 sync status — best-effort, never breaks the page.
-        from primeqa.metadata_bridge.s1_sync_console import read_s1_sync_status
+        from primeqa.metadata_bridge.s1_sync_console import (
+            read_s1_sync_status, read_s1_sync_history)
         s1_status = read_s1_sync_status(request.user["tenant_id"], env_id)
+        # UI Pass 1: paginated sync-run HISTORY beside the latest-sync panel.
+        history_page = request.args.get("page", 1, type=int) or 1
+        s1_history = read_s1_sync_history(
+            request.user["tenant_id"], env_id, page=history_page, per_page=20)
 
         return render_template("environments/detail.html", **ctx(
             active_page="settings_environments", settings_page="environments",
             breadcrumb_section="Environments", breadcrumb_item=env.name,
             env=env_data, message=request.args.get("message"),
             sync_statuses=sync_statuses, meta_version_id=meta_version_id,
-            s1_status=s1_status,
+            s1_status=s1_status, s1_history=s1_history,
         ))
     finally:
         db.close()
@@ -918,6 +923,67 @@ def environments_requeue_enrichment(env_id):
     else:
         msg = f"Requeue error: {res.get('error', 'could not requeue')}"
     return redirect(f"/environments/{env_id}?message={quote(msg)}")
+
+
+@views_bp.route("/environments/diff")
+@role_required("admin")
+def environments_diff():
+    """UI Pass 1: org-vs-org comparison. MODEL diff (structural S1 entity diff) +
+    RESULT diff (cross-org test outcomes). One picker carries BOTH axes — the
+    connected_org UUID (model diff) and the environment_id (result diff). Pure
+    read; both functions degrade to available=False rather than break the page.
+
+    Note: ``/environments/diff`` cannot collide with ``/environments/<int:env_id>``
+    — the int converter never matches the literal ``diff`` (same as
+    ``/environments/new``)."""
+    from primeqa.metadata_bridge.s1_sync_console import (
+        list_connected_orgs, model_diff_for_envs)
+    from primeqa.intelligence.s4_execution_console import result_diff
+    tid = request.user["tenant_id"]
+    orgs = list_connected_orgs(tid)
+    a = request.args.get("a", type=int)
+    b = request.args.get("b", type=int)
+    model = results = label_a = label_b = None
+    same_sel = bool(a and b and a == b)
+    if a and b and a != b:
+        by_env = {o["environment_id"]: o for o in orgs}
+        label_a = (by_env.get(a) or {}).get("label") or ("env-%s" % a)
+        label_b = (by_env.get(b) or {}).get("label") or ("env-%s" % b)
+        model = model_diff_for_envs(tid, a, b)
+        results = result_diff(tid, a, b)
+    return render_template("environments/diff.html", **ctx(
+        active_page="settings_environments", settings_page="environments",
+        breadcrumb_section="Environments", breadcrumb_item="Compare orgs",
+        orgs=orgs, sel_a=a, sel_b=b, same_sel=same_sel,
+        label_a=label_a, label_b=label_b, model=model, results=results))
+
+
+@views_bp.route("/environments/<int:env_id>/runs/<uuid:run_id>")
+@role_required("admin")
+def environments_run_detail(env_id, run_id):
+    """UI Pass 1: detail for ONE sync run, scoped to the env — the gap/error
+    drilldown where Phase 2 (typed failure category + permission gaps) surfaces.
+
+    OWNERSHIP (non-negotiable): ``read_s1_run_detail`` matches the run to THIS
+    env's connected_org IN SQL; a run from another env's org returns found=False
+    -> 404, never rendered (no cross-scope disclosure). Fail-closed on read error.
+    The env itself is tenant-scoped first via ``get_environment``."""
+    db = next(get_db())
+    try:
+        env = EnvironmentRepository(db).get_environment(env_id, request.user["tenant_id"])
+        if not env:
+            return redirect("/environments")
+        env_name = env.name
+    finally:
+        db.close()
+    from primeqa.metadata_bridge.s1_sync_console import read_s1_run_detail
+    detail = read_s1_run_detail(request.user["tenant_id"], env_id, run_id)
+    if not detail.get("found"):
+        abort(404)
+    return render_template("environments/run_detail.html", **ctx(
+        active_page="settings_environments", settings_page="environments",
+        breadcrumb_section="Environments", breadcrumb_item=env_name,
+        env_id=env_id, env_name=env_name, run=detail["run"]))
 
 
 @views_bp.route("/org-model")
