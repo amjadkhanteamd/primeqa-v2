@@ -15771,3 +15771,52 @@ majors; the 2 minor findings (over-page clamp, diff list DOM caps) fixed pre-mer
 with exact totals); a truthful live current-phase progress bar (needs a small
 engine write — only `last_completed_phase` is pollable today, so "N of 11 phases
 complete" is honest but "currently running phase X" is only inferable).
+
+## D-264 — UI Pass 2: live sync progress bar (Option A, display-only) — honest completed-count + enrichment count, no engine write
+
+**Context.** The env detail page polled a running sync every 5s but only
+full-reloaded on completion — a static "● syncing…" badge with no live progress
+(D-263 deferral). The Pass-2 recon settled the fork: **Option A** (display-only,
+from what's already pollable) vs **Option B** (a truthful `current_phase` requiring
+a hot-path engine write + migration). Option A chosen.
+
+**Decision — two HONEST lanes, both real facts.**
+1. **Structure** — "N of 11 phases complete" from `sync_runs.last_completed_phase`
+   (written per phase by `_advance_last_completed_phase` AFTER each phase commits,
+   `engine.py:244` — a committed fact). N = `ENTITY_ORDER.index(last_completed)+1`
+   of 11 (`fk_assertion.py:54-66`); `last_completed_phase == 'Flow'` → "Structure ✓
+   · 11 of 11". The bar shows the COMPLETED count + the just-completed phase label;
+   it **never** displays a guessed/inferred currently-running phase (the next phase
+   is a guess that's wrong mid-rollback). NULL/unknown phase → 0 of 11, never a
+   crash or a fabricated phase.
+2. **Enrichment** — "{done}/{total}" from a new per-org read
+   `readiness.count_enrichment_progress` (one cheap SELECT over
+   `ai_enrichment_queue ⋈ entities`, same scoping as `count_failed_enrichment`):
+   `done = status IN ('succeeded','failed_permanent')` (the two TERMINAL states),
+   `total = COUNT(*)`. `failed_retryable` is deliberately EXCLUDED from `done`
+   (it gets re-claimed) so the bar never shows a premature 100%.
+
+**Decision — Option B (truthful current-phase) NOT taken.** Showing "now running
+phase 7 of 11" as a fact would need a `current_phase` column + a separate committed
+write at every phase entry (~11 writes/run on the hot sync path) + a migration — a
+marginal gain over completed-count. The honest "N complete + enrichment X/Y" kills
+the spinner without touching the engine. (Deferred; revisit only if a live
+current-phase is specifically wanted.)
+
+**Scope.** PURE READ — no migration, no engine write, no write path. The poll JSON
+ADDITIVELY gains `enrichment:{done,total}` (every existing field retained — the one
+exact-dict-equality test is on the `provisioned=False` early-return, unaffected);
+`read_s1_sync_status` already carried `last_completed_phase`. The poller now
+re-renders both lanes in place each 5s (the spinner-killer) instead of reload-only;
+it still stops + refreshes on a terminal `sync_runs.status`
+(`success`/`partial_success`/`failure`). New: `count_enrichment_progress`
+(readiness.py), `enrichment` on `_read_status`, `phase_order()` (lazy `ENTITY_ORDER`
+re-export, the single source for the 11 phases), `sync_phases` passed to the
+template, the two-lane bar + poller in `detail.html`. 12 unit red-proofs (the
+11-phase order; the N-of-11 server-render across Object/Field/ValidationRule/Flow/
+None/bogus; the done/total shaping incl. zero/None). Full unit suite green (3153).
+Adversarially reviewed: 0 blockers / 0 majors. Live mid-sync capture (the poll JSON
+moving — `last_completed_phase` advancing through ENTITY_ORDER, `enrichment.done`
+climbing toward `total`, terminal finalize, env-59 entity count steady at 5910):
+reported out-of-band (this log is append-only). **This closes the Pass-2 live
+progress requirement.**
