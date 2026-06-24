@@ -15904,3 +15904,71 @@ connect record (memory `sf-prod-org-connected.md`).
 **Fallback.** The Phase-2 Slice C FLS-detection design (Tooling-vs-describe diff,
 `fls_hidden_fields_count` on `sync_runs`) is **retained for reference only** — to be
 revisited if the admin-Run-As rule is ever relaxed.
+
+## D-267 — projection spine in business language: org-scoped label resolution + register discipline (the demo-feedback close-out)
+
+**Context.** Demo/pilot feedback: the rendered "narrative spine" — test-case
+titles, run attribution, evidence steps — leaked raw Salesforce API names
+(`Case_SLA__c`, `Case_SLA__c.SLA_Code__c`), Flow/recipe names
+(`SQ205_Create_Case_SLA`), and DB-schema terms (`length`/`precision`/`scale`,
+`EntityDefinition`). The spine must read in business language; those tokens belong
+only in the technical-details / traceability register.
+
+**Key fact (recon).** S1 already stores the human label on every entity —
+`entities.display_name` (the SF `label` / `MasterLabel`), keyed per connected org
+by `sf_api_name` (object-qualified for fields, so the key matches a claim's
+`external_id` verbatim — no join). On env-59: 112/148 objects + **all 4895/4895
+fields** carry a populated `display_name ≠ sf_api_name`. **No schema change, no
+re-generation, no backfill** — a read-path render away.
+
+**Decision.**
+- **Org-scoped label resolver** — new `primeqa/intelligence/entity_labels.py`
+  `label_map(tenant_id, *, connected_org_id=None, environment_id=None) ->
+  {sf_api_name: display_name}`. ONE query over `entities` (`valid_to_seq IS NULL`),
+  **org-scoped — never blends across orgs** (per-org D-255..D-260): explicit org;
+  else env→org via `get_connected_org_for_environment`; else the tenant's primary
+  org (most active entities, deterministic). Best-effort → `{}`; omits rows where
+  `display_name` is NULL or `== sf_api_name`.
+- **Spine renders labels** — `claim_presentation.claim_title` / `step_plain` stay
+  PURE; an optional trailing `labels` param resolves api names (fallback to the
+  api name when unmapped == the pre-change behavior). Threaded at the S3/S4
+  console readers (one `label_map` per page) + the run-detail view (env-scoped).
+- **Register discipline (§6c):** property-claim titles state the constraint in
+  words (`length`→"is N characters", `precision`→"holds up to N digits",
+  `scale`→"has N decimal place(s)", boolean field-flags + `field_type` → business
+  phrasings, generic fallback humanizes the column name — **no raw `snake_case` on
+  the spine**); the automation-effect title **drops the Flow name** and leads with
+  the effect ("Automatically sets {object} {field} to {value}").
+- **Attribution relabeled at DISPLAY** — the S6 attribution prose is *stored* in
+  `s6_interpretations.detail->'attribution'` with the raw api name. `interpreter`
+  (S6) stays pure/DB-free; instead `humanize_attribution` rewrites the subject
+  phrase `"<EntityType> <api>"` → `"the <label> <entity-type>"` at render, scoped
+  to the run's org — fixing **old and new runs alike** without mutating the store.
+- **Evidence de-jargon** — `step_plain` maps system/Tooling sobjects
+  (`EntityDefinition`→"object definition", …) and resolves custom sobjects via the
+  label map; data sobjects keep the established form.
+- **Terminology** — run-detail breadcrumb `Claims/Claim`→`Tests/Test case`; nav
+  `My Tickets`→`Requirements` (page/model/route already say "Requirements").
+
+**Scope / non-goals.** Picklist *value* labels are pass-through (the literal is
+already human, e.g. "Active"); the inline-vs-standard-value-set JSONB label
+extraction is **deferred** (standard `PicklistValue.display_name` carries the
+`SVS:`-qualified form, not the bare label). No DB writes on any of these read
+paths; one label query per page (no N+1).
+
+**Verified.** 3163/3163 unit + run-tests page green; live env-59 before/after on
+the SQ-212 plan (11 titles), a run's attribution + evidence step — all business
+language, deterministic, zero claim writes. Adversarial review (Workflow):
+0 blockers/majors; one minor (generic property branch leaked the column name)
+fixed in-slice; one nit (a second short-lived tenant connection per page)
+deliberately left.
+
+**Related (separate, deferred).** Diagnosed the SQ-212 "duplicate test case"
+(claims `487460fe` / `5ddb8c6a`): **not** a dedup miss and **not** a title-render
+collision — two legitimately-distinct rows whose only `asserted_truth` difference
+is the natural-language `triggering_action.description` (`(Case_SLA__c)` vs
+`({{Case_SLA__c}})`); the canonicalizer already strips ref `version_seq` +
+`external_id`. Root-cause fix (a future, governance-critical decision —
+`IDENTITY_HASH_VERSION` policy): exclude the free-text `triggering_action`
+description from identity canonicalization for `automation-effect` /
+`state-transition` claims. Not applied here.
