@@ -16004,3 +16004,39 @@ render in business language (D-267); zero claim text carries `{{…}}`. Separate
 still deferred: the `IDENTITY_HASH_VERSION` "drop description from identity" idea
 (refuted as unsafe — over-merges a prose-only precondition) and a generation-side
 `{{…}}` normalizer (AK chose source-fix over a code build).
+
+## D-269 — business-facing coverage views render the live/active test set; deprecated claims appear only on detail + lineage views
+
+**Principle.** Same register split as D-267 (business language in the spine,
+technical detail behind it): a "what grades the release" coverage view shows the
+**live/active** test set; **supersession history** (deprecated claims) lives on
+detail + lineage views. Closes the D-268 honest gap — deprecation marked but did
+not hide, so each assertion still listed an approved row + a badged-deprecated
+predecessor on business-facing pages.
+
+**Change (display-only; no schema, no migration, no claim writes).** Filter
+`status='deprecated'` in the single reader/query that feeds each list — so rows
+AND counts stay consistent (the filter feeds both the COUNT and the page rows):
+- **requirement test-plan** (`_read_claims`) — skip deprecated; each assertion
+  renders once (its approved/active claim).
+- **claims library / Test Library** (`_list_claims`) — exclude deprecated when no
+  explicit `status` filter is given (an explicit `status='draft'` inbox filter, or
+  asking for `'deprecated'`, is honored as-is).
+- **requirements-list "N test cases" badge** (`_count_claims_by_requirement`) —
+  active-only, so the badge matches the filtered plan. (The plan header count is
+  `len(claims)`, automatically correct once the reader filters.)
+
+**Left visible (deprecated stays).** The test-case **detail** page (direct nav to
+a deprecated claim renders it, badged), the **"Related test cases" siblings**
+lineage/dedup helper, and all **run / provenance** views. A code TODO marks an
+optional `?include_deprecated` toggle, not built this slice.
+
+**Verified.** Live before/after: SQ-212 plan 11→8 (drops the 3 D-268 rows),
+SQ-205 plan 9→8 (drops its own deprecated `e87c2666`), badges match (8/8); library
+excludes all 7 deprecated-active (23 shown), drafts inbox unaffected; detail of a
+deprecated claim still renders, siblings still surface it; deterministic, zero
+claim writes (30→30). Full unit suite 3163 green + a new integration regression
+test (`test_s3_generation_console`, 14 green) + edited-consumer templates compile.
+**Note:** the 2 deprecated state-transition rows the D-268 prompt labeled "SQ-205"
+are actually SQ-212 (drop from SQ-212); SQ-205 had a separate deprecated claim —
+the filter is per-requirement, so it dropped the right rows on each.
