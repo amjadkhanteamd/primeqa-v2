@@ -16040,3 +16040,5 @@ test (`test_s3_generation_console`, 14 green) + edited-consumer templates compil
 **Note:** the 2 deprecated state-transition rows the D-268 prompt labeled "SQ-205"
 are actually SQ-212 (drop from SQ-212); SQ-205 had a separate deprecated claim —
 the filter is per-requirement, so it dropped the right rows on each.
+
+## D-270 — Evidence Model & Evaluation Strategy interpretation-boundary layer (Claim → Evaluation Strategy → Recipe(s) → Execution → Evidence → Verdict); primary output `Verified` (coverage's sole input); three contracts accepted; persistence + §4 semantic decisions + S4 run-all + BVA all deferred to the S6 build; see ADR-001.
