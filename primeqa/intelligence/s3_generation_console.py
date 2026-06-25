@@ -90,6 +90,13 @@ def _read_claims(session, requirement_key: str, labels=None) -> list[dict]:
         claim = coord.get_latest_claim(session, m.test_id)
         if claim is None:                             # link with no live claim — skip
             continue
+        # D-269: business-facing coverage views render the LIVE/active test set —
+        # a deprecated (superseded) claim still renders on its detail + lineage
+        # pages, just not in the requirement plan, so each assertion shows once.
+        # (TODO: an optional ?include_deprecated toggle if a business view ever
+        # needs the full set — not built this slice.)
+        if claim.status == "deprecated":
+            continue
         recipes = coord.list_active_recipes(session, m.test_id)
         claims.append({
             "test_id": str(m.test_id),
@@ -347,6 +354,15 @@ def _list_claims(conn, *, limit: int, offset: int, q=None, status=None,
     if status:
         clause += " AND c.status::text = :status"
         qp["status"] = status
+    else:
+        # D-269: the Test Library (unfiltered) is a business-facing coverage view
+        # — render the live/active set, not superseded claims. An explicit status
+        # filter (e.g. the drafts inbox's 'draft', or someone asking for
+        # 'deprecated') is honored as-is; a deprecated claim still opens on its
+        # own detail page. The clause feeds BOTH the COUNT and the page rows, so
+        # the total stays consistent with the filtered list. (TODO: an optional
+        # include_deprecated arg if a business view ever needs the full set.)
+        clause += " AND c.status::text <> 'deprecated'"
     total = conn.execute(text(
         f"SELECT COUNT(*) FROM test_claims c WHERE c.valid_to IS NULL{clause}"),
         qp).scalar()
@@ -460,10 +476,14 @@ def _count_claims_by_requirement(conn, keys) -> dict:
     if not keys:
         return {}
     from sqlalchemy import bindparam
+    # D-269: the requirements-list "N test cases" badge is a business-facing
+    # coverage count — exclude deprecated (superseded) claims so the badge matches
+    # the filtered plan (which also drops deprecated). Active = valid_to IS NULL.
     stmt = text(
         "SELECT l.external_key AS k, COUNT(DISTINCT l.test_id) AS n "
         "FROM test_requirement_links l "
         "JOIN test_claims c ON c.test_id = l.test_id AND c.valid_to IS NULL "
+        "  AND c.status::text <> 'deprecated' "
         "WHERE l.external_system = 'jira' AND l.link_kind = 'generated_from' "
         "AND l.external_key IN :keys GROUP BY l.external_key"
     ).bindparams(bindparam("keys", expanding=True))

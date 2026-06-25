@@ -149,3 +149,35 @@ def test_count_claims_by_requirement_empty_keys(seeded):
 
 def test_count_claims_by_requirement_bad_tenant():
     assert count_claims_by_requirement(-1, ["R0"])["available"] is False
+
+
+# --- D-269: deprecated claims drop from business-facing coverage views ---------
+
+def test_deprecated_claim_excluded_from_plan_library_and_count_but_visible_on_detail(seeded):
+    """A deprecated (superseded) claim drops from the requirement plan, the claims
+    library, and the per-requirement count — but still renders on its own detail
+    page (supersession history stays reachable)."""
+    from primeqa.intelligence.s4_execution_console import deprecate_claim
+    _, res = _emit_run(seeded, [_grounded_rel()], persister=LedgerPersister(TEST_TENANT_ID))
+    test_id = res.results[0].outcome.claims_written[0].test_id
+
+    # baseline: visible in all three business-facing views
+    assert count_claims_by_requirement(TEST_TENANT_ID, ["R0"])["counts"].get("R0") == 1
+    assert any(c["test_id"] == str(test_id)
+               for c in read_requirement_claims(TEST_TENANT_ID, "R0")["claims"])
+    assert any(c["test_id"] == str(test_id)
+               for c in list_claims(TEST_TENANT_ID, per_page=50)["claims"])
+
+    # deprecate it (D-228 supersession, status-only)
+    out = deprecate_claim(TEST_TENANT_ID, test_id, "test: superseded (D-269 filter)")
+    assert out["ok"] is True and out["status"] == "deprecated"
+
+    # now excluded from the plan, the library, and the count (key omitted at 0)
+    assert read_requirement_claims(TEST_TENANT_ID, "R0")["claims"] == []
+    assert all(c["test_id"] != str(test_id)
+               for c in list_claims(TEST_TENANT_ID, per_page=50)["claims"])
+    assert "R0" not in count_claims_by_requirement(TEST_TENANT_ID, ["R0"])["counts"]
+
+    # ... but the detail page still renders the deprecated claim
+    det = read_claim_detail(TEST_TENANT_ID, test_id)
+    assert det["found"] is True and det["claim"]["status"] == "deprecated"
