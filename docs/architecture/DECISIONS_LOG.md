@@ -16042,3 +16042,5 @@ are actually SQ-212 (drop from SQ-212); SQ-205 had a separate deprecated claim �
 the filter is per-requirement, so it dropped the right rows on each.
 
 ## D-270 — Evidence Model & Evaluation Strategy interpretation-boundary layer (Claim → Evaluation Strategy → Recipe(s) → Execution → Evidence → Verdict); primary output `Verified` (coverage's sole input); three contracts accepted; persistence + §4 semantic decisions + S4 run-all + BVA all deferred to the S6 build; see ADR-001.
+
+## D-271 — Coverage model: three-rung ladder Has Claim → Approved → Verified, headline = Verified %; derived read-only view over Requirement↔Claim, sole input `Verified` (ADR-001/D-270); multi-claim = strict-AND, counts generated_from; org-scoping inherited per-org from S6 Verified (mechanism owned by S6 build); build follows the S6 Verified build; see coverage-model-spec.md.
