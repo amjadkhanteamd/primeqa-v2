@@ -91,7 +91,8 @@ def trigger_claim_run(tenant_id: int, test_id, environment_id: int, *,
 # NULL). Tenant-scoped by the connection's search_path — no tenant_id column.
 _CLAIM_RUNS_SQL = (
     "SELECT CAST(r.run_id AS text) AS run_id, CAST(r.recipe_id AS text) AS recipe_id, "
-    "r.outcome::text AS outcome, r.finished_at, i.verdict::text AS verdict "
+    "r.outcome::text AS outcome, r.failure_category, r.finished_at, "
+    "i.verdict::text AS verdict "
     "FROM s4_execution_runs r "
     "LEFT JOIN s6_interpretations i ON i.run_id = r.run_id "
     "WHERE r.claim_test_id = CAST(:tid AS uuid) "
@@ -100,12 +101,15 @@ _CLAIM_RUNS_SQL = (
 
 def _read_claim_runs(session, test_id, *, limit: int = 50) -> list[dict]:
     """Pure: the claim's runs newest-first — S4 outcome + finished_at LEFT JOINed
-    to the S6 verdict (verdict NULL when the best-effort interpret step failed)."""
+    to the S6 verdict (verdict NULL when the best-effort interpret step failed).
+    ``failure_category`` (D-261) rides along so the plain-words line can split a
+    permanent not_evaluated from a re-runnable one (D-272 Slice 1)."""
     rows = session.execute(
         text(_CLAIM_RUNS_SQL), {"tid": str(test_id), "limit": limit}).mappings().all()
     return [{
         "run_id": r["run_id"], "recipe_id": r["recipe_id"],
         "outcome": r["outcome"], "verdict": r["verdict"],
+        "failure_category": r["failure_category"],
         "finished_at": _iso(r["finished_at"]),
     } for r in rows]
 

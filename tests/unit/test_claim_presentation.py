@@ -282,6 +282,34 @@ def test_verdict_plain_falls_back_to_outcome_then_default():
     assert verdict_plain(None, None) == "No result recorded"
 
 
+# --- D-272 Slice 1: not_evaluated plain line splits by failure_category -------
+
+def test_verdict_plain_not_evaluated_default_is_re_runnable():
+    # no failure_category (incl. every pre-D-272 caller) → the re-runnable line.
+    line = verdict_plain("not_evaluated", "errored")
+    assert "re-run" in line.lower()
+    assert "needs attention" not in line.lower()
+
+
+def test_verdict_plain_not_evaluated_indeterminate_categories_re_runnable():
+    for cat in ("auth", "permission", "transient", "rate_limit", "unknown"):
+        line = verdict_plain("not_evaluated", "errored", cat)
+        assert "re-run" in line.lower(), cat
+        assert "needs attention" not in line.lower(), cat
+
+
+def test_verdict_plain_not_evaluated_permanent_needs_attention():
+    line = verdict_plain("not_evaluated", "errored", "normalization")
+    assert "needs attention" in line.lower()
+    assert "re-run" not in line.lower()
+
+
+def test_verdict_plain_other_verdicts_ignore_failure_category():
+    # a non-not_evaluated verdict is unaffected by failure_category.
+    assert verdict_plain("value_persisted", "passed", "normalization") == \
+        verdict_plain("value_persisted", "passed")
+
+
 # ---------------------------------------------------------------------------
 # Refusal notes (D-206.1)
 # ---------------------------------------------------------------------------

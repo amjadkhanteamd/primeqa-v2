@@ -43,6 +43,38 @@ ALL_CATEGORIES = frozenset({
     FailureCategory.UNKNOWN,
 })
 
+
+# --- evaluation-semantics partition (D-272 / evaluation-semantics-v1.md) ------
+# S4 assigns ``outcome=errored`` ONLY for a could-not-evaluate — the assertion
+# was never graded (transport / auth / throttle / environment-not-satisfiable /
+# an un-buildable test); a real assertion failure is ``outcome=failed`` instead.
+# Within that errored class the question is: will re-running plausibly change it?
+#   INDETERMINATE — evidence-incomplete, RE-RUNNABLE (D-272 §2.4): ``auth``
+#     (credential), ``rate_limit`` (throttle), ``transient`` (transport hiccup),
+#     ``permission`` (environment-not-satisfiable), plus the conservative
+#     defaults ``unknown`` and ``None`` (an errored run whose surface we could not
+#     classify). None of these is evidence the claim is false; re-running —
+#     possibly after an onboarding fix — can still verify it.
+#   PERMANENT — re-running AS-IS will not change it: ``normalization`` is an
+#     our-side malformed / un-buildable test (MALFORMED_QUERY / INVALID_FIELD /
+#     UnfillableWorld / StepRefResolutionError). Still NOT a claim failure and
+#     still NOT ``Verified`` — but it needs the test fixed, not a blind re-run.
+# Reuses ``failure_category`` (no parallel state). This is the two-way evidence-
+# completeness split the ``Verified`` invariant rests on — NOT a retry policy
+# (blind-retry vs fix-then-rerun is a later slice).
+PERMANENT_CATEGORIES = frozenset({FailureCategory.NORMALIZATION})
+INDETERMINATE_CATEGORIES = ALL_CATEGORIES - PERMANENT_CATEGORIES
+
+
+def is_indeterminate(category: Optional[str]) -> bool:
+    """True when an errored run with this ``failure_category`` is evidence-
+    incomplete and re-runnable (D-272 §2.4) — everything except a known-permanent
+    our-side defect. ``None`` (errored with no captured/derivable category) and
+    ``unknown`` both resolve to indeterminate: we never settle "we don't know
+    why" as a permanent failure. Total over every ``failure_category`` value and
+    over ``None``."""
+    return category not in PERMANENT_CATEGORIES
+
 # Salesforce ``errorCode``s meaning "the integration user lacks access" — the
 # permission / FLS signal. These are exactly the codes D-225 surfaces on the
 # mutation path (an FLS-hidden field denies the write); they may also ride an

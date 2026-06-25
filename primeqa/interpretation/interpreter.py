@@ -231,12 +231,32 @@ def _interpret_inspection(evidence: RunEvidence):
 # ---------------------------------------------------------------------------
 
 def _not_evaluated(evidence: RunEvidence, step_id):
+    """An errored run → the ``not_evaluated`` verdict. D-272 Slice 1: the verdict
+    is unchanged, but the attribution now carries whether the run is INDETERMINATE
+    (evidence-incomplete, re-runnable — credentials / transport / throttle /
+    environment-not-satisfiable) or PERMANENT (an our-side malformed / un-buildable
+    test that re-running as-is repeats). The class is derived from the SAME
+    ``failure_category`` the result store persists (``failure_signature``), so it
+    is consistent across persist and interpret and works retroactively from the
+    captured evidence (which carries ``error_type``). Neither branch is a claim
+    failure and neither is ``Verified``."""
+    from primeqa.execution_engine.evidence import failure_signature
+    from primeqa.integrations.failure_taxonomy import is_indeterminate
+
     err = evidence.error
     detail = (f"{err.phase}: {err.error_type}: {err.message}" if err is not None
               else "errored (no error surface captured)")
+    category, _ = failure_signature(evidence)
+    if is_indeterminate(category):
+        attribution = (f"The run could not be evaluated against the org ({detail}). "
+                       f"The evidence is incomplete — re-run.")
+    else:
+        attribution = (f"The run could not be evaluated because the test itself "
+                       f"could not be built or run ({detail}). Re-running as-is "
+                       f"will not change this — it needs attention.")
     return (
         "not_evaluated",
-        f"The run could not be evaluated against the org ({detail}).",
+        attribution,
         (EvidenceRef(step_id, detail),),
     )
 

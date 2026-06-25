@@ -2446,7 +2446,10 @@ def claims_detail(test_id):
     siblings = read_claim_siblings(tid, test_id)      # D-228 (F3): supersession context
     runs = read_claim_runs(tid, test_id)              # D-168 (3a): recent runs (S6)
     for r in runs.get("runs") or []:                  # D-206: plain-words line
-        r["plain"] = verdict_plain(r.get("verdict"), r.get("outcome"))
+        # D-272 Slice 1: failure_category splits a permanent not_evaluated (the
+        # test could not be built) from a re-runnable one.
+        r["plain"] = verdict_plain(r.get("verdict"), r.get("outcome"),
+                                   r.get("failure_category"))
     # D-233: the source requirement (the back-link). The substrate stores only the
     # external_key; the v1 db resolves it to a viewable requirement id.
     req_key = read_claim_requirement(tid, test_id).get("requirement_key")

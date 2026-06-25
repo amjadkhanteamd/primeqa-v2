@@ -257,3 +257,33 @@ class RunEvidence:
     # (F6.1, D-196). Empty for read-only / rejected-create runs. ``CreatedRecord``s
     # from ``provisioning.CreatedRecordTracker``; persisted to s4_created_records.
     created_records: tuple = ()
+
+
+def failure_signature(evidence: RunEvidence) -> tuple[Optional[str], Optional[str]]:
+    """Derive the run's ``(failure_category, sf_error_code)`` from its top-level
+    error surface — the ONE classification both the result store (at persist,
+    :func:`primeqa.execution_engine.result_store._run_failure`) and S6 (at
+    interpret, the ``not_evaluated`` path) consume, so a run reads the SAME
+    category in both places (incl. retroactively from the captured evidence,
+    which carries ``error_type`` even on rows persisted before the failure_category
+    column existed).
+
+    Pure; reuses the shared taxonomy (``integrations.failure_taxonomy.category_for``).
+    Returns ``(None, None)`` for a run with no error surface — ``passed`` /
+    assertion-``failed`` / a business rejection carry no ``evidence.error``. The SF
+    ``errorCode`` is read from the first erroring step's evidence (a read-path
+    ``SFRequestError`` has no captured code, so it classifies by exception class
+    only — a documented coarseness)."""
+    from primeqa.integrations.failure_taxonomy import category_for
+
+    err = evidence.error
+    if err is None:
+        return None, None
+    sf_error_code = None
+    for step in evidence.steps:
+        if getattr(step, "error", None) is not None:
+            code = getattr(step, "error_code", None)
+            if isinstance(code, str) and code:
+                sf_error_code = code
+                break
+    return category_for(err.error_type, sf_error_code), sf_error_code

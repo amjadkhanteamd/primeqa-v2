@@ -139,6 +139,35 @@ def test_inspection_errored_is_not_evaluated():
 
 
 # ---------------------------------------------------------------------------
+# D-272 Slice 1: indeterminate-vs-permanent split on the not_evaluated path
+# ---------------------------------------------------------------------------
+
+def test_errored_indeterminate_is_marked_re_runnable():
+    # an auth/transport error is could-not-evaluate → re-runnable; the verdict is
+    # unchanged (not_evaluated) but the attribution says re-run, not "needs attention".
+    err = ErrorSurface(phase="read", error_type="SFAuthError", message="401")
+    ev = _run(outcome="errored", steps=[_read(0)], error=err)
+    interp = interpret_run(ev)
+    assert interp.verdict == "not_evaluated"          # verdict unchanged
+    attr = interp.attribution.lower()
+    assert "evidence is incomplete" in attr and attr.rstrip().endswith("re-run.")
+    assert "needs attention" not in attr
+
+
+def test_errored_permanent_is_not_re_runnable():
+    # a normalization defect (our-side malformed/un-buildable test, e.g.
+    # StepRefResolutionError) is permanent: re-running as-is won't change it.
+    err = ErrorSurface(phase="construct", error_type="StepRefResolutionError",
+                       message="ref unresolved")
+    ev = _run(outcome="errored", steps=[_read(0)], error=err)
+    interp = interpret_run(ev)
+    assert interp.verdict == "not_evaluated"          # still not_evaluated, NOT failed
+    attr = interp.attribution.lower()
+    assert "needs attention" in attr and "will not change this" in attr
+    assert "evidence is incomplete" not in attr
+
+
+# ---------------------------------------------------------------------------
 # Discipline: outcome carried (never recomputed) + deterministic
 # ---------------------------------------------------------------------------
 

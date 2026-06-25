@@ -278,10 +278,26 @@ _OUTCOME_PLAIN = {
     "errored": "Could not run to completion",
 }
 
+# D-272 Slice 1: a PERMANENT not_evaluated (the test itself could not be
+# built/run — failure_category 'normalization') is honestly NOT a re-run.
+_NOT_EVALUATED_PERMANENT = (
+    "Could not be evaluated — the test itself could not be built or run "
+    "(needs attention, not a retry)")
 
-def verdict_plain(verdict: Optional[str], outcome: Optional[str] = None) -> str:
+
+def verdict_plain(verdict: Optional[str], outcome: Optional[str] = None,
+                  failure_category: Optional[str] = None) -> str:
     """One sentence for a run row: the S6 verdict's plain words, falling back
-    to the bare outcome when no interpretation was recorded."""
+    to the bare outcome when no interpretation was recorded.
+
+    ``failure_category`` (the run's typed error class, D-261) splits the
+    ``not_evaluated`` line per D-272 §2.4: a permanent our-side defect
+    (``normalization``) reads "needs attention", everything else keeps the
+    re-runnable credentials/infrastructure line. Default ``None`` → the
+    indeterminate line, so every pre-D-272 caller is unchanged."""
+    from primeqa.integrations.failure_taxonomy import is_indeterminate
+    if verdict == "not_evaluated" and not is_indeterminate(failure_category):
+        return _NOT_EVALUATED_PERMANENT
     if verdict and verdict in _VERDICT_PLAIN:
         return _VERDICT_PLAIN[verdict]
     if outcome and outcome in _OUTCOME_PLAIN:

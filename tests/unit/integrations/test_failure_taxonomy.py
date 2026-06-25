@@ -17,7 +17,8 @@ from primeqa.integrations.exceptions import (
     SFAuthError, SFIncompletePaginationError, SFRateLimitError, SFRequestError,
 )
 from primeqa.integrations.failure_taxonomy import (
-    ALL_CATEGORIES, FailureCategory, category_for, classify_failure,
+    ALL_CATEGORIES, INDETERMINATE_CATEGORIES, PERMANENT_CATEGORIES,
+    FailureCategory, category_for, classify_failure, is_indeterminate,
 )
 
 
@@ -99,3 +100,38 @@ def test_category_for_synthesized_surface_types():
 def test_category_for_is_total():
     assert category_for("AnythingElse", None) in ALL_CATEGORIES
     assert category_for(None, None) == FailureCategory.UNKNOWN
+
+
+# --- D-272 Slice 1: indeterminate-vs-permanent partition ---------------------
+
+def test_partition_is_exhaustive_and_disjoint():
+    # every failure_category value is classified, exactly once.
+    assert PERMANENT_CATEGORIES <= ALL_CATEGORIES
+    assert INDETERMINATE_CATEGORIES | PERMANENT_CATEGORIES == ALL_CATEGORIES
+    assert not (INDETERMINATE_CATEGORIES & PERMANENT_CATEGORIES)
+
+
+def test_only_normalization_is_permanent():
+    # the one our-side malformed/un-buildable defect is permanent; the rest are
+    # could-not-evaluate → re-runnable.
+    assert PERMANENT_CATEGORIES == {FailureCategory.NORMALIZATION}
+
+
+@pytest.mark.parametrize("category", [
+    FailureCategory.AUTH, FailureCategory.PERMISSION, FailureCategory.TRANSIENT,
+    FailureCategory.RATE_LIMIT, FailureCategory.UNKNOWN,
+])
+def test_indeterminate_categories_are_re_runnable(category):
+    # credential / throttle / transport / environment-not-satisfiable / unknown
+    # are evidence-incomplete → re-runnable (D-272 §2.4), incl. auth + permission.
+    assert is_indeterminate(category) is True
+
+
+def test_normalization_is_permanent_not_re_runnable():
+    assert is_indeterminate(FailureCategory.NORMALIZATION) is False
+
+
+def test_none_is_indeterminate_conservative():
+    # an errored run with no captured/derivable category never settles as a
+    # permanent failure — re-runnable by default.
+    assert is_indeterminate(None) is True

@@ -22,7 +22,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ENUM, JSONB, UUID
 
 from primeqa.db import Base
-from primeqa.execution_engine.evidence import RunEvidence
+from primeqa.execution_engine.evidence import RunEvidence, failure_signature
 
 # Reuse the run_outcome PG enum (created by the substrate-2 migration). Same
 # pattern as substrate-2's models_db: mirror the type, create_type=False.
@@ -92,30 +92,13 @@ class S4CreatedRecord(Base):
 
 def _run_failure(evidence: RunEvidence):
     """Phase 2 Slice A: derive the run-level ``(failure_category, sf_error_code)``
-    from the evidence's top-level error surface, reusing the shared taxonomy
-    (``integrations.failure_taxonomy.category_for`` — the single mapping table).
+    from the evidence's top-level error surface.
 
-    Returns ``(None, None)`` for a run with no transport error — ``passed`` /
-    assertion-``failed`` / a business rejection carry no ``evidence.error``. The SF
-    ``errorCode`` is read from the erroring step's evidence (D-225 captured it on
-    the mutation-attempt evidence — the FLS-write case). A read-path
-    ``SFRequestError`` has no captured code, so it classifies by exception class
-    only (auth / rate_limit resolve; a bare SFRequestError stays ``unknown``) — a
-    documented coarseness; the sync side classifies the LIVE exception in full via
-    ``classify_failure``."""
-    from primeqa.integrations.failure_taxonomy import category_for
-
-    err = getattr(evidence, "error", None)
-    if err is None:
-        return None, None
-    sf_error_code = None
-    for step in evidence.steps:
-        if getattr(step, "error", None) is not None:
-            code = getattr(step, "error_code", None)
-            if isinstance(code, str) and code:
-                sf_error_code = code
-                break
-    return category_for(err.error_type, sf_error_code), sf_error_code
+    Delegates to :func:`primeqa.execution_engine.evidence.failure_signature` — the
+    single derivation S6 shares (D-272 Slice 1), so a run reads the SAME category
+    at persist and at interpret. Returns ``(None, None)`` for a run with no
+    transport error (``passed`` / assertion-``failed`` / a business rejection)."""
+    return failure_signature(evidence)
 
 
 def persist_run_evidence(session, evidence: RunEvidence):
