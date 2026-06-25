@@ -15972,3 +15972,35 @@ is the natural-language `triggering_action.description` (`(Case_SLA__c)` vs
 `IDENTITY_HASH_VERSION` policy): exclude the free-text `triggering_action`
 description from identity canonicalization for `automation-effect` /
 `state-transition` claims. Not applied here.
+
+## D-268 — SQ-212 malformed-duplicate cleanup: deprecated 3 placeholder-bearing claims (D-228, status-only) after the Jira source was cleaned
+
+**Executed (2026-06-25).** Root cause = the SQ-212 Jira requirement carried
+un-substituted `{{…}}` placeholders (`requirements.jira_description`), quoted
+verbatim into claim text by the verbatim-excerpt path (Guardrail-3) with no
+normalization on the storage path — confirmed not a code regression (the importer
+copies `fields["description"]` raw from Jira; the variance was the LLM's
+verbatim-span choice). **AK cleaned the source in Jira and re-imported** (the
+active SQ-212 requirement is now id=300, `{{…}}`-free; the importer offers no
+in-app description edit and reimport-over-active is blocked by the "already exists"
+guard, so delete-then-reimport was required). With the source clean, the three
+placeholder-bearing claims were **deprecated via D-228 supersession**
+(`coordinator.deprecate_claim`, humans-only, reason recorded in provenance —
+status-only `UPDATE test_claims SET status='deprecated'`, no `valid_to`/run
+touch): `487460fe` (auto-effect → clean equiv `5ddb8c6a`), `b50c1bf4`
+(state-transition → `4bb7cf21`), `1abd4b17` (state-transition → `90542bfd`). Each
+clean equivalent stays `approved`/active on SQ-212; run counts unchanged (targets
+4/4 each; equivalents 5/5 each); total active claims 30→30.
+
+**Honest scope note:** D-228 deprecation **marks, it does not hide** — the
+requirement-plan template renders deprecated claims with a "deprecated" badge
+rather than filtering them, so each assertion now shows one `approved` row + one
+badged `deprecated` predecessor. The *functional* duplicate is resolved (only the
+approved claim grades releases / is runnable); hiding deprecated rows from the
+plan view is a separate UI choice, not done here. The 3 soft-deleted residual
+SQ-212 requirement rows (id 296/297/299) from the delete/reimport churn are
+harmless (the partial unique index excludes them); purge is optional. Titles now
+render in business language (D-267); zero claim text carries `{{…}}`. Separate &
+still deferred: the `IDENTITY_HASH_VERSION` "drop description from identity" idea
+(refuted as unsafe — over-merges a prose-only precondition) and a generation-side
+`{{…}}` normalizer (AK chose source-fix over a code build).
