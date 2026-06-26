@@ -128,7 +128,9 @@ class TestCoordinatorWriteRecipeImplemented:
 class TestCoordinatorSignatures:
     def test_write_claim_parameter_names(self) -> None:
         """Pin the v1 signature. Track D-β.2 implements the body
-        but must not rename the parameters."""
+        but must not rename the parameters. D-285 (Slice 4f.0)
+        appends ``strategy_kind`` (keyword-only, default None) —
+        an additive tail param; the prior names are unchanged."""
         sig = inspect.signature(
             SemanticTransactionCoordinator.write_claim,
         )
@@ -139,6 +141,7 @@ class TestCoordinatorSignatures:
             "actor", "test_id",
             "archetype", "claim_kind",
             "asserted_truth", "semantic_conditions",
+            "strategy_kind",
         ]
 
     def test_write_claim_keyword_only_after_session(self) -> None:

@@ -45,6 +45,7 @@ from sqlalchemy import (
     DateTime,
     Index,
     Integer,
+    String,
     Text,
     text,
 )
@@ -251,6 +252,14 @@ class TestClaim(Base):
     status = Column(
         CLAIM_STATUS_ENUM, nullable=False, server_default="draft",
     )
+
+    strategy_kind = Column(String, nullable=True)
+    """D-285 (Slice 4f.0): the recorded evaluation strategy —
+    ``single`` / ``bva``, open text (code owns the vocabulary,
+    no CHECK). NULL on every claim authored before 4f.2; the run
+    router + decision engine READ it (never derive). Set once by
+    generation in 4f.2. Fork C: a dedicated column, never folded
+    into ``asserted_truth``."""
 
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),

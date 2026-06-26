@@ -195,6 +195,11 @@ class ClaimRead:
     status: str
     created_at: datetime
     updated_at: datetime
+    # D-285 (Slice 4f.0): the recorded evaluation strategy (`single` / `bva`),
+    # NULL until generation sets it in 4f.2. The router + decision engine READ
+    # this (never derive). Trailing optional so existing constructions are
+    # unaffected; the projection always supplies the column value.
+    strategy_kind: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -338,6 +343,7 @@ class SemanticTransactionCoordinator:
         claim_kind: str,
         asserted_truth: BodyBase,
         semantic_conditions: BodyBase,
+        strategy_kind: Optional[str] = None,
     ) -> WriteClaimResult:
         """Write a new claim version per SPEC §4.7.6's 11-step
         orchestration.
@@ -360,6 +366,11 @@ class SemanticTransactionCoordinator:
             ``claim_kind``).
           semantic_conditions: The conditions body (typically
             :class:`SemanticConditionsBody`).
+          strategy_kind: D-285 (Slice 4f.0) — the claim's recorded
+            evaluation strategy (``single`` / ``bva``), or ``None``
+            (the default, persisted as NULL → routes single). Set
+            by generation in 4f.2; every caller before then omits
+            it. READ (never derived) by the router + decision engine.
 
         Returns:
           A :class:`WriteClaimResult` with the new version's
@@ -592,6 +603,7 @@ class SemanticTransactionCoordinator:
             identity_hash=new_hash,
             identity_hash_version=IDENTITY_HASH_VERSION,
             status=new_status,
+            strategy_kind=strategy_kind,   # D-285: NULL until 4f.2 sets it
         )
         session.add(new_claim)
         session.flush()
@@ -1035,6 +1047,7 @@ class SemanticTransactionCoordinator:
             status=row.status,
             created_at=row.created_at,
             updated_at=row.updated_at,
+            strategy_kind=row.strategy_kind,   # D-285: read the column, never derive
         )
 
     def _hydrate_recipe_row(self, row: TestRecipe) -> RecipeRead:
