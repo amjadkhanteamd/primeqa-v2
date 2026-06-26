@@ -78,16 +78,50 @@ def _is_flaky(outcomes) -> bool:
     return transitions >= 2
 
 
+def _claim_verified(c) -> bool:
+    """THE single place a claim's good state is decided for the release decision
+    (D-280, Slice 4b). Replaces the inline ``latest_run.outcome == 'passed'`` rule
+    that used to be scattered across the quarantine / pass-rate / blocker reads.
+
+    Today every claim is ``single``: Verified iff the latest counted run passed —
+    the N=1 identity Slice 2a proved byte-identical to the old rule over live data
+    (``apply_strategy('single', [adapter(outcome)]) == (outcome == 'passed')``).
+    Polarity is a NO-OP on the single arm (S4 already folds accept/reject into the
+    outcome — Slice 2a's ``test_polarity_does_not_change_single_verdict``), so
+    ``expect_rejection=False`` is exact, not an assumption.
+
+    A **never-run** claim (no ``latest_run``) is NOT verified and is NEVER routed
+    through the applier (``single`` requires N=1, and a never-run claim has no
+    probe) — the separate ``never_run`` / ``has_runs`` blocker owns that case.
+
+    Prefers the value :func:`_assemble_claim_evidence` already attached (computed
+    once per claim); for a hand-built evidence dict that lacks it, derives the SAME
+    rule — so there is exactly ONE definition, never an inline outcome check.
+    **Slice 4d adds the bva branch HERE** (``if c.get('strategy_kind') == 'bva':
+    return _verified_bva(c)``) — this is the one extension point."""
+    v = c.get("verified")
+    if v is not None:
+        return v
+    lr = c.get("latest_run")
+    if lr is None:
+        return False
+    from primeqa.interpretation.strategy import (
+        apply_strategy, probe_result_from_outcome)
+    return apply_strategy(
+        None, "single",
+        [probe_result_from_outcome(lr["outcome"], expect_rejection=False)])
+
+
 def _claim_quarantined(c) -> bool:
     """D-232: is a claim quarantined for the release decision? A MANUAL pin WINS
     (always quarantined); a MANUAL lift wins the other way (never); absent a manual
-    entry, the live flake signal governs — flaky AND its latest run not-passed."""
+    entry, the live flake signal governs — flaky AND its latest run not Verified."""
     mq = c.get("manual_quarantine")          # 'pinned' | 'lifted' | None
     if mq == "pinned":
         return True
     if mq == "lifted":
         return False
-    return bool(c.get("flaky") and c["latest_run"]["outcome"] != "passed")
+    return bool(c.get("flaky") and not _claim_verified(c))
 
 # Is there a NEWER run of a DIFFERENT (non-NULL) version than the approved one?
 # (Superseded evidence newer than what we counted — the decision warns on it.)
@@ -187,11 +221,17 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None) -> list[
                 "finished_at": (row["finished_at"].isoformat()
                                 if row["finished_at"] else None),
                 "version_unknown": row["claim_version_seq"] is None,
-                # D-237: the plain-English cause for a not-passed latest run.
-                "cause": (_cause_phrase(row["detail"], row["verdict"],
-                                        row["outcome"])
-                          if row["outcome"] != "passed" else None),
+                "cause": None,        # set below, off the Verified predicate
             }
+        # D-280 (Slice 4b): the claim's good state, decided ONCE here via the single
+        # `Verified` predicate (replaces the old inline `outcome == 'passed'`). A
+        # never-run claim is NOT verified and skips the applier (the never_run
+        # blocker owns it). 4d will branch this on the recorded strategy kind.
+        verified = _claim_verified({"latest_run": latest_run})
+        if latest_run is not None and not verified:
+            # D-237: the plain-English cause for a not-Verified latest run.
+            latest_run["cause"] = _cause_phrase(row["detail"], row["verdict"],
+                                                row["outcome"])
         recent_outcomes = [r["outcome"] for r in rows]
         flaky = _is_flaky(recent_outcomes)
 
@@ -209,6 +249,7 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None) -> list[
             "approved_seq": approved_seq,
             "grounding": grounding,
             "latest_run": latest_run,
+            "verified": verified,                          # D-280: the decided good state
             "superseded_newer_run": superseded_newer,
             "never_run": latest_run is None,
             "flaky": flaky,
@@ -283,7 +324,10 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
                    if quarantine_on and _claim_quarantined(c)]
     scored = [c for c in counted if c not in quarantined]
 
-    passed = sum(1 for c in scored if c["latest_run"]["outcome"] == "passed")
+    # D-280: the good-state count is the Verified predicate (was outcome=='passed').
+    # failed / errored stay raw — they are outcome-category tallies for the metrics
+    # breakdown, not a good-vs-not-good grade.
+    passed = sum(1 for c in scored if _claim_verified(c))
     failed = sum(1 for c in scored if c["latest_run"]["outcome"] == "failed")
     errored = sum(1 for c in scored if c["latest_run"]["outcome"] == "errored")
 
@@ -402,7 +446,7 @@ def compute_substrate_decision(claim_evidence, criteria=None, *, now=None) -> di
     _blk_seen, blocking = set(), []
     if criteria_met.get("pass_rate") is False:
         for c in scored:
-            if c["latest_run"]["outcome"] != "passed":
+            if not _claim_verified(c):          # D-280: not Verified ⇒ a blocker
                 _blk_seen.add(c["test_id"])
                 blocking.append({
                     "test_id": c["test_id"],

@@ -336,3 +336,97 @@ def test_cause_phrase_falls_back_to_outcome_when_no_verdict():
 def test_cause_phrase_never_raises_on_garbage():
     assert _cause_phrase(12345, None, "failed")        # non-dict/str detail
     assert _cause_phrase("{not valid json", None, "failed")  # bad json string
+
+
+# === Slice 4b (D-280): the Verified predicate is the single good-state rule =====
+
+import os  # noqa: E402
+
+from primeqa.intelligence.substrate_decision import _claim_verified  # noqa: E402
+
+
+def test_claim_verified_passed_is_true():
+    assert _claim_verified({"latest_run": {"outcome": "passed"}}) is True
+
+
+@pytest.mark.parametrize("outcome", ["failed", "errored", "skipped"])
+def test_claim_verified_not_passed_is_false(outcome):
+    # byte-identical to the old `outcome == 'passed'` rule, but via the applier
+    # (errored/skipped → indeterminate → not Verified; failed → fail → not Verified).
+    assert _claim_verified({"latest_run": {"outcome": outcome}}) is False
+
+
+def test_claim_verified_never_run_is_false_without_the_applier():
+    # never-run has no probe — it must NOT be routed through apply_strategy (the
+    # single arm needs N=1 and would RAISE on an empty set). It stays on the
+    # separate never_run / has_runs blocker. If this were routed, it would raise;
+    # returning False without error IS the proof it bypasses the applier.
+    assert _claim_verified({"latest_run": None}) is False
+    assert _claim_verified({}) is False
+
+
+def test_claim_verified_prefers_attached_value():
+    # _assemble_claim_evidence attaches the once-computed value; the read sites use
+    # it as-is (the attached bool wins over re-derivation).
+    assert _claim_verified({"verified": True, "latest_run": {"outcome": "failed"}}) is True
+    assert _claim_verified({"verified": False, "latest_run": {"outcome": "passed"}}) is False
+
+
+def test_pass_rate_and_passed_count_are_driven_by_verified():
+    # the good-state count = sum of Verified claims (was outcome=='passed'). A
+    # failed claim is not Verified → excluded; pass_rate is over the Verified ones.
+    ev = [_claim("passed"), _claim("passed"), _claim("failed")]
+    d = compute_substrate_decision(ev)
+    assert d["metrics"]["passed"] == 2
+    assert d["metrics"]["pass_rate"] == round(2 / 3 * 100, 1)
+
+
+def test_blocker_list_uses_verified():
+    # a not-Verified scored claim that crosses the pass-rate gate is a blocker —
+    # the per-claim list is driven by `not _claim_verified`.
+    ev = [_bclaim("failed", keys=["FAIL-1"])]
+    d = compute_substrate_decision(ev)
+    assert d["recommendation"] == "no_go"
+    assert [b["external_keys"] for b in d["blocking"]] == [["FAIL-1"]]
+
+
+@pytest.mark.integration
+def test_assembled_verified_matches_live_passed_rule():
+    """Over real assembled evidence, the attached `verified` equals today's
+    `latest_run.outcome == 'passed'` for EVERY claim with a counted run — the
+    behavior-neutral gate for the decision-engine wiring. Read-only; skips without
+    the Railway DB."""
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+            url = os.environ.get("DATABASE_URL")
+        except Exception:
+            url = None
+    if not url:
+        pytest.skip("no DATABASE_URL — live-parity needs the Railway DB")
+
+    from primeqa import db
+    if getattr(db, "engine", None) is None:
+        db.init_db(url)
+    from sqlalchemy.orm import Session
+    from primeqa.semantic.connection import get_tenant_connection
+    from primeqa.intelligence.substrate_decision import _assemble_claim_evidence
+
+    checked = 0
+    with get_tenant_connection(1) as conn:
+        s = Session(bind=conn)
+        try:
+            ev = _assemble_claim_evidence(s, ["SQ-205", "SQ-212"], tenant_id=1)
+        finally:
+            s.close()
+    for c in ev:
+        assert "verified" in c                       # attached on every row
+        lr = c.get("latest_run")
+        if lr is None:
+            assert c["verified"] is False            # never-run → not verified
+            continue
+        assert c["verified"] == (lr["outcome"] == "passed"), (c["test_id"], lr["outcome"])
+        checked += 1
+    assert checked > 0, "live-parity exercised no claims with runs"
