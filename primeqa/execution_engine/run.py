@@ -804,3 +804,113 @@ def run_all_recipes_execution_async(
         probes.append(ProbeRun(recipe.recipe_id, evidence.run_id, evidence.outcome))
 
     return RunAllResult(batch_id=batch_id, ran=True, probes=tuple(probes))
+
+
+# ---------------------------------------------------------------------------
+# The run-all ROUTER (D-278, S6 Slice 3.4) — dispatch a claim to the single run
+# path or the run-all path (Slice 3.3) by the claim's RECORDED strategy kind.
+# READS a recorded kind; never DERIVES one (that inference is §4a, generation-
+# time). Additive + DORMANT: today no claim records a kind (recon case A), so
+# `_recorded_strategy_kind` is always None and every claim routes to single —
+# byte-identical to before. Run-all is reachable ONLY by a claim that
+# affirmatively records kind=='bva'; it is never the default and never inferred.
+# ---------------------------------------------------------------------------
+
+_ROUTE_SINGLE = "single"
+_ROUTE_RUNALL = "runall"
+
+
+def route_strategy(strategy_kind: Optional[str]) -> str:
+    """The routing table — a claim's recorded strategy kind → which run path
+    (``"single"`` / ``"runall"``). Pure; fail-loud on a kind we don't understand.
+
+    - ``None`` (NO kind recorded — today's reality; no bva was ever intended) →
+      single. The HONEST default for un-kinded claims: run the single path we have
+      always run.
+    - ``"single"`` → single.
+    - ``"bva"`` → run-all (Slice 3.3) — the ONLY way to reach run-all.
+    - any other NON-NULL value → **raise** ``ValueError``. A recorded kind we do
+      not recognize is a wiring bug, surfaced — silently falling back to single
+      would let a claim that was meant to get boundary testing quietly get one
+      probe + a green check (the overstate-what-you-know failure ``apply_strategy``
+      also refuses). **ABSENT (→single) and UNRECOGNIZED (→raise) are two distinct
+      branches** — absent is fine (no bva intended); unrecognized is a fault.
+    """
+    if strategy_kind is None or strategy_kind == _ROUTE_SINGLE:
+        return _ROUTE_SINGLE
+    if strategy_kind == "bva":
+        return _ROUTE_RUNALL
+    raise ValueError(f"unrecognized strategy kind {strategy_kind!r}")
+
+
+def _recorded_strategy_kind(claim) -> Optional[str]:
+    """The claim's RECORDED evaluation-strategy kind, or ``None`` when none is
+    recorded. **§4a SEAM (the single point):** today no kind field exists on the
+    claim (recon case A — ``ClaimRead`` carries ``claim_kind`` = the assertion
+    type, not a strategy kind), so this is always ``None`` → :func:`route_strategy`
+    → single. When §4a records the kind on the claim, this reader returns it and
+    run-all becomes reachable for ``bva`` claims — a one-line change here. NEVER
+    derives the kind from claim shape (that derivation is §4a's, at generation)."""
+    if claim is None:
+        return None
+    return getattr(claim, "strategy_kind", None)
+
+
+def run_claim_execution_for_tenant(
+    tenant_id: int,
+    test_id: UUID,
+    *,
+    environment_id: int,
+    available_environment: Optional[ExecutionEnvironmentBody] = None,
+    client=None,
+    coordinator=None,
+    field_overrides=None,
+    caller_tier=None,
+    session_scope=None,
+    single_fn=None,
+    runall_fn=None,
+):
+    """Production sync entry — ROUTE by the claim's recorded strategy kind (D-278,
+    Slice 3.4), then run + commit. Opens one tenant connection, resolves the claim's
+    current approved version, routes via :func:`route_strategy`, and dispatches to
+    the single run path (:func:`run_recipe_execution`) or the run-all path
+    (:func:`run_all_recipes_execution`, Slice 3.3) on that session — committing on
+    clean exit (boundary A), like :func:`run_recipe_execution_for_tenant`.
+
+    **DORMANT today:** no claim records a kind (recon case A), so this ALWAYS takes
+    the single branch — byte-identical to :func:`run_recipe_execution_for_tenant`
+    (plus one cheap approved-claim read). Run-all is reached ONLY by a claim that
+    records ``kind=='bva'``.
+
+    Returns a :class:`RunPathResult` on the single branch (today, always) or a
+    :class:`RunAllResult` on the run-all branch. (Callers that map the result —
+    ``trigger_claim_run._map_run_result`` — handle ``RunPathResult`` today; the
+    ``RunAllResult`` mapping lands with Slice 4, when run-all becomes reachable.)
+
+    ``session_scope`` / ``single_fn`` / ``runall_fn`` are injectable seams for tests
+    (assert WHICH path is selected without a live SF run); the async entry +
+    consumer wiring is a Slice-4 companion (it lands with the RunAllResult
+    result-handling the consumer will then need).
+    """
+    from primeqa.execution_engine.stranded_cleanup import StrandedRecordSink
+
+    coord = coordinator or SemanticTransactionCoordinator()
+    scope = session_scope or _default_session_scope
+    single = single_fn or run_recipe_execution
+    runall = runall_fn or run_all_recipes_execution
+    sink = StrandedRecordSink(tenant_id, environment_id)
+
+    with scope(tenant_id) as session:
+        claim = coord.get_current_approved_claim(session, test_id)
+        route = route_strategy(_recorded_strategy_kind(claim))
+        if route == _ROUTE_RUNALL:
+            return runall(
+                session, test_id, environment_id=environment_id,
+                available_environment=available_environment, client=client,
+                coordinator=coord, record_sink=sink,
+                field_overrides=field_overrides, caller_tier=caller_tier)
+        return single(
+            session, test_id, environment_id=environment_id,
+            available_environment=available_environment, client=client,
+            coordinator=coord, record_sink=sink,
+            field_overrides=field_overrides, caller_tier=caller_tier)

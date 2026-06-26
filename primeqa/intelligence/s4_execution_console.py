@@ -70,8 +70,11 @@ def trigger_claim_run(tenant_id: int, test_id, environment_id: int, *,
     ``{bare_field_name: value}`` map passed straight to the engine; it applies only
     to the positive vertical's subject create (the executor enforces this)."""
     try:
-        from primeqa.execution_engine.run import run_recipe_execution_for_tenant
-        result = run_recipe_execution_for_tenant(
+        # D-278 (Slice 3.4): route by the claim's recorded strategy kind. DORMANT —
+        # no claim records a kind today (recon case A), so this always takes the
+        # single path, byte-identical to the prior direct call.
+        from primeqa.execution_engine.run import run_claim_execution_for_tenant
+        result = run_claim_execution_for_tenant(
             tenant_id, UUID(str(test_id)), environment_id=environment_id,
             client=client, field_overrides=field_overrides or None,
             caller_tier=caller_tier)
