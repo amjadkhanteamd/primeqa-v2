@@ -990,3 +990,52 @@ def run_claim_execution_for_tenant(
             available_environment=available_environment, client=client,
             coordinator=coord, record_sink=sink,
             field_overrides=field_overrides, caller_tier=caller_tier)
+
+
+def async_run_claim_execution_for_tenant(
+    tenant_id: int,
+    test_id: UUID,
+    *,
+    environment_id: int,
+    client=None,
+    coordinator=None,
+    session_scope=None,
+    single_fn=None,
+    runall_fn=None,
+):
+    """Async production entry — ROUTE by the claim's recorded strategy kind (D-284,
+    Slice 4e), the ASYNC counterpart of the 3.4 sync router
+    :func:`run_claim_execution_for_tenant`. Resolves the claim's recorded kind in a
+    brief read (REUSING :func:`route_strategy` + :func:`_recorded_strategy_kind` —
+    the ONE place single-vs-bva is decided, no second copy), then dispatches to the
+    async single path (:func:`run_recipe_execution_async`) or the async run-all path
+    (:func:`run_all_recipes_execution_async`, Slice 3.3). Each async fn opens its
+    OWN brief brackets, so the dispatch runs AFTER the kind-resolve scope closes.
+
+    **DORMANT today:** no claim records a kind (recon case A), so this ALWAYS routes
+    single — byte-identical to calling :func:`run_recipe_execution_async` directly
+    (plus one cheap approved-claim read, the same resolution the async run already
+    does internally). Run-all is reached ONLY by a claim recording ``kind=='bva'``
+    (the single §4a SEAM — ``_recorded_strategy_kind``, always None today). This is
+    the HARD PREREQUISITE for §4a (4f): an async-enqueued bva claim reaches run-all
+    HERE instead of crashing the consumer (which would read ``.evidence`` on a
+    :class:`RunAllResult`).
+
+    Returns a :class:`RunPathResult` on the single branch (today, always) or a
+    :class:`RunAllResult` on the run-all branch. ``session_scope`` / ``single_fn`` /
+    ``runall_fn`` are injectable seams for tests (assert WHICH path is selected
+    without a live SF run)."""
+    coord = coordinator or SemanticTransactionCoordinator()
+    scope = session_scope or _default_session_scope
+    single = single_fn or run_recipe_execution_async
+    runall = runall_fn or run_all_recipes_execution_async
+
+    with scope(tenant_id) as session:
+        claim = coord.get_current_approved_claim(session, test_id)
+        route = route_strategy(_recorded_strategy_kind(claim))
+
+    if route == _ROUTE_RUNALL:
+        return runall(tenant_id, test_id,
+                      environment_id=environment_id, client=client)
+    return single(tenant_id, test_id,
+                  environment_id=environment_id, client=client)

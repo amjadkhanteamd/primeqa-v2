@@ -133,20 +133,21 @@ def test_default_path_no_resolver_passes_client_none():
     assert s.get_job(job.id).status == "completed"
 
 
-def test_default_run_fn_is_the_async_path():
-    # Drift-guard for the D-230.2 consumer flip: the default run_fn is the ASYNC path
-    # — which now runs ALL recipe kinds (metadata + data) holding NO DB connection
-    # across SF I/O (the data-path deferral was lifted by WorldPlan pre-resolution).
-    # The sync run_recipe_execution_for_tenant remains the live-proven fallback.
+def test_default_run_fn_is_the_async_router():
+    # Drift-guard: the default run_fn is the ASYNC ROUTER (D-284, Slice 4e) — it
+    # routes by recorded strategy kind (absent→single, 'bva'→async run-all) and
+    # dispatches to the async run paths (NO DB connection held across SF I/O). It
+    # is NOT the sync entry. DORMANT: every claim is single today, so the router
+    # ALWAYS reaches run_recipe_execution_async (byte-identical to the old default).
     import inspect
 
     from primeqa.execution_engine.run import (
-        run_recipe_execution_async,
+        async_run_claim_execution_for_tenant,
         run_recipe_execution_for_tenant,
     )
     default = inspect.signature(
         process_execution_job_for_tenant).parameters["run_fn"].default
-    assert default is run_recipe_execution_async
+    assert default is async_run_claim_execution_for_tenant
     assert default is not run_recipe_execution_for_tenant
 
 

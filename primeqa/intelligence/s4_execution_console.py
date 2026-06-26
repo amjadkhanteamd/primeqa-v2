@@ -44,6 +44,16 @@ def _map_run_result(result) -> dict:
     ``interpretation.verdict``) so it is directly unit-testable with stand-ins."""
     if not getattr(result, "ran", False):
         return {"ok": True, "ran": False, "reason": getattr(result, "reason", None)}
+    if hasattr(result, "batch_id"):              # D-284: a run-all RunAllResult —
+        probes = getattr(result, "probes", ()) or ()   # report the batch, not a
+        return {                                        # single run. NO .evidence.
+            "ok": True, "ran": True,
+            "batch_id": str(result.batch_id),
+            "probe_count": len(probes),
+            # Verified is NOT computed here — the decision engine reads the batch
+            # (4d). The console only reports that the batch ran.
+            "recipe_id": None, "outcome": None, "verdict": None,
+        }
     ev = getattr(result, "evidence", None)
     interp = getattr(result, "interpretation", None)
     rid = getattr(result, "selected_recipe_id", None)

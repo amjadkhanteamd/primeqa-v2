@@ -226,3 +226,69 @@ def test_real_approved_claims_route_single_dormant():
         finally:
             s.close()
     assert checked > 0, "dormancy proof exercised no approved claims"
+
+
+# --- 5. async router dispatch (D-284, Slice 4e) — mirrors the sync router -------
+
+from primeqa.execution_engine.run import async_run_claim_execution_for_tenant  # noqa: E402
+
+
+class _AsyncRecorder:
+    """A fake async single_fn / runall_fn: records (tenant_id, test_id, kwargs)."""
+
+    def __init__(self, ret):
+        self.ret = ret
+        self.calls = []
+
+    def __call__(self, tenant_id, test_id, **kwargs):
+        self.calls.append((tenant_id, test_id, kwargs))
+        return self.ret
+
+
+def _async_run(claim, *, single, runall, test_id=None):
+    test_id = test_id or uuid4()
+    coord = _DispatchCoord(claim)
+    out = async_run_claim_execution_for_tenant(
+        1, test_id, environment_id=7, coordinator=coord,
+        session_scope=_scope_yielding(object()),
+        single_fn=single, runall_fn=runall)
+    return out, test_id
+
+
+def test_async_dispatch_absent_kind_routes_single():
+    claim = SimpleNamespace(claim_kind="existence")        # no strategy_kind → None
+    single, runall = _AsyncRecorder("S"), _AsyncRecorder("R")
+    out, test_id = _async_run(claim, single=single, runall=runall)
+    assert out == "S"
+    assert len(single.calls) == 1 and len(runall.calls) == 0
+    assert single.calls[0][0] == 1 and single.calls[0][1] == test_id     # threaded through
+    assert single.calls[0][2]["environment_id"] == 7
+
+
+def test_async_dispatch_single_kind_routes_single():
+    single, runall = _AsyncRecorder("S"), _AsyncRecorder("R")
+    out, _ = _async_run(SimpleNamespace(strategy_kind="single"),
+                        single=single, runall=runall)
+    assert out == "S" and len(single.calls) == 1 and len(runall.calls) == 0
+
+
+def test_async_dispatch_bva_kind_routes_runall():
+    single, runall = _AsyncRecorder("S"), _AsyncRecorder("R")
+    out, test_id = _async_run(SimpleNamespace(strategy_kind="bva"),
+                              single=single, runall=runall)
+    assert out == "R"
+    assert len(runall.calls) == 1 and len(single.calls) == 0
+    assert runall.calls[0][0] == 1 and runall.calls[0][1] == test_id
+
+
+def test_async_dispatch_unrecognized_kind_raises_neither_runs():
+    single, runall = _AsyncRecorder("S"), _AsyncRecorder("R")
+    with pytest.raises(ValueError):
+        _async_run(SimpleNamespace(strategy_kind="weird"), single=single, runall=runall)
+    assert single.calls == [] and runall.calls == []
+
+
+def test_async_dispatch_no_approved_claim_routes_single():
+    single, runall = _AsyncRecorder("S"), _AsyncRecorder("R")
+    out, _ = _async_run(None, single=single, runall=runall)       # no approved claim
+    assert out == "S" and len(single.calls) == 1 and len(runall.calls) == 0

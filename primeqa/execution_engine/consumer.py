@@ -29,9 +29,23 @@ from typing import Callable, Optional
 from uuid import UUID
 
 from primeqa.execution_engine.jobs import ExecutionJobStore
-from primeqa.execution_engine.run import run_recipe_execution_async
+from primeqa.execution_engine.run import async_run_claim_execution_for_tenant
 
 log = logging.getLogger(__name__)
+
+
+def _async_log_outcome(result) -> str:
+    """A log-friendly outcome string for EITHER async run-result shape (D-284,
+    Slice 4e). A single :class:`RunPathResult` carries ``.evidence.outcome``; a
+    :class:`RunAllResult` (run-all, NO ``.evidence``) carries ``.probes`` /
+    ``.batch_id`` — report the batch, never assume ``.evidence`` (which would
+    ``AttributeError``). Does NOT compute Verified (the decision engine reads the
+    batch, 4d). The single shape returns the EXACT prior expression — byte-identical."""
+    if hasattr(result, "batch_id"):              # RunAllResult (run-all batch shape)
+        probes = getattr(result, "probes", ()) or ()
+        return f"batch {result.batch_id}: {len(probes)} probe(s)"
+    return (result.evidence.outcome if (result.ran and result.evidence)
+            else (result.reason or "ran"))
 
 # (tenant_id, environment_id) -> an authenticated SF client (Tooling/data).
 ClientResolver = Callable[[int, Optional[int]], object]
@@ -58,7 +72,7 @@ def _classify_error(exc: Exception) -> str:
 
 def process_execution_job_for_tenant(
     tenant_id: int, *, client_resolver: Optional[ClientResolver] = None,
-    run_fn=run_recipe_execution_async,
+    run_fn=async_run_claim_execution_for_tenant,
 ) -> Optional[int]:
     """Claim and run one queued execution job for ``tenant_id``. Returns the
     processed job id, or ``None`` when the tenant's queue is empty.
@@ -89,8 +103,10 @@ def process_execution_job_for_tenant(
         result = run_fn(
             tenant_id, UUID(job.test_id),
             environment_id=job.environment_id, client=client)
-        outcome = (result.evidence.outcome if (result.ran and result.evidence)
-                   else (result.reason or "ran"))
+        # D-284 (Slice 4e): route handled which run path ran; the result is a
+        # single RunPathResult or a run-all RunAllResult. _async_log_outcome handles
+        # BOTH (a RunAllResult has no .evidence — the old direct read crashed).
+        outcome = _async_log_outcome(result)
         log.info("s4 execution job %s done (ran=%s, outcome=%s)",
                  job.id, result.ran, outcome)
         store.complete(job.id)
@@ -120,7 +136,7 @@ def process_execution_job_for_tenant(
 
 def run_s4_execution_tick(
     tenant_ids, *, client_resolver: Optional[ClientResolver] = None,
-    run_fn=run_recipe_execution_async,
+    run_fn=async_run_claim_execution_for_tenant,
 ) -> dict[int, str]:
     """One job per tenant, with per-tenant isolation: a tenant whose
     claim/processing raises is logged and skipped — it never starves the others.
