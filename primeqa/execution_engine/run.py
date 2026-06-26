@@ -644,6 +644,59 @@ class _PrepError:
         self.exc = exc
 
 
+def _write_batch_manifest(tenant_id, batch_id, claim_test_id, expected_recipe_ids,
+                          env_key=None):
+    """Record the run-all batch MANIFEST (C2, Slice 4c.0 / D-281): the EXPECTED
+    applicable recipe set for this batch, committed EARLY in its OWN transaction
+    (BEFORE any probe runs), so a batch that crashes before any probe persists is
+    still readable as ``expected=N`` / ``present=0`` → INCOMPLETE → not-Verified
+    (the completeness check, Slice 4c.1). The recorded membership is **drift-immune**
+    — unlike recomputing the applicable set at read time, which depends on the
+    mutable approved-claim version + recipe ``valid_to`` / status / priority.
+
+    Own committed txn via ``get_tenant_connection`` (search_path = tenant_N), so it
+    is durable independent of the probe loop's fate — the early-commit correctness
+    requirement, not a nicety.
+
+    DORMANT: only a run-all invocation calls this, and nothing routes to run-all
+    until §4a. Skips when ``tenant_id`` is None (no tenant context — e.g. a run-all
+    unit test that doesn't exercise the manifest); the loop still runs, and 4c.1
+    reads a manifest-less batch as unknowable → not-Verified (the safe default)."""
+    if tenant_id is None:
+        return
+    from datetime import datetime, timezone
+
+    from sqlalchemy import bindparam, text
+    from sqlalchemy.dialects.postgresql import ARRAY
+    from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+    from sqlalchemy.orm import Session
+
+    from primeqa.semantic.connection import get_tenant_connection
+
+    stmt = text(
+        "INSERT INTO s4_runall_batch_manifests "
+        "(batch_id, claim_test_id, expected_recipe_ids, env_key, created_at) "
+        "VALUES (:batch_id, :claim_test_id, :recipe_ids, :env_key, :created_at) "
+        "ON CONFLICT (batch_id) DO NOTHING"
+    ).bindparams(bindparam("recipe_ids", type_=ARRAY(PG_UUID(as_uuid=True))))
+
+    with get_tenant_connection(tenant_id) as conn:     # own txn; commits on exit
+        s = Session(bind=conn)
+        try:
+            s.execute(stmt, {
+                "batch_id": batch_id,
+                "claim_test_id": claim_test_id,
+                "recipe_ids": list(expected_recipe_ids),
+                "env_key": env_key,
+                "created_at": datetime.now(timezone.utc),
+            })
+            s.flush()
+        finally:
+            s.close()
+    # get_tenant_connection commits on clean exit — the manifest is durable now,
+    # before the first probe runs.
+
+
 def run_all_recipes_execution(
     session,
     test_id: UUID,
@@ -656,6 +709,8 @@ def run_all_recipes_execution(
     field_overrides=None,
     caller_tier=None,
     execute_fn=None,
+    tenant_id=None,
+    manifest_writer=None,
 ) -> RunAllResult:
     """Run EVERY applicable recipe of ``test_id`` as one batch (sync; D-277).
 
@@ -678,10 +733,14 @@ def run_all_recipes_execution(
     aborts the batch. (``probes`` may therefore be shorter than the applicable set
     when some probe's persist failed.)
 
-    ``execute_fn`` defaults to :func:`_execute_for_kind` (injectable for tests).
+    ``execute_fn`` defaults to :func:`_execute_for_kind` (injectable for tests);
+    ``manifest_writer`` to :func:`_write_batch_manifest` (injectable for tests).
+    ``tenant_id`` is needed only for the manifest's own committed txn (the router
+    threads it); ``None`` skips the manifest (the loop still runs).
     """
     coord = coordinator or SemanticTransactionCoordinator()
     execute = execute_fn or _execute_for_kind
+    write_manifest = manifest_writer or _write_batch_manifest
     batch_id = uuid4()
 
     recipes = coord.select_recipes_for_execution(
@@ -690,6 +749,13 @@ def run_all_recipes_execution(
         replay_mode="live")
     if not recipes:
         return RunAllResult(batch_id=batch_id, ran=False, reason="no_eligible_recipes")
+
+    # Slice 4c.0 (C2/D-281): record the EXPECTED applicable set as the batch
+    # manifest, committed EARLY (own txn) BEFORE the probe loop — so a batch that
+    # crashes mid-loop is still readable as expected=N → incomplete (4c.1). Only
+    # when there IS an applicable set (N≥1) and a batch is about to run. DORMANT.
+    write_manifest(tenant_id, batch_id, test_id,
+                   [r.recipe_id for r in recipes], env_key=None)
 
     probes = []
     for recipe in recipes:
@@ -732,6 +798,7 @@ def run_all_recipes_execution_async(
     session_scope=None,
     caller_tier=None,
     execute_fn=None,
+    manifest_writer=None,
 ) -> RunAllResult:
     """Async run-all (D-277) — same batch semantics as
     :func:`run_all_recipes_execution`, bracketed like
@@ -750,6 +817,7 @@ def run_all_recipes_execution_async(
     coord = coordinator or SemanticTransactionCoordinator()
     scope = session_scope or _default_session_scope
     execute = execute_fn or _execute_for_kind
+    write_manifest = manifest_writer or _write_batch_manifest
     batch_id = uuid4()
 
     # 1. select all + prep each — one brief read bracket.
@@ -769,6 +837,13 @@ def run_all_recipes_execution_async(
                 preps.append(_PrepError(exc))  # abort the batch — defer it to its probe
     if not recipes:
         return RunAllResult(batch_id=batch_id, ran=False, reason="no_eligible_recipes")
+
+    # Slice 4c.0 (C2/D-281): the batch manifest — the EXPECTED applicable set,
+    # committed EARLY in its own txn BEFORE the probe loop (the select bracket
+    # above already closed), so a batch that crashes mid-loop is readable as
+    # incomplete (4c.1). Only when N≥1. DORMANT (nothing routes to run-all yet).
+    write_manifest(tenant_id, batch_id, test_id,
+                   [r.recipe_id for r in recipes], env_key=None)
 
     sink = StrandedRecordSink(tenant_id, environment_id)
     probes = []
@@ -908,7 +983,8 @@ def run_claim_execution_for_tenant(
                 session, test_id, environment_id=environment_id,
                 available_environment=available_environment, client=client,
                 coordinator=coord, record_sink=sink,
-                field_overrides=field_overrides, caller_tier=caller_tier)
+                field_overrides=field_overrides, caller_tier=caller_tier,
+                tenant_id=tenant_id)        # 4c.0: for the batch manifest's own txn
         return single(
             session, test_id, environment_id=environment_id,
             available_environment=available_environment, client=client,

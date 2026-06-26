@@ -29,6 +29,14 @@ from primeqa.execution_engine.run import (
 _T = datetime(2026, 6, 26, 12, 0, 0, tzinfo=timezone.utc)
 
 
+def _noop_manifest(*a, **k):
+    """Stub for the Slice 4c.0 batch-manifest writer — these loop-isolation tests
+    don't exercise the manifest, and the real writer would open a tenant DB conn
+    (these tests pass tenant_id=1 but run with no DB). The manifest write has its
+    own dedicated tests below."""
+    return None
+
+
 class _FakeSession:
     """Captures added rows; models SAVEPOINT rollback (begin_nested drops rows
     added in a failed block, like a real Postgres savepoint). ``fail_flush_on``
@@ -194,6 +202,7 @@ def test_async_runall_persists_batch_stamped_rows(monkeypatch):
     result = run_all_recipes_execution_async(
         1, uuid4(), environment_id=7, client=object(),
         coordinator=_FakeCoord(recipes), session_scope=fake_scope,
+        manifest_writer=_noop_manifest,
         execute_fn=lambda recipe, *a, **k: _passed_evidence(recipe, 7))
     rows = _s4_rows(captured)
     assert len(rows) == 2
@@ -221,6 +230,7 @@ def test_async_runall_one_probe_raises_still_persists_errored(monkeypatch):
     result = run_all_recipes_execution_async(
         1, uuid4(), environment_id=7, client=object(),
         coordinator=_FakeCoord(recipes), session_scope=fake_scope,
+        manifest_writer=_noop_manifest,
         execute_fn=fake_execute)
     rows = _s4_rows(captured)
     assert len(rows) == 3
@@ -235,7 +245,7 @@ def test_async_runall_empty_set_persists_nothing():
 
     result = run_all_recipes_execution_async(
         1, uuid4(), environment_id=7, coordinator=_FakeCoord([]),
-        session_scope=fake_scope,
+        session_scope=fake_scope, manifest_writer=_noop_manifest,
         execute_fn=lambda *a, **k: pytest.fail("execute must not be called"))
     assert result.ran is False and result.probes == ()
 
@@ -274,6 +284,114 @@ def test_async_runall_one_probe_persist_fails_others_still_persist():
     result = run_all_recipes_execution_async(
         1, uuid4(), environment_id=7, client=object(),
         coordinator=_FakeCoord(recipes), session_scope=fake_scope,
+        manifest_writer=_noop_manifest,
         execute_fn=lambda recipe, *a, **k: _passed_evidence(recipe, 7))
     rows = _s4_rows(captured)
     assert len(rows) == 2 and len(result.probes) == 2   # one probe skipped, batch ran on
+
+
+# --- Slice 4c.0 (D-281): the batch manifest — written EARLY, before probes ----
+
+def test_sync_runall_writes_manifest_before_probes():
+    # the manifest (the EXPECTED applicable set) is recorded FIRST — before any
+    # probe executes — with the threaded tenant_id, the batch_id, and the full set.
+    recipes = [_fake_recipe() for _ in range(3)]
+    events = []
+
+    def rec_manifest(tenant_id, batch_id, test_id, recipe_ids, **k):
+        events.append(("manifest", tenant_id, batch_id, tuple(recipe_ids)))
+
+    def rec_execute(recipe, *a, **k):
+        events.append(("execute", recipe.recipe_id))
+        return _passed_evidence(recipe, 7)
+
+    tid = uuid4()
+    result = run_all_recipes_execution(
+        _FakeSession(), tid, environment_id=7, tenant_id=42,
+        coordinator=_FakeCoord(recipes),
+        execute_fn=rec_execute, manifest_writer=rec_manifest)
+
+    assert events[0][0] == "manifest"                       # FIRST, before probes
+    assert events[0][1] == 42                               # tenant threaded through
+    assert events[0][2] == result.batch_id                 # the batch's id
+    assert events[0][3] == tuple(r.recipe_id for r in recipes)   # the applicable set
+    assert [e[0] for e in events[1:]] == ["execute", "execute", "execute"]
+
+
+def test_sync_runall_empty_set_writes_no_manifest():
+    # no applicable set ⇒ no batch runs ⇒ no manifest (the writer is never called).
+    called = []
+    result = run_all_recipes_execution(
+        _FakeSession(), uuid4(), environment_id=7, tenant_id=42,
+        coordinator=_FakeCoord([]),
+        execute_fn=lambda *a, **k: pytest.fail("execute must not run"),
+        manifest_writer=lambda *a, **k: called.append(a))
+    assert result.ran is False
+    assert called == []
+
+
+def test_sync_runall_manifest_written_even_when_a_probe_errors():
+    # the manifest precedes the loop, so a probe erroring mid-batch leaves the
+    # manifest intact — the "crashed-early ⇒ readable as incomplete" property,
+    # modeled at the writer-call level (the real durability = own txn, scratch-DB
+    # tested).
+    recipes = [_fake_recipe() for _ in range(3)]
+    manifests = []
+    erroring = recipes[1].recipe_id
+
+    def rec_manifest(tenant_id, batch_id, test_id, recipe_ids, **k):
+        manifests.append((batch_id, tuple(recipe_ids)))
+
+    def fake_execute(recipe, *a, **k):
+        if recipe.recipe_id == erroring:
+            raise RuntimeError("probe blew up mid-batch")
+        return _passed_evidence(recipe, 7)
+
+    result = run_all_recipes_execution(
+        _FakeSession(), uuid4(), environment_id=7, tenant_id=42,
+        coordinator=_FakeCoord(recipes),
+        execute_fn=fake_execute, manifest_writer=rec_manifest)
+    assert len(manifests) == 1
+    assert manifests[0][0] == result.batch_id
+    assert manifests[0][1] == tuple(r.recipe_id for r in recipes)   # FULL expected set
+
+
+def test_sync_runall_no_tenant_id_skips_manifest_default_writer():
+    # the DEFAULT writer no-ops when tenant_id is None (no tenant context) — the
+    # loop still runs (existing run-all tests rely on this). Proven by: a run with
+    # tenant_id unset + the default writer does not raise and runs all probes.
+    recipes = [_fake_recipe() for _ in range(2)]
+    result = run_all_recipes_execution(
+        _FakeSession(), uuid4(), environment_id=7,        # no tenant_id
+        coordinator=_FakeCoord(recipes),
+        execute_fn=lambda recipe, *a, **k: _passed_evidence(recipe, 7))
+    assert result.ran is True and len(result.probes) == 2
+
+
+def test_async_runall_writes_manifest_with_expected_set(monkeypatch):
+    monkeypatch.setattr("primeqa.execution_engine.run._resolve_env_gate",
+                        lambda session, environment_id: ("full", False))
+    recipes = [_fake_recipe(recipe_kind="metadata-recipe") for _ in range(2)]
+    captured = _FakeSession()
+
+    @contextmanager
+    def fake_scope(tenant_id):
+        yield captured
+
+    events = []
+
+    def rec_manifest(tenant_id, batch_id, test_id, recipe_ids, **k):
+        events.append(("manifest", tuple(recipe_ids)))
+
+    def rec_execute(recipe, *a, **k):
+        events.append(("execute", recipe.recipe_id))
+        return _passed_evidence(recipe, 7)
+
+    run_all_recipes_execution_async(
+        7, uuid4(), environment_id=7, client=object(),
+        coordinator=_FakeCoord(recipes), session_scope=fake_scope,
+        execute_fn=rec_execute, manifest_writer=rec_manifest)
+
+    # the manifest is recorded BEFORE any probe executes, carrying the applicable set.
+    assert events[0][0] == "manifest"
+    assert events[0][1] == tuple(r.recipe_id for r in recipes)
