@@ -1484,34 +1484,34 @@ class SemanticTransactionCoordinator:
 
         return "mixed"
 
-    def select_recipe_for_execution(
+    def _matching_recipes_for_execution(
         self,
         session: Session,
         test_id: UUID,
         *,
         available_environment: ExecutionEnvironmentBody,
         replay_mode: Literal["live"] = "live",
-    ) -> Optional[RecipeRead]:
-        """Policy resolution per SPEC §10.4 — the canonical
-        example of resolution-class operations.
+    ) -> list[TestRecipe]:
+        """Shared resolution behind :meth:`select_recipe_for_execution` and
+        :meth:`select_recipes_for_execution` (D-275, S6 Slice 3.1) — the single
+        source of truth for run-path recipe resolution.
 
-        Composes:
+        Composes (per SPEC §10.4):
           - current-approved claim resolution
-          - eligible-recipe filtering (D-γ.2's "no autonomous
-            execution" commitment: ``status IN
-            ('active', 'approved')`` AND ``valid_to IS NULL``)
+          - eligible-recipe filtering (D-γ.2's "no autonomous execution"
+            commitment: ``status IN ('active', 'approved')`` AND
+            ``valid_to IS NULL``)
           - environment satisfiability matching
             (see :meth:`_environment_satisfies`)
-          - deterministic ordering (priority DESC, version_seq
-            DESC, recipe_id ASC)
+          - deterministic ordering (priority DESC, version_seq DESC, recipe_id ASC)
 
-        Returns ``None`` if any composition step yields no
-        match.
+        Returns the **full sorted set** of matching (un-hydrated) ``TestRecipe``
+        rows — ``[]`` when any composition step yields no match. Callers hydrate
+        what they need (the singular takes ``[0]``; the plural takes all).
 
-        ``replay_mode='live'`` is the only supported value at
-        v1; SPEC §6.8 reserves historical and semantic replay
-        modes for future evolution. Other values raise
-        :class:`NotImplementedError` with a SPEC reference.
+        ``replay_mode='live'`` is the only supported value at v1; SPEC §6.8
+        reserves historical and semantic replay modes for future evolution. Other
+        values raise :class:`NotImplementedError` with a SPEC reference.
         """
         if replay_mode != "live":
             raise NotImplementedError(
@@ -1521,7 +1521,7 @@ class SemanticTransactionCoordinator:
 
         approved = self.get_current_approved_claim(session, test_id)
         if approved is None:
-            return None
+            return []
 
         eligible = (
             session.query(TestRecipe)
@@ -1532,8 +1532,6 @@ class SemanticTransactionCoordinator:
             )
             .all()
         )
-        if not eligible:
-            return None
 
         # Filter by environment satisfiability.
         matching = []
@@ -1544,8 +1542,6 @@ class SemanticTransactionCoordinator:
                 available_env=available_environment,
             ):
                 matching.append(row)
-        if not matching:
-            return None
 
         # Sort: priority DESC, version_seq DESC, recipe_id ASC.
         matching.sort(key=lambda r: (
@@ -1553,7 +1549,60 @@ class SemanticTransactionCoordinator:
             -r.version_seq,
             str(r.recipe_id),
         ))
-        return self._hydrate_recipe_row(matching[0])
+        return matching
+
+    def select_recipe_for_execution(
+        self,
+        session: Session,
+        test_id: UUID,
+        *,
+        available_environment: ExecutionEnvironmentBody,
+        replay_mode: Literal["live"] = "live",
+    ) -> Optional[RecipeRead]:
+        """Policy resolution per SPEC §10.4 — the canonical example of
+        resolution-class operations. Returns the **top** eligible +
+        environment-satisfiable recipe (priority DESC, version_seq DESC,
+        recipe_id ASC), or ``None`` if any composition step yields no match.
+
+        The N=1 head of :meth:`_matching_recipes_for_execution`; byte-identical to
+        the pre-D-275 inline resolution (the run path's single-recipe selection).
+
+        ``replay_mode='live'`` is the only supported value at v1; SPEC §6.8
+        reserves historical and semantic replay modes for future evolution. Other
+        values raise :class:`NotImplementedError` with a SPEC reference.
+        """
+        matching = self._matching_recipes_for_execution(
+            session, test_id,
+            available_environment=available_environment,
+            replay_mode=replay_mode,
+        )
+        return self._hydrate_recipe_row(matching[0]) if matching else None
+
+    def select_recipes_for_execution(
+        self,
+        session: Session,
+        test_id: UUID,
+        *,
+        available_environment: ExecutionEnvironmentBody,
+        replay_mode: Literal["live"] = "live",
+    ) -> list[RecipeRead]:
+        """The FULL env-satisfiable applicable-recipe set for ``test_id`` — every
+        eligible + environment-satisfiable recipe, in the same deterministic order
+        as :meth:`select_recipe_for_execution` (priority DESC, version_seq DESC,
+        recipe_id ASC). Returns ``[]`` when none match (never raises on empty).
+
+        D-275, S6 Slice 3.1 — the run-all keystone's applicable-probe read. **Pure
+        read; wired to nothing in this slice** (Slice 3.3's run-all loop iterates
+        this set, running every probe of a ``bva`` claim). For a single-recipe
+        claim, ``select_recipes_for_execution(...)[0]`` equals
+        ``select_recipe_for_execution(...)``.
+        """
+        matching = self._matching_recipes_for_execution(
+            session, test_id,
+            available_environment=available_environment,
+            replay_mode=replay_mode,
+        )
+        return [self._hydrate_recipe_row(row) for row in matching]
 
     def _environment_satisfies(
         self,

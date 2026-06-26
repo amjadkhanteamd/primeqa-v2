@@ -521,3 +521,122 @@ def test_replay_mode_invalid_value_raises(session) -> None:
             available_environment=_empty_env(),
             replay_mode="bogus",  # type: ignore[arg-type]
         )
+
+
+# ---------------------------------------------------------------------------
+# select_recipes_for_execution (PLURAL) — the run-all applicable set (D-275, 3.1)
+# ---------------------------------------------------------------------------
+# These share the singular's resolution (eligibility + env-satisfiability + sort)
+# via the private _matching_recipes_for_execution helper; the existing tests above
+# are the singular's byte-identity safety net after that refactor.
+
+
+def test_plural_empty_when_no_approved_claim(session) -> None:
+    coord = SemanticTransactionCoordinator()
+    body = make_value_claim()
+    r = coord.write_claim(
+        session, actor="human", test_id=None,
+        archetype="data_behavior", claim_kind="value-claim",
+        asserted_truth=body, semantic_conditions=empty_conditions(),
+    )
+    assert coord.select_recipes_for_execution(
+        session, r.test_id, available_environment=_empty_env(),
+    ) == []
+
+
+def test_plural_empty_when_no_eligible_recipes(session) -> None:
+    coord = SemanticTransactionCoordinator()
+    test_id, _ = arrange_approved_claim(session, coord)
+    arrange_recipe_with_status(
+        session, coord, claim_test_id=test_id, status="generated_unapproved",
+    )
+    assert coord.select_recipes_for_execution(
+        session, test_id, available_environment=_empty_env(),
+    ) == []
+
+
+def test_plural_returns_full_set_in_priority_order(session) -> None:
+    """Three active recipes priorities [5, 10, 7] → the full set, sorted
+    priority DESC: [10, 7, 5]."""
+    coord = SemanticTransactionCoordinator()
+    test_id, _ = arrange_approved_claim(session, coord)
+    ids = {}
+    for prio in (5, 10, 7):
+        rid, _ = arrange_recipe_with_status(
+            session, coord, claim_test_id=test_id, status="active", priority=prio,
+        )
+        ids[prio] = rid
+    result = coord.select_recipes_for_execution(
+        session, test_id, available_environment=_empty_env(),
+    )
+    assert [r.recipe_id for r in result] == [ids[10], ids[7], ids[5]]
+
+
+def test_plural_single_recipe_parity_with_singular(session) -> None:
+    """One recipe → plural is a 1-element list whose [0] is exactly what the
+    singular returns."""
+    coord = SemanticTransactionCoordinator()
+    test_id, _ = arrange_approved_claim(session, coord)
+    recipe_id, _ = arrange_recipe_with_status(
+        session, coord, claim_test_id=test_id, status="active",
+    )
+    plural = coord.select_recipes_for_execution(
+        session, test_id, available_environment=_empty_env(),
+    )
+    singular = coord.select_recipe_for_execution(
+        session, test_id, available_environment=_empty_env(),
+    )
+    assert len(plural) == 1
+    assert plural[0].recipe_id == recipe_id == singular.recipe_id
+
+
+def test_plural_head_equals_singular_multi(session) -> None:
+    """The singular-unchanged guarantee: with N recipes, plural[0] is exactly the
+    recipe the singular selects (the matching[0] tie-break head)."""
+    coord = SemanticTransactionCoordinator()
+    test_id, _ = arrange_approved_claim(session, coord)
+    for prio in (5, 10, 7):
+        arrange_recipe_with_status(
+            session, coord, claim_test_id=test_id, status="active", priority=prio,
+        )
+    plural = coord.select_recipes_for_execution(
+        session, test_id, available_environment=_empty_env(),
+    )
+    singular = coord.select_recipe_for_execution(
+        session, test_id, available_environment=_empty_env(),
+    )
+    assert plural[0].recipe_id == singular.recipe_id
+
+
+def test_plural_excludes_environment_unsatisfiable(session) -> None:
+    """The env filter applies to the full set: a recipe requiring feature_X is
+    excluded when the available env lacks it; the satisfiable one remains."""
+    coord = SemanticTransactionCoordinator()
+    test_id, _ = arrange_approved_claim(session, coord)
+    ok_id, _ = arrange_recipe_with_status(
+        session, coord, claim_test_id=test_id, status="active",
+    )
+    arrange_recipe_with_status(
+        session, coord, claim_test_id=test_id, status="active",
+        execution_environment=make_minimal_execution_environment(
+            feature_names=["feature_X"],
+        ),
+    )
+    result = coord.select_recipes_for_execution(
+        session, test_id, available_environment=_empty_env(),
+    )
+    assert [r.recipe_id for r in result] == [ok_id]
+
+
+def test_plural_replay_mode_non_live_raises(session) -> None:
+    """The plural honors the same SPEC §6.8 replay-mode guard as the singular."""
+    coord = SemanticTransactionCoordinator()
+    test_id, _ = arrange_approved_claim(session, coord)
+    arrange_recipe_with_status(
+        session, coord, claim_test_id=test_id, status="active",
+    )
+    with pytest.raises(NotImplementedError):
+        coord.select_recipes_for_execution(
+            session, test_id, available_environment=_empty_env(),
+            replay_mode="historical",  # type: ignore[arg-type]
+        )
