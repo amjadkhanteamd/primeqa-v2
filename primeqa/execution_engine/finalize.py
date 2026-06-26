@@ -37,7 +37,8 @@ from primeqa.execution_engine.result_store import persist_run_evidence
 from primeqa.test_representation import SemanticTransactionCoordinator
 
 
-def finalize_run(session, evidence: RunEvidence, *, coordinator=None):
+def finalize_run(session, evidence: RunEvidence, *, coordinator=None,
+                 batch_id=None, source=None):
     """Persist ``evidence`` and report its outcome as posture to S2.
 
     Args:
@@ -46,11 +47,15 @@ def finalize_run(session, evidence: RunEvidence, *, coordinator=None):
       evidence: the in-memory :class:`RunEvidence` the executor produced.
       coordinator: optional :class:`SemanticTransactionCoordinator` (injected
         for tests); default-constructed when omitted.
+      batch_id / source: D-277 (run-all) — the batch-correlation stamp threaded
+        to :func:`persist_run_evidence`. Both default ``None`` (omitted from the
+        INSERT), so every single-run caller is byte-identical to pre-D-277; the
+        run-all loop passes ``batch_id`` + ``source='runall_probe'`` per probe.
 
     Returns the :class:`RecipeRuntimeState` ``report_run_outcome`` produced —
     the post-callback runtime-state snapshot for the recipe.
     """
-    persist_run_evidence(session, evidence)
+    persist_run_evidence(session, evidence, batch_id=batch_id, source=source)
 
     coord = coordinator or SemanticTransactionCoordinator()
     return coord.report_run_outcome(

@@ -29,7 +29,7 @@ import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from primeqa.execution_engine.bridge import build_metadata_inspection_plan
 from primeqa.execution_engine.bridge import (
@@ -564,3 +564,243 @@ def _prepare_async_execute(recipe, session, environment_id: int, client):
         f"(only metadata-recipe + data-recipe are wired)",
         recipe_id=recipe.recipe_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# Run-all (D-277, S6 Slice 3.3) — execute EVERY applicable recipe of a claim as
+# one batch, each run stamped with one batch_id, with per-probe failure
+# isolation. The keystone the bva strategy (Slice 4) grades over. Additive +
+# DORMANT: wired to no router (Slice 3.4 routes single vs run-all; nothing
+# derives a bva probe set until §4a), so nothing reaches here yet — the singular
+# run paths above are byte-identical. This layer only runs-and-persists; it does
+# NOT interpret/aggregate or compute Verified (that is Slice 4). finalize_run +
+# the best-effort S6 interpret per probe are the SAME as the singular's.
+# ---------------------------------------------------------------------------
+
+_RUNALL_SOURCE = "runall_probe"
+
+
+@dataclass(frozen=True)
+class ProbeRun:
+    """One probe's run within a run-all batch — the recipe, its minted run, and
+    the carried-verbatim S4 outcome (incl. ``errored``). No verdict / Verified."""
+
+    recipe_id: UUID
+    run_id: UUID
+    outcome: str
+
+
+@dataclass(frozen=True)
+class RunAllResult:
+    """The outcome of a run-all invocation (D-277). ``probes`` is one entry per
+    APPLICABLE recipe — including every errored one (a probe that ran-and-errored
+    leaves a batch-stamped row; this is NOT the same as a probe that never ran).
+    ``ran`` is ``False`` only when the applicable set was empty (a real state, not
+    an error — nothing persisted). The batch's completeness/aggregation → Slice 4."""
+
+    batch_id: UUID
+    ran: bool
+    probes: tuple = ()
+    reason: Optional[str] = None
+
+
+def _synthesize_errored_evidence(recipe, environment_id: int, exc: BaseException) -> RunEvidence:
+    """Build a minimal ``errored`` :class:`RunEvidence` for a probe whose execute
+    RAISED before producing evidence (authorization / plan-translation / org
+    resolution / an unexpected fault). The probe WAS attempted but could not be
+    evaluated — so run-all must still persist a batch-stamped row (outcome=errored
+    → Slice 1 classifies it indeterminate), never swallow it: Slice 4's
+    completeness check distinguishes "ran-and-errored" (a row exists) from "never
+    ran" (no row), and a swallowed probe with no row would break that."""
+    from datetime import datetime, timezone
+
+    from primeqa.execution_engine.evidence import ErrorSurface
+
+    now = datetime.now(timezone.utc)
+    return RunEvidence(
+        run_id=uuid4(),
+        recipe_id=recipe.recipe_id,
+        recipe_version_seq=recipe.version_seq,
+        claim_test_id=recipe.claim_test_id,
+        claim_version_seq=recipe.claim_version_seq,
+        environment_id=environment_id,
+        api_choice="n/a",
+        outcome="errored",
+        started_at=now,
+        finished_at=now,
+        steps=(),
+        error=ErrorSurface(phase="translate", error_type=type(exc).__name__,
+                           message=str(exc)[:500]),
+    )
+
+
+class _PrepError:
+    """Marks an async probe whose bracket-1 prep (:func:`_prepare_async_execute`)
+    raised — so the batch loop synthesizes an errored evidence for THAT probe from
+    ``exc`` instead of letting one recipe's prep failure abort the whole batch
+    (run-all per-probe isolation, D-277)."""
+
+    def __init__(self, exc: BaseException):
+        self.exc = exc
+
+
+def run_all_recipes_execution(
+    session,
+    test_id: UUID,
+    *,
+    environment_id: int,
+    available_environment: Optional[ExecutionEnvironmentBody] = None,
+    client=None,
+    coordinator=None,
+    record_sink=None,
+    field_overrides=None,
+    caller_tier=None,
+    execute_fn=None,
+) -> RunAllResult:
+    """Run EVERY applicable recipe of ``test_id`` as one batch (sync; D-277).
+
+    Mints one ``batch_id``; resolves the full env-satisfiable applicable set via
+    :meth:`select_recipes_for_execution` (the plural, 3.1); runs each recipe
+    through the recipe-agnostic :func:`_execute_for_kind`; and persists each
+    result batch-stamped (``finalize_run(..., batch_id, source='runall_probe')``).
+    An empty applicable set persists nothing and returns ``ran=False`` (a real
+    state, not an error). Shares the caller's session (one commit by
+    ``_for_tenant``), with a per-probe SAVEPOINT so a probe's failure can't poison
+    the shared transaction for the others.
+
+    **Per-probe failure isolation:** each probe runs inside its own
+    ``begin_nested`` savepoint. A probe whose execute RAISES still persists a
+    batch-stamped ``errored`` row (synthesized) and the loop continues; a probe
+    whose executor RETURNS an errored evidence persists that real row; a probe
+    whose PERSIST itself fails rolls back to its savepoint (the session stays
+    clean for the next probe) and leaves no row — so the batch is incomplete ⇒
+    Slice 4 reads it not-Verified ⇒ re-runnable (D-272). One probe failing never
+    aborts the batch. (``probes`` may therefore be shorter than the applicable set
+    when some probe's persist failed.)
+
+    ``execute_fn`` defaults to :func:`_execute_for_kind` (injectable for tests).
+    """
+    coord = coordinator or SemanticTransactionCoordinator()
+    execute = execute_fn or _execute_for_kind
+    batch_id = uuid4()
+
+    recipes = coord.select_recipes_for_execution(
+        session, test_id,
+        available_environment=available_environment or _MIN_AVAILABLE_ENV,
+        replay_mode="live")
+    if not recipes:
+        return RunAllResult(batch_id=batch_id, ran=False, reason="no_eligible_recipes")
+
+    probes = []
+    for recipe in recipes:
+        # Per-probe isolation via a SAVEPOINT: a probe whose execute raises a
+        # session-poisoning error, OR whose persist (finalize) fails, rolls back to
+        # its savepoint — leaving the shared session clean for the next probe (one
+        # probe never aborts the batch). A persist failure leaves NO row for that
+        # probe → the batch is incomplete ⇒ Slice 4 reads it not-Verified ⇒
+        # re-runnable (D-272), the honest outcome of a mid-batch DB fault.
+        try:
+            with session.begin_nested():
+                try:
+                    evidence = execute(
+                        recipe, session, environment_id, client,
+                        record_sink=record_sink, field_overrides=field_overrides,
+                        caller_tier=caller_tier)
+                except Exception as exc:               # execute failed → errored probe
+                    evidence = _synthesize_errored_evidence(recipe, environment_id, exc)
+                finalize_run(session, evidence, coordinator=coord,
+                             batch_id=batch_id, source=_RUNALL_SOURCE)
+        except Exception:                              # persist/posture failed → no row
+            _log.warning("run-all: probe %s did not persist (batch %s); the batch is "
+                         "incomplete and re-runnable",
+                         getattr(recipe, "recipe_id", None), batch_id, exc_info=True)
+            continue
+        _interpret_and_persist(session, evidence)      # best-effort, its own savepoint
+        probes.append(ProbeRun(recipe.recipe_id, evidence.run_id, evidence.outcome))
+
+    return RunAllResult(batch_id=batch_id, ran=True, probes=tuple(probes))
+
+
+def run_all_recipes_execution_async(
+    tenant_id: int,
+    test_id: UUID,
+    *,
+    environment_id: int,
+    client=None,
+    available_environment: Optional[ExecutionEnvironmentBody] = None,
+    coordinator=None,
+    session_scope=None,
+    caller_tier=None,
+    execute_fn=None,
+) -> RunAllResult:
+    """Async run-all (D-277) — same batch semantics as
+    :func:`run_all_recipes_execution`, bracketed like
+    :func:`run_recipe_execution_async` so no DB connection is held across the
+    Salesforce I/O:
+
+      1. **select + prep** (one read bracket): the full applicable set + each
+         probe's client/world_plans + the env gate, resolved under the connection;
+      2. **execute** holding NO DB connection — per probe, with failure isolation;
+      3. **persist + posture + interpret** in a FRESH brief transaction PER PROBE,
+         so each probe's row commits on its own (a probe's persist failure never
+         touches the others) — the stronger isolation the production path uses.
+    """
+    from primeqa.execution_engine.stranded_cleanup import StrandedRecordSink
+
+    coord = coordinator or SemanticTransactionCoordinator()
+    scope = session_scope or _default_session_scope
+    execute = execute_fn or _execute_for_kind
+    batch_id = uuid4()
+
+    # 1. select all + prep each — one brief read bracket.
+    with scope(tenant_id) as session:
+        recipes = coord.select_recipes_for_execution(
+            session, test_id,
+            available_environment=available_environment or _MIN_AVAILABLE_ENV,
+            replay_mode="live")
+        # env_gate is resolved ONCE for the batch (assumed immutable for its
+        # duration — the same as the singular async path, which resolves it once).
+        env_gate = _resolve_env_gate(session, environment_id) if recipes else None
+        preps = []
+        for recipe in recipes:
+            try:
+                preps.append(_prepare_async_execute(recipe, session, environment_id, client))
+            except Exception as exc:           # a per-recipe prep failure must NOT
+                preps.append(_PrepError(exc))  # abort the batch — defer it to its probe
+    if not recipes:
+        return RunAllResult(batch_id=batch_id, ran=False, reason="no_eligible_recipes")
+
+    sink = StrandedRecordSink(tenant_id, environment_id)
+    probes = []
+    for recipe, prep in zip(recipes, preps):
+        # 2. execute — NO DB connection held; per-probe isolation. A prep failure
+        #    (bracket 1) or an execute raise both become this probe's errored
+        #    evidence — never a batch-wide abort.
+        if isinstance(prep, _PrepError):
+            evidence = _synthesize_errored_evidence(recipe, environment_id, prep.exc)
+        else:
+            resolved_client, world_plans = prep
+            try:
+                evidence = execute(
+                    recipe, None, environment_id, resolved_client,
+                    record_sink=sink, world_plans=world_plans,
+                    env_gate=env_gate, caller_tier=caller_tier)
+            except Exception as exc:
+                evidence = _synthesize_errored_evidence(recipe, environment_id, exc)
+        # 3. persist + posture + interpret — a FRESH brief TX per probe, so a
+        #    persist failure rolls back only THIS probe's scope (the others, each
+        #    in their own scope, are untouched). A failed persist leaves no row →
+        #    incomplete batch ⇒ not-Verified ⇒ re-runnable (D-272).
+        try:
+            with scope(tenant_id) as session:
+                finalize_run(session, evidence, coordinator=coord,
+                             batch_id=batch_id, source=_RUNALL_SOURCE)
+                _interpret_and_persist(session, evidence)
+        except Exception:
+            _log.warning("run-all(async): probe %s did not persist (batch %s); the "
+                         "batch is incomplete and re-runnable",
+                         getattr(recipe, "recipe_id", None), batch_id, exc_info=True)
+            continue
+        probes.append(ProbeRun(recipe.recipe_id, evidence.run_id, evidence.outcome))
+
+    return RunAllResult(batch_id=batch_id, ran=True, probes=tuple(probes))
