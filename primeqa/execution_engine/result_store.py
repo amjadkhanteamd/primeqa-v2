@@ -15,6 +15,7 @@ session with ``report_run_outcome``). Slice 2's no-DB unit tests stay untouched.
 from __future__ import annotations
 
 import dataclasses
+import uuid
 from datetime import datetime
 
 from sqlalchemy import (
@@ -62,6 +63,17 @@ class S4ExecutionRun(Base):
     # free.
     failure_category = Column(String, nullable=True)
     sf_error_code = Column(String, nullable=True)
+    # D-275 (S6 run-all, Slice 3.2): batch correlation. ``batch_id`` is minted at
+    # run time by the run-all loop, stamping each probe-run of one invocation so
+    # strict-AND grades ONE batch; NULL on every single-recipe run (dormant until
+    # the run-all loop, Slice 3.3). ``source`` is the trigger discriminator (open
+    # text — runall_probe today; shared-design with the deferred suite-run
+    # grouping, DEFERRED_ITEMS §3). persist_run_evidence OMITS both from the INSERT
+    # when not passed (the columns are never referenced for a single run — deploy
+    # order-independent). Completeness semantics (expected probe membership) land
+    # in Slice 4.
+    batch_id = Column(UUID(as_uuid=True), nullable=True)
+    source = Column(String, nullable=True)
 
 
 class S4CreatedRecord(Base):
@@ -101,7 +113,9 @@ def _run_failure(evidence: RunEvidence):
     return failure_signature(evidence)
 
 
-def persist_run_evidence(session, evidence: RunEvidence):
+def persist_run_evidence(session, evidence: RunEvidence, *,
+                         batch_id: uuid.UUID | None = None,
+                         source: str | None = None):
     """Persist one :class:`RunEvidence` as an ``s4_execution_runs`` row.
 
     Maps the in-memory evidence to typed columns + an ``evidence`` JSONB trace,
@@ -114,8 +128,22 @@ def persist_run_evidence(session, evidence: RunEvidence):
     is created) so a crash before this finalize cannot strand a record without a
     reapable row. A finalize write would have been both too late (no durability)
     and a duplicate (the sink already wrote it).
+
+    D-275 (Slice 3.2): ``batch_id`` / ``source`` are the run-all batch-correlation
+    columns. Both default ``None`` and are **omitted from the INSERT when not
+    passed** (the columns are referenced ONLY when a run-all caller stamps a batch
+    — Slice 3.3), so this writer is byte-identical to pre-D-275 for every current
+    single-run caller and is safe pre/post the additive migration. Completeness
+    semantics (the most-recent-complete-batch rule) live in Slice 4.
     """
     failure_category, sf_error_code = _run_failure(evidence)
+    # Omit-when-None: only stamp the batch columns a run-all caller actually
+    # passes, so an unset column never enters the INSERT (deploy order-independent).
+    batch_cols = {}
+    if batch_id is not None:
+        batch_cols["batch_id"] = batch_id
+    if source is not None:
+        batch_cols["source"] = source
     row = S4ExecutionRun(
         run_id=evidence.run_id,
         recipe_id=evidence.recipe_id,
@@ -130,6 +158,7 @@ def persist_run_evidence(session, evidence: RunEvidence):
         evidence=_evidence_trace(evidence),
         failure_category=failure_category,
         sf_error_code=sf_error_code,
+        **batch_cols,
     )
     session.add(row)
     session.flush()

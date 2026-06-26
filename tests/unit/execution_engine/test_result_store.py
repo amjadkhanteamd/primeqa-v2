@@ -132,6 +132,29 @@ def test_claim_version_seq_preserved_when_present():
     assert row.claim_version_seq == 3
 
 
+# --- D-275 Slice 3.2: run-all batch correlation columns ----------------------
+
+def test_batch_columns_omitted_when_not_passed():
+    """Deploy-safety: a single run never sets batch_id/source, so the attributes
+    stay UNSET → SQLAlchemy omits them from the INSERT → the new columns are never
+    referenced (safe pre/post the additive migration). They read back as None."""
+    row = _persist(_run_ev())
+    assert "batch_id" not in row.__dict__
+    assert "source" not in row.__dict__
+    assert row.batch_id is None
+    assert row.source is None
+
+
+def test_batch_columns_stamped_when_passed():
+    bid = uuid4()
+    session = _FakeSession()
+    persist_run_evidence(session, _run_ev(),
+                         batch_id=bid, source="runall_probe")
+    row = session.added[0]
+    assert row.batch_id == bid
+    assert row.source == "runall_probe"
+
+
 def _persist(ev):
     session = _FakeSession()
     persist_run_evidence(session, ev)
