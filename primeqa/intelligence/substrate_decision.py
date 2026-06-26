@@ -78,7 +78,7 @@ def _is_flaky(outcomes) -> bool:
     return transitions >= 2
 
 
-def _claim_verified(c) -> bool:
+def _claim_verified(c, *, session=None) -> bool:
     """THE single place a claim's good state is decided for the release decision
     (D-280, Slice 4b). Replaces the inline ``latest_run.outcome == 'passed'`` rule
     that used to be scattered across the quarantine / pass-rate / blocker reads.
@@ -97,11 +97,43 @@ def _claim_verified(c) -> bool:
     Prefers the value :func:`_assemble_claim_evidence` already attached (computed
     once per claim); for a hand-built evidence dict that lacks it, derives the SAME
     rule — so there is exactly ONE definition, never an inline outcome check.
-    **Slice 4d adds the bva branch HERE** (``if c.get('strategy_kind') == 'bva':
-    return _verified_bva(c)``) — this is the one extension point."""
+
+    **bva branch (D-283, Slice 4d) — a DEAD BRANCH today.** When a claim records
+    ``strategy_kind == 'bva'`` (only once §4a authors it, 4f), good state comes from
+    the claim's most-recent run-all batch (4c.1, :func:`read_batch_completeness`): an
+    INCOMPLETE batch (a probe row absent, or no batch — the reader short-circuits
+    with ``probes=None``) ⇒ NOT Verified; a COMPLETE batch ⇒ the bva strict-AND over
+    its probes (4a). The arm is **only ever called with a reader-certified COMPLETE
+    set** (never ``probes=None`` / empty, which the arm raises on) — preserving 4a's
+    "trusts the set is complete" contract. The branch sits AFTER the attached-value
+    short-circuit, so a claim whose ``verified`` was already attached (the production
+    path, 4f) never needs a ``session`` here; the ``session`` is for the derive case.
+    An ABSENT kind (``None`` — every claim today) takes the SINGLE path (the honest
+    default); an UNRECOGNIZED kind RAISES (a wiring bug, never a silent single
+    fallback — the 3.4 router discipline). Reachable by NO claim until §4a."""
     v = c.get("verified")
     if v is not None:
         return v
+    strategy_kind = c.get("strategy_kind")
+    if strategy_kind == "bva":
+        if session is None:
+            # Reached only on the DERIVE case (no attached ``verified``); the batch
+            # read needs a session. 4f wires ``_assemble`` to attach the bva
+            # ``verified`` (or pass a session), so this is unreachable until then —
+            # fail LOUD with the contract, not a cryptic ``AttributeError`` on a
+            # ``None`` session.
+            raise ValueError(
+                "bva claim reached _claim_verified with no attached `verified` and "
+                "no session — the derive case requires a session to read the batch")
+        from primeqa.interpretation.batch_reader import read_batch_completeness
+        from primeqa.interpretation.strategy import apply_strategy
+        result = read_batch_completeness(session, c.get("test_id"))
+        if not result.complete:
+            return False                      # incomplete/no-batch ⇒ not-Verified;
+                                              # the arm is NEVER called (probes=None)
+        return apply_strategy(c, "bva", list(result.probes))   # complete ⇒ strict-AND
+    if strategy_kind not in (None, "single"):
+        raise ValueError(f"unrecognized strategy kind {strategy_kind!r}")
     lr = c.get("latest_run")
     if lr is None:
         return False

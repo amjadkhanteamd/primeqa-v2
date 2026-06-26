@@ -430,3 +430,92 @@ def test_assembled_verified_matches_live_passed_rule():
         assert c["verified"] == (lr["outcome"] == "passed"), (c["test_id"], lr["outcome"])
         checked += 1
     assert checked > 0, "live-parity exercised no claims with runs"
+
+
+# === Slice 4d (D-283): the bva branch in _claim_verified (DEAD BRANCH) =========
+# Exercises the bva branch's LOGIC even though no real claim reaches it. The batch
+# read is canned via monkeypatch (no DB) — the reader itself is tested in 4c.1.
+
+from primeqa.interpretation.strategy import ProbeResult            # noqa: E402
+from primeqa.interpretation.batch_reader import BatchCompleteness  # noqa: E402
+
+
+def _patch_reader(monkeypatch, result):
+    monkeypatch.setattr("primeqa.interpretation.batch_reader.read_batch_completeness",
+                        lambda session, tid: result)
+
+
+def _bva_claim():
+    return {"strategy_kind": "bva", "test_id": "t-bva"}
+
+
+def test_bva_complete_all_pass_is_verified(monkeypatch):
+    _patch_reader(monkeypatch, BatchCompleteness(
+        complete=True, probes=(ProbeResult("pass"), ProbeResult("pass"))))
+    assert _claim_verified(_bva_claim(), session=object()) is True
+
+
+def test_bva_complete_one_errored_is_not_verified(monkeypatch):
+    # COMPLETE-but-indeterminate (errored row present) → the bva arm's strict-AND
+    # returns not-Verified.
+    _patch_reader(monkeypatch, BatchCompleteness(
+        complete=True, probes=(ProbeResult("pass"), ProbeResult("indeterminate"))))
+    assert _claim_verified(_bva_claim(), session=object()) is False
+
+
+def test_bva_incomplete_is_not_verified_without_calling_the_arm(monkeypatch):
+    # INCOMPLETE (row-absent): the reader short-circuited (probes=None). The branch
+    # returns False WITHOUT calling apply_strategy — patch it to RAISE and confirm
+    # it is never reached (calling the arm with None/empty would raise by design).
+    _patch_reader(monkeypatch, BatchCompleteness(
+        complete=False, probes=None, reason="incomplete"))
+
+    def _boom(*a, **k):
+        raise AssertionError("the arm must NOT be called on an incomplete batch")
+
+    monkeypatch.setattr("primeqa.interpretation.strategy.apply_strategy", _boom)
+    assert _claim_verified(_bva_claim(), session=object()) is False
+
+
+def test_bva_no_batch_is_not_verified(monkeypatch):
+    _patch_reader(monkeypatch, BatchCompleteness(
+        complete=False, probes=None, reason="no_batch"))
+    assert _claim_verified(_bva_claim(), session=object()) is False
+
+
+def test_bva_attached_verified_short_circuits_no_batch_read(monkeypatch):
+    # the production path (4f) attaches `verified`; a bva claim with an attached
+    # value short-circuits BEFORE the batch read → no session needed. Patch the
+    # reader to RAISE and confirm it is never called.
+    def _boom(*a, **k):
+        raise AssertionError("attached `verified` must short-circuit before the read")
+
+    monkeypatch.setattr("primeqa.interpretation.batch_reader.read_batch_completeness", _boom)
+    assert _claim_verified({"strategy_kind": "bva", "verified": True}) is True
+    assert _claim_verified({"strategy_kind": "bva", "verified": False}) is False
+
+
+def test_absent_strategy_kind_uses_single_path_unchanged():
+    # every real claim today: no strategy_kind → the SINGLE path, byte-identical.
+    assert _claim_verified({"latest_run": {"outcome": "passed"}}) is True
+    assert _claim_verified({"latest_run": {"outcome": "failed"}}) is False
+
+
+def test_single_strategy_kind_explicit_uses_single_path():
+    assert _claim_verified({"strategy_kind": "single",
+                            "latest_run": {"outcome": "passed"}}) is True
+
+
+def test_unrecognized_strategy_kind_raises():
+    # an unrecognized recorded kind is a wiring bug — fail loud, never a silent
+    # single fallback (the 3.4 router discipline).
+    with pytest.raises(ValueError):
+        _claim_verified({"strategy_kind": "weird", "latest_run": {"outcome": "passed"}})
+
+
+def test_bva_derive_without_session_raises_clear_contract_error():
+    # the derive case (no attached `verified`) needs a session; reaching it with
+    # session=None raises a CLEAR contract error, not a cryptic AttributeError.
+    # (Unreachable today — dead branch — but fail-loud if 4f mis-wires it.)
+    with pytest.raises(ValueError):
+        _claim_verified({"strategy_kind": "bva", "test_id": "t"})   # no session
