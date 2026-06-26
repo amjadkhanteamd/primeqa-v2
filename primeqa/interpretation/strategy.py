@@ -92,14 +92,16 @@ def apply_strategy(claim, kind: str, probe_results: Sequence[ProbeResult]) -> bo
     ``(claim, kind, probe_results)``: no execution, no S1 / SF / DB, no clock,
     no random.
 
-    ``claim`` is accepted but UNUSED by the ``single`` arm — it is the seam
-    ``bva`` (Slice 4) needs to know which boundary probes are *required*; carrying
-    it here keeps the signature stable across strategies.
+    ``claim`` is accepted but UNUSED by both arms today — completeness/membership
+    (which boundary probes are *required* and whether the batch realized all of
+    them) is the **batch reader's contract** (Slice 4c), not the strategy's;
+    carrying ``claim`` keeps the signature stable and leaves the seam for a future
+    strategy that needs it.
     """
     if kind == "single":
         return _apply_single(probe_results)
     if kind == "bva":
-        raise NotImplementedError("bva arm — Slice 4")
+        return _apply_bva(probe_results)
     raise ValueError(f"unknown strategy kind {kind!r}")
 
 
@@ -118,3 +120,44 @@ def _apply_single(probe_results: Sequence[ProbeResult]) -> bool:
     if outcome in ("fail", "indeterminate"):
         return False
     raise ValueError(f"unrecognized ProbeResult.outcome {outcome!r}")
+
+
+def _apply_bva(probe_results: Sequence[ProbeResult]) -> bool:
+    """Strict-AND over the boundary probe set (D-272 §2.2): Verified IFF EVERY
+    probe ``pass``ed. ANY ``fail`` OR ANY ``indeterminate`` → NOT Verified — an
+    ``indeterminate`` (evidence-incomplete, D-272 §2.4) means the claim could not
+    be fully evaluated, so it is not Verified regardless of how the others went.
+    There is NO threshold, NO "most passed", NO partial credit: one non-pass probe
+    (fail OR indeterminate) sinks the whole claim.
+
+    ``polarity`` is NOT read (same as ``single``): S4 already folds accept/reject
+    polarity into each probe's ``pass`` / ``fail`` outcome; it is carried for
+    diagnostics, not for the verdict.
+
+    **Completeness is the CALLER's contract** (the batch reader, Slice 4c): this
+    arm assumes ``probe_results`` IS the complete applicable probe set for the
+    claim and ANDs their outcomes. It does NOT check membership — how many probes
+    were expected, or whether a probe is missing. A batch that never realized an
+    applicable probe is detected upstream (incomplete batch ⇒ not Verified, D-275);
+    it never reaches here as a short set that silently passes.
+
+    N=0 RAISES: an empty bva set is a wiring/generation bug (a bva claim mints ≥1
+    applicable probe at generation, D-272 §2.1), NOT a vacuous truth. Returning
+    ``True`` for "no probes" would silently Verify an un-probed claim — the exact
+    overstate-what-you-know failure the strict semantics forbid. N≥1 is valid
+    (1..N boundary probes). An unrecognized ``outcome`` value RAISES (fail-loud,
+    never an implicit default), mirroring ``_apply_single``.
+    """
+    if not probe_results:
+        raise ValueError(
+            "bva strategy requires at least 1 probe result, got 0 — an empty "
+            "boundary set is a wiring bug, never vacuously Verified")
+    verified = True
+    for pr in probe_results:
+        if pr.outcome == "pass":
+            continue
+        if pr.outcome in ("fail", "indeterminate"):
+            verified = False          # do NOT short-circuit: validate every probe
+            continue
+        raise ValueError(f"unrecognized ProbeResult.outcome {pr.outcome!r}")
+    return verified

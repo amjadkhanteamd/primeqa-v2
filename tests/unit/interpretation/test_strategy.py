@@ -133,11 +133,6 @@ def test_single_two_probes_raises():
                        [ProbeResult(outcome="pass"), ProbeResult(outcome="pass")])
 
 
-def test_bva_kind_is_not_implemented():
-    with pytest.raises(NotImplementedError):
-        apply_strategy(None, "bva", [ProbeResult(outcome="pass")])
-
-
 def test_unknown_kind_raises():
     with pytest.raises(ValueError):
         apply_strategy(None, "weird", [ProbeResult(outcome="pass")])
@@ -148,6 +143,69 @@ def test_unrecognized_probe_outcome_raises():
     # silently default — the single arm raises.
     with pytest.raises(ValueError):
         apply_strategy(None, "single", [ProbeResult(outcome="banana")])  # type: ignore[arg-type]
+
+
+# --- 5b. bva arm — strict-AND over the probe set (Slice 4a) -------------------
+
+def _probes(*outcomes, polarity="accept"):
+    return [ProbeResult(outcome=o, polarity=polarity) for o in outcomes]
+
+
+@pytest.mark.parametrize("n", [2, 5])
+def test_bva_all_pass_is_verified(n):
+    assert apply_strategy(None, "bva", _probes(*(["pass"] * n))) is True
+
+
+def test_bva_single_probe_pass_is_verified():
+    # bva is valid at N=1 (single boundary probe) — all-pass → Verified.
+    assert apply_strategy(None, "bva", _probes("pass")) is True
+
+
+def test_bva_single_probe_fail_is_not_verified():
+    assert apply_strategy(None, "bva", _probes("fail")) is False
+
+
+def test_bva_one_fail_among_passes_is_not_verified():
+    # strict-AND: one fail sinks the whole claim, no partial credit.
+    assert apply_strategy(None, "bva", _probes("pass", "fail", "pass")) is False
+
+
+def test_bva_one_indeterminate_among_passes_is_not_verified():
+    # the D-272 §2.4 invariant: an evidence-incomplete probe ⇒ NOT Verified,
+    # regardless of how the other probes went.
+    assert apply_strategy(None, "bva",
+                          _probes("pass", "indeterminate", "pass")) is False
+
+
+def test_bva_mixed_fail_and_indeterminate_is_not_verified():
+    assert apply_strategy(None, "bva",
+                          _probes("pass", "fail", "indeterminate")) is False
+
+
+def test_bva_empty_set_raises_not_vacuously_verified():
+    # THE critical one: an empty bva set must RAISE — never return True. A bva
+    # claim with zero probes is a wiring bug, not a vacuous pass.
+    with pytest.raises(ValueError):
+        apply_strategy(None, "bva", [])
+
+
+def test_bva_unrecognized_outcome_raises():
+    # fail-loud, even when another probe already fails — a bad outcome value is a
+    # wiring bug, surfaced, never silently treated as not-pass.
+    with pytest.raises(ValueError):
+        apply_strategy(None, "bva",
+                       [ProbeResult(outcome="pass"),
+                        ProbeResult(outcome="banana"),   # type: ignore[arg-type]
+                        ProbeResult(outcome="fail")])
+
+
+def test_bva_polarity_does_not_change_verdict():
+    # a reject-polarity pass still counts as pass — the bva arm reads only outcome
+    # (S4 already folded polarity into pass/fail), mirroring the single arm.
+    assert apply_strategy(None, "bva", _probes("pass", "pass", polarity="reject")) is True
+    assert apply_strategy(None, "bva",
+                          [ProbeResult(outcome="pass", polarity="reject"),
+                           ProbeResult(outcome="fail", polarity="reject")]) is False
 
 
 # --- 6. purity guard — no I/O coupling --------------------------------------
