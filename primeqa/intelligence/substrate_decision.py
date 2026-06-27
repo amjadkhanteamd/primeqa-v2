@@ -258,8 +258,18 @@ def _assemble_claim_evidence(session, external_keys, *, tenant_id=None) -> list[
         # D-280 (Slice 4b): the claim's good state, decided ONCE here via the single
         # `Verified` predicate (replaces the old inline `outcome == 'passed'`). A
         # never-run claim is NOT verified and skips the applier (the never_run
-        # blocker owns it). 4d will branch this on the recorded strategy kind.
-        verified = _claim_verified({"latest_run": latest_run})
+        # blocker owns it).
+        # D-287 (Slice 4f.1): pass the recorded `strategy_kind` + `test_id` + the
+        # `session` so the 4d bva branch is REACHABLE WITH ITS SESSION when a claim
+        # becomes bva (4f.2) — satisfying the 4d guard (which raises on a bva claim
+        # with no session). BEHAVIOR-NEUTRAL today: every claim's `strategy_kind` is
+        # NULL (4f.0 shipped the column all-NULL), so `_claim_verified` takes the
+        # single path exactly as before; the kind/test_id/session are inert on that
+        # path. The wiring is dead until 4f.2 writes the first 'bva'.
+        verified = _claim_verified(
+            {"latest_run": latest_run, "test_id": str(tid),
+             "strategy_kind": getattr(approved, "strategy_kind", None)},
+            session=session)
         if latest_run is not None and not verified:
             # D-237: the plain-English cause for a not-Verified latest run.
             latest_run["cause"] = _cause_phrase(row["detail"], row["verdict"],

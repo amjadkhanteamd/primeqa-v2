@@ -519,3 +519,59 @@ def test_bva_derive_without_session_raises_clear_contract_error():
     # (Unreachable today — dead branch — but fail-loud if 4f mis-wires it.)
     with pytest.raises(ValueError):
         _claim_verified({"strategy_kind": "bva", "test_id": "t"})   # no session
+
+
+# === Slice 4f.1 (D-287): the _assemble call-shape satisfies the 4d precondition =
+# `_assemble_claim_evidence` now calls `_claim_verified` with the recorded
+# `strategy_kind` + `test_id` AND `session=session`. These prove that exact shape:
+# a None-kind claim stays single (session inert, byte-identical), and a bva claim
+# runs the bva branch WITH its session — NO guard — which is precisely what 4f.1
+# wires so 4f.2's first 'bva' write doesn't trip the 4d guard.
+
+def _assemble_shape(*, latest_run, strategy_kind, test_id="t-assemble"):
+    """The EXACT dict `_assemble_claim_evidence` now builds for `_claim_verified`."""
+    return {"latest_run": latest_run, "test_id": test_id,
+            "strategy_kind": strategy_kind}
+
+
+def test_assemble_shape_none_kind_is_single_and_byte_identical():
+    # today's reality: approved.strategy_kind is NULL → None. The _assemble shape
+    # (with test_id + session) must grade IDENTICALLY to the old minimal dict.
+    sess = object()
+    for outcome, expected in [("passed", True), ("failed", False), ("errored", False)]:
+        shape = _assemble_shape(latest_run={"outcome": outcome}, strategy_kind=None)
+        assert _claim_verified(shape, session=sess) is expected
+        # identical to the pre-4f.1 minimal-dict call (session/test_id inert on single)
+        assert _claim_verified({"latest_run": {"outcome": outcome}}) is expected
+
+
+def test_assemble_shape_none_kind_never_run_is_false():
+    # never-run via the _assemble shape stays a non-applier False (the never_run
+    # blocker owns it) — unchanged by the kind/test_id/session.
+    assert _claim_verified(
+        _assemble_shape(latest_run=None, strategy_kind=None), session=object()) is False
+
+
+def test_assemble_shape_bva_runs_branch_WITH_session_no_guard(monkeypatch):
+    # THE 4f.1 PROOF: a bva claim through the _assemble shape (session PASSED) runs
+    # the bva branch — reads the batch, grades — and does NOT raise the 4d guard.
+    _patch_reader(monkeypatch, BatchCompleteness(
+        complete=True, probes=(ProbeResult("pass"), ProbeResult("pass"))))
+    shape = _assemble_shape(latest_run=None, strategy_kind="bva")
+    assert _claim_verified(shape, session=object()) is True          # no guard raised
+
+
+def test_assemble_shape_bva_incomplete_is_not_verified(monkeypatch):
+    _patch_reader(monkeypatch, BatchCompleteness(
+        complete=False, probes=None, reason="incomplete"))
+    shape = _assemble_shape(latest_run=None, strategy_kind="bva")
+    assert _claim_verified(shape, session=object()) is False
+
+
+def test_assemble_shape_bva_WITHOUT_session_would_raise():
+    # the precondition made concrete: the SAME bva shape, but session=None (the
+    # pre-4f.1 minimal-dict reality), trips the 4d guard. 4f.1 supplies the session
+    # → no raise. This is exactly why the wiring is kind-AND-session, not kind alone.
+    shape = _assemble_shape(latest_run=None, strategy_kind="bva")
+    with pytest.raises(ValueError):
+        _claim_verified(shape)                                       # session=None
