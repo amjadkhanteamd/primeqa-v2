@@ -11,7 +11,10 @@ from __future__ import annotations
 import json
 from uuid import UUID, uuid4
 
-from primeqa.execution_engine.data_executor import execute_data_recipe
+from primeqa.execution_engine.data_executor import (
+    _is_permission_rejection,
+    execute_data_recipe,
+)
 from primeqa.execution_engine.data_mutation_client import DataMutationClient
 from primeqa.execution_engine.evidence import CreateAttemptEvidence
 from primeqa.execution_engine.plan import DataRecipePlan, PlannedCreate
@@ -279,3 +282,108 @@ def test_error_fields_empty_when_body_names_none():
     client = _StubClient(create_result=_rejected(_VR_CODE))
     ev = execute_data_recipe(_plan(), client=client, environment_id=_ENV_ID)
     assert ev.steps[0].error_fields == ()
+
+
+# ---------------------------------------------------------------------------
+# D-290 — permission/FLS rejection (403 + INSUFFICIENT_ACCESS*) is the org
+# ENFORCING the prohibition by access control: the same business outcome as the
+# 400 VR path, flowing through the SAME 4-way grade. Closes the hole where it
+# mis-graded as `errored`. Over-broadening guarded: only the unambiguous
+# permission signal reclassifies; any other 403 stays errored.
+# ---------------------------------------------------------------------------
+
+_PERM_CODE = "INSUFFICIENT_ACCESS"
+
+
+def test_permission_rejection_403_passes_when_expected():
+    # THE FIX: a 403 + INSUFFICIENT_ACCESS where the recipe expected it now grades
+    # `passed` (org enforced the prohibition) — previously `errored`.
+    client = _StubClient(create_result=_rejected(_PERM_CODE, status=403))
+    ev = execute_data_recipe(
+        _plan(expect_code=_PERM_CODE), client=client, environment_id=_ENV_ID)
+    assert ev.outcome == "passed"
+    step = ev.steps[0]
+    assert step.matched is True and step.http_status == 403
+    assert step.error_code == _PERM_CODE
+    assert step.cleanup.attempted is False     # nothing created → no cleanup
+    assert ev.error is None                    # a graded outcome, not an error
+
+
+def test_permission_rejection_400_already_passes_via_business_path():
+    # A permission denial that surfaces as HTTP 400 (the data API often does)
+    # was ALREADY a business rejection — the new 403 branch does not change it.
+    client = _StubClient(
+        create_result=_rejected("INSUFFICIENT_ACCESS_OR_READONLY", status=400))
+    ev = execute_data_recipe(
+        _plan(expect_code="INSUFFICIENT_ACCESS_OR_READONLY"),
+        client=client, environment_id=_ENV_ID)
+    assert ev.outcome == "passed"
+    assert ev.steps[0].http_status == 400
+
+
+def test_permission_rejection_wrong_kind_is_failed_not_passed():
+    # A permission rejection when the recipe expected a VR → FAILED (the asserted
+    # mechanism did not fire), never silently passed and no longer errored.
+    client = _StubClient(create_result=_rejected(_PERM_CODE, status=403))
+    ev = execute_data_recipe(
+        _plan(expect_code=_VR_CODE), client=client, environment_id=_ENV_ID)
+    assert ev.outcome == "failed"
+    assert ev.steps[0].matched is False
+
+
+def test_ambiguous_403_stays_errored_the_guard():
+    # THE HONESTY GUARD: a 403 whose code is NOT a recognized permission signal
+    # (API disabled, IP range, …) is NOT a business rejection — it stays errored.
+    # A wrong optimistic-pass is worse than the original errored mis-grade.
+    client = _StubClient(create_result=_rejected("API_DISABLED_FOR_ORG", status=403))
+    ev = execute_data_recipe(
+        _plan(expect_code=_PERM_CODE), client=client, environment_id=_ENV_ID)
+    assert ev.outcome == "errored"
+    assert ev.error is not None and ev.steps[0].http_status == 403
+
+
+def test_bare_403_no_code_stays_errored():
+    # A 403 with no structured error code (empty/unparseable body) → errored.
+    client = _StubClient(create_result={
+        "api_response": {"status_code": 403, "body": []},
+        "http_status": 403, "success": False, "record_id": None})
+    ev = execute_data_recipe(_plan(expect_code=_PERM_CODE),
+                             client=client, environment_id=_ENV_ID)
+    assert ev.outcome == "errored"
+
+
+def test_vr_400_path_unchanged_by_permission_branch():
+    # VR path byte-identical: a 400 VR with a matching code still passes; a 400
+    # with a wrong code still fails — the permission branch is only reached for
+    # non-400 statuses, so the 400 grade is untouched.
+    ev_ok = execute_data_recipe(
+        _plan(expect_code=_VR_CODE),
+        client=_StubClient(create_result=_rejected(_VR_CODE, status=400)),
+        environment_id=_ENV_ID)
+    assert ev_ok.outcome == "passed"
+    ev_no = execute_data_recipe(
+        _plan(expect_code=_VR_CODE),
+        client=_StubClient(create_result=_rejected("DUPLICATE_VALUE", status=400)),
+        environment_id=_ENV_ID)
+    assert ev_no.outcome == "failed"
+
+
+def test_is_permission_rejection_guard_unit():
+    # Direct unit on the discriminator — consumes the failure taxonomy's PERMISSION
+    # classification (the D-225 codes), nothing else.
+    for code in ("INSUFFICIENT_ACCESS", "INSUFFICIENT_ACCESS_OR_READONLY",
+                 "INSUFFICIENT_FIELD_ACCESS",
+                 "INSUFFICIENT_ACCESS_ON_CROSS_REFERENCE_ENTITY",
+                 "INVALID_FIELD_FOR_INSERT_UPDATE"):
+        assert _is_permission_rejection([{"errorCode": code}]) is True
+    # NOT a permission signal:
+    for code in (_VR_CODE, "DUPLICATE_VALUE", "MALFORMED_QUERY",
+                 "API_DISABLED_FOR_ORG", "INVALID_SESSION_ID"):
+        assert _is_permission_rejection([{"errorCode": code}]) is False
+    # no code / empty / non-dict entries:
+    assert _is_permission_rejection([{"message": "x"}]) is False
+    assert _is_permission_rejection([]) is False
+    assert _is_permission_rejection(["not-a-dict", None]) is False
+    # any-of: a multi-error body with one permission code → True
+    assert _is_permission_rejection(
+        [{"errorCode": "OTHER"}, {"errorCode": "INSUFFICIENT_ACCESS"}]) is True

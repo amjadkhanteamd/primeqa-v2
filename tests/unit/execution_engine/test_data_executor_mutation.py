@@ -418,3 +418,74 @@ def test_client_update_captures_rejection_response():
     env = c.update("Opportunity", "006A", {"Amount": 1})
     assert env["success"] is False and env["http_status"] == 400
     assert env["api_response"]["body"][0]["errorCode"] == _VR_CODE
+
+
+# ---------------------------------------------------------------------------
+# D-290 — permission/FLS rejection on the prohibited mutation (403 +
+# INSUFFICIENT_ACCESS*) is the org enforcing the prohibition by access control:
+# the SAME 4-way grade as the 400 VR path, through the shared _run_mutation_attempt
+# branch (update + delete). Over-broadening guarded: an ambiguous 403 stays errored.
+# ---------------------------------------------------------------------------
+
+_PERM = "INSUFFICIENT_ACCESS"
+
+
+def _delete_plan_expecting(code, *, object_api="Opportunity"):
+    target = LogicalRef(entity_type="Object", external_id=object_api)
+    return DataRecipePlan(
+        recipe_id=uuid4(), recipe_version_seq=2, claim_test_id=uuid4(),
+        claim_version_seq=None, api_choice="rest",
+        steps=(
+            PlannedCreate(
+                step_id="create-setup", target_object=target,
+                field_values={f"{object_api}.Amount": 500}, expect_rejection=None),
+            PlannedDelete(
+                step_id="delete-violating", target_object=target,
+                expect_rejection=RejectionExpectation(error_code=code),
+                setup_step_id="create-setup"),
+        ))
+
+
+def test_update_permission_rejection_403_passes():
+    # THE FIX (update): a 403 + INSUFFICIENT_ACCESS on the prohibited update where
+    # the recipe expected it grades `passed` — previously `errored`. The setup
+    # create succeeded; the subject is still torn down.
+    client = _StubClient(
+        create_result=_created("006A"),
+        update_result=_rejected(code=_PERM, status=403))
+    ev = _run(_update_plan(expect=RejectionExpectation(error_code=_PERM)), client)
+    assert ev.outcome == "passed"
+    assert ev.steps[1].matched is True and ev.steps[1].http_status == 403
+    assert client.deletes == [("Opportunity", "006A")]      # teardown still runs
+
+
+def test_update_permission_wrong_kind_is_failed():
+    # Expected a VR but the org enforced via permission → failed (not passed,
+    # no longer errored).
+    client = _StubClient(
+        create_result=_created("006A"),
+        update_result=_rejected(code=_PERM, status=403))
+    ev = _run(_update_plan(), client)        # _update_plan defaults to VR expect
+    assert ev.outcome == "failed"
+    assert ev.steps[1].matched is False
+
+
+def test_update_ambiguous_403_stays_errored():
+    # THE GUARD: a non-permission 403 is NOT a business rejection → errored.
+    client = _StubClient(
+        create_result=_created("006A"),
+        update_result=_rejected(code="API_DISABLED_FOR_ORG", status=403))
+    ev = _run(_update_plan(expect=RejectionExpectation(error_code=_PERM)), client)
+    assert ev.outcome == "errored"
+    assert client.deletes == [("Opportunity", "006A")]      # teardown still runs
+
+
+def test_delete_permission_rejection_403_passes():
+    # The shared branch covers delete too: a 403 + INSUFFICIENT_ACCESS on the
+    # prohibited delete, expected, grades `passed`.
+    client = _StubClient(
+        create_result=_created("006A"),
+        delete_results=[_rejected(code=_PERM, status=403), {"success": True}])
+    ev = _run(_delete_plan_expecting(_PERM), client)
+    assert ev.outcome == "passed"
+    assert ev.steps[1].matched is True and ev.steps[1].http_status == 403

@@ -75,12 +75,38 @@ from primeqa.execution_engine.world import (
     plan_world,
 )
 from primeqa.integrations.exceptions import SFClientError
+from primeqa.integrations.failure_taxonomy import FailureCategory, category_for
 
 # A Salesforce **business** rejection (validation rule, required-field,
 # duplicate, …) surfaces as HTTP 400 with a structured error body. Any other
 # non-2xx (401 / 403 / 429 / 5xx) is an infra / auth failure — the org did not
 # perform a business evaluation, so the create "couldn't be attempted" → errored.
+#
+# D-290 exception: a permission / FLS rejection (INSUFFICIENT_ACCESS*, the codes
+# D-225 surfaces) is the org ENFORCING the prohibition by access control — the
+# same class of business outcome as a VR, but it can surface as 403 rather than
+# the 400 VR path. :func:`_is_permission_rejection` recognizes ONLY that
+# unambiguous signal, so such a rejection routes through the same grade instead
+# of being mis-graded "couldn't attempt → errored".
 _BUSINESS_REJECTION_STATUS = 400
+
+
+def _is_permission_rejection(rejection_body) -> bool:
+    """D-290: True iff the rejection body carries a Salesforce ``errorCode`` the
+    failure taxonomy classifies as ``permission`` (the D-225 access-denial codes:
+    INSUFFICIENT_ACCESS / INSUFFICIENT_ACCESS_OR_READONLY / INSUFFICIENT_FIELD_ACCESS
+    / …). This is the UNAMBIGUOUS "the org enforced the prohibition by access
+    control" signal — consuming the taxonomy's classification, NOT re-parsing raw
+    HTTP. A non-2xx with no recognized permission code (a bare 403, API-disabled,
+    IP-range — which classify ``unknown``) returns False and is NOT reclassified;
+    it stays ``errored`` (honest-uncertainty over optimistic-pass)."""
+    for e in rejection_body:
+        if not isinstance(e, dict):
+            continue
+        code = e.get("errorCode")
+        if code and category_for(None, code) == FailureCategory.PERMISSION:
+            return True
+    return False
 
 
 def execute_data_recipe(
@@ -333,6 +359,18 @@ def _run_mutation_attempt(mutation, sobject, record_id, client):
 
     if http_status == _BUSINESS_REJECTION_STATUS:
         # The org evaluated + rejected on business rules — the grounded eval.
+        matched = _matches(mutation.expect_rejection, rejection_body)
+        ev = _mutation_evidence(
+            mutation, sobject, record_id, changes, start, end,
+            http_status=http_status, success=False,
+            rejection_body=rejection_body, matched=matched)
+        return ev, ("passed" if matched else "failed"), None
+
+    if _is_permission_rejection(rejection_body):
+        # D-290: a permission/FLS rejection (403 + INSUFFICIENT_ACCESS*) on the
+        # prohibited mutation is the org ENFORCING the prohibition by access control
+        # — the same class of outcome as the 400 VR path above. Route it through the
+        # SAME 4-way grade (passed iff matched, else failed). Mirrors _run_create.
         matched = _matches(mutation.expect_rejection, rejection_body)
         ev = _mutation_evidence(
             mutation, sobject, record_id, changes, start, end,
@@ -797,8 +835,24 @@ def _run_create(create, sobject, client):
             cleanup=CleanupRecord(attempted=False))
         return ev, ("passed" if matched else "failed"), None
 
-    # A non-2xx, non-400 response (401 / 403 / 429 / 5xx) — not a business
-    # rejection; the org didn't evaluate → couldn't attempt → errored.
+    if _is_permission_rejection(rejection_body):
+        # D-290: a permission/FLS rejection (403 + INSUFFICIENT_ACCESS*) is the org
+        # ENFORCING the prohibition by access control — the same class of business
+        # outcome as the 400 VR path above. Route it through the SAME 4-way grade:
+        # passed iff it MATCHES the recipe's expect_rejection (a permission-shaped
+        # expectation), failed if the recipe expected a different rejection kind
+        # (never silently passed). Mirrors the 400 branch exactly.
+        matched = _matches(create.expect_rejection, rejection_body)
+        end = _now()
+        ev = _evidence(
+            create, sobject, start, end, http_status=http_status, success=False,
+            rejection_body=rejection_body, matched=matched,
+            cleanup=CleanupRecord(attempted=False))
+        return ev, ("passed" if matched else "failed"), None
+
+    # A non-2xx, non-400 response with no recognized business-rejection signal
+    # (401 / a bare 403 / 429 / 5xx) — the org didn't evaluate on business rules →
+    # couldn't attempt → errored.
     end = _now()
     err = ErrorSurface(
         phase="create", error_type="UnexpectedResponse",
