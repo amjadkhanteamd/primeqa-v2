@@ -90,21 +90,43 @@ from primeqa.integrations.failure_taxonomy import FailureCategory, category_for
 # of being mis-graded "couldn't attempt → errored".
 _BUSINESS_REJECTION_STATUS = 400
 
+# D-290.1: a permission/FLS denial on a data mutation surfaces as HTTP 403 (a
+# 400 + INSUFFICIENT_ACCESS is ALREADY the VR business-rejection path above). The
+# permission reclassification is gated on EXACTLY 403 so a transient (5xx / 429) or
+# auth (401) response — even one whose multi-error body happens to carry a
+# permission sub-error — stays on the errored path, preserving its re-runnable
+# (indeterminate, D-272/D-273) signal instead of being graded as a business outcome.
+_PERMISSION_REJECTION_STATUS = 403
+
+# D-290.1 (adversarial-review hardening): the failure taxonomy's PERMISSION set is
+# sized for SYNC data-loss detection, where any access/writability denial counts.
+# For prohibition GRADING — where reclassifying to a business rejection can yield an
+# optimistic ``passed`` — it is too broad: ``INVALID_FIELD_FOR_INSERT_UPDATE`` is
+# DUAL-MEANING (an FLS denial OR a STRUCTURALLY non-writable field — formula /
+# roll-up / auto-number / system audit). We cannot tell "the org enforced a
+# prohibition by access control" from "this field is not a writable data field", so
+# it does NOT reclassify — honest-uncertainty stays errored. The remaining codes
+# (the INSUFFICIENT_ACCESS* family) are unambiguous access denials.
+_AMBIGUOUS_PERMISSION_CODES = frozenset({"INVALID_FIELD_FOR_INSERT_UPDATE"})
+
 
 def _is_permission_rejection(rejection_body) -> bool:
-    """D-290: True iff the rejection body carries a Salesforce ``errorCode`` the
-    failure taxonomy classifies as ``permission`` (the D-225 access-denial codes:
-    INSUFFICIENT_ACCESS / INSUFFICIENT_ACCESS_OR_READONLY / INSUFFICIENT_FIELD_ACCESS
-    / …). This is the UNAMBIGUOUS "the org enforced the prohibition by access
-    control" signal — consuming the taxonomy's classification, NOT re-parsing raw
-    HTTP. A non-2xx with no recognized permission code (a bare 403, API-disabled,
-    IP-range — which classify ``unknown``) returns False and is NOT reclassified;
-    it stays ``errored`` (honest-uncertainty over optimistic-pass)."""
+    """D-290: True iff the rejection body carries an UNAMBIGUOUS access-denial code
+    — a Salesforce ``errorCode`` the failure taxonomy classifies as ``permission``
+    (the D-225 codes) MINUS the dual-meaning ones (:data:`_AMBIGUOUS_PERMISSION_CODES`).
+    The surviving set is the ``INSUFFICIENT_ACCESS*`` family: an unambiguous "the org
+    enforced the prohibition by access control" signal — consuming the taxonomy's
+    classification, NOT re-parsing raw HTTP. A body with no recognized access-denial
+    code (a bare 403, API-disabled, IP-range — which classify ``unknown``, or the
+    excluded dual-meaning code) returns False and is NOT reclassified; it stays
+    ``errored`` (honest-uncertainty over optimistic-pass). Callers additionally gate
+    on :data:`_PERMISSION_REJECTION_STATUS` (403)."""
     for e in rejection_body:
         if not isinstance(e, dict):
             continue
         code = e.get("errorCode")
-        if code and category_for(None, code) == FailureCategory.PERMISSION:
+        if (code and code not in _AMBIGUOUS_PERMISSION_CODES
+                and category_for(None, code) == FailureCategory.PERMISSION):
             return True
     return False
 
@@ -366,11 +388,13 @@ def _run_mutation_attempt(mutation, sobject, record_id, client):
             rejection_body=rejection_body, matched=matched)
         return ev, ("passed" if matched else "failed"), None
 
-    if _is_permission_rejection(rejection_body):
+    if (http_status == _PERMISSION_REJECTION_STATUS
+            and _is_permission_rejection(rejection_body)):
         # D-290: a permission/FLS rejection (403 + INSUFFICIENT_ACCESS*) on the
         # prohibited mutation is the org ENFORCING the prohibition by access control
         # — the same class of outcome as the 400 VR path above. Route it through the
         # SAME 4-way grade (passed iff matched, else failed). Mirrors _run_create.
+        # D-290.1: gated on 403 + an unambiguous access-denial code.
         matched = _matches(mutation.expect_rejection, rejection_body)
         ev = _mutation_evidence(
             mutation, sobject, record_id, changes, start, end,
@@ -835,13 +859,15 @@ def _run_create(create, sobject, client):
             cleanup=CleanupRecord(attempted=False))
         return ev, ("passed" if matched else "failed"), None
 
-    if _is_permission_rejection(rejection_body):
+    if (http_status == _PERMISSION_REJECTION_STATUS
+            and _is_permission_rejection(rejection_body)):
         # D-290: a permission/FLS rejection (403 + INSUFFICIENT_ACCESS*) is the org
         # ENFORCING the prohibition by access control — the same class of business
         # outcome as the 400 VR path above. Route it through the SAME 4-way grade:
         # passed iff it MATCHES the recipe's expect_rejection (a permission-shaped
         # expectation), failed if the recipe expected a different rejection kind
-        # (never silently passed). Mirrors the 400 branch exactly.
+        # (never silently passed). Mirrors the 400 branch exactly. D-290.1: gated on
+        # 403 + an unambiguous access-denial code so transient/auth statuses stay errored.
         matched = _matches(create.expect_rejection, rejection_body)
         end = _now()
         ev = _evidence(

@@ -369,21 +369,56 @@ def test_vr_400_path_unchanged_by_permission_branch():
 
 
 def test_is_permission_rejection_guard_unit():
-    # Direct unit on the discriminator — consumes the failure taxonomy's PERMISSION
-    # classification (the D-225 codes), nothing else.
+    # Direct unit on the discriminator — the UNAMBIGUOUS access-denial family (a
+    # taxonomy PERMISSION code MINUS the dual-meaning ones).
     for code in ("INSUFFICIENT_ACCESS", "INSUFFICIENT_ACCESS_OR_READONLY",
                  "INSUFFICIENT_FIELD_ACCESS",
-                 "INSUFFICIENT_ACCESS_ON_CROSS_REFERENCE_ENTITY",
-                 "INVALID_FIELD_FOR_INSERT_UPDATE"):
+                 "INSUFFICIENT_ACCESS_ON_CROSS_REFERENCE_ENTITY"):
         assert _is_permission_rejection([{"errorCode": code}]) is True
-    # NOT a permission signal:
+    # NOT an unambiguous access denial — incl. the DUAL-MEANING code (D-290.1):
+    # INVALID_FIELD_FOR_INSERT_UPDATE is a taxonomy permission code but also fires
+    # for a structurally non-writable field, so it must NOT reclassify.
     for code in (_VR_CODE, "DUPLICATE_VALUE", "MALFORMED_QUERY",
-                 "API_DISABLED_FOR_ORG", "INVALID_SESSION_ID"):
+                 "API_DISABLED_FOR_ORG", "INVALID_SESSION_ID",
+                 "INVALID_FIELD_FOR_INSERT_UPDATE"):
         assert _is_permission_rejection([{"errorCode": code}]) is False
     # no code / empty / non-dict entries:
     assert _is_permission_rejection([{"message": "x"}]) is False
     assert _is_permission_rejection([]) is False
     assert _is_permission_rejection(["not-a-dict", None]) is False
-    # any-of: a multi-error body with one permission code → True
+    # any-of: a multi-error body with one unambiguous access-denial code → True
     assert _is_permission_rejection(
         [{"errorCode": "OTHER"}, {"errorCode": "INSUFFICIENT_ACCESS"}]) is True
+
+
+# ---------------------------------------------------------------------------
+# D-290.1 — adversarial-review hardening: the dual-meaning code stays errored, and
+# the permission branch is gated on HTTP 403 so a transient (5xx/429) body that
+# happens to carry a permission code keeps its re-runnable (errored) signal.
+# ---------------------------------------------------------------------------
+
+def test_invalid_field_for_insert_update_stays_errored():
+    # The reviewer's break: INVALID_FIELD_FOR_INSERT_UPDATE is dual-meaning (FLS OR
+    # a structurally non-writable field). Even at 403 and even when the recipe
+    # expects it, it must NOT grade `passed` — honest-uncertainty → errored.
+    client = _StubClient(create_result=_rejected(
+        "INVALID_FIELD_FOR_INSERT_UPDATE", status=403))
+    ev = execute_data_recipe(
+        _plan(expect_code="INVALID_FIELD_FOR_INSERT_UPDATE"),
+        client=client, environment_id=_ENV_ID)
+    assert ev.outcome == "errored"
+
+
+def test_transient_5xx_with_permission_code_stays_errored():
+    # The status gate: a 503 whose multi-error body carries a permission sub-error
+    # must stay `errored` (transient → re-runnable, D-273), NOT be reclassified as a
+    # business outcome. The permission branch is gated on HTTP 403.
+    body = {"api_response": {"status_code": 503, "body": [
+                {"errorCode": "SERVER_UNAVAILABLE", "message": "try again"},
+                {"errorCode": "INSUFFICIENT_ACCESS", "message": "no"}]},
+            "http_status": 503, "success": False, "record_id": None}
+    ev = execute_data_recipe(
+        _plan(expect_code="INSUFFICIENT_ACCESS"), client=_StubClient(create_result=body),
+        environment_id=_ENV_ID)
+    assert ev.outcome == "errored"
+    assert ev.steps[0].http_status == 503
