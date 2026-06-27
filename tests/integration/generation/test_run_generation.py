@@ -23,8 +23,8 @@ from primeqa.generation.run import run_generation
 from primeqa.intelligence.llm.router import OPUS, SONNET, TenantPolicy
 
 from .conftest import (
-    FakeTurn, FakeToolTurn, TEST_TENANT_ID, intent, make_request, propose_turn,
-    query_outcome_rows, rel_intent,
+    FakeTurn, FakeToolTurn, TEST_ENV_ID, TEST_TENANT_ID, intent, make_request,
+    propose_turn, query_outcome_rows, rel_intent,
 )
 
 
@@ -52,7 +52,7 @@ def test_run_generation_config_batch_persists_draft(seeded):
     req.semantic_context.archetype_hint = "configuration"
     seam = FakeToolTurn([propose_turn(_grounded_rel()), _emit_draft_turn()])
 
-    result = run_generation(req, tenant_id=TEST_TENANT_ID, api_key="unused",
+    result = run_generation(req, tenant_id=TEST_TENANT_ID, api_key="unused", environment_id=TEST_ENV_ID,
                             tool_turn_fn=seam)
 
     # BatchResult: exactly one outcome for the one requirement (no-silent-drops).
@@ -74,7 +74,7 @@ def test_run_generation_data_behavior_batch_persists_refusal(seeded):
     seam = FakeToolTurn([propose_turn(intent(claim_kind="prohibition-claim",
                                              polarity="negative", sf_api_name="Account"))])
 
-    result = run_generation(req, tenant_id=TEST_TENANT_ID, api_key="unused",
+    result = run_generation(req, tenant_id=TEST_TENANT_ID, api_key="unused", environment_id=TEST_ENV_ID,
                             tool_turn_fn=seam)
 
     assert result.results[0].outcome.outcome_kind == OutcomeKind.REFUSAL
@@ -107,7 +107,7 @@ def test_run_generation_binds_routed_model_to_gateway(
 
     monkeypatch.setattr("primeqa.generation.run.build_tool_turn_fn", _spy)
 
-    run_generation(req, tenant_id=TEST_TENANT_ID, api_key="unused", tenant_policy=policy)
+    run_generation(req, tenant_id=TEST_TENANT_ID, api_key="unused", environment_id=TEST_ENV_ID, tenant_policy=policy)
 
     # the model handed to the gateway binding IS route_model's output ...
     assert captured["model"] == route_model(req, policy)

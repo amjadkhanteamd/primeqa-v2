@@ -24,6 +24,13 @@ from sqlalchemy.exc import OperationalError
 
 DEFAULT_TEST_DB_URL = "postgresql://localhost/primeqa_test_governance"
 TEST_TENANT_ID = 1
+# D-286: the test env whose connected_org the seed is provisioned for. Generation
+# now resolves env→org and scopes S1 reads + the version pin to that org, so every
+# run_generation / enqueue test threads this env, and the seed tags its entities +
+# edges with the env's org. A single-org test world: scoped reads == org-blind
+# reads (the predicate is vacuous on one org) — the no-op that proves single-org
+# generation is byte-identical.
+TEST_ENV_ID = 590
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -146,26 +153,42 @@ def _rebind_production_engine(db_setup, test_db_url):
 def seeded(db_setup) -> dict:
     from primeqa.semantic.connection import get_tenant_connection
 
+    # D-286: the org every seeded entity/edge is tagged with (a closure var set
+    # inside the with-block, below, before any _entity/_edge call). Tagging is
+    # ADDITIVE for the org-blind consumers (the verticals read `SemanticOrgModel(
+    # conn)` org-blind → ignore connected_org_id → see the whole seed) and correct
+    # for the org-scoped ones (run_generation / the pin resolve env→org → read
+    # `WHERE connected_org_id = org_id`).
+    org_id = None
+
     def _entity(conn, etype, api, vfrom, sf_id=None, attrs=None):
         return conn.execute(text(
             "INSERT INTO entities (entity_type, sf_id, sf_api_name, display_name, "
-            "attributes, valid_from_seq, valid_to_seq, last_synced_at) "
-            "VALUES (:et,:sfid,:api,:api,CAST(:attrs AS jsonb),:vf,NULL,NOW()) RETURNING id"
+            "attributes, connected_org_id, valid_from_seq, valid_to_seq, last_synced_at) "
+            "VALUES (:et,:sfid,:api,:api,CAST(:attrs AS jsonb),CAST(:org AS uuid),"
+            ":vf,NULL,NOW()) RETURNING id"
         ), {"et": etype, "sfid": sf_id, "api": api, "vf": vfrom,
-            "attrs": json.dumps(attrs or {})}).scalar()
+            "attrs": json.dumps(attrs or {}), "org": org_id}).scalar()
 
     def _edge(conn, src, tgt, etype, ecat, vfrom):
         conn.execute(text(
             "INSERT INTO edges (source_entity_id, target_entity_id, edge_type, "
-            "edge_category, properties, valid_from_seq, valid_to_seq) "
-            "VALUES (CAST(:s AS uuid),CAST(:t AS uuid),:et,:ec,'{}'::jsonb,:vf,NULL)"
-        ), {"s": str(src), "t": str(tgt), "et": etype, "ec": ecat, "vf": vfrom})
+            "edge_category, properties, connected_org_id, valid_from_seq, valid_to_seq) "
+            "VALUES (CAST(:s AS uuid),CAST(:t AS uuid),:et,:ec,'{}'::jsonb,"
+            "CAST(:org AS uuid),:vf,NULL)"
+        ), {"s": str(src), "t": str(tgt), "et": etype, "ec": ecat, "vf": vfrom,
+            "org": org_id})
 
     with get_tenant_connection(TEST_TENANT_ID) as conn:
+        # D-286: provision the env's connected_org FIRST (FK target for the tagged
+        # entities/edges), then bind it for the closures above.
+        from primeqa.sync.credentials import ensure_connected_org_for_environment
+        org_id = ensure_connected_org_for_environment(
+            conn, TEST_ENV_ID, "https://gen-test.example.local")
         v1 = conn.execute(text(
-            "INSERT INTO logical_versions (version_name, version_type) "
-            "VALUES (:n,'manual_checkpoint') RETURNING version_seq"
-        ), {"n": f"gov_v1_{uuid4().hex[:8]}"}).scalar()
+            "INSERT INTO logical_versions (version_name, version_type, connected_org_id) "
+            "VALUES (:n,'manual_checkpoint',CAST(:org AS uuid)) RETURNING version_seq"
+        ), {"n": f"gov_v1_{uuid4().hex[:8]}", "org": org_id}).scalar()
         # bare Object — no VR / Flow / Field (drives no_org_constraint,
         # ontology_gap, ungrounded-claim refusals)
         account = _entity(conn, "Object", "Account", v1)
@@ -214,7 +237,17 @@ def seeded(db_setup) -> dict:
         log_flow = _entity(conn, "Flow", "Log_Effects", v1)
         _edge(conn, log_flow, order_log, "TRIGGERS_ON", "BEHAVIOR", v1)
 
-    return {"v1": int(v1), "account": account, "case": case, "invoice": invoice}
+    return {"v1": int(v1), "account": account, "case": case, "invoice": invoice,
+            "org": str(org_id), "env": TEST_ENV_ID}    # D-286
+
+
+def seed_org_id(conn) -> str:
+    """D-286: the test seed's connected_org id (resolves ``TEST_ENV_ID``). Per-file
+    helpers that insert a fresh ``logical_version`` / ``entities`` MUST tag them
+    with this org, else the org-scoped reads + version pin (which filter
+    ``connected_org_id = org``) won't see them."""
+    from primeqa.sync.credentials import get_connected_org_for_environment
+    return get_connected_org_for_environment(conn, TEST_ENV_ID)
 
 
 @pytest.fixture(autouse=True)

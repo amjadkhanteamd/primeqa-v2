@@ -14,15 +14,17 @@ from sqlalchemy import text
 from primeqa.generation.intake import resolve_current_s1_version
 from primeqa.semantic.connection import get_tenant_connection
 
-from .conftest import TEST_TENANT_ID
+from .conftest import TEST_ENV_ID, TEST_TENANT_ID, seed_org_id
 
 
 def _insert_version(name: str) -> int:
+    # D-286: tag the version with the seed's org so the org-scoped
+    # resolve_current_s1_version (which filters connected_org_id = org) sees it.
     with get_tenant_connection(TEST_TENANT_ID) as conn:
         return conn.execute(text(
-            "INSERT INTO logical_versions (version_name, version_type) "
-            "VALUES (:n, 'manual_checkpoint') RETURNING version_seq"
-        ), {"n": name}).scalar()
+            "INSERT INTO logical_versions (version_name, version_type, connected_org_id) "
+            "VALUES (:n, 'manual_checkpoint', CAST(:org AS uuid)) RETURNING version_seq"
+        ), {"n": name, "org": seed_org_id(conn)}).scalar()
 
 
 def test_resolve_current_s1_version_returns_latest(seeded):
@@ -31,7 +33,7 @@ def test_resolve_current_s1_version_returns_latest(seeded):
     # versions other tests left behind.
     name = f"intake_cur_{uuid4().hex[:8]}"
     seq = _insert_version(name)
-    got_seq, got_name = resolve_current_s1_version(TEST_TENANT_ID)
+    got_seq, got_name = resolve_current_s1_version(TEST_TENANT_ID, TEST_ENV_ID)
     assert got_seq == seq
     assert got_name == name
 
@@ -41,5 +43,5 @@ def test_resolve_current_s1_version_advances_with_new_version(seeded):
     _insert_version(f"intake_old_{uuid4().hex[:8]}")
     newer = f"intake_new_{uuid4().hex[:8]}"
     newer_seq = _insert_version(newer)
-    got_seq, got_name = resolve_current_s1_version(TEST_TENANT_ID)
+    got_seq, got_name = resolve_current_s1_version(TEST_TENANT_ID, TEST_ENV_ID)
     assert got_seq == newer_seq and got_name == newer

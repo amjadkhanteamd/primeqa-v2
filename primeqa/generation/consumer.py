@@ -64,7 +64,9 @@ def process_job_for_tenant(
         )
         api_key = api_key_resolver(tenant_id, job.environment_id)
         result = run_generation(
-            request, tenant_id=tenant_id, api_key=api_key, tool_turn_fn=tool_turn_fn)
+            request, tenant_id=tenant_id, api_key=api_key,
+            environment_id=job.environment_id,        # D-286: scope S1 to the run's org
+            tool_turn_fn=tool_turn_fn)
         kind = (result.results[0].outcome.outcome_kind.value
                 if result.results else "unknown")
         log.info("s3 generation job %s completed (outcome=%s)", job.id, kind)

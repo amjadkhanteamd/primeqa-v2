@@ -71,6 +71,37 @@ class TestResolveRunOrgFailLoud:
             _resolve_run_org(_Session(None), 60)
 
 
+class TestSharedResolverFailLoud:
+    """D-286: the SHARED fail-loud resolver in sync.credentials — the ONE place
+    S3 generation + S4 execution resolve env→org. Resolves → id; unresolved /
+    None env → OrgResolutionError (never a silent org-blind read)."""
+
+    def test_resolves_to_id(self):
+        from primeqa.sync.credentials import resolve_connected_org_or_raise
+        assert resolve_connected_org_or_raise(_Conn(ORG), 59) == ORG
+
+    def test_unresolved_env_raises(self):
+        from primeqa.sync.credentials import (
+            resolve_connected_org_or_raise, OrgResolutionError)
+        with pytest.raises(OrgResolutionError):
+            resolve_connected_org_or_raise(_Conn(None), 60)
+
+    def test_none_env_raises(self):
+        # None environment_id (the Optional[int] edge) → fail-loud, NOT org-blind.
+        from primeqa.sync.credentials import (
+            resolve_connected_org_or_raise, OrgResolutionError)
+        with pytest.raises(OrgResolutionError):
+            resolve_connected_org_or_raise(_Conn(ORG), None)
+
+    def test_execution_error_class_is_the_same_object(self):
+        # back-compat: execution_engine.errors re-exports the relocated class, so
+        # the existing `from execution_engine.errors import OrgResolutionError`
+        # path is the identical object the shared resolver raises.
+        from primeqa.sync.credentials import OrgResolutionError as Shared
+        from primeqa.execution_engine.errors import OrgResolutionError as ReExported
+        assert Shared is ReExported
+
+
 class TestS6SkipOnOrgless:
     def test_interpret_skips_when_no_org(self):
         from primeqa.execution_engine.run import _interpret_and_persist

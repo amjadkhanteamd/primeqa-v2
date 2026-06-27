@@ -19,7 +19,8 @@ from primeqa.generation.jobs import GenerationJobStore
 from primeqa.semantic.connection import get_engine, get_tenant_connection
 
 from .conftest import (
-    FakeTurn, FakeToolTurn, TEST_TENANT_ID, intent, propose_turn, query_outcome_rows,
+    FakeTurn, FakeToolTurn, TEST_ENV_ID, TEST_TENANT_ID, intent, propose_turn,
+    query_outcome_rows,
 )
 
 # A stub api_key resolver — the scripted tool_turn_fn means the key is unused
@@ -43,7 +44,7 @@ def _case_negative_seam() -> FakeToolTurn:
     ])
 
 
-def _seed_job(*, requirement_text, s1_version_seq, environment_id=7) -> int:
+def _seed_job(*, requirement_text, s1_version_seq, environment_id=TEST_ENV_ID) -> int:
     """Create a queued job and pin the enqueue fields (slice 4 will do this from
     the endpoint; here we seed them directly)."""
     store = GenerationJobStore(TEST_TENANT_ID)

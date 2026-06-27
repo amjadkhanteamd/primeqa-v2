@@ -15,7 +15,14 @@ class ExecutionEngineError(Exception):
     """Base for every substrate-4 error.
 
     Lets callers ``except ExecutionEngineError`` to catch any S4-originated
-    failure without enumerating subclasses.
+    failure without enumerating subclasses. ONE deliberate exception (D-286):
+    ``OrgResolutionError`` was relocated to the cross-cutting ``sync.credentials``
+    with a NEUTRAL base (so S3 + S4 raise it from the one shared resolver), so
+    ``except ExecutionEngineError`` does NOT catch it. This is behavior-neutral:
+    the sole production ``except ExecutionEngineError`` (``executability.py``)
+    wraps only pure plan/translate code that never raises it, and the run path
+    classifies it as ``"execution_error"`` via the ``_classify_error`` fallthrough
+    either way.
     """
 
 
@@ -60,15 +67,15 @@ class CredentialResolutionError(ExecutionEngineError):
     token. A binding failure, not a run outcome (the run never started)."""
 
 
-class OrgResolutionError(ExecutionEngineError):
-    """A run's ``environment_id`` does not resolve to a ``connected_orgs`` row —
-    so S1 cannot be scoped to the run's org (per-org Slice 3a, D-257).
-
-    Fail-loud on the execution path: reading the wrong org's S1 (or the whole
-    tenant org-blind) would attribute a run's evidence against metadata the run
-    never executed against. A binding failure (the env has no provisioned/synced
-    org), not a run outcome.
-    """
+# D-286: OrgResolutionError was relocated to the shared cross-cutting home
+# (``primeqa.sync.credentials``) so S3 generation + S4 execution raise the SAME
+# fail-loud error from the SAME resolver (no second fail-loud site, no S1→S4
+# backward dependency). Re-exported here so ``from primeqa.execution_engine.errors
+# import OrgResolutionError`` keeps working. It is now a neutral ``Exception`` (NOT
+# an ``ExecutionEngineError``) — behavior-neutral for S4 because ``_classify_error``
+# falls through unrecognized exceptions to ``"execution_error"``, the exact code
+# the old ``ExecutionEngineError`` branch produced.
+from primeqa.sync.credentials import OrgResolutionError  # noqa: F401,E402
 
 
 class UnsupportedEdgeError(ExecutionEngineError):

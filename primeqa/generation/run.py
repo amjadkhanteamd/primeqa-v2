@@ -27,6 +27,7 @@ from primeqa.generation.runtime import BatchResult, GenerationRuntime, ToolTurnF
 from primeqa.intelligence.llm.router import TenantPolicy
 from primeqa.semantic.connection import get_tenant_connection
 from primeqa.semantic.query import SemanticOrgModel
+from primeqa.sync.credentials import resolve_connected_org_or_raise
 
 # The substrate-3 production generation task — the usage-accounting tag the
 # gateway logs under (distinct from the eval's ``generation_live_eval``). Model
@@ -37,6 +38,7 @@ GENERATION_TASK = "generation"
 
 def run_generation(
     request: GenerationRequest, *, tenant_id: int, api_key: str,
+    environment_id: int,
     tenant_policy: Optional[TenantPolicy] = None,
     tool_turn_fn: Optional[ToolTurnFn] = None,
 ) -> BatchResult:
@@ -46,6 +48,12 @@ def run_generation(
     ``tool_turn_fn`` seam is injected (the test path), and runs
     :class:`GenerationRuntime` over a :class:`GovernanceCore` with the
     :class:`LedgerPersister` wired (persistence ON).
+
+    ``environment_id`` (D-286): the run's env, resolved to its ``connected_org``
+    so S1 entity reads are **org-scoped** (mirrors execution's per-org D-260). A
+    two-org tenant otherwise resolves every standard entity to >1 org →
+    ambiguous-reference refusal for all generation. Fail-loud if env→org does not
+    resolve (the shared resolver raises) — never an org-blind read.
 
     Error policy (D-106.3): abort-on-error with per-requirement-committed
     isolation (D-096.6). With D-105's refuse-not-crash, the remaining
@@ -63,7 +71,9 @@ def run_generation(
     # The S1-read connection is held across the batch (D-106.4 pilot-acceptable);
     # LedgerPersister opens its own per-requirement transaction connections.
     with get_tenant_connection(tenant_id) as conn:
-        seam = GovernanceCore(SemanticOrgModel(conn))
+        # D-286: scope the batch's S1 reads to the run's org (fail-loud).
+        org_id = resolve_connected_org_or_raise(conn, environment_id)
+        seam = GovernanceCore(SemanticOrgModel(conn, connected_org_id=org_id))
         return GenerationRuntime().run(
             request=request, seam=seam, tool_turn_fn=fn,
             persister=LedgerPersister(tenant_id),

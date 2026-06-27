@@ -29,19 +29,27 @@ from primeqa.generation.protocol import (
 )
 from primeqa.semantic.connection import get_tenant_connection
 from primeqa.semantic.query import SemanticOrgModel
+from primeqa.sync.credentials import resolve_connected_org_or_raise
 
 
-def resolve_current_s1_version(tenant_id: int) -> tuple[int, str]:
-    """The tenant's current S1 snapshot to pin a run against: the latest
-    ``logical_version`` (``MAX(version_seq)``, the canonical S1 primitive) and
-    its name.
+def resolve_current_s1_version(tenant_id: int, environment_id: int) -> tuple[int, str]:
+    """The run's S1 snapshot to pin against: the latest ``logical_version`` **of
+    the env's org** (``MAX(version_seq)`` scoped to ``connected_org_id``) and its
+    name.
+
+    D-286: org-scoped (mirrors the entity reads in ``run_generation``). On a
+    two-org tenant the tenant-wide MAX belongs to whichever org synced last, so a
+    tenant-wide pin would read the OTHER org's seq — pinning and reads MUST be the
+    same org or the entity reads land at a version the org never synced. Resolves
+    env→org fail-loud (the shared resolver raises if unprovisioned).
 
     Raises ``VersionNotFoundError`` (via
-    :meth:`SemanticOrgModel.current_version_seq`) when the tenant has no S1
-    version — fail-loud, since there is no org snapshot to generate against.
+    :meth:`SemanticOrgModel.current_version_seq`) when the org has no S1 version —
+    fail-loud, since there is no org snapshot to generate against.
     """
     with get_tenant_connection(tenant_id) as conn:
-        seq = SemanticOrgModel(conn).current_version_seq()
+        org_id = resolve_connected_org_or_raise(conn, environment_id)
+        seq = SemanticOrgModel(conn, connected_org_id=org_id).current_version_seq()
         name = conn.execute(
             text("SELECT version_name FROM logical_versions WHERE version_seq = :seq"),
             {"seq": seq},
@@ -89,7 +97,7 @@ def enqueue_s3_generation(
     current ``s1_version`` (``MAX(version_seq)``; fail-loud if the tenant has no
     S1 version) and get-or-creates the job. Idempotent on
     ``(requirement_key, s1_version_seq)``."""
-    seq, name = resolve_current_s1_version(tenant_id)
+    seq, name = resolve_current_s1_version(tenant_id, environment_id)  # D-286: org-scoped pin
     return GenerationJobStore(tenant_id).create_or_get_job(
         requirement_key=requirement_ref["key"],
         s1_version_seq=seq,

@@ -29,6 +29,21 @@ from sqlalchemy import text
 from primeqa.integrations.sf_client import SalesforceClient
 
 
+class OrgResolutionError(Exception):
+    """An ``environment_id`` does not resolve to a ``connected_orgs`` row — so S1
+    cannot be scoped to the caller's org (per-org Slice 3 / D-257, D-286).
+
+    The SHARED fail-loud surface for every per-org S1 consumer (execution + S3
+    generation). A NEUTRAL base (not a substrate-specific error) so it can live in
+    this cross-cutting module and be raised toward S4 / S3 alike without a backward
+    dependency. Execution still classifies it as ``execution_error`` (its
+    ``_classify_error`` fallthrough is ``execution_error``, identical to the old
+    ``ExecutionEngineError`` branch — so relocating the class is behavior-neutral
+    for S4); S3 generation surfaces it as a job failure. Fail-loud because reading
+    the wrong org's S1 (or org-blind on a multi-org tenant) grounds/attributes
+    against metadata the caller never targeted."""
+
+
 class CredentialResolutionError(Exception):
     """The environment / connection is missing or yields no token — a binding
     failure (the sync never starts), distinct from a sync outcome. Sync-local
@@ -120,3 +135,21 @@ def get_connected_org_for_environment(conn, environment_id: int) -> "str | None"
     return conn.execute(text(
         "SELECT CAST(id AS text) FROM connected_orgs WHERE environment_id = :eid"),
         {"eid": environment_id}).scalar()
+
+
+def resolve_connected_org_or_raise(conn, environment_id) -> str:
+    """The ONE shared fail-loud env→org resolver (D-286): the run/generation's
+    ``connected_org_id`` (str), or :class:`OrgResolutionError` if unresolved.
+
+    Both per-org S1 consumers call this — S4 execution (via ``_resolve_run_org``,
+    relocated here from the inline wrapper) and S3 generation (entity reads +
+    version pin). A ``None`` / unprovisioned ``environment_id`` raises (it is the
+    bug the per-org work fixes — org-blind on a multi-org tenant resolves every
+    standard entity to >1 org → ambiguous-reference). Single source of the
+    fail-loud decision; ``conn`` is a tenant-scoped connection."""
+    org_id = get_connected_org_for_environment(conn, environment_id)
+    if org_id is None:
+        raise OrgResolutionError(
+            f"no connected_org for environment_id={environment_id}; cannot scope "
+            f"S1 to the caller's org (per-org Slice 3 / D-286)")
+    return org_id

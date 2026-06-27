@@ -45,7 +45,7 @@ from primeqa.execution_engine.data_executor import (
     plan_data_recipe_world,
 )
 from primeqa.execution_engine.errors import (
-    OrgResolutionError, PlanTranslationError, PolicyError,
+    PlanTranslationError, PolicyError,
 )
 from primeqa.execution_engine.evidence import RunEvidence
 from primeqa.core.authz import AuthorizationError, Tier
@@ -236,14 +236,15 @@ def _resolve_run_org(session, environment_id: int) -> str:
     """The run's ``connected_org_id`` (str), FAIL-LOUD if unresolved (per-org
     Slice 3a, D-257). A run reads S1 *scoped to the org it executes against* — an
     env with no provisioned connected_org would otherwise fall back to a wrong /
-    org-blind read, attributing the run's evidence against the wrong metadata."""
-    from primeqa.sync.credentials import get_connected_org_for_environment
-    org_id = get_connected_org_for_environment(session.connection(), environment_id)
-    if org_id is None:
-        raise OrgResolutionError(
-            f"no connected_org for environment_id={environment_id}; cannot scope "
-            f"S1 to the run's org (per-org Slice 3a)")
-    return org_id
+    org-blind read, attributing the run's evidence against the wrong metadata.
+
+    D-286: delegates to the SHARED resolver (``sync.credentials``) so S4 execution
+    and S3 generation fail-loud through the ONE resolver. Behavior-neutral — same
+    org id resolved, same ``OrgResolutionError`` raised (now neutral-based; S4
+    classifies it as ``execution_error`` via the ``_classify_error`` fallthrough,
+    identical to before)."""
+    from primeqa.sync.credentials import resolve_connected_org_or_raise
+    return resolve_connected_org_or_raise(session.connection(), environment_id)
 
 
 def _execute_for_kind(recipe, session, environment_id: int, client,
