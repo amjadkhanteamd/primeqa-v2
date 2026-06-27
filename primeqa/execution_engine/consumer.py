@@ -120,14 +120,33 @@ def process_execution_job_for_tenant(
     # wrongly fail an already-completed job; the notifier itself never raises +
     # skips quarantined claims (D-232). Fires only on a real did-not-pass outcome.
     try:
-        ev = getattr(result, "evidence", None)
-        if result is not None and result.ran and ev is not None \
-                and ev.outcome in ("failed", "errored"):
-            from primeqa.shared.notifications import notify_substrate_run_failed
-            notify_substrate_run_failed(
-                tenant_id, run_id=str(ev.run_id), test_id=str(ev.claim_test_id),
-                environment_id=ev.environment_id, outcome=ev.outcome,
-                error_message=(ev.error.message if ev.error else None))
+        if result is not None and hasattr(result, "batch_id"):
+            # D-288 (4f.2-prep): run-all (bva) BATCH shape (Slice 4e RunAllResult) —
+            # no single .evidence. Notify if ANY probe did not pass; a ProbeRun carries
+            # no error_message or environment_id, so test_id + environment_id come from
+            # the job. Same batch_id discriminator as _async_log_outcome (4e). The hook
+            # fires off raw probe outcomes, not the bva Verified verdict (decided later,
+            # 4d) — may over-notify; documented on notify_substrate_batch_failed.
+            failed = [p for p in (getattr(result, "probes", ()) or ())
+                      if getattr(p, "outcome", None) in ("failed", "errored")]
+            if result.ran and failed:
+                from primeqa.shared.notifications import notify_substrate_batch_failed
+                notify_substrate_batch_failed(
+                    tenant_id, batch_id=str(result.batch_id),
+                    test_id=str(job.test_id), environment_id=job.environment_id,
+                    failed_count=len(failed),
+                    run_ids=[str(p.run_id) for p in failed])
+        else:
+            # Single RunPathResult (D-234) — UNCHANGED, byte-identical. Reached for the
+            # single shape (no .batch_id) and for result is None.
+            ev = getattr(result, "evidence", None)
+            if result is not None and result.ran and ev is not None \
+                    and ev.outcome in ("failed", "errored"):
+                from primeqa.shared.notifications import notify_substrate_run_failed
+                notify_substrate_run_failed(
+                    tenant_id, run_id=str(ev.run_id), test_id=str(ev.claim_test_id),
+                    environment_id=ev.environment_id, outcome=ev.outcome,
+                    error_message=(ev.error.message if ev.error else None))
     except Exception:                                # pragma: no cover
         log.exception("s4 run-failure notify raised; job %s already finalized",
                       job.id)

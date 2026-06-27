@@ -404,6 +404,12 @@ class EmissionBundle:
     caveat_kind: Optional[CaveatKind]
     # D-228: additional realizations (fallback depths / alternative shapes).
     secondary_recipes: tuple = ()
+    # D-288 (4f.2-prep): the claim's evaluation strategy, claim-DERIVED at authoring.
+    # None today (every authoring path leaves it unset → write_claim persists NULL →
+    # the router/decision read None → single, byte-identical). The future bva-authoring
+    # helper (4f.2b, after the §4a claim-shape is settled in 4f.2a) stamps 'bva' here;
+    # persistence reads it through to write_claim. The wire is dormant until then.
+    strategy_kind: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

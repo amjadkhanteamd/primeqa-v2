@@ -213,6 +213,66 @@ def notify_substrate_run_failed(tenant_id: int, *, run_id, test_id,
                     tenant_id, run_id, e)
 
 
+def notify_substrate_batch_failed(tenant_id: int, *, batch_id, test_id,
+                                  environment_id, failed_count: int,
+                                  run_ids) -> None:
+    """D-288 (4f.2-prep): batch-shaped counterpart to
+    :func:`notify_substrate_run_failed` for an UNATTENDED run-all (bva) batch
+    (Slice 4e ``RunAllResult``). A batch carries N peer probe runs and NO single
+    ``RunEvidence`` — a ``ProbeRun`` is just ``(recipe_id, run_id, outcome)``, with
+    no per-probe error message or environment_id — so this reports ``batch_id`` +
+    the failed-probe count + the failing ``run_ids``; ``environment_id`` comes from
+    the job.
+
+    TRIGGER (caller's contract, consumer hook): any failed/errored probe in the
+    batch. The consumer cannot see the bva *Verified* verdict (the decision engine
+    computes that later, 4d), so this fires off raw probe outcomes — which may
+    OVER-notify relative to the strict-AND verdict (e.g. a transient ``errored``
+    probe that a re-run would clear leaves the claim not-Verified AND notifies,
+    where a verdict-aware notifier might wait). Acceptable for an unattended-run
+    alert; tightening to the verdict is deferred.
+
+    Same best-effort discipline as the single notifier: NEVER raises; a QUARANTINED
+    claim (D-232) is skipped; opens its own brief public session for recipient
+    resolution, closes it, THEN sends."""
+    try:
+        from primeqa.intelligence import quarantine
+        if quarantine.is_quarantined(tenant_id, test_id):
+            return                                   # operator set this one aside
+    except Exception:                                # pragma: no cover
+        pass                                         # a quarantine-read blip ≠ block
+
+    try:
+        from primeqa.db import get_db
+        db = next(get_db())
+        try:
+            recipients = _admin_emails(db, tenant_id)
+        finally:
+            db.close()
+        if not recipients:
+            return
+        short = str(batch_id)[:8]
+        runs = [str(r) for r in (run_ids or [])]
+        body = (f"A run-all test batch on environment #{environment_id} had "
+                f"{failed_count} probe(s) not pass.\n\nBatch: {batch_id}\n")
+        if runs:
+            body += "Failing runs:\n" + "".join(f"  - {r}\n" for r in runs)
+        body += f"\nReview the test at /claims/{test_id}"
+        send_email(Notification(
+            kind="substrate_batch_failed",
+            subject=f"[Plimsol] A test batch had {failed_count} failing "
+                    f"probe(s) (batch {short})",
+            body=body,
+            recipients=recipients,
+            tenant_id=tenant_id,
+            extras={"batch_id": str(batch_id), "test_id": str(test_id),
+                    "failed_count": failed_count, "run_ids": runs},
+        ))
+    except Exception as e:                           # pragma: no cover
+        log.warning("notify_substrate_batch_failed failed for tenant %s batch %s: %s",
+                    tenant_id, batch_id, e)
+
+
 def _admin_emails(db, tenant_id: int) -> List[str]:
     from primeqa.core.models import User
     rows = db.query(User.email).filter(

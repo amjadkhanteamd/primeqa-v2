@@ -309,6 +309,21 @@ def test_secondary_round_trips_through_registry():
     assert restored.steps[0].fields_to_capture == ["APPLIES_TO"]
 
 
+# ---------------------------------------------------------------------------
+# D-288 (4f.2-prep) — the EmissionBundle.strategy_kind slot. The slot exists
+# and DEFAULTS None: no authoring path stamps it yet (the bva-authoring helper
+# is deferred to 4f.2b), so every bundle authored today carries None → the
+# persister writes NULL → router/decision read None → single, byte-identical.
+# ---------------------------------------------------------------------------
+
+def test_authored_bundle_strategy_kind_defaults_none():
+    # both the behavioral and the caveated shapes — no authoring path sets it.
+    for formulas in (_DERIVABLE, _DERIVABLE_CMP, _NOT_DERIVABLE, _NONE):
+        bundle = author_emission(_grounded(formulas=formulas))
+        assert hasattr(bundle, "strategy_kind")
+        assert bundle.strategy_kind is None
+
+
 def test_secondary_does_not_perturb_claim_identity():
     # Option-C invariant extended to D-228: secondaries are operational layers;
     # the claim body + identity_hash are byte-identical with or without them.

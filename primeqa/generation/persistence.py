@@ -133,6 +133,11 @@ class LedgerPersister:
             archetype=emission.archetype, claim_kind=emission.claim_kind,
             asserted_truth=emission.asserted_truth,
             semantic_conditions=emission.semantic_conditions,
+            # D-288 (4f.2-prep): thread the bundle's claim-derived strategy_kind
+            # through to the column (D-285). None today (no authoring path stamps it)
+            # → write_claim persists NULL → the router/decision read None → single,
+            # byte-identical with pre-D-288. getattr keeps hand-built bundles working.
+            strategy_kind=getattr(emission, "strategy_kind", None),
         )
         # D-207: append — one outcome accumulates refs across N bundles.
         outcome.claims_written = (outcome.claims_written or []) + [
