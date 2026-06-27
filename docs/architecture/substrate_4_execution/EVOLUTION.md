@@ -259,3 +259,30 @@ the plan/build split also makes the SYNC path create strictly fewer records on a
 `(filler, unfillable)` outcome; one transport-error-on-a-doomed-branch sub-case flips the terminal ErrorSurface to
 `UnfillableWorld`, both still `errored`). Zero migrations for Part B. Suites: unit 2554, execution_engine
 integration 40. DECISIONS_LOG D-230 / D-230.2.
+
+## 2026-06-27 — F-c: permission/FLS rejection graded as the org enforcing the prohibition (D-290 / D-290.1)
+
+S4's prohibition grading recognized only **HTTP 400 + a VR business-rejection** as the org enforcing a
+prohibition; a permission/FLS denial (HTTP 403 + an `INSUFFICIENT_ACCESS*` code) fell through to `errored` —
+a hole where a real access-control enforcement of the prohibited mutation mis-graded as "S4 couldn't attempt
+it". This closes it: a permission/FLS rejection is the org enforcing the prohibition by **access control**,
+the same grounded fact as a VR rejection, so it grades through the **same 4-way grade** (passed iff
+`_matches`, else `failed`; succeeded-when-prohibited → `failed` + delete; couldn't-attempt → `errored`).
+
+**The grading edit (D-290).** Two mirror sites in `execution_engine/data_executor.py` — `_run_create` and
+`_run_mutation_attempt` — gain a permission branch that sits **after** the unchanged HTTP-400 VR branch and
+routes the 403/`INSUFFICIENT_ACCESS*` rejection through that same 4-way grade. It consumes the failure
+taxonomy's `PERMISSION` classification. The HTTP-400 VR path is **byte-identical**; the D-273
+indeterminate/permanent errored split is intact (a couldn't-attempt still erodes to the re-runnable signal).
+No S2/`RejectionExpectation` change, no schema, no migration — code-only.
+
+**The hardening (D-290.1).** The pre-push adversarial review caught a real false-`passed`: the dual-meaning
+code `INVALID_FIELD_FOR_INSERT_UPDATE` is **either** an FLS denial **or** a structurally non-writable field,
+so blanket reclassification would grade a structural failure as the org-enforced-prohibition. It is now
+**excluded** from reclassification (`_AMBIGUOUS_PERMISSION_CODES`), and the branch is gated on **exactly
+HTTP 403** so a transient (5xx/429) or auth (401) response keeps its `errored`/indeterminate (re-runnable,
+D-273) signal rather than being read as enforcement.
+
+**Scope — engine-capability, UNEXERCISED today.** S3 does not author permission-prohibition recipes yet, so
+no live verdict flips on the current corpus; this widens S4's grounded-grading envelope ahead of the
+emission. DECISIONS_LOG D-290 / D-290.1.

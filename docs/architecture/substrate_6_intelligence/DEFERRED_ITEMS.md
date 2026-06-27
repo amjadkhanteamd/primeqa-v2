@@ -24,6 +24,14 @@ Authored at the slice-1+2 foundation milestone (2026-05-27). Append corrections 
 
 ---
 
+## Dated note — 2026-06-27: bva / evaluation-strategy execution pipeline intentionally suspended (D-289)
+
+The boundary-value-analysis (bva) / evaluation-strategy arc is **built, dormant, and intentionally suspended at the architecture boundary** — a clean handoff marker, not unfinished work. The full pipeline exists across S6 and its seams: the pure `Verified` strategy arms (`single` + `bva`) in `interpretation/strategy.py` (D-274 / D-279); the decision-engine `substrate_decision._claim_verified` Verified seam + bva branch (D-280 / D-283); the run-all execution path + batch manifest (D-275 / D-276 / D-277 / D-281); the completeness reader `interpretation/batch_reader.py` (D-282); the async companion (D-284); the `strategy_kind` VARCHAR column on `test_claims` (D-285); the `_assemble` wiring (D-287); and the `EmissionBundle.strategy_kind` slot (D-288). The Verified evaluation-semantics underneath are evaluation-semantics-v1 (D-272) + the errored→indeterminate/permanent split (D-273); ADR-001 (D-270) + the Coverage spec (D-271) frame the whole. It is **fully dormant** — no authoring path writes `strategy_kind='bva'`, so every claim routes `single`, single-path reads stay byte-identical, and there is zero live behavior change and zero Salesforce cost — and **decision-neutral** (it does not bias the eventual claim model).
+
+The next step is **not** implementation: it is a core modelling decision (4f.2a) — the identity of a constraint/bva claim, how a mixed-polarity probe set maps to one canonical claim, and whether bva is a new `claim_kind` or an evaluation strategy over an existing claim. Resumption is a dedicated **TA-pressure-tested architecture review** framed *"what is the relationship between a claim and an evaluation strategy?"* (NOT *"how do we build bva"*), **gated on a mature S4 foundation** (effort returned to S4 proper, the keystone). When bva resumes (do not present as next-up): **4f.2a** (the claim/evaluation-strategy modelling decision) → **4f.2b** (the guarded bva-authoring helper that stamps `strategy_kind='bva'`) → **4f.3** (the gated single-claim LIVE flip) → **Slice 5** (persistence + coverage read-layer). — **D-289 (+ D-272 / ADR-001 D-270)**
+
+---
+
 ## References
 
 - Design rationale: `DECISIONS_LOG.md` D-111 / D-111.1.
