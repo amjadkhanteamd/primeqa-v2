@@ -2420,3 +2420,45 @@ class TestBatchedMaterializeEdgesPropertyBearing:
         mock_close.assert_called_once()
         assert mock_close.call_args[0][2] == ["edge-stale"]
         assert result.edges_superseded == 1
+
+
+class TestCloseEdgesEndpoints:
+    """D-291: ``_close_edges_for_entities(endpoints=...)`` — ``"source"`` closes
+    only the source incidence (the change-path close-on-change), ``"both"``
+    (default) keeps the deletion reconcile's source-OR-target semantics."""
+
+    def _run(self, endpoints):
+        from primeqa.sync.materialize import _close_edges_for_entities
+        conn = MagicMock()
+        kwargs = {} if endpoints is None else {"endpoints": endpoints}
+        _close_edges_for_entities(
+            conn, _stub_ctx(),
+            ["33333333-3333-3333-3333-333333333333"], **kwargs)
+        return str(conn.execute.call_args[0][0]), conn.execute.call_args[0][1]
+
+    def test_source_only_closes_source_incidence(self):
+        sql, params = self._run("source")
+        assert "source_entity_id = ANY" in sql
+        assert "target_entity_id" not in sql          # inbound NOT closed
+        assert params["close_seq"] == 42              # same seq as the entity close
+
+    def test_both_default_closes_either_incidence(self):
+        sql, _ = self._run(None)                       # default endpoints
+        assert "source_entity_id = ANY" in sql and "target_entity_id = ANY" in sql
+
+    def test_both_explicit_matches_default(self):
+        sql, _ = self._run("both")
+        assert "source_entity_id = ANY" in sql and "target_entity_id = ANY" in sql
+
+    def test_invalid_endpoints_raises(self):
+        import pytest
+        from primeqa.sync.materialize import _close_edges_for_entities
+        with pytest.raises(ValueError):
+            _close_edges_for_entities(
+                MagicMock(), _stub_ctx(), ["x"], endpoints="nonsense")
+
+    def test_empty_ids_is_noop(self):
+        from primeqa.sync.materialize import _close_edges_for_entities
+        conn = MagicMock()
+        _close_edges_for_entities(conn, _stub_ctx(), [], endpoints="source")
+        conn.execute.assert_not_called()

@@ -200,10 +200,16 @@ def _materialize_chunk(
 
     if buckets.changed:
         # SCD Type 2: close old, insert new.
-        _batch_close_superseded(
-            conn, ctx,
-            [e.prior_entity_id for e in buckets.changed],
-        )
+        prior_ids = [e.prior_entity_id for e in buckets.changed]
+        _batch_close_superseded(conn, ctx, prior_ids)
+        # D-291: close the superseded versions' OUTBOUND edges in the SAME
+        # phase transaction, at the SAME close seq as the entity supersession.
+        # The edge phase re-materializes only the NEW version's outbound edges
+        # (its existing-edge read keys on the new id), so without this the prior
+        # version's outbound edges stay current → source-danglers. endpoints=
+        # "source" by design (inbound is the neighbour's responsibility) — see
+        # _close_edges_for_entities.
+        _close_edges_for_entities(conn, ctx, prior_ids, endpoints="source")
         changed_new_ids = _batch_insert_new_entities(
             conn, ctx, entity_type, buckets.changed, now,
         )
@@ -798,20 +804,41 @@ def _close_edges_for_entities(
     conn: Any,
     ctx: SyncContext,
     entity_ids: list[str],
+    endpoints: str = "both",
 ) -> None:
-    """Close (SCD-2) every currently-active edge that touches any of
-    ``entity_ids`` as source OR target. Used by the deletion reconcile so a
-    superseded entity leaves no dangling active edge. Closed-open semantics:
-    sets ``valid_to_seq = ctx.logical_version_seq`` (same as the other edge
-    close-outs)."""
+    """Close (SCD-2) currently-active edges incident to any of ``entity_ids``.
+
+    ``endpoints`` selects which incidence is closed:
+      - ``"both"`` (default): source OR target — the **deletion reconcile's**
+        semantics (a deleted entity leaves no dangling active edge in either
+        direction). The existing call site (:func:`reconcile_deletions_by_sf_id`)
+        keeps this default; its behaviour is unchanged.
+      - ``"source"`` (D-291): source only — the **change-path close-on-change**. A
+        re-versioned entity owns closing only its OWN outbound edges of the
+        retired version; its inbound edges are the (unchanged) neighbour's
+        responsibility, re-pointed when that neighbour materializes. Closing the
+        inbound side here would risk a cross-phase ordering orphan: closing
+        ``Y -> X_old`` after neighbour ``Y``'s phase already ran this sync leaves
+        ``Y -> X_new`` uninserted until the next sync.
+
+    Closed-open semantics: ``valid_to_seq = ctx.logical_version_seq`` — the same
+    seq :func:`_batch_close_superseded` closes the entity rows at, so on the
+    change path the edge close and the entity close sit at the same version."""
     if not entity_ids:
         return
-    conn.execute(text("""
+    if endpoints == "source":
+        incidence = "source_entity_id = ANY(CAST(:ids AS uuid[]))"
+    elif endpoints == "both":
+        incidence = ("(source_entity_id = ANY(CAST(:ids AS uuid[])) "
+                     "OR target_entity_id = ANY(CAST(:ids AS uuid[])))")
+    else:
+        raise ValueError(
+            f"endpoints must be 'both' or 'source', got {endpoints!r}")
+    conn.execute(text(f"""
         UPDATE edges
         SET valid_to_seq = :close_seq
         WHERE valid_to_seq IS NULL
-          AND (source_entity_id = ANY(CAST(:ids AS uuid[]))
-               OR target_entity_id = ANY(CAST(:ids AS uuid[])))
+          AND {incidence}
     """), {
         "close_seq": ctx.logical_version_seq,
         "ids": entity_ids,
