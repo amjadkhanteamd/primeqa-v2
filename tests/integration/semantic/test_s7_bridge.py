@@ -7,6 +7,7 @@ null-phrase degrade. Plus the best-effort ``answer_question`` wrapper.
 """
 from __future__ import annotations
 
+import contextlib
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -88,5 +89,131 @@ def test_null_phrase_degrades_to_refused_with_citations(conn, seed):
 
 def test_answer_question_best_effort_on_bad_tenant():
     # tenant -1 has no schema → get_tenant_connection fails → available=False, no raise.
+    # (env defaults None; the connection fails at __enter__ — before the D-292 env
+    # check inside the with-body — so a bad tenant still yields the service-error
+    # refusal, not the env-required one.)
     out = answer_question(-1, "why did these fail?")
     assert out["available"] is False and out["status"] == "refused"
+    assert out["refusal_reason"] == "unavailable"   # the service-error refusal, NOT env-required
+
+
+# ── D-292: org-scoping the S1 reader through the shared D-286 resolver ──────────
+# Hermetic wrapper tests (monkeypatch only — no conn/seed/DB): they exercise the
+# org-resolution branch in `answer_question` itself, not the pure inner `_answer`.
+
+@contextlib.contextmanager
+def _fake_conn(_tenant_id):
+    yield object()                                    # a sentinel conn — never used
+
+
+def test_answer_question_org_scopes_reader_to_resolved_org(monkeypatch):
+    """D-292: env-selected → the reader is built org-scoped (ONE org via the shared
+    resolver), not org-less — so a name-resolving read can't blend across orgs."""
+    import primeqa.intelligence.conversation_bridge as bridge
+    import primeqa.semantic.connection as conn_mod
+    import primeqa.semantic.query as query_mod
+    import primeqa.sync.credentials as cred_mod
+
+    seen = {}
+
+    class _FakeS1:
+        def __init__(self, conn, connected_org_id=None, **kw):
+            seen["org"] = connected_org_id            # capture the org binding
+
+    def _fake_resolve(conn, environment_id):
+        seen["env"] = environment_id
+        return "ORG-ABC"
+
+    def _capture_answer(s1, session, *, question, ctx, phrase_fn):
+        seen["s1"] = s1                               # the org-scoped reader reaches _answer
+        return {"available": True, "status": "answered", "text": "ok",
+                "refusal_reason": None, "citations": []}
+
+    monkeypatch.setattr(conn_mod, "get_tenant_connection", _fake_conn)
+    monkeypatch.setattr(query_mod, "SemanticOrgModel", _FakeS1)
+    monkeypatch.setattr(cred_mod, "resolve_connected_org_or_raise", _fake_resolve)
+    monkeypatch.setattr(bridge, "_answer", _capture_answer)
+
+    out = answer_question(1, "what is affected by Account?", environment_id=42,
+                          object_api_name="Account")
+    assert out["status"] == "answered"
+    assert seen["env"] == 42                          # resolved through the SHARED resolver
+    assert seen["org"] == "ORG-ABC"                   # reader bound to ONE org, not None
+    assert isinstance(seen.get("s1"), _FakeS1)        # that org-scoped reader reached _answer
+
+
+def test_answer_question_refuses_when_env_is_none(monkeypatch):
+    """D-292: environment_id=None → graceful in-band refusal (available=True,
+    refusal_reason=environment_required); never available=False, never a reader."""
+    import primeqa.semantic.connection as conn_mod
+    import primeqa.semantic.query as query_mod
+
+    built = {"s1": False}
+
+    class _FakeS1:
+        def __init__(self, *a, **k):
+            built["s1"] = True                        # must NOT be reached
+
+    monkeypatch.setattr(conn_mod, "get_tenant_connection", _fake_conn)
+    monkeypatch.setattr(query_mod, "SemanticOrgModel", _FakeS1)
+
+    out = answer_question(1, "why did these fail?", environment_id=None)
+    assert out["available"] is True and out["status"] == "refused"
+    assert out["refusal_reason"] == "environment_required"
+    assert out["citations"] == []
+    assert built["s1"] is False                       # no org-less reader was constructed
+
+
+def test_answer_question_refuses_when_resolver_raises(monkeypatch):
+    """D-292: env present but unprovisioned → resolver raises OrgResolutionError →
+    the SAME graceful refusal (available=True, environment_required) — NOT
+    _unavailable() (available=False) and NOT an uncaught 500."""
+    import primeqa.semantic.connection as conn_mod
+    import primeqa.semantic.query as query_mod
+    import primeqa.sync.credentials as cred_mod
+
+    built = {"s1": False}
+
+    class _FakeS1:
+        def __init__(self, *a, **k):
+            built["s1"] = True                        # must NOT be reached
+
+    def _raise(conn, environment_id):
+        raise cred_mod.OrgResolutionError("no connected_org for env")
+
+    monkeypatch.setattr(conn_mod, "get_tenant_connection", _fake_conn)
+    monkeypatch.setattr(query_mod, "SemanticOrgModel", _FakeS1)
+    monkeypatch.setattr(cred_mod, "resolve_connected_org_or_raise", _raise)
+
+    out = answer_question(1, "why did these fail?", environment_id=7)
+    assert out["available"] is True and out["status"] == "refused"
+    assert out["refusal_reason"] == "environment_required"
+    assert built["s1"] is False                       # refused before building a reader
+
+
+def test_answer_question_unavailable_when_resolver_db_errors(monkeypatch):
+    """D-292.1: a resolver failure that is NOT OrgResolutionError (e.g. a transient
+    DB fault) is NOT the env-required refusal — it falls to the outer except ->
+    _unavailable() (available=False, refusal_reason=unavailable). No 500, and the
+    env-required refusal is reserved for a genuinely missing/unresolvable org."""
+    import primeqa.semantic.connection as conn_mod
+    import primeqa.semantic.query as query_mod
+    import primeqa.sync.credentials as cred_mod
+
+    built = {"s1": False}
+
+    class _FakeS1:
+        def __init__(self, *a, **k):
+            built["s1"] = True                        # must NOT be reached
+
+    def _db_error(conn, environment_id):
+        raise RuntimeError("transient DB fault during org resolution")
+
+    monkeypatch.setattr(conn_mod, "get_tenant_connection", _fake_conn)
+    monkeypatch.setattr(query_mod, "SemanticOrgModel", _FakeS1)
+    monkeypatch.setattr(cred_mod, "resolve_connected_org_or_raise", _db_error)
+
+    out = answer_question(1, "why did these fail?", environment_id=7)
+    assert out["available"] is False and out["status"] == "refused"
+    assert out["refusal_reason"] == "unavailable"     # service condition, NOT environment_required
+    assert built["s1"] is False

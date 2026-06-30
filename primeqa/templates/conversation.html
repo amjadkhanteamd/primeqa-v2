@@ -73,9 +73,13 @@
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
       <div>
         <label for="environment_id" class="block text-sm font-medium text-gray-700">Environment</label>
-        <select id="environment_id" name="environment_id"
+        {# D-292.1: /ask is strictly environment-scoped — every answer is grounded
+           in one connected org, so the selector is `required`. The placeholder is
+           `disabled selected`; a round-tripped valid env is rendered after and
+           wins (last `selected` in document order), so it still pre-selects. #}
+        <select id="environment_id" name="environment_id" required
           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
-          <option value="">&mdash; select &mdash;</option>
+          <option value="" disabled selected>&mdash; select &mdash;</option>
           {% for env in environments %}
             <option value="{{ env.id }}"
               {% if form.environment_id == env.id|string %}selected{% endif %}>{{ env.name }}</option>
