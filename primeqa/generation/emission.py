@@ -74,7 +74,7 @@ from primeqa.test_representation.models.claims.data_behavior.value_claim import 
     ValueClaimBody,
 )
 from primeqa.test_representation.models.common import BodyBase
-from primeqa.test_representation.models.conditions import SemanticConditionsBody
+from primeqa.test_representation.models.conditions import Condition, SemanticConditionsBody
 from primeqa.test_representation.models.environment import (
     AuthAssumption,
     ExecutionEnvironmentBody,
@@ -186,6 +186,18 @@ class GroundedEmission:
 
 
 @dataclass(frozen=True)
+class _GroundedCondition:
+    """A grounded business-state clause for a prohibition's identity-bearing
+    semantic_conditions (D-293, Option A). ``field`` is the S1-resolved subject of
+    the clause (governance fills the ``_Endpoint``); ``predicate``/``value`` follow
+    the S2 ``Condition`` taxonomy (value-free predicates carry ``value=None``)."""
+
+    field: _Endpoint
+    predicate: str
+    value: Any = None
+
+
+@dataclass(frozen=True)
 class GroundedNegative:
     """data_behavior prohibition-negative grounding (D-101): a ValidationRule
     ``APPLIES_TO`` the subject grounds the rejection at Layer-1-plausible. The
@@ -202,6 +214,12 @@ class GroundedNegative:
     # violating-value derivation over these to decide verified vs. caveated.
     # Empty (the default) -> no derivable formula -> caveated fallback unchanged.
     vr_formulas: tuple[str, ...] = ()
+    # D-293: grounded business-state clauses (Option A — LLM-proposed, governance-
+    # verified). Authored into the claim's semantic_conditions so distinct
+    # conditions yield distinct identity_hashes (no AC1/2/4 collapse). Empty (the
+    # default) -> conditions=[], byte-identical to pre-D-293 (DORMANT until the
+    # intent contract + grounding arm it in a later slice).
+    conditions: tuple[_GroundedCondition, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -763,6 +781,21 @@ def _update_rejected_recipe(
     return trigger, recipe, env
 
 
+def _conditions_body(grounded: tuple, version_seq: int) -> SemanticConditionsBody:
+    """Build the identity-bearing ``SemanticConditionsBody`` from grounded
+    business-state clauses (D-293). Each clause becomes one ``Condition`` over the
+    S1-resolved field. Empty input -> ``conditions=[]`` — byte-identical to the
+    pre-D-293 condition-free prohibition (the dormant default)."""
+    return SemanticConditionsBody(conditions=[
+        Condition(
+            subject=IdentityBearingRef(
+                entity_type=c.field.entity_type, entity_id=c.field.entity_id,
+                version_seq=version_seq, external_id=c.field.external_id),
+            predicate=c.predicate, value=c.value)
+        for c in grounded
+    ])
+
+
 def _author_negative(g: GroundedNegative) -> EmissionBundle:
     subject_ref = IdentityBearingRef(
         entity_type=g.subject.entity_type, entity_id=g.subject.entity_id,
@@ -806,9 +839,13 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
         # recipe (D-110.3), not the claim.
         expected_rejection=RejectionSignal(error_code=_VR_REJECTION_ERROR_CODE),
     )
-    # The triggering condition lives in the formula; whether or not it parsed, the
-    # claim is unconditional at this layer (the marker/caveat carry the verdict).
-    conditions = SemanticConditionsBody(conditions=[])
+    # D-293: the business STATE is identity-bearing. When governance grounded a
+    # rejection condition (Option A), author it into semantic_conditions so this
+    # prohibition is a DISTINCT claim (no AC1/2/4 collapse); the violating VALUE
+    # stays operational (the recipe), preserving D-110.3's recipe-rewrite identity
+    # stability. Absent -> conditions=[], byte-identical to pre-D-293 (DORMANT
+    # until the intent contract + grounding populate g.conditions).
+    conditions = _conditions_body(g.conditions, g.version_seq)
 
     # D-110.3 (S3-thin) + D-203: a VERIFIED negative emits the BEHAVIORAL
     # recipe — the 2-step update-rejected shape when both directions derived,
