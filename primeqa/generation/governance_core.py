@@ -43,6 +43,7 @@ from primeqa.generation.emission import (
     GroundedProperty,
     GroundedStateTransition,
     _Endpoint,
+    _GroundedCondition,
     author_emission,
     is_emittable,
 )
@@ -142,6 +143,50 @@ _LAYER_B_MIN_EXCERPT = 5
 def phase_for_reason(reason: str) -> Optional[str]:
     """The reasoning phase a D-076 dismissal reason belongs to (D-077d)."""
     return DISMISSAL_PHASE.get(reason)
+
+
+# D-293 (Option A) — rejection-condition predicate taxonomy, mirrored from
+# test_representation/models/conditions.py. Validated there at Condition
+# construction; re-checked HERE so an invalid LLM-proposed clause REFUSES at
+# grounding rather than crashing emission.
+_CONDITION_VALUE_FREE = {"is_null", "is_not_null"}
+_CONDITION_VALUE_BEARING = {"equals", "not_equals", "in_set", "matches_pattern"}
+
+
+def _ground_rejection_conditions(proposed, neighborhood: list, version_seq: int):
+    """Ground each LLM-proposed prohibition rejection-condition clause (D-293,
+    Option A — the business STATE under which the rejection is asserted). A clause
+    is ``{field: "Object.Field", predicate, value}``; its field must BELONG_TO the
+    subject (verified in the scoped neighborhood) and its predicate/value must
+    satisfy the S2 ``Condition`` coupling. Returns ``(grounded, invalid)`` —
+    ``invalid`` is a list of human reasons; a non-empty list means the caller
+    refuses (invent-nothing). Empty ``proposed`` -> ``([], [])``: the dormant
+    default, byte-identical to the pre-D-293 condition-free prohibition."""
+    fields_by_name = {
+        r.entity.sf_api_name: r.entity for r in neighborhood
+        if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"}
+    grounded: list = []
+    invalid: list[str] = []
+    for clause in (proposed or []):
+        c = clause or {}
+        fld, predicate, value = c.get("field"), c.get("predicate"), c.get("value")
+        ent = fields_by_name.get(fld)
+        if ent is None:
+            invalid.append(f"field {fld!r} does not BELONG_TO the subject")
+            continue
+        if predicate in _CONDITION_VALUE_FREE:
+            if value is not None:
+                invalid.append(f"predicate {predicate!r} forbids a value"); continue
+        elif predicate in _CONDITION_VALUE_BEARING:
+            if value is None:
+                invalid.append(f"predicate {predicate!r} requires a value"); continue
+        else:
+            invalid.append(f"predicate {predicate!r} not in the condition taxonomy"); continue
+        grounded.append(_GroundedCondition(
+            field=_Endpoint(entity_id=ent.id, entity_type=ent.entity_type,
+                            external_id=ent.sf_api_name or str(ent.id)),
+            predicate=predicate, value=value))
+    return grounded, invalid
 
 
 def _grounding_vr_formulas(claim_kind: str, neighborhood: list) -> tuple[str, ...]:
@@ -661,6 +706,20 @@ class GovernanceCore:
         # prohibition-claim emits in Phase 2 step 1; other data_behavior kinds
         # remain finalize-stubbed (the D-100 carve-out).
         if state is not None and claim_kind == "prohibition-claim":
+            # D-293 (Option A): ground the LLM-proposed rejection business-state
+            # (target_subject_hint.rejection_conditions) — each clause's field must
+            # BELONG_TO the subject. An ungroundable/ill-formed clause refuses
+            # (invent-nothing). Absent -> ([],[]) -> conditions=() (DORMANT;
+            # byte-identical to pre-D-293 until the v10 prompt elicits it).
+            grounded_conds, invalid_conds = _ground_rejection_conditions(
+                hint.get("rejection_conditions"), neighborhood, at)
+            if invalid_conds:
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.no_relevant_context(
+                        f"rejection-condition not grounded on "
+                        f"{subject.sf_api_name}: {invalid_conds}"))
             _stash_grounding(state, GroundedNegative(
                 archetype=archetype, claim_kind=claim_kind,
                 operation_hint=hint.get("operation"), version_seq=at,
@@ -671,7 +730,10 @@ class GovernanceCore:
                 # Carry the grounding VRs' formulas so authoring can run the
                 # D-107 verified-vs-caveated gate (re-found from the same
                 # in-scope neighborhood Layer-1 grounding matched).
-                vr_formulas=_grounding_vr_formulas(claim_kind, neighborhood)))
+                vr_formulas=_grounding_vr_formulas(claim_kind, neighborhood),
+                # D-293: the grounded business-state -> the claim's identity-bearing
+                # semantic_conditions (distinct states -> distinct claims).
+                conditions=tuple(grounded_conds)))
 
         # Stash grounding for the positive value-claim (D-115.3). Grounding has
         # already verified the NAMED field exists, so re-resolve it from the same

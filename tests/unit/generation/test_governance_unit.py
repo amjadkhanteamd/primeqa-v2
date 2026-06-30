@@ -280,6 +280,55 @@ def test_grounding_vr_formulas_unknown_dim_is_empty():
 
 
 # ---------------------------------------------------------------------------
+# D-293 (Slice 2): _ground_rejection_conditions — grounds an LLM-proposed
+# prohibition business-state against the scoped neighborhood (Option A).
+# ---------------------------------------------------------------------------
+
+def _field_rel(sf_api_name: str, entity_id=None):
+    """A BELONGS_TO Field relation carrying what _ground_rejection_conditions reads."""
+    return SimpleNamespace(
+        edge_type="BELONGS_TO",
+        entity=SimpleNamespace(entity_type="Field", sf_api_name=sf_api_name,
+                               id=entity_id or uuid4(), attributes={}))
+
+
+def test_ground_rejection_conditions_empty_is_dormant():
+    assert gc._ground_rejection_conditions(None, [], 7) == ([], [])
+    assert gc._ground_rejection_conditions([], [_field_rel("Opportunity.Loan_Amount__c")], 7) == ([], [])
+
+
+def test_ground_rejection_conditions_grounds_field_in_neighborhood():
+    nb = [_field_rel("Opportunity.Loan_Amount__c")]
+    grounded, invalid = gc._ground_rejection_conditions(
+        [{"field": "Opportunity.Loan_Amount__c", "predicate": "is_null"}], nb, 7)
+    assert invalid == [] and len(grounded) == 1
+    assert grounded[0].field.external_id == "Opportunity.Loan_Amount__c"
+    assert grounded[0].predicate == "is_null" and grounded[0].value is None
+
+
+def test_ground_rejection_conditions_unresolved_field_is_invalid():
+    grounded, invalid = gc._ground_rejection_conditions(
+        [{"field": "Opportunity.Nope__c", "predicate": "is_null"}],
+        [_field_rel("Opportunity.Loan_Amount__c")], 7)
+    assert grounded == [] and invalid and "Nope__c" in invalid[0]
+
+
+def test_ground_rejection_conditions_predicate_value_coupling():
+    nb = [_field_rel("Opportunity.Loan_Amount__c")]
+    f = "Opportunity.Loan_Amount__c"
+    _, inv_free_with_value = gc._ground_rejection_conditions(
+        [{"field": f, "predicate": "is_null", "value": 5}], nb, 7)
+    _, inv_bearing_no_value = gc._ground_rejection_conditions(
+        [{"field": f, "predicate": "equals"}], nb, 7)
+    _, inv_unknown = gc._ground_rejection_conditions(
+        [{"field": f, "predicate": "greater_than", "value": 5}], nb, 7)
+    assert inv_free_with_value and inv_bearing_no_value and inv_unknown
+    g, inv = gc._ground_rejection_conditions(
+        [{"field": f, "predicate": "equals", "value": "On Hold"}], nb, 7)
+    assert inv == [] and len(g) == 1 and g[0].value == "On Hold"
+
+
+# ---------------------------------------------------------------------------
 # D-107 verified-vs-caveated drift-guard: LAYER_2 <=> caveat-dropped (Option C)
 # ---------------------------------------------------------------------------
 
