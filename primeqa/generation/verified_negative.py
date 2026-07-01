@@ -160,7 +160,7 @@ def _satisfy(node, want_true: bool, meta: dict) -> dict[str, Any]:
         # already handled by the Not case flipping want_true). Only when metadata
         # confirms the field is boolean — otherwise a bare field is type-uncertain.
         fm = (meta or {}).get(node.path[-1])
-        if fm is not None and fm.get("field_type") == "boolean":
+        if fm is not None and fm.get("field_type") == "boolean" and _writable(fm):
             return {node.path[-1]: want_true}
         raise _Undecidable(f"bare field predicate {node.name} (type-uncertain)")
     if isinstance(node, Literal):
@@ -209,6 +209,18 @@ def _field_meta(node: FieldRef, meta: dict) -> Optional[dict]:
     return (meta or {}).get(node.path[-1])
 
 
+def _writable(fm: Optional[dict]) -> bool:
+    """D-294 certainty bar — a violating payload can only target a WRITABLE field.
+    A calculated (formula / rollup-summary) field, or one that is neither
+    createable NOR updateable (system / audit fields), cannot be set: a create or
+    update of it would be rejected for the WRONG reason (masking the VR, mis-graded
+    passed), so every derive branch that SETS a field refuses when it is not
+    writable. Defaults match ``field_details`` (D-160 server_default TRUE), so an
+    absent flag reads writable; an absent rail entry (``None``) is not writable."""
+    return bool(fm) and not fm.get("is_calculated") and (
+        fm.get("is_createable", True) or fm.get("is_updateable", True))
+
+
 def _satisfy_cross_field(left: FieldRef, right: FieldRef, op: str,
                          want_true: bool, meta: dict) -> dict[str, Any]:
     """Derive an ordered numeric pair for ``left <op> right`` (D-294). Certainty
@@ -217,10 +229,10 @@ def _satisfy_cross_field(left: FieldRef, right: FieldRef, op: str,
     if ml is None or mr is None:
         raise _Undecidable(
             "field-to-field comparison without field metadata (needs D-294 rail)")
-    if ml["field_type"] not in _NUMERIC or mr["field_type"] not in _NUMERIC:
+    if ml.get("field_type") not in _NUMERIC or mr.get("field_type") not in _NUMERIC:
         raise _Undecidable("field-to-field comparison on non-numeric field(s)")
-    if ml.get("is_calculated") or mr.get("is_calculated"):
-        raise _Undecidable("field-to-field comparison on a calculated field (not writable)")
+    if not _writable(ml) or not _writable(mr):
+        raise _Undecidable("field-to-field comparison on a non-writable field")
     eff = op if want_true else _NEG[op]              # violate: make `left eff right` TRUE
     a, b = _CROSS_PAIR[eff]
     return {left.path[-1]: a, right.path[-1]: b}
@@ -313,9 +325,12 @@ def _satisfy_function(node: FunctionCall, want_true: bool, meta: dict) -> dict[s
             return {field: None}                     # blank fires the rejection
         # D-294: NOT(ISBLANK) fires when the field is NON-blank -> synthesize a
         # certain non-blank value from field metadata (else refuse — the bar).
-        v = _nonblank_value((meta or {}).get(field))
+        fm = (meta or {}).get(field)
+        v = _nonblank_value(fm)                       # None/absent -> UNSYNTHESIZABLE
         if v is _UNSYNTHESIZABLE:
             raise _Undecidable(f"NOT {node.name} (no synthesizable non-blank value)")
+        if not _writable(fm):                         # value exists but field is read-only
+            raise _Undecidable(f"NOT {node.name} (field not writable)")
         payload = {field: v}
         _self_check(node, payload, want_true)        # evaluate confirms it fires
         return payload
@@ -328,12 +343,15 @@ def _satisfy_function(node: FunctionCall, want_true: bool, meta: dict) -> dict[s
             return {field: forbidden}
         # D-294: NOT(ISPICKVAL(field,"X")) fires when field != "X" -> set a
         # certain alternative from the field's active picklist values (rail 2-hop).
-        # Refuse (as today) when the set is absent (inline picklist S1 did not
-        # capture) or has no value other than the forbidden one.
-        vals = ((meta or {}).get(field) or {}).get("picklist_values")
+        # Refuse (as today) when the field is not writable, the set is absent
+        # (inline picklist S1 did not capture), or has no value other than "X".
+        fm = (meta or {}).get(field)
+        vals = (fm or {}).get("picklist_values")
         alt = next((v for v in (vals or ()) if v != forbidden), None)
         if alt is None:
             raise _Undecidable("NOT ISPICKVAL (no certain alternative picklist value)")
+        if not _writable(fm):
+            raise _Undecidable("NOT ISPICKVAL (field not writable)")
         payload = {field: alt}
         _self_check(node, payload, want_true)        # evaluate confirms field != "X"
         return payload

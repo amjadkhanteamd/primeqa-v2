@@ -242,6 +242,10 @@ def _grounding_field_metadata(neighborhood: list, s1, at_seq: int) -> dict:
             "field_type": (details.get("field_type") or "").lower(),
             "length": details.get("length"),
             "is_calculated": bool(details.get("is_calculated", False)),
+            # D-294: writability (D-160) — a violating payload can only SET a
+            # writable field; defaults TRUE to match field_details' server_default.
+            "is_createable": bool(details.get("is_createable", True)),
+            "is_updateable": bool(details.get("is_updateable", True)),
             "picklist_values": picklist_values,
         }
     return out

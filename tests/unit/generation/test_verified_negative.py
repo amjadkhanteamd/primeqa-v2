@@ -235,7 +235,8 @@ def test_cross_field_refuses_non_numeric_operand():
 def test_cross_field_refuses_calculated_field():
     meta = {"A__c": {"field_type": "currency", "is_calculated": True},
             "B__c": {"field_type": "currency", "is_calculated": False}}
-    assert "calculated" in derive(parse("A__c > B__c"), meta).reason
+    # calculated -> non-writable -> refuse (unified writability guard)
+    assert "non-writable" in derive(parse("A__c > B__c"), meta).reason
 
 
 def test_cross_field_dotted_ref_is_prescanned_cross_object():
@@ -334,3 +335,31 @@ def test_plain_ispickval_unchanged_with_metadata():
     # the already-derivable positive shape is untouched by the metadata rail.
     assert derive(parse('ISPICKVAL(Stage__c,"Closed")'), _PK).violating_payload \
         == {"Stage__c": "Closed"}
+
+
+# ---------------------------------------------------------------------------
+# D-294 writability guard — a violating payload can only SET a writable field.
+# is_calculated (formula/rollup) or neither-createable-nor-updateable refuses for
+# ALL four shapes (not just cross-field); create-only / update-only still derive.
+# ---------------------------------------------------------------------------
+
+def test_all_shapes_refuse_calculated_field():
+    assert isinstance(derive(parse("NOT(ISBLANK(F__c))"),
+        {"F__c": {"field_type": "text", "is_calculated": True}}), NotDerivable)
+    assert isinstance(derive(parse("Flag__c"),
+        {"Flag__c": {"field_type": "boolean", "is_calculated": True}}), NotDerivable)
+    assert isinstance(derive(parse('NOT(ISPICKVAL(S__c,"X"))'),
+        {"S__c": {"field_type": "picklist", "picklist_values": ("X", "Y"),
+                  "is_calculated": True}}), NotDerivable)
+    assert isinstance(derive(parse("A__c > B__c"),
+        {"A__c": {"field_type": "currency", "is_calculated": True},
+         "B__c": {"field_type": "currency"}}), NotDerivable)
+
+
+def test_shapes_refuse_field_neither_createable_nor_updateable():
+    nw = {"field_type": "text", "is_createable": False, "is_updateable": False}
+    assert isinstance(derive(parse("NOT(ISBLANK(F__c))"), {"F__c": nw}), NotDerivable)
+    # create-only (or update-only) is still writable -> derives (no over-refusal)
+    assert isinstance(derive(parse("NOT(ISBLANK(F__c))"),
+        {"F__c": {"field_type": "text", "is_createable": True, "is_updateable": False}}),
+        VerifiedNegative)
