@@ -15,8 +15,8 @@ import pytest
 
 from primeqa.execution_engine.errors import PlanTranslationError
 from primeqa.execution_engine.run import run_recipe_execution
+from primeqa.generation.emission import _inspection_recipe as _inspection_recipe_bodies
 from primeqa.generation.emission import (
-    GroundedNegative,
     _Endpoint,
     author_emission,
 )
@@ -84,13 +84,12 @@ class _FakeSession:
 # ---------------------------------------------------------------------------
 
 def _inspection_recipe():
-    bundle = author_emission(GroundedNegative(
-        archetype="data_behavior", claim_kind="prohibition-claim",
-        operation_hint="delete", version_seq=7,
-        subject=_Endpoint(entity_id=uuid4(), entity_type="Object", external_id="Lead"),
-        requirement_excerpt="x"))
-    return _wrap(bundle.causal_initiation, bundle.observation_realization,
-                 bundle.execution_environment,
+    # D-293 removed the prohibition -> inspection emission this used to source
+    # from; build the inspection recipe directly (the dispatch path is unchanged).
+    trigger, recipe, env = _inspection_recipe_bodies(
+        read_entity_type="Object", read_external_id="Lead", capture_field="APPLIES_TO",
+        env_detail="read Lead metadata to verify a validation rule applies")
+    return _wrap(trigger, recipe, env,
                  trigger_kind="inspection-trigger", recipe_kind="metadata-recipe")
 
 

@@ -26,16 +26,18 @@ def test_eval_corpus_full_spectrum(seeded):
 
     # spectrum coverage — the full governed-outcome range (D-102.3)
     assert report.by_category.get("draft", (0, 0))[1] >= 1            # verified config draft
-    assert report.by_category.get("caveated_draft", (0, 0))[1] >= 1   # caveated negative
+    # D-293: the old caveated-prohibition draft is gone — a formula-less VR now
+    # REFUSES (behaviour-incomplete), so that case moved into the refusal category.
     assert report.by_category.get("verified_negative", (0, 0))[1] >= 1  # D-107 Layer-2 verified negative
     assert report.by_category.get("multiclaim_draft", (0, 0))[1] >= 1   # D-207 multi-intent -> N claims
-    assert report.by_category.get("refusal", (0, 0))[1] >= 6          # refusal kinds/causes
+    assert report.by_category.get("refusal", (0, 0))[1] >= 7          # refusal kinds/causes (incl. D-293 behaviour-incomplete)
     assert report.by_category.get("dedup", (0, 0))[1] >= 1            # was_noop
     assert report.total >= 10
-    # both no-admissible-negative causes + the caveated draft are present
+    # the no-admissible-negative causes + the D-293 behaviour-incomplete refusal are present
     assert "no-admissible-negative-scenario-found" in report.by_refusal_kind
     assert "ungrounded-claim" in report.by_refusal_kind
     assert "ambiguous-reference" in report.by_refusal_kind
+    assert "behaviour-incomplete" in report.by_refusal_kind          # D-293: caveated-prohibition -> refuse
     assert report.passed == report.total
 
 
@@ -48,7 +50,7 @@ def test_eval_replay_two_invariant_stable(seeded):
         assert st.explanation_stable, f"{c.id}: explanation_hash drift"
         # semantic continuity (D-090(b)): drafts re-emit to the same identity
         # (a D-207 multiclaim draft must dedup EVERY bundle)
-        if c.category in ("draft", "caveated_draft", "verified_negative",
+        if c.category in ("draft", "verified_negative",
                           "multiclaim_draft", "dedup"):
             assert st.identity_stable, (
                 f"{c.id}: identity_hash drift — same-version re-run did not dedup")

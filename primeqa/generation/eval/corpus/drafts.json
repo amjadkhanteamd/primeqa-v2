@@ -111,9 +111,9 @@
   }
  },
  {
-  "id": "caveated-prohibition-negative",
-  "description": "data_behavior prohibition negative on Case (which HAS a VR) -> Layer-1-plausible caveated draft; the first caveat firing.",
-  "category": "caveated_draft",
+  "id": "behaviour-incomplete-negative",
+  "description": "data_behavior prohibition negative on Case (whose VR has NO formula) -> D-293 behaviour-incomplete refusal: no behavioural reject recipe derives, so the substrate refuses rather than degrading to a caveated inspection.",
+  "category": "refusal",
   "fixture": {
    "entities": [
     {
@@ -149,30 +149,11 @@
       }
      }
     }
-   },
-   {
-    "tool": "emit_outcome",
-    "input": {
-     "outcome_kind": "draft",
-     "payload": {
-      "admissibility_layer": "layer_1"
-     }
-    }
    }
   ],
   "expect": {
-   "outcome_kind": "draft",
-   "admissibility_layer": "layer_1",
-   "caveat_required": true,
-   "caveat_kind": "deeper_verification_layer_unparsed",
-   "claim": {
-    "archetype": "data_behavior",
-    "claim_kind": "prohibition-claim"
-   },
-   "recipe": {
-    "trigger_kind": "inspection-trigger",
-    "recipe_kind": "metadata-recipe"
-   }
+   "outcome_kind": "refusal",
+   "refusal_kind": "behaviour-incomplete"
   },
   "live": {
    "requirement_text": "Users must not be able to close a Case without entering a reason; the platform should reject the save.",
@@ -181,25 +162,16 @@
      {
       "field": "outcome_kind",
       "op": "eq",
-      "value": "draft"
-     },
-     {
-      "field": "archetype",
-      "op": "eq",
-      "value": "data_behavior"
-     },
-     {
-      "field": "caveat_required",
-      "op": "is_true"
+      "value": "refusal"
      }
     ],
     "acceptable_variants": [
      {
-      "field": "claim_kind",
+      "field": "refusal_kind",
       "op": "in",
       "value": [
-       "prohibition-claim",
-       "state-transition-claim"
+       "behaviour-incomplete",
+       "no-admissible-negative-scenario-found"
       ]
      }
     ],
@@ -208,9 +180,9 @@
      "phrasing",
      "excerpt",
      "subject",
-     "caveat_kind"
+     "cause"
     ],
-    "_note": "caveat_required is_true: this VR carries NO formula, so nothing derives and the negative stays Layer-1-plausible -> caveated. A non-caveated data_behavior draft would be the D-096.2 overclaim (e.g. a value-claim positive misread). The formula parser has now landed (D-107): a VR with a DERIVABLE formula yields a non-caveated Layer-2 verified negative instead -- see verified-prohibition-negative."
+    "_note": "D-293: Case's VR carries NO formula, so no behavioural reject recipe derives -> the substrate REFUSES (behaviour-incomplete) rather than degrading to a caveated metadata inspection. A prohibition whose VR has a DERIVABLE formula still emits a Layer-2 verified negative -- see verified-prohibition-negative."
    }
   }
  },

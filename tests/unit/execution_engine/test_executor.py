@@ -29,7 +29,7 @@ from primeqa.execution_engine.plan import (
     PlannedAssertion,
     PlannedRead,
 )
-from primeqa.generation.emission import GroundedNegative, _Endpoint, author_emission
+from primeqa.generation.emission import _Endpoint, _inspection_recipe, author_emission
 from primeqa.integrations.exceptions import SFRequestError
 from primeqa.test_representation.coordinator import RecipeRead
 from primeqa.test_representation.models.primitives import AssertionPredicate
@@ -59,21 +59,22 @@ class _StubClient:
 
 
 def _emitted_plan(recipe_id=None, version_seq=4, claim_test_id=None):
-    """Build a real metadata-inspection plan from an emitted prohibition recipe
-    (read APPLIES_TO over Lead + assert exists), via the slice-1 bridge."""
-    bundle = author_emission(GroundedNegative(
-        archetype="data_behavior", claim_kind="prohibition-claim",
-        operation_hint="delete", version_seq=7,
-        subject=_Endpoint(entity_id=uuid4(), entity_type="Object", external_id="Lead"),
-        requirement_excerpt="Users must not delete a Lead without a reason."))
+    """Build a real metadata-inspection plan (read APPLIES_TO over Lead + assert
+    exists), via the slice-1 bridge. Built directly from the inspection-recipe
+    builder — D-293 removed the prohibition -> inspection emission this used to
+    source from (prohibitions now emit a behavioural reject recipe); the executor
+    is a generic inspection runner, so this is the same plan it always ran."""
+    trigger, mrecipe, env = _inspection_recipe(
+        read_entity_type="Object", read_external_id="Lead", capture_field="APPLIES_TO",
+        env_detail="read Lead metadata to verify a validation rule applies")
     recipe = RecipeRead(
         recipe_id=recipe_id or uuid4(), version_seq=version_seq,
         valid_from=_NOW, valid_to=None,
         claim_test_id=claim_test_id or uuid4(), claim_version_seq=None,
         trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
-        causal_initiation=bundle.causal_initiation,
-        observation_realization=bundle.observation_realization,
-        execution_environment=bundle.execution_environment,
+        causal_initiation=trigger,
+        observation_realization=mrecipe,
+        execution_environment=env,
         priority=0, status="generated_unapproved",
         created_at=_NOW, updated_at=_NOW)
     return build_metadata_inspection_plan(recipe)

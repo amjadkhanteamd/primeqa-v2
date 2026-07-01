@@ -36,7 +36,10 @@ def _emit_draft_turn() -> FakeTurn:
 
 
 def _case_negative_seam() -> FakeToolTurn:
-    # "Case" HAS a VR (APPLIES_TO) -> a caveated prohibition-negative draft.
+    # "Case" HAS a VR (APPLIES_TO) but its VR has no formula -> D-293 refuses it
+    # behaviour-incomplete. Either way the job runs to COMPLETION with one durable
+    # outcome row (a refusal is a valid governed outcome) — which is all these
+    # consumer/tick tests assert.
     return FakeToolTurn([
         propose_turn(intent(claim_kind="prohibition-claim", polarity="negative",
                             sf_api_name="Case")),

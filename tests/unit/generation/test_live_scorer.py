@@ -51,30 +51,32 @@ def test_config_refusal_auto_fails():
     assert r.invariant_ok is False and r.verdict == "violation"
 
 
-# --- caveated negative probe ----------------------------------------------
+# --- behaviour-incomplete negative probe (D-293) --------------------------
 
-def test_negative_primary_is_neutral():
-    r = _score("caveated-prohibition-negative", _obs(
-        "draft", archetype="data_behavior", claim_kind="prohibition-claim",
-        caveat_required=True))
+def test_behaviour_incomplete_refusal_is_neutral():
+    # D-293: the formula-less prohibition's invariant outcome is a REFUSAL
+    # (behaviour-incomplete). A refusal holds the envelope -> neutral.
+    r = _score("behaviour-incomplete-negative", _obs(
+        "refusal", refusal_kind="behaviour-incomplete"))
     assert r.invariant_ok and not r.drift and r.verdict == "neutral"
 
 
-def test_negative_collapse_to_config_auto_fails():
-    # behavioral negative -> configuration metadata-relationship = collapse.
-    r = _score("caveated-prohibition-negative", _obs(
-        "draft", archetype="configuration",
-        claim_kind="metadata-relationship-claim", caveat_required=False))
+def test_behaviour_incomplete_degraded_to_draft_auto_fails():
+    # D-293's central guarantee: emitting ANY draft for the non-derivable
+    # prohibition is the degrade the decision forbids -> the envelope's
+    # outcome_kind=refusal invariant is violated -> auto-fail. (This is exactly
+    # the pre-D-293 caveated-inspection degradation, now a scorer violation.)
+    r = _score("behaviour-incomplete-negative", _obs(
+        "draft", archetype="data_behavior", claim_kind="prohibition-claim",
+        caveat_required=True))
     assert r.invariant_ok is False and r.verdict == "violation"
 
 
-def test_negative_noncaveated_draft_auto_fails():
-    # A Layer-1-plausible negative must be caveated (caveat_required is_true,
-    # D-104). A non-caveated data_behavior draft — e.g. a value-claim positive
-    # misread of a "must not" requirement — is the D-096.2 overclaim -> auto-fail.
-    r = _score("caveated-prohibition-negative", _obs(
-        "draft", archetype="data_behavior", claim_kind="value-claim",
-        caveat_required=False))
+def test_behaviour_incomplete_collapse_to_config_auto_fails():
+    # a config metadata-relationship draft is also a non-refusal -> violation.
+    r = _score("behaviour-incomplete-negative", _obs(
+        "draft", archetype="configuration",
+        claim_kind="metadata-relationship-claim", caveat_required=False))
     assert r.invariant_ok is False and r.verdict == "violation"
 
 

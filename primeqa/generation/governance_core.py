@@ -46,6 +46,7 @@ from primeqa.generation.emission import (
     _GroundedCondition,
     author_emission,
     is_emittable,
+    prohibition_recipe_derivable,
 )
 from primeqa.generation.governance import (
     ConversationContext,
@@ -383,6 +384,17 @@ class RefusalRouter:
     def no_relevant_context(self, detail: str) -> RefusalDirective:
         return RefusalDirective(RefusalKind.NO_RELEVANT_CONTEXT, {"detail": detail})
 
+    def behaviour_incomplete(self, detail: str) -> RefusalDirective:
+        """D-293 decision-2: a prohibition intent that is not a COMPLETE behaviour
+        instance — no derivable behavioural reject recipe from the grounding VR(s)
+        (non-numeric formula, or a non-VR-rejectable operation like delete/share/
+        transfer) — refuses HERE rather than degrading to the caveated metadata
+        inspection (the pre-D-293 fallback that masked the AC1/2/4 collapse). A
+        policy refusal: the requirement is admissible, but the substrate declines
+        to author a behaviourally-empty prohibition. Lifts as violation-derivation
+        widens (the out-of-scope D-293 follow-on)."""
+        return RefusalDirective(RefusalKind.BEHAVIOUR_INCOMPLETE, {"detail": detail})
+
     def emission_deferred(self, archetype: str, claim_kind: str,
                           detail: Optional[str] = None) -> RefusalDirective:
         """A groundable claim whose emission for this claim_kind isn't built yet
@@ -701,16 +713,17 @@ class GovernanceCore:
                                     interpretation_delta=delta,
                                     refusal=self._router.emission_deferred(archetype, claim_kind))
 
-        # Stash grounding for the caveated prohibition-negative emission
-        # (D-101.1), mirroring config's _resolve_configuration. Only
-        # prohibition-claim emits in Phase 2 step 1; other data_behavior kinds
-        # remain finalize-stubbed (the D-100 carve-out).
+        # Stash grounding for the prohibition-negative emission (D-101.1),
+        # mirroring config's _resolve_configuration. Only prohibition-claim emits
+        # in Phase 2 step 1; other data_behavior kinds remain finalize-stubbed
+        # (the D-100 carve-out). D-293: an incomplete behaviour instance REFUSES
+        # here rather than degrading to a caveated metadata inspection.
         if state is not None and claim_kind == "prohibition-claim":
             # D-293 (Option A): ground the LLM-proposed rejection business-state
             # (target_subject_hint.rejection_conditions) — each clause's field must
             # BELONG_TO the subject. An ungroundable/ill-formed clause refuses
-            # (invent-nothing). Absent -> ([],[]) -> conditions=() (DORMANT;
-            # byte-identical to pre-D-293 until the v10 prompt elicits it).
+            # (invent-nothing). Absent -> ([],[]) -> conditions=() (identity is
+            # condition-free, the de-collapse mechanism just isn't exercised).
             grounded_conds, invalid_conds = _ground_rejection_conditions(
                 hint.get("rejection_conditions"), neighborhood, at)
             if invalid_conds:
@@ -720,6 +733,28 @@ class GovernanceCore:
                     refusal=self._router.no_relevant_context(
                         f"rejection-condition not grounded on "
                         f"{subject.sf_api_name}: {invalid_conds}"))
+            # Carry the grounding VRs' formulas so authoring (and the gate below)
+            # can run the D-107 verified-vs-caveated derivation (re-found from the
+            # same in-scope neighborhood Layer-1 grounding matched).
+            vr_formulas = _grounding_vr_formulas(claim_kind, neighborhood)
+            # D-293 decision-2 (refuse, never silently degrade): the behaviour
+            # instance is complete only when a BEHAVIOURAL reject recipe is
+            # derivable. A non-numeric VR (NOT-ISBLANK / picklist / cross-field) or
+            # a non-VR-rejectable operation (delete / share / transfer) derives
+            # nothing -> REFUSE here, rather than emitting the pre-D-293 caveated
+            # inspection (which masked the AC1/2/4 collapse and degraded AC3 to a
+            # bare existence check). Conditions de-collapse identity (Reading B);
+            # derivability is the hard gate.
+            if not prohibition_recipe_derivable(hint.get("operation"), vr_formulas):
+                return IntentResolution(
+                    grounded_candidates=[], next_action=NextAction.REFUSE,
+                    interpretation_delta=delta,
+                    refusal=self._router.behaviour_incomplete(
+                        f"prohibition on {subject.sf_api_name}: no derivable "
+                        f"behavioural reject recipe from the grounding validation "
+                        f"rule(s) (non-numeric formula, or a non-rejectable "
+                        f"operation); refusing rather than degrading to a metadata "
+                        f"inspection (D-293)"))
             _stash_grounding(state, GroundedNegative(
                 archetype=archetype, claim_kind=claim_kind,
                 operation_hint=hint.get("operation"), version_seq=at,
@@ -727,10 +762,7 @@ class GovernanceCore:
                     entity_id=subject.id, entity_type=subject.entity_type,
                     external_id=subject.sf_api_name or str(subject.id)),
                 requirement_excerpt=excerpt,
-                # Carry the grounding VRs' formulas so authoring can run the
-                # D-107 verified-vs-caveated gate (re-found from the same
-                # in-scope neighborhood Layer-1 grounding matched).
-                vr_formulas=_grounding_vr_formulas(claim_kind, neighborhood),
+                vr_formulas=vr_formulas,
                 # D-293: the grounded business-state -> the claim's identity-bearing
                 # semantic_conditions (distinct states -> distinct claims).
                 conditions=tuple(grounded_conds)))

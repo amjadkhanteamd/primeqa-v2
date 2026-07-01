@@ -100,7 +100,7 @@ def _lead_prohibition():
     return intent(claim_kind="prohibition-claim", polarity="negative", sf_api_name="Lead")
 
 
-def _case_prohibition():   # Case VR has NO formula -> caveated LAYER_1
+def _case_prohibition():   # Case VR has NO formula -> D-293 behaviour-incomplete refuse
     return intent(claim_kind="prohibition-claim", polarity="negative", sf_api_name="Case")
 
 
@@ -151,15 +151,29 @@ def test_multi_intent_path_ids_reindexed(seeded):
     assert extra.get("selected_path_ids") == ["c0", "c1"]
 
 
-def test_caveat_aggregates_across_bundles(seeded):
-    # Case prohibition is caveated (VR formula absent); the verified Lead
-    # negative is LAYER_2/no-caveat. Any caveated bundle caveats the outcome.
+def test_behaviour_incomplete_member_emits_nothing_in_multi_intent(seeded):
+    # D-293: the old "any caveated bundle caveats the whole outcome" aggregation no
+    # longer exists — a prohibition either verified-emits or refuses. Here the Case
+    # member GROUNDS (its VR APPLIES_TO Case, so it is admissibly_grounded) but the
+    # VR has no formula, so no behavioural reject recipe derives -> the behaviour
+    # gate refuses it and it emits NO claim; the verified Lead prohibition still
+    # emits. The outcome is a DRAFT carrying only the emittable claim, with no
+    # caveat — the behaviour-incomplete member does NOT degrade to a claim.
     r = _run_one_requirement(seeded, multi_propose([_lead_prohibition(), _case_prohibition()]))
     o = r.outcome
-    assert len(o.claims_written) == 2
-    assert o.admissibility_layer == AdmissibilityLayer.LAYER_1
-    assert o.caveat_required is True
-    assert o.caveat_kind is not None
+    assert o.outcome_kind == OutcomeKind.DRAFT
+    assert len(o.claims_written) == 1          # only the verified Lead claim
+    assert o.caveat_required is False and o.caveat_kind is None
+    # BOTH intents grounded (Layer-1) — Case was NOT rejected at grounding; the
+    # drop is at the behaviour gate (post-grounding).
+    ai = o.attempted_interpretation
+    paths = {p["path_id"]: p for p in ai.candidate_paths}
+    assert set(paths) == {"c0", "c1"}
+    assert all(p["admissibility_status"] == "admissibly_grounded" for p in paths.values())
+    assert paths["c1"]["subject_refs"][0]["sf_api_name"] == "Case"   # the behaviour-incomplete member
+    # ...but only the derivable member (Lead, c0) was selected + emitted a claim;
+    # the behaviour-incomplete Case member produced no claim (no degraded artifact).
+    assert ai.model_dump().get("selected_path_id") == "c0"
 
 
 # ---------------------------------------------------------------------------

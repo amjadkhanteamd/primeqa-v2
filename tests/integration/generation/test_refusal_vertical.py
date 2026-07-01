@@ -111,8 +111,12 @@ def test_grounded_candidate_proceeds_to_emit(seeded):
         )
         state = RequirementState(request_id=ctx.request_id, requirement_ref={})
         res = gov.resolve_intent(
+            # D-293: use "Lead" — its VR carries a derivable ISBLANK formula, so
+            # the prohibition is a COMPLETE behaviour instance and PROCEEDS. (Case,
+            # the old positive control, has a formula-less VR and now refuses
+            # behaviour-incomplete — see test_refusal_vertical below.)
             intent_input=intent(claim_kind="prohibition-claim", polarity="negative",
-                                sf_api_name="Case"),   # Case HAS a ValidationRule
+                                sf_api_name="Lead"),
             ctx=ctx, state=state,
         )
     assert res.next_action == NextAction.PROCEED_TO_EMIT
@@ -149,6 +153,28 @@ def test_grounded_value_claim_refuses_emission_deferred(seeded):
     rows = query_outcome_rows()
     assert len(rows["outcomes"]) == 1
     assert rows["outcomes"][0]["refusal_kind"] == "emission-deferred"
+
+
+def test_behaviour_incomplete_prohibition_refuses(seeded):
+    # D-293 decision-2: "Case" grounds a prohibition (VR Case.RequireReason
+    # APPLIES_TO Case) but that VR has NO formula, so no behavioural reject recipe
+    # derives -> the substrate REFUSES (behaviour-incomplete) rather than degrading
+    # to a caveated metadata inspection. This exercises the PRIMARY refuse path
+    # (the governance gate -> BEHAVIOUR_INCOMPLETE), which the unit suite covers
+    # only in halves.
+    from primeqa.generation.persistence import LedgerPersister
+    _, res = _run(seeded, [intent(claim_kind="prohibition-claim", polarity="negative",
+                                  sf_api_name="Case")],
+                  persister=LedgerPersister(TEST_TENANT_ID))
+    o = res.results[0].outcome
+    assert o.outcome_kind == OutcomeKind.REFUSAL
+    assert o.refusal_kind == RefusalKind.BEHAVIOUR_INCOMPLETE
+    assert not o.claims_written and not o.recipes_written
+    # persisted end to end -> the new PG enum value round-trips (proves the
+    # 20260701_0010 ADD VALUE migration applied + models_db enum accepts it).
+    rows = query_outcome_rows()
+    assert len(rows["outcomes"]) == 1
+    assert rows["outcomes"][0]["refusal_kind"] == "behaviour-incomplete"
 
 
 def test_value_claim_unknown_field(seeded):

@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v9"
+CURRENT = "generation@v10"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -41,6 +41,7 @@ _FILES = {
     "generation@v7": _VERSIONS_DIR / "generation_v7.md",
     "generation@v8": _VERSIONS_DIR / "generation_v8.md",
     "generation@v9": _VERSIONS_DIR / "generation_v9.md",
+    "generation@v10": _VERSIONS_DIR / "generation_v10.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -72,6 +73,12 @@ RECORDED_HASHES = {
     # atomicity (precision+scale = two intents); value-claim persistence framing;
     # the per-AC coverage contract (acceptance_criteria + ac_ref / no_admissible_test).
     "generation@v9": "fdd5e2171ea9da1f8fef32c8ecd70e5b96b39c832a8bd6211fec8dd680487240",
+    # v10 (D-293): prohibition behaviour-instance contract — the LLM names the
+    # rejection business STATE (rejection_conditions: field/predicate/value
+    # clauses) so distinct rules are distinct claims (no AC1/2/4 collapse); the
+    # substrate REFUSES an incomplete behaviour instance (no derivable behavioural
+    # reject recipe) rather than degrading to the caveated metadata inspection.
+    "generation@v10": "0f43a120674001d1476698c274d3a939282bc0a7d725e5b564a9146d34d5d69e",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).

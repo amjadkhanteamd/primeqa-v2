@@ -24,12 +24,12 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v9():
-    # D-247: CURRENT bumped to v9 (config-first-class decomposition + the per-AC
-    # coverage contract). v1..v8 stay frozen + pinned-resolvable
-    # (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v9"
-    assert registry.get() == registry.get("generation@v9")
+def test_current_resolves_to_v10():
+    # D-293: CURRENT bumped to v10 (prohibition behaviour-instance contract —
+    # rejection_conditions + refuse-not-degrade). v1..v9 stay frozen +
+    # pinned-resolvable (test_runtime_honors_pinned_prompt_version).
+    assert registry.CURRENT == "generation@v10"
+    assert registry.get() == registry.get("generation@v10")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # the substance the schemas don't enforce (D-103.3) is present
@@ -56,6 +56,11 @@ def test_current_resolves_to_v9():
     assert "Scan every requirement" in sys
     assert "precision" in sys and "scale" in sys            # property atomicity
     assert "ac_ref" in sys and "no_admissible_test" in sys  # the coverage contract
+    # v10's prohibition behaviour-instance contract (D-293)
+    assert "rejection_conditions" in sys                    # the business-state hint
+    assert "business STATE" in sys
+    assert "is_not_null" in sys and "matches_pattern" in sys  # the predicate taxonomy
+    assert "REFUSES that intent honestly" in sys            # refuse-not-degrade
     # the honest-dismissals guard is preserved verbatim (not overturned)
     assert "honest" in sys and "forced breadth" in sys
 

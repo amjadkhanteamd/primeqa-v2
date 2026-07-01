@@ -35,7 +35,10 @@ def _cond(external_id, eid, predicate="is_null", value=None):
         predicate=predicate, value=value)
 
 
-def _grounded(conditions=(), formulas=()):
+# A derivable numeric VR by default — D-293 authors a prohibition only when a
+# behavioural reject recipe derives; the formula drives the RECIPE (operational),
+# never the claim identity, so it does not affect the identity assertions below.
+def _grounded(conditions=(), formulas=("Amount__c > 10000",)):
     return GroundedNegative(
         archetype="data_behavior", claim_kind="prohibition-claim",
         operation_hint="modify_record", version_seq=7,
@@ -78,11 +81,13 @@ def test_same_business_state_same_identity():
 # --- Option-C property preserved: identity ignores recipe-affecting inputs ---
 
 def test_identity_stable_across_recipe_inputs():
-    # Same business STATE; different vr_formulas drive a different recipe (the
-    # violating value is operational). Identity must be unchanged (D-110.3).
+    # Same business STATE; different (both derivable) vr_formulas drive a different
+    # recipe — the violating VALUE/threshold is operational. Identity must be
+    # unchanged (D-110.3's preserved Option-C property). Both formulas must derive,
+    # since D-293 refuses a non-derivable prohibition (no recipe to compare).
     cond = (_cond("Opportunity.Loan_Amount__c", LOAN_AMOUNT),)
-    a = author_emission(_grounded(conditions=cond, formulas=()))
-    b = author_emission(_grounded(conditions=cond, formulas=("Amount  > 10000",)))
+    a = author_emission(_grounded(conditions=cond, formulas=("Amount__c > 10000",)))
+    b = author_emission(_grounded(conditions=cond, formulas=("Amount__c > 99999",)))
     assert _hash(a) == _hash(b)
 
 

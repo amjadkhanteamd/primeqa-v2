@@ -24,7 +24,7 @@ from primeqa.intelligence.s4_execution_console import (
     trigger_claim_run,
 )
 from primeqa.execution_engine.run import _MIN_AVAILABLE_ENV
-from primeqa.generation.emission import GroundedNegative, _Endpoint, author_emission
+from primeqa.generation.emission import _inspection_recipe
 from primeqa.test_representation import SemanticTransactionCoordinator
 
 from ._fixtures import empty_conditions, make_value_claim
@@ -38,11 +38,14 @@ def _seed_draft_claim_with_recipe(session, coord):
         session, actor="s3", test_id=None,
         archetype="data_behavior", claim_kind="value-claim",
         asserted_truth=body, semantic_conditions=empty_conditions())
-    bundle = author_emission(GroundedNegative(
-        archetype="data_behavior", claim_kind="prohibition-claim",
-        operation_hint="delete", version_seq=7,
-        subject=_Endpoint(entity_id=uuid4(), entity_type="Object", external_id="Lead"),
-        requirement_excerpt="Users must not delete a Lead without a reason."))
+    # D-293 removed the prohibition -> inspection emission this used to source
+    # from; build the inspection recipe directly (console listing is unchanged).
+    _trigger, _recipe, _env = _inspection_recipe(
+        read_entity_type="Object", read_external_id="Lead", capture_field="APPLIES_TO",
+        env_detail="read Lead metadata to verify a validation rule applies")
+    bundle = SimpleNamespace(
+        causal_initiation=_trigger, observation_realization=_recipe,
+        execution_environment=_env)
     coord.write_recipe(
         session, actor="s3", recipe_id=None, claim_test_id=cr.test_id,
         trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",

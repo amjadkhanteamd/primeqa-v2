@@ -702,6 +702,52 @@ def _derive_violation(formulas: tuple[str, ...]) -> Optional[VerifiedNegative]:
     return None
 
 
+class BehaviourIncomplete(RuntimeError):
+    """D-293: a prohibition reached authoring with no derivable behavioural
+    reject recipe. Governance's :func:`prohibition_recipe_derivable` gate must
+    refuse such intents BEFORE emission (refuse, never degrade); this guards the
+    invariant so emission can never fall back to the caveated inspection."""
+
+
+def _derive_prohibition_recipe(
+    operation_hint: Optional[str], vr_formulas: tuple[str, ...],
+) -> tuple[str, Optional[VerifiedUpdateNegative], Optional[VerifiedNegative]]:
+    """Bind the prohibition operation and derive its behavioural reject recipe —
+    the SINGLE source of truth shared by :func:`_author_negative` (which needs the
+    derived payloads) and :func:`prohibition_recipe_derivable` (the D-293 gate,
+    which needs only the yes/no). Returns ``(operation, update_pair, violation)``;
+    the behaviour instance is complete iff ``update_pair`` or ``violation`` is set.
+
+      modify_record / modify_field → UPDATE shape (setup + violating changes);
+        when only the violation derives, create-rejected (a state-only VR fires on
+        insert too); when neither, nothing (incomplete).
+      create_duplicate → create-rejected.
+      delete / share / transfer_ownership → nothing: VRs never fire on delete, and
+        shares/transfers are not VR-rejectable creates (the pre-D-203 blur, closed).
+    """
+    operation = (operation_hint if operation_hint in _PROHIBITION_OPERATIONS
+                 else _DEFAULT_OPERATION)
+    update_pair: Optional[VerifiedUpdateNegative] = None
+    violation: Optional[VerifiedNegative] = None
+    if operation in ("modify_record", "modify_field"):
+        update_pair = _derive_update_violation(vr_formulas)
+        if update_pair is None:
+            violation = _derive_violation(vr_formulas)
+    elif operation == "create_duplicate":
+        violation = _derive_violation(vr_formulas)
+    return operation, update_pair, violation
+
+
+def prohibition_recipe_derivable(
+    operation_hint: Optional[str], vr_formulas: tuple[str, ...],
+) -> bool:
+    """D-293 completeness predicate (the governance gate): does this prohibition
+    yield a BEHAVIOURAL reject recipe? ``False`` → incomplete behaviour instance →
+    governance refuses (no degrade to the caveated inspection)."""
+    _, update_pair, violation = _derive_prohibition_recipe(operation_hint, vr_formulas)
+    return update_pair is not None or violation is not None
+
+
 def _behavioral_recipe(
     *, subject_entity_type: str, subject_external_id: str,
     violating_payload: dict, env_detail: str,
@@ -801,32 +847,14 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
         entity_type=g.subject.entity_type, entity_id=g.subject.entity_id,
         version_seq=g.version_seq, external_id=g.subject.external_id,
     )
-    # Bind the operation from the intent hint against the closed enum, defaulting
-    # to a safe generic when unspecified/invalid (D-101.2).
-    operation = (g.operation_hint if g.operation_hint in _PROHIBITION_OPERATIONS
-                 else _DEFAULT_OPERATION)
     # Graded operation dispatch (D-203) over the verified-vs-caveated gate
-    # (D-107). The derived payloads ride the RECIPE (operational), never the
-    # claim — the claim body is byte-identical across ALL recipe shapes (the
-    # Option-C identity_hash invariant; verified by a stability test).
-    #
-    #   modify_record / modify_field → try the UPDATE shape (setup +
-    #     violating changes, both derivable); when only the violation derives,
-    #     fall back to TODAY'S create-rejected (no regression — a state-only VR
-    #     fires on insert too); when neither, caveated.
-    #   create_duplicate → create-rejected (as today).
-    #   delete / share / transfer_ownership → caveated inspection ALWAYS:
-    #     VRs never fire on delete (and shares/transfers are not VR-rejectable
-    #     creates) — a create-rejected recipe here would test the wrong
-    #     operation (the pre-D-203 semantic blur, closed).
-    update_pair = None
-    violation = None
-    if operation in ("modify_record", "modify_field"):
-        update_pair = _derive_update_violation(g.vr_formulas)
-        if update_pair is None:
-            violation = _derive_violation(g.vr_formulas)
-    elif operation == "create_duplicate":
-        violation = _derive_violation(g.vr_formulas)
+    # (D-107) — bind the operation + derive the behavioural reject recipe via the
+    # shared predicate (the single source of truth with the D-293 governance
+    # gate). The derived payloads ride the RECIPE (operational), never the claim;
+    # the violating VALUE is recipe-rewrite-stable (D-110.3 Option-C), while the
+    # business STATE rides semantic_conditions (D-293, identity-bearing).
+    operation, update_pair, violation = _derive_prohibition_recipe(
+        g.operation_hint, g.vr_formulas)
     verified = update_pair is not None or violation is not None
     claim = ProhibitionClaimBody(
         target=subject_ref,
@@ -874,14 +902,18 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
         )
         trigger_kind, recipe_kind = "data-mutation-trigger", "data-recipe"
     else:
-        trigger, recipe, env = _inspection_recipe(
-            read_entity_type=g.subject.entity_type,
-            read_external_id=g.subject.external_id,
-            capture_field="APPLIES_TO",
-            env_detail=(f"read {g.subject.external_id} metadata to verify a "
-                        f"validation rule applies (rejection plausibility)"),
-        )
-        trigger_kind, recipe_kind = "inspection-trigger", "metadata-recipe"
+        # D-293 decision-2 (refuse, never silently degrade). A prohibition with no
+        # derivable behavioural reject recipe (non-numeric VR; or delete / share /
+        # transfer_ownership, which VRs never reject) is an INCOMPLETE behaviour
+        # instance. Governance's prohibition_recipe_derivable() gate REFUSES such
+        # intents before stash, so this branch is unreachable on the normal path;
+        # the guard makes the invariant explicit — emission no longer degrades to
+        # the pre-D-293 caveated metadata inspection (which masked the AC1/2/4
+        # collapse and degraded AC3 to a bare existence check).
+        raise BehaviourIncomplete(
+            f"prohibition on {g.subject.external_id}: no derivable behavioural "
+            f"reject recipe (operation={operation}); the D-293 completeness gate "
+            f"must refuse this intent before emission")
 
     # D-228: a VERIFIED negative ALSO carries the caveated inspection
     # re-verify as a fallback SECONDARY (priority -10) — depth diversity per

@@ -29,13 +29,11 @@ from uuid import uuid4
 
 from sqlalchemy import text
 
+from types import SimpleNamespace
+
 from primeqa.execution_engine.result_store import S4ExecutionRun
 from primeqa.execution_engine.run import run_recipe_execution
-from primeqa.generation.emission import (
-    GroundedNegative,
-    _Endpoint,
-    author_emission,
-)
+from primeqa.generation.emission import _inspection_recipe
 from primeqa.interpretation.result_store import S6Interpretation
 from primeqa.test_representation import SemanticTransactionCoordinator
 
@@ -58,11 +56,14 @@ def _seed_approved_inspection_recipe(session, coord, *, subject="Lead"):
     """Approved claim + an approved inspection recipe (real emitted bodies) —
     the same arrangement test_s4_run_path uses."""
     test_id, _ = arrange_approved_claim(session, coord)
-    bundle = author_emission(GroundedNegative(
-        archetype="data_behavior", claim_kind="prohibition-claim",
-        operation_hint="delete", version_seq=7,
-        subject=_Endpoint(entity_id=uuid4(), entity_type="Object", external_id=subject),
-        requirement_excerpt=f"Users must not delete a {subject} without a reason."))
+    # D-293 removed the prohibition -> inspection emission this used to source
+    # from; build the inspection recipe directly (the interpret path is unchanged).
+    _trigger, _recipe, _env = _inspection_recipe(
+        read_entity_type="Object", read_external_id=subject, capture_field="APPLIES_TO",
+        env_detail=f"read {subject} metadata to verify a validation rule applies")
+    bundle = SimpleNamespace(
+        causal_initiation=_trigger, observation_realization=_recipe,
+        execution_environment=_env)
     written = coord.write_recipe(
         session, actor="human", recipe_id=None, claim_test_id=test_id,
         trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",

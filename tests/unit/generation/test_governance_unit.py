@@ -8,10 +8,13 @@ import json
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 from primeqa.generation import governance_core as gc
-from primeqa.generation.enums import AdmissibilityLayer, CaveatKind
+from primeqa.generation.enums import AdmissibilityLayer
 from primeqa.generation.emission import (
     EMITTABLE,
+    BehaviourIncomplete,
     GroundedAutomationEffect,
     GroundedCapability,
     GroundedEmission,
@@ -90,7 +93,10 @@ _EMITTABLE_SHAPES = {
     ("data_behavior", "prohibition-claim"): lambda: GroundedNegative(
         archetype="data_behavior", claim_kind="prohibition-claim",
         operation_hint=None, version_seq=1,
-        subject=_ep("Object", "Case"), requirement_excerpt="x"),
+        # D-293: a prohibition authors only when a behavioural reject recipe is
+        # derivable — give a numeric VR so this drift-guard exercises authoring.
+        subject=_ep("Object", "Case"), requirement_excerpt="x",
+        vr_formulas=("Amount < 0",)),
     ("data_behavior", "value-claim"): lambda: GroundedPositive(
         archetype="data_behavior", claim_kind="value-claim", version_seq=1,
         target_object=_ep("Object", "Invoice"), field=_ep("Field", "Invoice.Amount"),
@@ -329,7 +335,39 @@ def test_ground_rejection_conditions_predicate_value_coupling():
 
 
 # ---------------------------------------------------------------------------
-# D-107 verified-vs-caveated drift-guard: LAYER_2 <=> caveat-dropped (Option C)
+# D-293 (Slice 3): the completeness gate — prohibition_recipe_derivable (the
+# shared predicate governance refuses on) + the behaviour_incomplete router.
+# ---------------------------------------------------------------------------
+
+def test_prohibition_recipe_derivable_truth_table():
+    from primeqa.generation.emission import prohibition_recipe_derivable as d
+    # numeric comparison / ISBLANK derive a behavioural recipe -> complete
+    assert d("modify_record", ("Amount < 0",)) is True
+    assert d("modify_record", ("ISBLANK(Reason__c)",)) is True
+    assert d(None, ("Amount < 0",)) is True               # default op = modify_record
+    assert d("create_duplicate", ("Amount = 0",)) is True
+    # the at-least-one rule: one derivable formula among several -> complete
+    assert d("modify_record", ('REGEX(Name,"x")', "Amount < 0")) is True
+    # non-numeric / field-to-field / empty -> NOT derivable -> the gate refuses
+    assert d("modify_record", ()) is False
+    assert d("modify_record", ("Amount < Other__c",)) is False
+    assert d("modify_record", ('REGEX(Name,"x")',)) is False
+    # delete / share / transfer never derive (VRs do not reject them)
+    assert d("delete", ("Amount < 0",)) is False
+    assert d("transfer_ownership", ("Amount < 0",)) is False
+
+
+def test_behaviour_incomplete_router_kind():
+    from primeqa.generation.enums import RefusalKind
+    directive = gc.RefusalRouter().behaviour_incomplete("no derivable reject recipe")
+    assert directive.refusal_kind is RefusalKind.BEHAVIOUR_INCOMPLETE
+    assert "no derivable reject recipe" in directive.payload["detail"]
+
+
+# ---------------------------------------------------------------------------
+# D-107 / D-293: an authored negative is ALWAYS LAYER_2 (caveat dropped). The
+# pre-D-293 Layer-1 caveated fallback is gone — a non-derivable negative refuses
+# (emission guard raises) rather than emitting a caveated inspection.
 # ---------------------------------------------------------------------------
 
 def _neg(formulas: tuple[str, ...]) -> GroundedNegative:
@@ -347,27 +385,25 @@ def test_verified_negative_is_layer2_no_caveat():
     assert b.caveat_required is False and b.caveat_kind is None
 
 
-def test_caveated_negative_is_layer1_with_caveat():
-    # No derivable formula (empty; field-to-field; or unparsed) -> the Layer-1-
-    # plausible caveated fallback (D-101), unchanged.
+def test_non_derivable_negative_refuses_no_caveated_fallback():
+    # D-293 decision-2: no derivable formula (empty; field-to-field; or unparsed)
+    # -> incomplete behaviour instance -> emission guard raises (the pre-D-293
+    # Layer-1 caveated inspection fallback is removed). Governance refuses these
+    # before stash; the guard makes the invariant explicit.
     for formulas in ((), ("Amount < Other__c",), ('REGEX(Name, "x")',)):
-        b = author_emission(_neg(formulas))
-        assert b.admissibility_layer is AdmissibilityLayer.LAYER_1
-        assert b.caveat_required is True
-        assert b.caveat_kind is CaveatKind.DEEPER_VERIFICATION_LAYER_UNPARSED
+        with pytest.raises(BehaviourIncomplete):
+            author_emission(_neg(formulas))
 
 
-def test_layer2_iff_caveat_dropped_invariant():
-    # The slice-4 drift-guard: across the verified/caveated split the marker and
-    # the caveat move together — LAYER_2 exactly when no caveat. Under Option C
-    # the gate is derivability ALONE (no payload-present clause). Includes a
-    # multi-VR object where one of two formulas derives (at-least-one).
-    for formulas in ((), ("Amount < 0",), ("Amount < Other__c",), ("ISBLANK(R__c)",),
-                     ('REGEX(Name, "x")',), ("Amount < 0", 'Name < "M"')):
+def test_every_authored_negative_is_layer2_no_caveat():
+    # D-293: every prohibition that authors at all is verified (LAYER_2, no
+    # caveat) — the marker/caveat invariant degenerates to "always dropped".
+    # Includes a multi-VR object where one of two formulas derives (at-least-one).
+    for formulas in (("Amount < 0",), ("ISBLANK(R__c)",), ("Amount < 0", 'Name < "M"')):
         b = author_emission(_neg(formulas))
-        is_l2 = b.admissibility_layer is AdmissibilityLayer.LAYER_2
-        assert is_l2 == (not b.caveat_required)
-        assert is_l2 == (b.caveat_kind is None)
+        assert b.admissibility_layer is AdmissibilityLayer.LAYER_2
+        assert b.caveat_required is False
+        assert b.caveat_kind is None
 
 
 # ---------------------------------------------------------------------------

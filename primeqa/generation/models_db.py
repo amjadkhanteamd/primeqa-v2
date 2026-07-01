@@ -88,6 +88,7 @@ REFUSAL_KIND_ENUM = ENUM(
     "structural-validation-failure",
     "low-generation-confidence",
     "no-admissible-negative-scenario-found",
+    "behaviour-incomplete",   # D-293: prohibition behaviour instance incomplete (no derivable reject recipe); refuse, never degrade
     "operational-budget-exhausted",
     "emission-deferred",   # D-105: groundable, but emission for this kind isn't built
     name="refusal_kind",

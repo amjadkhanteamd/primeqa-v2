@@ -12,11 +12,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from primeqa.execution_engine.run import RunPathResult, run_recipe_execution
-from primeqa.generation.emission import (
-    GroundedNegative,
-    _Endpoint,
-    author_emission,
-)
+from primeqa.generation.emission import _inspection_recipe
 from primeqa.test_representation.coordinator import RecipeRead
 
 _NOW = datetime(2026, 5, 27, tzinfo=timezone.utc)
@@ -68,19 +64,21 @@ class _FakeSession:
 
 
 def _inspection_recipe_read(recipe_id=None):
-    """A real emitted metadata-inspection RecipeRead (the bridge accepts it)."""
-    bundle = author_emission(GroundedNegative(
-        archetype="data_behavior", claim_kind="prohibition-claim",
-        operation_hint="delete", version_seq=7,
-        subject=_Endpoint(entity_id=uuid4(), entity_type="Object", external_id="Lead"),
-        requirement_excerpt="Users must not delete a Lead without a reason."))
+    """A real metadata-inspection RecipeRead (the bridge accepts it). Built
+    directly from the inspection-recipe builder — D-293 removed the prohibition
+    -> inspection emission this used to source from (prohibitions now emit a
+    behavioural reject recipe); the run path is unchanged, so any inspection
+    recipe drives it identically."""
+    trigger, recipe, env = _inspection_recipe(
+        read_entity_type="Object", read_external_id="Lead", capture_field="APPLIES_TO",
+        env_detail="read Lead metadata to verify a validation rule applies")
     return RecipeRead(
         recipe_id=recipe_id or uuid4(), version_seq=3, valid_from=_NOW, valid_to=None,
         claim_test_id=uuid4(), claim_version_seq=None,
         trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",
-        causal_initiation=bundle.causal_initiation,
-        observation_realization=bundle.observation_realization,
-        execution_environment=bundle.execution_environment,
+        causal_initiation=trigger,
+        observation_realization=recipe,
+        execution_environment=env,
         priority=0, status="approved", created_at=_NOW, updated_at=_NOW)
 
 

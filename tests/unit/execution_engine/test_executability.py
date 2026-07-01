@@ -81,7 +81,11 @@ _SHAPES = {
     ("data_behavior", "prohibition-claim"): lambda: GroundedNegative(
         archetype="data_behavior", claim_kind="prohibition-claim",
         operation_hint=None, version_seq=1,
-        subject=_ep("Object", "Case"), requirement_excerpt="x"),
+        # D-293: a prohibition authors only when a behavioural reject recipe is
+        # derivable; give a numeric VR so this pair emits (a data-recipe) and the
+        # executability drift-guard exercises it (still executable=True).
+        subject=_ep("Object", "Case"), requirement_excerpt="x",
+        vr_formulas=("Amount < 0",)),
     ("data_behavior", "value-claim"): lambda: GroundedPositive(
         archetype="data_behavior", claim_kind="value-claim", version_seq=1,
         target_object=_ep("Object", "Invoice"),

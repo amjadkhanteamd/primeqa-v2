@@ -95,17 +95,20 @@ def test_executor_runs_end_to_end_live():
         build_metadata_inspection_plan, execute_metadata_inspection,
     )
     from primeqa.execution_engine.tooling_client import ToolingReadClient
-    from primeqa.generation.emission import (
-        GroundedNegative, _Endpoint, author_emission,
-    )
+    from types import SimpleNamespace
+    from primeqa.generation.emission import _inspection_recipe
     from primeqa.test_representation.coordinator import RecipeRead
 
     now = datetime(2026, 5, 27, tzinfo=timezone.utc)
-    bundle = author_emission(GroundedNegative(
-        archetype="data_behavior", claim_kind="prohibition-claim",
-        operation_hint="delete", version_seq=1,
-        subject=_Endpoint(entity_id=uuid4(), entity_type="Object", external_id="Account"),
-        requirement_excerpt="Users must not delete an Account without a reason."))
+    # D-293 removed the prohibition -> inspection emission this used to source
+    # from; build the inspection recipe directly (a live metadata read over the
+    # subject — the executor is a generic inspection runner).
+    _trigger, _recipe, _env = _inspection_recipe(
+        read_entity_type="Object", read_external_id="Account", capture_field="APPLIES_TO",
+        env_detail="read Account metadata to verify a validation rule applies")
+    bundle = SimpleNamespace(
+        causal_initiation=_trigger, observation_realization=_recipe,
+        execution_environment=_env)
     plan = build_metadata_inspection_plan(RecipeRead(
         recipe_id=uuid4(), version_seq=1, valid_from=now, valid_to=None,
         claim_test_id=uuid4(), claim_version_seq=None,

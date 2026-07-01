@@ -55,7 +55,7 @@ TOOL_NAMES = (TOOL_PROPOSE, TOOL_SELECT, TOOL_EMIT)
 # Substrate-3 vocabularies — derived from the Slice-0 enums so they cannot
 # drift from the locked definitions.
 _OUTCOME_KINDS = [e.value for e in OutcomeKind]          # draft | refusal
-_REFUSAL_KINDS = [e.value for e in RefusalKind]          # 8 values
+_REFUSAL_KINDS = [e.value for e in RefusalKind]          # 10 values (D-293 added behaviour-incomplete)
 _DISMISSAL_REASONS = [e.value for e in DismissalReason]  # 8 values
 _ADMISSIBILITY_LAYERS = [e.value for e in AdmissibilityLayer]  # layer_1 | layer_2
 

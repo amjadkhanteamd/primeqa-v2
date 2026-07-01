@@ -3,8 +3,8 @@
 Reuses this package's ``session`` fixture (transactional rollback, the migrated
 substrate test DB). Seeds a real **approved metadata-inspection recipe** in
 ``tenant_1`` via the Coordinator (the test_representation builders make
-*data*-recipes, so the inspection bodies are written directly with
-``author_emission``'s output + an UPDATE to 'approved'), then runs
+*data*-recipes, so the inspection bodies are written directly from the
+inspection-recipe builder's output + an UPDATE to 'approved'), then runs
 ``run_recipe_execution`` with a **stub client** (the local test DB has no
 ``environments``/``connections`` for ``resolve_tooling_client``) and asserts the
 full chain writes BOTH the ``s4_execution_runs`` row and the
@@ -12,17 +12,14 @@ full chain writes BOTH the ``s4_execution_runs`` row and the
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 from sqlalchemy import text
 
 from primeqa.execution_engine.result_store import S4ExecutionRun
 from primeqa.execution_engine.run import run_recipe_execution
-from primeqa.generation.emission import (
-    GroundedNegative,
-    _Endpoint,
-    author_emission,
-)
+from primeqa.generation.emission import _inspection_recipe
 from primeqa.test_representation import SemanticTransactionCoordinator
 
 from ._fixtures import arrange_approved_claim
@@ -41,11 +38,14 @@ class _StubClient:
 def _seed_approved_inspection_recipe(session, coord, *, subject="Lead"):
     """Approved claim + an approved inspection recipe (real emitted bodies)."""
     test_id, _ = arrange_approved_claim(session, coord)
-    bundle = author_emission(GroundedNegative(
-        archetype="data_behavior", claim_kind="prohibition-claim",
-        operation_hint="delete", version_seq=7,
-        subject=_Endpoint(entity_id=uuid4(), entity_type="Object", external_id=subject),
-        requirement_excerpt=f"Users must not delete a {subject} without a reason."))
+    # D-293 removed the prohibition -> inspection emission this used to source
+    # from; build the inspection recipe directly (the run path is unchanged).
+    _trigger, _recipe, _env = _inspection_recipe(
+        read_entity_type="Object", read_external_id=subject, capture_field="APPLIES_TO",
+        env_detail=f"read {subject} metadata to verify a validation rule applies")
+    bundle = SimpleNamespace(
+        causal_initiation=_trigger, observation_realization=_recipe,
+        execution_environment=_env)
     written = coord.write_recipe(
         session, actor="human", recipe_id=None, claim_test_id=test_id,
         trigger_kind="inspection-trigger", recipe_kind="metadata-recipe",

@@ -334,6 +334,10 @@ _REFUSAL_PLAIN = {
     "no-admissible-negative-scenario-found":
         "No org rule exists that would reject this — there is no real "
         "enforcement to test.",
+    "behaviour-incomplete":
+        "The org has a rule that should reject this, but the engine cannot yet "
+        "build a concrete test that provokes the rejection — so it refuses "
+        "rather than emit a weaker check that would not actually exercise the rule.",
     "operational-budget-exhausted":
         "Generation ran out of its processing budget before finishing — "
         "try again.",

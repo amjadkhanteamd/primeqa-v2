@@ -207,12 +207,22 @@ def seeded(db_setup) -> dict:
         _edge(conn, amount, invoice, "BELONGS_TO", "STRUCTURAL", v1)
         # Object WITH a VR carrying a DERIVABLE formula (D-107): the negative is
         # Layer-2-VERIFIED (a violating value derives with certainty) -> no caveat.
-        # Contrast with "Case" above, whose VR has empty attributes (no formula)
-        # and stays Layer-1-plausible / caveated.
+        # Contrast with "Case" above, whose VR has empty attributes (no formula):
+        # no behavioural reject recipe derives, so under D-293 a Case prohibition
+        # REFUSES (behaviour-incomplete) rather than degrading to a caveated
+        # inspection. Lead is the positive-emit control for prohibition negatives.
         lead = _entity(conn, "Object", "Lead", v1)
         lead_vr = _entity(conn, "ValidationRule", "Lead.RequireReason", v1,
                           attrs={"formula_text": "ISBLANK(Reason__c)"})
         _edge(conn, lead_vr, lead, "APPLIES_TO", "BEHAVIOR", v1)
+        # D-293: a SECOND Object with a DERIVABLE-formula VR. The sibling read
+        # (test_multi_recipe_vertical) needs TWO emittable prohibitions of the same
+        # kind under one requirement; "Case" (the old non-derivable second member)
+        # now refuses behaviour-incomplete, so a second derivable object is needed.
+        quote = _entity(conn, "Object", "Quote", v1)
+        quote_vr = _entity(conn, "ValidationRule", "Quote.NonNegativeTotal", v1,
+                           attrs={"formula_text": "Total__c < 0"})
+        _edge(conn, quote_vr, quote, "APPLIES_TO", "BEHAVIOR", v1)
         # Object WITH a record-triggered Flow (D-210): the automation-effect /
         # state-transition vertical's grounding fixture — Flow TRIGGERS_ON Order;
         # Order.Status__c is the to-state/effect field; Order_Log__c is the

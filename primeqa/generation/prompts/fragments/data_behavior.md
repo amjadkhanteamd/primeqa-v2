@@ -12,8 +12,32 @@ Data-behavior claims concern how records and fields behave at runtime.
   blocked. The substrate grounds the claim on a Validation Rule that applies
   to that Object and dispatches the test's shape on the operation (an update
   prohibition is tested by creating a valid record and attempting the
-  forbidden edit). Propose the negative even when it will be caveated — a
-  caveated grounded negative is the honest artifact, not an overclaim.
+  forbidden edit).
+  - **Name the business STATE under which the rejection applies.** Two
+    prohibitions on the same Object that differ only by *which* rule is
+    violated ("reject when Loan Amount is blank" vs "reject when Stage is
+    Closed") are DIFFERENT assertions, not one realisation of the same one. So
+    in `target_subject_hint` set `rejection_conditions`: a list of clauses,
+    each `{"field": "Object.Field", "predicate": <p>, "value": <v>}`, naming
+    the field state that holds when the operation must be rejected. `predicate`
+    is one of `"equals"`, `"not_equals"`, `"in_set"` (value is a list), or
+    `"matches_pattern"` — all of which carry a `value` — or `"is_null"` /
+    `"is_not_null"`, which take NO `value` (omit it). Each `field` must be a
+    real, fully-qualified `Object.Field` on the subject. Give the state
+    whenever the requirement implies one; omit `rejection_conditions` only for a
+    genuinely unconditional rule. The state becomes part of the claim's
+    identity, so distinct states are distinct claims (they no longer collapse
+    into one generic prohibition); the specific violating value the test sends
+    stays in the recipe.
+  - **The substrate refuses an incomplete behaviour instance — it does not
+    degrade.** A prohibition is authored ONLY when a real reject test is
+    derivable (a violating input the substrate can construct from the
+    validation rule, today numeric comparisons). When it is not — a
+    mandatory-field / `ISBLANK` or picklist gate, a cross-field comparison, or
+    a delete/share prohibition no validation rule fires on — the substrate
+    REFUSES that intent honestly rather than emitting a weak "a rule exists"
+    metadata check. Propose the negative regardless; an honest refusal is the
+    correct artifact, never an overclaim.
 - **Positives (value-claim).** When the requirement asserts a *specific field*
   holds a *specific value* (e.g. "Account.Status is 'Active'", "Case.Priority
   defaults to 'High'"), propose a `value-claim` with positive polarity. Put the

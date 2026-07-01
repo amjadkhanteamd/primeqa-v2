@@ -1,18 +1,25 @@
 """Unit tests for the S3 behavioral-negative emission (D-110.3, S3-thin) — pure,
 offline, constructed GroundedNegatives.
 
-A **verified** negative (a VR formula the D-107 parser derives) now emits the
+A **verified** negative (a VR formula the D-107 parser derives) emits the
 **behavioral** data-recipe — a create carrying the parser's violating payload +
-`expect_rejection` — instead of the inspection re-verify. A **caveated** negative
-(no derivable formula) stays inspection. The claim's `identity_hash` is **stable**
-across both (the violating payload lives in the recipe, not the claim — the
-Option-C invariant).
+`expect_rejection`. **D-293 (decision-2): there is no caveated negative anymore.**
+A prohibition with no derivable behavioural reject recipe (non-numeric VR;
+delete/share/transfer) is an INCOMPLETE behaviour instance — governance refuses it
+before stash, and emission's guard RAISES :class:`BehaviourIncomplete` rather than
+degrading to the inspection re-verify (the pre-D-293 fallback). The claim's
+`identity_hash` is **stable** across the behavioural recipe shapes (the violating
+value lives in the recipe; the business state lives in `semantic_conditions` —
+D-293 refines Option-C, it does not abandon recipe-stability).
 """
 from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
+
 from primeqa.generation.emission import (
+    BehaviourIncomplete,
     GroundedNegative,
     _Endpoint,
     author_emission,
@@ -108,56 +115,58 @@ def test_verified_marker_and_caveat_dropped():
 
 
 # ---------------------------------------------------------------------------
-# Caveated → inspection (unchanged)
+# D-293 decision-2: non-derivable → REFUSE (emission guard raises; no degrade)
 # ---------------------------------------------------------------------------
 
-def test_non_derivable_formula_stays_inspection():
-    bundle = author_emission(_grounded(formulas=_NOT_DERIVABLE))
-    assert bundle.trigger_kind == "inspection-trigger"
-    assert bundle.recipe_kind == "metadata-recipe"
-    assert isinstance(bundle.causal_initiation, InspectionTriggerBody)
-    assert isinstance(bundle.observation_realization, MetadataRecipeBody)
-    assert bundle.caveat_required is True
+def test_non_derivable_formula_raises_behaviour_incomplete():
+    # An org-state VR (ISCHANGED) derives no violating input -> incomplete
+    # behaviour instance. Governance refuses before stash; emission's guard makes
+    # the invariant explicit by raising rather than degrading to the inspection.
+    with pytest.raises(BehaviourIncomplete):
+        author_emission(_grounded(formulas=_NOT_DERIVABLE))
 
 
-def test_no_formula_stays_inspection():
-    bundle = author_emission(_grounded(formulas=_NONE))
-    assert bundle.recipe_kind == "metadata-recipe"
-    assert bundle.caveat_required is True
+def test_no_formula_raises_behaviour_incomplete():
+    with pytest.raises(BehaviourIncomplete):
+        author_emission(_grounded(formulas=_NONE))
 
 
 # ---------------------------------------------------------------------------
-# ⚑ The claim identity is STABLE across verified/caveated (Option-C invariant)
+# ⚑ The claim identity is STABLE across recipe shapes (Option-C, refined by
+#   D-293: the violating VALUE rewrites the recipe but never the claim identity)
 # ---------------------------------------------------------------------------
 
-def test_claim_identity_hash_stable_across_verified_and_caveated():
-    # Same subject; the ONLY difference is whether the VR formula derives. The
-    # behavioral payload lives in the recipe — the CLAIM body must be identical.
+def test_claim_identity_hash_stable_across_recipe_value_rewrite():
+    # Same subject, same (empty) business state; the ONLY difference is the
+    # violating VALUE the recipe sends — a comparison VR drives the 2-step
+    # update-rejected shape, ISBLANK drives the create-rejected shape. The
+    # operational recipe differs; the CLAIM body (identity) must be byte-identical
+    # (D-110.3's preserved Option-C property — value is operational, not identity).
     eid = uuid4()
-    g_verified = GroundedNegative(
+    g_update = GroundedNegative(
+        archetype="data_behavior", claim_kind="prohibition-claim",
+        operation_hint="modify_record", version_seq=7,
+        subject=_Endpoint(entity_id=eid, entity_type="Object", external_id="Lead"),
+        requirement_excerpt="x", vr_formulas=_DERIVABLE_CMP)
+    g_create = GroundedNegative(
         archetype="data_behavior", claim_kind="prohibition-claim",
         operation_hint="modify_record", version_seq=7,
         subject=_Endpoint(entity_id=eid, entity_type="Object", external_id="Lead"),
         requirement_excerpt="x", vr_formulas=_DERIVABLE)
-    g_caveated = GroundedNegative(
-        archetype="data_behavior", claim_kind="prohibition-claim",
-        operation_hint="modify_record", version_seq=7,
-        subject=_Endpoint(entity_id=eid, entity_type="Object", external_id="Lead"),
-        requirement_excerpt="x", vr_formulas=_NOT_DERIVABLE)
 
-    b_v = author_emission(g_verified)
-    b_c = author_emission(g_caveated)
+    b_u = author_emission(g_update)
+    b_c = author_emission(g_create)
 
-    # the recipes differ (behavioral vs inspection)...
-    assert b_v.recipe_kind == "data-recipe"
-    assert b_c.recipe_kind == "metadata-recipe"
+    # the recipes differ (update-rejected vs create-rejected)...
+    assert b_u.causal_initiation.operation == "update"
+    assert b_c.causal_initiation.operation == "create"
     # ...but the CLAIM bodies are byte-identical -> identity_hash stable.
-    assert b_v.asserted_truth.model_dump() == b_c.asserted_truth.model_dump()
-    h_v = compute_identity_hash(
-        b_v.archetype, b_v.claim_kind, b_v.asserted_truth, b_v.semantic_conditions)
+    assert b_u.asserted_truth.model_dump() == b_c.asserted_truth.model_dump()
+    h_u = compute_identity_hash(
+        b_u.archetype, b_u.claim_kind, b_u.asserted_truth, b_u.semantic_conditions)
     h_c = compute_identity_hash(
         b_c.archetype, b_c.claim_kind, b_c.asserted_truth, b_c.semantic_conditions)
-    assert h_v == h_c
+    assert h_u == h_c
 
 
 # ---------------------------------------------------------------------------
@@ -207,14 +216,13 @@ def test_create_duplicate_hint_keeps_create_rejected():
     assert len(steps) == 1 and steps[0].field_values == {"Amount__c": 0}
 
 
-def test_delete_hint_stays_caveated_even_when_derivable():
-    # The semantic-blur fix: VRs never fire on delete — a create-rejected
-    # recipe would test the wrong operation, so a delete prohibition routes to
-    # the caveated inspection regardless of formula derivability.
-    bundle = author_emission(_grounded_op("delete", _DERIVABLE_CMP))
-    assert bundle.recipe_kind == "metadata-recipe"
-    assert bundle.trigger_kind == "inspection-trigger"
-    assert bundle.caveat_required is True
+def test_delete_hint_refuses_even_when_formula_derivable():
+    # The semantic-blur fix (D-203) + D-293: VRs never fire on delete, so a
+    # delete prohibition derives no behavioural reject recipe REGARDLESS of the
+    # formula. Pre-D-293 it degraded to the caveated inspection; now it is an
+    # incomplete behaviour instance -> refuse (emission guard raises).
+    with pytest.raises(BehaviourIncomplete):
+        author_emission(_grounded_op("delete", _DERIVABLE_CMP))
 
 
 def test_update_shape_is_layer_2_no_caveat():
@@ -223,9 +231,10 @@ def test_update_shape_is_layer_2_no_caveat():
     assert bundle.caveat_required is False
 
 
-def test_claim_identity_stable_across_all_three_recipe_shapes():
-    # The Option-C invariant extended to D-203: update-rejected vs
-    # create-rejected vs caveated-inspection — the CLAIM body never varies.
+def test_claim_identity_stable_across_both_behavioural_shapes():
+    # The Option-C invariant extended to D-203, refined by D-293: update-rejected
+    # vs create-rejected — the two BEHAVIOURAL shapes (the caveated-inspection
+    # third shape no longer exists; it refuses). The CLAIM body never varies.
     eid = uuid4()
 
     def _g(formulas):
@@ -238,18 +247,15 @@ def test_claim_identity_stable_across_all_three_recipe_shapes():
 
     b_update = author_emission(_g(_DERIVABLE_CMP))     # 2-step update shape
     b_create = author_emission(_g(_DERIVABLE))         # create-rejected fallback
-    b_caveat = author_emission(_g(_NOT_DERIVABLE))     # inspection
 
     assert b_update.causal_initiation.operation == "update"
     assert b_create.causal_initiation.operation == "create"
-    assert b_caveat.recipe_kind == "metadata-recipe"
     assert (b_update.asserted_truth.model_dump()
-            == b_create.asserted_truth.model_dump()
-            == b_caveat.asserted_truth.model_dump())
+            == b_create.asserted_truth.model_dump())
     hashes = {
         compute_identity_hash(b.archetype, b.claim_kind,
                               b.asserted_truth, b.semantic_conditions)
-        for b in (b_update, b_create, b_caveat)
+        for b in (b_update, b_create)
     }
     assert len(hashes) == 1
 
@@ -292,11 +298,8 @@ def test_verified_update_rejected_carries_inspection_secondary():
     assert bundle.secondary_recipes[0].recipe_kind == "metadata-recipe"
 
 
-def test_caveated_negative_has_no_secondaries():
-    # The caveated primary IS the inspection — a secondary would duplicate it.
-    bundle = author_emission(_grounded(formulas=_NOT_DERIVABLE))
-    assert bundle.recipe_kind == "metadata-recipe"
-    assert bundle.secondary_recipes == ()
+# (D-293 removed test_caveated_negative_has_no_secondaries — a caveated negative
+# no longer exists; the non-derivable case refuses, covered by the raises tests.)
 
 
 def test_secondary_round_trips_through_registry():
@@ -317,34 +320,17 @@ def test_secondary_round_trips_through_registry():
 # ---------------------------------------------------------------------------
 
 def test_authored_bundle_strategy_kind_defaults_none():
-    # both the behavioral and the caveated shapes — no authoring path sets it.
-    for formulas in (_DERIVABLE, _DERIVABLE_CMP, _NOT_DERIVABLE, _NONE):
+    # both behavioural shapes (create-rejected + update-rejected) — no authoring
+    # path sets it. Non-derivable shapes now refuse (D-293), so they author no
+    # bundle to inspect.
+    for formulas in (_DERIVABLE, _DERIVABLE_CMP):
         bundle = author_emission(_grounded(formulas=formulas))
         assert hasattr(bundle, "strategy_kind")
         assert bundle.strategy_kind is None
 
 
-def test_secondary_does_not_perturb_claim_identity():
-    # Option-C invariant extended to D-228: secondaries are operational layers;
-    # the claim body + identity_hash are byte-identical with or without them.
-    eid = uuid4()
-
-    def _g(formulas):
-        return GroundedNegative(
-            archetype="data_behavior", claim_kind="prohibition-claim",
-            operation_hint="modify_record", version_seq=7,
-            subject=_Endpoint(entity_id=eid, entity_type="Object",
-                              external_id="Lead"),
-            requirement_excerpt="x", vr_formulas=formulas)
-
-    b_with = author_emission(_g(_DERIVABLE))         # 1 secondary
-    b_without = author_emission(_g(_NOT_DERIVABLE))  # 0 secondaries
-    assert len(b_with.secondary_recipes) == 1
-    assert b_without.secondary_recipes == ()
-    h_with = compute_identity_hash(
-        b_with.archetype, b_with.claim_kind,
-        b_with.asserted_truth, b_with.semantic_conditions)
-    h_without = compute_identity_hash(
-        b_without.archetype, b_without.claim_kind,
-        b_without.asserted_truth, b_without.semantic_conditions)
-    assert h_with == h_without
+# (D-293 removed test_secondary_does_not_perturb_claim_identity — it relied on a
+# no-secondary authored prohibition, which no longer exists, every authored
+# prohibition now being verified and carrying the inspection secondary. The
+# identity-invariance across operational recipe variation is covered by
+# test_claim_identity_stable_across_both_behavioural_shapes.)

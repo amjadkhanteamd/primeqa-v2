@@ -171,9 +171,11 @@ def test_dedup_reemit_keeps_the_two_recipe_set(seeded):
 # --- D-228 (F3): the siblings read — supersession context ---------------------
 
 def _emit_two_prohibitions_one_requirement(seeded):
-    """ONE requirement (key R0), TWO prohibition intents (Lead verified + Case
-    caveated) via the D-207 multi-intent propose — both claims share the
-    requirement link AND the claim_kind, so each is the other's sibling."""
+    """ONE requirement (key R0), TWO prohibition intents (Lead + Quote, both with
+    a derivable-formula VR so both emit) via the D-207 multi-intent propose — both
+    claims share the requirement link AND the claim_kind, so each is the other's
+    sibling. (D-293: the old second member "Case" has a formula-less VR and now
+    refuses behaviour-incomplete, so it can no longer be the sibling.)"""
     from primeqa.semantic.connection import get_tenant_connection
     from primeqa.semantic.query import SemanticOrgModel
     from primeqa.generation.governance_core import GovernanceCore
@@ -188,7 +190,7 @@ def _emit_two_prohibitions_one_requirement(seeded):
         _flat(intent(claim_kind="prohibition-claim", polarity="negative",
                      sf_api_name="Lead")),
         _flat(intent(claim_kind="prohibition-claim", polarity="negative",
-                     sf_api_name="Case")),
+                     sf_api_name="Quote")),
     ]}
     req = make_request(s1_version_seq=seeded["v1"])
     turns = [propose_turn(multi), _emit_draft_turn()]
@@ -203,19 +205,19 @@ def _emit_two_prohibitions_one_requirement(seeded):
 
 def test_siblings_surface_same_requirement_same_kind(seeded):
     from primeqa.intelligence.s3_generation_console import read_claim_siblings
-    lead_id, case_id = _emit_two_prohibitions_one_requirement(seeded)
+    lead_id, quote_id = _emit_two_prohibitions_one_requirement(seeded)
 
     out = read_claim_siblings(TEST_TENANT_ID, lead_id)
     assert out["available"] is True
-    assert [s["test_id"] for s in out["siblings"]] == [str(case_id)]
+    assert [s["test_id"] for s in out["siblings"]] == [str(quote_id)]
     sib = out["siblings"][0]
     assert sib["claim_kind"] == "prohibition-claim"
     assert sib["status"] == "draft"
     assert sib["requirement_key"] == "R0"
     assert sib["title"]                       # the panel renders a sentence
 
-    # symmetric: the Case claim sees the Lead claim
-    back = read_claim_siblings(TEST_TENANT_ID, case_id)
+    # symmetric: the Quote claim sees the Lead claim
+    back = read_claim_siblings(TEST_TENANT_ID, quote_id)
     assert [s["test_id"] for s in back["siblings"]] == [str(lead_id)]
 
 

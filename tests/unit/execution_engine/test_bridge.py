@@ -26,10 +26,12 @@ from primeqa.execution_engine import (
     PlanTranslationError,
     build_metadata_inspection_plan,
 )
+from types import SimpleNamespace
+
 from primeqa.generation.emission import (
     GroundedEmission,
-    GroundedNegative,
     _Endpoint,
+    _inspection_recipe,
     author_emission,
 )
 from primeqa.test_representation.coordinator import RecipeRead
@@ -51,18 +53,18 @@ _NOW = datetime(2026, 5, 27, tzinfo=timezone.utc)
 # ---------------------------------------------------------------------------
 
 def _emit_negative():
-    """The D-107 prohibition inspection recipe S3 emits (read a VR APPLIES_TO
-    the subject + assert it surfaces)."""
-    return author_emission(GroundedNegative(
-        archetype="data_behavior",
-        claim_kind="prohibition-claim",
-        operation_hint="delete",
-        version_seq=7,
-        subject=_Endpoint(
-            entity_id=uuid4(), entity_type="Object", external_id="Lead",
-        ),
-        requirement_excerpt="Users must not delete a Lead without a reason.",
-    ))
+    """The metadata-inspection recipe shape S3 historically emitted for a
+    prohibition (read a VR APPLIES_TO the subject + assert it surfaces). D-293
+    removed that emission — prohibitions now emit a behavioural reject recipe —
+    but the bridge is a generic inspection decoder, so this fixture is built
+    directly from the inspection-recipe builder (the identical read-subject /
+    capture-APPLIES_TO / assert-exists shape, no longer routed via a claim)."""
+    trigger, recipe, env = _inspection_recipe(
+        read_entity_type="Object", read_external_id="Lead", capture_field="APPLIES_TO",
+        env_detail="read Lead metadata to verify a validation rule applies")
+    return SimpleNamespace(
+        causal_initiation=trigger, observation_realization=recipe,
+        execution_environment=env)
 
 
 def _emit_config():
