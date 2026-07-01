@@ -144,6 +144,17 @@ class EvalHarness:
             ), {"s": str(name_to_id[edge["source"]]), "t": str(name_to_id[edge["target"]]),
                 "et": edge["edge_type"], "ec": edge.get("edge_category", "BEHAVIOR"),
                 "props": json.dumps(edge.get("properties") or {}), "vf": vseq})
+        # D-294: optional field_details rows so a probe can exercise the
+        # metadata-driven violation-derivation shapes (cross-field / NOT-ISBLANK /
+        # bare-boolean) — each carries field_type (+ optional length / is_calculated)
+        # for a Field the rail reads via get_entity_details.
+        for fd in fixture.get("field_details", []):
+            conn.execute(text(
+                "INSERT INTO field_details (entity_id, object_entity_id, field_type, "
+                "is_calculated, length) VALUES (CAST(:e AS uuid),CAST(:o AS uuid),:ft,:calc,:len)"
+            ), {"e": str(name_to_id[fd["field"]]), "o": str(name_to_id[fd["object"]]),
+                "ft": fd["field_type"], "calc": bool(fd.get("is_calculated", False)),
+                "len": fd.get("length")})
         return int(vseq)
 
     def _make_request(self, vseq: int, *, requirement_text: str = "the requirement",

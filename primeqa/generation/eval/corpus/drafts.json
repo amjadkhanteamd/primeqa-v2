@@ -908,5 +908,390 @@
     ]
    }
   }
+ },
+ {
+  "id": "cross-field-prohibition-negative",
+  "description": "D-294: cross-field VR (Loan__c > Property__c) on Deal; both fields numeric per field_details -> derivable ordered pair -> Layer-2 verified update-rejected draft.",
+  "category": "verified_negative",
+  "fixture": {
+   "entities": [
+    {
+     "entity_type": "Object",
+     "sf_api_name": "Deal"
+    },
+    {
+     "entity_type": "Field",
+     "sf_api_name": "Deal.Loan__c"
+    },
+    {
+     "entity_type": "Field",
+     "sf_api_name": "Deal.Property__c"
+    },
+    {
+     "entity_type": "ValidationRule",
+     "sf_api_name": "Deal.LoanVsProperty",
+     "attributes": {
+      "formula_text": "Loan__c > Property__c"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "source": "Deal.Loan__c",
+     "target": "Deal",
+     "edge_type": "BELONGS_TO",
+     "edge_category": "STRUCTURAL"
+    },
+    {
+     "source": "Deal.Property__c",
+     "target": "Deal",
+     "edge_type": "BELONGS_TO",
+     "edge_category": "STRUCTURAL"
+    },
+    {
+     "source": "Deal.LoanVsProperty",
+     "target": "Deal",
+     "edge_type": "APPLIES_TO",
+     "edge_category": "BEHAVIOR"
+    }
+   ],
+   "field_details": [
+    {
+     "field": "Deal.Loan__c",
+     "object": "Deal",
+     "field_type": "currency"
+    },
+    {
+     "field": "Deal.Property__c",
+     "object": "Deal",
+     "field_type": "currency"
+    }
+   ]
+  },
+  "turns": [
+   {
+    "tool": "propose_semantic_intent",
+    "input": {
+     "requirement_excerpt": "The system shall reject a Deal whose Loan exceeds the Property value.",
+     "intent_descriptor": {
+      "archetype_hint": "data_behavior",
+      "polarity_hint": "negative",
+      "claim_kind_hint": "prohibition-claim",
+      "target_subject_hint": {
+       "entity_type": "Object",
+       "sf_api_name": "Deal"
+      }
+     }
+    }
+   },
+   {
+    "tool": "emit_outcome",
+    "input": {
+     "outcome_kind": "draft",
+     "payload": {
+      "admissibility_layer": "layer_2"
+     }
+    }
+   }
+  ],
+  "expect": {
+   "outcome_kind": "draft",
+   "admissibility_layer": "layer_2",
+   "caveat_required": false,
+   "caveat_kind": null,
+   "claim": {
+    "archetype": "data_behavior",
+    "claim_kind": "prohibition-claim"
+   },
+   "recipe": {
+    "trigger_kind": "data-mutation-trigger",
+    "recipe_kind": "data-recipe"
+   }
+  },
+  "live": {
+   "requirement_text": "The system shall reject a Deal whose Loan exceeds the Property value.",
+   "envelope": {
+    "invariant": [
+     {
+      "field": "outcome_kind",
+      "op": "eq",
+      "value": "draft"
+     },
+     {
+      "field": "archetype",
+      "op": "eq",
+      "value": "data_behavior"
+     },
+     {
+      "field": "caveat_required",
+      "op": "is_false"
+     }
+    ],
+    "acceptable_variants": [
+     {
+      "field": "claim_kind",
+      "op": "in",
+      "value": [
+       "prohibition-claim"
+      ]
+     }
+    ],
+    "benign": [
+     "explanation",
+     "phrasing",
+     "excerpt",
+     "subject",
+     "caveat_kind"
+    ],
+    "_note": "D-294 metadata-driven derivation: the grounding VR is non-numeric/field-to-field but the field metadata (field_details type) makes a certain violating value derivable -> Layer-2 verified, no caveat."
+   }
+  }
+ },
+ {
+  "id": "not-isblank-prohibition-negative",
+  "description": "D-294: NOT(ISBLANK(Body__c)) on Note ('must be empty'); text field per field_details -> a certain non-blank value derives -> Layer-2 verified draft.",
+  "category": "verified_negative",
+  "fixture": {
+   "entities": [
+    {
+     "entity_type": "Object",
+     "sf_api_name": "Note"
+    },
+    {
+     "entity_type": "Field",
+     "sf_api_name": "Note.Body__c"
+    },
+    {
+     "entity_type": "ValidationRule",
+     "sf_api_name": "Note.MustBeEmpty",
+     "attributes": {
+      "formula_text": "NOT(ISBLANK(Body__c))"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "source": "Note.Body__c",
+     "target": "Note",
+     "edge_type": "BELONGS_TO",
+     "edge_category": "STRUCTURAL"
+    },
+    {
+     "source": "Note.MustBeEmpty",
+     "target": "Note",
+     "edge_type": "APPLIES_TO",
+     "edge_category": "BEHAVIOR"
+    }
+   ],
+   "field_details": [
+    {
+     "field": "Note.Body__c",
+     "object": "Note",
+     "field_type": "text",
+     "length": 255
+    }
+   ]
+  },
+  "turns": [
+   {
+    "tool": "propose_semantic_intent",
+    "input": {
+     "requirement_excerpt": "The system shall reject a Note that has a body.",
+     "intent_descriptor": {
+      "archetype_hint": "data_behavior",
+      "polarity_hint": "negative",
+      "claim_kind_hint": "prohibition-claim",
+      "target_subject_hint": {
+       "entity_type": "Object",
+       "sf_api_name": "Note"
+      }
+     }
+    }
+   },
+   {
+    "tool": "emit_outcome",
+    "input": {
+     "outcome_kind": "draft",
+     "payload": {
+      "admissibility_layer": "layer_2"
+     }
+    }
+   }
+  ],
+  "expect": {
+   "outcome_kind": "draft",
+   "admissibility_layer": "layer_2",
+   "caveat_required": false,
+   "caveat_kind": null,
+   "claim": {
+    "archetype": "data_behavior",
+    "claim_kind": "prohibition-claim"
+   },
+   "recipe": {
+    "trigger_kind": "data-mutation-trigger",
+    "recipe_kind": "data-recipe"
+   }
+  },
+  "live": {
+   "requirement_text": "The system shall reject a Note that has a body.",
+   "envelope": {
+    "invariant": [
+     {
+      "field": "outcome_kind",
+      "op": "eq",
+      "value": "draft"
+     },
+     {
+      "field": "archetype",
+      "op": "eq",
+      "value": "data_behavior"
+     },
+     {
+      "field": "caveat_required",
+      "op": "is_false"
+     }
+    ],
+    "acceptable_variants": [
+     {
+      "field": "claim_kind",
+      "op": "in",
+      "value": [
+       "prohibition-claim"
+      ]
+     }
+    ],
+    "benign": [
+     "explanation",
+     "phrasing",
+     "excerpt",
+     "subject",
+     "caveat_kind"
+    ],
+    "_note": "D-294 metadata-driven derivation: the grounding VR is non-numeric/field-to-field but the field metadata (field_details type) makes a certain violating value derivable -> Layer-2 verified, no caveat."
+   }
+  }
+ },
+ {
+  "id": "bare-boolean-prohibition-negative",
+  "description": "D-294: bare boolean field predicate (Blocked__c) on Task; boolean per field_details -> {Blocked__c: True} derives -> Layer-2 verified draft.",
+  "category": "verified_negative",
+  "fixture": {
+   "entities": [
+    {
+     "entity_type": "Object",
+     "sf_api_name": "Task"
+    },
+    {
+     "entity_type": "Field",
+     "sf_api_name": "Task.Blocked__c"
+    },
+    {
+     "entity_type": "ValidationRule",
+     "sf_api_name": "Task.NotBlocked",
+     "attributes": {
+      "formula_text": "Blocked__c"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "source": "Task.Blocked__c",
+     "target": "Task",
+     "edge_type": "BELONGS_TO",
+     "edge_category": "STRUCTURAL"
+    },
+    {
+     "source": "Task.NotBlocked",
+     "target": "Task",
+     "edge_type": "APPLIES_TO",
+     "edge_category": "BEHAVIOR"
+    }
+   ],
+   "field_details": [
+    {
+     "field": "Task.Blocked__c",
+     "object": "Task",
+     "field_type": "boolean"
+    }
+   ]
+  },
+  "turns": [
+   {
+    "tool": "propose_semantic_intent",
+    "input": {
+     "requirement_excerpt": "The system shall reject a Task that is blocked.",
+     "intent_descriptor": {
+      "archetype_hint": "data_behavior",
+      "polarity_hint": "negative",
+      "claim_kind_hint": "prohibition-claim",
+      "target_subject_hint": {
+       "entity_type": "Object",
+       "sf_api_name": "Task"
+      }
+     }
+    }
+   },
+   {
+    "tool": "emit_outcome",
+    "input": {
+     "outcome_kind": "draft",
+     "payload": {
+      "admissibility_layer": "layer_2"
+     }
+    }
+   }
+  ],
+  "expect": {
+   "outcome_kind": "draft",
+   "admissibility_layer": "layer_2",
+   "caveat_required": false,
+   "caveat_kind": null,
+   "claim": {
+    "archetype": "data_behavior",
+    "claim_kind": "prohibition-claim"
+   },
+   "recipe": {
+    "trigger_kind": "data-mutation-trigger",
+    "recipe_kind": "data-recipe"
+   }
+  },
+  "live": {
+   "requirement_text": "The system shall reject a Task that is blocked.",
+   "envelope": {
+    "invariant": [
+     {
+      "field": "outcome_kind",
+      "op": "eq",
+      "value": "draft"
+     },
+     {
+      "field": "archetype",
+      "op": "eq",
+      "value": "data_behavior"
+     },
+     {
+      "field": "caveat_required",
+      "op": "is_false"
+     }
+    ],
+    "acceptable_variants": [
+     {
+      "field": "claim_kind",
+      "op": "in",
+      "value": [
+       "prohibition-claim"
+      ]
+     }
+    ],
+    "benign": [
+     "explanation",
+     "phrasing",
+     "excerpt",
+     "subject",
+     "caveat_kind"
+    ],
+    "_note": "D-294 metadata-driven derivation: the grounding VR is non-numeric/field-to-field but the field metadata (field_details type) makes a certain violating value derivable -> Layer-2 verified, no caveat."
+   }
+  }
  }
 ]
