@@ -64,7 +64,7 @@ from primeqa.generation.protocol import (
     RefusalEntry,
 )
 from primeqa.semantic.edges import TIER_1_EDGES
-from primeqa.semantic.entity_attributes import vr_formula_text
+from primeqa.semantic.entity_attributes import vr_error_message, vr_formula_text
 from primeqa.semantic.formula import Comparison, FieldRef, is_parsed, parse, walk
 from primeqa.semantic.query import Entity, SemanticOrgModel
 
@@ -213,6 +213,41 @@ def _grounding_vr_formulas(claim_kind: str, neighborhood: list) -> tuple[str, ..
             if text:
                 formulas.append(text)
     return tuple(formulas)
+
+
+def _grounding_vr_messages(claim_kind: str, neighborhood: list) -> dict:
+    """{VR formula_text -> user-facing error message} for the grounding VRs (D-297,
+    lever 5), read from S1 at grounding via the SAME (edge_type, far_type) dimension
+    as :func:`_grounding_vr_formulas` — so the keys align with what emission derives
+    from. Slice 5.2 looks up the DERIVED source formula's message here and projects
+    it into the recipe's ``error_message_pattern`` so the S4 grade confirms the
+    CORRECT rule fired (not merely some VR). **Ambiguity guard:** a formula_text with
+    >1 matching VR carrying DIFFERING messages is dropped (never bind an arbitrary
+    message); a VR with no message is skipped. The LLM never authors these — they are
+    the messages S1 synced from Salesforce (ground-or-refuse). DORMANT until 5.2
+    reads it."""
+    dim = _NEGATIVE_LAYER1_DIM.get(claim_kind)
+    if dim is None:
+        return {}
+    edge_type, far_type = dim
+    out: dict = {}
+    ambiguous: set = set()
+    for r in neighborhood:
+        if r.edge_type != edge_type or r.entity.entity_type != far_type:
+            continue
+        text = vr_formula_text(r.entity.attributes)
+        if not text:
+            continue
+        msg = vr_error_message(r.entity.attributes)
+        if msg is None:
+            continue
+        if text in out and out[text] != msg:
+            ambiguous.add(text)          # same formula, differing messages -> drop
+        elif text not in ambiguous:
+            out[text] = msg
+    for text in ambiguous:
+        out.pop(text, None)
+    return out
 
 
 def _claim_condition_fields(grounded_conds) -> frozenset[str]:
@@ -969,7 +1004,11 @@ class GovernanceCore:
                 conditions=tuple(grounded_conds),
                 # D-294: read-only field metadata for violation-derivation breadth
                 # (dormant this slice; derive ignores it).
-                field_metadata=field_metadata))
+                field_metadata=field_metadata,
+                # D-297 (lever 5): {VR formula -> error message} for the grounding
+                # VRs; DORMANT here — 5.2 looks up the DERIVED source formula's
+                # message and projects it into the recipe's error_message_pattern.
+                vr_messages=_grounding_vr_messages(claim_kind, neighborhood)))
 
         # Stash grounding for the positive value-claim (D-115.3). Grounding has
         # already verified the NAMED field exists, so re-resolve it from the same

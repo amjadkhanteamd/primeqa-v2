@@ -229,6 +229,13 @@ class GroundedNegative:
     # exactly as today (the certainty bar). DORMANT until a later slice arms the
     # derive branches; threaded-but-ignored here.
     field_metadata: dict = field(default_factory=dict)
+    # D-297 (lever 5): {VR formula_text -> the VR's user-facing error message},
+    # read from S1 at grounding (governance `_grounding_vr_messages`). DORMANT here —
+    # emission does not read it yet; slice 5.2 looks up the DERIVED source formula's
+    # message and projects it into RejectionExpectation.error_message_pattern so the
+    # S4 grade confirms WHICH rule fired. Empty (the default) -> no pattern ->
+    # byte-identical. Not persisted (transient), not an identity_hash input.
+    vr_messages: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

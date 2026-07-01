@@ -285,6 +285,47 @@ def test_grounding_vr_formulas_unknown_dim_is_empty():
                                                           {"formula_text": "Amount < 0"})]) == ()
 
 
+# D-297 (lever 5, S1 dormant): _grounding_vr_messages — {formula_text -> error
+# message} for the matched VRs, keyed the same as _grounding_vr_formulas so emission
+# (5.2) can look up the DERIVED source formula's message. Ambiguity-guarded.
+
+def test_grounding_vr_messages_maps_formula_to_message():
+    nb = [
+        _rel("APPLIES_TO", "ValidationRule",
+             {"formula_text": "Amount < 0", "error_message": "Amount must be positive"}),
+        _rel("APPLIES_TO", "ValidationRule", {"formula_text": "ISBLANK(R__c)"}),  # no message
+        _rel("BELONGS_TO", "Field", {"formula_text": "x", "error_message": "wrong edge"}),
+    ]
+    assert gc._grounding_vr_messages("prohibition-claim", nb) == {
+        "Amount < 0": "Amount must be positive"}
+
+
+def test_grounding_vr_messages_ambiguity_guard_drops_conflicting():
+    # Same formula_text, DIFFERING messages -> dropped (never bind an arbitrary one);
+    # same formula + same message -> kept.
+    nb = [
+        _rel("APPLIES_TO", "ValidationRule", {"formula_text": "F", "error_message": "m1"}),
+        _rel("APPLIES_TO", "ValidationRule", {"formula_text": "F", "error_message": "m2"}),
+        _rel("APPLIES_TO", "ValidationRule", {"formula_text": "G", "error_message": "gm"}),
+        _rel("APPLIES_TO", "ValidationRule", {"formula_text": "G", "error_message": "gm"}),
+    ]
+    out = gc._grounding_vr_messages("prohibition-claim", nb)
+    assert "F" not in out
+    assert out["G"] == "gm"
+
+
+def test_grounding_vr_messages_raw_tooling_shape():
+    # D-203.1 two-shape tolerance: raw Tooling ErrorMessage + Metadata.errorConditionFormula.
+    nb = [_rel("APPLIES_TO", "ValidationRule",
+               {"Metadata": {"errorConditionFormula": "Amt > 100"}, "ErrorMessage": "too big"})]
+    assert gc._grounding_vr_messages("prohibition-claim", nb) == {"Amt > 100": "too big"}
+
+
+def test_grounding_vr_messages_unknown_dim_is_empty():
+    assert gc._grounding_vr_messages("value-claim", [_rel(
+        "APPLIES_TO", "ValidationRule", {"formula_text": "F", "error_message": "m"})]) == {}
+
+
 # ---------------------------------------------------------------------------
 # D-293 (Slice 2): _ground_rejection_conditions — grounds an LLM-proposed
 # prohibition business-state against the scoped neighborhood (Option A).
