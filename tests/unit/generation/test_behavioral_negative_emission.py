@@ -505,3 +505,17 @@ def test_d297_regex_metacharacters_in_message_are_escaped():
     assert mutation.expect_rejection.error_message_pattern == re.escape(msg)
     # and the escaped pattern matches the literal message (teeth of the projection)
     assert re.fullmatch(mutation.expect_rejection.error_message_pattern, msg)
+
+
+def test_d297_1_html_entity_message_unescaped_before_escape():
+    # D-297.1: the Tooling API stores VR messages with HTML entities (e.g. the rupee
+    # sign as "&#8377;"); emission HTML-unescapes before re.escape so the pattern is
+    # escape(RENDERED), matching the org's rendered runtime message (S4 _matches also
+    # unescapes the runtime side). The pattern must NOT carry the raw entity.
+    g = _grounded_msg(
+        formulas=("Amount__c = 0",),
+        vr_messages={"Amount__c = 0": "Loans over &#8377;50,00,000 need approval."})
+    _, mutation = author_emission(g).observation_realization.steps
+    assert mutation.expect_rejection.error_message_pattern == re.escape(
+        "Loans over ₹50,00,000 need approval.")   # ₹ = rendered rupee sign
+    assert "&#8377;" not in mutation.expect_rejection.error_message_pattern

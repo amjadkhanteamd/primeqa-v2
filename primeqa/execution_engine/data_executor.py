@@ -37,6 +37,7 @@ setup failure is ``errored`` (the prohibition was never exercised), never
 """
 from __future__ import annotations
 
+import html
 import re
 import time
 from dataclasses import replace
@@ -921,7 +922,13 @@ def _matches(expect, rejection_body) -> bool:
         msg_ok = True
     else:
         pat = expect.error_message_pattern
-        msg_ok = any(re.search(pat, e.get("message") or "") for e in errors)
+        # D-297.1: HTML-unescape the runtime message before matching — the pattern
+        # is escaped from the S1-synced VR message, which the emission side already
+        # unescaped (Tooling stores HTML entities, the org renders them). Normalizing
+        # BOTH sides makes the match encoding-robust, so an entity/rendered mismatch
+        # cannot grade a correct rejection `failed`. Only D-297 sets a message
+        # pattern, so this normalization touches no other grading path.
+        msg_ok = any(re.search(pat, html.unescape(e.get("message") or "")) for e in errors)
     return code_ok and msg_ok
 
 

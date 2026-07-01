@@ -37,6 +37,7 @@ prohibition claim's identity_hash is unchanged (no premature D-088 break).
 """
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -901,7 +902,13 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
     # so the S4 grade confirms WHICH rule fired. No message / unknown source -> None
     # -> the recipe's error_message_pattern stays None -> byte-identical. The message
     # is S1-synced from Salesforce (ground-or-refuse), never LLM-authored.
-    error_message = g.vr_messages.get(source_formula) if source_formula else None
+    # D-297.1: HTML-unescape the synced message before it is escaped into the
+    # pattern — the Tooling API stores VR messages with HTML entities (e.g.
+    # "&#8377;" for the rupee sign), but the org's runtime rejection renders them;
+    # normalizing to the rendered form (S4 _matches unescapes the runtime side too)
+    # keeps a CORRECT rejection from grading `failed` on an encoding mismatch.
+    _raw_message = g.vr_messages.get(source_formula) if source_formula else None
+    error_message = html.unescape(_raw_message) if _raw_message else None
     claim = ProhibitionClaimBody(
         target=subject_ref,
         operation=operation,

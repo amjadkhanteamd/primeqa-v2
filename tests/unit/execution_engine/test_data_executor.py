@@ -154,6 +154,29 @@ def test_message_pattern_must_also_match():
     assert ev_no.outcome == "failed"
 
 
+def test_d297_1_html_entity_message_matches_rendered_pattern():
+    # D-297.1: emission escapes the RENDERED message (it HTML-unescapes the
+    # Tooling-stored entity first); the org's runtime rejection may return EITHER the
+    # HTML entity or the rendered char. _matches HTML-unescapes the runtime side, so
+    # BOTH forms match -> passed. An encoding mismatch must never grade a correct
+    # rejection `failed`.
+    import re as _re
+    rendered = "Loans over ₹50,00,000 need approval."
+    pat = _re.escape(rendered)
+    for runtime_msg in ("Loans over &#8377;50,00,000 need approval.", rendered):
+        ev = execute_data_recipe(
+            _plan(expect_pattern=pat),
+            client=_StubClient(create_result=_rejected(_VR_CODE, message=runtime_msg)),
+            environment_id=_ENV_ID)
+        assert ev.outcome == "passed", runtime_msg
+    # teeth preserved: a genuinely different message still fails (unescape is no-op).
+    ev_wrong = execute_data_recipe(
+        _plan(expect_pattern=pat),
+        client=_StubClient(create_result=_rejected(_VR_CODE, message="Unrelated error.")),
+        environment_id=_ENV_ID)
+    assert ev_wrong.outcome == "failed"
+
+
 def test_match_robust_to_multi_error_body():
     body = {"api_response": {"status_code": 400,
             "body": [{"errorCode": "OTHER", "message": "x"},
