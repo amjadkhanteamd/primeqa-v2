@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v10"
+CURRENT = "generation@v11"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -42,6 +42,7 @@ _FILES = {
     "generation@v8": _VERSIONS_DIR / "generation_v8.md",
     "generation@v9": _VERSIONS_DIR / "generation_v9.md",
     "generation@v10": _VERSIONS_DIR / "generation_v10.md",
+    "generation@v11": _VERSIONS_DIR / "generation_v11.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -79,6 +80,11 @@ RECORDED_HASHES = {
     # substrate REFUSES an incomplete behaviour instance (no derivable behavioural
     # reject recipe) rather than degrading to the caveated metadata inspection.
     "generation@v10": "0f43a120674001d1476698c274d3a939282bc0a7d725e5b564a9146d34d5d69e",
+    # v11 (D-299): automation-effect entry-condition trigger — the LLM proposes
+    # trigger_fields (the {field_name, value} pairs the create must SET so the
+    # Flow's entry gate fires AND the record passes its validation rules) plus
+    # automation_name (disambiguate WHICH Flow when several fire on the object).
+    "generation@v11": "57677c7318cb053133f49db98421a16a60a7bf76ee15a8c6d35f8bc4f58cadd0",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).

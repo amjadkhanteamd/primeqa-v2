@@ -90,7 +90,21 @@ Data-behavior claims concern how records and fields behave at runtime.
   stamped field, REQUIRED); set `effect_value` only when the requirement
   names a stable literal — omit it for stamps like "today"/"now" (the test
   then asserts the field was set at all).
+  When several Flows fire on the trigger object, set `automation_name` to the
+  API name of the specific Flow the requirement is about — otherwise the claim
+  cannot tell which automation to assert.
+  A Flow usually fires only when its ENTRY CONDITION is met, and the record
+  must first pass every validation rule to be created at all. So set
+  `trigger_fields` — an array of `{"field_name": "<Object.Field>", "value": <v>}`
+  (fully-qualified names) — naming every field the create must set for the Flow
+  to fire: the entry-gate field(s) AND any field a validation rule requires
+  present. Example: to fire a risk-rating Flow gated on
+  `StageName='Credit Assessment'` where that stage's VR also demands KYC and a
+  credit score, set all three — `[{"field_name":"Opportunity.StageName","value":"Credit Assessment"},{"field_name":"Opportunity.KYC_Complete__c","value":true},{"field_name":"Opportunity.Credit_Score__c","value":700}]`.
+  Do NOT list the effect field itself in `trigger_fields` — the org must
+  produce it. Omit `trigger_fields` when the Flow fires on bare creation.
   The substrate verifies every name against the org model and grounds the
-  claim on a record-triggered Flow existing on the trigger object.
+  claim on a record-triggered Flow existing on the trigger object; it silently
+  drops any `trigger_fields` entry it cannot verify (it never guesses).
 - Choose the Object the behavior acts on as the subject — not a field — unless
   the claim is specifically about a single field's value.

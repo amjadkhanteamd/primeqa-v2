@@ -24,12 +24,12 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v10():
-    # D-293: CURRENT bumped to v10 (prohibition behaviour-instance contract —
-    # rejection_conditions + refuse-not-degrade). v1..v9 stay frozen +
-    # pinned-resolvable (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v10"
-    assert registry.get() == registry.get("generation@v10")
+def test_current_resolves_to_v11():
+    # D-299: CURRENT bumped to v11 (automation-effect entry-condition trigger —
+    # trigger_fields + automation_name). v1..v10 stay frozen + pinned-resolvable
+    # (test_runtime_honors_pinned_prompt_version).
+    assert registry.CURRENT == "generation@v11"
+    assert registry.get() == registry.get("generation@v11")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # the substance the schemas don't enforce (D-103.3) is present
@@ -61,6 +61,10 @@ def test_current_resolves_to_v10():
     assert "business STATE" in sys
     assert "is_not_null" in sys and "matches_pattern" in sys  # the predicate taxonomy
     assert "REFUSES that intent honestly" in sys            # refuse-not-degrade
+    # v11's automation-effect entry-condition trigger contract (D-299)
+    assert "trigger_fields" in sys                          # the entry-condition hint
+    assert "automation_name" in sys                         # disambiguate WHICH Flow
+    assert "entry-gate" in sys or "ENTRY CONDITION" in sys
     # the honest-dismissals guard is preserved verbatim (not overturned)
     assert "honest" in sys and "forced breadth" in sys
 
