@@ -362,3 +362,72 @@ def test_authored_bundle_strategy_kind_defaults_none():
 # prohibition now being verified and carrying the inspection secondary. The
 # identity-invariance across operational recipe variation is covered by
 # test_claim_identity_stable_across_both_behavioural_shapes.)
+
+
+# ---------------------------------------------------------------------------
+# D-296 (lever 4) — the compound cross-field / NOT-ISBLANK prohibition composes
+# end to end: selection (governance, test_vr_alignment.py) hands the aligned
+# Loan_Exceeds VR here, and the D-296 soft-merge derivation emits a runnable
+# 2-step update-rejected recipe. This pins the EMISSION end (gate + golden + hash).
+# field_metadata is keyed by the VERBATIM mixed-case field name (the derive side is
+# uncased — a lowercase key would silently disengage the reconciliation).
+# ---------------------------------------------------------------------------
+
+_EXCEEDS = ("AND(NOT(ISBLANK(Loan_Amount__c)), NOT(ISBLANK(Property_Value__c)), "
+            "Loan_Amount__c > Property_Value__c)",)
+_XF_META = {
+    "Loan_Amount__c": {"field_type": "currency", "is_calculated": False},
+    "Property_Value__c": {"field_type": "currency", "is_calculated": False},
+}
+
+
+def test_d296_ac2_prohibition_recipe_derivable():
+    # The D-293 completeness gate now passes for AC2's aligned VR (was False
+    # pre-D-296 — the compound AND(NOT-ISBLANK, NOT-ISBLANK, a>b) refused).
+    from primeqa.generation.emission import prohibition_recipe_derivable
+    assert prohibition_recipe_derivable("modify_record", _EXCEEDS, _XF_META) is True
+
+
+def test_d296_compound_cross_field_emits_update_rejected_recipe():
+    bundle = author_emission(_grounded(
+        formulas=_EXCEEDS, external_id="Opportunity", field_metadata=_XF_META))
+    assert bundle.recipe_kind == "data-recipe"
+    assert bundle.causal_initiation.operation == "update"
+    setup, mutation = bundle.observation_realization.steps
+    assert isinstance(setup, CreateStep) and setup.expect_rejection is None
+    # non-violating setup: Loan blank -> the AND doesn't fire. Object-qualified key.
+    assert setup.field_values == {"Opportunity.Loan_Amount__c": None}
+    assert mutation.kind == "update"
+    # violating: Loan 1 > Property 0 fires; both non-blank (0 is a non-blank number).
+    assert mutation.field_changes == {"Opportunity.Loan_Amount__c": 1,
+                                      "Opportunity.Property_Value__c": 0}
+    assert mutation.expect_rejection.error_code == _VR_CODE
+    # no _SoftFill sentinel leaked into the emitted recipe (raw values only).
+    from primeqa.generation.verified_negative import _SoftFill
+    for v in list(setup.field_values.values()) + list(mutation.field_changes.values()):
+        assert not isinstance(v, _SoftFill)
+
+
+def test_d296_compound_claim_identity_hash_stable():
+    # lever 4 changes which VR grounds AC2 (and the recipe), NEVER the claim identity:
+    # same subject + (empty) conditions as a create-rejected claim -> same hash.
+    eid = uuid4()
+    g_compound = GroundedNegative(
+        archetype="data_behavior", claim_kind="prohibition-claim",
+        operation_hint="modify_record", version_seq=7,
+        subject=_Endpoint(entity_id=eid, entity_type="Object", external_id="Opportunity"),
+        requirement_excerpt="x", vr_formulas=_EXCEEDS, field_metadata=_XF_META)
+    g_create = GroundedNegative(
+        archetype="data_behavior", claim_kind="prohibition-claim",
+        operation_hint="modify_record", version_seq=7,
+        subject=_Endpoint(entity_id=eid, entity_type="Object", external_id="Opportunity"),
+        requirement_excerpt="x", vr_formulas=_DERIVABLE)
+    b_x = author_emission(g_compound)
+    b_c = author_emission(g_create)
+    assert b_x.causal_initiation.operation == "update"
+    assert b_x.asserted_truth.model_dump() == b_c.asserted_truth.model_dump()
+    h_x = compute_identity_hash(
+        b_x.archetype, b_x.claim_kind, b_x.asserted_truth, b_x.semantic_conditions)
+    h_c = compute_identity_hash(
+        b_c.archetype, b_c.claim_kind, b_c.asserted_truth, b_c.semantic_conditions)
+    assert h_x == h_c
