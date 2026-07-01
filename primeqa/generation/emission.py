@@ -326,6 +326,15 @@ class GroundedAutomationEffect:
     effect_lookup_field: Optional[_Endpoint] = None  # cross-object correlate
     # D-227 parent-stamp: the SUBJECT's own lookup to the effect parent.
     effect_via_lookup_field: Optional[_Endpoint] = None
+    # D-299: the OPTIONAL entry-condition trigger — the (field, value) pairs the
+    # create must SET so the Flow's entry gate actually fires (the risk-rating
+    # flow gates on StageName='Credit Assessment' AND the KYC/Credit-Score fields
+    # its Credit_Assessment_Prerequisites VR forces present). Each _Endpoint is
+    # a Field verified BELONGS_TO the SUBJECT at the stash gate; requirement-
+    # sourced values (verbatim). Empty () → today's shallow observe-the-org shape
+    # exactly (the create sets nothing, so the flow never fires — observability,
+    # not correctness). Multi-field because one entry gate is not enough.
+    trigger_fields: tuple = ()  # tuple[tuple[_Endpoint, Any], ...]
 
 
 @dataclass(frozen=True)
