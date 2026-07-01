@@ -65,7 +65,7 @@ from primeqa.generation.protocol import (
 )
 from primeqa.semantic.edges import TIER_1_EDGES
 from primeqa.semantic.entity_attributes import vr_formula_text
-from primeqa.semantic.formula import FieldRef, is_parsed, parse, walk
+from primeqa.semantic.formula import Comparison, FieldRef, is_parsed, parse, walk
 from primeqa.semantic.query import Entity, SemanticOrgModel
 
 
@@ -241,6 +241,31 @@ def _vr_formula_fields(text: str) -> frozenset[str]:
         node.path[-1].lower()
         for node in walk(ast)
         if isinstance(node, FieldRef) and node.path)
+
+
+def _vr_cross_field_pairs(text: str) -> frozenset[frozenset[str]]:
+    """The cross-field comparison operand-pairs a VR formula references (D-296 —
+    the structural discriminator field-overlap is blind to). Each pair is an
+    order-free ``frozenset`` of the two bare, lower-cased field api-names of a
+    ``Comparison`` whose BOTH sides are ``FieldRef`` (e.g. ``Loan_Amount__c >
+    Property_Value__c`` -> ``{{loan_amount__c, property_value__c}}``). The operator
+    is deliberately IGNORED — this is a membership discriminator only; orientation
+    is handled downstream by ``verified_negative._satisfy_cross_field`` via
+    ``_CROSS_PAIR``. Field-vs-literal comparisons (``Amount > 10000``) and
+    unparseable formulas contribute NOTHING (``frozenset()``), so the D-295.1
+    generic wrong-green class carries no cross-field signature. Strictly less than
+    :func:`_vr_formula_fields` — a single node-shape filter, not a formula
+    evaluator. DORMANT until D-296 S2 wires it into ``_best_aligned_vr``'s tie
+    branch (exact-equality guard: a pair qualifies iff it == the claim's fields)."""
+    ast = parse(text)
+    if not is_parsed(ast):
+        return frozenset()
+    return frozenset(
+        frozenset({node.left.path[-1].lower(), node.right.path[-1].lower()})
+        for node in walk(ast)
+        if isinstance(node, Comparison)
+        and isinstance(node.left, FieldRef) and isinstance(node.right, FieldRef)
+        and node.left.path and node.right.path)
 
 
 def _best_aligned_vr(vr_formulas: tuple[str, ...], grounded_conds) -> Optional[str]:

@@ -270,3 +270,49 @@ def test_refusal_detail_d293_when_no_candidate_vrs():
     detail = gc._prohibition_refusal_detail("Opportunity", (), (), [])
     assert "D-293" in detail
     assert "D-295" not in detail
+
+
+# --- D-296 lever 4: _vr_cross_field_pairs (dormant — the structural discriminator) --
+
+def test_cross_field_pairs_on_real_rules():
+    # Only Loan_Exceeds has a field-to-field Comparison; the rest are field-vs-literal
+    # or blank/picklist checks -> no cross-field signature.
+    assert gc._vr_cross_field_pairs(VR_LOAN_EXCEEDS) == frozenset(
+        {frozenset({"loan_amount__c", "property_value__c"})})
+    assert gc._vr_cross_field_pairs(VR_HOME_LOAN) == frozenset()
+    assert gc._vr_cross_field_pairs(VR_CREDIT_ASSESSMENT) == frozenset()
+    # Block_Approved's Loan_Amount__c > 5000000 is field-vs-LITERAL -> no pair.
+    assert gc._vr_cross_field_pairs(VR_BLOCK_APPROVED) == frozenset()
+    # The generic Amount rule (the D-295.1 wrong-green class) has no cross-field sig.
+    assert gc._vr_cross_field_pairs(VR_AMOUNT) == frozenset()
+
+
+def test_cross_field_pairs_unparseable_is_empty():
+    assert gc._vr_cross_field_pairs("REGEX(Name, '[0-9]+') && CASE(x,1,2,3)") == frozenset()
+    assert gc._vr_cross_field_pairs("") == frozenset()
+
+
+def test_cross_field_pairs_order_free():
+    # The pair is order-free (a frozenset), so operand order doesn't matter.
+    assert gc._vr_cross_field_pairs("A__c > B__c") == gc._vr_cross_field_pairs("B__c > A__c")
+    assert gc._vr_cross_field_pairs("A__c > B__c") == frozenset({frozenset({"a__c", "b__c"})})
+
+
+def test_cross_field_pairs_dotted_takes_bare_tail():
+    # A self-qualified formula ref reduces to bare tails, matching _vr_formula_fields
+    # + the claim-condition side.
+    assert gc._vr_cross_field_pairs(
+        "Opportunity.Loan_Amount__c > Opportunity.Property_Value__c") == frozenset(
+        {frozenset({"loan_amount__c", "property_value__c"})})
+
+
+def test_cross_field_pairs_field_vs_literal_has_none():
+    # The membership discriminator is field-TO-field only; a literal comparison
+    # (either side a Literal) is never a cross-field pair.
+    assert gc._vr_cross_field_pairs("Amount__c > 10000") == frozenset()
+    assert gc._vr_cross_field_pairs("ISPICKVAL(StageName, \"Closed\")") == frozenset()
+
+
+def test_cross_field_pairs_multiple_distinct_pairs():
+    assert gc._vr_cross_field_pairs("AND(A__c > B__c, C__c < D__c)") == frozenset(
+        {frozenset({"a__c", "b__c"}), frozenset({"c__c", "d__c"})})
