@@ -365,6 +365,58 @@ def test_behaviour_incomplete_router_kind():
 
 
 # ---------------------------------------------------------------------------
+# D-294 (Slice 1): _grounding_field_metadata — the read-only field-metadata rail
+# (bare-keyed type/picklist). DORMANT: derive ignores it this slice, so this only
+# proves the rail POPULATES; no derivation outcome changes yet.
+# ---------------------------------------------------------------------------
+
+class _StubS1Meta:
+    """Minimal SemanticOrgModel stub: field_details by entity id + picklist rows."""
+
+    def __init__(self, details_by_id, picklist_by_pvs):
+        self._d, self._p = details_by_id, picklist_by_pvs
+
+    def get_entity_details(self, entity_id, at_seq=None):
+        return self._d.get(entity_id)
+
+    def get_picklist_values(self, pvs_id, at_seq=None):
+        return self._p.get(pvs_id, [])
+
+
+def test_grounding_field_metadata_populates_bare_keyed_type_and_picklist():
+    loan_id, stage_id = uuid4(), uuid4()
+    nb = [_field_rel("Opportunity.Loan_Amount__c", loan_id),
+          _field_rel("Opportunity.Stage__c", stage_id),
+          # a non-Field relation is ignored
+          SimpleNamespace(edge_type="APPLIES_TO",
+                          entity=SimpleNamespace(entity_type="ValidationRule",
+                                                 sf_api_name="Opportunity.VR", id=uuid4()))]
+    s1 = _StubS1Meta(
+        details_by_id={
+            loan_id: {"field_type": "Currency", "length": None, "is_calculated": False},
+            stage_id: {"field_type": "Picklist", "picklist_value_set_entity_id": "pvs1"}},
+        picklist_by_pvs={"pvs1": [
+            {"value_api_name": "Prospecting", "is_active": True},
+            {"value_api_name": "Closed", "is_active": True},
+            {"value_api_name": "Old", "is_active": False}]})
+    meta = gc._grounding_field_metadata(nb, s1, at_seq=7)
+    assert set(meta) == {"Loan_Amount__c", "Stage__c"}      # bare-keyed (Object.Field -> Field)
+    assert meta["Loan_Amount__c"]["field_type"] == "currency"   # lowercased
+    assert meta["Loan_Amount__c"]["picklist_values"] is None    # non-picklist -> None
+    assert meta["Loan_Amount__c"]["is_calculated"] is False
+    assert meta["Stage__c"]["field_type"] == "picklist"
+    assert meta["Stage__c"]["picklist_values"] == ("Prospecting", "Closed")  # ACTIVE only
+
+
+def test_grounding_field_metadata_empty_when_no_fields():
+    # no BELONGS_TO Field -> empty rail -> derivation refuses exactly as today.
+    nb = [SimpleNamespace(edge_type="APPLIES_TO",
+                          entity=SimpleNamespace(entity_type="ValidationRule",
+                                                 sf_api_name="X", id=uuid4()))]
+    assert gc._grounding_field_metadata(nb, _StubS1Meta({}, {}), at_seq=7) == {}
+
+
+# ---------------------------------------------------------------------------
 # D-107 / D-293: an authored negative is ALWAYS LAYER_2 (caveat dropped). The
 # pre-D-293 Layer-1 caveated fallback is gone — a non-derivable negative refuses
 # (emission guard raises) rather than emitting a caveated inspection.

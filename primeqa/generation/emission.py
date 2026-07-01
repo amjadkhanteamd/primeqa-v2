@@ -37,7 +37,7 @@ prohibition claim's identity_hash is unchanged (no premature D-088 break).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 from uuid import UUID
 
@@ -220,6 +220,15 @@ class GroundedNegative:
     # default) -> conditions=[], byte-identical to pre-D-293 (DORMANT until the
     # intent contract + grounding arm it in a later slice).
     conditions: tuple[_GroundedCondition, ...] = ()
+    # D-294: read-only S1 field metadata for violation-derivation breadth, keyed
+    # by BARE field api name (as the formula parser / recipe speak). Each value:
+    # {field_type, length, is_calculated, picklist_values|None}. Governance fills
+    # it at grounding; `derive`/`derive_update` consume it to synthesize the
+    # violating value for non-numeric shapes (cross-field / NOT-ISBLANK /
+    # NOT-ISPICKVAL / bare-boolean). Empty (the default) -> derivation refuses
+    # exactly as today (the certainty bar). DORMANT until a later slice arms the
+    # derive branches; threaded-but-ignored here.
+    field_metadata: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -668,21 +677,25 @@ def _author_layout(g: GroundedLayout) -> EmissionBundle:
 
 
 def _derive_update_violation(
-    formulas: tuple[str, ...],
+    formulas: tuple[str, ...], field_metadata: Optional[dict] = None,
 ) -> Optional[VerifiedUpdateNegative]:
     """The update-shape gate (D-203): the first grounding VR formula derivable
     in BOTH directions — a non-violating setup state AND violating changes.
     Only comparisons qualify (NOT-ISPICKVAL / NOT-ISBLANK have no certain
     non-violating assignment); ``None`` → the caller's graded fallback
-    (create-rejected when ``_derive_violation`` still succeeds, else caveated)."""
+    (create-rejected when ``_derive_violation`` still succeeds, else caveated).
+    ``field_metadata`` (D-294) is threaded to ``derive_update`` for the
+    metadata-driven non-numeric shapes; absent -> today's behaviour."""
     for text in formulas:
-        result = derive_update(parse(text))
+        result = derive_update(parse(text), field_metadata)
         if isinstance(result, VerifiedUpdateNegative):
             return result
     return None
 
 
-def _derive_violation(formulas: tuple[str, ...]) -> Optional[VerifiedNegative]:
+def _derive_violation(
+    formulas: tuple[str, ...], field_metadata: Optional[dict] = None,
+) -> Optional[VerifiedNegative]:
     """The verified-vs-caveated gate AND the violating-payload source (D-107 /
     D-110.3). Returns the first grounding VR formula whose error-condition
     *certainly* derives a violating field assignment (a
@@ -696,7 +709,7 @@ def _derive_violation(formulas: tuple[str, ...]) -> Optional[VerifiedNegative]:
     (operational), never the claim — so the Option-C claim-identity invariant
     holds (the claim body is byte-identical whether verified or caveated)."""
     for text in formulas:
-        result = derive(parse(text))
+        result = derive(parse(text), field_metadata)
         if isinstance(result, VerifiedNegative):
             return result
     return None
@@ -711,6 +724,7 @@ class BehaviourIncomplete(RuntimeError):
 
 def _derive_prohibition_recipe(
     operation_hint: Optional[str], vr_formulas: tuple[str, ...],
+    field_metadata: Optional[dict] = None,
 ) -> tuple[str, Optional[VerifiedUpdateNegative], Optional[VerifiedNegative]]:
     """Bind the prohibition operation and derive its behavioural reject recipe —
     the SINGLE source of truth shared by :func:`_author_negative` (which needs the
@@ -730,21 +744,24 @@ def _derive_prohibition_recipe(
     update_pair: Optional[VerifiedUpdateNegative] = None
     violation: Optional[VerifiedNegative] = None
     if operation in ("modify_record", "modify_field"):
-        update_pair = _derive_update_violation(vr_formulas)
+        update_pair = _derive_update_violation(vr_formulas, field_metadata)
         if update_pair is None:
-            violation = _derive_violation(vr_formulas)
+            violation = _derive_violation(vr_formulas, field_metadata)
     elif operation == "create_duplicate":
-        violation = _derive_violation(vr_formulas)
+        violation = _derive_violation(vr_formulas, field_metadata)
     return operation, update_pair, violation
 
 
 def prohibition_recipe_derivable(
     operation_hint: Optional[str], vr_formulas: tuple[str, ...],
+    field_metadata: Optional[dict] = None,
 ) -> bool:
     """D-293 completeness predicate (the governance gate): does this prohibition
     yield a BEHAVIOURAL reject recipe? ``False`` → incomplete behaviour instance →
-    governance refuses (no degrade to the caveated inspection)."""
-    _, update_pair, violation = _derive_prohibition_recipe(operation_hint, vr_formulas)
+    governance refuses (no degrade to the caveated inspection). ``field_metadata``
+    (D-294) widens what derives; absent -> today's behaviour."""
+    _, update_pair, violation = _derive_prohibition_recipe(
+        operation_hint, vr_formulas, field_metadata)
     return update_pair is not None or violation is not None
 
 
@@ -854,7 +871,7 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
     # the violating VALUE is recipe-rewrite-stable (D-110.3 Option-C), while the
     # business STATE rides semantic_conditions (D-293, identity-bearing).
     operation, update_pair, violation = _derive_prohibition_recipe(
-        g.operation_hint, g.vr_formulas)
+        g.operation_hint, g.vr_formulas, g.field_metadata)
     verified = update_pair is not None or violation is not None
     claim = ProhibitionClaimBody(
         target=subject_ref,

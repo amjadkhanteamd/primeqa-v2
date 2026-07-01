@@ -214,6 +214,39 @@ def _grounding_vr_formulas(claim_kind: str, neighborhood: list) -> tuple[str, ..
     return tuple(formulas)
 
 
+def _grounding_field_metadata(neighborhood: list, s1, at_seq: int) -> dict:
+    """Read-only S1 field metadata for every Field in the scoped neighborhood
+    (D-294), keyed by BARE field api name (as the formula parser + recipe speak).
+    Each value: ``{field_type, length, is_calculated, picklist_values|None}``.
+    Feeds metadata-driven violation-derivation; an absent/insufficient entry makes
+    derivation refuse exactly as today (the certainty bar). Same character of read
+    as :func:`_grounding_vr_formulas` (grounding already reads S1), at the same
+    pinned version, no live-org effect. The picklist 2-hop mirrors
+    ``evolution/s1_reader.py`` (Field -> field_details.picklist_value_set_entity_id
+    -> active value set). DORMANT until the derive branches are armed."""
+    out: dict = {}
+    for r in neighborhood:
+        if r.edge_type != EDGE_BELONGS or r.entity.entity_type != "Field":
+            continue
+        api = r.entity.sf_api_name
+        if not api:
+            continue
+        details = s1.get_entity_details(r.entity.id, at_seq=at_seq) or {}
+        picklist_values = None
+        pvs_id = details.get("picklist_value_set_entity_id")
+        if pvs_id:
+            rows = s1.get_picklist_values(pvs_id, at_seq=at_seq)
+            picklist_values = tuple(
+                v["value_api_name"] for v in rows if v.get("is_active"))
+        out[api.rsplit(".", 1)[-1]] = {
+            "field_type": (details.get("field_type") or "").lower(),
+            "length": details.get("length"),
+            "is_calculated": bool(details.get("is_calculated", False)),
+            "picklist_values": picklist_values,
+        }
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Internal candidate
 # ---------------------------------------------------------------------------
@@ -737,6 +770,11 @@ class GovernanceCore:
             # can run the D-107 verified-vs-caveated derivation (re-found from the
             # same in-scope neighborhood Layer-1 grounding matched).
             vr_formulas = _grounding_vr_formulas(claim_kind, neighborhood)
+            # D-294: read-only S1 field metadata (type/picklist) for the fields in
+            # the scoped neighborhood — feeds metadata-driven violation-derivation
+            # (cross-field / NOT-ISBLANK / NOT-ISPICKVAL / bare-boolean). DORMANT
+            # this slice (derive ignores it), so the gate result is unchanged.
+            field_metadata = _grounding_field_metadata(neighborhood, self._s1, at)
             # D-293 decision-2 (refuse, never silently degrade): the behaviour
             # instance is complete only when a BEHAVIOURAL reject recipe is
             # derivable. A non-numeric VR (NOT-ISBLANK / picklist / cross-field) or
@@ -744,8 +782,10 @@ class GovernanceCore:
             # nothing -> REFUSE here, rather than emitting the pre-D-293 caveated
             # inspection (which masked the AC1/2/4 collapse and degraded AC3 to a
             # bare existence check). Conditions de-collapse identity (Reading B);
-            # derivability is the hard gate.
-            if not prohibition_recipe_derivable(hint.get("operation"), vr_formulas):
+            # derivability is the hard gate. D-294 widens what derives via
+            # field_metadata (dormant here).
+            if not prohibition_recipe_derivable(
+                    hint.get("operation"), vr_formulas, field_metadata):
                 return IntentResolution(
                     grounded_candidates=[], next_action=NextAction.REFUSE,
                     interpretation_delta=delta,
@@ -765,7 +805,10 @@ class GovernanceCore:
                 vr_formulas=vr_formulas,
                 # D-293: the grounded business-state -> the claim's identity-bearing
                 # semantic_conditions (distinct states -> distinct claims).
-                conditions=tuple(grounded_conds)))
+                conditions=tuple(grounded_conds),
+                # D-294: read-only field metadata for violation-derivation breadth
+                # (dormant this slice; derive ignores it).
+                field_metadata=field_metadata))
 
         # Stash grounding for the positive value-claim (D-115.3). Grounding has
         # already verified the NAMED field exists, so re-resolve it from the same

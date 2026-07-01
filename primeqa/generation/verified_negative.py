@@ -70,8 +70,11 @@ class _Undecidable(Exception):
     """Internal — certainty failed for some subtree; caught at the boundary."""
 
 
-def derive(ast) -> Union[VerifiedNegative, NotDerivable]:
-    """Derive the violating payload, or NotDerivable (fail-loud)."""
+def derive(ast, field_metadata=None) -> Union[VerifiedNegative, NotDerivable]:
+    """Derive the violating payload, or NotDerivable (fail-loud). ``field_metadata``
+    (D-294, bare-field-keyed S1 type/picklist) will widen derivation to non-numeric
+    shapes in a later slice; it is accepted-but-ignored here (DORMANT), so behaviour
+    is identical to the metadata-free path until the derive branches are armed."""
     blocked = _pre_scan(ast)
     if blocked is not None:
         return blocked
@@ -84,12 +87,13 @@ def derive(ast) -> Union[VerifiedNegative, NotDerivable]:
     return VerifiedNegative(payload)
 
 
-def derive_update(ast) -> Union[VerifiedUpdateNegative, NotDerivable]:
+def derive_update(ast, field_metadata=None) -> Union[VerifiedUpdateNegative, NotDerivable]:
     """Derive the 2-step update-rejected pair (D-203): setup =
     ``_satisfy(ast, False)`` (a create the rule does NOT reject), violating
     changes = ``_satisfy(ast, True)`` (the update it MUST). Same pre-scan +
     certainty bar as :func:`derive`; either direction underivable →
-    NotDerivable (the caller's graded fallback)."""
+    NotDerivable (the caller's graded fallback). ``field_metadata`` (D-294)
+    accepted-but-ignored here (DORMANT); armed in a later slice."""
     blocked = _pre_scan(ast)
     if blocked is not None:
         return blocked
