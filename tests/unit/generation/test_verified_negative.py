@@ -296,3 +296,41 @@ def test_not_isblank_refuses_unsynthesizable_type():
 def test_bare_field_non_boolean_still_refuses():
     r = derive(parse("Amount__c"), {"Amount__c": {"field_type": "currency"}})
     assert isinstance(r, NotDerivable) and "bare field" in r.reason
+
+
+# ---------------------------------------------------------------------------
+# D-294 — NOT(ISPICKVAL) ("field must be X") derives an alternative active
+# picklist value with metadata; metadata-free / single-value / inline refuses.
+# ---------------------------------------------------------------------------
+
+_PK = {"Stage__c": {"field_type": "picklist",
+                    "picklist_values": ("Prospecting", "Closed", "Won")}}
+
+
+def test_not_ispickval_derives_alternative_value():
+    # NOT(ISPICKVAL(Stage,"Closed")) fires when Stage != "Closed" -> pick an alt.
+    r = derive(parse('NOT(ISPICKVAL(Stage__c,"Closed"))'), _PK)
+    assert r.violating_payload == {"Stage__c": "Prospecting"}   # first active != forbidden
+
+
+def test_not_ispickval_refuses_without_metadata():
+    assert isinstance(derive(parse('NOT(ISPICKVAL(Stage__c,"Closed"))')), NotDerivable)
+
+
+def test_not_ispickval_refuses_when_only_forbidden_value():
+    r = derive(parse('NOT(ISPICKVAL(S__c,"X"))'),
+               {"S__c": {"field_type": "picklist", "picklist_values": ("X",)}})
+    assert isinstance(r, NotDerivable) and "picklist" in r.reason
+
+
+def test_not_ispickval_refuses_inline_picklist_none():
+    # an inline picklist S1 did not capture -> picklist_values None -> refuse.
+    r = derive(parse('NOT(ISPICKVAL(S__c,"X"))'),
+               {"S__c": {"field_type": "picklist", "picklist_values": None}})
+    assert isinstance(r, NotDerivable)
+
+
+def test_plain_ispickval_unchanged_with_metadata():
+    # the already-derivable positive shape is untouched by the metadata rail.
+    assert derive(parse('ISPICKVAL(Stage__c,"Closed")'), _PK).violating_payload \
+        == {"Stage__c": "Closed"}

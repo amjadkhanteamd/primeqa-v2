@@ -323,9 +323,20 @@ def _satisfy_function(node: FunctionCall, want_true: bool, meta: dict) -> dict[s
         field = _single_field(node)
         if not (len(node.args) == 2 and isinstance(node.args[1], Literal)):
             raise _Undecidable("ISPICKVAL without a literal value")
+        forbidden = node.args[1].value
         if want_true:
-            return {field: node.args[1].value}
-        raise _Undecidable("NOT ISPICKVAL (no certain alternative picklist value)")
+            return {field: forbidden}
+        # D-294: NOT(ISPICKVAL(field,"X")) fires when field != "X" -> set a
+        # certain alternative from the field's active picklist values (rail 2-hop).
+        # Refuse (as today) when the set is absent (inline picklist S1 did not
+        # capture) or has no value other than the forbidden one.
+        vals = ((meta or {}).get(field) or {}).get("picklist_values")
+        alt = next((v for v in (vals or ()) if v != forbidden), None)
+        if alt is None:
+            raise _Undecidable("NOT ISPICKVAL (no certain alternative picklist value)")
+        payload = {field: alt}
+        _self_check(node, payload, want_true)        # evaluate confirms field != "X"
+        return payload
     raise _Undecidable(f"function {node.name} not derivable")
 
 

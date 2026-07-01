@@ -368,6 +368,10 @@ def test_prohibition_recipe_derivable_truth_table():
     assert d("modify_record", ("NOT(ISBLANK(Reason__c))",)) is False       # no metadata
     assert d("modify_record", ("KYC_Done__c",), {"KYC_Done__c": {"field_type": "boolean"}}) is True
     assert d("modify_record", ("KYC_Done__c",)) is False                   # bare, no metadata
+    # D-294 Slice 4: NOT(ISPICKVAL) flips to derivable with a ≥2-value picklist
+    assert d("modify_record", ('NOT(ISPICKVAL(Stage__c,"Closed"))',),
+             {"Stage__c": {"field_type": "picklist", "picklist_values": ("Open", "Closed")}}) is True
+    assert d("modify_record", ('NOT(ISPICKVAL(Stage__c,"Closed"))',)) is False   # no metadata
 
 
 def test_behaviour_incomplete_router_kind():
