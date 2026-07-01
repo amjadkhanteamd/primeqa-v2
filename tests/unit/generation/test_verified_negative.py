@@ -273,6 +273,67 @@ def test_not_isblank_update_pair_setup_blank_violate_nonblank():
     assert r.violating_changes == {"Reason__c": "PQA"}
 
 
+# ---------------------------------------------------------------------------
+# D-296 — the compound cross-field / NOT-ISBLANK reconciliation (soft merge).
+# The real env-59 Loan_Exceeds_Property_Value shape:
+#   AND(NOT(ISBLANK(a)), NOT(ISBLANK(b)), a > b)
+# was NotDerivable pre-D-296 (the two NOT-ISBLANK fillers `1` collided with the
+# cross-field ordered pair `(1, 0)` in _merge); the _SoftFill soft-merge now
+# lets the hard non-blank cross-field value subsume the soft NOT-ISBLANK filler.
+# Metadata keyed by the VERBATIM mixed-case field name (the derive side is uncased).
+# ---------------------------------------------------------------------------
+
+_EXCEEDS = ("AND(NOT(ISBLANK(Loan_Amount__c)), NOT(ISBLANK(Property_Value__c)), "
+            "Loan_Amount__c > Property_Value__c)")
+_XF_COMPOUND = {
+    "Loan_Amount__c": {"field_type": "currency", "is_calculated": False},
+    "Property_Value__c": {"field_type": "currency", "is_calculated": False},
+}
+
+
+def test_compound_cross_field_notisblank_derives():
+    r = derive(parse(_EXCEEDS), _XF_COMPOUND)
+    assert isinstance(r, VerifiedNegative), r
+    # 1 > 0 fires the rule; both fields non-blank (0 is a non-blank number).
+    assert r.violating_payload == {"Loan_Amount__c": 1, "Property_Value__c": 0}
+
+
+def test_compound_cross_field_no_softfill_escapes():
+    from primeqa.generation.verified_negative import _SoftFill
+    payload = derive(parse(_EXCEEDS), _XF_COMPOUND).violating_payload
+    assert not any(isinstance(v, _SoftFill) for v in payload.values())
+
+
+def test_compound_cross_field_update_pair_derives():
+    from primeqa.generation.verified_negative import _SoftFill
+    r = derive_update(parse(_EXCEEDS), _XF_COMPOUND)
+    assert isinstance(r, VerifiedUpdateNegative), r
+    assert r.violating_changes == {"Loan_Amount__c": 1, "Property_Value__c": 0}
+    assert not any(isinstance(v, _SoftFill) for v in r.setup_payload.values())
+    assert not any(isinstance(v, _SoftFill) for v in r.violating_changes.values())
+
+
+def test_compound_post_merge_value_satisfies_not_isblank():
+    # the EMITTED Property_Value = 0 (the cross-field value, not the filler 1) must
+    # still satisfy NOT(ISBLANK(...)) — the polarity holds on the merged value.
+    from primeqa.semantic.formula import evaluate
+    assert evaluate(parse("NOT(ISBLANK(Property_Value__c))"),
+                    {"Property_Value__c": 0}) is True
+
+
+def test_compound_cross_field_refuses_without_metadata():
+    # no metadata -> the cross-field conjunct can't synthesize -> NotDerivable (bar).
+    assert isinstance(derive(parse(_EXCEEDS)), NotDerivable)
+
+
+def test_notisblank_and_isblank_same_field_conflict_still_refuses():
+    # a genuine contradiction (must-be-nonblank AND must-be-blank on one field) is a
+    # blank hard vs a soft non-blank -> still conflicts -> NotDerivable (refuse floor).
+    r = derive(parse("AND(NOT(ISBLANK(A__c)), ISBLANK(A__c))"),
+               {"A__c": {"field_type": "currency"}})
+    assert isinstance(r, NotDerivable)
+
+
 def test_bare_boolean_derives_true_with_metadata():
     assert derive(parse("KYC_Done__c"), _BOOL).violating_payload == {"KYC_Done__c": True}
     assert derive(parse("NOT(KYC_Done__c)"), _BOOL).violating_payload == {"KYC_Done__c": False}

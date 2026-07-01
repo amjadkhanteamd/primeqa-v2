@@ -68,9 +68,10 @@ class VerifiedUpdateNegative:
     """The 2-step update-rejected pair (D-203): a create-time state that does
     NOT violate the formula (the setup record) + the field changes that DO
     (the update the org must reject). Both certainty-derived — only formulas
-    satisfiable in BOTH directions qualify (comparisons; NOT-ISPICKVAL /
-    NOT-ISBLANK have no certain non-violating assignment and stay
-    NotDerivable)."""
+    satisfiable in BOTH directions qualify. Comparisons qualify; D-294 NOT-ISBLANK
+    derives too (setup = the blank state, violating = a non-blank value); D-296
+    derives a compound ``AND(NOT-ISBLANK, ..., a>b)`` via the soft/hard merge. A
+    direction with no certain assignment stays NotDerivable (the graded fallback)."""
 
     setup_payload: dict[str, Any]       # non-violating create-time state
     violating_changes: dict[str, Any]   # the update that fires the rejection
@@ -79,6 +80,17 @@ class VerifiedUpdateNegative:
 @dataclass(frozen=True)
 class NotDerivable:
     reason: str
+
+
+@dataclass(frozen=True)
+class _SoftFill:
+    """D-296 — a "soft" fill: an *any non-blank* value synthesized for a
+    ``NOT(ISBLANK(f))`` conjunct, which a HARD assignment on the same field (e.g. a
+    cross-field ordered value like ``Property_Value__c: 0``) may override in
+    :func:`_merge`, since any non-blank value already satisfies the NOT-ISBLANK
+    constraint. Stripped to its raw ``value`` at the derive / derive_update boundary
+    (:func:`_unwrap_soft`); it never reaches an emitted payload."""
+    value: Any
 
 
 class _Undecidable(Exception):
@@ -99,7 +111,7 @@ def derive(ast, field_metadata=None) -> Union[VerifiedNegative, NotDerivable]:
         return NotDerivable(str(e))
     if not payload:
         return NotDerivable("no field assignment derivable (constant predicate)")
-    return VerifiedNegative(payload)
+    return VerifiedNegative(_unwrap_soft(payload))
 
 
 def derive_update(ast, field_metadata=None) -> Union[VerifiedUpdateNegative, NotDerivable]:
@@ -121,7 +133,20 @@ def derive_update(ast, field_metadata=None) -> Union[VerifiedUpdateNegative, Not
     if not setup or not violating:
         return NotDerivable("no field assignment derivable (constant predicate)")
     return VerifiedUpdateNegative(
-        setup_payload=setup, violating_changes=violating)
+        setup_payload=_unwrap_soft(setup),
+        violating_changes=_unwrap_soft(violating))
+
+
+def _unwrap_soft(payload: dict[str, Any]) -> dict[str, Any]:
+    """D-296 boundary strip: a ``_SoftFill`` that survived :func:`_merge` (no hard
+    override) becomes its raw non-blank value HERE, at the derive / derive_update
+    boundary — NOT inside ``_merge`` (a lone ``NOT(ISBLANK)`` never passes through a
+    merge, so a merge-only strip would leak the sentinel into an emitted single-field
+    payload and corrupt it). Asserts no sentinel escapes into the emitted payload."""
+    out = {k: (v.value if isinstance(v, _SoftFill) else v) for k, v in payload.items()}
+    assert not any(isinstance(v, _SoftFill) for v in out.values()), \
+        "D-296: _SoftFill escaped the derivation boundary"
+    return out
 
 
 def _pre_scan(ast) -> Optional[NotDerivable]:
@@ -179,15 +204,39 @@ def _first(operands, want_true: bool, meta: dict) -> dict[str, Any]:
     raise _Undecidable(f"no derivable disjunct ({last})")
 
 
+def _is_blank(v) -> bool:
+    return v is None or v == ""
+
+
 def _merge(dicts) -> dict[str, Any]:
-    """Merge per-operand assignments; conflicting values on one field is not
-    certainly satisfiable here (we do not solve multi-constraint-per-field)."""
+    """Merge per-operand assignments (we do not solve multi-constraint-per-field).
+    D-296 soft-vs-hard reconciliation: a ``_SoftFill`` (any-non-blank, from
+    NOT-ISBLANK) YIELDS to a hard assignment on the same field PROVIDED that hard
+    value is itself non-blank — it then subsumes the NOT-ISBLANK constraint (safe
+    because a hard cross-field value is a provably-non-blank numeric, as
+    :func:`_satisfy_cross_field` refused non-numeric/non-writable fields). A hard
+    *blank* survivor, or two unequal hard values, remain a genuine conflict ->
+    NotDerivable (the refuse floor)."""
     out: dict[str, Any] = {}
     for d in dicts:
         for field, value in d.items():
-            if field in out and out[field] != value:
+            if field not in out:
+                out[field] = value
+                continue
+            existing = out[field]
+            e_soft = isinstance(existing, _SoftFill)
+            v_soft = isinstance(value, _SoftFill)
+            if e_soft and v_soft:
+                continue                        # both any-non-blank -> keep existing
+            if e_soft or v_soft:
+                hard = value if e_soft else existing
+                if _is_blank(hard):             # non-blank constraint vs a blank hard
+                    raise _Undecidable(f"conflicting assignment on field {field}")
+                out[field] = hard               # hard non-blank subsumes the soft fill
+                continue
+            if existing != value:               # two hard, unequal
                 raise _Undecidable(f"conflicting assignment on field {field}")
-            out[field] = value
+            # two hard, equal -> keep existing
     return out
 
 
@@ -332,8 +381,10 @@ def _satisfy_function(node: FunctionCall, want_true: bool, meta: dict) -> dict[s
         if not _writable(fm):                         # value exists but field is read-only
             raise _Undecidable(f"NOT {node.name} (field not writable)")
         payload = {field: v}
-        _self_check(node, payload, want_true)        # evaluate confirms it fires
-        return payload
+        _self_check(node, payload, want_true)        # evaluate confirms it fires (raw)
+        # D-296: return a SOFT fill — any non-blank value satisfies NOT-ISBLANK, so a
+        # hard cross-field assignment on the same field may override it in _merge.
+        return {field: _SoftFill(v)}
     if node.name == "ISPICKVAL":
         field = _single_field(node)
         if not (len(node.args) == 2 and isinstance(node.args[1], Literal)):
