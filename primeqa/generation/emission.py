@@ -37,6 +37,7 @@ prohibition claim's identity_hash is unchanged (no premature D-088 break).
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from uuid import UUID
@@ -685,24 +686,26 @@ def _author_layout(g: GroundedLayout) -> EmissionBundle:
 
 def _derive_update_violation(
     formulas: tuple[str, ...], field_metadata: Optional[dict] = None,
-) -> Optional[VerifiedUpdateNegative]:
+) -> tuple[Optional[VerifiedUpdateNegative], Optional[str]]:
     """The update-shape gate (D-203): the first grounding VR formula derivable
     in BOTH directions — a non-violating setup state AND violating changes.
     Only comparisons qualify (NOT-ISPICKVAL / NOT-ISBLANK have no certain
-    non-violating assignment); ``None`` → the caller's graded fallback
+    non-violating assignment); ``(None, None)`` → the caller's graded fallback
     (create-rejected when ``_derive_violation`` still succeeds, else caveated).
     ``field_metadata`` (D-294) is threaded to ``derive_update`` for the
-    metadata-driven non-numeric shapes; absent -> today's behaviour."""
+    metadata-driven non-numeric shapes; absent -> today's behaviour. **D-297:**
+    also returns the SOURCE formula text (the VR the recipe actually violates) so
+    the caller can bind that VR's error message (never an arbitrary aligned one)."""
     for text in formulas:
         result = derive_update(parse(text), field_metadata)
         if isinstance(result, VerifiedUpdateNegative):
-            return result
-    return None
+            return result, text
+    return None, None
 
 
 def _derive_violation(
     formulas: tuple[str, ...], field_metadata: Optional[dict] = None,
-) -> Optional[VerifiedNegative]:
+) -> tuple[Optional[VerifiedNegative], Optional[str]]:
     """The verified-vs-caveated gate AND the violating-payload source (D-107 /
     D-110.3). Returns the first grounding VR formula whose error-condition
     *certainly* derives a violating field assignment (a
@@ -714,12 +717,16 @@ def _derive_violation(
     add rejections, never suppress one). D-110.3 *uses* the payload (the
     behavioral create's field_values); it is carried in the **recipe**
     (operational), never the claim — so the Option-C claim-identity invariant
-    holds (the claim body is byte-identical whether verified or caveated)."""
+    holds (the claim body is byte-identical whether verified or caveated).
+
+    **D-297:** also returns the SOURCE formula text (the VR whose violation the
+    recipe carries) so the caller binds THAT VR's error message, not an aligned
+    one."""
     for text in formulas:
         result = derive(parse(text), field_metadata)
         if isinstance(result, VerifiedNegative):
-            return result
-    return None
+            return result, text
+    return None, None
 
 
 class BehaviourIncomplete(RuntimeError):
@@ -732,12 +739,14 @@ class BehaviourIncomplete(RuntimeError):
 def _derive_prohibition_recipe(
     operation_hint: Optional[str], vr_formulas: tuple[str, ...],
     field_metadata: Optional[dict] = None,
-) -> tuple[str, Optional[VerifiedUpdateNegative], Optional[VerifiedNegative]]:
+) -> tuple[str, Optional[VerifiedUpdateNegative], Optional[VerifiedNegative], Optional[str]]:
     """Bind the prohibition operation and derive its behavioural reject recipe —
     the SINGLE source of truth shared by :func:`_author_negative` (which needs the
     derived payloads) and :func:`prohibition_recipe_derivable` (the D-293 gate,
-    which needs only the yes/no). Returns ``(operation, update_pair, violation)``;
-    the behaviour instance is complete iff ``update_pair`` or ``violation`` is set.
+    which needs only the yes/no). Returns ``(operation, update_pair, violation,
+    source_formula)``; the behaviour instance is complete iff ``update_pair`` or
+    ``violation`` is set. ``source_formula`` (D-297) is the VR-formula text the
+    recipe actually violates (for message-pattern binding), or ``None``.
 
       modify_record / modify_field → UPDATE shape (setup + violating changes);
         when only the violation derives, create-rejected (a state-only VR fires on
@@ -750,13 +759,14 @@ def _derive_prohibition_recipe(
                  else _DEFAULT_OPERATION)
     update_pair: Optional[VerifiedUpdateNegative] = None
     violation: Optional[VerifiedNegative] = None
+    source: Optional[str] = None
     if operation in ("modify_record", "modify_field"):
-        update_pair = _derive_update_violation(vr_formulas, field_metadata)
+        update_pair, source = _derive_update_violation(vr_formulas, field_metadata)
         if update_pair is None:
-            violation = _derive_violation(vr_formulas, field_metadata)
+            violation, source = _derive_violation(vr_formulas, field_metadata)
     elif operation == "create_duplicate":
-        violation = _derive_violation(vr_formulas, field_metadata)
-    return operation, update_pair, violation
+        violation, source = _derive_violation(vr_formulas, field_metadata)
+    return operation, update_pair, violation, source
 
 
 def prohibition_recipe_derivable(
@@ -767,14 +777,14 @@ def prohibition_recipe_derivable(
     yield a BEHAVIOURAL reject recipe? ``False`` → incomplete behaviour instance →
     governance refuses (no degrade to the caveated inspection). ``field_metadata``
     (D-294) widens what derives; absent -> today's behaviour."""
-    _, update_pair, violation = _derive_prohibition_recipe(
+    _, update_pair, violation, _ = _derive_prohibition_recipe(
         operation_hint, vr_formulas, field_metadata)
     return update_pair is not None or violation is not None
 
 
 def _behavioral_recipe(
     *, subject_entity_type: str, subject_external_id: str,
-    violating_payload: dict, env_detail: str,
+    violating_payload: dict, env_detail: str, error_message: Optional[str] = None,
 ) -> tuple[DataMutationTriggerBody, DataRecipeBody, ExecutionEnvironmentBody]:
     """Build the (trigger, recipe, env) triple for a **behavioral** negative
     (D-110.3): a create the org should reject. The ``CreateStep`` carries the
@@ -796,7 +806,9 @@ def _behavioral_recipe(
             target_object=target,
             field_values=dict(violating_payload),
             expect_rejection=RejectionExpectation(
-                error_code=_VR_REJECTION_ERROR_CODE),
+                error_code=_VR_REJECTION_ERROR_CODE,
+                error_message_pattern=(
+                    re.escape(error_message) if error_message else None)),
         )],
     )
     env = ExecutionEnvironmentBody(auth_assumptions=[AuthAssumption(
@@ -808,6 +820,7 @@ def _behavioral_recipe(
 def _update_rejected_recipe(
     *, subject_entity_type: str, subject_external_id: str,
     setup_payload: dict, violating_changes: dict, env_detail: str,
+    error_message: Optional[str] = None,
 ) -> tuple[DataMutationTriggerBody, DataRecipeBody, ExecutionEnvironmentBody]:
     """Build the (trigger, recipe, env) triple for an **update-rejected**
     negative (D-203): a setup ``CreateStep`` carrying the derived non-violating
@@ -841,7 +854,9 @@ def _update_rejected_recipe(
                 target=target,
                 field_changes=_qualified(violating_changes),
                 expect_rejection=RejectionExpectation(
-                    error_code=_VR_REJECTION_ERROR_CODE),
+                    error_code=_VR_REJECTION_ERROR_CODE,
+                    error_message_pattern=(
+                        re.escape(error_message) if error_message else None)),
             ),
         ],
     )
@@ -877,9 +892,16 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
     # gate). The derived payloads ride the RECIPE (operational), never the claim;
     # the violating VALUE is recipe-rewrite-stable (D-110.3 Option-C), while the
     # business STATE rides semantic_conditions (D-293, identity-bearing).
-    operation, update_pair, violation = _derive_prohibition_recipe(
+    operation, update_pair, violation, source_formula = _derive_prohibition_recipe(
         g.operation_hint, g.vr_formulas, g.field_metadata)
     verified = update_pair is not None or violation is not None
+    # D-297 (lever 5): bind the DERIVED VR's synced error message (from the grounding
+    # map, keyed by the VR the recipe actually violates — never an arbitrary aligned
+    # VR, so a multi-VR condition-free passthrough binds the right message or none)
+    # so the S4 grade confirms WHICH rule fired. No message / unknown source -> None
+    # -> the recipe's error_message_pattern stays None -> byte-identical. The message
+    # is S1-synced from Salesforce (ground-or-refuse), never LLM-authored.
+    error_message = g.vr_messages.get(source_formula) if source_formula else None
     claim = ProhibitionClaimBody(
         target=subject_ref,
         operation=operation,
@@ -914,6 +936,7 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
             env_detail=(f"create a valid {g.subject.external_id} record, then "
                         f"update it into violation of the grounding validation "
                         f"rule (expect rejection)"),
+            error_message=error_message,
         )
         trigger_kind, recipe_kind = "data-mutation-trigger", "data-recipe"
     elif verified:
@@ -923,6 +946,7 @@ def _author_negative(g: GroundedNegative) -> EmissionBundle:
             violating_payload=violation.violating_payload,
             env_detail=(f"create a {g.subject.external_id} record violating the "
                         f"grounding validation rule (expect rejection)"),
+            error_message=error_message,
         )
         trigger_kind, recipe_kind = "data-mutation-trigger", "data-recipe"
     else:

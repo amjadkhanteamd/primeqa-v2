@@ -14,6 +14,7 @@ D-293 refines Option-C, it does not abandon recipe-stability).
 """
 from __future__ import annotations
 
+import re
 from uuid import uuid4
 
 import pytest
@@ -431,3 +432,76 @@ def test_d296_compound_claim_identity_hash_stable():
     h_c = compute_identity_hash(
         b_c.archetype, b_c.claim_kind, b_c.asserted_truth, b_c.semantic_conditions)
     assert h_x == h_c
+
+
+# ---------------------------------------------------------------------------
+# D-297 (lever 5, S2 activate): the DERIVED VR's synced error message is projected
+# into the recipe's error_message_pattern (re.escape), so the S4 grade confirms
+# WHICH rule fired — bound to the derived source VR, never an arbitrary aligned one.
+# No message / unknown source -> None -> byte-identical (fabrication-safety).
+# ---------------------------------------------------------------------------
+
+def _grounded_msg(*, formulas, vr_messages, external_id="Lead", field_metadata=None,
+                  operation_hint="modify_record"):
+    return GroundedNegative(
+        archetype="data_behavior", claim_kind="prohibition-claim",
+        operation_hint=operation_hint, version_seq=7,
+        subject=_Endpoint(entity_id=uuid4(), entity_type="Object", external_id=external_id),
+        requirement_excerpt="x", vr_formulas=formulas,
+        field_metadata=field_metadata or {}, vr_messages=vr_messages)
+
+
+def test_d297_message_projected_when_derived_vr_has_message():
+    # A comparison VR derives (update-rejected shape); its message is escaped into
+    # the UpdateStep's error_message_pattern, alongside the generic error_code.
+    g = _grounded_msg(formulas=("Amount__c = 0",),
+                      vr_messages={"Amount__c = 0": "Amount must not be zero."})
+    _, mutation = author_emission(g).observation_realization.steps
+    assert mutation.expect_rejection.error_code == _VR_CODE
+    assert mutation.expect_rejection.error_message_pattern == re.escape("Amount must not be zero.")
+
+
+def test_d297_no_pattern_when_derived_vr_has_no_message():
+    # The map has no entry for the derived VR -> pattern stays None -> byte-identical
+    # (never invent a message).
+    g = _grounded_msg(formulas=("Amount__c = 0",), vr_messages={})
+    _, mutation = author_emission(g).observation_realization.steps
+    assert mutation.expect_rejection.error_message_pattern is None
+
+
+def test_d297_binds_to_the_derived_vr_not_an_arbitrary_one():
+    # The load-bearing multi-VR passthrough: the FIRST candidate is org-state
+    # (NotDerivable), the SECOND derives. The message MUST bind to the derived
+    # (second) VR — never the first's (wrong) message.
+    g = _grounded_msg(
+        formulas=("ISCHANGED(Status__c)", "Amount__c = 0"),
+        vr_messages={"ISCHANGED(Status__c)": "WRONG — underivable VR's message",
+                     "Amount__c = 0": "Amount must not be zero."})
+    _, mutation = author_emission(g).observation_realization.steps
+    assert mutation.expect_rejection.error_message_pattern == re.escape("Amount must not be zero.")
+
+
+def test_d297_create_rejected_shape_also_carries_message():
+    # ISBLANK -> create-rejected (single CreateStep); the message rides that step.
+    g = _grounded_msg(formulas=("ISBLANK(Reason__c)",),
+                      vr_messages={"ISBLANK(Reason__c)": "Reason is required."})
+    step = author_emission(g).observation_realization.steps[0]
+    assert step.kind == "create"
+    assert step.expect_rejection.error_message_pattern == re.escape("Reason is required.")
+
+
+def test_d297_default_grounded_no_messages_byte_identical():
+    # A GroundedNegative with the default empty vr_messages -> pattern None -> the
+    # pre-D-297 recipe (the existing _grounded helper path stays byte-identical).
+    _, mutation = author_emission(_grounded(formulas=_DERIVABLE_CMP)).observation_realization.steps
+    assert mutation.expect_rejection.error_message_pattern is None
+
+
+def test_d297_regex_metacharacters_in_message_are_escaped():
+    # A message with regex metachars must be re.escape-d (matched literally by _matches).
+    msg = "Value must match [A-Z]+ (uppercase)."
+    g = _grounded_msg(formulas=("Amount__c = 0",), vr_messages={"Amount__c = 0": msg})
+    _, mutation = author_emission(g).observation_realization.steps
+    assert mutation.expect_rejection.error_message_pattern == re.escape(msg)
+    # and the escaped pattern matches the literal message (teeth of the projection)
+    assert re.fullmatch(mutation.expect_rejection.error_message_pattern, msg)
