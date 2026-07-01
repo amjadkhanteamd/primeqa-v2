@@ -236,6 +236,11 @@ def seeded(db_setup) -> dict:
         _edge(conn, order_stage, order, "BELONGS_TO", "STRUCTURAL", v1)
         order_flow = _entity(conn, "Flow", "Stamp_Order_Status", v1)
         _edge(conn, order_flow, order, "TRIGGERS_ON", "BEHAVIOR", v1)
+        # D-299: a SECOND Flow TRIGGERS_ON Order__c — the multi-flow fixture that
+        # proves a requirement-NAMED automation binds THAT flow, not the
+        # first-encountered one (env-59's Opportunity has three flows).
+        order_flow2 = _entity(conn, "Flow", "Escalate_Order", v1)
+        _edge(conn, order_flow2, order, "TRIGGERS_ON", "BEHAVIOR", v1)
         order_log = _entity(conn, "Object", "Order_Log__c", v1)
         log_lookup = _entity(conn, "Field", "Order_Log__c.Order__c", v1)
         _edge(conn, log_lookup, order_log, "BELONGS_TO", "STRUCTURAL", v1)

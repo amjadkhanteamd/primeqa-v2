@@ -186,8 +186,11 @@ def test_negative_state_transition_defers_to_prohibition_vertical(seeded):
 # ---------------------------------------------------------------------------
 
 def test_automation_effect_same_record(seeded):
+    # D-299: name the flow so the bind is deterministic (Order__c now has two
+    # flows TRIGGERS_ON it). No trigger_fields -> today's padding-only create.
     r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
-                             field_name="Order__c.Status__c", expected_value="Activated"))
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             automation_name="Stamp_Order_Status"))
     o = r.outcome
     assert o.outcome_kind == OutcomeKind.DRAFT
     body = r.emission.asserted_truth
@@ -197,6 +200,56 @@ def test_automation_effect_same_record(seeded):
     assert body.expected_effect.kind == "field_change"
     steps = r.emission.observation_realization.steps
     assert [s.step_id for s in steps] == ["create-record", "read-created", "assert-value"]
+    # dormant trigger: the create is still padding-only (empty)
+    assert steps[0].field_values == {}
+
+
+def test_automation_effect_binds_the_named_flow_among_many(seeded):
+    # D-299: Order__c has TWO flows TRIGGERS_ON it; the requirement names the
+    # SECOND — the claim must bind THAT flow, not the first-encountered one.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             automation_name="Escalate_Order"))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    assert r.emission.asserted_truth.automation.external_id == "Escalate_Order"
+
+
+def test_automation_effect_named_flow_absent_refuses(seeded):
+    # D-299: a requirement-named flow that does NOT TRIGGERS_ON the subject is a
+    # genuine grounding miss — refuse, never bind a different flow.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             automation_name="Ghost_Flow"),
+             expect_emit=False)
+    assert r.outcome.outcome_kind == OutcomeKind.REFUSAL
+
+
+def test_automation_effect_entry_condition_sets_the_create(seeded):
+    # D-299: the grounded entry-condition trigger makes the create SET that field
+    # (so the flow's entry gate fires) while the asserted effect field stays
+    # org-produced (absent from the create).
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             automation_name="Stamp_Order_Status",
+                             trigger_fields=[{"field_name": "Order__c.Stage__c",
+                                              "value": "Submitted"}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    steps = r.emission.observation_realization.steps
+    assert steps[0].field_values == {"Order__c.Stage__c": "Submitted"}
+    assert "Order__c.Status__c" not in steps[0].field_values
+
+
+def test_automation_effect_unverifiable_trigger_dropped_not_refused(seeded):
+    # D-299 drop-never-refuse: an unverifiable entry-condition field is DROPPED
+    # (never guessed) and the claim still emits its (now padding-only) shape —
+    # an over-proposed trigger never regresses a previously-emittable claim.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             automation_name="Stamp_Order_Status",
+                             trigger_fields=[{"field_name": "Order__c.Nope__c",
+                                              "value": "X"}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    assert r.emission.observation_realization.steps[0].field_values == {}
 
 
 def test_automation_effect_cross_object(seeded):

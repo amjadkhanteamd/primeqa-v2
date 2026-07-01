@@ -191,6 +191,40 @@ def _ground_rejection_conditions(proposed, neighborhood: list, version_seq: int)
     return grounded, invalid
 
 
+def _ground_trigger_fields(proposed, neighborhood: list) -> tuple:
+    """D-299: resolve the LLM-proposed entry-condition (field, value) pairs — the
+    fields the create must SET so an automation's entry gate actually fires (e.g.
+    ``StageName='Credit Assessment'`` + the KYC/Credit-Score fields the entry VR
+    forces present). Each proposed pair is ``{field_name: "Object.Field", value}``;
+    the field must BELONG_TO the subject (object-qualified name, exactly the
+    check ``effect_field`` and the D-222 state-transition trigger use).
+
+    **Drop-never-refuse** (mirrors the D-222 staged trigger): an unverifiable
+    field or a value-less pair is silently DROPPED — never guessed, never
+    refused (a previously-emittable automation-effect never regresses to a
+    refusal because the LLM over-proposed a trigger). Returns a tuple of
+    ``(_Endpoint, value)`` pairs; ``()`` when nothing verifies (the dormant
+    default — today's padding-only shallow create)."""
+    if not isinstance(proposed, list):
+        return ()
+    fields_by_name = {
+        r.entity.sf_api_name: r.entity for r in neighborhood
+        if r.edge_type == EDGE_BELONGS and r.entity.entity_type == "Field"}
+    pairs: list = []
+    for item in proposed:
+        c = item or {}
+        fname, value = c.get("field_name"), c.get("value")
+        if not fname or value is None:
+            continue
+        ent = fields_by_name.get(fname)
+        if ent is None:
+            continue
+        pairs.append((_Endpoint(
+            entity_id=ent.id, entity_type=ent.entity_type,
+            external_id=ent.sf_api_name or str(ent.id)), value))
+    return tuple(pairs)
+
+
 def _grounding_vr_formulas(claim_kind: str, neighborhood: list) -> tuple[str, ...]:
     """Formula texts of the ValidationRules that ground this negative — matched by
     the same (edge_type, far_type) the Layer-1 dimension uses (D-078). Carried
@@ -502,7 +536,8 @@ class AdmissibilityEngine:
 
     def evaluate(self, *, archetype: str, claim_kind: str, polarity_hint: str,
                  subject: Entity, neighborhood: list, excerpt: str,
-                 path_id: str = "c0", field_hint: Optional[str] = None) -> _Candidate:
+                 path_id: str = "c0", field_hint: Optional[str] = None,
+                 automation_hint: Optional[str] = None) -> _Candidate:
         """Derive the requirement-anchored candidate and determine Layer-1
         admissibility. Substrate-authored; returns a single _Candidate."""
         cand = _Candidate(
@@ -524,7 +559,8 @@ class AdmissibilityEngine:
 
         if self.is_negative(claim_kind, polarity_hint):
             return self._evaluate_negative(cand, claim_kind, neighborhood)
-        return self._evaluate_positive(cand, claim_kind, neighborhood, field_hint)
+        return self._evaluate_positive(cand, claim_kind, neighborhood, field_hint,
+                                       automation_hint)
 
     def _evaluate_negative(self, cand: _Candidate, claim_kind: str, neighborhood: list) -> _Candidate:
         dim = _NEGATIVE_LAYER1_DIM.get(claim_kind)
@@ -543,7 +579,8 @@ class AdmissibilityEngine:
         return cand
 
     def _evaluate_positive(self, cand: _Candidate, claim_kind: str, neighborhood: list,
-                           field_hint: Optional[str] = None) -> _Candidate:
+                           field_hint: Optional[str] = None,
+                           automation_hint: Optional[str] = None) -> _Candidate:
         # Positive grounding needs supporting structure (a Field BELONGS_TO the
         # subject Object). A **value-claim** asserts ``field == V``, so it grounds
         # only when the *named* field exists (verify-at-grounding, D-115.3): an
@@ -559,8 +596,17 @@ class AdmissibilityEngine:
             grounds = bool(field_hint) and any(
                 r.entity.sf_api_name == field_hint for r in fields)
         elif claim_kind == "automation-effect-claim":
-            grounds = any(r.edge_type == EDGE_FLOW and r.entity.entity_type == "Flow"
-                          for r in neighborhood)
+            flows = [r for r in neighborhood
+                     if r.edge_type == EDGE_FLOW and r.entity.entity_type == "Flow"]
+            # D-299: with >1 Flow TRIGGERS_ON the subject (env-59 Opportunity has
+            # three), a requirement-NAMED Flow must bind THAT flow — grounding on
+            # the wrong (first-encountered) flow would assert the wrong effect.
+            # A named-but-absent flow is a genuine grounding miss (refuse). No
+            # name -> the any-flow floor (backward-compat; safe with one flow).
+            if automation_hint:
+                grounds = any(r.entity.sf_api_name == automation_hint for r in flows)
+            else:
+                grounds = bool(flows)
         else:
             grounds = bool(fields)
         if grounds:
@@ -913,7 +959,8 @@ class GovernanceCore:
         base = self._admit.evaluate(archetype=archetype, claim_kind=claim_kind,
                                     polarity_hint=polarity, subject=subject,
                                     neighborhood=neighborhood, excerpt=excerpt,
-                                    field_hint=hint.get("field_name"))
+                                    field_hint=hint.get("field_name"),
+                                    automation_hint=hint.get("automation_name"))
         candidates = self._decomp.enumerate_candidates(base)
         grounded = [c for c in candidates if c.status == "admissibly_grounded"]
         delta = self._delta(neighborhood, candidates)
@@ -1126,10 +1173,30 @@ class GovernanceCore:
         # (effect object + its lookup field back to the subject). Every name
         # is LLM-proposed but S1-verified; unverifiable -> defer, never guess.
         if state is not None and claim_kind == "automation-effect-claim":
-            flow_ent = next(
-                (r.entity for r in neighborhood
-                 if r.edge_type == EDGE_FLOW and r.entity.entity_type == "Flow"),
-                None)
+            flows = [r.entity for r in neighborhood
+                     if r.edge_type == EDGE_FLOW and r.entity.entity_type == "Flow"]
+            # D-299: bind the requirement-NAMED Flow (env-59 Opportunity has 3
+            # flows TRIGGERS_ON it — first-encountered would name the wrong
+            # automation and assert the wrong effect). A named-but-absent Flow
+            # is a genuine grounding miss (refuse — the admissibility gate
+            # already dismisses it, this is the defence-in-depth twin). No name
+            # -> first-encountered (backward-compat; the pre-D-299 behaviour).
+            automation_name = hint.get("automation_name")
+            if automation_name:
+                flow_ent = next(
+                    (f for f in flows if f.sf_api_name == automation_name), None)
+                if flow_ent is None:
+                    return IntentResolution(
+                        grounded_candidates=[], next_action=NextAction.REFUSE,
+                        interpretation_delta=delta,
+                        refusal=self._router.emission_deferred(
+                            archetype, claim_kind,
+                            detail=(f"the requirement-named Flow "
+                                    f"{automation_name!r} does not TRIGGERS_ON "
+                                    f"the subject (found "
+                                    f"{sorted(f.sf_api_name for f in flows)})")))
+            else:
+                flow_ent = flows[0] if flows else None
             if flow_ent is None:
                 # defensive: positives admit on this edge; negatives may reach
                 # here without one
@@ -1231,6 +1298,13 @@ class GovernanceCore:
                                     "effect: field_name + expected_value on "
                                     "the subject, or effect_object + "
                                     "effect_lookup_field")))
+                # D-299: the OPTIONAL entry-condition trigger — the (field,
+                # value) pairs the create must SET so the Flow's entry gate
+                # fires. Same-record only (the gate is on the subject create);
+                # object-qualified BELONGS_TO verify, drop-never-refuse. Empty
+                # -> today's padding-only shallow create.
+                trigger_fields = _ground_trigger_fields(
+                    hint.get("trigger_fields"), neighborhood)
                 _stash_grounding(state, GroundedAutomationEffect(
                     archetype=archetype, claim_kind=claim_kind, version_seq=at,
                     subject=subj_ep, automation=flow_ep,
@@ -1238,7 +1312,8 @@ class GovernanceCore:
                     effect_field=_Endpoint(
                         entity_id=field_ent.id, entity_type=field_ent.entity_type,
                         external_id=field_ent.sf_api_name or str(field_ent.id)),
-                    effect_value=effect_value))
+                    effect_value=effect_value,
+                    trigger_fields=trigger_fields))
 
         # grounded -> emit deferred (draft vertical). resolve_intent stays whole.
         presented = [PresentedCandidate(path_id=c.path_id,

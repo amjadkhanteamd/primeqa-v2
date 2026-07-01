@@ -376,6 +376,73 @@ def test_ground_rejection_conditions_predicate_value_coupling():
 
 
 # ---------------------------------------------------------------------------
+# D-299: automation-effect entry-condition grounding + named-flow binding.
+# ---------------------------------------------------------------------------
+
+def _flow_rel(sf_api_name: str, entity_id=None):
+    """A TRIGGERS_ON Flow relation off the Object subject."""
+    return SimpleNamespace(
+        edge_type=gc.EDGE_FLOW,
+        entity=SimpleNamespace(entity_type="Flow", sf_api_name=sf_api_name,
+                               id=entity_id or uuid4(), attributes={}))
+
+
+def _auto_cand():
+    return gc._Candidate(
+        path_id="c0", archetype="data_behavior",
+        claim_kind="automation-effect-claim",
+        subject_refs=[{"entity_type": "Object", "sf_api_name": "Order__c"}],
+        requirement_anchor="x", status="dismissed")
+
+
+def test_ground_trigger_fields_empty_is_dormant():
+    assert gc._ground_trigger_fields(None, []) == ()
+    assert gc._ground_trigger_fields([], [_field_rel("Opportunity.StageName")]) == ()
+
+
+def test_ground_trigger_fields_resolves_object_qualified_belongs_to():
+    nb = [_field_rel("Opportunity.StageName"),
+          _field_rel("Opportunity.KYC_Complete__c")]
+    out = gc._ground_trigger_fields(
+        [{"field_name": "Opportunity.StageName", "value": "Credit Assessment"},
+         {"field_name": "Opportunity.KYC_Complete__c", "value": True}], nb)
+    assert [(ep.external_id, v) for ep, v in out] == [
+        ("Opportunity.StageName", "Credit Assessment"),
+        ("Opportunity.KYC_Complete__c", True)]
+
+
+def test_ground_trigger_fields_drops_unverifiable_and_valueless():
+    # drop-never-refuse: an unknown field or a value-less pair is dropped, and
+    # the verified pair still comes through.
+    nb = [_field_rel("Opportunity.StageName")]
+    out = gc._ground_trigger_fields(
+        [{"field_name": "Opportunity.StageName", "value": "Credit Assessment"},
+         {"field_name": "Opportunity.Ghost__c", "value": "X"},   # not in nb
+         {"field_name": "Opportunity.StageName"}],                # no value
+        nb)
+    assert [(ep.external_id, v) for ep, v in out] == [
+        ("Opportunity.StageName", "Credit Assessment")]
+
+
+def test_evaluate_positive_named_flow_grounds_only_on_match():
+    # D-299: with >1 Flow TRIGGERS_ON the subject a requirement-NAMED flow must
+    # bind THAT flow; a named-but-absent flow is a genuine grounding miss.
+    admit = gc.AdmissibilityEngine(None)   # _evaluate_positive touches no S1
+    nb = [_flow_rel("Stamp_Order_Status"), _flow_rel("Escalate_Order")]
+    matched = admit._evaluate_positive(
+        _auto_cand(), "automation-effect-claim", nb, None, "Escalate_Order")
+    assert matched.status == "admissibly_grounded"
+    absent = admit._evaluate_positive(
+        _auto_cand(), "automation-effect-claim", nb, None, "Ghost_Flow")
+    assert absent.status == "dismissed"
+    assert absent.dismissal_reason == "insufficient_grounding"
+    # no name -> the any-flow floor (backward-compat, pre-D-299)
+    unnamed = admit._evaluate_positive(
+        _auto_cand(), "automation-effect-claim", nb, None, None)
+    assert unnamed.status == "admissibly_grounded"
+
+
+# ---------------------------------------------------------------------------
 # D-293 (Slice 3): the completeness gate — prohibition_recipe_derivable (the
 # shared predicate governance refuses on) + the behaviour_incomplete router.
 # ---------------------------------------------------------------------------
