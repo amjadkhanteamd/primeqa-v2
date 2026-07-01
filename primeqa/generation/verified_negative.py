@@ -41,6 +41,16 @@ from primeqa.semantic.formula import (
 _ORG_STATE_FUNCS = {"PRIORVALUE", "ISCHANGED", "ISNEW"}
 _FLIP = {"<": ">", ">": "<", "<=": ">=", ">=": "<=", "=": "=", "<>": "<>"}
 _NEG = {"<": ">=", ">": "<=", "<=": ">", ">=": "<", "=": "<>", "<>": "="}
+# D-294: numeric SF DescribeField.type-s a cross-field comparison can order.
+# Mirrors `execution_engine.world._NUMERIC` (kept local to avoid an S3->S4 import;
+# unified with the shared value-synthesis helper in a later slice).
+_NUMERIC = frozenset({"int", "integer", "double", "currency", "percent"})
+# A concrete numeric (left, right) pair making ``left <op> right`` TRUE — the
+# violating assignment for a cross-field comparison (D-294). Deterministic, so a
+# ``>`` pair is strictly-greater by construction (no `evaluate` self-check exists
+# for field-to-field; correctness is construction- + live-proof).
+_CROSS_PAIR = {">": (1, 0), ">=": (1, 0), "<": (0, 1), "<=": (0, 1),
+               "=": (0, 0), "<>": (1, 0)}
 
 
 @dataclass(frozen=True)
@@ -72,14 +82,14 @@ class _Undecidable(Exception):
 
 def derive(ast, field_metadata=None) -> Union[VerifiedNegative, NotDerivable]:
     """Derive the violating payload, or NotDerivable (fail-loud). ``field_metadata``
-    (D-294, bare-field-keyed S1 type/picklist) will widen derivation to non-numeric
-    shapes in a later slice; it is accepted-but-ignored here (DORMANT), so behaviour
-    is identical to the metadata-free path until the derive branches are armed."""
+    (D-294, bare-field-keyed S1 type/picklist) widens derivation to metadata-backed
+    shapes (cross-field armed here); absent/insufficient metadata refuses exactly
+    as the metadata-free path (the certainty bar)."""
     blocked = _pre_scan(ast)
     if blocked is not None:
         return blocked
     try:
-        payload = _satisfy(ast, True)
+        payload = _satisfy(ast, True, field_metadata or {})
     except _Undecidable as e:
         return NotDerivable(str(e))
     if not payload:
@@ -93,13 +103,14 @@ def derive_update(ast, field_metadata=None) -> Union[VerifiedUpdateNegative, Not
     changes = ``_satisfy(ast, True)`` (the update it MUST). Same pre-scan +
     certainty bar as :func:`derive`; either direction underivable →
     NotDerivable (the caller's graded fallback). ``field_metadata`` (D-294)
-    accepted-but-ignored here (DORMANT); armed in a later slice."""
+    widens what derives (cross-field: a non-violating pair + a violating pair)."""
     blocked = _pre_scan(ast)
     if blocked is not None:
         return blocked
+    meta = field_metadata or {}
     try:
-        setup = _satisfy(ast, False)
-        violating = _satisfy(ast, True)
+        setup = _satisfy(ast, False, meta)
+        violating = _satisfy(ast, True, meta)
     except _Undecidable as e:
         return NotDerivable(str(e))
     if not setup or not violating:
@@ -120,23 +131,24 @@ def _pre_scan(ast) -> Optional[NotDerivable]:
     return None
 
 
-def _satisfy(node, want_true: bool) -> dict[str, Any]:
+def _satisfy(node, want_true: bool, meta: dict) -> dict[str, Any]:
     """A field assignment that makes ``node`` evaluate to ``want_true``.
-    Raises ``_Undecidable`` when no certain assignment exists."""
+    Raises ``_Undecidable`` when no certain assignment exists. ``meta`` is the
+    D-294 bare-field-keyed metadata rail (empty -> metadata-free behaviour)."""
     if isinstance(node, And):
         if want_true:
-            return _merge(_satisfy(op, True) for op in node.operands)
-        return _first(node.operands, False)          # NOT(AND) = OR(NOT ops)
+            return _merge(_satisfy(op, True, meta) for op in node.operands)
+        return _first(node.operands, False, meta)     # NOT(AND) = OR(NOT ops)
     if isinstance(node, Or):
         if want_true:
-            return _first(node.operands, True)
-        return _merge(_satisfy(op, False) for op in node.operands)  # NOT(OR)=AND(NOT)
+            return _first(node.operands, True, meta)
+        return _merge(_satisfy(op, False, meta) for op in node.operands)  # NOT(OR)=AND(NOT)
     if isinstance(node, Not):
-        return _satisfy(node.operand, not want_true)
+        return _satisfy(node.operand, not want_true, meta)
     if isinstance(node, Comparison):
-        return _satisfy_comparison(node, want_true)
+        return _satisfy_comparison(node, want_true, meta)
     if isinstance(node, FunctionCall):
-        return _satisfy_function(node, want_true)
+        return _satisfy_function(node, want_true, meta)
     if isinstance(node, FieldRef):
         raise _Undecidable(f"bare field predicate {node.name} (type-uncertain)")
     if isinstance(node, Literal):
@@ -144,12 +156,12 @@ def _satisfy(node, want_true: bool) -> dict[str, Any]:
     raise _Undecidable("unrecognized node")
 
 
-def _first(operands, want_true: bool) -> dict[str, Any]:
+def _first(operands, want_true: bool, meta: dict) -> dict[str, Any]:
     """First operand with a derivable satisfying assignment (OR / NOT-AND)."""
     last = None
     for op in operands:
         try:
-            return _satisfy(op, want_true)
+            return _satisfy(op, want_true, meta)
         except _Undecidable as e:
             last = e
     raise _Undecidable(f"no derivable disjunct ({last})")
@@ -167,11 +179,39 @@ def _merge(dicts) -> dict[str, Any]:
     return out
 
 
-def _satisfy_comparison(node: Comparison, want_true: bool) -> dict[str, Any]:
+def _satisfy_comparison(node: Comparison, want_true: bool, meta: dict) -> dict[str, Any]:
+    # D-294: a field-to-field comparison (`Loan__c > Property__c`) is derivable
+    # when both fields are numeric + writable — synthesize an ordered pair.
+    if isinstance(node.left, FieldRef) and isinstance(node.right, FieldRef):
+        return _satisfy_cross_field(node.left, node.right, node.op, want_true, meta)
     field, literal, op = _orient(node)
     if want_true is False:
         op = _NEG[op]
     return {field: _violating_value(op, literal)}
+
+
+def _field_meta(node: FieldRef, meta: dict) -> Optional[dict]:
+    """The rail entry for a FieldRef, by its bare field key (the LAST path
+    segment — the field, for both bare ``Loan__c`` and self-qualified
+    ``Opportunity.Loan__c`` refs, matching how the rail is keyed). None if absent."""
+    return (meta or {}).get(node.path[-1])
+
+
+def _satisfy_cross_field(left: FieldRef, right: FieldRef, op: str,
+                         want_true: bool, meta: dict) -> dict[str, Any]:
+    """Derive an ordered numeric pair for ``left <op> right`` (D-294). Certainty
+    bar: refuse (as today) unless BOTH fields have numeric, writable metadata."""
+    ml, mr = _field_meta(left, meta), _field_meta(right, meta)
+    if ml is None or mr is None:
+        raise _Undecidable(
+            "field-to-field comparison without field metadata (needs D-294 rail)")
+    if ml["field_type"] not in _NUMERIC or mr["field_type"] not in _NUMERIC:
+        raise _Undecidable("field-to-field comparison on non-numeric field(s)")
+    if ml.get("is_calculated") or mr.get("is_calculated"):
+        raise _Undecidable("field-to-field comparison on a calculated field (not writable)")
+    eff = op if want_true else _NEG[op]              # violate: make `left eff right` TRUE
+    a, b = _CROSS_PAIR[eff]
+    return {left.path[-1]: a, right.path[-1]: b}
 
 
 def _orient(node: Comparison):
@@ -207,7 +247,9 @@ def _violating_value(op: str, literal: Literal) -> Any:
     raise _Undecidable(f"unsupported literal kind {literal.kind!r}")
 
 
-def _satisfy_function(node: FunctionCall, want_true: bool) -> dict[str, Any]:
+def _satisfy_function(node: FunctionCall, want_true: bool, meta: dict) -> dict[str, Any]:
+    # D-294: ``meta`` (the field-metadata rail) is threaded here for the
+    # NOT-ISBLANK / NOT-ISPICKVAL shapes armed in a later slice; unused today.
     if node.name in ("ISBLANK", "ISNULL"):
         field = _single_field(node)
         if want_true:

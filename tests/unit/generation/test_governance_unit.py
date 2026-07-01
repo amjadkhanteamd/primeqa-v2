@@ -350,11 +350,18 @@ def test_prohibition_recipe_derivable_truth_table():
     assert d("modify_record", ('REGEX(Name,"x")', "Amount < 0")) is True
     # non-numeric / field-to-field / empty -> NOT derivable -> the gate refuses
     assert d("modify_record", ()) is False
-    assert d("modify_record", ("Amount < Other__c",)) is False
+    assert d("modify_record", ("Amount < Other__c",)) is False       # metadata-free (D-293)
     assert d("modify_record", ('REGEX(Name,"x")',)) is False
     # delete / share / transfer never derive (VRs do not reject them)
     assert d("delete", ("Amount < 0",)) is False
     assert d("transfer_ownership", ("Amount < 0",)) is False
+    # D-294: the SAME cross-field VR flips to derivable WITH numeric field metadata
+    xf = {"Loan__c": {"field_type": "currency"}, "Property__c": {"field_type": "double"}}
+    assert d("modify_record", ("Loan__c > Property__c",), xf) is True
+    # ...but still refuses without metadata, or when an operand is non-numeric
+    assert d("modify_record", ("Loan__c > Property__c",)) is False
+    assert d("modify_record", ("Loan__c > Property__c",),
+             {"Loan__c": {"field_type": "text"}, "Property__c": {"field_type": "double"}}) is False
 
 
 def test_behaviour_incomplete_router_kind():

@@ -42,13 +42,13 @@ from primeqa.test_representation.models.triggers.inspection import (
 _VR_CODE = "FIELD_CUSTOM_VALIDATION_EXCEPTION"
 
 
-def _grounded(*, formulas, external_id="Lead"):
+def _grounded(*, formulas, external_id="Lead", field_metadata=None):
     return GroundedNegative(
         archetype="data_behavior", claim_kind="prohibition-claim",
         operation_hint="modify_record", version_seq=7,
         subject=_Endpoint(entity_id=uuid4(), entity_type="Object", external_id=external_id),
         requirement_excerpt="Users must not save a Lead without a reason.",
-        vr_formulas=formulas)
+        vr_formulas=formulas, field_metadata=field_metadata or {})
 
 
 # A derivable formula → VerifiedNegative; a non-derivable one → caveated.
@@ -268,6 +268,34 @@ def test_update_recipe_round_trips_through_registry():
         dumped["kind"], dumped["body_schema_version"]).model_validate(dumped)
     assert restored.steps[1].kind == "update"
     assert restored.steps[1].expect_rejection.error_code == _VR_CODE
+
+
+# ---------------------------------------------------------------------------
+# D-294 — a cross-field prohibition (Loan__c > Property__c) with numeric field
+# metadata AUTHORS a behavioural reject-test end to end (was behaviour-incomplete
+# refuse pre-D-294). Proves the rail -> derive -> author path, not just derive().
+# ---------------------------------------------------------------------------
+
+def test_cross_field_with_metadata_authors_update_rejected():
+    meta = {"Loan__c": {"field_type": "currency", "is_calculated": False},
+            "Property__c": {"field_type": "double", "is_calculated": False}}
+    bundle = author_emission(_grounded(
+        formulas=("Loan__c > Property__c",), external_id="Deal", field_metadata=meta))
+    # verified -> LAYER_2, no caveat, a behavioural data-recipe (not the refuse guard)
+    assert bundle.admissibility_layer.value == "layer_2"
+    assert bundle.caveat_required is False
+    assert bundle.recipe_kind == "data-recipe"
+    setup, mutation = bundle.observation_realization.steps
+    # the violating update carries the ordered cross-field pair (object-qualified)
+    assert mutation.field_changes == {"Deal.Loan__c": 1, "Deal.Property__c": 0}
+    assert setup.field_values == {"Deal.Loan__c": 0, "Deal.Property__c": 1}  # non-violating
+    assert mutation.expect_rejection.error_code == _VR_CODE
+
+
+def test_cross_field_without_metadata_still_raises_behaviour_incomplete():
+    # the D-293 floor holds when the rail is empty (the certainty bar).
+    with pytest.raises(BehaviourIncomplete):
+        author_emission(_grounded(formulas=("Loan__c > Property__c",), external_id="Deal"))
 
 
 # ---------------------------------------------------------------------------

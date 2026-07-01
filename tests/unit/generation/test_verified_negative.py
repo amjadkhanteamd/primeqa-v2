@@ -193,3 +193,54 @@ def test_update_compound_and_merges_both_sides():
     assert violating == {"Amount": 101, "Quantity__c": 6}
     # NOT(AND) = OR(NOT ops): the first derivable disjunct suffices for setup.
     assert setup == {"Amount": 100}
+
+
+# ---------------------------------------------------------------------------
+# D-294 — cross-field comparison derives with numeric field metadata. Metadata-
+# free field-to-field still refuses (the pre-D-294 bar). Correctness is
+# construction-proof: `evaluate` is NonEvaluable for field-to-field, so the
+# ordered pair satisfies the operator by construction.
+# ---------------------------------------------------------------------------
+
+_XF = {"Loan__c": {"field_type": "currency", "is_calculated": False},
+       "Property__c": {"field_type": "double", "is_calculated": False}}
+
+
+def test_cross_field_derives_ordered_pair_with_numeric_metadata():
+    r = derive(parse("Loan__c > Property__c"), _XF)
+    assert isinstance(r, VerifiedNegative)
+    assert r.violating_payload == {"Loan__c": 1, "Property__c": 0}   # 1 > 0 fires
+    assert derive(parse("Loan__c < Property__c"), _XF).violating_payload \
+        == {"Loan__c": 0, "Property__c": 1}
+
+
+def test_cross_field_update_pair_nonviolating_setup_then_violating():
+    r = derive_update(parse("Loan__c > Property__c"), _XF)
+    assert isinstance(r, VerifiedUpdateNegative)
+    assert r.setup_payload == {"Loan__c": 0, "Property__c": 1}       # 0 > 1 FALSE (setup)
+    assert r.violating_changes == {"Loan__c": 1, "Property__c": 0}   # 1 > 0 TRUE (fires)
+
+
+def test_cross_field_refuses_without_metadata():
+    # the pre-D-294 behaviour — metadata-free field-to-field still refuses (the bar).
+    r = derive(parse("Loan__c > Property__c"))
+    assert isinstance(r, NotDerivable) and "field-to-field" in r.reason
+
+
+def test_cross_field_refuses_non_numeric_operand():
+    meta = {"A__c": {"field_type": "text"}, "B__c": {"field_type": "currency"}}
+    assert "non-numeric" in derive(parse("A__c > B__c"), meta).reason
+
+
+def test_cross_field_refuses_calculated_field():
+    meta = {"A__c": {"field_type": "currency", "is_calculated": True},
+            "B__c": {"field_type": "currency", "is_calculated": False}}
+    assert "calculated" in derive(parse("A__c > B__c"), meta).reason
+
+
+def test_cross_field_dotted_ref_is_prescanned_cross_object():
+    # a self-qualified formula is a DOTTED ref -> pre-scanned as cross-object
+    # (NotDerivable) before the cross-field branch; cross-field is bare-bare only.
+    meta = {"Loan__c": {"field_type": "currency"}, "Property__c": {"field_type": "currency"}}
+    r = derive(parse("Opportunity.Loan__c > Opportunity.Property__c"), meta)
+    assert isinstance(r, NotDerivable) and "cross-object" in r.reason
