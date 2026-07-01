@@ -65,6 +65,7 @@ from primeqa.generation.protocol import (
 )
 from primeqa.semantic.edges import TIER_1_EDGES
 from primeqa.semantic.entity_attributes import vr_formula_text
+from primeqa.semantic.formula import FieldRef, is_parsed, parse, walk
 from primeqa.semantic.query import Entity, SemanticOrgModel
 
 
@@ -212,6 +213,81 @@ def _grounding_vr_formulas(claim_kind: str, neighborhood: list) -> tuple[str, ..
             if text:
                 formulas.append(text)
     return tuple(formulas)
+
+
+def _claim_condition_fields(grounded_conds) -> frozenset[str]:
+    """The bare, lower-cased field api-names a prohibition claim's grounded
+    conditions reference (D-295 — the LEFT side of the VR field-overlap match).
+    ``_GroundedCondition.field.external_id`` is object-qualified (``Object.Field``,
+    ``governance_core.py`` grounding); the bare tail (``rsplit('.',1)[-1]``) is what
+    the VR formula parser speaks, so both sides of the overlap are normalized alike."""
+    return frozenset(
+        gc.field.external_id.rsplit(".", 1)[-1].lower()
+        for gc in (grounded_conds or [])
+        if gc.field and gc.field.external_id)
+
+
+def _vr_formula_fields(text: str) -> frozenset[str]:
+    """The bare, lower-cased field api-names a VR formula references (D-295 — the
+    RIGHT side of the match). Parsed via the pure D-107 parser; an unparseable
+    formula contributes NO fields (→ zero overlap; it is non-derivable anyway, so a
+    spurious selection would only refuse downstream, never green a wrong-rule test).
+    ``walk`` recurses ``FunctionCall`` args, so ``ISBLANK``/``ISPICKVAL`` surface
+    their inner ``FieldRef``; ``path[-1]`` is the bare tail, matching the claim side."""
+    ast = parse(text)
+    if not is_parsed(ast):
+        return frozenset()
+    return frozenset(
+        node.path[-1].lower()
+        for node in walk(ast)
+        if isinstance(node, FieldRef) and node.path)
+
+
+def _best_aligned_vr(vr_formulas: tuple[str, ...], grounded_conds) -> Optional[str]:
+    """The single VR formula whose referenced fields best overlap the claim's
+    grounded condition fields (D-295), or ``None`` when none shares a field.
+    Deterministic: ``score = |claim_fields ∩ vr_fields|`` (intersection
+    CARDINALITY, not Jaccard — a broad-but-correct VR must not be penalized by its
+    union denominator); ties broken by the TIGHTEST VR (fewest referenced fields =
+    most specific), then original order as the final disambiguator (order is only
+    ever the last-resort tie-break, never a signal). Refuse floor = 1 shared field.
+    Callers apply the degenerate guard (empty conds / single VR) before this."""
+    claim_fields = _claim_condition_fields(grounded_conds)
+    if not claim_fields:
+        return None
+    best: Optional[str] = None
+    best_key: Optional[tuple] = None
+    for idx, text in enumerate(vr_formulas):
+        vr_fields = _vr_formula_fields(text)
+        score = len(claim_fields & vr_fields)
+        if score < 1:                       # refuse floor: no shared field
+            continue
+        # minimize (-score, field_count, index): highest overlap, then tightest
+        # VR, then earliest — fully deterministic, order never a signal.
+        key = (-score, len(vr_fields), idx)
+        if best_key is None or key < best_key:
+            best_key, best = key, text
+    return best
+
+
+def _align_vr_to_conditions(
+        vr_formulas: tuple[str, ...], grounded_conds) -> tuple[str, ...]:
+    """Narrow the grounding VR formulas to the ONE that matches the claim's
+    conditions (D-295), so emission's first-derivable loop grounds each prohibition
+    on its OWN rule rather than the first-derivable generic VR on the object.
+
+    **DORMANT (D-295 S1):** the selection core (:func:`_best_aligned_vr`) is
+    implemented and unit-tested, but this wrapper is a byte-identical PASS-THROUGH
+    until S2 arms it — it returns ``vr_formulas`` unchanged, so the gate and the
+    persisted ``GroundedNegative`` see the same tuple and generation behaviour is
+    unchanged. S2 flips the body to::
+
+        if not grounded_conds or len(vr_formulas) <= 1:
+            return vr_formulas                      # degenerate guard (load-bearing)
+        best = _best_aligned_vr(vr_formulas, grounded_conds)
+        return (best,) if best is not None else ()  # () → the D-293 gate refuses
+    """
+    return vr_formulas
 
 
 def _grounding_field_metadata(neighborhood: list, s1, at_seq: int) -> dict:
@@ -774,6 +850,14 @@ class GovernanceCore:
             # can run the D-107 verified-vs-caveated derivation (re-found from the
             # same in-scope neighborhood Layer-1 grounding matched).
             vr_formulas = _grounding_vr_formulas(claim_kind, neighborhood)
+            # D-295: narrow the grounding VRs to the ONE whose fields match this
+            # claim's conditions, so the prohibition grounds on its OWN rule rather
+            # than the first-derivable generic VR on a multi-VR object. Rebinding
+            # here means the gate below AND the persisted GroundedNegative see the
+            # same narrowed tuple. DORMANT this slice — a byte-identical pass-through
+            # until S2 arms it (a claim with conditions on a multi-VR object is the
+            # only case S2 changes; single-VR / condition-free stays byte-identical).
+            vr_formulas = _align_vr_to_conditions(vr_formulas, grounded_conds)
             # D-294: read-only S1 field metadata (type/picklist) for the fields in
             # the scoped neighborhood — feeds metadata-driven violation-derivation
             # (cross-field / NOT-ISBLANK / NOT-ISPICKVAL / bare-boolean). DORMANT
