@@ -137,19 +137,42 @@ def test_best_aligned_cardinality_not_jaccard():
     assert gc._best_aligned_vr((narrow, broad), conds) == broad  # cardinality → broad
 
 
-def test_best_aligned_tie_prefers_tightest_vr():
-    # Loan_Amount alone scores 1 against Home_Loan(4), Loan_Exceeds(2), Block(3);
-    # the tightest (fewest fields) wins → Loan_Exceeds.
+def test_best_aligned_refuses_on_ambiguous_multi_tie():
+    # Loan_Amount alone scores 1 against Home_Loan / Loan_Exceeds / Block_Approved —
+    # a 3-way tie. D-295.1: an ambiguous grounding REFUSES (None) rather than
+    # guessing (the removed tightest-VR tie-break would have picked Loan_Exceeds).
     conds = [_cond("Opportunity.Loan_Amount__c")]
-    assert gc._best_aligned_vr(ALL_VRS, conds) == VR_LOAN_EXCEEDS
+    assert gc._best_aligned_vr(ALL_VRS, conds) is None
 
 
-def test_best_aligned_tie_same_width_prefers_earliest_index():
+def test_best_aligned_refuses_two_way_tie_order_independent():
     a1 = "ISBLANK(A__c)"
-    a2 = "NOT(ISBLANK(A__c))"   # same field set {a__c}, same width, later index
+    a2 = "NOT(ISBLANK(A__c))"        # same field set {a__c} → both score 1 → tie
     conds = [_cond("Obj.A__c")]
-    assert gc._best_aligned_vr((a1, a2), conds) == a1
-    assert gc._best_aligned_vr((a2, a1), conds) == a2  # order is the last-resort key
+    assert gc._best_aligned_vr((a1, a2), conds) is None
+    assert gc._best_aligned_vr((a2, a1), conds) is None   # order never a signal
+
+
+def test_best_aligned_refuses_business_vs_generic_tie():
+    # D-295.1 regression guard (the adversarial wrong-green vector): a claim
+    # under-specified to {discount__c} ties the intended approval-gate rule (2
+    # fields) with a generic numeric rule (1 field). The OLD tightest-VR tie-break
+    # picked the GENERIC rule — the exact class D-295 exists to avoid. Now it
+    # REFUSES rather than green a test asserting the wrong rule.
+    business = "AND(Discount__c > 0, ISBLANK(Approver__c))"
+    generic = "Discount__c > 50"
+    conds = [_cond("Opportunity.Discount__c")]
+    assert gc._best_aligned_vr((business, generic), conds) is None
+    assert gc._best_aligned_vr((generic, business), conds) is None
+
+
+def test_best_aligned_strict_higher_overlap_still_wins():
+    # A UNIQUE top score is still selected (only ties refuse) — cardinality picks
+    # the strictly-higher-overlap VR. This keeps AC1/AC4/AC9 working.
+    broad = "AND(ISBLANK(A__c), ISBLANK(B__c), ISBLANK(C__c))"   # {a,b,c}
+    narrow = "ISBLANK(A__c)"                                      # {a}
+    conds = [_cond("Obj.A__c"), _cond("Obj.B__c")]               # broad=2, narrow=1
+    assert gc._best_aligned_vr((narrow, broad), conds) == broad
 
 
 def test_best_aligned_refuse_no_shared_field():
@@ -188,6 +211,16 @@ def test_align_refuses_empty_when_no_vr_aligns():
     assert gc._align_vr_to_conditions(ALL_VRS, conds) == ()
 
 
+def test_align_refuses_on_ambiguous_tie():
+    # {loan_amount, property_value} ties Home_Loan(2) and Loan_Exceeds(2) → ambiguous
+    # → () → the D-293 gate refuses. This is req-302 AC2 under D-295.1: field-overlap
+    # alone cannot tell the cross-field rule from the mandatory-fields rule, so it
+    # honestly refuses rather than guessing.
+    conds = [_cond("Opportunity.Loan_Amount__c"),
+             _cond("Opportunity.Property_Value__c")]
+    assert gc._align_vr_to_conditions(ALL_VRS, conds) == ()
+
+
 def test_align_degenerate_empty_conditions_passthrough_identity():
     # A condition-free prohibition (pre-D-293) is untouched — SAME object, all VRs,
     # first-derivable preserved. The byte-identity backstop.
@@ -217,7 +250,7 @@ def test_refusal_detail_d295_when_no_vr_aligns():
     conds = [_cond("Opportunity.Description")]
     detail = gc._prohibition_refusal_detail("Opportunity", (), ALL_VRS, conds)
     assert "D-295" in detail
-    assert "no validation rule aligns" in detail
+    assert "do not uniquely select" in detail
     assert "description" in detail
 
 

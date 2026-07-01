@@ -244,30 +244,38 @@ def _vr_formula_fields(text: str) -> frozenset[str]:
 
 
 def _best_aligned_vr(vr_formulas: tuple[str, ...], grounded_conds) -> Optional[str]:
-    """The single VR formula whose referenced fields best overlap the claim's
-    grounded condition fields (D-295), or ``None`` when none shares a field.
-    Deterministic: ``score = |claim_fields ∩ vr_fields|`` (intersection
-    CARDINALITY, not Jaccard — a broad-but-correct VR must not be penalized by its
-    union denominator); ties broken by the TIGHTEST VR (fewest referenced fields =
-    most specific), then original order as the final disambiguator (order is only
-    ever the last-resort tie-break, never a signal). Refuse floor = 1 shared field.
-    Callers apply the degenerate guard (empty conds / single VR) before this."""
+    """The VR formula whose fields UNIQUELY best-overlap the claim's grounded
+    condition fields (D-295), or ``None`` when the choice is not unique. Score =
+    ``|claim_fields ∩ vr_fields|`` (intersection cardinality, not Jaccard — a
+    broad-but-correct VR must not be penalized by its union denominator). Returns
+    ``None`` when the claim has no condition fields, when no VR shares a field
+    (refuse floor = 1), or when **>=2 VRs TIE at the top score** — an ambiguous
+    grounding refuses rather than guessing.
+
+    **D-295.1 (adversarial-review fix):** a field-count tie-break was removed — it
+    systematically preferred the *narrowest* VR on a tie, which is the generic
+    numeric rule (``X > N``), the exact class D-295 exists to stop grounding on. When
+    field-overlap cannot uniquely pin the rule, refuse-not-degrade wins. **Residual
+    bound (not caught here):** field-overlap trusts the LLM's condition grounding — a
+    mis-attributed grounding whose fields give a STRICT higher overlap on a wrong
+    (but derivable) VR is still selected; that is bounded by grounding quality, not
+    by this selector (see D-295.1). Callers apply the degenerate guard (empty conds
+    / single VR) before this."""
     claim_fields = _claim_condition_fields(grounded_conds)
     if not claim_fields:
         return None
     best: Optional[str] = None
-    best_key: Optional[tuple] = None
-    for idx, text in enumerate(vr_formulas):
-        vr_fields = _vr_formula_fields(text)
-        score = len(claim_fields & vr_fields)
+    best_score = 0
+    tie = False
+    for text in vr_formulas:
+        score = len(claim_fields & _vr_formula_fields(text))
         if score < 1:                       # refuse floor: no shared field
             continue
-        # minimize (-score, field_count, index): highest overlap, then tightest
-        # VR, then earliest — fully deterministic, order never a signal.
-        key = (-score, len(vr_fields), idx)
-        if best_key is None or key < best_key:
-            best_key, best = key, text
-    return best
+        if score > best_score:
+            best_score, best, tie = score, text, False
+        elif score == best_score:
+            tie = True                       # another VR ties the top -> ambiguous
+    return None if tie else best
 
 
 def _align_vr_to_conditions(
@@ -276,10 +284,11 @@ def _align_vr_to_conditions(
     conditions (D-295), so emission's first-derivable loop grounds each prohibition
     on its OWN rule rather than the first-derivable generic VR on the object.
 
-    Returns ``(best_vr,)`` when a VR's fields overlap the claim's condition fields,
-    or ``()`` when none does — an empty tuple drives the D-293 derivability gate to
-    REFUSE (no rule matches the asserted state) rather than grounding a mismatched
-    generic rule. **Degenerate guard (the load-bearing first line):** with no
+    Returns ``(best_vr,)`` when a VR's fields UNIQUELY overlap the claim's condition
+    fields, or ``()`` when none uniquely does (no overlap, or an ambiguous >=2-way
+    tie — D-295.1) — an empty tuple drives the D-293 derivability gate to REFUSE
+    rather than grounding a mismatched or ambiguously-chosen rule. **Degenerate
+    guard (the load-bearing first line):** with no
     grounded conditions (a condition-free prohibition, pre-D-293) or a single (or
     zero) candidate VR there is nothing to disambiguate — ``vr_formulas`` passes
     through unchanged, so those cases stay byte-identical to pre-D-295 and a
@@ -296,17 +305,20 @@ def _prohibition_refusal_detail(
         vr_all: tuple[str, ...], grounded_conds) -> str:
     """The BA-facing reason a prohibition's behaviour instance is incomplete
     (reached only when :func:`prohibition_recipe_derivable` is False). Distinguishes
-    the **D-295 mismatch** — alignment emptied a >=2-VR candidate set, i.e. no rule
-    matches the asserted state — from the **D-293 derivability gap** — the aligned
-    (or lone) VR cannot yet be turned into a behavioural reject recipe. Kept
-    distinct so the D-247 coverage/refusal surface shows a BA *why*: fix the
-    condition (D-295) vs the rule is not yet testable (D-293)."""
+    the **D-295 mismatch** — alignment emptied a >=2-VR candidate set, i.e. the
+    conditions do not uniquely select a rule — from the **D-293 derivability gap** —
+    the aligned (or lone) VR cannot yet be turned into a behavioural reject recipe.
+    Kept distinct so the D-247 coverage/refusal surface shows a BA *why*: refine the
+    condition (D-295) vs the rule is not yet testable (D-293). The D-295 wording is
+    literally true for all three ways alignment empties: no parseable rule
+    references the fields, or >=2 rules tie (D-295.1)."""
     if not vr_formulas and len(vr_all) >= 2:
         return (
-            f"prohibition on {subject_name}: no validation rule aligns with the "
-            f"claim's condition fields "
-            f"{sorted(_claim_condition_fields(grounded_conds))}; refusing rather "
-            f"than grounding a mismatched generic rule (D-295)")
+            f"prohibition on {subject_name}: the claim's condition fields "
+            f"{sorted(_claim_condition_fields(grounded_conds))} do not uniquely "
+            f"select a validation rule (no parseable rule references them, or more "
+            f"than one rule matches equally); refine the conditions rather than "
+            f"grounding a mismatched or ambiguous rule (D-295)")
     return (
         f"prohibition on {subject_name}: no derivable behavioural reject recipe "
         f"from the grounding validation rule(s) (non-numeric formula, or a "
