@@ -67,6 +67,10 @@ def test_empty_trigger_fields_authors_todays_shallow_recipe():
     assert isinstance(create, CreateStep)
     # the padding-only create is EMPTY — nothing set on the subject
     assert create.field_values == {}
+    # empty tuple keeps the ORIGINAL triggering_action (the requirement excerpt,
+    # NOT the entry-condition rewrite) — fully locks the byte-identical claim
+    assert body.triggering_action.description == \
+        "when an Order is created the Flow stamps Status__c"
 
 
 def test_trigger_fields_set_the_entry_condition_on_the_create():

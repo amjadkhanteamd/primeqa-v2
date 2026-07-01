@@ -424,6 +424,25 @@ def test_ground_trigger_fields_drops_unverifiable_and_valueless():
         ("Opportunity.StageName", "Credit Assessment")]
 
 
+def test_ground_trigger_fields_excludes_the_effect_field_k16():
+    # k16 truth-bearing guard: the effect field (the value-under-test the Flow
+    # must PRODUCE) is DROPPED if proposed as a trigger — the create must never
+    # plant it, else the assert passes without the Flow firing (silent
+    # wrong-green). Enforced by the substrate, not the prompt.
+    nb = [_field_rel("Opportunity.StageName"),
+          _field_rel("Opportunity.Risk_Rating__c")]
+    out = gc._ground_trigger_fields(
+        [{"field_name": "Opportunity.StageName", "value": "Credit Assessment"},
+         {"field_name": "Opportunity.Risk_Rating__c", "value": "Medium"}],  # the effect
+        nb, exclude_field="Opportunity.Risk_Rating__c")
+    assert [(ep.external_id, v) for ep, v in out] == [
+        ("Opportunity.StageName", "Credit Assessment")]
+    # excluding the ONLY trigger falls back to the empty tuple (shallow shape)
+    assert gc._ground_trigger_fields(
+        [{"field_name": "Opportunity.Risk_Rating__c", "value": "Medium"}],
+        nb, exclude_field="Opportunity.Risk_Rating__c") == ()
+
+
 def test_evaluate_positive_named_flow_grounds_only_on_match():
     # D-299: with >1 Flow TRIGGERS_ON the subject a requirement-NAMED flow must
     # bind THAT flow; a named-but-absent flow is a genuine grounding miss.

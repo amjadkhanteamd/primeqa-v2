@@ -252,6 +252,40 @@ def test_automation_effect_unverifiable_trigger_dropped_not_refused(seeded):
     assert r.emission.observation_realization.steps[0].field_values == {}
 
 
+def test_automation_effect_effect_field_as_trigger_is_excluded_k16(seeded):
+    # k16 truth-bearing guard (adversarial-review S-1): if the requirement lists
+    # the EFFECT field itself as a trigger, the substrate DROPS it — the create
+    # must never plant the value-under-test (else the assert passes without the
+    # Flow firing: a silent wrong-green). Enforced by the substrate, not the
+    # prompt. Here the ONLY proposed trigger is the effect field -> shallow shape.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             automation_name="Stamp_Order_Status",
+                             trigger_fields=[{"field_name": "Order__c.Status__c",
+                                              "value": "Activated"}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    create = r.emission.observation_realization.steps[0]
+    assert create.field_values == {}                       # the effect field was dropped
+    assert "Order__c.Status__c" not in create.field_values
+
+
+def test_automation_effect_multi_field_trigger_end_to_end(seeded):
+    # D-299 N-1 (adversarial-review): prove the governance->emission composition
+    # with MORE THAN ONE trigger pair through the real runtime. Two verified,
+    # non-effect fields both land on the create; the effect field stays absent.
+    r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
+                             field_name="Order__c.Status__c", expected_value="Activated",
+                             automation_name="Stamp_Order_Status",
+                             trigger_fields=[
+                                 {"field_name": "Order__c.Stage__c", "value": "Submitted"},
+                                 {"field_name": "Order__c.Priority__c", "value": "High"}]))
+    assert r.outcome.outcome_kind == OutcomeKind.DRAFT
+    create = r.emission.observation_realization.steps[0]
+    assert create.field_values == {"Order__c.Stage__c": "Submitted",
+                                   "Order__c.Priority__c": "High"}
+    assert "Order__c.Status__c" not in create.field_values
+
+
 def test_automation_effect_cross_object(seeded):
     r = _run(seeded, _intent("automation-effect-claim", "positive", "Order__c",
                              effect_object="Order_Log__c",

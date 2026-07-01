@@ -234,6 +234,11 @@ def seeded(db_setup) -> dict:
         # state-transition pair (set at create; the org's automation reacts).
         order_stage = _entity(conn, "Field", "Order__c.Stage__c", v1)
         _edge(conn, order_stage, order, "BELONGS_TO", "STRUCTURAL", v1)
+        # D-299: a third Order field so a MULTI-field (N=2) entry-condition
+        # trigger can be proven end-to-end (Stage__c + Priority__c), with the
+        # effect field Status__c staying org-produced.
+        order_priority = _entity(conn, "Field", "Order__c.Priority__c", v1)
+        _edge(conn, order_priority, order, "BELONGS_TO", "STRUCTURAL", v1)
         order_flow = _entity(conn, "Flow", "Stamp_Order_Status", v1)
         _edge(conn, order_flow, order, "TRIGGERS_ON", "BEHAVIOR", v1)
         # D-299: a SECOND Flow TRIGGERS_ON Order__c — the multi-flow fixture that

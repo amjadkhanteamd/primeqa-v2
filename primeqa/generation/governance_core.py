@@ -191,7 +191,8 @@ def _ground_rejection_conditions(proposed, neighborhood: list, version_seq: int)
     return grounded, invalid
 
 
-def _ground_trigger_fields(proposed, neighborhood: list) -> tuple:
+def _ground_trigger_fields(proposed, neighborhood: list,
+                           exclude_field: Optional[str] = None) -> tuple:
     """D-299: resolve the LLM-proposed entry-condition (field, value) pairs — the
     fields the create must SET so an automation's entry gate actually fires (e.g.
     ``StageName='Credit Assessment'`` + the KYC/Credit-Score fields the entry VR
@@ -199,12 +200,19 @@ def _ground_trigger_fields(proposed, neighborhood: list) -> tuple:
     the field must BELONG_TO the subject (object-qualified name, exactly the
     check ``effect_field`` and the D-222 state-transition trigger use).
 
+    **k16 truth-bearing guard**: ``exclude_field`` (the effect field's
+    object-qualified api-name) is DROPPED if proposed as a trigger. The trigger
+    sets the entry CONDITION; the value-under-test (the field the Flow must
+    PRODUCE) must never be planted by the create — else the equals-assert passes
+    with the Flow never firing (a silent wrong-green feeding GO/NO-GO). The
+    substrate enforces this, not the prompt (invent-nothing / Guardrail-2).
+
     **Drop-never-refuse** (mirrors the D-222 staged trigger): an unverifiable
-    field or a value-less pair is silently DROPPED — never guessed, never
-    refused (a previously-emittable automation-effect never regresses to a
-    refusal because the LLM over-proposed a trigger). Returns a tuple of
-    ``(_Endpoint, value)`` pairs; ``()`` when nothing verifies (the dormant
-    default — today's padding-only shallow create)."""
+    field, a value-less pair, or the excluded effect field is silently DROPPED —
+    never guessed, never refused (a previously-emittable automation-effect never
+    regresses to a refusal because the LLM over-proposed a trigger). Returns a
+    tuple of ``(_Endpoint, value)`` pairs; ``()`` when nothing verifies (the
+    dormant default — today's padding-only shallow create)."""
     if not isinstance(proposed, list):
         return ()
     fields_by_name = {
@@ -216,6 +224,8 @@ def _ground_trigger_fields(proposed, neighborhood: list) -> tuple:
         fname, value = c.get("field_name"), c.get("value")
         if not fname or value is None:
             continue
+        if exclude_field is not None and fname == exclude_field:
+            continue                    # k16: never plant the value-under-test
         ent = fields_by_name.get(fname)
         if ent is None:
             continue
@@ -1301,10 +1311,13 @@ class GovernanceCore:
                 # D-299: the OPTIONAL entry-condition trigger — the (field,
                 # value) pairs the create must SET so the Flow's entry gate
                 # fires. Same-record only (the gate is on the subject create);
-                # object-qualified BELONGS_TO verify, drop-never-refuse. Empty
-                # -> today's padding-only shallow create.
+                # object-qualified BELONGS_TO verify, drop-never-refuse. The
+                # effect field is excluded (k16): the create sets the entry
+                # CONDITION, never the value-under-test the Flow must produce.
+                # Empty -> today's padding-only shallow create.
                 trigger_fields = _ground_trigger_fields(
-                    hint.get("trigger_fields"), neighborhood)
+                    hint.get("trigger_fields"), neighborhood,
+                    exclude_field=field_ent.sf_api_name)
                 _stash_grounding(state, GroundedAutomationEffect(
                     archetype=archetype, claim_kind=claim_kind, version_seq=at,
                     subject=subj_ep, automation=flow_ep,
