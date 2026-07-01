@@ -7,10 +7,10 @@ both AC1 and AC4 grounded on the generic ``Amount > 10000``). The VR formulas
 below are the REAL env-59 Opportunity rules for req-302 (fetched from prod
 tenant_1), so these tests prove selection on the actual business rules.
 
-**Slice 1 (this file lands with it): the aligner is DORMANT** — a byte-identical
-pass-through. The scorer core (``_best_aligned_vr`` + the two field-extractors)
-is fully exercised here; the wrapper's pass-through is asserted by identity. S2
-arms ``_align_vr_to_conditions`` to narrow / refuse and flips those assertions.
+**Slice 2 (armed):** ``_align_vr_to_conditions`` narrows a multi-VR candidate set
+to the aligned VR, or returns ``()`` (no rule matches → the D-293 gate refuses).
+Condition-free / single-VR (or zero-VR) sets pass through unchanged (the
+degenerate guard), so those cases stay byte-identical to pre-D-295.
 """
 from __future__ import annotations
 
@@ -161,24 +161,79 @@ def test_best_aligned_empty_conditions_is_none():
     assert gc._best_aligned_vr(ALL_VRS, []) is None
 
 
-# --- _align_vr_to_conditions: DORMANT pass-through (S1 byte-identity) --------
+# --- _align_vr_to_conditions: ARMED (S2 — narrow to the aligned VR, or refuse) --
 
-def test_align_dormant_is_passthrough_identity():
-    # Returns the SAME tuple object — no narrowing, no copy — so the gate and the
-    # persisted GroundedNegative see exactly today's formulas. This is the S1
-    # byte-identity guarantee; S2 flips it to narrow-or-refuse.
+def test_align_narrows_ac1_to_home_loan():
+    # 5 candidate VRs → the ONE matching AC1's conditions. This is the defect fix:
+    # AC1 no longer grounds on the generic Amount rule.
     conds = [_cond("Opportunity.Loan_Type__c"), _cond("Opportunity.Loan_Amount__c")]
-    assert gc._align_vr_to_conditions(ALL_VRS, conds) is ALL_VRS
+    assert gc._align_vr_to_conditions(ALL_VRS, conds) == (VR_HOME_LOAN,)
 
 
-def test_align_dormant_unchanged_on_the_case_s2_will_change():
-    # AC1 on a multi-VR object is exactly the case S2 narrows (5 VRs → 1). S1 must
-    # still return all five, unchanged, so generation behaviour is identical.
-    conds = [_cond("Opportunity.Loan_Type__c"), _cond("Opportunity.Loan_Amount__c")]
-    assert gc._align_vr_to_conditions(ALL_VRS, conds) == ALL_VRS
-    assert len(gc._align_vr_to_conditions(ALL_VRS, conds)) == 5
+def test_align_narrows_ac4_to_credit_assessment():
+    conds = [_cond("Opportunity.StageName"), _cond("Opportunity.KYC_Complete__c")]
+    assert gc._align_vr_to_conditions(ALL_VRS, conds) == (VR_CREDIT_ASSESSMENT,)
 
 
-def test_align_dormant_passthrough_even_when_no_vr_aligns():
+def test_align_narrows_ac9_to_block_approved():
+    conds = [_cond("Opportunity.Loan_Amount__c"),
+             _cond("Opportunity.Approval_Status__c"), _cond("Opportunity.StageName")]
+    assert gc._align_vr_to_conditions(ALL_VRS, conds) == (VR_BLOCK_APPROVED,)
+
+
+def test_align_refuses_empty_when_no_vr_aligns():
+    # >=2 candidates + conditions, no shared field → () → the D-293 gate refuses
+    # (the D-295 mismatch reason, not a derivability gap).
     conds = [_cond("Opportunity.Description")]
-    assert gc._align_vr_to_conditions(ALL_VRS, conds) is ALL_VRS
+    assert gc._align_vr_to_conditions(ALL_VRS, conds) == ()
+
+
+def test_align_degenerate_empty_conditions_passthrough_identity():
+    # A condition-free prohibition (pre-D-293) is untouched — SAME object, all VRs,
+    # first-derivable preserved. The byte-identity backstop.
+    assert gc._align_vr_to_conditions(ALL_VRS, []) is ALL_VRS
+    assert gc._align_vr_to_conditions(ALL_VRS, None) is ALL_VRS
+
+
+def test_align_degenerate_single_vr_passthrough_identity():
+    # A single-VR object is never refused by alignment (nothing to disambiguate);
+    # the lone VR grounds, with the D-293 derivability gate as its only backstop —
+    # even when the claim's fields don't overlap it.
+    one = (VR_HOME_LOAN,)
+    conds = [_cond("Opportunity.Description")]      # score 0, but len<=1 guards
+    assert gc._align_vr_to_conditions(one, conds) is one
+
+
+def test_align_zero_vr_passthrough():
+    conds = [_cond("Opportunity.Loan_Amount__c")]
+    assert gc._align_vr_to_conditions((), conds) == ()
+
+
+# --- _prohibition_refusal_detail: D-295 mismatch vs D-293 derivability gap ---
+
+def test_refusal_detail_d295_when_no_vr_aligns():
+    # Alignment emptied a >=2-VR candidate set → the D-295 mismatch reason, and it
+    # surfaces the unmatched condition fields so a BA can fix the condition.
+    conds = [_cond("Opportunity.Description")]
+    detail = gc._prohibition_refusal_detail("Opportunity", (), ALL_VRS, conds)
+    assert "D-295" in detail
+    assert "no validation rule aligns" in detail
+    assert "description" in detail
+
+
+def test_refusal_detail_d293_when_aligned_vr_not_derivable():
+    # A non-empty aligned VR that isn't derivable → the D-293 derivability reason
+    # (this is exactly AC2: Loan_Exceeds is selected but its compound shape can't
+    # yet be derived under D-294).
+    detail = gc._prohibition_refusal_detail(
+        "Opportunity", (VR_LOAN_EXCEEDS,), ALL_VRS,
+        [_cond("Opportunity.Loan_Amount__c"), _cond("Opportunity.Property_Value__c")])
+    assert "D-293" in detail
+    assert "no derivable behavioural reject recipe" in detail
+
+
+def test_refusal_detail_d293_when_no_candidate_vrs():
+    # No VRs on the object at all (vr_all empty) → D-293, never the D-295 mismatch.
+    detail = gc._prohibition_refusal_detail("Opportunity", (), (), [])
+    assert "D-293" in detail
+    assert "D-295" not in detail

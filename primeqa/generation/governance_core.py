@@ -276,18 +276,42 @@ def _align_vr_to_conditions(
     conditions (D-295), so emission's first-derivable loop grounds each prohibition
     on its OWN rule rather than the first-derivable generic VR on the object.
 
-    **DORMANT (D-295 S1):** the selection core (:func:`_best_aligned_vr`) is
-    implemented and unit-tested, but this wrapper is a byte-identical PASS-THROUGH
-    until S2 arms it — it returns ``vr_formulas`` unchanged, so the gate and the
-    persisted ``GroundedNegative`` see the same tuple and generation behaviour is
-    unchanged. S2 flips the body to::
+    Returns ``(best_vr,)`` when a VR's fields overlap the claim's condition fields,
+    or ``()`` when none does — an empty tuple drives the D-293 derivability gate to
+    REFUSE (no rule matches the asserted state) rather than grounding a mismatched
+    generic rule. **Degenerate guard (the load-bearing first line):** with no
+    grounded conditions (a condition-free prohibition, pre-D-293) or a single (or
+    zero) candidate VR there is nothing to disambiguate — ``vr_formulas`` passes
+    through unchanged, so those cases stay byte-identical to pre-D-295 and a
+    single-VR object is never refused by alignment (the D-293 gate remains its only
+    backstop). See :func:`_best_aligned_vr` for the scorer."""
+    if not grounded_conds or len(vr_formulas) <= 1:
+        return vr_formulas
+    best = _best_aligned_vr(vr_formulas, grounded_conds)
+    return (best,) if best is not None else ()
 
-        if not grounded_conds or len(vr_formulas) <= 1:
-            return vr_formulas                      # degenerate guard (load-bearing)
-        best = _best_aligned_vr(vr_formulas, grounded_conds)
-        return (best,) if best is not None else ()  # () → the D-293 gate refuses
-    """
-    return vr_formulas
+
+def _prohibition_refusal_detail(
+        subject_name: str, vr_formulas: tuple[str, ...],
+        vr_all: tuple[str, ...], grounded_conds) -> str:
+    """The BA-facing reason a prohibition's behaviour instance is incomplete
+    (reached only when :func:`prohibition_recipe_derivable` is False). Distinguishes
+    the **D-295 mismatch** — alignment emptied a >=2-VR candidate set, i.e. no rule
+    matches the asserted state — from the **D-293 derivability gap** — the aligned
+    (or lone) VR cannot yet be turned into a behavioural reject recipe. Kept
+    distinct so the D-247 coverage/refusal surface shows a BA *why*: fix the
+    condition (D-295) vs the rule is not yet testable (D-293)."""
+    if not vr_formulas and len(vr_all) >= 2:
+        return (
+            f"prohibition on {subject_name}: no validation rule aligns with the "
+            f"claim's condition fields "
+            f"{sorted(_claim_condition_fields(grounded_conds))}; refusing rather "
+            f"than grounding a mismatched generic rule (D-295)")
+    return (
+        f"prohibition on {subject_name}: no derivable behavioural reject recipe "
+        f"from the grounding validation rule(s) (non-numeric formula, or a "
+        f"non-rejectable operation); refusing rather than degrading to a metadata "
+        f"inspection (D-293)")
 
 
 def _grounding_field_metadata(neighborhood: list, s1, at_seq: int) -> dict:
@@ -849,15 +873,15 @@ class GovernanceCore:
             # Carry the grounding VRs' formulas so authoring (and the gate below)
             # can run the D-107 verified-vs-caveated derivation (re-found from the
             # same in-scope neighborhood Layer-1 grounding matched).
-            vr_formulas = _grounding_vr_formulas(claim_kind, neighborhood)
+            vr_all = _grounding_vr_formulas(claim_kind, neighborhood)
             # D-295: narrow the grounding VRs to the ONE whose fields match this
             # claim's conditions, so the prohibition grounds on its OWN rule rather
             # than the first-derivable generic VR on a multi-VR object. Rebinding
             # here means the gate below AND the persisted GroundedNegative see the
-            # same narrowed tuple. DORMANT this slice — a byte-identical pass-through
-            # until S2 arms it (a claim with conditions on a multi-VR object is the
-            # only case S2 changes; single-VR / condition-free stays byte-identical).
-            vr_formulas = _align_vr_to_conditions(vr_formulas, grounded_conds)
+            # same narrowed tuple. Condition-free / single-VR pass through unchanged
+            # (byte-identical to pre-D-295); a >=2-VR set with conditions but no
+            # aligning VR narrows to () -> the gate below refuses (D-295, not D-293).
+            vr_formulas = _align_vr_to_conditions(vr_all, grounded_conds)
             # D-294: read-only S1 field metadata (type/picklist) for the fields in
             # the scoped neighborhood — feeds metadata-driven violation-derivation
             # (cross-field / NOT-ISBLANK / NOT-ISPICKVAL / bare-boolean). DORMANT
@@ -874,15 +898,16 @@ class GovernanceCore:
             # field_metadata (dormant here).
             if not prohibition_recipe_derivable(
                     hint.get("operation"), vr_formulas, field_metadata):
+                # D-295: a MISMATCH (no rule aligns with the asserted state) and
+                # D-293's derivability gap (the aligned/only VR cannot be tested)
+                # both refuse here, with distinct BA-facing reasons.
                 return IntentResolution(
                     grounded_candidates=[], next_action=NextAction.REFUSE,
                     interpretation_delta=delta,
                     refusal=self._router.behaviour_incomplete(
-                        f"prohibition on {subject.sf_api_name}: no derivable "
-                        f"behavioural reject recipe from the grounding validation "
-                        f"rule(s) (non-numeric formula, or a non-rejectable "
-                        f"operation); refusing rather than degrading to a metadata "
-                        f"inspection (D-293)"))
+                        _prohibition_refusal_detail(
+                            subject.sf_api_name, vr_formulas, vr_all,
+                            grounded_conds)))
             _stash_grounding(state, GroundedNegative(
                 archetype=archetype, claim_kind=claim_kind,
                 operation_hint=hint.get("operation"), version_seq=at,
