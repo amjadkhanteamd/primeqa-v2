@@ -268,39 +268,50 @@ def _vr_cross_field_pairs(text: str) -> frozenset[frozenset[str]]:
         and node.left.path and node.right.path)
 
 
-def _best_aligned_vr(vr_formulas: tuple[str, ...], grounded_conds) -> Optional[str]:
-    """The VR formula whose fields UNIQUELY best-overlap the claim's grounded
-    condition fields (D-295), or ``None`` when the choice is not unique. Score =
-    ``|claim_fields ∩ vr_fields|`` (intersection cardinality, not Jaccard — a
-    broad-but-correct VR must not be penalized by its union denominator). Returns
-    ``None`` when the claim has no condition fields, when no VR shares a field
-    (refuse floor = 1), or when **>=2 VRs TIE at the top score** — an ambiguous
-    grounding refuses rather than guessing.
+def _break_tie_by_cross_field(tied_vrs, claim_fields) -> Optional[str]:
+    """Break a >=2-way field-overlap tie (D-296) using the cross-field structural
+    discriminator that field-overlap is blind to. A tied VR QUALIFIES iff it carries
+    a cross-field comparison pair EXACTLY equal to the claim's condition fields
+    (exact-equality guard: a strict subset would admit an *incidental* cross-field on
+    an over-grounded claim — rejected in D-296 / guard A). Returns the sole qualifier,
+    or ``None`` when zero or >=2 qualify — refuse-on-non-unique, reasserted at this
+    second dimension. Callers pass only the already-tied set. A generic ``X > N`` is
+    field-vs-literal and carries no cross-field pair, so the D-295.1 wrong-green class
+    can never qualify here."""
+    qualifiers = [t for t in tied_vrs if claim_fields in _vr_cross_field_pairs(t)]
+    return qualifiers[0] if len(qualifiers) == 1 else None
 
-    **D-295.1 (adversarial-review fix):** a field-count tie-break was removed — it
-    systematically preferred the *narrowest* VR on a tie, which is the generic
-    numeric rule (``X > N``), the exact class D-295 exists to stop grounding on. When
-    field-overlap cannot uniquely pin the rule, refuse-not-degrade wins. **Residual
-    bound (not caught here):** field-overlap trusts the LLM's condition grounding — a
-    mis-attributed grounding whose fields give a STRICT higher overlap on a wrong
-    (but derivable) VR is still selected; that is bounded by grounding quality, not
-    by this selector (see D-295.1). Callers apply the degenerate guard (empty conds
-    / single VR) before this."""
+
+def _best_aligned_vr(vr_formulas: tuple[str, ...], grounded_conds) -> Optional[str]:
+    """The VR formula that best-grounds the claim (D-295 + D-296), or ``None`` when
+    the choice is not unique. Primary signal = field-overlap CARDINALITY
+    ``|claim_fields ∩ vr_fields|`` (not Jaccard). Returns ``None`` when the claim has
+    no condition fields or no VR shares a field (refuse floor = 1). On a **>=2-way tie
+    at the top score**, D-296 breaks it with the cross-field structural discriminator
+    (:func:`_break_tie_by_cross_field`, exact-equality); a tie the discriminator
+    cannot uniquely resolve still returns ``None`` (D-295.1 refuse-on-non-unique).
+
+    **D-295.1:** the earlier field-count tie-break was removed — it preferred the
+    narrowest VR (the generic ``X > N``), a wrong-green vector. **D-296:** a structural
+    (not field-count) discriminator now breaks a tie only toward a VR whose cross-field
+    pair exactly matches the claim. **Residual (unchanged):** a mis-attributed grounding
+    whose fields give a STRICT higher overlap on a wrong-but-derivable VR is still the
+    unique top-scorer and is selected — bounded by grounding quality, not this selector.
+    Callers apply the degenerate guard (empty conds / single VR) before this."""
     claim_fields = _claim_condition_fields(grounded_conds)
     if not claim_fields:
         return None
-    best: Optional[str] = None
-    best_score = 0
-    tie = False
-    for text in vr_formulas:
-        score = len(claim_fields & _vr_formula_fields(text))
-        if score < 1:                       # refuse floor: no shared field
-            continue
-        if score > best_score:
-            best_score, best, tie = score, text, False
-        elif score == best_score:
-            tie = True                       # another VR ties the top -> ambiguous
-    return None if tie else best
+    # Pass 1: the top field-overlap score (each VR's fields parsed once).
+    scored = [(len(claim_fields & _vr_formula_fields(t)), t) for t in vr_formulas]
+    best_score = max((s for s, _ in scored), default=0)
+    if best_score < 1:                          # refuse floor: no VR shares a field
+        return None
+    # Pass 2: the full tied set at the top score (includes the incumbent — a
+    # single-pass boolean 'tie' flag would drop it and mislead the discriminator).
+    tied = [t for s, t in scored if s == best_score]
+    if len(tied) == 1:
+        return tied[0]
+    return _break_tie_by_cross_field(tied, claim_fields)   # D-296; None if non-unique
 
 
 def _align_vr_to_conditions(

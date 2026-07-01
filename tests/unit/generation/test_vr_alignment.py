@@ -211,14 +211,15 @@ def test_align_refuses_empty_when_no_vr_aligns():
     assert gc._align_vr_to_conditions(ALL_VRS, conds) == ()
 
 
-def test_align_refuses_on_ambiguous_tie():
-    # {loan_amount, property_value} ties Home_Loan(2) and Loan_Exceeds(2) → ambiguous
-    # → () → the D-293 gate refuses. This is req-302 AC2 under D-295.1: field-overlap
-    # alone cannot tell the cross-field rule from the mandatory-fields rule, so it
-    # honestly refuses rather than guessing.
+def test_align_ac2_selects_loan_exceeds_via_cross_field_tiebreak():
+    # D-296 (lever 4): {loan_amount, property_value} ties Home_Loan(2) and
+    # Loan_Exceeds(2) on field-overlap, but only Loan_Exceeds carries a cross-field
+    # pair EXACTLY equal to the claim's fields → the tie-break selects it. This was a
+    # refusal under D-295.1; the flip IS the point of lever 4. (AC2 still refuses
+    # END-TO-END until S3 derivation — but the SELECTION is now correct.)
     conds = [_cond("Opportunity.Loan_Amount__c"),
              _cond("Opportunity.Property_Value__c")]
-    assert gc._align_vr_to_conditions(ALL_VRS, conds) == ()
+    assert gc._align_vr_to_conditions(ALL_VRS, conds) == (VR_LOAN_EXCEEDS,)
 
 
 def test_align_degenerate_empty_conditions_passthrough_identity():
@@ -316,3 +317,52 @@ def test_cross_field_pairs_field_vs_literal_has_none():
 def test_cross_field_pairs_multiple_distinct_pairs():
     assert gc._vr_cross_field_pairs("AND(A__c > B__c, C__c < D__c)") == frozenset(
         {frozenset({"a__c", "b__c"}), frozenset({"c__c", "d__c"})})
+
+
+# --- D-296 lever 4 S2: the cross-field tie-break (armed selection) ----------
+
+def test_best_aligned_ac2_breaks_tie_to_loan_exceeds():
+    # AC2 ties Home_Loan(2)/Loan_Exceeds(2) on field-overlap; the cross-field
+    # discriminator picks Loan_Exceeds (its pair == claim fields exactly).
+    conds = [_cond("Opportunity.Loan_Amount__c"), _cond("Opportunity.Property_Value__c")]
+    assert gc._best_aligned_vr(ALL_VRS, conds) == VR_LOAN_EXCEEDS
+
+
+def test_best_aligned_ac1_ac4_ac9_are_strict_winners_unaffected():
+    # The strict-unique winners never reach the tie branch — byte-identical selection.
+    assert gc._best_aligned_vr(ALL_VRS, [_cond("Opportunity.Loan_Type__c"),
+                                         _cond("Opportunity.Loan_Amount__c")]) == VR_HOME_LOAN
+    assert gc._best_aligned_vr(ALL_VRS, [_cond("Opportunity.StageName"),
+                                         _cond("Opportunity.KYC_Complete__c")]) == VR_CREDIT_ASSESSMENT
+    assert gc._best_aligned_vr(ALL_VRS, [_cond("Opportunity.Loan_Amount__c"),
+                                         _cond("Opportunity.Approval_Status__c"),
+                                         _cond("Opportunity.StageName")]) == VR_BLOCK_APPROVED
+
+
+def test_break_tie_exactly_one_qualifier():
+    conds = frozenset({"loan_amount__c", "property_value__c"})
+    # Home_Loan has no cross-field pair; Loan_Exceeds's pair == conds → unique winner.
+    assert gc._break_tie_by_cross_field(
+        [VR_HOME_LOAN, VR_LOAN_EXCEEDS], conds) == VR_LOAN_EXCEEDS
+
+
+def test_break_tie_two_cross_field_returns_none():
+    # ATTACK2: two VRs each carry a cross-field pair == claim fields → ambiguous → None.
+    a = "A__c > B__c"
+    b = "B__c < A__c"      # same order-free pair {a__c, b__c}
+    conds = frozenset({"a__c", "b__c"})
+    assert gc._break_tie_by_cross_field([a, b], conds) is None
+
+
+def test_break_tie_superset_attack_rejected_by_exact_equality():
+    # An over-grounded claim {a,b,c}: an INCIDENTAL cross-field VR carries pair {a,b}
+    # (a strict SUBSET of the claim). Exact-equality REJECTS it → None (no mis-select).
+    incidental = "AND(ISBLANK(C__c), A__c > B__c)"     # cross-field pair {a__c, b__c}
+    all_blank = "AND(ISBLANK(A__c), ISBLANK(B__c), ISBLANK(C__c))"
+    conds = frozenset({"a__c", "b__c", "c__c"})
+    assert gc._break_tie_by_cross_field([all_blank, incidental], conds) is None
+
+
+def test_break_tie_zero_qualifiers_returns_none():
+    conds = frozenset({"x__c", "y__c"})   # no VR references these
+    assert gc._break_tie_by_cross_field([VR_HOME_LOAN, VR_CREDIT_ASSESSMENT], conds) is None
