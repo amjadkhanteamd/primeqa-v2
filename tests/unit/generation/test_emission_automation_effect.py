@@ -67,3 +67,27 @@ def test_empty_trigger_fields_authors_todays_shallow_recipe():
     assert isinstance(create, CreateStep)
     # the padding-only create is EMPTY — nothing set on the subject
     assert create.field_values == {}
+
+
+def test_trigger_fields_set_the_entry_condition_on_the_create():
+    # D-299 S2: a grounded entry-condition trigger makes the create SET those
+    # fields so the Flow's entry gate fires — while the asserted effect field
+    # stays org-produced (deliberately absent from the create). Keys stay
+    # object-qualified (S4 bare-ifies them); values are carried raw.
+    trigger = (
+        (_Endpoint(entity_id=uuid4(), entity_type="Field",
+                   external_id="Order__c.Stage__c"), "Submitted"),
+        (_Endpoint(entity_id=uuid4(), entity_type="Field",
+                   external_id="Order__c.Priority__c"), "High"),
+    )
+    b = author_emission(_grounded_same_record(trigger_fields=trigger))
+    steps = b.observation_realization.steps
+    assert [s.step_id for s in steps] == ["create-record", "read-created", "assert-value"]
+    create = steps[0]
+    assert create.field_values == {"Order__c.Stage__c": "Submitted",
+                                   "Order__c.Priority__c": "High"}
+    # the asserted effect field is NOT set by the create — the Flow must produce it
+    assert "Order__c.Status__c" not in create.field_values
+    # the claim's triggering event names the entry condition (explainability)
+    desc = b.asserted_truth.triggering_action.description
+    assert "Order__c.Stage__c" in desc and "Order__c.Priority__c" in desc

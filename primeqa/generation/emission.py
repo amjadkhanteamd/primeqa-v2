@@ -1256,16 +1256,38 @@ def _author_automation_effect(g: GroundedAutomationEffect) -> EmissionBundle:
         field_ref = IdentityBearingRef(
             entity_type=g.effect_field.entity_type, entity_id=g.effect_field.entity_id,
             version_seq=g.version_seq, external_id=field_api)
+        # D-299: the create SETS the grounded entry-condition fields so the
+        # Flow's entry gate actually fires — a padding-only create can never
+        # provoke the effect (observability, not correctness). Keys are
+        # object-qualified external_ids (S4 bare-ifies them via world._sf_fields,
+        # exactly as for the D-222 state-transition trigger). The value is
+        # carried raw (the recipe side; the claim wraps in LiteralValue). Empty
+        # trigger_fields () -> today's padding-only shape, byte-identical.
+        create_fields = {ep.external_id: val for ep, val in g.trigger_fields}
+        sr_event = event
+        if create_fields:
+            gate = ", ".join(f"{k}={v!r}" for k, v in create_fields.items())
+            sr_event = EventDescriptor(
+                trigger_kind="data-mutation-trigger",
+                description=(f"creating a {object_api} with {gate} — "
+                             f"{g.requirement_excerpt}"))
         claim = AutomationEffectClaimBody(
             automation=automation_ref, automation_primitive="flow",
-            triggering_action=event,
+            triggering_action=sr_event,
             expected_effect=FieldChangeEffect(changes=StateDescriptor(
                 field_values={field_api: LiteralValue(value=g.effect_value)})),
             affected_fields=[field_ref],
         )
-        steps = _observe_steps(object_api, field_api, g.effect_value)
-        details = (f"create a {object_api} record, read it back, assert the "
-                   f"Flow set {field_api}={g.effect_value!r}")
+        steps = _observe_steps(object_api, field_api, g.effect_value,
+                               create_fields=create_fields)
+        if create_fields:
+            gate = ", ".join(f"{k}={v!r}" for k, v in create_fields.items())
+            details = (f"create a {object_api} record with {gate} (the Flow's "
+                       f"entry condition), read it back, assert the Flow set "
+                       f"{field_api}={g.effect_value!r}")
+        else:
+            details = (f"create a {object_api} record, read it back, assert the "
+                       f"Flow set {field_api}={g.effect_value!r}")
     elif g.effect_via_lookup_field is not None:
         # D-227 parent-stamp: the Flow stamps a record the TRIGGER record
         # points to via its own lookup. Create the parent FIRST (so its id is
