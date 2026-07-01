@@ -35,7 +35,8 @@ from dataclasses import dataclass
 from typing import Any, Optional, Union
 
 from primeqa.semantic.formula import (
-    And, Comparison, FieldRef, FunctionCall, Literal, Not, NotParsed, Or, walk,
+    And, Comparison, FieldRef, FunctionCall, Literal, Not, NotParsed, NonEvaluable,
+    Or, evaluate, walk,
 )
 
 _ORG_STATE_FUNCS = {"PRIORVALUE", "ISCHANGED", "ISNEW"}
@@ -45,6 +46,10 @@ _NEG = {"<": ">=", ">": "<=", "<=": ">", ">=": "<", "=": "<>", "<>": "="}
 # Mirrors `execution_engine.world._NUMERIC` (kept local to avoid an S3->S4 import;
 # unified with the shared value-synthesis helper in a later slice).
 _NUMERIC = frozenset({"int", "integer", "double", "currency", "percent"})
+# D-294: textual SF types a deterministic non-blank filler can safely fill.
+# Mirrors `execution_engine.world._TEXTUAL` (kept local — see _nonblank_value).
+_TEXTUAL = frozenset({"string", "text", "textarea", "combobox"})
+_UNSYNTHESIZABLE = object()   # "no certain non-blank value for this field type"
 # A concrete numeric (left, right) pair making ``left <op> right`` TRUE — the
 # violating assignment for a cross-field comparison (D-294). Deterministic, so a
 # ``>`` pair is strictly-greater by construction (no `evaluate` self-check exists
@@ -150,6 +155,13 @@ def _satisfy(node, want_true: bool, meta: dict) -> dict[str, Any]:
     if isinstance(node, FunctionCall):
         return _satisfy_function(node, want_true, meta)
     if isinstance(node, FieldRef):
+        # D-294: a bare boolean field predicate is TRUE iff the field is TRUE, so
+        # ``want_true`` maps directly onto the field's value (NOT-wrapping is
+        # already handled by the Not case flipping want_true). Only when metadata
+        # confirms the field is boolean — otherwise a bare field is type-uncertain.
+        fm = (meta or {}).get(node.path[-1])
+        if fm is not None and fm.get("field_type") == "boolean":
+            return {node.path[-1]: want_true}
         raise _Undecidable(f"bare field predicate {node.name} (type-uncertain)")
     if isinstance(node, Literal):
         raise _Undecidable("constant boolean predicate")
@@ -247,14 +259,66 @@ def _violating_value(op: str, literal: Literal) -> Any:
     raise _Undecidable(f"unsupported literal kind {literal.kind!r}")
 
 
+def _nonblank_value(fm: Optional[dict]) -> Any:
+    """A certain, DETERMINISTIC non-blank value for a field given its D-294
+    metadata dict (or None) — else ``_UNSYNTHESIZABLE``. Deterministic (fixed)
+    values keep S3 emission replay-stable; this is a DISTINCT concern from
+    ``world._fill_value`` (S4 padding-validity, which uses live now()/today()),
+    so it is intentionally NOT shared."""
+    if not fm:
+        return _UNSYNTHESIZABLE
+    ft = (fm.get("field_type") or "")
+    if ft in _NUMERIC:
+        return 1
+    if ft == "boolean":
+        return True
+    if ft in _TEXTUAL:
+        length = fm.get("length") or 0
+        v = "PQA"
+        return v[:length] if 0 < length < len(v) else v
+    if ft == "email":
+        return "pqa@example.com"
+    if ft == "url":
+        return "https://example.com"
+    if ft == "phone":
+        return "5555550100"
+    if ft == "date":
+        return "2000-01-01"
+    if ft == "datetime":
+        return "2000-01-01T00:00:00Z"
+    if ft == "picklist":
+        vals = fm.get("picklist_values")
+        return vals[0] if vals else _UNSYNTHESIZABLE
+    return _UNSYNTHESIZABLE
+
+
+def _self_check(node, payload: dict, want_true: bool) -> None:
+    """D-294 polarity guard: a metadata-synthesized payload must make ``node``
+    evaluate to ``want_true`` (via the D-113 ``evaluate`` primitive). ``evaluate``
+    is Kleene — ``NonEvaluable`` (bare field, field-to-field) means no check is
+    possible, so we trust the construction. A concrete disagreement is a bug ->
+    refuse (never emit a payload that does not actually fire the rule)."""
+    result = evaluate(node, payload)
+    if isinstance(result, NonEvaluable):
+        return
+    if result != want_true:
+        raise _Undecidable(
+            f"synthesized value failed the evaluate self-check for {node!r}")
+
+
 def _satisfy_function(node: FunctionCall, want_true: bool, meta: dict) -> dict[str, Any]:
-    # D-294: ``meta`` (the field-metadata rail) is threaded here for the
-    # NOT-ISBLANK / NOT-ISPICKVAL shapes armed in a later slice; unused today.
     if node.name in ("ISBLANK", "ISNULL"):
         field = _single_field(node)
         if want_true:
             return {field: None}                     # blank fires the rejection
-        raise _Undecidable(f"NOT {node.name} (no certain non-blank value)")
+        # D-294: NOT(ISBLANK) fires when the field is NON-blank -> synthesize a
+        # certain non-blank value from field metadata (else refuse — the bar).
+        v = _nonblank_value((meta or {}).get(field))
+        if v is _UNSYNTHESIZABLE:
+            raise _Undecidable(f"NOT {node.name} (no synthesizable non-blank value)")
+        payload = {field: v}
+        _self_check(node, payload, want_true)        # evaluate confirms it fires
+        return payload
     if node.name == "ISPICKVAL":
         field = _single_field(node)
         if not (len(node.args) == 2 and isinstance(node.args[1], Literal)):

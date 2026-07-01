@@ -362,6 +362,12 @@ def test_prohibition_recipe_derivable_truth_table():
     assert d("modify_record", ("Loan__c > Property__c",)) is False
     assert d("modify_record", ("Loan__c > Property__c",),
              {"Loan__c": {"field_type": "text"}, "Property__c": {"field_type": "double"}}) is False
+    # D-294 Slice 3: NOT(ISBLANK) + bare-boolean flip to derivable with metadata
+    assert d("modify_record", ("NOT(ISBLANK(Reason__c))",),
+             {"Reason__c": {"field_type": "text"}}) is True
+    assert d("modify_record", ("NOT(ISBLANK(Reason__c))",)) is False       # no metadata
+    assert d("modify_record", ("KYC_Done__c",), {"KYC_Done__c": {"field_type": "boolean"}}) is True
+    assert d("modify_record", ("KYC_Done__c",)) is False                   # bare, no metadata
 
 
 def test_behaviour_incomplete_router_kind():

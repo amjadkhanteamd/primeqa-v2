@@ -244,3 +244,55 @@ def test_cross_field_dotted_ref_is_prescanned_cross_object():
     meta = {"Loan__c": {"field_type": "currency"}, "Property__c": {"field_type": "currency"}}
     r = derive(parse("Opportunity.Loan__c > Opportunity.Property__c"), meta)
     assert isinstance(r, NotDerivable) and "cross-object" in r.reason
+
+
+# ---------------------------------------------------------------------------
+# D-294 — NOT(ISBLANK) ("must be empty") + bare boolean derive with field
+# metadata; metadata-free still refuses (the pre-D-294 bar). Each metadata-backed
+# payload is evaluate-self-checked (polarity) before it is returned.
+# ---------------------------------------------------------------------------
+
+_TXT = {"Reason__c": {"field_type": "text", "length": 255}}
+_BOOL = {"KYC_Done__c": {"field_type": "boolean"}}
+
+
+def test_not_isblank_derives_nonblank_value_with_metadata():
+    assert derive(parse("NOT(ISBLANK(Reason__c))"), _TXT).violating_payload \
+        == {"Reason__c": "PQA"}
+    # a numeric field -> a non-zero (unambiguously non-blank) value
+    assert derive(parse("NOT(ISBLANK(Amt__c))"),
+                  {"Amt__c": {"field_type": "currency"}}).violating_payload == {"Amt__c": 1}
+
+
+def test_not_isblank_update_pair_setup_blank_violate_nonblank():
+    # 2-step: setup blank (does NOT fire the must-be-empty rule) -> update non-blank (fires)
+    r = derive_update(parse("NOT(ISBLANK(Reason__c))"), _TXT)
+    assert isinstance(r, VerifiedUpdateNegative)
+    assert r.setup_payload == {"Reason__c": None}
+    assert r.violating_changes == {"Reason__c": "PQA"}
+
+
+def test_bare_boolean_derives_true_with_metadata():
+    assert derive(parse("KYC_Done__c"), _BOOL).violating_payload == {"KYC_Done__c": True}
+    assert derive(parse("NOT(KYC_Done__c)"), _BOOL).violating_payload == {"KYC_Done__c": False}
+
+
+def test_conditional_must_be_empty_compound_merges():
+    p = derive(parse('AND(ISPICKVAL(Stage__c,"Closed"), NOT(ISBLANK(Reason__c)))'),
+               _TXT).violating_payload
+    assert p == {"Stage__c": "Closed", "Reason__c": "PQA"}
+
+
+def test_not_isblank_and_bare_boolean_refuse_without_metadata():
+    assert isinstance(derive(parse("NOT(ISBLANK(Reason__c))")), NotDerivable)
+    assert isinstance(derive(parse("KYC_Done__c")), NotDerivable)
+
+
+def test_not_isblank_refuses_unsynthesizable_type():
+    r = derive(parse("NOT(ISBLANK(Tags__c))"), {"Tags__c": {"field_type": "multipicklist"}})
+    assert isinstance(r, NotDerivable) and "non-blank" in r.reason
+
+
+def test_bare_field_non_boolean_still_refuses():
+    r = derive(parse("Amount__c"), {"Amount__c": {"field_type": "currency"}})
+    assert isinstance(r, NotDerivable) and "bare field" in r.reason
