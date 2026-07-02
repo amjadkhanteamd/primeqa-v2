@@ -169,23 +169,25 @@ class PlannedDataRead:
 
 @dataclass(frozen=True)
 class PlannedUpdate:
-    """A planned update the org should **reject** (D-203 — the 2-step
-    behavioral negative).
+    """A planned update — REJECTED (D-203, the 2-step behavioral negative)
+    or POSITIVE (D-306, the update-then-observe chain).
 
-    Narrowed from a recipe's ``UpdateStep`` carrying ``expect_rejection``.
-    ``setup_step_id`` is the **positional binding** to the plan's setup
-    :class:`PlannedCreate` — the executor mutates the record that setup step
-    created (no ``$ref`` machinery; the bridge validates the pairing).
-    ``field_changes`` is carried verbatim (S1-qualified names; the executor
-    bare-ifies at the live boundary). ``expect_rejection`` is **required**:
-    an ordinary (positive) update step is a 5b-2 concern, not planned here.
+    Narrowed from a recipe's ``UpdateStep``. ``setup_step_id`` is the
+    **positional binding** to the plan's create — the executor mutates the
+    record that create step made (no ``$ref`` machinery; the bridge validates
+    the pairing). ``field_changes`` is carried verbatim (S1-qualified names;
+    the executor bare-ifies at the live boundary). ``expect_rejection`` set =
+    the D-203 negative; ``None`` = the D-306 positive update, where
+    ``expect_acceptance`` grades a business rejection ``failed`` (the org
+    refused a change that must succeed) instead of an indeterminate.
     """
 
     step_id: str
     target_object: LogicalRef
     field_changes: dict
-    expect_rejection: RejectionExpectation
+    expect_rejection: Optional[RejectionExpectation]
     setup_step_id: str
+    expect_acceptance: bool = False
     kind: Literal["update"] = "update"
 
 

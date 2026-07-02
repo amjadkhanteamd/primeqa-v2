@@ -105,6 +105,11 @@ class UpdateStep(_StepBase):
     target: OperationalRef
     field_changes: dict[str, Any]
     expect_rejection: Optional[RejectionExpectation] = None
+    expect_acceptance: bool = False
+    """D-306: the update IS (part of) the assertion — a business
+    rejection of it grades ``failed`` (the org refused a change that
+    must succeed), never an indeterminate. Mirrors CreateStep (D-305).
+    Default False = every pre-D-306 recipe byte-identical."""
 
 
 class DeleteStep(_StepBase):

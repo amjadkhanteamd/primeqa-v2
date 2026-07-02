@@ -471,3 +471,107 @@ def test_positive_projection_carries_expect_acceptance():
         api_choice="rest")
     plan = build_data_recipe_plan(recipe)
     assert plan.steps[0].expect_acceptance is True
+
+
+# ---------------------------------------------------------------------------
+# D-306: the positive update-then-observe projection (lever 7d)
+# ---------------------------------------------------------------------------
+
+def _positive_update_body(
+    *, expect_acceptance=False, qualified=True, empty_changes=False,
+    wrong_object=False, two_updates=False, update_after_read=False,
+    object_api="Account",
+) -> DataRecipeBody:
+    """The S2 body of an update-then-observe recipe (D-306): create →
+    positive update (NO expect_rejection) → read-back → assert."""
+    target = {"ref_kind": "logical", "entity_type": "Object", "external_id": object_api}
+    changes_key = f"{object_api}.Status__c" if qualified else "Status__c"
+    update = {"kind": "update", "step_id": "update-trigger",
+              "target": ({"ref_kind": "logical", "entity_type": "Object",
+                          "external_id": "Lead"} if wrong_object else target),
+              "field_changes": {} if empty_changes else {changes_key: "Renewed"}}
+    if expect_acceptance:
+        update["expect_acceptance"] = True
+    read = {"kind": "read", "step_id": "read-created", "target": target,
+            "soql": f"SELECT Status__c FROM {object_api} WHERE Id = '$create-record.id'",
+            "fields_to_capture": ["Status__c"]}
+    assertion = {"kind": "assert", "step_id": "assert-value",
+                 "predicate": {"subject_ref": "read-created.Status__c",
+                               "predicate": "equals", "value": "Renewed"}}
+    create = {"kind": "create", "step_id": "create-record",
+              "target_object": target, "field_values": {"Status__c": "Active"}}
+    if update_after_read:
+        steps = [create, read, update, assertion]
+    elif two_updates:
+        steps = [create, update, {**update, "step_id": "update-again"}, read, assertion]
+    else:
+        steps = [create, update, read, assertion]
+    return DataRecipeBody.model_validate({
+        "api_choice": "rest", "identity_context": "system",
+        "execution_mechanism": "direct_api", "steps": steps,
+    })
+
+
+def test_decodes_update_then_observe_recipe_to_plan():
+    plan = build_data_recipe_plan(
+        _recipe_read(observation_realization=_positive_update_body()))
+
+    assert len(plan.steps) == 4
+    create, update, read, assertion = plan.steps
+    assert isinstance(create, PlannedCreate) and create.expect_rejection is None
+    assert isinstance(update, PlannedUpdate)
+    assert update.expect_rejection is None                      # the positive form
+    assert update.expect_acceptance is False
+    assert update.field_changes == {"Account.Status__c": "Renewed"}  # verbatim (qualified)
+    assert update.setup_step_id == "create-record"              # bound to the terminal create
+    assert isinstance(read, PlannedDataRead)
+    assert isinstance(assertion, PlannedAssertion)
+
+
+def test_positive_update_carries_expect_acceptance():
+    # The D-305.1 lesson applied forward: the flag must SURVIVE projection —
+    # a dropped flag makes the update leg's defining failure grade dead code.
+    plan = build_data_recipe_plan(_recipe_read(
+        observation_realization=_positive_update_body(expect_acceptance=True)))
+    assert plan.steps[1].expect_acceptance is True
+
+
+def test_rejects_positive_update_on_wrong_object():
+    recipe = _recipe_read(
+        observation_realization=_positive_update_body(wrong_object=True))
+    with pytest.raises(PlanTranslationError, match="record under observation"):
+        build_data_recipe_plan(recipe)
+
+
+def test_rejects_positive_update_with_empty_changes():
+    recipe = _recipe_read(
+        observation_realization=_positive_update_body(empty_changes=True))
+    with pytest.raises(PlanTranslationError, match="no field_changes"):
+        build_data_recipe_plan(recipe)
+
+
+def test_rejects_two_positive_updates():
+    recipe = _recipe_read(
+        observation_realization=_positive_update_body(two_updates=True))
+    with pytest.raises(PlanTranslationError, match=r"UpdateStep x 0\.\.1"):
+        build_data_recipe_plan(recipe)
+
+
+def test_rejects_positive_update_after_read():
+    recipe = _recipe_read(
+        observation_realization=_positive_update_body(update_after_read=True))
+    with pytest.raises(PlanTranslationError, match=r"UpdateStep x 0\.\.1"):
+        build_data_recipe_plan(recipe)
+
+
+def test_flagged_update_still_routes_to_the_negative_projection():
+    # The dispatch boundary (D-306 changes nothing here): an UpdateStep
+    # CARRYING expect_rejection routes negative even when read/assert follow —
+    # and the negative projection fails loud on that 4-step shape.
+    body = _positive_update_body()
+    dumped = body.model_dump(mode="json")
+    dumped["steps"][1]["expect_rejection"] = {"error_code": _VR_CODE}
+    flagged = DataRecipeBody.model_validate(dumped)
+    recipe = _recipe_read(observation_realization=flagged)
+    with pytest.raises(PlanTranslationError, match="behavioral negative"):
+        build_data_recipe_plan(recipe)

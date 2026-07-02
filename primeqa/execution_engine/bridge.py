@@ -434,11 +434,15 @@ def _project_negative(steps, *, recipe_id) -> tuple:
 
 def _project_positive(steps, *, recipe_id) -> tuple:
     """Project the positive create-and-verify (D-115 side B, N-create chains
-    D-205): ``CreateStep × N`` (N ≥ 1, none carrying ``expect_rejection``) →
-    ``ReadStep`` → ``AssertStep``. A later create's field values may reference
-    an earlier create's record (``"$<step_id>.id"`` — the executor resolves).
-    Every other shape fails loud. ``steps[0]`` is already validated as a
-    ``CreateStep`` on a ``LogicalRef``."""
+    D-205, the update-then-observe phase D-306): ``CreateStep × N`` (N ≥ 1,
+    none carrying ``expect_rejection``) → ``[UpdateStep × 0..1]`` (no
+    ``expect_rejection`` — a flagged update routes to the negative projection)
+    → ``ReadStep`` → ``AssertStep``. A later create's field values may
+    reference an earlier create's record (``"$<step_id>.id"`` — the executor
+    resolves). The update, when present, mutates the record the TERMINAL
+    create made (the record under observation — the one the read observes);
+    its target must name that create's object. Every other shape fails loud.
+    ``steps[0]`` is already validated as a ``CreateStep`` on a ``LogicalRef``."""
     n = 0
     while n < len(steps) and isinstance(steps[n], CreateStep):
         create = steps[n]
@@ -458,13 +462,52 @@ def _project_positive(steps, *, recipe_id) -> tuple:
             )
         n += 1
 
-    if (n == 0 or len(steps) != n + 2
+    # D-306: an optional single positive update between the creates and the
+    # read — the trigger phase of update-then-observe.
+    update = None
+    if n < len(steps) and isinstance(steps[n], UpdateStep):
+        update = steps[n]
+        terminal = steps[n - 1] if n > 0 else None
+        if update.expect_rejection is not None:
+            # Unreachable via build_data_recipe_plan (same reason as above).
+            raise PlanTranslationError(
+                f"update {update.step_id!r} in a positive recipe must not "
+                f"carry expect_rejection",
+                recipe_id=recipe_id,
+            )
+        if not isinstance(update.target, LogicalRef):
+            raise PlanTranslationError(
+                f"update {update.step_id!r} must target a LogicalRef; got a "
+                f"{type(update.target).__name__}",
+                recipe_id=recipe_id,
+            )
+        if terminal is None or (
+                update.target.external_id != terminal.target_object.external_id):
+            raise PlanTranslationError(
+                f"update {update.step_id!r} targets "
+                f"{update.target.external_id!r} but the terminal create "
+                f"provisions "
+                f"{terminal.target_object.external_id if terminal else None!r} "
+                f"— a positive update must act on the record under "
+                f"observation (D-306)",
+                recipe_id=recipe_id,
+            )
+        if not update.field_changes:
+            raise PlanTranslationError(
+                f"update {update.step_id!r} carries no field_changes — an "
+                f"empty positive update observes nothing (D-306)",
+                recipe_id=recipe_id,
+            )
+        n += 1
+
+    tail = int(update is not None)
+    if (n - tail == 0 or len(steps) != n + 2
             or not isinstance(steps[n], ReadStep)
             or not isinstance(steps[n + 1], DataAssertStep)):
         shape = ", ".join(type(s).__name__ for s in steps) or "(empty)"
         raise PlanTranslationError(
-            f"positive data-recipe must be CreateStep x N (N >= 1) -> ReadStep "
-            f"-> AssertStep; got [{shape}]",
+            f"positive data-recipe must be CreateStep x N (N >= 1) -> "
+            f"[UpdateStep x 0..1] -> ReadStep -> AssertStep; got [{shape}]",
             recipe_id=recipe_id,
         )
     read, assertion = steps[n], steps[n + 1]
@@ -474,6 +517,19 @@ def _project_positive(steps, *, recipe_id) -> tuple:
             f"name); got a {type(read.target).__name__}",
             recipe_id=recipe_id,
         )
+    planned_update = () if update is None else (
+        PlannedUpdate(
+            step_id=update.step_id,
+            target_object=update.target,
+            field_changes=dict(update.field_changes),
+            expect_rejection=None,
+            # binds to the TERMINAL create — the record under observation.
+            setup_step_id=steps[n - tail - 1].step_id,
+            # D-305.1 (review B1) applied forward: the flag must SURVIVE
+            # projection or the update leg's defining failure grade is dead code.
+            expect_acceptance=getattr(update, "expect_acceptance", False),
+        ),
+    )
     return tuple(
         PlannedCreate(
             step_id=c.step_id,
@@ -484,8 +540,8 @@ def _project_positive(steps, *, recipe_id) -> tuple:
             # dropping it made the archetype's defining failure grade dead code.
             expect_acceptance=getattr(c, "expect_acceptance", False),
         )
-        for c in steps[:n]
-    ) + (
+        for c in steps[:n - tail]
+    ) + planned_update + (
         PlannedDataRead(
             step_id=read.step_id,
             target=read.target,

@@ -431,12 +431,14 @@ def _run_mutation_attempt(mutation, sobject, record_id, client):
 
 def _mutation_evidence(mutation, sobject, record_id, changes, start, end, *,
                        http_status, success, rejection_body, matched,
-                       error=None):
+                       error=None, ordinal=1):
     """Assemble Update/DeleteAttemptEvidence. ``changes`` is the bare-ified
-    payload actually PATCHed (the api_request analog); None for a delete."""
+    payload actually PATCHed (the api_request analog); None for a delete.
+    ``ordinal`` defaults to 1 (the 2-step negative's mutation slot); the
+    D-306 positive update passes its chain position."""
     first = rejection_body[0] if rejection_body else {}
     common = dict(
-        step_id=mutation.step_id, ordinal=1, sobject=sobject,
+        step_id=mutation.step_id, ordinal=ordinal, sobject=sobject,
         record_id=record_id, http_status=http_status, success=success,
         error_code=(first.get("errorCode") if isinstance(first, dict) else None),
         message=(first.get("message") if isinstance(first, dict) else None),
@@ -474,18 +476,25 @@ def _sf_soql(soql: str, sobject: str) -> str:
 def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
                   world_plans=None, record_sink=None,
                   field_overrides=None) -> RunEvidence:
-    """The positive create-and-verify path (D-115; N-create chains D-205):
-    per create — construct-world → resolve cross-step refs → create-expect-
-    success → thread state — then observe the read-back → teardown (k14,
-    always, before grading) → ground ``field == V``.
+    """The positive create-and-verify path (D-115; N-create chains D-205;
+    the update-then-observe phase D-306): per create — construct-world →
+    resolve cross-step refs → create-expect-success → thread state — then the
+    optional positive update (the trigger phase, on the terminal create's
+    record) — then observe the read-back → teardown (k14, always, before
+    grading) → ground ``field == V``.
 
     The plan is the bridge-guaranteed shape ``(PlannedCreate × N,
-    PlannedDataRead, PlannedAssertion)``. The full outcome grammar is
-    DECISIONS_LOG D-115.2; any pre-read failure tears down everything already
-    built (creates + their provisioned parents) and surfaces honestly."""
+    [PlannedUpdate × 0..1], PlannedDataRead, PlannedAssertion)``. The full
+    outcome grammar is DECISIONS_LOG D-115.2; any pre-read failure tears down
+    everything already built (creates + their provisioned parents) and
+    surfaces honestly."""
     run_id = uuid4()
     started = _now()
-    *creates, read, assertion = plan.steps
+    *head, read, assertion = plan.steps
+    # D-306: split the optional positive update (the trigger phase) off the
+    # create chain — the bridge guarantees at most one, create-adjacent.
+    update = head[-1] if head and isinstance(head[-1], PlannedUpdate) else None
+    creates = head[:-1] if update is not None else head
 
     # D-230.2: live S1 read (sync) or pre-resolved WorldPlans (async, world_plans).
     at_seq = s1.current_version_seq() if s1 is not None else None
@@ -614,12 +623,93 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
             field_values=field_values, ordinal=ordinal))
         record_ids.append(record_id)
 
+    # 4b. D-306: the positive update — the trigger phase of update-then-
+    #     observe. Mutates the record the TERMINAL create made (the bridge
+    #     binds setup_step_id there), then falls through to the same observe →
+    #     teardown → ground tail. ``field_overrides`` never touch it (the
+    #     changes ARE the semantic trigger, D-306's k16 line). A business
+    #     rejection grades ``failed`` when the step carries
+    #     ``expect_acceptance`` (the org refused a change the requirement says
+    #     must succeed — the finding, mirroring the D-305 create rule);
+    #     otherwise ``errored`` (the run's premise broke; nothing was
+    #     observed).
+    update_ev = None
+    if update is not None:
+        u_sobject = update.target_object.external_id
+        u_record_id = state.get(update.setup_step_id, {}).get("id")
+        if u_record_id is None:
+            # Unreachable via the bridge binding — a loud guard for direct calls.
+            err = ErrorSurface(
+                phase="update", error_type="UnboundUpdate",
+                message=(f"positive update {update.step_id!r} binds to create "
+                         f"{update.setup_step_id!r} which produced no record"))
+            return _result(plan, run_id, started, environment_id, _torn_down(),
+                           "errored", err, created_records=tracker.records)
+        try:
+            u_resolved = resolve_field_value_refs(update.field_changes, state)
+        except StepRefResolutionError as e:
+            err = ErrorSurface("update", type(e).__name__, str(e))
+            return _result(plan, run_id, started, environment_id, _torn_down(),
+                           "errored", err, created_records=tracker.records)
+        changes = _sf_fields(u_resolved, u_sobject)
+        u_start = _now()
+        try:
+            env = client.update(u_sobject, u_record_id, changes)
+        except SFClientError as e:
+            err = ErrorSurface("update", type(e).__name__, str(e))
+            update_ev = _mutation_evidence(
+                update, u_sobject, u_record_id, changes, u_start, _now(),
+                http_status=None, success=False, rejection_body=(),
+                matched=None, error=err, ordinal=len(creates))
+            return _result(plan, run_id, started, environment_id,
+                           _torn_down() + (update_ev,), "errored", err,
+                           created_records=tracker.records)
+        u_status = env["http_status"]
+        u_rejection = _as_error_tuple(env["api_response"]["body"])
+        u_end = _now()
+        if not env["success"]:
+            if (u_status == _BUSINESS_REJECTION_STATUS
+                    and getattr(update, "expect_acceptance", False)):
+                # The update IS (part of) the assertion — any business
+                # rejection is the FINDING, regardless of field attribution
+                # (the staged state, not one field, is what the org evaluated).
+                update_ev = _mutation_evidence(
+                    update, u_sobject, u_record_id, changes, u_start, u_end,
+                    http_status=u_status, success=False,
+                    rejection_body=u_rejection, matched=None,
+                    ordinal=len(creates))
+                return _result(plan, run_id, started, environment_id,
+                               _torn_down() + (update_ev,), "failed", None,
+                               created_records=tracker.records)
+            err = ErrorSurface(
+                phase="update",
+                error_type=("UnexpectedRejection"
+                            if u_status == _BUSINESS_REJECTION_STATUS
+                            else "UnexpectedResponse"),
+                message=(f"positive (trigger) update returned HTTP {u_status}; "
+                         f"the observe phase never ran"))
+            update_ev = _mutation_evidence(
+                update, u_sobject, u_record_id, changes, u_start, u_end,
+                http_status=u_status, success=False,
+                rejection_body=u_rejection, matched=None, error=err,
+                ordinal=len(creates))
+            return _result(plan, run_id, started, environment_id,
+                           _torn_down() + (update_ev,), "errored", err,
+                           created_records=tracker.records)
+        update_ev = _mutation_evidence(
+            update, u_sobject, u_record_id, changes, u_start, u_end,
+            http_status=u_status, success=True, rejection_body=(),
+            matched=None, ordinal=len(creates))
+
+    mid = (update_ev,) if update_ev is not None else ()
+    base = len(creates) + len(mid)
+
     # 5. Observe back (records still alive; state carries every create's id
     #    for the SOQL's $refs). D-210: an empty read retries a bounded number
     #    of times — a side-effect record may land moments after the trigger.
     read_sobject = read.target.external_id
     read_ev, read_err = _read_with_retry(
-        read, read_sobject, state, client, ordinal=len(creates))
+        read, read_sobject, state, client, ordinal=base)
 
     # 5b. D-210: rows the read observed that S4 did NOT create are the org's
     #     automation-created side-effect records — register them so teardown
@@ -646,7 +736,7 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
     if read_err is not None:
         return _result(
             plan, run_id, started, environment_id,
-            create_steps + (read_ev,), "errored", read_err,
+            create_steps + mid + (read_ev,), "errored", read_err,
             created_records=tracker.records)
     if (read_ev.row_count == 0
             and assertion.predicate.predicate != "exists"
@@ -657,14 +747,14 @@ def _run_positive(plan: DataRecipePlan, *, client, environment_id: int, s1=None,
                      "(no immediate-consistency assumption)"))
         return _result(
             plan, run_id, started, environment_id,
-            create_steps + (read_ev,), "errored", err,
+            create_steps + mid + (read_ev,), "errored", err,
             created_records=tracker.records)
 
-    assert_ev = _run_ground(assertion, read_ev, ordinal=len(creates) + 1)
+    assert_ev = _run_ground(assertion, read_ev, ordinal=base + 1)
     outcome = "passed" if assert_ev.held else "failed"
     return _result(
         plan, run_id, started, environment_id,
-        create_steps + (read_ev, assert_ev), outcome, None,
+        create_steps + mid + (read_ev, assert_ev), outcome, None,
         created_records=tracker.records)
 
 

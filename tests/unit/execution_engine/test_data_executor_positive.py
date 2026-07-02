@@ -23,6 +23,7 @@ from primeqa.execution_engine.plan import (
     PlannedAssertion,
     PlannedCreate,
     PlannedDataRead,
+    PlannedUpdate,
 )
 from primeqa.execution_engine.result_store import persist_run_evidence
 from primeqa.integrations.exceptions import SFRequestError
@@ -1085,3 +1086,157 @@ def test_negative_vertical_ignores_overrides():
                         field_overrides={"Company": "Injected"})
     assert client.creates[0][1]["Company"] == "Acme"   # override did NOT apply
     assert "Injected" not in client.creates[0][1].values()
+
+
+# ---------------------------------------------------------------------------
+# D-306: the positive update leg (update-then-observe, lever 7d)
+# ---------------------------------------------------------------------------
+
+class _UpdClient(_StubClient):
+    """The positive stub + an ``update`` method (the D-306 trigger phase)."""
+
+    def __init__(self, *, update_result=None, update_raises=None, **kw):
+        super().__init__(**kw)
+        self._update_result = update_result
+        self._update_raises = update_raises
+        self.updates = []
+
+    def update(self, sobject, record_id, field_changes):
+        self.updates.append((sobject, record_id, dict(field_changes)))
+        if self._update_raises is not None:
+            raise self._update_raises
+        return self._update_result
+
+
+def _upd_env(status, body):
+    return {"api_response": {"status_code": status, "body": body},
+            "http_status": status, "success": 200 <= status < 300,
+            "record_id": None}
+
+
+def _update_plan(*, expect_acceptance=False, object_api="Account"):
+    """CreateStep → positive UpdateStep (qualified keys, D-306) → read → assert."""
+    target = LogicalRef(entity_type="Object", external_id=object_api)
+    return DataRecipePlan(
+        recipe_id=uuid4(), recipe_version_seq=2, claim_test_id=uuid4(),
+        claim_version_seq=None, api_choice="rest",
+        steps=(
+            PlannedCreate(step_id="create-record", target_object=target,
+                          field_values={"Status__c": "Active"},
+                          expect_rejection=None),
+            PlannedUpdate(step_id="update-trigger", target_object=target,
+                          field_changes={f"{object_api}.Status__c": "Renewed"},
+                          expect_rejection=None,
+                          setup_step_id="create-record",
+                          expect_acceptance=expect_acceptance),
+            PlannedDataRead(
+                step_id="read-created", target=target,
+                soql=f"SELECT Status__c FROM {object_api} WHERE Id = '$create-record.id'",
+                fields_to_capture=("Status__c",)),
+            PlannedAssertion(
+                step_id="assert-value",
+                predicate=AssertionPredicate(
+                    subject_ref="read-created.Status__c",
+                    predicate="equals", value="Renewed")),
+        ))
+
+
+def test_update_then_observe_passes():
+    client = _UpdClient(create_result=_success("001Z"),
+                        update_result=_upd_env(204, None),
+                        query_result=[{"Status__c": "Renewed"}])
+    ev = _run(_update_plan(), client, _s1())
+    assert ev.outcome == "passed"
+    assert [s.kind for s in ev.steps] == ["create", "update", "read", "assert"]
+    assert [s.ordinal for s in ev.steps] == [0, 1, 2, 3]
+    # The update PATCHed the record the terminal create made, keys BARE-ified.
+    assert client.updates == [("Account", "001Z", {"Status__c": "Renewed"})]
+    upd = ev.steps[1]
+    assert upd.success is True and upd.http_status == 204
+    # k14 — teardown still deletes the record, AFTER the read.
+    assert client.deletes == [("Account", "001Z")]
+
+
+def test_update_rejected_with_expect_acceptance_grades_failed():
+    # D-306 mirror of the D-305 create rule: the update IS the assertion — a
+    # business rejection is the FINDING, not an indeterminate.
+    client = _UpdClient(
+        create_result=_success("001Z"),
+        update_result=_upd_env(400, [{
+            "errorCode": "FIELD_CUSTOM_VALIDATION_EXCEPTION",
+            "message": "no", "fields": ["Status__c"]}]))
+    ev = _run(_update_plan(expect_acceptance=True), client, _s1())
+    assert ev.outcome == "failed"
+    assert ev.error is None
+    upd = ev.steps[-1]
+    assert upd.kind == "update" and upd.success is False
+    assert upd.http_status == 400
+    assert upd.error_code == "FIELD_CUSTOM_VALIDATION_EXCEPTION"
+    # Teardown ran despite the failure (k14).
+    assert client.deletes == [("Account", "001Z")]
+    # The read NEVER ran — nothing was observable.
+    assert client.queries == []
+
+
+def test_update_rejected_without_expectation_grades_errored():
+    client = _UpdClient(
+        create_result=_success("001Z"),
+        update_result=_upd_env(400, [{
+            "errorCode": "FIELD_CUSTOM_VALIDATION_EXCEPTION",
+            "message": "no", "fields": []}]))
+    ev = _run(_update_plan(expect_acceptance=False), client, _s1())
+    assert ev.outcome == "errored"
+    assert ev.error.error_type == "UnexpectedRejection"
+    assert client.deletes == [("Account", "001Z")]
+
+
+def test_update_transport_error_grades_errored():
+    client = _UpdClient(create_result=_success("001Z"),
+                        update_raises=SFRequestError("boom"))
+    ev = _run(_update_plan(expect_acceptance=True), client, _s1())
+    assert ev.outcome == "errored"
+    assert ev.error.phase == "update"
+    assert client.deletes == [("Account", "001Z")]
+
+
+def test_update_non_400_failure_grades_errored():
+    client = _UpdClient(create_result=_success("001Z"),
+                        update_result=_upd_env(500, None))
+    ev = _run(_update_plan(expect_acceptance=True), client, _s1())
+    assert ev.outcome == "errored"
+    assert ev.error.error_type == "UnexpectedResponse"
+    assert client.deletes == [("Account", "001Z")]
+
+
+def test_field_overrides_never_touch_the_update():
+    # D-306's k16 line: dispatch-time overrides steer the CREATE's padding;
+    # the update's field_changes ARE the semantic trigger — verbatim, always.
+    client = _UpdClient(create_result=_success("001Z"),
+                        update_result=_upd_env(204, None),
+                        query_result=[{"Status__c": "Renewed"}])
+    ev = execute_data_recipe(
+        _update_plan(), client=client, environment_id=_ENV_ID, s1=_s1(),
+        field_overrides={"Status__c": "Hijacked"})
+    assert ev.outcome == "passed"
+    # The override landed on the create (the subject create, D-235)...
+    assert client.creates[0][1]["Status__c"] == "Hijacked"
+    # ...and the update payload is untouched.
+    assert client.updates == [("Account", "001Z", {"Status__c": "Renewed"})]
+
+
+def test_update_evidence_persists_via_existing_store():
+    # The positive run's MIXED evidence tuple (create + update + read + assert)
+    # must serialize through the existing persister unchanged
+    # (UpdateAttemptEvidence already round-trips for the negative vertical;
+    # this pins the D-306 positive placement).
+    client = _UpdClient(create_result=_success("001Z"),
+                        update_result=_upd_env(204, None),
+                        query_result=[{"Status__c": "Renewed"}])
+    ev = _run(_update_plan(), client, _s1())
+    session = _FakeSession()
+    persist_run_evidence(session, ev)
+    row = session.added[0]
+    assert row.outcome == "passed"
+    json.dumps(row.evidence)                                # JSONB-safe
+    assert [s["kind"] for s in row.evidence["steps"]] == [
+        "create", "update", "read", "assert"]
