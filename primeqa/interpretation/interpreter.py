@@ -65,13 +65,16 @@ def interpret_run(evidence: RunEvidence,
         # positive update-observe run also lands here — behavioral grading of
         # an errored outcome is not_evaluated, the correct verdict for it.
         verdict, attribution, refs = _interpret_behavioral(evidence, mutation)
-    elif create is not None and claim_kind in _POSITIVE_VOCAB:
+    elif (create is not None and claim_kind in _POSITIVE_VOCAB
+            and evidence.outcome != "passed"):
         # D-305.1 (review B2) / D-306 live-proof fix: create-only evidence on
         # a POSITIVE claim kind is a FAILED-AT-CREATE run (an acceptance case
         # the org refused, or a rejected staging create graded under
         # expect_acceptance) — the direction is INVERTED vs the 1-step
         # negative: the org rejecting IS the finding. Grading it behavioral
-        # produced prohibition prose on positive claims.
+        # produced prohibition prose on positive claims. A PASSED create-only
+        # run cannot be a positive shape (positives pass through their
+        # assert), so it falls through to the behavioral branch unchanged.
         verdict, attribution, refs = _interpret_acceptance_rejected(
             evidence, create, claim_kind=claim_kind)
     elif create is not None:
