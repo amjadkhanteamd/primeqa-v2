@@ -286,3 +286,108 @@ def test_one_step_negative_dispatch_unchanged():
     interp = interpret_run(ev)
     assert interp.verdict == "prohibition_enforced"
     assert "violating create" in interp.attribution
+
+
+# ---------------------------------------------------------------------------
+# Acceptance (D-305) + update-then-observe (D-306) dispatch
+# ---------------------------------------------------------------------------
+
+def _positive_update(*, success, http_status, body, error=None):
+    """A POSITIVE update's evidence (D-306): matched is always None — no
+    expect_rejection to match. Contrast _mutation (the D-203 negative)."""
+    return UpdateAttemptEvidence(
+        field_changes={"StageName": "Credit Assessment"},
+        step_id="update-record", ordinal=1, sobject="Opportunity",
+        record_id="006A", http_status=http_status, success=success,
+        error_code=(body[0]["errorCode"] if body else None),
+        message=(body[0].get("message") if body else None),
+        rejection_body=tuple(body), matched=None,
+        started_at=_T, finished_at=_T, duration_ms=1, error=error)
+
+
+def test_acceptance_failed_at_create_is_creation_rejected():
+    # D-305.1 (review B2) retro-coverage: a FAILED-AT-CREATE acceptance run —
+    # the org rejecting IS the finding, never the negative's enforcement prose.
+    ev = _run(outcome="failed", steps=[_create(
+        success=False, matched=None, http_status=400,
+        body=[{"errorCode": _VR, "message": "no"}])])
+    interp = interpret_run(ev, claim_kind="acceptance-claim")
+    assert interp.verdict == "creation_rejected"
+    assert "must save" in interp.attribution
+    assert "prohibition" not in interp.attribution
+
+
+def test_acceptance_failed_at_update_is_change_rejected():
+    # D-306: the failed-at-UPDATE acceptance shape (create + update, no
+    # assert) — the org refused the CHANGE; direction inverted vs D-203.
+    ev = _run(outcome="failed", steps=[
+        _setup_create(),
+        _positive_update(success=False, http_status=400,
+                         body=[{"errorCode": _VR, "message": "no"}])])
+    interp = interpret_run(ev, claim_kind="acceptance-claim")
+    assert interp.verdict == "change_rejected"
+    assert "must succeed" in interp.attribution
+    assert "prohibition" not in interp.attribution
+    assert interp.evidence_refs[0].step_id == "update-record"
+
+
+def test_passed_update_acceptance_is_change_accepted():
+    # D-306: a PASSED update-acceptance run reaches its assert — it must NEVER
+    # route to the behavioral (negative) interpreter despite carrying update
+    # evidence, and the vocabulary is the CHANGE's, not the creation's.
+    ev = _run(outcome="passed", steps=[
+        _setup_create(),
+        _positive_update(success=True, http_status=204, body=[]),
+        _read(1), _assert(True)])
+    interp = interpret_run(ev, claim_kind="acceptance-claim")
+    assert interp.verdict == "change_accepted"
+    assert "prohibition" not in interp.attribution
+
+
+def test_passed_update_observe_is_automation_triggered():
+    # D-306 (the dispatch-order fix): a passed automation-effect update-observe
+    # run carries a mid-chain positive update — grading it as the D-203
+    # negative would read "the violating update was rejected as asserted", a
+    # wrong-direction verdict on a PASSED positive run.
+    ev = _run(outcome="passed", steps=[
+        _setup_create(),
+        _positive_update(success=True, http_status=204, body=[]),
+        _read(1), _assert(True)])
+    interp = interpret_run(ev, claim_kind="automation-effect-claim")
+    assert interp.verdict == "automation_triggered"
+    assert "prohibition" not in interp.attribution
+    assert "violating" not in interp.attribution
+
+
+def test_failed_update_observe_assert_is_automation_not_triggered():
+    ev = _run(outcome="failed", steps=[
+        _setup_create(),
+        _positive_update(success=True, http_status=204, body=[]),
+        _read(1), _assert(False)])
+    interp = interpret_run(ev, claim_kind="automation-effect-claim")
+    assert interp.verdict == "automation_not_triggered"
+
+
+def test_errored_update_observe_is_not_evaluated():
+    # A rejected trigger update WITHOUT expect_acceptance grades errored in S4
+    # (staging honesty) — the interpretation is not_evaluated, never a finding.
+    err = ErrorSurface(phase="update", error_type="UnexpectedRejection",
+                       message="positive (trigger) update returned HTTP 400")
+    ev = _run(outcome="errored", steps=[
+        _setup_create(),
+        _positive_update(success=False, http_status=400,
+                         body=[{"errorCode": _VR, "message": "no"}],
+                         error=err)], error=err)
+    interp = interpret_run(ev, claim_kind="automation-effect-claim")
+    assert interp.verdict == "not_evaluated"
+
+
+def test_two_step_negative_dispatch_unchanged_by_d306():
+    # The D-203 negative still routes behavioral: its update carries a graded
+    # matched flag and no assert follows.
+    ev = _run(outcome="passed", steps=[
+        _setup_create(),
+        _mutation("update", success=False, matched=True, http_status=400,
+                  body=[{"errorCode": _VR, "message": "no"}])])
+    interp = interpret_run(ev, claim_kind="prohibition-claim")
+    assert interp.verdict == "prohibition_enforced"

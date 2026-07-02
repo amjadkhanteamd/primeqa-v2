@@ -40,17 +40,31 @@ def interpret_run(evidence: RunEvidence,
     mutation = _mutation_step(evidence)
     create = _create_step(evidence)
     assertion = _assert_step(evidence)
-    if mutation is not None:
+    if create is not None and assertion is not None:
+        # positive create-and-verify (D-136), including the D-306 update-
+        # observe chain: a run that REACHED its assert grades on the assert —
+        # a mid-chain positive update is never the graded step, and negatives
+        # never carry an assert, so this branch dispatches FIRST. The
+        # update-op acceptance picks the change vocabulary (the case is the
+        # CHANGE, not the creation).
+        vocab_kind = claim_kind
+        if claim_kind == "acceptance-claim" and mutation is not None:
+            vocab_kind = "acceptance-claim@update"
+        verdict, attribution, refs = _interpret_positive(
+            evidence, create, assertion, claim_kind=vocab_kind)
+    elif mutation is not None and claim_kind == "acceptance-claim":
+        # D-306: the FAILED-AT-UPDATE acceptance shape (create + update
+        # evidence, no assert) — the org refused the CHANGE the requirement
+        # says must succeed; the claim direction is INVERTED vs D-203.
+        verdict, attribution, refs = _interpret_acceptance_rejected(
+            evidence, mutation)
+    elif mutation is not None:
         # 2-step behavioral negative (D-203): graded against the rejected
         # MUTATION, never the setup create (which succeeded by construction —
-        # grading it would falsely read prohibition_not_enforced).
+        # grading it would falsely read prohibition_not_enforced). An ERRORED
+        # positive update-observe run also lands here — behavioral grading of
+        # an errored outcome is not_evaluated, the correct verdict for it.
         verdict, attribution, refs = _interpret_behavioral(evidence, mutation)
-    elif create is not None and assertion is not None:
-        # positive create-and-verify (D-136): create-expect-success → read-back →
-        # value assert. The 1-step negative emits a *single* create step (no
-        # assert), so the presence of an assert alongside is the discriminator.
-        verdict, attribution, refs = _interpret_positive(
-            evidence, create, assertion, claim_kind=claim_kind)
     elif create is not None and claim_kind == "acceptance-claim":
         # D-305.1 (review B2): a FAILED-AT-CREATE acceptance run is create-only
         # evidence too — but the claim direction is INVERTED vs the 1-step
@@ -154,27 +168,47 @@ _POSITIVE_VOCAB = {
         "The case saves.",
         "the org rejected a creation the requirement says must save",
         "The org refused the asserted case."),
+    # D-306: the update-op acceptance — the CHANGE, not the creation, is the
+    # case (a synthetic vocab key; interpret() selects it when acceptance
+    # evidence carries a positive update).
+    "acceptance-claim@update": (
+        "change_accepted", "change_rejected",
+        "the org accepted the change (the update persisted)",
+        "The change succeeds.",
+        "the record did not verify after the accepted change",
+        "The accepted change did not verify."),
 }
 
 
-def _interpret_acceptance_rejected(evidence: RunEvidence,
-                                   create: CreateAttemptEvidence):
-    """D-305.1: the acceptance archetype's failure shape — the org REFUSED a
-    creation the requirement says must save. ``failed`` is the graded business
-    finding (D-305's expect_acceptance grade); ``errored`` stays not-evaluated
-    (transport/ambiguous — the org did not business-evaluate the case)."""
+def _interpret_acceptance_rejected(evidence: RunEvidence, step):
+    """D-305.1 / D-306: the acceptance archetype's failure shapes — the org
+    REFUSED the creation (D-305, ``step`` is the create) or the CHANGE (D-306,
+    ``step`` is the positive update) the requirement says must succeed.
+    ``failed`` is the graded business finding (the expect_acceptance grade);
+    ``errored`` stays not-evaluated (transport/ambiguous — the org did not
+    business-evaluate the case)."""
     if evidence.outcome == "errored":
-        return _not_evaluated(evidence, create.step_id)
-    codes = sorted({e.get("errorCode") for e in (create.rejection_body or ())
+        return _not_evaluated(evidence, step.step_id)
+    is_update = step.kind == "update"
+    op = "update" if is_update else "creation"
+    codes = sorted({e.get("errorCode") for e in (step.rejection_body or ())
                     if isinstance(e, dict) and e.get("errorCode")})
-    detail = ("the org rejected the creation (" + ", ".join(codes) + ")"
-              if codes else "the org rejected the creation")
-    refs = (EvidenceRef(create.step_id,
-                        "create rejected (http " + str(create.http_status) +
+    detail = (f"the org rejected the {op} (" + ", ".join(codes) + ")"
+              if codes else f"the org rejected the {op}")
+    refs = (EvidenceRef(step.step_id,
+                        f"{step.kind} rejected (http " + str(step.http_status) +
                         "): " + detail),)
+    if is_update:
+        return (
+            "change_rejected",
+            ("The org refused to update the " + step.sobject + " case — the "
+             "change the requirement says must succeed — " + detail +
+             ". The acceptance claim does not hold."),
+            refs,
+        )
     return (
         "creation_rejected",
-        ("The org refused to create the " + create.sobject + " case the "
+        ("The org refused to create the " + step.sobject + " case the "
          "requirement says must save" + " — " + detail +
          ". The acceptance claim does not hold."),
         refs,

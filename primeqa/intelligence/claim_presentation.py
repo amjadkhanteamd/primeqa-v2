@@ -109,7 +109,8 @@ def claim_title(claim_kind: str, asserted_truth: Optional[dict],
             return f"Rejects {op} on {target}"
         if claim_kind == "acceptance-claim":
             target = _ref_name(body.get("target"), labels) or "the object"
-            return f"Accepts creating {target}"
+            op = "updating" if body.get("operation") == "update" else "creating"
+            return f"Accepts {op} {target}"
         if claim_kind == "value-claim":
             field = _ref_name(body.get("subject"), labels) or "the field"
             return f"{field} saves as {_literal(body.get('expected_value'))}"
@@ -264,6 +265,8 @@ _VERDICT_PLAIN = {
         "Triggered the automation — but the expected result never appeared",
     "creation_accepted": "the org accepted the creation",
     "creation_rejected": "the org rejected a creation that must save",
+    "change_accepted": "the org accepted the change",
+    "change_rejected": "the org rejected a change that must succeed",
     "asserted_metadata_present":
         "The configuration exists in the org (existence only — enforcement "
         "not exercised)",

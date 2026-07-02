@@ -33,6 +33,9 @@ Verdict = Literal[
     "automation_not_triggered",
     "creation_accepted",
     "creation_rejected",      # failed: the asserted effect never materialized
+    # acceptance, update-op (D-306) — the CHANGE, not the creation, is the case
+    "change_accepted",               # passed: the org accepted the asserted update
+    "change_rejected",               # failed: the org refused a change that must succeed
     # inspection — presence (metadata-recipe, `exists` assert: existence + metadata-relationship)
     "asserted_metadata_present",     # passed: the asserted relationship/metadata is there
     "asserted_metadata_absent",      # failed: it is not
