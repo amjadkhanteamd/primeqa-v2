@@ -24,11 +24,11 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v13():
-    # D-305: CURRENT bumped to v13 (the acceptance archetype). v1..v12 stay
+def test_current_resolves_to_v14():
+    # D-306: CURRENT bumped to v14 (update-then-observe). v1..v13 stay
     # frozen + pinned-resolvable (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v13"
-    assert registry.get() == registry.get("generation@v13")
+    assert registry.CURRENT == "generation@v14"
+    assert registry.get() == registry.get("generation@v14")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # the substance the schemas don't enforce (D-103.3) is present
@@ -71,6 +71,11 @@ def test_current_resolves_to_v13():
     assert "acceptance-claim" in sys
     assert "acceptance_conditions" in sys
     assert "DISTINCT claims" in sys
+    # v14's update-then-observe contract (D-306)
+    assert "update_trigger_fields" in sys                   # the recompute hint
+    assert "update_conditions" in sys                       # the change-accepted hint
+    assert "RE-computed" in sys or "re-computed" in sys
+    assert "Never list the observed field" in sys           # k16, both phases
     # the honest-dismissals guard is preserved verbatim (not overturned)
     assert "honest" in sys and "forced breadth" in sys
 
