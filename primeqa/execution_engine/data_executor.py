@@ -172,7 +172,8 @@ def execute_data_recipe(
         # 2-step setup create -> rejected update/delete (D-203).
         return _run_negative_with_setup(
             plan, client=client, environment_id=environment_id, s1=s1,
-            world_plans=world_plans, record_sink=record_sink)
+            world_plans=world_plans, record_sink=record_sink,
+            field_overrides=field_overrides)
     return _run_positive(
         plan, client=client, environment_id=environment_id, s1=s1,
         world_plans=world_plans, record_sink=record_sink,
@@ -247,7 +248,7 @@ def _execute_negative(
 
 def _run_negative_with_setup(
     plan: DataRecipePlan, *, client, environment_id: int, s1=None,
-    world_plans=None, record_sink=None,
+    world_plans=None, record_sink=None, field_overrides=None,
 ) -> RunEvidence:
     """The 2-step behavioral negative (D-203): construct-world → setup
     create-expect-success → attempt the prohibited update/delete → grade the
@@ -258,6 +259,16 @@ def _run_negative_with_setup(
     unfillable world, or the org rejecting the setup create itself — is
     ``errored``: the prohibition under test was never exercised, so there is
     nothing to grade (never ``failed``, which would falsely indict the org).
+
+    ``field_overrides`` (D-235, extended by D-300 S4) applies to the SETUP
+    create only — the staging create is run-time test data exactly like the
+    positive vertical's subject. Ordering is deliberately SAFER than the
+    positive path's: an override beats the blind padding filler (its purpose —
+    e.g. steer StageName away from a VR-gated stage the padding picklist
+    default happens to hit) but NEVER beats the recipe's derived semantic
+    setup fields (a tester knob must not perturb the derived non-violating
+    state, e.g. the bva boundary value). The prohibited mutation itself is
+    untouched — overrides can never mask the violation under test.
     """
     run_id = uuid4()
     started = _now()
@@ -288,8 +299,13 @@ def _run_negative_with_setup(
         return _result(plan, run_id, started, environment_id, (), "errored", err,
                        created_records=tracker.records)
 
+    # Merge order (later wins after _sf_fields bare-ification): padding
+    # fillers < field_overrides < the derived semantic setup fields — the
+    # override steers padding, never the derived state (D-300 S4; contrast
+    # the positive path, where overrides deliberately win over field_values).
     field_values = _sf_fields(
-        {**setup.field_values, **scalar_filler, **parent_filler}, sobject)
+        {**scalar_filler, **parent_filler, **(field_overrides or {}),
+         **setup.field_values}, sobject)
 
     # 2. The setup create — expect success.
     c_start = _now()

@@ -489,3 +489,37 @@ def test_delete_permission_rejection_403_passes():
     ev = _run(_delete_plan_expecting(_PERM), client)
     assert ev.outcome == "passed"
     assert ev.steps[1].matched is True and ev.steps[1].http_status == 403
+
+
+# ---------------------------------------------------------------------------
+# D-300 S4: field_overrides on the SETUP create (staging is run-time test data;
+# override beats padding, NEVER the derived semantic setup fields).
+# ---------------------------------------------------------------------------
+
+def test_setup_create_honors_field_overrides_for_padding():
+    # The live D-300 finding: padding's picklist default hit a VR-gated stage
+    # and staged nothing. An override steers the PADDED field; the derived
+    # semantic setup field and the prohibited update are untouched.
+    client = _StubClient(create_result=_created(), update_result=_rejected())
+    ev = execute_data_recipe(
+        _update_plan(), client=client, environment_id=_ENV_ID, s1=_s1(),
+        field_overrides={"Name": "Custom Stage Steer"})
+    assert ev.outcome == "passed"
+    sobject, payload = client.creates[0]
+    assert payload["Name"] == "Custom Stage Steer"     # override beat padding
+    assert payload["Amount"] == 500                    # semantic setup intact
+    _, _, changes = client.updates[0]
+    assert changes == {"Amount": 2000000}              # the mutation untouched
+
+
+def test_setup_override_never_beats_the_semantic_setup_field():
+    # Contrast the positive path (overrides win there): the staging override
+    # must not perturb the DERIVED non-violating state (e.g. a bva boundary
+    # value) — the semantic field wins even across bare/qualified key forms.
+    client = _StubClient(create_result=_created(), update_result=_rejected())
+    ev = execute_data_recipe(
+        _update_plan(), client=client, environment_id=_ENV_ID, s1=_s1(),
+        field_overrides={"Amount": 999})
+    assert ev.outcome == "passed"
+    _, payload = client.creates[0]
+    assert payload["Amount"] == 500                    # derived value wins
