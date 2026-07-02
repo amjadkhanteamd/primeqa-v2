@@ -103,8 +103,19 @@ Data-behavior claims concern how records and fields behave at runtime.
   credit score, set all three — `[{"field_name":"Opportunity.StageName","value":"Credit Assessment"},{"field_name":"Opportunity.KYC_Complete__c","value":true},{"field_name":"Opportunity.Credit_Score__c","value":700}]`.
   Do NOT list the effect field itself in `trigger_fields` — the org must
   produce it. Omit `trigger_fields` when the Flow fires on bare creation.
+  A CALCULATED (formula) field is also an automation: when the requirement
+  asserts a computed field's value ("Loan-to-Value is calculated as loan
+  divided by property value", "the formula computes 62.5%"), propose an
+  `automation-effect-claim` whose `automation_name` is the FORMULA FIELD's
+  fully-qualified API name (e.g. `"Opportunity.Loan_to_Value__c"`), with
+  `field_name` set to the same field, `expected_value` to the computed result
+  the requirement states, and `trigger_fields` naming the INPUT fields and
+  values the computation reads (plus any field a validation rule requires for
+  the record to save). Never list the computed field itself in
+  `trigger_fields` — the org must produce it.
   The substrate verifies every name against the org model and grounds the
-  claim on a record-triggered Flow existing on the trigger object; it silently
-  drops any `trigger_fields` entry it cannot verify (it never guesses).
+  claim on a record-triggered Flow existing on the trigger object — or, for a
+  formula, on the named field being calculated; it silently drops any
+  `trigger_fields` entry it cannot verify (it never guesses).
 - Choose the Object the behavior acts on as the subject — not a field — unless
   the claim is specifically about a single field's value.

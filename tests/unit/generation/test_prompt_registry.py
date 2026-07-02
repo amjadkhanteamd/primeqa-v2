@@ -24,12 +24,11 @@ def test_frozen_content_hash_matches_recorded():
             f"{v}: frozen content drifted from its recorded hash")
 
 
-def test_current_resolves_to_v11():
-    # D-299: CURRENT bumped to v11 (automation-effect entry-condition trigger —
-    # trigger_fields + automation_name). v1..v10 stay frozen + pinned-resolvable
-    # (test_runtime_honors_pinned_prompt_version).
-    assert registry.CURRENT == "generation@v11"
-    assert registry.get() == registry.get("generation@v11")
+def test_current_resolves_to_v12():
+    # D-304: CURRENT bumped to v12 (the formula automation primitive). v1..v11
+    # stay frozen + pinned-resolvable (test_runtime_honors_pinned_prompt_version).
+    assert registry.CURRENT == "generation@v12"
+    assert registry.get() == registry.get("generation@v12")
     sys = registry.get()
     assert len(sys) > 1000                                  # substantive, not a stub
     # the substance the schemas don't enforce (D-103.3) is present
@@ -65,6 +64,9 @@ def test_current_resolves_to_v11():
     assert "trigger_fields" in sys                          # the entry-condition hint
     assert "automation_name" in sys                         # disambiguate WHICH Flow
     assert "entry-gate" in sys or "ENTRY CONDITION" in sys
+    # v12's formula-primitive contract (D-304)
+    assert "CALCULATED (formula) field is also an automation" in sys
+    assert "on the named field being calculated" in sys
     # the honest-dismissals guard is preserved verbatim (not overturned)
     assert "honest" in sys and "forced breadth" in sys
 

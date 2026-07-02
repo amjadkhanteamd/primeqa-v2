@@ -28,7 +28,7 @@ _VERSIONS_DIR = _DIR / "versions"
 
 # The default version new generations use (replay pins its own version on the
 # request's operational_context.prompt_template_version, per D-071).
-CURRENT = "generation@v11"
+CURRENT = "generation@v12"
 
 # version id -> frozen composed artifact (filesystem-safe slug).
 _FILES = {
@@ -43,6 +43,7 @@ _FILES = {
     "generation@v9": _VERSIONS_DIR / "generation_v9.md",
     "generation@v10": _VERSIONS_DIR / "generation_v10.md",
     "generation@v11": _VERSIONS_DIR / "generation_v11.md",
+    "generation@v12": _VERSIONS_DIR / "generation_v12.md",
 }
 
 # Recorded SHA-256 of each frozen version's composed content (D-103.1 drift
@@ -85,6 +86,10 @@ RECORDED_HASHES = {
     # Flow's entry gate fires AND the record passes its validation rules) plus
     # automation_name (disambiguate WHICH Flow when several fire on the object).
     "generation@v11": "57677c7318cb053133f49db98421a16a60a7bf76ee15a8c6d35f8bc4f58cadd0",
+    # v12 (D-304): the formula automation primitive — a calculated field's value
+    # is an automation-effect (automation_name = the FIELD, trigger_fields = the
+    # formula inputs + VR-survival staging, expected_value = the computed result).
+    "generation@v12": "f36cd9609a5fb038be099e2a27228e3ee74520bbecae427ea8841681a608ba01",
 }
 
 # Working composition order — authors the NEXT frozen version (NOT runtime).
