@@ -31,6 +31,9 @@ class ModelPrice:
 MODEL_PRICING: Dict[str, ModelPrice] = {
     # Claude 4.7 (newest, current OPUS default in router.py)
     "claude-opus-4-7":            ModelPrice(input=15.00, output=75.00),
+    # Claude 5 family — Sonnet 5 is the S3 generation default as of 2026-07-02
+    # (see router.SONNET_5 / generation/routing.py). Same $3/$15 Sonnet tier.
+    "claude-sonnet-5":            ModelPrice(input=3.00,  output=15.00),
     # Claude 4.6
     "claude-opus-4-6":            ModelPrice(input=15.00, output=75.00),
     "claude-sonnet-4-6":          ModelPrice(input=3.00,  output=15.00),

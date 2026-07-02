@@ -1,6 +1,6 @@
-"""Pure unit tests for D-091 model routing (route_model, D-106.2): the archetype
-table, explicit-pin precedence, default-to-capability, and tenant
-``always_use_opus`` — plus purity (no mutation of the request)."""
+"""Pure unit tests for model routing (route_model): the 2026-07-02 Sonnet-5
+default flip (ALL archetypes → Sonnet 5), explicit-pin precedence, tenant
+``always_use_opus`` (still Opus) — plus purity (no mutation of the request)."""
 from __future__ import annotations
 
 from uuid import uuid4
@@ -14,7 +14,7 @@ from primeqa.generation.protocol import (
     SemanticContext,
 )
 from primeqa.generation.routing import route_model
-from primeqa.intelligence.llm.router import OPUS, SONNET, TenantPolicy
+from primeqa.intelligence.llm.router import OPUS, SONNET_5, TenantPolicy
 
 
 def _req(*, archetype_hint=None, model=None) -> GenerationRequest:
@@ -29,24 +29,17 @@ def _req(*, archetype_hint=None, model=None) -> GenerationRequest:
 
 
 # ---------------------------------------------------------------------------
-# Archetype table (D-091): config/ui -> Sonnet; everything else -> Opus
+# Sonnet-5 default flip (2026-07-02): EVERY archetype routes to Sonnet 5.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("archetype", ["configuration", "ui"])
-def test_config_and_ui_route_to_sonnet(archetype):
-    assert route_model(_req(archetype_hint=archetype)) == SONNET
-
-
-@pytest.mark.parametrize("archetype", ["data_behavior", "permission", "integration"])
-def test_reasoning_archetypes_route_to_opus(archetype):
-    assert route_model(_req(archetype_hint=archetype)) == OPUS
-
-
-@pytest.mark.parametrize("archetype", [None, "mixed", "totally_unknown"])
-def test_missing_or_unknown_archetype_defaults_to_opus(archetype):
-    # Default-to-capability (D-106.2): a missing / unknown hint never silently
-    # downgrades to Sonnet.
-    assert route_model(_req(archetype_hint=archetype)) == OPUS
+@pytest.mark.parametrize("archetype", [
+    "configuration", "ui", "data_behavior", "permission", "integration",
+    "mixed", None, "totally_unknown",
+])
+def test_all_archetypes_route_to_sonnet_5(archetype):
+    # The archetype table was collapsed: generation defaults to Sonnet 5 for all
+    # archetypes (and for a missing / unknown hint) ahead of the A/B.
+    assert route_model(_req(archetype_hint=archetype)) == SONNET_5
 
 
 # ---------------------------------------------------------------------------
@@ -68,15 +61,15 @@ def test_explicit_model_wins_over_always_use_opus():
 # Tenant always_use_opus (D-106.2 precedence #2)
 # ---------------------------------------------------------------------------
 
-def test_always_use_opus_overrides_sonnet_archetype():
-    # config would route Sonnet; the premium tier gets Opus everywhere.
-    assert route_model(_req(archetype_hint="configuration"),
+def test_always_use_opus_overrides_sonnet_default():
+    # The premium tier keeps Opus everywhere, despite the Sonnet-5 default.
+    assert route_model(_req(archetype_hint="data_behavior"),
                        TenantPolicy(always_use_opus=True)) == OPUS
 
 
-def test_default_policy_does_not_force_opus():
-    # The default policy leaves the archetype table in charge.
-    assert route_model(_req(archetype_hint="ui"), TenantPolicy()) == SONNET
+def test_default_policy_routes_sonnet_5():
+    # The default policy leaves the Sonnet-5 default in charge.
+    assert route_model(_req(archetype_hint="ui"), TenantPolicy()) == SONNET_5
 
 
 # ---------------------------------------------------------------------------

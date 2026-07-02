@@ -46,6 +46,16 @@ COMPLEXITY_HIGH = "high"
 OPUS = "claude-opus-4-7"
 SONNET = "claude-sonnet-4-5-20250929"
 HAIKU = "claude-haiku-4-5-20251001"
+# Sonnet 5 — the newest Sonnet (Claude 5 family). S3 generation routes here by
+# default as of 2026-07-02 (AK; generation/routing.py), ahead of the formal
+# Sonnet-vs-Opus A/B. Its own constant so bumping generation's model does NOT
+# disturb the _CHAINS tasks (agent_fix / repair_proposal / failure_analysis /
+# test_plan_generation) that still bind the older SONNET.
+# NOTE: unlike the ids above (probe-verified 2026-04-20), this id was set from
+# the model catalog and NOT yet probed in-repo — confirm it resolves for the
+# deployed key (scripts/probe_llm_models.py) before relying on it; a wrong id
+# 404s and fails generation loud (content_error, non-retryable).
+SONNET_5 = "claude-sonnet-5"
 
 
 # ---- Configurable summary model (Phase-1 close-out #5) ---------------------
